@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No file under ``server/`` cites the nonexistent "S4 item 14" (#412 item 3).
 
 The spec's S4 has items 1 to 6. The work five places cited as "#189 S4 item

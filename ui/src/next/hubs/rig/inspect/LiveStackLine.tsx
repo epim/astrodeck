@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LiveStackLine.tsx - the live-stack readout, rebuilt (wave R7, T-R7-19;
 // replaces `components/preview/LiveStackReadout.tsx`, which is NOT edited and
 // keeps serving `#/classic`).

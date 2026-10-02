@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/site.ts — pure geo helpers for the Settings → Site panel. No React, no
 // DOM: npx-tsx testable (caps.ts/safety.ts precedent). Longitude is stored
 // SIGNED East-positive, latitude signed +N (config.py:11-16 convention); the UI

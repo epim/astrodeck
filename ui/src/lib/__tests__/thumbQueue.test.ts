@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // thumbQueue.test.ts — the pacing that stops the gallery asking for a minute's
 // work in one frame of animation.
 //

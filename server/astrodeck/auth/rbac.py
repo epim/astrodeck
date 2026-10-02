@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Boot-time route->capability assertion (W2.2 / plan section "BOOT-TIME ROUTE
 ASSERTION").
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Examples after slice S3 (#189 U-09; spec 1.7, S3 item 4; Revision 2
 rulings 2 and 9).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One true sentence per catalog object, composed only from fields it has.
 
 Model: ``brightstars.describe()`` ("β Cas · Cassiopeia") and

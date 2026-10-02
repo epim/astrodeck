@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PreflightModal.tsx — the full pre-flight gate before Run Sequence
 // (onboarding spec §2b). Opens ONLY when there's a blocked item (or from the
 // strip's "Review"). It explains + offers in-place Fix; it is not a mandatory

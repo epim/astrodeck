@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTRACT.md's worked examples must still be what the scorer measures (#89).
 
 The contract quotes case-specific measured numbers in the present tense and

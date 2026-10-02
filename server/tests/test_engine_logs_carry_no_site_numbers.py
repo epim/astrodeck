@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The engine's hold, idle-watch and flip-watch lines tell a viewer nothing
 about the site (#233, engine half; mosaic slice H3 task T11; H3 orchestrator
 ruling 1 (spec, Still waiting on the owner, item 10); spec 5.8, 5.10, 6.9).

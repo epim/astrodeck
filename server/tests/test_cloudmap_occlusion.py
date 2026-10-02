@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Is there cloud in the beam, stage 4.
 
 Every test here pins one specific way this module can be plausibly wrong: a

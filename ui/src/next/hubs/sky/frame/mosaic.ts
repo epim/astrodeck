@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mosaic.ts - FRAME mode's arithmetic, its one server call, and what its door
 // hands Send to Flow Wizard (hub-sky plan C; #196, spec 2026-09-23 flows
 // mosaic, section 8 S6).

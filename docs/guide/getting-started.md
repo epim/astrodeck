@@ -59,3 +59,5 @@ Native guiding and native autofocus require `astrodeck_native`, which published 
 ## Next steps
 
 Connect [equipment and profiles](equipment-and-profiles.md), configure a [Windows rig](windows-rig.md), or read the [Orange Pi appliance guide](orange-pi-appliance.md). Continue with [capture](capture.md), [Flows and mosaics](flows-and-mosaics.md), and [unattended nights](unattended-nights.md).
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

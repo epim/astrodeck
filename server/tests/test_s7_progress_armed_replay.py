@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The progress route says what an armed auto-resume would replay (#473, S7
 orchestrator ruling 1; spec 5.9, 6.9).
 

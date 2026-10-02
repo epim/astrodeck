@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """"What catalogued objects are inside this sky region" -- written once for
 both queued callers: a camera-frame overlay (what's in the field the rig is
 pointed at) and the Atlas viewport (what's in the patch of sky currently

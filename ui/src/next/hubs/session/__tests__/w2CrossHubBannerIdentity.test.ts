@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2CrossHubBannerIdentity.test.ts - WP-60 (#268): `useSessionBanners` must key
 // an incident banner's dismissal on the incident's IDENTITY, not on its KIND
 // alone.

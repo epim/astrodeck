@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targets.ts - the three catalogue sources merged into one list of things the
 // finder can draw, plus the kind mapping, the status decoration and the filter
 // palette (hub-sky plan B.2 and B.12).

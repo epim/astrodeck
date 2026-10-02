@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sitesModel.ts - pure helpers for the Sites sheet (T-SKY-4): great-circle
 // distance from the phone's GPS fix, the coordinate/horizon summary lines a
 // row prints (honouring the view.site_precise privacy rule), and which saved

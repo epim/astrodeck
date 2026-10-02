@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A no-light verdict says what its reference stands on (#308, S3
 orchestrator ruling 8).
 

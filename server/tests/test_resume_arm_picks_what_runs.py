@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-resume re-centres on what the run will shoot, at its angle (#159,
 I-13; #189 S2 item 6; mosaic spec 5.9, 3.4, Revision 2 ruling 9).
 

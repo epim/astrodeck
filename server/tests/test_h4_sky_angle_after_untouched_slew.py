@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """After every slew that left the rotator untouched, the sky angle its solve
 measured is recorded in the session report (#526 part 3, H4 orchestrator
 ruling 3; #145 and S8, which wait on this data).

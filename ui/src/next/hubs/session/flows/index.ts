@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // session/flows/index.ts - what the SESSION hub mounts for `#/session/flows`.
 //
 // `SessionHub.tsx` is another task's file, so this barrel is the seam: the hub

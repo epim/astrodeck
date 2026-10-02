@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Ed25519 signing/verification for release artifacts (fail-closed)."""
 import base64
 

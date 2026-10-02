@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.88 - #203 (solar-system rows computed site-free for a caller
 # without view.site_derived), the flow canvas loss badge, and the tonight brief
 # that promised an HFR grade nothing does. Same traps as deploy_0287.ps1.

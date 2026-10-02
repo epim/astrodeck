@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickVisibility.ts - tonight's ephemeris for one position, for the sheets that
 // draw a night arc or a brief (hub-sky plan B.4, A.11, D.3).
 //

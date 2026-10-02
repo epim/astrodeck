@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """/api/catalog/tonight route (NOV-3)."""
 from __future__ import annotations
 

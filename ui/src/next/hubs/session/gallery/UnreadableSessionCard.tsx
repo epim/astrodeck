@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // UnreadableSessionCard.tsx - a session file the rig cannot read, on the shelf
 // (#242).
 //

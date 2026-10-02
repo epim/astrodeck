@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ProfileRow.tsx - the PROFILE row and the popover it anchors (plan A.3).
 //
 // The row states which saved rig is in force and how big it is. The COUNT is

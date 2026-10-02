@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What the preview encoder does with a frame's row length — and what it cannot.
 
 Read this before re-opening #110 (Capture preview drawn squeezed, sheared

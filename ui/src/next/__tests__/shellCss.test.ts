@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // shellCss.test.ts - a source-reading guard on shell.css for the sheet-panel
 // containment rule.
 //

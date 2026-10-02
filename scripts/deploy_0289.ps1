@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.89 - the 409 payload RUN needed (a flow with any loss could not be
 # started at all), rotation -1 = no angle constraint, and a button press you can
 # actually see. Same traps as deploy_0288.ps1.

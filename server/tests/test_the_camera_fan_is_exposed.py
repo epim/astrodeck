@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#22: the Poseidon-M PRO's hot-side fan (config 21) can be read and set.
 
 During the 2026-09-12 cooler failure, ruling the fan out took poking config

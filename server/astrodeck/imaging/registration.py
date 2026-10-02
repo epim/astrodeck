@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Star-pattern registration: the translation between two star fields.
 
 Live stacking v1 anchored on the single brightest star. That fails in three

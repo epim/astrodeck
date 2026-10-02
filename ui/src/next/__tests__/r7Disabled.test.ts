@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // r7Disabled.test.ts - the new UI never uses the native `disabled` attribute.
 //
 //   Run directly:  npx tsx src/next/__tests__/r7Disabled.test.ts

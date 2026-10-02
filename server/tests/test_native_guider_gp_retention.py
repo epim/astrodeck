@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A5 (P4-T1 ruling B + fix round, amended spec §3-A5): NativeGuider persists/
 loads the PPEC model window beside the calibration — ``{"dumped_at": <epoch s>,
 "window": [[t, m, v, c], ...]}`` — restores it through the engine's

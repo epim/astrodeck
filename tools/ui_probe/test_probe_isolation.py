@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Real-browser regression for #31, and the browser every walk runs in (#535).
 Run with the probe's Playwright Python.
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.28 to the astrotown rig. Run ON the rig (elevated ssh session).
 #
 # What 0.3.28 carries, on top of 0.3.27's polar guard: the meridian flip's

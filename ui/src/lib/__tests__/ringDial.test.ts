@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ringDial.test.ts — NO TWO CHIPS MAY OVERLAP. That is the whole file.
 //
 // The dial shipped with its limit written in a header comment ("five items…

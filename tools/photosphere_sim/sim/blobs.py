@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Connected runs of one colour in an RGBA raster.
 
 The scorer decodes the finished panorama by looking for each palette colour in

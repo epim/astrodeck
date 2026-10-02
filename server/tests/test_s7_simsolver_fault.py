@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The simulator's staged solve failure (#189 S7 item 1, the second of its four
 scenarios, walked on the real page by tools/ui_probe/routes_s7.json).
 

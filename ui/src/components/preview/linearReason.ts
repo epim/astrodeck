@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Why a linear-data tool is unavailable — the TRUE reason, not a guess.
 //
 // `linearEnabled = !!preview && !isNina && preview.data_is_linear` has three

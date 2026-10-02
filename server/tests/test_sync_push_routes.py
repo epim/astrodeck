@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The surface Phase 2 was missing: config in, status out, push on demand.
 
 The core algorithm has its own tests (``test_sync_push.py``) and the runner has

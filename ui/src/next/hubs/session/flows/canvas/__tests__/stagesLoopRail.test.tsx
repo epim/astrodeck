@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stagesLoopRail.test.tsx - the phone stage list's panel loop and its counts
 // line, MOUNTED (#189 S4 item 6; spec 2026-09-23 flows mosaic, 1.4 "How it is
 // drawn" and "When the wire is added"; Revision 2 ruling 2; S4 orchestrator

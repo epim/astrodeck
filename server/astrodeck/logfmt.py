@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """uvicorn log formatting for the rig server: the path, never the query (#550).
 
 uvicorn's stock access line is `GET /api/cloudmap/at?alt=..&az=.. HTTP/1.1`, and

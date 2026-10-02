@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native (Rust engine) autofocus, end-to-end against the simulator.
 
 The sim camera renders focus-dependent star sharpness (``sim.py`` ``_render_stars``:

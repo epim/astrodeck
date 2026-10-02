@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Coarse focus: get close enough that autofocus can take over.
 
 Autofocus fits a V-curve of star HFR, so it needs STARS at the start. A badly

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API tests for POST /api/profiles/{id}/set-providers (#132).
 
 The sibling file ``test_clear_profile_overrides`` covers the UNDO. This covers

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // usePreviewGestures — pointer/touch/wheel zoom+pan inside the shared transform.
 // (live-preview spec §7 "Gestures, remap, transform" — stream S)
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/guideRms.ts — pure same-night per-provider RMS tagging + window selection
 // (P5-T1 fix round C1/I2). The "guide" bus channel carries no provider tag, so
 // store.ts stamps each incoming tick with the CURRENTLY-resolved guide provider

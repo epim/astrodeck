@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // altaz.test.ts — the port is checked against the PYTHON, not against itself.
 //
 // Every expected value below came out of the server's own

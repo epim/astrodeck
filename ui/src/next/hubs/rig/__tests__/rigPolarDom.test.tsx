@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigPolarDom.test.tsx - the POLAR ALIGNMENT sub-sheet, MOUNTED (plan
 // hub-rig.md D.2, T-RIG-3 row).
 //

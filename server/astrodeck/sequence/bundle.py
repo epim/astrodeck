@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-10 stacker-ready interop export bundle — pure core (NO I/O).
 
 Turns a finished :class:`~astrodeck.sequence.report.SessionReport` into a small,

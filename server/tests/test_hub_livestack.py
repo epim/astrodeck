@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Live View through the hub: arming makes preview events carry `livestack`,
 frames accumulate across the loop's subs, stop clears it, and an unarmed hub
 publishes NO livestack field (byte-for-byte-unchanged preview path)."""

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // replayNotice.ts - the editor's line that an armed auto-resume will replay
 // the version of the flow its session froze, not the flow on screen (#473,
 // S7 orchestrator ruling 1; spec 5.9).

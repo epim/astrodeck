@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightSheet.tsx - "what is this flow actually going to do tonight?", in
 // four readings of the same answer (parity row A18): the night as a picture,
 // the night as sentences, the plan the engine will literally run, and how much

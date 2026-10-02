@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The centring rules of the mosaic group driver, pure (#534, H4 orchestrator
 ruling 2; #532, contract 1; spec 5.1, 5.6 steps 4 and 7).
 

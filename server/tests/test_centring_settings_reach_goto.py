@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A target's centring settings reach `goto_and_center` (#170), and a slew
 that cannot rotate says so (#160, the engine half).
 

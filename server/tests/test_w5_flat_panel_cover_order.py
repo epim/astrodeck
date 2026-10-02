@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-37 (c) / #194: a combined cover+calibrator (a flip-flat, whose light
 panel is the underside of the cover itself) must have its cover CLOSED
 before the panel is switched on for a flat, not opened after.

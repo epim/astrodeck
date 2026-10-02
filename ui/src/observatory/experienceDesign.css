@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 .dx { --dx-blue:#9ebbdc; --dx-violet:#b2aacd; font-size:14px; scroll-padding-top:15px; }
 .dx.obs-night { --dx-blue:var(--o-accent); --dx-violet:var(--o-warn); }
 .dx button,.dx input,.dx select { font:inherit; }.dx button { cursor:pointer; }.dx button:disabled { cursor:not-allowed; opacity:.45; }

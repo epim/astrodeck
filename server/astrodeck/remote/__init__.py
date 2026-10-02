@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """AstroDeck remote-access (W3) -- the SCOPE-SIDE dial-out client + wire protocol.
 
 This package owns the home's half of the no-gRPC / no-Tailscale WS-tunnel design

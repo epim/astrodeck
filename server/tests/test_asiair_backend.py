@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ASIAIR backend — hardware-free tests against a fake libasi client.
 
 THERE IS NO ASIAIR ON THIS NETWORK, and none of these tests pretend otherwise.

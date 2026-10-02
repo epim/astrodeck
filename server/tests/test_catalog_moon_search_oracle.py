@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Moon's position in ``/api/catalog`` is a location oracle (#193).
 
 WHY THIS IS THE SAME BUG AS THE ONE ALREADY CLOSED. ``/api/catalog`` withholds

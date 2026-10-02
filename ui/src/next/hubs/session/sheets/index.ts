@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // session/sheets/index.ts - the SESSION hub's sheet registry
 // (ARCHITECTURE.md section 5).
 //

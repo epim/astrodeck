@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The rig naming its own target (#182) -- the hub wiring and the line it holds.
 
 The feature is: a plate solve says what patch of sky the camera is on, and the

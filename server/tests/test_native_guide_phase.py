@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NOV-7 (docs/superpowers/specs/2026-07-23-guiding-narration-design.md):
 ``GuideStats.phase`` + ``NativeGuider._current_phase()`` (design doc §1.3).
 Fixture shape mirrors ``test_native_guider_e2e.py`` / ``_dither.py`` /

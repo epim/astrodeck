@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureFilterDial.test.ts — Capture's FILT ring (#181/#179).
 //
 //   Run directly:  npx tsx src/components/capture/__tests__/captureFilterDial.test.ts

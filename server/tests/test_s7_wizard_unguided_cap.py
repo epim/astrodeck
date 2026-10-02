@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The wizard's unguided sub cap ends below the doctor's line (#432; #189
 spec 1.8, and Revision 2, ruling 4: every generated graph passes the doctor
 at note level or better; S7).

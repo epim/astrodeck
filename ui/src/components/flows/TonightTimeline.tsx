@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightTimeline.tsx — tonight as a picture, drawn from the server's TIMES.
 //
 // `flows/tonight.py` says it in capitals: "WHAT THIS RETURNS IS TIMES, NOT

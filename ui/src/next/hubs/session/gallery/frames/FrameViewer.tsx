@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FrameViewer.tsx - the picture someone opened, at the size of the screen
 // showing it (wave R7, area H: `components/gallery/FrameViewer.tsx`).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionDates.ts — the one-line identity string on a session card.
 //
 // REVIEW #35: five session cards all read "Tonight" with nothing to tell them

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API: /api/sequence/stack {start,stop,reset}, the status GET and preview.jpg.
 
 Mirrors the in-process app + sim-rig harness from test_bahtinov_route.py. The

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rotatorCard.test.ts — pure-geometry regression for the RotatorCard arc dial
 // (CAA spec §5.1). The dial is display-only, but its polar/arc math decides
 // where the current-angle dot and the range-of-motion sweep land, so a

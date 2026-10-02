@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """AlpacaRotator verb mapping against a recording fake connection."""
 import asyncio
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/bundleView.ts — pure helpers for the ReportView "Stacking bundle" panel
 // (PRO-10 §1.5 / Task 5). No React, no I/O — unit-tested via `npx tsx`
 // (bundleView.test.ts), mirroring lib/eta.ts.

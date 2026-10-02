@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ResumeArm hands the target it re-centred to the engine's idle clock (#202,
 the resume half).
 

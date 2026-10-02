@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Policy wrapper over ``signing.verify_artifact``: a pinned public key is
 REQUIRED, SHA256 then Ed25519 must both pass, fail-closed. Kept separate so the
 service reads as download -> verify -> stage."""

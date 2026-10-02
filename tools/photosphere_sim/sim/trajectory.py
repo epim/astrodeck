@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Camera trajectories built from a route definition (CONTRACT.md's Route schema).
 
 A route describes a person holding a phone: a sequence of ``aims`` the view

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The second wave of the 2026-08-03 file-safety sweep.
 
 The SPA catch-all traversal (a READ primitive) is pinned in

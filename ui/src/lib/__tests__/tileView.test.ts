@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tileView.test.ts — pure tests for lib/tileView.ts (tile-engine spec §3).
 // Inline-assert harness (no vitest); runs via `npx tsx`.
 import { tileOrderFor, visibleTiles, tileMesh, ancestorUV } from "../tileView";

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-11 file-naming + folder templates — pure token engine (no I/O).
 
 The persisted per-target counter lives in the Hub (CAPTURE_DIR-backed); this

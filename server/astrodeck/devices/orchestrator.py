@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Connect a live rig from a ``RigSpec`` (Stage A).
 
 Turns a declarative ``RigSpec`` (primary backend + per-role overrides) into a

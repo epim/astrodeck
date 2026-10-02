@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowWizardSheet.test.tsx - the #/next `flowWizard` sheet, its door and its
 // registry entry (#196; spec 2026-09-23 flows mosaic, Revision 2 ruling 4,
 // D13, D-FU-2, section 8 S6).

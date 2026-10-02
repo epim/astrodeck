@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PatchCard.tsx - the card that replaces the lock card when nothing catalogued
 // is under the reticle (hub-sky plan A.8).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AtlasHost.tsx - ATLAS mode: the classic pannable sky, inside the Sky hub.
 //
 // WHY THIS EXISTS. On a deployed rig the Sky tab opens on the schematic MAP

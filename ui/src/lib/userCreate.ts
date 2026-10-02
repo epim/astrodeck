@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // userCreate.ts — the decision layer behind "add a user".
 //
 // The account form used to demand a password, full stop. But this rig can sign

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``GET /api/sync/manifest`` — the rig's half of a pull sync.
 
 The reconciliation RULES are tested in ``test_sync_manifest.py`` against real

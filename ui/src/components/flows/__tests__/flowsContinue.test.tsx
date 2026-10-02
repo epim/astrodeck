@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsContinue.test.tsx - CONTINUE's three questions and START OVER, on both
 // run paths (#189 S1-17, spec 5.9).
 //

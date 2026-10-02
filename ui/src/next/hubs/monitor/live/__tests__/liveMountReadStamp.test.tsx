@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // liveMountReadStamp.test.tsx - MONITOR - LIVE's own mount read never
 // overwrites a newer live event (#476, the LiveScreen half; S7 orchestrator
 // ruling 3; spec 5.10).

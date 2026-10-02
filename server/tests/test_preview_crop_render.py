@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Preview /crop + /render.png (the former "Pass 2" stubs): a sensor-1:1 ROI
 zoom and a full-resolution baked-stretch export, both cut from the LINEAR frame
 array held for the latest 1-2 previews. 404 when that linear array is gone.

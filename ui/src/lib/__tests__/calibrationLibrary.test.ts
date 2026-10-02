@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for PRO-1's pure calibration-library helpers (calibration-library
 // spec §6). Same tiny inline-assert harness as eta.test.ts — compiles under
 // `tsc -b`, runs with: npx tsx src/lib/__tests__/calibrationLibrary.test.ts

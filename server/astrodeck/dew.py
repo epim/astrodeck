@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Dew heaters driven by the MARGIN to the dew point (D-RIG-3, task S7f).
 
 THE MARGIN, NOT THE HUMIDITY. Relative humidity is a statement about the AIR:

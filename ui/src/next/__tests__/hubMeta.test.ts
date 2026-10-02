@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // hubMeta.test.ts - the sub-nav chips are a PURE function of `SubContext`.
 //
 //   Run directly:  npx tsx src/next/__tests__/hubMeta.test.ts

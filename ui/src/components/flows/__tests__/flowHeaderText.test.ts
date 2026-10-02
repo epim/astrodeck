@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowHeaderText.test.ts — the four things the Flows toolbar could print untrue.
 //   Run:  npx tsx src/components/flows/__tests__/flowHeaderText.test.ts   (from ui/)
 //

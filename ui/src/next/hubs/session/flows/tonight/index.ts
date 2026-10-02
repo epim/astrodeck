@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // session/flows/tonight/index.ts - the seam this area publishes.
 //
 // The Flows cutover task composes the SESSION hub's sheet registry from the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Coarse focus — the way out of the loop that cost a night.
 
 Autofocus needs stars to start; a badly-defocused rig has none. This shrinks

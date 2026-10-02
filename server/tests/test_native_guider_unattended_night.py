@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sub-project A acceptance gate (spec §5): the UNATTENDED NIGHT scenario on
 the closed-loop sim, deterministic under a virtual clock. Exercises A1 (fault
 absorption via NativeGuider._expose), A2 (PPEC survives a mid-run dither), and

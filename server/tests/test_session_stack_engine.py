@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The engine hand-off: the session stack is fed ACCEPTED frames, and only those.
 
 This is the assertion the feature stands on. The composite is meant to show what

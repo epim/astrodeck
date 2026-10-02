@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wind.ts - which way the cloud is going, drawn as drift on the screen
 // (hub-sky plan B.9).
 //

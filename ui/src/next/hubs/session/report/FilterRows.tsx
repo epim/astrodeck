@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FilterRows.tsx - `By filter` and `By target`, both built from one row.
 //
 // The row is the campaign-ledger line (proto 10): the filter's name beside its

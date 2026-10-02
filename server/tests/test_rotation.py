@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Table-driven tests for astrodeck.rotation — direct transcription checks of
 docs/native-parity/algorithms/nina-platesolving.md §11.2/§11.4. The UI mirror
 (ui/src/lib/rotation.ts) asserts the SAME vectors — keep the tables in sync."""

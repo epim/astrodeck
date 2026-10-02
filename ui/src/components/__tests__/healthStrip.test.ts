@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Health-strip (Monitor hero polish, implementation brief §5) pure-logic
 // regression — the tier-1/2 folding of safety/disk/backend_links/meridian/
 // nina_link/status.providers/end_reason into the single "is my night OK?"

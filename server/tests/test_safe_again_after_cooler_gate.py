@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The open-sky pause and the roof reopen publish "safe again" only once the
 cooler gate has passed, and the gate's wait reads the safety monitor on its
 own clock (#448, S4 review item 9; spec 5.8).

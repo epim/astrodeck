@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-11 file-naming templates — pure engine + per-target counter."""
 from __future__ import annotations
 import re

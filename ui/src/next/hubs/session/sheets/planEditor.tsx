@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planEditor.tsx - the plan editor, whole, at tablet and desktop
 // (plan section D.4; wave R7 task T-R7-5).
 //

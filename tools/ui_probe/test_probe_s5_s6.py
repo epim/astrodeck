@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Self-tests for the S5 and S6 probe (#189 S5, S6, routes_s5_s6.json). Run
 with the probe's Playwright Python, like test_probe_s4.py:
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guideSettings.test.ts — pure tests for lib/guideSettings.ts's
 // defaultGuideSettings()/validateGuideSettings(), the per-axis guide-algorithm
 // selection the native guider's GuideView settings drawer edits. Asserts the

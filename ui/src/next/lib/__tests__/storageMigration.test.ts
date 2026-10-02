@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // storageMigration.test.ts - the one-way door from a browser key to the rig
 // (D-FU-1, T-U7b-11).
 //

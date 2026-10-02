@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // DriversPanel.tsx — Settings → "Backend Drivers" (equipment-drivers spec §4.2).
 // The ONE place backends are declared: add/edit/enable/probe/delete configured
 // drivers (NINA / Alpaca / PHD2), see what each currently OFFERS (per-role

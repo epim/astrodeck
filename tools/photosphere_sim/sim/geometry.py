@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Coordinate conventions for the photosphere simulator.
 
 This module is derived from CONTRACT.md and the W3C DeviceOrientation

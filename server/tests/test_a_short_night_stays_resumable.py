@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#252: a run that ends with frames owed must stay resumable.
 
 Every test here drives the REAL engine. The defect these cover shipped behind

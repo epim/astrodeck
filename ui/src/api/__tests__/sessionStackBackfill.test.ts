@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // backfillLabel: the one line the Session stack panel shows about the pass that
 // folds in the subs a run had already shot before the stack was switched on.
 //

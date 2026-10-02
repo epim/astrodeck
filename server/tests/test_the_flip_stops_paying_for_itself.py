@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ONE MERIDIAN FLIP COST THIRTY-TWO MINUTES, AND MOST OF IT BOUGHT NOTHING.
 
 Measured on astrotown, v0.3.25, the night of 2026-09-07/08 (times are

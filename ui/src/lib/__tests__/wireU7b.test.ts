@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The wave-S7 fetch wrappers build the request the wire actually accepts.
 //
 // These wrappers are consumed by nine other tasks, and every one of them is a

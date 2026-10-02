@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // galleryDom.test.tsx - the SESSION / GALLERY shelf, MOUNTED.
 //
 //   Run directly:  npx tsx src/next/hubs/session/gallery/__tests__/galleryDom.test.tsx

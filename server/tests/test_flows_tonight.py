@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight, resolved — the numbers behind the Tonight panel.
 
 The prototype's ``tonight()`` returns invented times: dusk at 20:41 every night,

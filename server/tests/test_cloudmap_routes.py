@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The three cloud-map routes, stage 6a -- and the one architectural rule.
 
 The routes are read-only, session-gated, and answer with 200 for every state of

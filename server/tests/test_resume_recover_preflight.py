@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Resume and recover run the start's horizon and Sun pre-flight (#291; mosaic
 slice S3 task S3-H; spec 6.3, 5.9 "every existing guard still applies", 3.5).
 

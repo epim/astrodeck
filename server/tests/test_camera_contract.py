@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The keystone: every camera adapter is subjected to the SAME behavioral
 contract, driven by a fake SDK. A new brand can't silently violate it.
 

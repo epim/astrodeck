@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Base ``Telescope`` contract for multi-rate mount tracking (2026-07-21):
 the ``TRACKING_RATES`` vocabulary + the ``can_set_tracking_rate`` capability
 flag + the two default methods, exercised against a minimal concrete

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FilterNamesModal.tsx — assign filter-wheel slot names + per-filter focuser
 // offsets (UX-05). Reuses PreflightModal's overlay/focus-trap shell. Names flow
 // into FITS FILTER headers, saved-image filenames (NINA-style token), and the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Framing-assistant router (Sky-Atlas, design spec §5, Owner C).
 
 The mosaic engine is **server-canonical**: ``compute_mosaic`` here is the byte-for-

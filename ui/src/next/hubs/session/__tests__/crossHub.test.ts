@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // crossHub.test.ts - the data the SESSION hub hands the chrome on every OTHER
 // hub (plan sections E.1-E.3).
 //

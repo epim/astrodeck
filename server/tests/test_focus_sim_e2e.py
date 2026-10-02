@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The whole autofocus chain on the simulator, with nothing substituted.
 
 Every other autofocus test either hands ``sweep_metric`` a canned curve (so it

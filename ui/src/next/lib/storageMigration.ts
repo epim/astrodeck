@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // storageMigration.ts - moving ONE browser key onto the rig, once, in a way
 // that cannot lose it (D-FU-1, the T-U7a-K contract).
 //

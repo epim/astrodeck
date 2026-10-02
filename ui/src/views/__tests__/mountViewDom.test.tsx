@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mountViewDom.test.tsx — the Mount view's controls against a rig that answers.
 //
 //   Run directly:  npx tsx src/views/__tests__/mountViewDom.test.tsx

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NINA backend adapter (Stage A) -- the transition bridge.
 
 WRAPS ``devices.nina.build_nina_rig`` behind the ``Backend`` / ``BackendSession``

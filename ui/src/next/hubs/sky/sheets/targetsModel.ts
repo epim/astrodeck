@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targetsModel.ts - the ranked list behind the Suggested-targets sheet
 // (hub-sky plan A.10, B.2, B.6, B.12).
 //

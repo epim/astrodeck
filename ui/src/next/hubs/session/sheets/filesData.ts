@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filesData.ts - everything the Files sheet knows that is not a pixel.
 //
 // Three jobs, all of them store-free and (except the two fetch helpers) pure,

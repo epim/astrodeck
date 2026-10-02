@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A ceiling, not just a floor.
 
 Every altitude limit in the codebase was a MINIMUM. But a strain-wave mount with

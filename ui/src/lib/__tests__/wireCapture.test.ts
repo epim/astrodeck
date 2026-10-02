@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The promote wrappers build the request the wire accepts, and read the answer
 // by CODE (T-U7b-3, D-SES-4).
 //

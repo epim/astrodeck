@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Unprivileged network frontend for AstroDeck WiFi onboarding.
 
 This process parses hostile HTTP/DNS traffic and never executes network tools,

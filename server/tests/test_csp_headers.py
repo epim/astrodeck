@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """OPEN-012: the CSP no longer allows inline scripts.
 
 The one pre-paint inline script moved to public/bootstrap.js (served 'self'), so

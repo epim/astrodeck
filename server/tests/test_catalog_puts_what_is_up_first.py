@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The first rows of a target search should be targets you can actually shoot.
 
 Seen on the rig 2026-08-19 from 37N: opening MOUNT and searching shows, in

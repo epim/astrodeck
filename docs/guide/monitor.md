@@ -49,3 +49,5 @@ When an interrupted run is recoverable, **RESUME INTERRUPTED RUN** shows the rec
 ## Related
 
 [Sessions and multiple nights](sessions-multi-night.md) · [Unattended nights](unattended-nights.md) · [Weather](weather.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

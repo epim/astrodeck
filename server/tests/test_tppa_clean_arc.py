@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The measuring arc has to be ONE ROTATION OF ONE AXIS, and until 2026-09-09
 it was two gotos.
 

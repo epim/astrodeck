@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowsCanvasHost.tsx - the Flows canvas inside the hub body, at 768 px and up
 // (plan section D.3; ARCHITECTURE.md section 4, "the Flows canvas fills the hub
 // body"). Wave R7's cutover (T-R7-20) is what this file is.

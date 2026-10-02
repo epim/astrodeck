@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowWizard.tsx — the guided "NEW FLOW" sheet. Contract §C.14, ref 09.
 //
 // THE GENERATOR LIVES ON THE SERVER, AND STAYS THERE.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // session/flows/inspector/index.ts - what wave R7's cutover task (T-R7-20)
 // composes from this area.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Blackout (opaque) filter slots.
 
 A blackout slot is a carrier with no glass: it blocks the light path so darks

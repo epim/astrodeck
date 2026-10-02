@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ASCOM Alpaca backend.
 
 Speaks the Alpaca HTTP/REST device protocol — the open standard supported by
@@ -389,6 +391,36 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         self._exposing = False
         self.full_well = None
         self.can_report_cooler_power = False
+
+    async def _get(self, method: str, **params: Any) -> Any:
+        """As ``_AlpacaDevice._get``, but MEASURES ``connected`` (issue #16).
+
+        ``connected`` used to be a pure memory of "the Connected=True PUT once
+        succeeded", never touched again until an explicit ``disconnect()`` —
+        so a camera whose Alpaca server vanished mid-night still read
+        'connected' to the reconnect gate
+        (``sequence/engine.py._reconnect_gate``) forever, the same shape of
+        bug ``zwo_am5.py`` fixed for the mount's serial link.
+
+        Only a TRANSPORT failure (``httpx.TransportError`` — no HTTP response
+        came back at all) measures it false here. A ``DeviceError`` means the
+        driver DID answer — a non-200 status or an ASCOM ``ErrorNumber`` — and
+        answering, even to refuse the call, is proof the device is still
+        there; folding that in too would reconnect a camera that is merely
+        busy or was asked for something it declined."""
+        try:
+            return await super()._get(method, **params)
+        except httpx.TransportError:
+            self.connected = False
+            raise
+
+    async def _put(self, method: str, **params: Any) -> Any:
+        """As ``_get`` above, for PUT — see its docstring."""
+        try:
+            return await super()._put(method, **params)
+        except httpx.TransportError:
+            self.connected = False
+            raise
 
     async def connect(self) -> None:
         await _AlpacaDevice.connect(self)

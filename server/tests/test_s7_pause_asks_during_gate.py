@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The safety pause's re-asks of an unconfirmed stop keep their clock while
 its cooler gate waits (#453; spec 5.8 and 6.17).
 

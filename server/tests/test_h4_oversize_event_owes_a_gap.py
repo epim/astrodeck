@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An event the tunnel cannot send owes the viewer a gap marker (#485).
 
 After S7-BUS (#444) every home-side drop but one was announced. The one left

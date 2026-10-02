@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TabBar.tsx - the phone's six hubs (README "Information architecture").
 //
 // The active hub shows its label; the others are icon-only, which is what buys

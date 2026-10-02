@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 

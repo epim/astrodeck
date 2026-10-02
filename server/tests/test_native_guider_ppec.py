@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """P4 acceptance gate (spec §5): PPEC beats hysteresis on strong injected
 periodic error, plus the native.py config-passthrough for `ppec` + `blc_pulse_ms`.
 

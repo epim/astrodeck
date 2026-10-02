@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A group's last live panel, with guiding optional and no guider connected,
 is a plain target at its hop (#315, S3 orchestrator ruling 6; spec 5.6 step
 7, Revision 2 ruling 5).

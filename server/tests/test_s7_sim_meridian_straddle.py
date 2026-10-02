@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A rotating 2x2 whose panels straddle the meridian, end to end (#189 S7
 item 1, the last of its four simulator scenarios; spec 5.7, 5.10, 6.9,
 6.11; #422).

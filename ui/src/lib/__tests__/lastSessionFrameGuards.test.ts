@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lastSessionFrameGuards.test.ts — the guards in lib/lastSessionFrame.ts that
 // its own test file asserts but does not actually exercise.
 //

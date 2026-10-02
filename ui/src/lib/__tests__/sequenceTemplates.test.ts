@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure tests for the NOV-5 starter template catalog + mapping. No jsdom — runs
 // under `npx tsx`, compiles under `tsc -b` (idiom: lib/__tests__/eta.test.ts).
 //   npx tsx src/lib/__tests__/sequenceTemplates.test.ts

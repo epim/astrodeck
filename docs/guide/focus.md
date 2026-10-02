@@ -43,3 +43,5 @@ Fit the mask, then use **BAHTINOV MODE** and its **START** control to measure th
 ## Related
 
 [Capture](capture.md) · [Plan editor](plan-and-sequences.md) · [Flows and mosaics](flows-and-mosaics.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

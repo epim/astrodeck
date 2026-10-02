@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Stage A (#239): stored plans stop pretending they chose the defaults.
 
 Every plan saved before this change carries a concrete value for all twelve

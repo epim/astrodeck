@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SessionHub.tsx - the SESSION hub's body: NOW, GALLERY or FLOWS.
 //
 // THE SUB-NAV IS NOT HERE, deliberately. The shell renders it once for every

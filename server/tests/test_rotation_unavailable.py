@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """goto_and_center flags ``rotation_unavailable`` (#160, I-15; mosaic spec 5.6
 step 4 and section 8 S1 item 10).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5PolarEasedScaleFinite.test.tsx - #269: PolarReticle must never hand a
 // ring or a tier-zone circle a non-finite strokeOpacity (or radius), even
 // when the animation clock disagrees with itself about where "now" is on the

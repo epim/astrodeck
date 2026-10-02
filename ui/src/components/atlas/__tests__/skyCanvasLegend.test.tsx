@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyCanvasLegend.test.tsx - the "Object size" legend in panel mode keeps off
 // the panel labels (#425, mosaic slice S7; spec 2026-09-23 flows mosaic, 2.3).
 //

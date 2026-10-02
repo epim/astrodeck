@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What the TPPA adjusting phase computes, and what actually reaches the operator.
 
 Surface: ``astrodeck_native.tppa_update`` plus the publish path in

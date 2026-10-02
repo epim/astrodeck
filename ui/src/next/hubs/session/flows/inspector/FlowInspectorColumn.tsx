@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowInspectorColumn.tsx - the 284 px right column beside the Flows canvas,
 // and the body of the `flowNode` sheet (parity row A11).
 //

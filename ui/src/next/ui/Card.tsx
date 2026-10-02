@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX, ReactNode } from "react";
 
 /** The design's card: radius 16, `--bg-panel` ground, `--line` border.

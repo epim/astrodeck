@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Last-known device state, so a power cut is DETECTABLE rather than guessed.
 
 This module RECORDS; it never restores. Driving a focuser back to a remembered

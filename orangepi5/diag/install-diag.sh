@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Install the temporary telemetry collector into a MOUNTED appliance rootfs.
 #
 #   sudo ./install-diag.sh /mnt/sd

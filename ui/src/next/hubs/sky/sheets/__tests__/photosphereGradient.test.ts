@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // A steep sky gradient in part of the compass is not an obstruction (#102).
 //
 // The mosaic rule added for #71 and #74 compares each column's departure - the

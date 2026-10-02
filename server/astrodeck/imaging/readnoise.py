@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Read-noise measurement from bias frames — the photon-free acceptance test
 for a camera's read modes (e.g. Player One LRN vs Normal, or the HCG transition
 at gain 125). Read noise in electrons = sigma(ADU) * eGain.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowWizardDom.test.tsx — the wizard sheet's GENERATE FLOW button, MOUNTED.
 //
 //   Run directly:  npx tsx src/components/flows/__tests__/flowWizardDom.test.tsx

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A buffer whose rows are not the width we think they are must not become an
 image.
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LogExportSheet.tsx - Settings > MORE > Log export (plan section C.6, row
 // LOG EXPORT; section B.2.4).
 //

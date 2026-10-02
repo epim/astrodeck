@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX, ReactNode } from "react";
 
 /** The content frame every sheet shares (ARCHITECTURE section 5): a header row

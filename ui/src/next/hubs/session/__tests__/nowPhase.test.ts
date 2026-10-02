@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nowPhase.test.ts - the phase pill's ladder, row by row.
 //
 //   Run directly:  npx tsx src/next/hubs/session/__tests__/nowPhase.test.ts

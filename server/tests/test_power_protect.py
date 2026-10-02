@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """D-RIG-5: a protected switch port is refused SERVER-SIDE, and the per-port
 settings store behind that decision (``astrodeck/power_guard.py``).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The clocked group harness holds the hub's meridian on the night's clock,
 not on the real-time status poll's (#368; spec 5.7 as built S4, the
 harness clock).

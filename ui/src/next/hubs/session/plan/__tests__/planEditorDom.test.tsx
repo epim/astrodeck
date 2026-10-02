@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planEditorDom.test.tsx - the rebuilt PLAN EDITOR sheet, MOUNTED, with a
 // stubbed rig.
 //

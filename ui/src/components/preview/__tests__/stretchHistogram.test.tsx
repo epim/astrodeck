@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stretchHistogram.test.tsx — containment contract for the Advanced disclosure
 // on the stretch histogram (components/preview/StretchHistogram.tsx).
 //

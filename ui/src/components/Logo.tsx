@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Logo.tsx — AstroDeck mark as an inline SVG (no external asset). Owned by the
 // SHARED lane; feature lanes consume it (the live-preview empty-state fallback,
 // header/brand slots). Tasteful for a dark observatory UI: a stylized telescope

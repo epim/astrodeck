@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ASTRODECK_CONFIG_DIR / ASTRODECK_CAPTURE_DIR relocate persistent state out of the
 versioned release dir, so a self-update (which swaps the release dir) never wipes
 config / profiles / plans / captured images. Tested in a clean subprocess because

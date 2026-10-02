@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """TPPA must not walk its measurement arc across the meridian, must not report
 a fit that no mount on a tripod could produce, and must not report a fit whose
 own axis did not turn by what the mount was told to turn.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Flat auto-exposure must work WITHOUT a flat panel, and must re-meter the sky.
 
 FOUND 2026-08-11 while trying to shoot flats on the real rig. ``imaging/flats.py``

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RecoveryCards.tsx - the two run states the old Monitor could not tell apart,
 // and the three controls that act on a live run.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.26 to the astrotown rig. Run ON the rig (elevated ssh session).
 #
 # Derived from deploy_0325.ps1. What is new for this release:

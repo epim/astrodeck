@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wheelRing.ts - where every filter slot sits on the 236 px ring, and when the
 // ring stops being the right drawing at all (plan hub-rig.md B.6 item 1, E19).
 //

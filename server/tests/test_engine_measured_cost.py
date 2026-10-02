@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """`SequenceEngine.measured_cost(kind)`: what the engine has MEASURED an event
 to cost, ``(mean_s, samples)``, or None when it has measured none (S3, for
 the doctor's hop note M10, spec 1.8: "only when a measured cost is

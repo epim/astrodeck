@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The roof reopen's cooler gate waits UNDER THE CLOSED ROOF, and the roof
 opens only on a safety verdict read after that wait (S4 safety review of item
 11, spec 5.8).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // create/index.ts - flow creation: the guided wizard and the quick flow
 // (wave R7 task T-R7-4, rows A16 and A17).
 //

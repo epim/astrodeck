@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Minimal Alpaca device server (COM-T2): ThreadingHTTPServer on 127.0.0.1
 serving /management/v1/configureddevices + /api/v1/<type>/<n>/<method>, with the
 per-device STA ComDevice cache and the Alpaca envelope the EXISTING AstroDeck

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API surface for self-update: status (read), check/apply/config (system.update)."""
 import pytest
 from fastapi.testclient import TestClient

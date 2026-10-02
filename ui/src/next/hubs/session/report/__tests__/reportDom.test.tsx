@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reportDom.test.tsx - the SESSION / NIGHT REPORT, MOUNTED.
 //
 //   Run directly:  npx tsx src/next/hubs/session/report/__tests__/reportDom.test.tsx

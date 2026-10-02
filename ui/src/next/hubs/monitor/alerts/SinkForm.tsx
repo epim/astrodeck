@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SinkForm.tsx - one alert channel, edited. Rebuilt in the design's own
 // vocabulary for wave R7 (T-R7-10); replaces the `SinkForm` inside
 // `components/settings/AlertsPanel.tsx:152-355`, which is NOT edited and keeps

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/site.ts — typed client for the site / mount-GPS / saved-locations surfaces
 // (spec §5). Thin over the shared `api` fetch wrapper (api.ts): same ApiError
 // throwing + per-path timeouts. Each function maps 1:1 to a verified route.

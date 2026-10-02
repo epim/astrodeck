@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """DUSK WINDOW's Start and Stop choices reach the compiled schedule (#191).
 
 THE DEFECT. The compile wrote ``start_mode: "dusk"`` for every DUSK WINDOW

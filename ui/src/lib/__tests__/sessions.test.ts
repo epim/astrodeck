@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessions.test.ts — pure tests for lib/sessions.ts (session cards math).
 // Inline-assert harness; runs via `npx tsx`.
 import { mergePreview, targetProgress } from "../sessions";

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTINUE's night comes from the route that has the clock (#511; spec 5.9,
 S7 orchestrator ruling 7; the "two readers of one count that decide it
 differently" class).

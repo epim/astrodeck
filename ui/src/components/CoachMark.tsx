@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CoachMark.tsx — F-G-2: reusable one-time spotlight primitive (first-run
 // wizard design spec §3, Task 3). Given a `data-coach="…"` anchor selector +
 // a `seenKey` + copy, portals a dim layer with a transparent hole around the

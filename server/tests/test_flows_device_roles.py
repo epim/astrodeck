@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Flows equipment: the DOME CONTROL and FLAT PANEL device contracts.
 
 Backend work-list item 6 of ``design_handoff_astrodeck_flows``. The two ROLES

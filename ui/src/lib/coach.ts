@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // coach.ts — F-G-1: pure `hasSeen` helpers (first-run wizard design spec §3,
 // Task 1). Persisted localStorage key `astrodeck-coach-seen` holds a JSON
 // object `{ [key]: true }`. Kept DOM-free/pure so it's testable via plain

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickFlowDom.test.tsx -- the QUICK FLOW sheet: what it posts, and what it asks
 // before it opens the shutter.
 //

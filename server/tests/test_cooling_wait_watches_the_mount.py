@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The run-start cooling wait watches a target a caller left the mount
 tracking (a #202 follow-up, made in the second hardening round, H2).
 

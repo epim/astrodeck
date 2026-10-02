@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // r7Primitives.test.tsx - the three shared primitives wave R7 is built out of.
 //
 //   Run directly:  npx tsx src/next/ui/__tests__/r7Primitives.test.tsx

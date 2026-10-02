@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The AM5 driver does not write 0,0 into the mount, or predict from it (#24).
 
 `ZwoAm5Telescope.connect` sends `:SMGE<lat>&<lon>#` on EVERY open - on purpose,

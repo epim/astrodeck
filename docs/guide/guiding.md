@@ -51,3 +51,5 @@ Compare guiding measurements under comparable conditions. A different night, sta
 ## Related
 
 [Focus](focus.md) · [Capture](capture.md) · [Monitor](monitor.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

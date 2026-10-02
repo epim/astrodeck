@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PanelsSection.tsx - the Target modal's PANELS section (#189 S4 item 1, S5
 // run mode; spec 2026-09-23 flows mosaic, 2.4 PANELS, 2.6, 5.2, 6.9).
 //

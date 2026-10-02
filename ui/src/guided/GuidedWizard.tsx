@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { Icon } from "../components/icons";
 import { useExperience } from "./experience";

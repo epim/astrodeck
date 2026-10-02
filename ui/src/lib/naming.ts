@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PRO-11 client mirror of server/astrodeck/naming.py. Advisory PREVIEW only —
 // the server render is authoritative for the real path. NAMING_TOKENS/MODE
 // are pinned against astrodeck.naming.KNOWN_TOKENS by

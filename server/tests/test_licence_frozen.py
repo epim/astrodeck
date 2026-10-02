@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Executable gate must inspect members and retain known owner blockers."""
 import sys
 import pytest

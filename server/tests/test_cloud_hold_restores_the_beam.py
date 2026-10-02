@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A cloud hold must put the science filter back before the run resumes.
 
 MEASURED, on the night of 2026-08-12. A hold fired at 04:01, shot its darks,

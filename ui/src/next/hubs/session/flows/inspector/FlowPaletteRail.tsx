@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowPaletteRail.tsx - the add-stage palette (parity row A14). ONE component,
 // two shapes: the 192 px rail beside the canvas at desktop, and the body of the
 // `flowPalette` sheet everywhere else.

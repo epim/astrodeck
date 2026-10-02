@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wheelRing.test.ts - the filter carousel's geometry, without a DOM.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/__tests__/wheelRing.test.ts

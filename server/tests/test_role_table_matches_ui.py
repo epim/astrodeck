@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The UI's copy of the role table must equal the server's.
 
 ``ui/src/lib/caps.ts`` hand-mirrors ``ROLES_CAP`` and says "keep in sync" in a

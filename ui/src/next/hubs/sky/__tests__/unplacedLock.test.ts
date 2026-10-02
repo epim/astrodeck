@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // unplacedLock.test.ts - the pure rules behind a lock the finder could not
 // place (#503, #504, #508): the lock card's primary for an UNKNOWN obstruction,
 // the window label's absent state, and the catalogue row a `?lock=` link

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rootChoice.ts - WHICH of the two roots the bare hash opens on.
 //
 // The app ships two complete front ends (ARCHITECTURE.md section 2): the

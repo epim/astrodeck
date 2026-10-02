@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyCards.test.ts - the Sky hub's pure arithmetic and copy rules: the lens
 // dial's seats, the lock card's five-case CTA, and FRAME mode's mosaic maths.
 //

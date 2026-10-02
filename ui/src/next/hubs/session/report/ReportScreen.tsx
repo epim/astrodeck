@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ReportScreen.tsx - the night report, rebuilt in the new UI's own vocabulary
 // (wave R7, area C: `views/ReportView.tsx`).
 //

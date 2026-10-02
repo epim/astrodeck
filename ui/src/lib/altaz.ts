@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // altaz.ts — RA/Dec to horizon coordinates, for putting a plan's targets on
 // the sky dome.
 //

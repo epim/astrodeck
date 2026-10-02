@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // QuickDefaultsSheet.tsx - QUICK SESSION DEFAULTS (plan section C.3).
 //
 // THE DEFAULTS LIVE ON THE RIG (D-FU-1). They were this phone's memory of the

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightView — the dedicated "Tonight" destination (polish grab-bag (c)).
 //
 // A first-timer should not have to already know that "what can I image right

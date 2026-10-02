@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targetsDom.test.tsx - the suggested-targets sheet, MOUNTED.
 //
 //   Run directly:  npx tsx src/next/hubs/sky/sheets/__tests__/targetsDom.test.tsx

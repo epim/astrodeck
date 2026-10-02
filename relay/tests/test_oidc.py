@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """§T7(3) OIDC termination -> home-verifiable principal token (W3.3.5).
 
 Runs the §T6 callback-handler cases (state/nonce/PKCE/email_verified/hd) against

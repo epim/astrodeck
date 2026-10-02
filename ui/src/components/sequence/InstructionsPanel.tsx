@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // InstructionsPanel.tsx — conditional-sequencer editor (PRO-3). A THIN render
 // over the tested pure helpers in lib/instructions.ts (defaultInstruction /
 // describeInstruction / validateInstruction / labels). No run-time logic lives

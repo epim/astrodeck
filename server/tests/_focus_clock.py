@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What one native autofocus sweep costs, measured on a virtual clock.
 
 THE POINT. A sweep on the rig takes 7 to 9 minutes and nothing in the tree can

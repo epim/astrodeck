@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5NamingPreviewSample.test.ts - the #/next naming editor's preview must not
 // drop GAIN/EXPOSURE/BINNING/SENSORTEMP (#278 remainder, W5 integration).
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The session report's ``relay_drops_per_hour`` (#521 fix 3): the owner's
 suggested fix built in ``report.py``'s own build() -- "count drops per hour
 in the night report, so a bad-network night is visible without log

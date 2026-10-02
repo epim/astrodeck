@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The flow store and the user store follow ``config.CONFIG_DIR`` when it is
 repointed (#436; #361's class, test isolation of module singletons).
 

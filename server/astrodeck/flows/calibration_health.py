@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The LIBRARY HEALTH matrix — what the calibration queue is allowed to believe.
 
 Backend work list item 5 of the Flows handoff: rows keyed

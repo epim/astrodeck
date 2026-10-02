@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // polarSolveRingDom.test.tsx — the reticle's capture/solve progress ring.
 //
 //   Run directly:  npx tsx src/components/__tests__/polarSolveRingDom.test.tsx

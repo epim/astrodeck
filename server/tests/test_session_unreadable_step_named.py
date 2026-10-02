@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A stored session with a frame type outside the four is named, and an armed
 one never drops out of auto-resume without a word (#416, S4 review item 8).
 

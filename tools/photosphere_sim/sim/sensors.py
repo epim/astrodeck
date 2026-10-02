@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Change-driven sensor events and frame delivery records, from a Trajectory.
 
 Neither function samples the rendered images: :func:`orientation_events`

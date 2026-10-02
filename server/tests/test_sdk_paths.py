@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-platform vendor SDK resolution.
 
 The bug this exists to prevent is SILENT. Every native camera binding used to

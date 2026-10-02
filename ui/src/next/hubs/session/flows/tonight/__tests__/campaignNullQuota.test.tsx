@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // campaignNullQuota.test.tsx - a refused campaign quota is no count, not 0
 // (#424; mosaic slice S7).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* GotoStrip — a goto is not a stuck button (2026-08-07).
 
    A goto is a slew plus up to three solve→sync→re-slew rounds: up to 3 s of

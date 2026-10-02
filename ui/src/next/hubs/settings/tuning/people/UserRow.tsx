@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // UserRow.tsx - one local account, and the five things an admin can do to it
 // (wave R7, T-R7-11; plan section 3.F4).
 //

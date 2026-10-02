@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ProfileCard.tsx - one saved profile, and the five things that can be done to
 // it (wave R7, T-R7-17; plan section 3.F20).
 //

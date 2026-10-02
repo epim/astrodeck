@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T3: the telescope+camera DEVICE_API handlers translate each Alpaca
 method to the right ASCOM COM member. Portable (fake COM object; asserts the
 member names and argument marshaling), no comtypes/hardware.

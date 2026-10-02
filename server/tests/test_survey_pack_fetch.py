@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the offline survey pack fetcher (offline-pack spec §2)."""
 import asyncio
 import json

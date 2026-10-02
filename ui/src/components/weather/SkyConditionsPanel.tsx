@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyConditionsPanel.tsx — Monitor-mosaic cloud forecast cell (weather spec
 // §10). The CALLER mounts this ONLY for view.weather holders -- operator +
 // admin, 2026-07-17 decisions wave I2 (conditional-mount idiom,

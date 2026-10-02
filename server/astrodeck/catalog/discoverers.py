@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Who found each object, and when -- loaded once from the sidecar
 ``build_discoverers.py`` precomputed from Wikidata's P61/P575.
 

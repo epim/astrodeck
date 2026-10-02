@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // setupSteps.ts - the FIRST-TIME SETUP machine, PURE (plan section C.2.1).
 //
 // THE DESIGN HAS FIVE STEPS; THE PRODUCT HAS SIX. `lib/firstRunWizard.ts` is

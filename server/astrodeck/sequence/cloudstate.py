@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Is it cloudy? — the debounced, aged answer the sequencer is allowed to act on.
 
 ``imaging.clouds.cloud_score`` judges ONE frame, and every linear sub already

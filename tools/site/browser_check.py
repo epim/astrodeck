@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Independent static-site browser review. Local server only; no app or rig access."""
 from __future__ import annotations
 import argparse

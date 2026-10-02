@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // runArmedRecoveringDom.test.tsx - the #/next Monitor's RUN ARMED card while
 // ResumeArm's recovery ladder runs (#246).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the NOV-12 Bahtinov verdict mapping (lib/bahtinov.ts).
 //
 // No vitest/jest is wired into this UI, so these use the same tiny inline-assert

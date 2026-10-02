@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Abort publishes an intermediate state BEFORE the teardown it has to wait for.
 
 UX review finding 9. ``POST /api/sequence/abort`` awaits the WHOLE wind-down:

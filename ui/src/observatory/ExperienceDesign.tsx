@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import Logo from '../components/Logo';
 import { Dome, Icon } from './Observatory';

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SetupSheet.tsx - FIRST-TIME SETUP (`screenshots/23-first-time-setup.png`,
 // plan section C.2.2).
 //

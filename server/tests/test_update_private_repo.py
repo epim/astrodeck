@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Private-repo self-update: github asset API urls + github_token redaction
 (2026-07-21). A PRIVATE releases source needs a token; the browser_download_url
 can't be token-authed, so the service downloads via each asset's API url +

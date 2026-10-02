@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightStory.tsx — the same night, in sentences the operator can argue with.
 //
 // This tab is a 1:1 rendering of the server's `story[]` and nothing else. The

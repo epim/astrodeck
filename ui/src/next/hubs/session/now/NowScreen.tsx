@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NowScreen.tsx - SESSION / NOW: the vertical order of `07-session-running.html`.
 //
 // Run header, campaign ledger, incident, pool chips, the 250 px live stack,

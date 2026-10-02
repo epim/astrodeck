@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CalibrationLibraryEditor.tsx - the rebuilt master library (wave R7, T-R7-14;
 // plan section 3.F15, cutover table section 7).
 //

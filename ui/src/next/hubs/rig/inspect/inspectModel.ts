@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // inspectModel.ts - everything the INSPECT toolbar, histogram and readouts
 // DECIDE, with no React in it (wave R7, T-R7-19).
 //

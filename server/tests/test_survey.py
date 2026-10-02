@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Survey-cutout proxy tests (Sky-Atlas Owner B, design spec §4.3 / §9).
 
 These pin the unit-critical behavior that the spec calls out explicitly:

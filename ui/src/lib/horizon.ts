@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // horizon.ts — pure horizon verdict (onboarding spec §1d).
 // No HORIZON_MIN_DEG constant in TS: `horizonMin` comes from
 // `site.horizon_min_deg` (server-owned, single source of truth).

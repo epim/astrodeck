@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Review finding (D): the Instructions panel's COLLAPSED row used to join every
 // rule's description with " · " into one string and let CSS truncate it, so a
 // multi-rule plan showed a fragment of rule 1 and no sign the others existed.

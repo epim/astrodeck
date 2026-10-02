@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // escalationModel.ts - the vocabulary and the sentences of the run-recovery
 // policy (wave R7, T-R7-9; plan section 3.F2).
 //

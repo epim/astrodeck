@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The wind-down's park read-back waits for an asynchronous park (item 9, the
 follow-up to S3 orchestrator ruling 3, spec 6.17 and "Still waiting on the
 owner" item 24).

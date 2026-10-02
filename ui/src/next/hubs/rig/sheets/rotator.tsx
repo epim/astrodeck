@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rotator.tsx - the ROTATOR device sheet (plan hub-rig.md B.8; GAP-ANALYSIS
 // section 2 "Missing - rotator"; deviation E28).
 //

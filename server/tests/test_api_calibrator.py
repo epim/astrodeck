@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """POST /api/calibrator/* manual flat-panel control (PRO-5). Mirrors
 test_api_mount.py: a real create_app() + TestClient with hub.require
 monkeypatched to a tiny fake calibrator (no full sim connect for a route-shape

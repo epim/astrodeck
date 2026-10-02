@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SyncPanel.tsx — Settings → "File sync" (file-sync Phase 2).
 //
 // Destination picker (POST /api/config/sync) + what the push runner has actually

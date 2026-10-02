@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Render the Flows surface and prove, from PIXELS, that it is really there.
 
 The handoff makes this mandatory and says why (README §"Verify by looking"):

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3SkyCanvasZoomFit.test.tsx - WP-24b (a): ZOOM_MAX fitted to the configured
 // mosaic's extent, with a notice when the survey is too coarse at that zoom
 // (#182, backlog ruling D-nn n/a; fix shape per

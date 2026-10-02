@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
 import { CameraPoseHistory, MotionStability, viewVouchesFor,
   MOTION_STALE_MS, QUIET_DRIFT_DEG, QUIET_RATE_DEG_S } from '../photospherePose';

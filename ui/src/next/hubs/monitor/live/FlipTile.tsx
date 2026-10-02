@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlipTile.tsx - the MERIDIAN FLIP vitals tile.
 //
 // THE DECISION LOGIC IS TRANSCRIBED, NOT REDERIVED, from

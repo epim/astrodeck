@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Keep the classic Panel chrome and grid. Only the sky uses the new palette. */
 .csd-panel { scroll-margin-top: 64px; min-width: 0; }
 .csd-mode { display: flex; gap: 10px; }

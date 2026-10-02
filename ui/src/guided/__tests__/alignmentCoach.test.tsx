@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import {JSDOM} from "jsdom";
 const dom=new JSDOM('<div id="root"></div>',{url:'http://local/',pretendToBeVisual:true});
 const win=dom.window as any;

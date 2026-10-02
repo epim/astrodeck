@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-filter exposure and gain (#215, extending #148).
 
 THE PROMISE: a filter you have measured settings for does not have to be

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The group harness fails a spin that never yields (#319).
 
 `Night.run` bounds a night in real time by polling between

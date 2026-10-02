@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """describe() — one true sentence for every catalog object, composed from
 whatever fields it actually has. See describe.py's module docstring for the
 degrade rules; these tests check the things that can quietly go wrong:

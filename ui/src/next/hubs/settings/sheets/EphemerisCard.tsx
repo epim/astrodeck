@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // EphemerisCard.tsx - the satellite and comet element files, and the one button
 // that goes and gets them (D-SKY-1, wave U7b).
 //

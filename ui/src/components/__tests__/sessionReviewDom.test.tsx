@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionReviewDom.test.tsx — frame selection in Session Review, seen the way
 // the operator sees it at 2am.
 //

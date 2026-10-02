@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Bidirectional header transform (W3.2 header-transform rules).
 
 A broken ``Set-Cookie`` rewrite is a SILENT remote-only auth break that LAN

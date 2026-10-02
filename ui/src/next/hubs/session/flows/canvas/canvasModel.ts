@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // canvasModel.ts - every pure fact the rebuilt Flows canvas needs, in one
 // store-free, React-free, DOM-free module (wave R7, task T-R7-1).
 //

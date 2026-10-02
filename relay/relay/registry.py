@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Device registration + the per-home tunnel multiplexer (W3.3.4 / W3.3.5).
 
 This is the relay's in-memory routing core. It is intentionally TRANSPORT-FREE:

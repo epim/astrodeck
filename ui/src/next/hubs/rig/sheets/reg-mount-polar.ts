@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reg-mount-polar.ts - the two sheets T-RIG-3 owns, offered to the Rig hub's
 // registry as ONE object.
 //

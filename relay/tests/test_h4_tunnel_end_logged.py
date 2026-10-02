@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The relay logs a home tunnel's end (#521).
 
 The rig's tunnel to the Fly relay drops in clusters, each time with "no close

@@ -65,3 +65,5 @@ Session ledgers and saved files survive a server restart on persistent storage. 
 ## Related
 
 [Flows and mosaics](flows-and-mosaics.md) · [Monitor](monitor.md) · [Unattended nights](unattended-nights.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

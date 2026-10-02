@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AboutScreen.tsx - Settings > ABOUT (`#/settings/about`, plan section C.8).
 //
 // Two info rows (ENGINE, THIS APP), four chevron rows into their sheets

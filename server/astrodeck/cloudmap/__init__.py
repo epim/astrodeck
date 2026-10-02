@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Cloud occlusion geometry and, in later stages, satellite cloud products.
 
 Stage 1 is :mod:`astrodeck.cloudmap.geometry` alone: pure coordinate geometry

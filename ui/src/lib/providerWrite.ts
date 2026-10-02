@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // providerWrite.ts — WHERE a provider-override save lands, and what to tell the
 // user before they commit to it (#132).
 //

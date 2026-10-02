@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """FastAPI application: REST command surface + WebSocket event stream.
 
 Quick queries answer inline. Long operations (slews, autofocus, sequences,
@@ -1360,10 +1362,10 @@ def _why_dormant(session: Session,
 
     THE REPORT'S OWN WORD, VERBATIM, WHEN IT RECORDED ONE. Every ending the
     engine reaches in-process stamps the report through
-    ``_finalize_report``: "aborted" for a STOP, "incomplete", "dawn_cutoff",
-    "error", "unsafe" and the rest. Until #487 the route carried none of
-    them, and the card said "The server restarted" after every one,
-    including an operator's STOP.
+    ``_finalize_report``: "aborted" for a STOP, "shutdown" for a polite
+    server stop, "incomplete", "dawn_cutoff", "error", "unsafe" and the
+    rest. Until #487 the route carried none of them, and the card said "The
+    server restarted" after every one, including an operator's STOP.
 
     ``RESTART_END_REASON`` FOR THE EVIDENCE A RESTART LEAVES, and only for
     it. A process that stops under a run (a power cut, a crash, a kill by
@@ -1377,12 +1379,15 @@ def _why_dormant(session: Session,
     is no evidence of a restart, and neither is a report that is missing or
     unreadable: those answer None, and the card then states no cause.
 
-    A POLITE STOP OF THE SERVER IS NOT TOLD FROM A STOP. A teardown that
-    cancels the run task (Ctrl+C, a service stop) lands on the engine's
-    ``except CancelledError`` arm and finalizes "aborted", as STOP does;
-    only STOP disarms the session (``_finalize_report``, keyed on
-    ``_aborting``), and nothing records which it was, so both read
-    "aborted" here (#565)."""
+    A POLITE STOP OF THE SERVER IS TOLD FROM A STOP (#565, fixed). A
+    teardown that cancels the run task (Ctrl+C, a service stop) lands on
+    the engine's ``except CancelledError`` arm too, but that arm now
+    finalizes "shutdown" there and "aborted" only when the cancel came
+    through ``abort()`` (keyed on ``_aborting``, same as the disarm in
+    ``_finalize_report``). This function reads whichever word the report
+    recorded, verbatim, so the card can tell the two apart without asking
+    this function to re-derive anything: a hard kill (no ending recorded
+    at all) still falls through to ``RESTART_END_REASON`` below."""
     if last is None:
         return None
     if isinstance(last.end_reason, str) and last.end_reason:

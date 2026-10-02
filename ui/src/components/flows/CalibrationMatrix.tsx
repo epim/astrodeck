@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CalibrationMatrix.tsx — the LIBRARY HEALTH block inside the inspector, shown
 // only for a CALIBRATION QUEUE node. §C.9.
 //

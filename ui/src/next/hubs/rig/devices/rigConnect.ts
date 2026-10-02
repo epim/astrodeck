@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigConnect.ts - the ONE connect / simulator / disconnect implementation for
 // this hub (plan hub-rig.md A.7, lifted from `views/EquipmentView.tsx:346-493`).
 //

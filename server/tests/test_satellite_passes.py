@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight's visible passes: the three conditions, and what each one removes.
 
 A SEEDED ELEMENT SET AND A FIXED CLOCK. Every number below comes from one

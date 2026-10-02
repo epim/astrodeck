@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* GuideQuickBar — the guide screen's sticky glance + speed dials (2026-08-07).
 
    Guiding runs for hours and is checked from a phone; calibration is a

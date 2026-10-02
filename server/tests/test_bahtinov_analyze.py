@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NOV-12 analyzer wrapper: crop → bahtinov_offset → BahtinovResult + verdict.
 
 Locks the verdict copy/threshold table (locked/off), the geometric side vs the

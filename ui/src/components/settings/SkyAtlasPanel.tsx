@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyAtlasPanel.tsx — Settings → "Sky Atlas" (offline-pack spec §6).
 // Online-fetch toggle (POST /api/config/survey) + offline pack
 // status/download/delete (GET/POST/DELETE /api/survey/pack*). Progress polls

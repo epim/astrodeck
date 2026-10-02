@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A refused auto-reopen roof close keeps the idle stop's retries, and the
 open-sky pause reads its own stop back (#345, the #306 follow-up; spec 6.17
 and 5.8).

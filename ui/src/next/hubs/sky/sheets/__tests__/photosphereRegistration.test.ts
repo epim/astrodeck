@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
 import {registerFrame} from '../photosphereRegistration';
 import {ScanPoseSource,poseSeparation} from '../photospherePose';

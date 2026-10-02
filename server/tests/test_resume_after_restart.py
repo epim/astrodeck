@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Resume after a mid-night restart (spec docs/superpowers/specs/2026-08-02)."""
 from __future__ import annotations
 

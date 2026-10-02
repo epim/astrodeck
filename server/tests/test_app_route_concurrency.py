@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API-route regression tests for apply-profile self-cancel, spawn-replace, park-supersedes-goto fixes.
 
   * apply route no longer self-cancels (routed through _spawn_connect, not _spawn)

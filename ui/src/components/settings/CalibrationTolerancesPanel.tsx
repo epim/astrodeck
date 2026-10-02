@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CalibrationTolerancesPanel.tsx — how far a master dark/flat/bias may be from
 // the light it is applied to, and how the stacker combines them (PRO-1).
 //

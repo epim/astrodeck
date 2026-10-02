@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-frame WCS solve + write-back (spec `2026-07-24-per-frame-wcs-design.md`).
 
 PRO-2 F-B shipped the MECHANISM (solvers -> WcsSolution -> write_wcs) and a

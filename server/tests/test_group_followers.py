@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Followers of a mosaic, and ``after_group`` (#189 S2, task T18; spec 1.6,
 D15, 6.4, 6.18).
 

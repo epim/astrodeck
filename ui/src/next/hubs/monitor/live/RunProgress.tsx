@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RunProgress.tsx - how far along the run is, and when it ends.
 //
 // MONITOR > LIVE shipped without any of this (review #18). The semantics had

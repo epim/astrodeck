@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyAtlasMeta.ts — pure helpers for the Settings "Sky Atlas" card (offline-pack
 // spec §6). Kept out of the component so the inline-assert test harness (npx
 // tsx, no DOM) can exercise them directly.

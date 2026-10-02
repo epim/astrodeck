@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``SerialLink.request_sync``: one port, two callers, no interleaving.
 
 GN-02 gives the AM5 driver a way to put a pulse's STOP command on the wire from

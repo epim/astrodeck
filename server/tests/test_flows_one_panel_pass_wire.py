@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A pass wire into a one-panel TARGET is structure, not a loss (S4
 orchestrator ruling 3, #349; spec 1.4 item 4).
 

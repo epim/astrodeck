@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-41 (#204 Rust half): ``GuideStatsSnapshot`` publishes the engine's lock
 position through ``astrodeck_native``'s ``stats()``, and the host's
 different-star guard (``guide/native.py``'s ``_note_lock``) reads it instead

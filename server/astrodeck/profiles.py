@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Equipment profiles — named, replayable connection intents.
 
 A profile records *which backend + which device at which address* (not live

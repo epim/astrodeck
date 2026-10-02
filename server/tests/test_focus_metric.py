@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The star-size metric, judged on a real focuser sweep and nothing else.
 
 tests/fixtures/focus_sweep is a monotonic sweep over one rich star field

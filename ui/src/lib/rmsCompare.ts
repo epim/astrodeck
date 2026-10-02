@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/rmsCompare.ts — pure same-night head-to-head RMS comparison (P5-T1,
 // spec §6 P5). GuideView's provider-switch panel compares the LAST guide-stats
 // window recorded under two different guide providers within the same session

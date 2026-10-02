@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Toasts.tsx - the new UI's toast stack (ARCHITECTURE.md section 5).
 //
 // Reads the SAME `store.toasts` the legacy `components/Toasts.tsx` reads, so

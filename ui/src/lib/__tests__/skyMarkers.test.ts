@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyMarkers.test.ts — the Atlas actually draws the sky, and a tap finds it.
 //
 //   Run directly:  npx tsx src/lib/__tests__/skyMarkers.test.ts

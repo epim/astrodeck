@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PreviewMeta.tsx — compact header readout for the live-preview Panel (stream V).
 // Replaces the old `preview.width × preview.height` header span (which read the
 // renamed-away field — master §C-Risk-7). Reads data_width/data_height.

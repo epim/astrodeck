@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Known corruptions of a correct result directory, for proving the scorer fails.
 
 Spec section 10: before trusting a green report, run known corruptions against

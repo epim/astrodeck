@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The deploy restart step must refuse to be a silent no-op (#103).
 
 Every deploy script up to 0.3.33 found the server to kill by filtering

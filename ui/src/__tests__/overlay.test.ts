@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // overlay.test.ts — regression guard for the ONE overlay primitive and the two
 // CSS rules that made every overlay in the app land off the viewport.
 //

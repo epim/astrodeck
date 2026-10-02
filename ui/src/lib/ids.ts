@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ids.ts — client-side stable-id generation + backfill (sessions spec §1).
 // Every create path assigns ids at creation time; ensurePlanIds is the safety
 // net in loadPlan/setPlan that backfills legacy localStorage plans.

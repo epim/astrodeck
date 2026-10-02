@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Local username+password auth + user management routes (W2.6).
 
 A self-contained ``APIRouter`` carrying the LOCAL (offline/LAN) auth surface and

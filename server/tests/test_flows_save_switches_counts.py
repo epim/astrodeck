@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Ruling 2 at the doors: every save switches ``counts`` and its answer says
 so, and a read says what a dormant session keeps (#189 Revision 2 ruling 2,
 spec 3.3; task S3-A).

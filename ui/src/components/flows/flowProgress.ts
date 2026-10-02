@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowProgress.ts - the TARGET card's state chip, "212/315 subs" (#189 S1 item
 // 9, spec 1.2), read off `GET /api/flows/{id}/progress` (`flowsApi.progress`).
 //

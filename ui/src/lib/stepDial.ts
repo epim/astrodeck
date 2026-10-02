@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stepDial.ts — the geometry and the commit rule behind the step-size dial
 // (spec: docs/superpowers/specs/2026-07-30-scope-controls-design.md §The
 // step-size dial).

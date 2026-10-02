@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Simulator backend adapter (Stage A).
 
 Pins the WRAPPING contract for ``SimBackend`` / ``SimSession``: it registers

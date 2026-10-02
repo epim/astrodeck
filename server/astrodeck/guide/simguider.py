@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Simulated guider: produces a believable guide-error stream."""
 from __future__ import annotations
 
