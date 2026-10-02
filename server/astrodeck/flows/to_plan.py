@@ -45,6 +45,7 @@ from pydantic import ValidationError
 
 from ..catalog.coords import parse_dec, parse_ra
 from ..sequence.models import ActionKind, SequencePlan, TriggerKind
+from ..sequence.schedule import sun_window_needs_a_site
 from . import identity, tonight
 from .compile import lane_refusals
 from .models import FlowGraph
@@ -1956,6 +1957,28 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         # copy of the models' bounds, free to drift from the ones the run
         # obeys; the models' own verdict, named by block, cannot.
         raise GraphNotRunnable(_refused_values(e, where)) from None
+    # D-08 (backlog ruling, owner-approved 2026-09-30; #559, #582). This
+    # function is pure - no site, no clock beyond ``when`` - so it cannot say
+    # whether a site is actually saved; it says what ``sequence.engine.start``
+    # will insist on if one is not, the SAME sentence
+    # (`schedule.sun_window_needs_a_site`), read off the plan this compile
+    # just validated so the two can never drift into saying it two ways.
+    #
+    # LEVEL "note", NOT "warn" (caught in review): this fires on EVERY
+    # dusk/dawn-scheduled plan, including one on a rig with a site already
+    # saved, because this function has no site to check. A "warn" entry is
+    # what `losses()` reports as something the compile actually drops - and
+    # `/api/flows/{id}/run` refuses on a loss until `accept_unmapped` - so at
+    # "warn" this blocked every correctly-configured DUSK WINDOW flow with a
+    # false "parts of this flow do not survive the compile", caught by the
+    # existing tests/test_a_clean_flow_is_not_ten_warnings.py and
+    # tests/test_flows_routes.py. A note, not a loss: a flow with a site
+    # already saved survives the compile whole, and one with no site yet is
+    # still a flow worth saving - this is what stands between it and a run
+    # that refuses to start, not something this compile failed to honour.
+    site_warning = sun_window_needs_a_site(plan.targets)
+    if site_warning is not None:
+        unmapped.append(_note("schedule", site_warning, "note"))
     return plan, unmapped
 
 
