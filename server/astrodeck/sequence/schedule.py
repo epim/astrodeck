@@ -465,13 +465,18 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
     NO SITE, NO SUN BOUNDARY (#527). With no site saved a dusk or dawn
     boundary is ``None``: unresolvable, as a polar dusk is. It used to be the
     Sun's crossing at the 0,0 placeholder, so a DUSK flow on a fresh rig
-    waited twelve hours for dusk in the Gulf of Guinea and said nothing, and
-    ``resume_arm.window_open`` opened an armed DUSK session on 0,0's night.
-    ``now`` and ``time`` boundaries need no site and are unchanged. What
-    follows from the ``None`` is each reader's own rule: the engine's gating
-    reads a ``None`` start as not waiting on the clock, so the run starts,
-    and ``window_open``'s ``start is not None`` keeps auto-resume off, the
-    conservative direction.
+    waited twelve hours for dusk in the Gulf of Guinea and said nothing.
+    ``now`` and ``time`` boundaries need no site and are unchanged.
+    ``window_open``'s ``start is not None`` keeps auto-resume off, the
+    conservative direction, for a session whose window never opens this way.
+
+    A fresh ``start`` (not a resume) never reaches this ``None`` for a
+    dusk/dawn-scheduled, non-calibration target any more (D-08, #559, #582):
+    ``sequence.engine.start`` asks :func:`sun_window_needs_a_site` first and
+    refuses before calling this at all, so the gating rule immediately below
+    -- a ``None`` start is read as not waiting on the clock, so a run already
+    under way is never stopped mid-flight by a site someone cleared -- is
+    reached only for a target the run was already allowed to start.
     """
     # `site_lat_lon` asks `site_is_set`, and answers None for the placeholder
     # and for a half-saved site with no numbers yet. The `_lat_lon` this read
@@ -489,6 +494,62 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
         cap = start + sched.max_run_min * 60.0
         stop = cap if stop is None else min(stop, cap)
     return start, stop
+
+
+# ------------------------------------------------------------ D-08 wording
+
+#: Modes that need a real Sun to cross a twilight angle for, which in turn
+#: needs a real site (latitude, longitude) to compute that crossing for
+#: (#527). ``stop_mode`` has no "dusk" literal (``Schedule`` only offers
+#: none/dawn/time for a stop), but the check stays symmetric with
+#: ``start_mode``'s set rather than hand-carving a second tuple that could
+#: drift from it -- a stray "dusk" stop from a hand-edited plan is still
+#: caught, not silently ignored because nobody thought to list it twice.
+_SUN_MODES = ("dusk", "dawn")
+
+
+def sun_window_needs_a_site(targets: "list[Target]") -> str | None:
+    """The ONE sentence for why a dusk/dawn-scheduled target needs a saved
+    site, or ``None`` when nothing in ``targets`` depends on one.
+
+    Backlog ruling D-08 (owner-approved 2026-09-30, #559 and #582): with no
+    site saved, a dusk or dawn boundary cannot be resolved (``None`` from
+    ``resolve_window`` above), so the engine's run start refuses rather than
+    starting a run it cannot time, and the flow compiler shows the same
+    sentence as a warning before anyone presses Run -- ONE function, called
+    from both (``sequence.engine.start``, ``flows.to_plan.to_sequence_plan``),
+    so the two wordings cannot say it two different ways.
+
+    Calibration targets are excluded (a DUSK FLATS step runs off the DUSK
+    WINDOW it belongs to, never off a site of its own -- the same exclusion
+    the original #527 line made).
+
+    TWO INDEPENDENT CLAUSES (#582): a window can depend on dusk/dawn at
+    either end without the other, so this names only the end(s) that
+    actually do -- a NOW start with a DAWN stop needs a site only to know
+    when to stop, and a DUSK start with no stop needs one only to know when
+    to start. #582 found the ONE sentence this replaces had two clauses with
+    no test that could tell either from an unconditional ``True``; this
+    function is the one place both callers now share, so one pair of control
+    tests (``test_h4_dusk_unresolved_is_said.py``) covers it for both.
+    """
+    hit = [t for t in targets
+           if not t.calibration and t.schedule is not None
+           and (t.schedule.start_mode in _SUN_MODES
+                or t.schedule.stop_mode in _SUN_MODES)]
+    if not hit:
+        return None
+    names = [t.name for t in hit]
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more"
+                                    if len(names) > 3 else "")
+    needs = []
+    if any(t.schedule.start_mode in _SUN_MODES for t in hit):
+        needs.append("find dusk to start by")
+    if any(t.schedule.stop_mode in _SUN_MODES for t in hit):
+        needs.append("find dawn to stop by")
+    return (f"{shown} needs a saved site to {' and '.join(needs)}: with no "
+            f"site saved, this run refuses to start. Set a location in "
+            f"Settings > Site.")
 
 
 # --------------------------------------------------------------------- meridian
