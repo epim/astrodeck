@@ -15,7 +15,7 @@
 
 import { useEffect, useState, type JSX } from "react";
 import { api } from "../../../../api";
-import { useCamera, useMeridian, useSeq, useStatus, useWeather, usePlan } from "../../../../store";
+import { useCamera, useMeridian, useSeq, useStatus, useWeather, usePlan, useSite } from "../../../../store";
 import { accessPhrase, useCan, useCanViewWeather } from "../../../../lib/caps";
 import type { DiskInfo, SequencePlan, SequenceState, WeatherState } from "../../../../types";
 import { fmtClock, fmtDuration } from "../../../lib/format";
@@ -92,21 +92,44 @@ export function diskFace(disk: DiskInfo | undefined): TileFace {
 }
 
 /** TO DAWN. `dark_window.end_iso` is when astronomical dark ends, which is the
- *  end of usable sky, not sunrise. */
+ *  end of usable sky, not sunrise.
+ *
+ *  `siteIsDefault` is checked BEFORE `dark` is read at all (#633, the #24
+ *  is_default class). Darkness computed from the placeholder (0,0) site is a
+ *  fact about the Gulf of Guinea, not this rig - so even though the server
+ *  already withholds `dark_window` for an unset site ("NO SITE, NO SKY" in
+ *  `site_sky`), this face does not lean on that withholding alone. A `null`
+ *  dark window is ambiguous (no site saved, OR a real site with no darkness
+ *  tonight); `siteIsDefault` disambiguates it before either is read. */
 export function dawnFace(
   dark: DarkWindow | null,
   canSiteDerived: boolean,
   nowMs: number,
+  siteIsDefault: boolean,
 ): TileFace {
   if (!canSiteDerived) {
     return { value: "--", sub: `needs ${accessPhrase("view.site_derived")}`, tone: "dim" };
   }
+  if (siteIsDefault) {
+    return { value: "no site set", sub: "set one under the site pill", tone: "dim" };
+  }
   if (!dark) {
     return { value: "no dark tonight", sub: "the sun never drops 18° below the horizon", tone: "dim" };
   }
+  const startMs = Date.parse(dark.start_iso);
   const endMs = Date.parse(dark.end_iso);
-  if (!Number.isFinite(endMs)) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
     return { value: "--", sub: "the dark window did not parse", tone: "dim" };
+  }
+  // #640: `coords.dark_window` always names the NEXT astronomical-dark
+  // interval from "now" (server docstring), so outside darkness - including
+  // right after dawn - it names TOMORROW night's window, up to ~24h away.
+  // Counting down to `end_iso` in that case reads as "dark now, until dawn
+  // tomorrow", which is false the moment morning twilight has begun. A window
+  // that has not STARTED yet means it is not dark now, so say when darkness
+  // begins instead of counting toward an end that has not arrived either.
+  if (nowMs < startMs) {
+    return { value: "not dark yet", sub: `dark from ${fmtClock(startMs, nowMs)}`, tone: "dim" };
   }
   const leftS = (endMs - nowMs) / 1000;
   if (leftS <= 0) {
@@ -179,6 +202,11 @@ export function VitalsBand({ runActive, nowMs }: { runActive: boolean; nowMs: nu
   const canWeather = useCanViewWeather();
   const canSiteDerived = useCan("view.site_derived");
   const dark = useDarkWindow(canSiteDerived);
+  // `?? true`: until the first config load lands, treat the site as unknown
+  // the same conservative way the rest of the app does (`FirstRunWizard.tsx`,
+  // `useSetup.ts`) - never compute darkness from a site that has not been
+  // confirmed.
+  const siteIsDefault = useSite()?.is_default ?? true;
 
   return (
     <ReadoutGrid cols={3} data-testid="monitor-vitals">
@@ -204,7 +232,7 @@ export function VitalsBand({ runActive, nowMs }: { runActive: boolean; nowMs: nu
       )}
       <Tile label="DISK" face={diskFace(status?.disk)} testId="vital-disk" />
       {canSiteDerived && (
-        <Tile label="TO DAWN" face={dawnFace(dark, canSiteDerived, nowMs)} testId="vital-dawn" />
+        <Tile label="TO DAWN" face={dawnFace(dark, canSiteDerived, nowMs, siteIsDefault)} testId="vital-dawn" />
       )}
       <Tile label="NEXT TARGET" face={nextTargetFace(seq, plan)} testId="vital-next" />
     </ReadoutGrid>
