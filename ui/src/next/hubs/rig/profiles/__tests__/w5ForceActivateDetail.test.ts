@@ -59,7 +59,7 @@ test("sentenceFrom on empty input stays empty", () => {
 // said something else entirely (which is #256's whole complaint).
 const RECOVERING_DETAIL =
   "auto-resume is re-centring the mount after a restart "
-  + "(GET /api/sequence/resume-arm reports the step it is on); force stops "
+  + "(the Monitor shows the step it is on); force stops "
   + "the re-centring before its next step and turns that session's "
   + "auto-resume off, as Abort does, then goes ahead";
 

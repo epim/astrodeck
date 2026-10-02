@@ -796,6 +796,18 @@ class TestTheGolden2x2:
             E   AssertionError: $.plan.resume_across_nights: unexpected
 
         Regenerated from the same code path, with no other change.
+
+        RE-PINNED AGAIN FOR BACKLOG WP-55 (D-08, owner-approved 2026-09-30,
+        #559/#582): ``unmapped`` gains one new ``"schedule"`` entry.
+        ``to_plan.to_sequence_plan`` now appends an unconditional ``note``
+        for every dusk/dawn-scheduled plan (compile is pure and has no site
+        to check -- the orchestrator's ruling on D-08's compile half), and
+        the wizard's Mosaic kind, like the quick wizard, always opens with a
+        DUSK WINDOW. Regenerated from the same code path
+        (``regen_mosaic_2x2.py``'s logic: call ``_golden_now()`` and
+        ``json.dumps(..., indent=2, sort_keys=True, ensure_ascii=False)``),
+        with no other change; the diff against the fixture as this backlog
+        wave found it is exactly the one new sorted-in ``"schedule"`` line.
         """
         want = json.loads(GOLDEN.read_text(encoding="utf-8"))
         diffs = _same(want, _golden_now())
