@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Shared synthetic Bahtinov-pattern generator for the NOV-12 tests.
 
 Identical geometry to test_bahtinov.py's inline ``_make_bahtinov`` — three bright

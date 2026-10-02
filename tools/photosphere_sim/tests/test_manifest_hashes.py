@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A case's manifest hashes must name the bytes on disk (#91).
 
 The manifests record ``hashes.frames``, ``hashes.observations`` and

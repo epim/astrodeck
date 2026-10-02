@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Wanderer Snowflake filter wheel: banner parser, stream-first wheel driver,
 backend + framework integration. Hardware-free (FakeStreamLink)."""
 from __future__ import annotations

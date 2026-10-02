@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight counts a panel's visits ROUNDED UP when a visit's passes do not
 divide its rounds (#338, S4 orchestrator ruling 5; spec 5.3, 5.5).
 

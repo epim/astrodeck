@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // backendLinkReason.test.ts — UX #52 defence in depth: the tri-state grid must
 // never render a bare alarm word with no cause. The backend can (and did) send
 // `{ok:true, connected:false, error:null}`, which the grid maps to an orange

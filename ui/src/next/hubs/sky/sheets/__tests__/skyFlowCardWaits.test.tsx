@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyFlowCardWaits.test.tsx - the Sky flow card waits for the flow it names
 // and never draws another flow's stages; the quick sheet opens that card only
 // on the flow it saved (#499, the Sky flow card half; spec 2026-09-23 flows

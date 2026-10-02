@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // VitalsBand.tsx - the six numbers the design puts under the guiding trace.
 //
 // The screenshot has four (flip, sensor, dew margin, disk); GAP-ANALYSIS §11

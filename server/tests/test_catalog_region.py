@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """objects_in_region() — the bounded-region query both the camera-frame
 overlay and the Atlas viewport need. The centre+radius query is implemented
 with a true spherical separation (coords.angular_sep_deg), specifically so

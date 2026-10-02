@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // defaultSitePlacement.test.tsx - a DEFAULT site places nothing on the finder's
 // sky (#503), MOUNTED.
 //

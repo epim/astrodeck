@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // palette.ts — the add-stage palette's shape: which groups exist, the order the
 // rail renders them in, and the order of node types inside each group.
 //

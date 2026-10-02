@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safetyChain.test.ts - the WHEN A LIMIT TRIPS chain, built from config.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/__tests__/safetyChain.test.ts

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // credits.test.ts — the helpers, and the REAL generated data they run against.
 //
 //   Run directly:  npx tsx src/lib/__tests__/credits.test.ts

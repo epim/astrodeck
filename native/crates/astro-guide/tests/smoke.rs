@@ -1,3 +1,4 @@
+// Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
 //
 // Provenance: smoke test for the shared Action/Axis/AxisPulse/Direction/

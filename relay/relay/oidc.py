@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Google OIDC termination at the relay (W3.3.5 identity termination).
 
 A LAN home has no public HTTPS callback URL, so the RELAY owns the public

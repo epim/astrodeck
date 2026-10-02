@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An accepted-mode cycle visit is bounded by ATTEMPTS (#147, spec 5.3).
 
 `_run_step` has always said its visit was "BOUNDED BY ATTEMPTS", and in

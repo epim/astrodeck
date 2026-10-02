@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // brief.tsx - the ⓘ card: what this object is, and what tonight does to it
 // (hub-sky plan A.11).
 //

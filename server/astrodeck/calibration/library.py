@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-1 master calibration library — scans CAPTURE_DIR, builds masters, matches.
 
 The store mirrors ``plans.PlanLibrary`` (a manifest written atomically via

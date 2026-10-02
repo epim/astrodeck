@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cyclePlanRows.test.ts — the FILTER CYCLE slot editor's row model.
 //
 // The thing under test is a rule the 2026-08-14 export states as a prohibition:

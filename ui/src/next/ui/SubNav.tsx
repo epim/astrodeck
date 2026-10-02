@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX } from "react";
 import { Chip } from "./Chip";
 import type { Tone } from "./types";

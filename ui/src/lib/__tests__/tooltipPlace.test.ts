@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tooltipPlace.test.ts — pure tests for lib/tooltipPlace.ts (tooltip fix brief).
 // Inline-assert harness (no vitest); runs via `npx tsx`.
 import { placeTooltip } from "../tooltipPlace";

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // WeatherTuningPanel.tsx - the body of WEATHER > settings, rebuilt in the
 // design's own vocabulary (wave R7, T-R7-15; plan section 3.F18 and the cutover
 // table in section 7).

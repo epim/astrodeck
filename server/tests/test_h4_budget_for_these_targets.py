@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight's BUDGET counts this flow's own targets (#536, H4 orchestrator
 ruling 6).
 

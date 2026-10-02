@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PATCH /api/sessions/{id} decides and saves in one locked section (#167).
 
 The route used to load the session, run its refusals and mutations, and save

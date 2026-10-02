@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A flow lane runs once: a drawn loop is refused, not silently deleted (#149).
 
 THE DEFECT. ``flow_order`` walks the flow lane with Kahn's algorithm, and a

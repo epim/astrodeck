@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // One projection for the live dome and the saved panorama. Earth axes are
 // east, north, up; camera axes are right, up, and rear-camera forward.
 export type V3 = [number, number, number];

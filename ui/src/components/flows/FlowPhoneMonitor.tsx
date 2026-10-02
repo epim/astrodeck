@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowPhoneMonitor.tsx — the phone MONITOR tab. README §5, ref
 // `11-phone-monitor-390px.png`.
 //

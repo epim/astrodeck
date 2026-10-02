@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The doctor must not demand a wire the adapter calls redundant.
 
 Found by running a real flow on the rig (0.2.76) and then re-reading it after

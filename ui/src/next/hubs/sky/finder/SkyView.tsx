@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyView.tsx - the finder box itself: every layer in the plan's A.4, in the
 // prototype's own DOM order, back to front.
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targetsCatalog.test.ts - which row a sheet gets back when it asks the
 // catalogue for one object.
 //

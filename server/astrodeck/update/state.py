@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """In-memory snapshot of the update subsystem, read by ``GET /api/version`` and
 ``GET /api/update/status`` and written by the update service poller (Phase 3).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The rig's wall-clock safety tick. Two duties; the dawn park is the older.
 
 ONE TIMER, TWO HAZARDS, and they keep different clocks:

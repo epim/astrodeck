@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Gallery — browse / search / download / trash the capture library.
 
 The store side of the 2026-08-03 gallery design. Everything here is synchronous

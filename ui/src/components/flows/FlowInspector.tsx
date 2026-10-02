@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowInspector.tsx — the 284px right column at desktop, and the body of the
 // edit sheet at tablet/phone. §C.8.
 //

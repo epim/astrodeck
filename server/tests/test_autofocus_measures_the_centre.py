@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The sweep measures the CENTRE of the frame, ONCE per point.
 
 THE MEASURED PROBLEM. One native sweep on astrotown (v0.3.25, 26 MP Player One,

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/gallery.ts — the pure half of the image gallery (gallery design
 // 2026-08-03). Query building, size/count formatting, selection arithmetic and
 // every sentence the view speaks about a destructive action live here, store-

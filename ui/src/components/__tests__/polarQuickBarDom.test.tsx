@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // polarQuickBarDom.test.tsx — the Align screen's sticky status strip, MOUNTED.
 //
 //   Run directly:  npx tsx src/components/__tests__/polarQuickBarDom.test.tsx

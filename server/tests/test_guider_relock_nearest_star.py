@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#204: a re-lock is measured against the LOCK, not against the brightest star.
 
 On the M45 2x2 mosaic (night of 2026-09-23/24) the native guider stopped

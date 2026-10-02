@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // MonitorHub.tsx - the MONITOR hub: LIVE, LOG, ALERTS.
 //
 // The hub itself is a switch. The sub-nav chips are the shell's (it renders

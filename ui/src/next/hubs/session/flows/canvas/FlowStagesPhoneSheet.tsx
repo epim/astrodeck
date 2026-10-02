@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowStagesPhoneSheet.tsx - the phone's whole relationship with a flow's
 // graph (wave R7 parity row A24, plan section 4).
 //

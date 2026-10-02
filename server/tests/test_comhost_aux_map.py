@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T5: covercalibrator/dome/observingconditions host-side DEVICE_API
 mapping. Portable fake-COM objects — these types have no AstroDeck ABC yet, so
 this proves the HOST surface only (a future flats/dome/weather wave consumes it)."""

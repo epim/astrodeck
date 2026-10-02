@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The W3 binary tunnel frame codec (NO gRPC, NO protobuf).
 
 ONE outbound WSS carries multiplexed binary frames. Each WSS binary message is

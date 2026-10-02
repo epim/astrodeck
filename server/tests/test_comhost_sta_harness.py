@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T2: the per-device STA thread marshals every call to ONE thread and
 enforces a per-call deadline. Proven with a FAKE COM object (no comtypes)."""
 import threading

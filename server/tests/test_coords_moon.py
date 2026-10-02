@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Low-precision Moon ephemeris (coords.py) cross-checked against astropy.
 
 The gating path (schedule.py) is astropy-free, so coords grows a hand-rolled

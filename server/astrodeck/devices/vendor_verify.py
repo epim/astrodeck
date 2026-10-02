@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Integrity check for the third-party SDK binaries AstroDeck BUNDLES (OPEN-007).
 
 The ZWO and Player One SDK shared libraries execute in-process via ctypes. We

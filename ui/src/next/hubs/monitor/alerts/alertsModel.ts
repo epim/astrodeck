@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // alertsModel.ts - the pure half of MONITOR - ALERTS' sink editor (wave R7,
 // T-R7-10). Copy, one-line derivations and the lock-sentence composer, kept out
 // of the components so every string can be asserted without a DOM and so no

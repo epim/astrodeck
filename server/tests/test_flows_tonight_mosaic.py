@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight's mosaic branch (#189 U-10, spec 1.2, 3.2, S3 item 5, 5.5, 6.9).
 
 A multi-panel TARGET compiles to ONE entry, and Tonight has to read it as

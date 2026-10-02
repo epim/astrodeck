@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Tests for components/flows/autoLayout.ts — the phone FLOW tab's auto-laid
 // zigzag graph.
 //

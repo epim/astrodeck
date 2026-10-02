@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pure-function tests for the WiFi provisioner. No hardware, no network."""
 
 import importlib.util

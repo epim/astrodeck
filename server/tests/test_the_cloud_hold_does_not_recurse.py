@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The cloud hold called itself through the safety gate until Python gave up.
 
 MEASURED, astrotown 2026-09-06 22:13:46, v0.3.25. A low run produced one frame

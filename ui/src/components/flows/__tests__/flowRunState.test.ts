@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowRunState.test.ts - the run-mode readers, graded on what the server
 // really answers (#189 S5, #449, #451; spec 2.6 run mode, 5.8 holds, 5.9
 // CONTINUE, 5.10 published state, 6.9 privacy).

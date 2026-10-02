@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Policy checks cover live-metadata shapes and compiler-only dependencies."""
 from pathlib import Path
 import sys

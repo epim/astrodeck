@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A pass in which every panel fails centring holds the mosaic and strikes no
 panel (#534, H4 orchestrator ruling 2; spec 5.1 pass boundary, 5.6 steps 4
 and 7, the guide-start pass rule it mirrors; 6.9 and H3 orchestrator ruling

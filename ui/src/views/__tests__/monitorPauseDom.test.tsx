@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // monitorPauseDom.test.tsx — the Monitor dashboard across a PAUSE.
 //
 //   Run directly:  npx tsx src/views/__tests__/monitorPauseDom.test.tsx

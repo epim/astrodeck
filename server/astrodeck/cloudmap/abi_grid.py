@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The GOES-R ABI fixed grid (stage 2) -- latitude and longitude to pixel.
 
 No I/O, no network, no h5py, no numpy, no config, no rig. Every function total

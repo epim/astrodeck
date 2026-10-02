@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Fetch the ASTAP solver + a star database into ``server/astrodeck/vendor/astap``.
 
 WHY A FETCH SCRIPT AND NOT COMMITTED BINARIES. The smallest usable database is

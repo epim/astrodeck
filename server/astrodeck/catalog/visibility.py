@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight's visibility for a target: altitude curve, transit, astro-dark
 window, moon track/phase/separation, best imaging window, and a group-atomic
 recommended order.

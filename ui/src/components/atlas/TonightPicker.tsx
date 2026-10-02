@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightPicker — "What can I image tonight?" (NOV-3). Fetches the server-ranked,
 // difficulty-tagged catalog (GET /api/catalog/tonight) and lets a first-timer pick
 // a slam-dunk. A pick calls onPick(entry) -> AtlasView passes openFraming, exactly

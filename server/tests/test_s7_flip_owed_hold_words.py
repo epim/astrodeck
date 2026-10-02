@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The flip-owed hold's re-slews say what the hold is doing, in its own
 words, and the flip gate's first no-op sentence is said once, for the
 lead-time attempt it was written for (#456; spec 5.7, S7-ENG-FLIP).

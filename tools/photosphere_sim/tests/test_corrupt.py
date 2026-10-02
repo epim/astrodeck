@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Known corruptions of a correct result, and the numbers the scorer answers with.
 
 Spec section 10: before trusting a green report, corrupt an otherwise correct

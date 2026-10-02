@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // telemetry.test.ts — staleness-gate logic (the "stale only when connected" fix).
 // The server's 2s status poller only runs while a rig is connected, so with
 // NOTHING connected the /ws socket is quiet by design; the banner must not alarm

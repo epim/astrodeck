@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focuser.tsx - the FOCUSER device sheet (plan hub-rig.md B.5, deviations
 // E3-E6). Route `#/rig/devices/focuser`.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Flow persistence — one ``flows/<id>.json`` per flow, atomically written.
 
 Mirrors ``plans.PlanLibrary`` deliberately, down to ``safe_id_path``: the flow id

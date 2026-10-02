@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickSessionDom.test.tsx - the quick-session sheet, MOUNTED and pressed.
 //
 //   Run directly:  npx tsx src/next/hubs/sky/sheets/__tests__/quickSessionDom.test.tsx

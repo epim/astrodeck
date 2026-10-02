@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Persisted server configuration — the single source of truth for the observing
 site and the imaging optics.
 

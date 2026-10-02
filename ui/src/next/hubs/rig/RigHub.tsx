@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RigHub.tsx - the RIG hub root: DEVICES and CAPTURE.
 //
 // The chips themselves are the shell's (`shell/SubNav.tsx` renders them from

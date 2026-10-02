@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // inspectStack.tsx - the `src=stack` half of the Inspect sheet (plan F.9, D16).
 //
 // The session composite is a JPEG the server renders from every accepted sub of

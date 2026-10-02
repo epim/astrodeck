@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // domeOverlay.tsx - what is drawn ON the sky dome (the horizon profile, the
 // +30 min cloud ghosts and every target's path to dawn), plus the wind rose and
 // the legend that go around it (plan F.6).

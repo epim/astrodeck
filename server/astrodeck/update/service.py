@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Update service: poll GitHub, surface availability, and run the
 ``download -> verify -> stage -> signal-supervisor`` apply pipeline.
 

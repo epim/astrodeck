@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // QrCode.tsx - draws a `next/lib/qr.ts` symbol as one SVG path.
 //
 // NEVER THEMED, AND THAT IS THE POINT. Every other surface in this UI swaps its

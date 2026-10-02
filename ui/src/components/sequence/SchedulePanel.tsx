@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SchedulePanel.tsx — per-target autorun schedule sub-panel (wave-3 §1,6). A
 // collapsed disclosure row whose chip is scheduleSummary(); expanding reveals the
 // structured editor (NO token mini-language — C1-24). Pure controlled: the parent

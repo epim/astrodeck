@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // healpix.test.ts — golden-vector gate for lib/healpix.ts (tile-engine spec §2).
 // Inline-assert harness (no vitest); runs via `npx tsx`. Reads the committed
 // astropy-healpix vectors via Node fs at runtime (resolveJsonModule is off and

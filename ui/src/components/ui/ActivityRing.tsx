@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* ActivityRing — the app's one in-flight-operation ring (2026-08-07).
 
    Two modes, distinct by SHAPE and not hue (night mode turns every token red):

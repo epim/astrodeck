@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No start while auto-resume re-centres the mount (#189 item A7, spec 5.9
 "One starter per session").
 

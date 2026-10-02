@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ScaleBar.tsx — a labeled scale bar overlaid on the stage (field-workflow
 // finding #14, spec §1, §5). Drawn in SCREEN space (a fixed-px bar, not inside
 // the zoom transform) so it always reads a round angular value at the current

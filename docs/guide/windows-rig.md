@@ -34,3 +34,5 @@ Install ASTAP and its star database separately for standalone solving. Native gu
 4. Add authenticated [phone or remote access](remote-access-and-roles.md) only after the local path works.
 
 An activated profile becomes the boot profile. Review this before leaving powered hardware connected across a server restart.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

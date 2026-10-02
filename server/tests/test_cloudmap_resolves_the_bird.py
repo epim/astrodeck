@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The service must never hand ``"auto"`` to anything downstream.
 
 ``auto`` is a word the CONFIG speaks. Nothing else in the tree does:

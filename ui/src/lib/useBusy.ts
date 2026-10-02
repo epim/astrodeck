@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useBusy.ts — is MY operation still running on the rig?
 //
 // THE PROBLEM THIS EXISTS FOR. Most long operations are started through routes

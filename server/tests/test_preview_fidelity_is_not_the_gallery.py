@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The gallery's 256px tile must never become the preview's ceiling.
 
 2026-08-19: the gallery grid was pinned to one 256px width after the operator

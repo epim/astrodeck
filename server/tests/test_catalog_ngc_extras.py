@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The OpenNGC-extras sidecar (Hubble type, minor axis, redshift, a filtered
 NED note) build_ngc_extras.py precomputes into ngc_extras.tsv. describe.py's
 own tests cover how these fields change a rendered sentence; these tests

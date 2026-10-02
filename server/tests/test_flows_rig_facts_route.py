@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The rig facts the flow routes inject (#189 spec 3.3, 1.8; task S3-A).
 
 ``compile_plan``, ``to_sequence_plan`` and the doctor are pure: no devices,

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#615's proof: a forced timeout, not a rerun, shows the enriched message.
 
 test_resume_recovery_focus_counts.py::test_an_auto_resume_after_a_restart

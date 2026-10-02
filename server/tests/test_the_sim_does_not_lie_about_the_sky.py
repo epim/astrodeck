@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Two things the simulated rig asserts that are not true.
 
 Both were found by attacking a testing design rather than by running anything,

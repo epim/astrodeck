@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Server-side plan library: uuid upsert, name-collision detection, export
 bytes, import version handling (version_too_new vs invalid), and path-traversal
 hardening of the client-controllable id."""

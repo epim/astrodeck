@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``gating_status`` and ``constraint_gate`` refuse to judge a target's
 altitude, hour angle or Moon distance with no site saved (#540, #24's class).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focusPod.test.tsx — behaviour, contract and copy regression for the #125
 // Focus pod (components/focus/FocusPod.tsx) and for the one-line touch-action
 // fix on ui/StepDial that shipped with it.

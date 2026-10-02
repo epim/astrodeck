@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # AstroDeck appliance telemetry collector -- TEMPORARY debug scaffolding.
 #
 # Why this exists: the appliance is headless, has no console, and /var/log lives

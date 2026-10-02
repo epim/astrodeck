@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // exposureBias.test.ts — the frame-type-aware exposure rule.
 // Inline assert harness like catalogHint.test.ts.
 // Run: npx tsx src/lib/__tests__/exposureBias.test.ts

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SessionStackPanel.tsx - the run's colour composite (wave R7, area G:
 // `components/preview/SessionStack.tsx`, chrome REBUILT, image KEPT).
 //

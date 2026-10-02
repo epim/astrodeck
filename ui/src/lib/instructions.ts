@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // instructions.ts — pure helpers for the conditional sequencer (PRO-3). Mirrors
 // the "logic in lib, thin render" split (lib/planLibrary.ts, lib/sequenceTemplates.ts):
 // InstructionsPanel is a thin render over these tested, side-effect-free helpers.

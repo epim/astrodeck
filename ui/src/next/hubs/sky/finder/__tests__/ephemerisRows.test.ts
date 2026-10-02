@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ephemerisRows.test.ts - satellites and comets as rows, without a DOM
 // (wave U7b, T-U7b-1; decision D-SKY-1).
 //

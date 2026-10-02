@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FramedOverlay.tsx - the panels that stay drawn on the schematic finder after
 // DONE (proto `a_setPanels`, plan C).
 //

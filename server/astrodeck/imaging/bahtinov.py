@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Bahtinov-mask focus analysis (NOV-12).
 
 A Bahtinov mask makes three diffraction spikes on a bright star: two outer spikes

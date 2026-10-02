@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AtlasMarkers.tsx - tonight's ranked targets, and the reticle, drawn over the
 // atlas canvas.
 //

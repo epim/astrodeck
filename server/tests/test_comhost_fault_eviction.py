@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T6 host-side obligations (carried from the COM-T2 review):
 
   1. Fault-eviction (Medium): a COM call that times out FAULT-EVICTS its device

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Path-containment contract for client-controllable paths.
 
 The live defect this file was written for: the SPA catch-all

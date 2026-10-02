@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.81 - #239 stages A/B/C: rig standards in Settings, Plan off the rail,
 # Modelled line for line on deploy_0274.ps1, including the traps it names.
 $ErrorActionPreference = "Stop"

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // instructionsModel.ts - the pure half of the when/then rule editor.
 //
 // The rule GRAMMAR is not re-derived here. `lib/instructions.ts` owns the

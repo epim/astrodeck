@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CoolerRow.tsx - the cooler gate and the dew heater, compact.
 //
 // Not the Camera sheet (that is hub 4). This is here because a manual shot's

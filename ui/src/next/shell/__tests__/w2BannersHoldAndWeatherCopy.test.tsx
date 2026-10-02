@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2BannersHoldAndWeatherCopy.test.tsx - WP-17 (b) and (c) on the #/next
 // cross-hub banner strip.
 //

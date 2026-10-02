@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Stage A (#239): the standards block is reachable, and gated.
 
 A setting nobody can change is not a setting. This covers the route half of

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """TPPA must refuse near a celestial pole rather than report a wrong number.
 
 Observed on the rig 2026-08-03: a run at Dec +85 -- 5 degrees from the pole --

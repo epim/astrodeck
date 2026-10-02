@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API tests for /api/config/survey + /api/survey/pack* (offline-pack spec §5)."""
 import pytest
 from fastapi.testclient import TestClient

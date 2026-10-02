@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native three-point polar alignment (Rust TPPA engine), end-to-end vs the sim.
 
 The sim mount can be given a KNOWN polar-axis misalignment (``sim.py``

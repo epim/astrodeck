@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Regression test for the WS-reconnect rehydration bug: onopen only refreshed
 // config/principal/authMethods/update/logs, never the sequence/status snapshot.
 // A terminal `sequence` transition (complete/aborted/error) that fired while the

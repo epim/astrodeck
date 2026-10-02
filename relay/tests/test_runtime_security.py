@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the standalone relay privilege interlock."""
 
 from __future__ import annotations

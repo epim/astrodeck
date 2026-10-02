@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Is the CAMERA VIEW holding still? The orientation sensor cannot answer that:
 // Chromium only emits deviceorientation on a change of 0.1 degree, so a phone
 // held still emits nothing and silence is indistinguishable from a dead sensor.

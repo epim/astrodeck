@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The `ascom-local` backend (COM-T6): a managed local COM host + the EXISTING
 Alpaca client pointed at it (spec §3.2). Windows-only self-registration; off
 Windows this module registers nothing so ascom-local is simply absent.

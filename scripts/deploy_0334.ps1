@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Stage 0.3.34 on the astrotown rig. Run ON the rig (ssh session).
 #
 # What 0.3.34 carries, on top of 0.3.33: seventy-eight commits, because the rig

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NativeCamera: the vendor-blind engine that turns a CameraAdapter into a
 Camera. Owns the exposure lifecycle (generalized from alpaca.py:expose), buffer
 assembly, cooling, ROI/binning, and cancellation — written once for every brand.

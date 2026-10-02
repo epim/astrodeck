@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ReportPicker.tsx - which night is being read, and the three states the
 // index itself can be in.
 //

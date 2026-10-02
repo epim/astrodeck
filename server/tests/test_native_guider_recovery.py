@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """P2 gate (p2-t2-brief.md): star-lost recovery, mid-session
 ``flip_calibration``, and calibration-persistence reuse, all against the sim
 rig (dossier §3.3 star-lost/recovery, §9 item 4 flip, §8.4/§9 calibration

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filterSlots.test.ts — the blackout checkbox names the slot, and picking a
 // filter must never look identical to not picking one. Inline harness.
 import {

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Self-contained regression tests for FIX-D (frontend store) — same inline-assert
 // harness as src/lib/__tests__/foundation.test.ts (no vitest/jest wired in yet).
 //

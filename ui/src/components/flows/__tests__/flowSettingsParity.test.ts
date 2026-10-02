@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowSettingsParity.test.ts — the flow-level settings table, mirrored.
 //
 // `FLOW_SETTINGS` lives in server/astrodeck/flows/models.py and is copied into

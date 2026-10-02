@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Cloud occlusion geometry (stage 1) -- pure spherical coordinate geometry.
 
 No I/O, no config, no network, no rig, no numpy. Every function total and

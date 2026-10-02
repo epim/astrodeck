@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // QuickFlow.tsx -- the one-screen night: pick a target, say how many subs, tick
 // the filters, go.
 //

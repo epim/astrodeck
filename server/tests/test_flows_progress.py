@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What a flow has banked and what it still owes (#189 S1 item 9, spec 8).
 
 ``flows.progress.flow_progress`` is the pure half of ``GET

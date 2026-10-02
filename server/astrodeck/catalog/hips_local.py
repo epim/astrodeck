@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Local HiPS -> TAN cutout renderer (offline-pack spec §3).
 
 Same output contract as the hips2fits proxy: square TAN JPEG, North-up,

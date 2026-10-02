@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An unguided quick flow stays under the unguided line: a sub at or past
 ``doctor.UNGUIDED_SUB_LINE_S`` is refused, 422 ``invalid_quick_flow``, in
 words naming the filter and the limit (#518; #189 spec 1.8; H4

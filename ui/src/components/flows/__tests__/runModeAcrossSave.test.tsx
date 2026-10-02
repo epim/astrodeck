@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // runModeAcrossSave.test.tsx - run mode, the RUN button and the readouts hold
 // through the progress re-read a save starts (#449; spec 2.6 run mode, 5.9,
 // 5.10).

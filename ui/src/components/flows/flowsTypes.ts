@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsTypes.ts — the shapes the Flows surface shares with the server.
 //
 // These mirror server/astrodeck/flows/models.py. Two of them carry a trap that

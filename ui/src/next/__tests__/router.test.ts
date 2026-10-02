@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // router.test.ts - the hash grammar and the nav verbs (ARCHITECTURE.md #3).
 //
 //   Run directly:  npx tsx src/next/__tests__/router.test.ts

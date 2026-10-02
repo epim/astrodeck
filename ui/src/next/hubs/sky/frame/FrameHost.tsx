@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FrameHost.tsx - the real survey imagery under the mosaic panels (plan C).
 //
 // FRAME mode replaces the schematic finder with `components/atlas/SkyCanvas`,

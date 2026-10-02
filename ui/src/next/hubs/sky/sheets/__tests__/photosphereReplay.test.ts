@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The replay driver, checked on its own three moving parts: the PNG codec, the
 // area-averaging resampler the canvas stub is built on, and the driver's
 // determinism on a case small enough to build here.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useEffect, useState } from "react";
 import CameraDial from "../components/ui/CameraDial";
 import { cameraDialCategories } from "../components/ui/CameraPickers";

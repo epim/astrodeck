@@ -55,3 +55,5 @@ The default `/api/logs` response is a recent-event buffer. A `night` query reads
 ## Config got into a bad state
 
 Stop the server and back up its configuration directory before recovery. Source installs default to `server/config`; binaries use their per-user data directory, and services can override it with `ASTRODECK_CONFIG_DIR`. Keep profiles, accounts and session data together. For a lost administrator password, use `create-admin` against that same directory rather than deleting configuration files.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

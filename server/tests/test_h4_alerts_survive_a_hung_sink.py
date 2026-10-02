@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Alerts survive a sink that never answers (#538), and the dispatcher acts on
 the #444 ``relay_gap`` marker.
 

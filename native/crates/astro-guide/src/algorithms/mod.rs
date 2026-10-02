@@ -1,3 +1,4 @@
+// Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
 //
 // Provenance: crate-internal module wiring + the `GuideAlgorithm` trait,

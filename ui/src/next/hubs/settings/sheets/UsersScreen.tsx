@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // UsersScreen.tsx - Settings > USERS (`#/settings/users`, plan section C.7).
 //
 // Three stacked sections, `admin.users` gating the last two:

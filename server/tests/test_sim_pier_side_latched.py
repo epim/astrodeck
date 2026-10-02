@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The simulator mount keeps the pier side a goto chose (#298; spec 5.7, I-38,
 Revision 1's last row).
 

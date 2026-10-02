@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The group's pier-side REFERENCE after its pier change (#189 S2, spec 5.6
 step 5, 5.7, D10): the side a hop past the meridian is checked against, and
 what lets that hop disarm the flip latch.

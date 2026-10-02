@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#195: DUSK WINDOW's "Single night" used to change nothing about resuming -
 `engine.start` arms `auto_resume` unconditionally, and `ResumeArm.tick` asked
 only whether tonight's window was open, never how many nights the session had

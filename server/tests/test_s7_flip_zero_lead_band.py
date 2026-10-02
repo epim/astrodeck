@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A flip attempt made at zero lead waits `MERIDIAN_SIDE_MARGIN_S` past the
 crossing, whether or not it is a retry (#455, S7-ENG-FLIP; the band is the
 retry's, #366, S5 orchestrator ruling 2, spec 5.7, Revision 9 row 16, owner

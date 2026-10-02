@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#253, S2 orchestrator ruling 3: a saved PPEC file's measured count
 protects it from a save only while the next start could still restore it.
 

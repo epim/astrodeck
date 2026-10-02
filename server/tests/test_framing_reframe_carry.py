@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The re-frame carry: when a moved layout keeps its counts (#189 Revision 2
 ruling 3, #187; spec 3.3 and A.5).
 

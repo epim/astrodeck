@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Never expose while something is deliberately moving the mount, and re-centre
 after guiding comes back.
 

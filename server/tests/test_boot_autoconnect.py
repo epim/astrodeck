@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Lifespan boot auto-connect tests (Stage B, api/app.py:_lifespan, W1.6).
 
 On startup the app ALWAYS connects the active profile (so a rebooted Pi comes

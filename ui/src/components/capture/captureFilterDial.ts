@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureFilterDial.ts — Capture's own FILT ring for the speed dial (#181/#179).
 //
 // Every other screen builds its filter ring with `cameraDialCategories`, and

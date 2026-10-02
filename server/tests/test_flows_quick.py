@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``POST /api/flows/quick`` and ``flows.wizard.quick`` -- the one-screen night.
 
 The quick sheet exists because the guided wizard still asks an operator to

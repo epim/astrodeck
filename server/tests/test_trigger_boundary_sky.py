@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The TARGET-COMPLETE boundary has a sky too.
 
 The engine evaluates instructions at two places: every frame, and once when a

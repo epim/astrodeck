@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickModel.test.ts - the quick-session sheet's arithmetic, on its own.
 //
 //   Run directly:  npx tsx src/next/hubs/sky/sheets/__tests__/quickModel.test.ts

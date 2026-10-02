@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Measuring defocus, including on the real donut frame that broke everything.
 
 The property that matters: ONE number that changes monotonically with distance

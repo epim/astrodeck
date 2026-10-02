@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowFieldRow.tsx - one editable parameter of one node, in the design's own
 // vocabulary (parity row A12).
 //

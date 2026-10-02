@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // backendMeta.ts — UI-side metadata for the backend picker. The SERVER is the
 // source of truth for which backends exist and which roles each can fill (GET
 // /api/backends → BackendInfo[]); this module only adds the human explainer copy

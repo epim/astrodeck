@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // next/hubs/settings/tuning/system - the four SYSTEM editors, rebuilt (wave R7,
 // T-R7-12): software updates, factory reset, credits and licences, restricted
 // assets.

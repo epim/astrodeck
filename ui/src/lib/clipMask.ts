@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // clipMask.ts — per-pixel saturation mask derived from a sensor-1:1 /crop.
 // (crop+render UI design §2.3, Decision C)
 //

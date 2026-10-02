@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight's budget has a row for a FILTER CYCLE (S4 orchestrator ruling 5,
 #338; spec section 8 S3 item 5, 5.3, 5.5).
 

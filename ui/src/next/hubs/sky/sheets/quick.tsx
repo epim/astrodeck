@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quick.tsx - IMAGE THIS: one target, tonight, in one screen
 // (hub-sky plan D.1-D.4, design README section 3, screenshot 05).
 //

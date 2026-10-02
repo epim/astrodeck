@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // slewPad.test.tsx — the four buttons that can leave the mount slewing.
 //
 //   Run directly:  npx tsx src/components/__tests__/slewPad.test.tsx

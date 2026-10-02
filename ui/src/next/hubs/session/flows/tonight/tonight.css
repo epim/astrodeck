@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* tonight.css - the Tonight sheet's own classes (wave R7's CSS rule: only
    T-R7-0 may touch `next/next.css`, so every area writes its own sheet and
    imports it from its root component).

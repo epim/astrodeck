@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No API response may carry the site's coordinates (#19).
 
 The control this issue asks for, and the reason it asks for it: a key-name

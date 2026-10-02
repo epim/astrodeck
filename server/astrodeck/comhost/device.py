@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-device STA apartment thread + per-call deadline (COM-T2).
 
 ASCOM drivers are STA: each ComDevice owns ONE thread that CoInitializeEx's an

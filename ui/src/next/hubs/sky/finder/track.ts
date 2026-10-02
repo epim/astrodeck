@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // track.ts - a target's path from now to dawn, and the four colours that say why
 // each stretch of it is or is not worth shooting (hub-sky plan B.4).
 //

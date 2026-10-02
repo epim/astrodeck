@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SurveyControls — the Atlas framing control cluster (design spec §6). Survey
 // picker, FOV zoom + "fit object", per-image brightness dimmer, FOV lock
 // (absorbs the old "use camera FOV" button — see AtlasView's onCameraFovLock),

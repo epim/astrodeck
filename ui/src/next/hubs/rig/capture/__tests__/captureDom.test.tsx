@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureDom.test.tsx - RIG · CAPTURE, MOUNTED, pressed, and refused.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/capture/__tests__/captureDom.test.tsx

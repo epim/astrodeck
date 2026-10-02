@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every plate solve of an imaging-camera frame goes through the sky-angle
 recorder.
 

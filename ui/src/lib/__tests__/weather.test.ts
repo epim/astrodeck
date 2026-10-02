@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // weather.test.ts — normalizeWeather (stale fail-closed, clamping, missing
 // series) + breachSpans golden cases + fmtHm/agoLabel (weather spec §9/§14).
 // Run with:  npx tsx src/lib/__tests__/weather.test.ts   (from ui/)

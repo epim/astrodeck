@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Phase-1 self-update endpoints: open /healthz and /api/version snapshot."""
 import pytest
 from fastapi.testclient import TestClient

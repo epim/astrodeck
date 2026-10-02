@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // MosaicNightCard.tsx - what tonight looks like across the WHOLE mosaic, and
 // the stated reason for every panel that has none (review #33).
 //

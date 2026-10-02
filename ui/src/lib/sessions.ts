@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessions.ts — pure helpers for the Sessions cards (sessions spec §7).
 // No store/server access: plain data in, plain data out (tsx-testable).
 import type { SequencePlan, Session, SessionFrame } from "../types";

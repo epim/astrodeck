@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planLibrary.test.ts — pure tests for lib/planLibrary.ts (unified Plan panel
 // helpers: saved-row metadata chip + saved/unsaved ownership cue). Inline-assert
 // harness via `npx tsx` (idiom: planFile.test.ts).

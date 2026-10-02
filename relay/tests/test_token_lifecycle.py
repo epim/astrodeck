@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """OPEN-002: device-token rotation, revocation, and file reload.
 
 A leaked home device token must be invalidatable WITHOUT a full relay restart,

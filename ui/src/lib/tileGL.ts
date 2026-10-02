@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tileGL.ts — thin WebGL1 wrapper for the tile engine (tile-engine spec §4).
 // The only file that touches the GL API. initTileGL returns null on failure so
 // the caller falls back to the <img> pipeline. One textured-quad shader pair;

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focusMove.ts — what the Focuser panel says while a commanded move is in flight.
 //
 // Why this exists: on 2026-07-31 the user typed 22000 into "Go to position",

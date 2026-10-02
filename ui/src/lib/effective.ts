@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // effective.ts — read the WINNING layer, not the one that happens to be
 // convenient (#129).
 //

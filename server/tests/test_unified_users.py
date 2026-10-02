@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One account list, whatever a person signs in with.
 
 User management used to be two stores that never met: a local username+password

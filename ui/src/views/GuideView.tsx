@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { CalibrationReport } from "../types";
 import { api } from "../api";

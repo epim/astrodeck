@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A run does not start on top of somebody else's camera operation (#44).
 
 2026-09-18, `captures/logs/2026-09-17.jsonl`. A plate solve began at 03:17:56 at

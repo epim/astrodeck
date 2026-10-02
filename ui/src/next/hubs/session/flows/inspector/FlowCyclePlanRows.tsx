@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowCyclePlanRows.tsx - the FILTER CYCLE slot table, one row per filter in
 // the rig's wheel (parity row A13).
 //

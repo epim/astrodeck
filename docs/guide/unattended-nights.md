@@ -49,3 +49,5 @@ For a continuing campaign, remaining work stays in the session ledger and a late
 ## Related
 
 [Safety and automation](safety-and-automation.md) · [Weather](weather.md) · [Sessions and multiple nights](sessions-multi-night.md) · [Monitor](monitor.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

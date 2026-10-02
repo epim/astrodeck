@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 1: stable ids on Target/ExposureStep (sessions spec §1).
 
 Pydantic backfills a uuid4 hex on every validation of an id-less plan (the

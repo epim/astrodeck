@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PreviewToolbar.tsx — always-visible zoom primaries + overlay toggles + download
 // (stream T). Spec §5 "Toolbar", §11/§12.
 //

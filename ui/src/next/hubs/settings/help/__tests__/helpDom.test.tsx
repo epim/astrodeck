@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // helpDom.test.tsx - the rebuilt Help area, MOUNTED inside its sheet
 // (wave R7, T-R7-16).
 //

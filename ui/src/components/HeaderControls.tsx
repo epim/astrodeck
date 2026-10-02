@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // HeaderControls.tsx — mobile-sized header controls (touch spec §11 header, R16/R27).
 //
 // A narrow-selector child so mounting it does NOT widen App's `useStore()`

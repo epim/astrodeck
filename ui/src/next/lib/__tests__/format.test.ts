@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for format.ts. Sabotage check: reusing eta.ts's fmtDuration
 // verbatim (no space before a lone "s") turns the "45 s" worked example red;
 // dropping the RA wrap-to-[0,24) turns the negative-hours fmtRA test red;

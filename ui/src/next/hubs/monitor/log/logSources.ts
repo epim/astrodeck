@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // logSources.ts - which log the Log screen is showing, and how it asks for it.
 //
 // THREE SOURCES, and the difference is the whole point (plan §B.2.1):

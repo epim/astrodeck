@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Verify 0.3.31 actually carries what it claims, on the rig.
 
 Derived from verify_0330.py. 0.3.31 = 0.3.30 + the flows compiler notes, the

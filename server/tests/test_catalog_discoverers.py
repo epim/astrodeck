@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Wikidata-discoverer sidecar (build_discoverers.py -> discoverers.tsv).
 describe.py's own tests cover how a discovery clause changes a rendered
 sentence; these tests cover the sidecar and its join — ground truth against

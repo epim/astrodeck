@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SendToWizardHost.tsx - the classic UI's mount for Send to Flow Wizard (#196;
 // spec 2026-09-23 flows mosaic, Revision 2 ruling 4, D13, D-FU-2).
 //

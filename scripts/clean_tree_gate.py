@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Run a gate command against HEAD's content, not the working tree (#78).
 
 `feat/photosphere-production` reported a clean `tsc -b` for a whole pass of

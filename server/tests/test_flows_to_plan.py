@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The seam between a compiled flow and a plan the engine can run.
 
 Every test here exists because of one property of the models on the other side:

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native three-point polar alignment (TPPA) — AstroDeck's own Rust engine.
 
 The third driver behind :class:`PolarAlignSession`, selected for a native

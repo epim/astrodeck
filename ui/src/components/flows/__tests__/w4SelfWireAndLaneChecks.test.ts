@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w4SelfWireAndLaneChecks.test.ts - flowsConnect runs the lane and self-wire
 // checks for BOTH gestures, and the self-wire toast exists (#197; backlog
 // plan WP-36 (a), docs/superpowers/plans/2026-09-30-open-issue-backlog.md).

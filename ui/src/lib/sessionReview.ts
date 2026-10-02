@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionReview.ts — pure helpers for the review drawer (sessions spec §7):
 // verdicts, grid filtering, bulk-selection reducer, local override apply.
 import type { SessionFrame } from "../types";

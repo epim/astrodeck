@@ -44,3 +44,5 @@ Use the first-light path on a fresh simulator installation. For an existing rig,
 The [project overview](../overview.md) describes how the pieces fit together. The [quickstart](../quickstart.md) collects launch commands. The [project README](../../README.md) and [website](../../site/index.html) give the broader introduction.
 
 These guides were checked against the source at the revision recorded in the [documentation evidence](../../tools/docs/README.md). Executed simulator procedures and source-only checks are identified separately there. Native autofocus and guiding require the optional native engine; its current release packaging gap is tracked in [#630](https://github.com/epim/astrodeck/issues/630). Standalone plate solving also needs ASTAP and its star database installed separately.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

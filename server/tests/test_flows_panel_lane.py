@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The panel lane: which TARGET a capture or cycle stage belongs to (#151,
 #189 U-09 part; spec 2026-09-23 flows mosaic, 1.3 item 1, 1.4 items 1-4, 1.5
 and D2).

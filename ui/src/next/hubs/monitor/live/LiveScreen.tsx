@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LiveScreen.tsx - MONITOR - LIVE. The 3 a.m. glance.
 //
 // Read order is the order the questions get asked: is the night OK (health

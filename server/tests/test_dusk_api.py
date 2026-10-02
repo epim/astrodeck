@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The operator-facing dusk configuration, permissions and lifecycle."""
 from types import SimpleNamespace as NS
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowWire.test.ts — the wire layer's decisions, without a DOM.
 //   Run:  npx tsx src/components/flows/__tests__/flowWire.test.ts   (from ui/)
 //

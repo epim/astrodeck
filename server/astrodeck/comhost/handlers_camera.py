@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Camera COM<->Alpaca handlers (COM-T3). Maps exactly the Alpaca methods
 AlpacaCamera in devices/alpaca.py calls. ImageArray is returned as the [x][y]
 nested structure the client reshapes+transposes (json path in _download_image);

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Safe extraction + version-dir flattening for staging a release."""
 import io
 import tarfile

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The assumed-ambient extend path raised NameError on the rig, every time.
 
 Caught on astrotown 2026-08-16, in the log rather than in a test:

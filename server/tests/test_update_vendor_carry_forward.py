@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The self-updater must carry forward the bundled SDK libraries a release
 tarball may not ship (build_release omits Player One's, #199), gated on the
 staged manifest. The 0.3.23 hand deploy did this by hand; the updater did not,

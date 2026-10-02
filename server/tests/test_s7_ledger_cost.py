@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What the ledger costs at thousands of frames, and the budget it is held to
 (#189 spec section 10 risk 8 and Appendix A.3; #514, #515, #516).
 

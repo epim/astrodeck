@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Framing math — the client mirror of `server/astrodeck/catalog/framing.py`.
 // Pure functions, NO React. Used for the zero-latency live FOV/mosaic overlay
 // while the user drags. Nothing here is ever slewed to: a mosaic reaches a

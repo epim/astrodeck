@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Audit finding #25 -- ``SafetyConfig.preset`` was stored but never applied by
 anything, so the label on screen could say "backyard" while the numerics said
 something else entirely (``SAFETY_PRESETS`` was dead code).

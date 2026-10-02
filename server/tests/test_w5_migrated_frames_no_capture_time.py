@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """migrate_legacy_resume's synthesized frames carry no usable capture time,
 so a migrated body step's ADOPT match (H3 orchestrator ruling 7,
 ``continuation._capture_times``) is unmatched by RULE rather than by luck

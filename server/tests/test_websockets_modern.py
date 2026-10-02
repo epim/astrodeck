@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """OPEN-015: the WebSocket integration uses the modern (non-legacy) API.
 
 websockets 14.0 made ``websockets.connect`` the new asyncio implementation; the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 2: Session entity + SessionStore (sessions spec §2).
 
 Round-trip + effective-acceptance + done_map/remaining, prune policy (never

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // schedule.ts — pure presentation helpers for the per-target autorun schedule
 // (wave-3 §1). No React, no DOM: npx-tsx testable (rotatorDial.ts precedent).
 // The engine's semantics live server-side (sequence/schedule.py); this module

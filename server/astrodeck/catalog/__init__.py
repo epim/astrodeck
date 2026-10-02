@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 from .objects import CATALOG, SearchResult, search, search_catalog
 from .coords import (altaz, format_dec, format_ra, lst_hours, parse_dec,
                      parse_ra, round_az_deg)

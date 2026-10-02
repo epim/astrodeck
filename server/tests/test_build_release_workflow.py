@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The release workflow must actually PASS --strict, with a command line the
 script still parses.
 

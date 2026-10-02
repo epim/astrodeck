@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // next/ui/honest.ts - the one honest-disabled idiom for the new UI.
 //
 // ARCHITECTURE.md section 6 and non-negotiable 6: a control the user could

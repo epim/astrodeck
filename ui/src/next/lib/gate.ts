@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // gate.ts - the ONE lock-reason helper for every control that issues a
 // command (ARCHITECTURE.md #8 "RBAC and gating"). Pure: no React, no store, no
 // fetch - `s` is the five narrow fields the caller already has (from the real

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planStart.ts - the ONE derivation of "can this plan start, and what happens
 // when it does".
 //

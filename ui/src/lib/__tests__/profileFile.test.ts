@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // profileFile.test.ts — pure tests for lib/profileFile.ts (profile-library
 // import/export, F7 #5b). Inline-assert harness via `npx tsx` (planFile.test.ts
 // precedent).

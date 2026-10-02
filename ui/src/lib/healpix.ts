@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // healpix.ts — nested HEALPix math in TypeScript (tile-engine spec §2). Pure,
 // no DOM. Ported from the canonical chealpix ang2pix_nest / pix2ang_nest, made
 // continuous for fractional (u,v). Golden-vector gated against astropy-healpix

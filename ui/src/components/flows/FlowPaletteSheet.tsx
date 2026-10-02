@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowPaletteSheet.tsx — the add-stage palette as a bottom sheet (§C.10).
 //
 // The whole component is `<Overlay variant="sheet">` around `<FlowPalette

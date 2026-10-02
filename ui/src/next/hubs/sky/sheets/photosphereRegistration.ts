@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import {rotateBasis,type CameraBasis,type SkyPanorama,type OverlapCheck,cameraLens} from './photosphereGeometry';
 
 export interface Registration {basis:CameraBasis;overlap:OverlapCheck;adjusted:boolean;evaluations:number}

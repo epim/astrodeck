@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Smoke tests for the Rust-native engine bridge (`astrodeck_native`).
 
 These exercise the PyO3 surface described in the native-parity architecture

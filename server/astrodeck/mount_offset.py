@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Relative mount nudges: the absolute target a "move 5 arcmin east" asks for.
 
 D-RIG-4. Pure geometry, no device and no I/O, so the route in ``api/app.py``

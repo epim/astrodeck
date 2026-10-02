@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ephemerisCardDom.test.tsx - the satellite/comet element card in Settings >
 // SKY DATA, MOUNTED (wave U7b, T-U7b-1; decision D-SKY-1).
 //

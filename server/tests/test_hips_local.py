@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the local HiPS TAN renderer (offline-pack spec §3, §7).
 Synthetic packs only — no licensed imagery in the repo."""
 import io

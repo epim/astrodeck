@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """OPEN-008: a redacted security audit log for auth events.
 
 Failed and successful sign-ins must leave a durable, structured trace that

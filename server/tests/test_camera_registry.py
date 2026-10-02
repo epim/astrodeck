@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 import pytest
 from astrodeck.devices.cameras.adapter import CameraAdapter
 from astrodeck.devices.cameras import registry

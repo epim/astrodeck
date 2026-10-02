@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Player One camera adapter — maps the Player One SDK onto the CameraAdapter
 waist. Full imaging train for the Poseidon-M Pro: cooling, dew heater, ROI, and
 the two read-noise controls this camera earns its keep on —

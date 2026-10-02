@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // authGate.test.ts — #117: the console must not describe the observatory to
 // someone who is looking at the login screen.
 //

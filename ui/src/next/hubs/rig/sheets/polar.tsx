@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // polar.tsx - the POLAR ALIGNMENT sub-sheet, two deep under MOUNT
 // (plan hub-rig.md B.4, fragment proto/device-polar.html).
 //

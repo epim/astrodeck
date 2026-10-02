@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // previewChromeDom.test.tsx — the chrome drawn OVER the preview, mounted.
 //
 //   Run directly:  npx tsx src/components/preview/__tests__/previewChromeDom.test.tsx

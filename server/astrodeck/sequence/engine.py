@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sequence engine: runs an imaging plan autonomously.
 
 Per target: slew → (center) → (autofocus) → start guiding → for each step:

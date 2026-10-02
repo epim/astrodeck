@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { parseSeen, serializeSeen, withSeen, spotlightRect } from "../coach";
 let passed = 0, failed = 0; const failures: string[] = [];
 function test(n: string, f: () => void){ try { f(); passed++; } catch(e){ failed++; failures.push(`✗ ${n}: ${(e as Error).message}`);} }

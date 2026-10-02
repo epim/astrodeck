@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filterNamesModal.test.tsx — the learn-offsets Start gate, MOUNTED.
 //
 //   Run directly:  npx tsx src/components/capture/__tests__/filterNamesModal.test.tsx

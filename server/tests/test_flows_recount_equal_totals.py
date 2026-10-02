@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTINUE asks the recount question only when a total changes (S4
 orchestrator ruling 2, #348; spec 5.9's row "the compile's count_mode
 differs", Revision 2 ruling 2's consequences).

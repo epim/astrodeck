@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targetsCatalog.ts - reading ONE object out of the catalogue, for the sheets
 // that are handed an id in the hash and have to turn it into a target
 // (hub-sky plan A.11, D.2).

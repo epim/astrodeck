@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Real wizard navigation and lifetime, with editor bodies standing in for
 // their separately tested APIs. No telescope command belongs to navigation.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.12 - the cloud model gets a viewer: a tilted sky dome on Monitor.
 $ErrorActionPreference = "Stop"
 $Root = "C:\Users\James\AstroDeck"

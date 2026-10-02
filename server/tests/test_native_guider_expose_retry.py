@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A1 (final-branch-review I2): the native guider absorbs a transient
 guide-camera exposure fault via bounded retry+backoff, and dies loudly (honest
 death: _lost, not guiding) on a persistent fault. Drives the sim's

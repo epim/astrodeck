@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Run every UI test file and fail the process if any assertion failed.
 //
 //   npm test

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Login.tsx — the full-screen sign-in gate (W2.6). Shown by App ONLY when a login
 // method is enabled AND the caller is not signed in (or a first admin still needs
 // creating). When NO method is enabled this is NEVER mounted — the open LAN UI is

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Is the camera at the mosaic's planned angle? A pure verdict on the sky angle
 a hop's centring solve recorded (mosaic spec 5.6 step 4, Appendix A.2; U-04,
 #189).

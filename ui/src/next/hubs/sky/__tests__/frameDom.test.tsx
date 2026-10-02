@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // frameDom.test.tsx - FRAME mode, MOUNTED: the mosaic picker, the rotation dial,
 // the rotator honesty note, and what DONE actually sends.
 //

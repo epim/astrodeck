@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.24 - the relay Host-allowlist fix (0.3.23 answered 421 to every
 # tunneled request) and the updater's vendor carry-forward. Adapted from the
 # 0.3.23 deploy; every trap that script names still applies, plus two it

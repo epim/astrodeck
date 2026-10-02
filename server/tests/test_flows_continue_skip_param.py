@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTINUE with a panel skipped through the TARGET's own ``skip`` param
 (#189 spec 5.9 "Other cases" row 1, 2.5, 3.3; the S1/S2 test debt; task
 S3-A).

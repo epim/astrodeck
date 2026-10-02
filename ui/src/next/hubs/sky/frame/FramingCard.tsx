@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FramingCard.tsx - the mosaic picker, the rotation dial and the honesty note
 // that appear under the finder while FRAME is on (hub-sky plan C).
 //

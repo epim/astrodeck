@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // A 409 that asks a QUESTION has to arrive with the question's material.
 //
 // `POST /api/flows/{id}/run` answers 409 `code:"unmapped"` with the list of

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``blobs.find`` against hand-built rasters.
 
 Every image here is small enough to reason about pixel by pixel, so each

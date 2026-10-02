@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // runMode.test.tsx - the Target modal in RUN MODE, mounted on the real store
 // and graded on what the server really answers (#189 S5; spec 2026-09-23
 // flows mosaic, 2.6 run mode, 2.3 the panel states by shape, 5.10 published

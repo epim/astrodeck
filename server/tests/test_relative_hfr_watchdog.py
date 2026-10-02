@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-08: the HFR watchdog can be RELATIVE to the post-focus baseline.
 
 Evidence (docs/superpowers/specs/2026-09-06-guider-night-defects-triage.md):

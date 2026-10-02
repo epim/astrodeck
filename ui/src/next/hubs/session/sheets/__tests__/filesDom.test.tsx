@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filesDom.test.tsx - the FILES sheet, MOUNTED, with a stubbed rig.
 //
 //   Run directly:  npx tsx src/next/hubs/session/sheets/__tests__/filesDom.test.tsx

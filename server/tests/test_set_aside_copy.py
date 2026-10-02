@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A set-aside lasts for TONIGHT, and the log has to say so (#147, #208,
 #189 S2).
 

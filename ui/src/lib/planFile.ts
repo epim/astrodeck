@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planFile.ts — plan-library import-file parsing (sessions spec §7). The
 // server does the real schema validation (POST /api/plans/import → 422 with
 // version_too_new/invalid codes); this only guards the obvious non-files so

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SheetHost.tsx - renders `route.sheets` through the global registry
 // (ARCHITECTURE.md section 5).
 //

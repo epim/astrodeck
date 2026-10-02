@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Privilege-boundary, service-sandbox, and AP lifecycle tests."""
 
 from __future__ import annotations

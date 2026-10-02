@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mercator.test.ts — tile math round-trips, destPoint golden vectors, pierce
 // distances (zenith / 45° / 20° / clamps) — weather spec §11/§14.
 // Run with:  npx tsx src/lib/__tests__/mercator.test.ts   (from ui/)

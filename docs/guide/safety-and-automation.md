@@ -45,3 +45,5 @@ Use the alert settings and **ALERTS** screen to inspect delivery rather than ass
 ## Related
 
 [Weather](weather.md) · [Sessions and multiple nights](sessions-multi-night.md) · [Monitor](monitor.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

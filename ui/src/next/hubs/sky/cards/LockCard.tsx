@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LockCard.tsx - what the reticle is on, and the three things you can do with it
 // (hub-sky plan A.7).
 //

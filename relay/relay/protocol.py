@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """AstroDeck relay tunnel protocol -- the binary wire format (W3.2).
 
 ONE outbound WSS carries EVERYTHING between the home "scope" and this relay:

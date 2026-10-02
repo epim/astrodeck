@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native serial/local hardware driver probe (native-hardware on-ramp, 2026-07-21).
 
 A configured driver whose type is a registered ``hardware=True`` backend is probed

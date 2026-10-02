@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-4 Task 6 — engine wiring: end-of-night + unsafe roof close through the
 shielded ``_wind_down`` teardown, and the ``_on_unsafe`` escalation.
 

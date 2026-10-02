@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // canvas/sheets.ts - the sheets this area registers.
 //
 // One name, `flowStages`: the phone's stage list, monitor and tap-to-wire

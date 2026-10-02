@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanSessionsSection.tsx - the multi-night sessions ledger inside the plan
 // editor, rebuilt.
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-logic tests for the autofocus-result verdict mapping (implementation
 // brief §3): excellent|good|soft|failed|pending from the engine's best HFR, fit
 // R², and sweep state. Same dependency-free inline-assert harness as

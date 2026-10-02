@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanTargetCard.tsx - one target and its capture steps.
 //
 // The rebuild of `views/SequenceView.tsx:1066-1310` (`renderTarget`). It keeps

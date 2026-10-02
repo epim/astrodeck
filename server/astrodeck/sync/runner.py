@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The thing that actually calls :func:`~astrodeck.sync.push.push_once`.
 
 Phase 2 built the algorithm and left this seam empty on purpose — a push that

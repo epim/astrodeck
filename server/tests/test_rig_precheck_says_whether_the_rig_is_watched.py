@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#125: the precheck says whether anything outside the rig is watching it.
 
 The rig went offline on 2026-09-21 and nothing reported it. The product

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A digit run past CPython's 4300-digit limit reads as nothing, never as a
 ValueError (#441; the #328 / #362 class; spec 2026-09-23 flows mosaic, 3.2).
 

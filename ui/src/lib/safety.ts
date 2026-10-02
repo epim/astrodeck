@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safety.ts — pure normalizer for the SafetyMonitor snapshot into the store's
 // SafetyState. No React, no DOM: npx-tsx testable (schedule.ts precedent).
 //

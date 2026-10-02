@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The AstroDeck design system — the library boundary.
 //
 // WHY THIS FILE EXISTS. `ui/` is a Vite APPLICATION: private, no `main`, no

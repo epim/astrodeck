@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureStall.test.ts — #206: the stall alarm must time CAPTURE, not previews.
 //
 //   Run directly:  npx tsx src/lib/__tests__/captureStall.test.ts

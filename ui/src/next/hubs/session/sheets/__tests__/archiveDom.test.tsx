@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // archiveDom.test.tsx - SESSION > ARCHIVE (the frame library), MOUNTED.
 //
 //   Run directly:  npx tsx src/next/hubs/session/sheets/__tests__/archiveDom.test.tsx

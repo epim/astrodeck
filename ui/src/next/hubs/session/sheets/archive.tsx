@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // archive.tsx - THE FULL FRAME LIBRARY, at tablet and desktop.
 //
 // The Session hub's Gallery is a shelf of sessions; this is the thing under it:

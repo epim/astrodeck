@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Expose the next sweep point while the current one is still being measured.
 
 THE IDLE HALF OF EVERY SWEEP. A point costs `move -> expose -> measure`, and on

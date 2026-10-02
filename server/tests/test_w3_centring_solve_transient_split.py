@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """`_group_hop_checks` reads the split centring-transient key, falling back
 to the union (#576's second part, WP-21 of the 2026-09-30 open-issue
 backlog; D-03's own text: "WP-22 in this same wave splits goto_and_center's

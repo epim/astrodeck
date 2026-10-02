@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w1TonightWaitsForOpen.test.tsx - TONIGHT resolves and draws only the flow
 // its own route asked for, not whatever the canvas still has open (#553).
 //

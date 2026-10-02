@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A forced whole-rig connect validates its body before it touches anything
 (#257; spec 6.15 "Operator STOP"; mosaic slice S2 task T17).
 

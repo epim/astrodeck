@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionSheets.test.tsx - the SESSION hub's sheet registry, and the file whose
 // existence would silently empty it.
 //

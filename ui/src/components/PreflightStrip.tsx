@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PreflightStrip.tsx — compact pre-run readiness strip (onboarding spec §2a).
 // A `dense` Checklist rendered inline above the Run button, always visible when a
 // plan has frames. Inline-first: warnings are listed in plain language; the modal

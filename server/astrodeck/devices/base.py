@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Device abstraction layer.
 
 Every backend (Alpaca, simulator, future INDI) implements these interfaces.

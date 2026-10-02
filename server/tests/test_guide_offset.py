@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The guide scope points somewhere else, and the offset has to survive a flip.
 
 The operator can see the misalignment by eye and asked for it measured and

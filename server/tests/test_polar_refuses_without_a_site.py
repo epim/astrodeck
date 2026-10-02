@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native polar alignment refuses at the 0,0 default, before any slew (#24).
 
 Polar alignment is the worst place in this tree for the default site, because

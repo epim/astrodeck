@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Strict Windows ACL support for AstroDeck's private state.
 
 The functions in this module intentionally use only :mod:`ctypes` and Win32

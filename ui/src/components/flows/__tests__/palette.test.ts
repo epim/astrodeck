@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // palette.test.ts — the palette must offer every node type exactly once.
 //
 // The defect this guards against is not cosmetic: a node type the palette omits

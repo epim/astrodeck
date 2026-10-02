@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The matrix counts what is on disk, not only what has been stacked.
 
 THE DEFECT. ``/api/calibration/health`` shipped with ``counts_masters_only:

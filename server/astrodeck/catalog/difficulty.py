@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Beginner difficulty rating for catalog targets (NOV-3).
 
 Derives an Easy / Moderate / Hard tag from a target's integrated magnitude and

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // horizon.tsx - the HORIZON EDITOR sheet (T-SKY-4, plan A.15). Shared between
 // the Sky and Settings hubs (ARCHITECTURE.md section 5: one component,
 // registered once).

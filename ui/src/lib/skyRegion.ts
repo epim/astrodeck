@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyRegion.ts — "what is catalogued in the patch of sky I am looking at",
 // fetched once per REGION rather than once per view.
 //

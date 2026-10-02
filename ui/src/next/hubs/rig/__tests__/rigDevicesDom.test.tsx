@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigDevicesDom.test.tsx - RIG · DEVICES, mounted (plan hub-rig.md A, T-RIG-1).
 //
 //   Run directly:  npx tsx src/next/hubs/rig/__tests__/rigDevicesDom.test.tsx

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No test reads the developer's real config (#341).
 
 test_flows_wizard_route.py's fixture isolated only the flow library, and

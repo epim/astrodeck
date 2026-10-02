@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """In-tree registry of camera adapters. Real backends register their FACTORY so
 the parametrized contract suite (test_camera_contract.py) and optional in-tree
 discovery can enumerate every brand. Out-of-tree brands use the framework's

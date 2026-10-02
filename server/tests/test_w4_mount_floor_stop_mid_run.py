@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#604 (backlog shape c; orchestrator ruling 2026-10-01): mid-run, a
 destination below the mount's own floor or horizon mask used to raise
 SafetyAbort through the slew gate and end the WHOLE night, whether or not

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Streamed artifact download + small sidecar-text fetch (httpx).
 
 The artifact is streamed to disk with a byte ceiling and progress callbacks so the

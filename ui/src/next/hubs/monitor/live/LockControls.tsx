@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LockControls.tsx - the screen lock and keep-awake, rehomed.
 //
 // Both lived in `NavMoreSheet`, which the new IA deletes. They belong on

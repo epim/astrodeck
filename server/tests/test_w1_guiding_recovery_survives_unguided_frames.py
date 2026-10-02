@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The #72 guiding-recovery bound must survive an unguided banked frame
 (#134; backlog ruling WP-01 (c), owner-approved 2026-09-30).
 

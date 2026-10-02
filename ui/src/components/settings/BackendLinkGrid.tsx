@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // BackendLinkGrid.tsx — the tri-state per-role connection readout (W1.6 boot-LED
 // grid). Reads `backend_links` (hub.backend_links): a retained RoleResult joined
 // with the role's LIVE `connected` state. Present on every status poll + hello,

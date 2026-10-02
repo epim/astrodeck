@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Stage 0.3.36 on the astrotown rig. Run ON the rig, detached (see
 # deploy_common.ps1 for the launch line), beside deploy_common.ps1.
 #

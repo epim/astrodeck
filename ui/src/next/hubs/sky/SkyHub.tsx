@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyHub.tsx - the app's home screen: point the phone at the sky, lock something
 // in the reticle, start a night (hub-sky plan A.1, C, E).
 //

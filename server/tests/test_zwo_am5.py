@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ZWO AM5N native serial driver: link double, telescope behavior, backend +
 framework integration. All coordinates fictional (site privacy)."""
 from __future__ import annotations

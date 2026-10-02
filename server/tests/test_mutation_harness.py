@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mutation harness must not be able to leave a mutant in the tree (#96).
 
 The incident: the restore copy failed with OSError 22 while a watcher still

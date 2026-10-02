@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Two bounds the runner applies, and the rule that neither may be silent.
 
 Both are small, and both are the shape that has bitten this project before: a

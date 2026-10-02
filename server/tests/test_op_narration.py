@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Long operations narrate themselves (2026-08-07).
 
 Three operations used to render as a stuck busy button for their whole

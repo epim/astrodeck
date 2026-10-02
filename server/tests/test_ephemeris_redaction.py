@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What a caller who cannot see site-derived data gets, and when they get it.
 
 TWO SEPARATE PROPERTIES, and the second is the one that is easy to lose:

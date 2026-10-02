@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Two recorded answers the run-mode readers are graded on (#189 S5, spec
 1.2, 2.6, 5.9, 5.10, 6.9; U-07).
 

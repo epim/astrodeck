@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RotatorPanel.tsx - the ROTATOR sheet's body, rebuilt in the design's own
 // vocabulary (wave R7, T-R7-8; replaces the mounted
 // `components/equipment/RotatorCard.tsx`, which is NOT edited and keeps serving

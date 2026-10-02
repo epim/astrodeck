@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SendToWizardSheet.tsx - Send to Flow Wizard: ONE stepped sheet for both UIs
 // (#196; spec 2026-09-23 flows mosaic, Revision 2 ruling 4, D13, section 8 S6).
 //

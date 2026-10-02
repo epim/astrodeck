@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planLibraryUnreadable.test.tsx - a plan file that no longer reads as a plan,
 // in the classic Plan panel's saved-plan list (#378). MOUNTED.
 //

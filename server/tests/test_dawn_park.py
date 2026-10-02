@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Dawn park — the net under a night that ended without a run (task #139).
 
 Every park in this codebase lives inside ``engine._wind_down``, so a session

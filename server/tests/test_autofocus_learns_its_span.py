@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A sweep measures how wide the next one needs to be.
 
 #219 closed leaving the span open: "narrowing it wants the focuser's critical

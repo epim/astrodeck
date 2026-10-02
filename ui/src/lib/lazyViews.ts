@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lazyViews.ts — route-level code splitting for the view modules, built for a
 // TELESCOPE IN A DARK FIELD, not for a Lighthouse score.
 //

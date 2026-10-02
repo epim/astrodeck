@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FovOverlay — pure SVG geometry for the Atlas sensor rectangle / mosaic grid
 // (design spec §6). NO survey image, NO HTML text: SkyCanvas owns the <img> and
 // the HTML label layer; this component only emits <svg> shapes into the parent's

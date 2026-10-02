@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The Weather tuning area (wave R7, T-R7-15). Two entry points, one for each
 // sheet that mounts a rebuilt panel:
 //

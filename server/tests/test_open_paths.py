@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """S4 (server half) -- which paths ``_path_is_open`` lets through the shared
 token gate, and, just as much, which it does not.
 

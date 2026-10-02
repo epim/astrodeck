@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigFocuserDom.test.tsx - the FOCUSER device sheet, MOUNTED (plan hub-rig.md
 // B.5, task T-RIG-4).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // providerSave.ts — the ONE write path for a capability-provider override
 // (#132). Thin on purpose: every decision it makes lives next door in the pure
 // `providerWrite.ts`, so the branch can be unit-tested without a window, a

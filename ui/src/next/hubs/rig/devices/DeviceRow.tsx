@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // DeviceRow.tsx - one row of the device list (plan hub-rig.md A.4 "Row chrome").
 //
 // Props only: the model comes from `roster.ts`, which is where the judgement

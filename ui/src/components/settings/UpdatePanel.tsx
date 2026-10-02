@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // UpdatePanel.tsx — Settings → Updates (self-update, Phase 3). Admin-only
 // (system.update); the SettingsView tab is gated, and every mutating call is
 // re-gated server-side. Shows the running version, a "Check now" control, the

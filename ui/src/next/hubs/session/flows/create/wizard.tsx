@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wizard.tsx - NEW FLOW, guided (wave R7 row A16; rebuild of
 // `components/flows/FlowWizard.tsx` in the design's vocabulary).
 //

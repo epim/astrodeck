@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AstroDeck icon set v2 — "instrument glyphs".
 // Inline SVG, currentColor, 24x24 viewBox, stroke 1.5, round caps/joins.
 // Filled 1.2px dots are reserved for stars (rig, atlas, gallery, align, focus).
