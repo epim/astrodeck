@@ -647,6 +647,33 @@ class GuideConfig(BaseModel):
     #: Reaches the same hold as ``relock_limit`` — re-centre and recalibrate —
     #: and would have fired 55 minutes before the operator noticed. 0 is off.
     dither_settle_fail_limit: int = Field(2, ge=0, le=20)
+    #: #560 (WP-58). The DITHER NOW button on the GUIDER sheet has carried
+    #: three optional settle overrides since UX-24 (posted straight to
+    #: ``POST /api/guide/dither`` as ``settle_pixels``/``settle_time_s``/
+    #: ``settle_timeout_s`` and never saved), so a SCHEDULED run's own
+    #: dithers -- the per-``dither_every`` cadence and any flow instruction
+    #: that fires the ``dither`` action -- always fell through to the
+    #: guider's own built-in rule: native 1.5 px held 10 s, PHD2 1.5 px held
+    #: 8 s. These three persist that choice for every run, in the same
+    #: ``{"pixels", "time", "timeout"}`` shape ``guide/native.py`` and
+    #: ``guide/phd2.py``'s ``dither()`` already accept.
+    #:
+    #: ``None`` means "the guider's own default", the same convention the
+    #: DITHER NOW boxes use for "left blank" -- a 0 here is a real choice
+    #: (the engine's fast-recenter pulses alone, no extra settle dwell), not
+    #: a discarded blank, so each is Optional rather than defaulted to a
+    #: number.
+    #:
+    #: The native backend only honours TIMEOUT (``guide/native.py::dither``,
+    #: UX-24 docstring): the Rust engine owns its own settle pixels/time
+    #: criteria and does not export them to this wheel, so
+    #: ``dither_settle_pixels``/``dither_settle_time_s`` currently reach only
+    #: the PHD2 bridge, which honours all three. Threading them into the
+    #: native engine itself is `engine.rs`'s own named future task, not a
+    #: Python-side change.
+    dither_settle_pixels: float | None = Field(None, ge=0, le=100)
+    dither_settle_time_s: float | None = Field(None, ge=0, le=120)
+    dither_settle_timeout_s: float | None = Field(None, ge=1, le=600)
 
 
 # ------------------------------------------------- frame settings, by PURPOSE
