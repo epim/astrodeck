@@ -3,8 +3,8 @@ name: astrodeck-relay-edge
 services:
   relay:
     build:
-      context: ../..
-      dockerfile: relay/Dockerfile
+      context: ../../relay
+      dockerfile: Dockerfile
     user: "10001:10001"
     environment:
       RELAY_BIND_HOST: 0.0.0.0

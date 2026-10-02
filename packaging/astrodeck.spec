@@ -22,10 +22,19 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
-SERVER = Path(SPECPATH).resolve().parent / "server"
+ROOT = Path(SPECPATH).resolve().parent
+SERVER = ROOT / "server"
+sys.path.insert(0, str(ROOT / "packaging"))
+from distribution_policy import load_policy, selected_files, check_package_data
+from metadata_payloads import distributable_metadata, filter_installer_urls
+policy = load_policy(ROOT)
+check_package_data(ROOT, policy)
 
+native_metadata = copy_metadata("astrodeck-native")
+server_metadata = copy_metadata("astrodeck")
 datas = []
-datas += copy_metadata("astrodeck")          # entry points -> native backends
+datas += distributable_metadata(native_metadata)   # native version, real notices, source archive
+datas += distributable_metadata(server_metadata)   # entry points -> native backends
 datas += collect_data_files("astropy")
 datas += collect_data_files("astropy_healpix")
 
@@ -38,19 +47,18 @@ if not (webui / "index.html").is_file():
         "that serves no interface.")
 datas.append((str(webui), "astrodeck/webui"))
 
-# Vendored SDK libraries: Windows DLLs plus the per-platform Linux .so and
-# macOS .dylib trees. Copied wholesale, so the binary carries the libraries for
-# the platform it was built on (and harmlessly, the others).
-vendor = SERVER / "astrodeck" / "vendor"
-if vendor.is_dir():
-    datas.append((str(vendor), "astrodeck/vendor"))
-
-# Bundled survey pack, when the tree has one (it is large and optional).
-pack = SERVER / "astrodeck" / "catalog" / "_bundled_pack"
-if pack.is_dir():
-    datas.append((str(pack), "astrodeck/catalog/_bundled_pack"))
+# Select individual payload files through the shared owner policy. A wholesale
+# directory copy would bypass both fetch-only SDK choices and the DSS2 refusal.
+for source, relative in selected_files(SERVER / "astrodeck", "frozen", policy):
+    if relative.startswith(("vendor/", "catalog/_bundled_pack/")):
+        datas.append((str(source), "astrodeck/" + str(Path(relative).parent).replace("\\", "/")))
+for name in ("LICENSE", "THIRD-PARTY-NOTICES.md"):
+    datas.append((str(ROOT / name), "astrodeck-notices"))
+datas.append((str(ROOT / "packaging/distribution-policy.json"), "astrodeck-notices"))
 
 hiddenimports = [
+    "astrodeck_native",
+    "native_probe",
     # Registered by entry point, so nothing imports them statically.
     "astrodeck.devices.backends.zwo_am5",
     "astrodeck.devices.backends.zwo_usb",
@@ -73,7 +81,7 @@ hiddenimports = [
 
 a = Analysis(
     [str(Path(SPECPATH).resolve() / "entry.py")],
-    pathex=[str(SERVER)],
+    pathex=[str(SERVER), str(ROOT / "packaging")],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -86,6 +94,9 @@ a = Analysis(
               "PyQt5", "PyQt6", "PySide2", "PySide6"],
     noarchive=False,
 )
+# Automatic importlib.metadata hooks can add whole metadata directories.
+# Apply the same narrow omission to the final data TOC after those hooks run.
+a.datas = filter_installer_urls(a.datas, native_metadata + server_metadata)
 pyz = PYZ(a.pure)
 
 exe = EXE(
