@@ -7934,6 +7934,19 @@ class SequenceEngine:
                             f"is not centred; slewing without rotating, so the "
                             f"frame keeps whatever angle the camera is at",
                             "sequence")
+                    # THE GROUP ANGLE CHECK NEEDS A RESULT TO READ (#160 a).
+                    # `hop_centring` stays None on this branch otherwise, and
+                    # `_group_hop_checks` below only runs `hop_centring is not
+                    # None` -- so a rotating mosaic panel set `center=False`
+                    # was never deferred for the angle it never reached: it
+                    # shot blind, every visit, forever. Flagged exactly as a
+                    # connected rotator that tried and failed would be
+                    # (`rotation_skipped`): the remedy is the same, a
+                    # centred hop (or the panel being set aside), and
+                    # `_rotator_evidence`/`_group_angle_check` already read
+                    # this key to refuse crediting a stale rotator reading as
+                    # proof the camera is at the mosaic's angle.
+                    hop_centring = {"rotation_skipped": True}
                 await _bounded(tel.slew(target.ra_hours, target.dec_deg),
                                SLEW_TIMEOUT_S, f"slew to {target.name}")
                 try:
