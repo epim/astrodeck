@@ -120,7 +120,8 @@ def test_the_rigs_own_flow_still_reports_the_nine_it_still_draws(compiled):
 def test_the_slew_row_left_with_the_slew_stage(compiled):
     """The tenth row is gone because its stage is (S3, spec 1.7), not because
     it was hushed: the quick flow draws no SLEW + CENTER, and so nothing about
-    one. Held here so the nine above are known to be all there is.
+    one. Held here so the nine above are known to be all there is, plus the
+    one ``"schedule"`` row below.
 
     RED under mutant "SLEW left in the lane" (wizard.py's lane appends
     ``"slew"`` before ``"autofocus"`` again), observed verbatim:
@@ -130,11 +131,25 @@ def test_the_slew_row_left_with_the_slew_stage(compiled):
 
     The golden and ``test_s3w_switched_the_count_and_moved_nothing_else``
     stay green under it, as they must: the plan does not move.
+
+    RE-PINNED FOR BACKLOG WP-55 (D-08, owner-approved 2026-09-30, #559/#582):
+    this file's own title is about WARNINGS, and the row WP-55 added is a
+    NOTE, not one (see ``to_plan.to_sequence_plan``'s own comment on why it is
+    "note" and not "warn" -- the orchestrator's ruling on the compile half of
+    D-08). The quick wizard's lane always opens with a DUSK WINDOW
+    (``wizard.py``'s ``lane_types = ["dusk"]``), and ``to_sequence_plan`` now
+    appends one unconditional ``"schedule"`` note to every dusk/dawn-scheduled
+    plan -- compile is pure and has no site to check, so this fires whether or
+    not a site is actually saved. ``THE_NINE`` was never meant to count that
+    row (it predates D-08 entirely), so this is the one place the golden
+    count grows by exactly one: the real nine node rows plus the new
+    schedule row.
     """
     rec, _plan, rows = compiled
     assert "slew" not in [n.type for n in rec.graph.nodes]
     assert "nodes.slew" not in rows, rows["nodes.slew"]
-    assert sorted(rows) == sorted(THE_NINE), sorted(rows)
+    assert sorted(rows) == sorted(THE_NINE + ["schedule"]), sorted(rows)
+    assert rows["schedule"]["level"] == "note", rows["schedule"]
 
 
 def test_a_clean_flow_prints_no_losses_at_all(compiled):
