@@ -8805,10 +8805,29 @@ class Hub:
         rot = self.devices.get("rotator")
         if rot and rot.connected:
             try:
+                # R-4 (#145, #626, #671): the nudge buttons (RotatorCard.tsx,
+                # RotatorPanel.tsx) compute their target as this value +-1 and
+                # post it straight to POST /api/rotator/move, so it has to be
+                # read in that SAME frame -- the one that route resolves
+                # through `_rotator_sync_anchor` / `_effective_rotator_sign` --
+                # or a +1 nudge under a measured -1 sign lands a mechanical
+                # degree away from the displayed angle instead of a sky one.
+                # `rot.get_position()`'s plain formula bakes in sign +1,
+                # anchored at whatever mechanical angle happens to be current,
+                # which is only right at the exact point the rotator was last
+                # calibrated at. Same anchor/sign pair as the frame-metadata
+                # block above and the manual-move route itself.
+                mech_now = _rotation.mod360(
+                    float(await rot.get_mechanical_position()))
+                anchor_mech, anchor_offset = self._rotator_sync_anchor(
+                    rot, mech_now)
+                sky_deg = _rotation.mechanical_to_sky(
+                    mech_now, anchor_mech, anchor_offset,
+                    self._effective_rotator_sign())
                 out["rotator"] = {
                     "name": rot.name,
-                    "sky_deg": round(await rot.get_position(), 2),
-                    "mech_deg": round(await rot.get_mechanical_position(), 2),
+                    "sky_deg": round(sky_deg, 2),
+                    "mech_deg": round(mech_now, 2),
                     "moving": await rot.is_moving(),
                     "synced": rot.synced,
                     "can_reverse": rot.can_reverse,
