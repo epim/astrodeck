@@ -39,6 +39,19 @@ forecast:
   are both held to.
 * LOG THE OUTCOME, NEVER THE URL. Same rule as ``weather.py``: an exception
   type, never a query string.
+* A FAILURE BACKS OFF, IT NEVER RETRIES ON THE TICK (#635). CelesTrak's usage
+  policy (celestrak.org/usage-policy.php) tells automated clients to stop
+  after a non-200 response and involve a human rather than keep asking. A
+  failed fetch deliberately leaves ``fetched_ts`` where it was (the bullet
+  above), which means ``is_due`` stays true on its own -- so without a second
+  mechanism, ``_tick`` would hit a down CelesTrak every ``CHECK_INTERVAL_S``
+  forever, exactly what the policy asks us not to do. ``EphemerisStore`` holds
+  a separate ``_backoff_until`` per kind: the automatic tick honours it, an
+  explicit operator refresh (``refresh``/``start_refresh``) does not, and it
+  is cleared ONLY by a fetch that actually wrote a fresh envelope -- never by
+  an event the failure itself produced, which is how the relay client's own
+  reconnect backoff went permanently to its ceiling once (see
+  ``remote/relay_client.py``).
 
 WHAT THE FILES LOOK LIKE. One envelope each::
 
@@ -106,9 +119,30 @@ _TIMEOUT_S = 15.0
 #: at the next restart.
 CHECK_INTERVAL_S = 60.0
 
+#: #635: after a fetch that is anything other than a clean success, the
+#: AUTOMATIC poller stops trying this kind for at least this long -- CelesTrak
+#: ask for a human, not a client that keeps asking every ``CHECK_INTERVAL_S``.
+#: Doubles on every further consecutive failure (never reset by the failure
+#: itself, only by a fetch that actually writes a fresh envelope) up to the
+#: cap below. An explicit operator refresh is not held to this at all.
+BACKOFF_FLOOR_S = 6 * 3600.0
+#: Twenty-four hours: the ceiling a long outage's backoff climbs to and stays
+#: at, so a box left alone for a week still checks once a day rather than
+#: never again.
+BACKOFF_CAP_S = 24 * 3600.0
+
 SATELLITES = "satellites"
 COMETS = "comets"
 WHICH = (SATELLITES, COMETS)
+
+
+def _backoff_s(failures: int) -> float:
+    """The automatic-fetch cooldown after ``failures`` CONSECUTIVE non-success
+    outcomes for one kind (``failures`` is 1 on the first of a run): the floor,
+    doubling each time, never past the cap. Never shrinks on its own -- only
+    ``EphemerisStore._fetch_one`` resetting the counter on a clean success
+    makes the next failure start back at the floor."""
+    return min(BACKOFF_CAP_S, BACKOFF_FLOOR_S * (2 ** (failures - 1)))
 
 
 class ElementsUnavailable(RuntimeError):
@@ -412,10 +446,45 @@ def is_due(which: str, now: float | None = None) -> bool:
 # from the explicit refresh route. Each one PARSES before it returns, so a 200
 # carrying an error page is a failure here rather than an empty cache later.
 
+class _UpstreamStatus(RuntimeError):
+    """A response that was not 200. Carries ONLY the status code.
+
+    ``httpx.HTTPStatusError`` (what ``raise_for_status`` normally raises) puts
+    the full request URL in its own message, and that must never reach a log
+    line -- the module docstring's LOG THE OUTCOME rule. This is what a caller
+    actually wants to say happened: "CelesTrak responded 503", not a class
+    name and not a query string."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(f"status {status_code}")
+
+
+def _outcome_label(e: BaseException, host: str) -> str:
+    """A log-safe, URL-free description of a failed request: ``host``'s own
+    status code when it sent a response (``_UpstreamStatus``), or the
+    exception's type name when it did not -- a timeout or a dropped
+    connection never gets far enough to have one."""
+    if isinstance(e, _UpstreamStatus):
+        return f"{host} responded {e.status_code}"
+    return type(e).__name__
+
+
 async def _get(client, url: str) -> str:
     r = await client.get(url, headers={"User-Agent": _USER_AGENT},
                          timeout=_TIMEOUT_S)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except Exception as e:
+        # Duck-typed rather than an `isinstance(e, httpx.HTTPStatusError)`:
+        # this module otherwise never imports httpx at module scope (the
+        # `_Boom` invariant -- see the module docstring), and every response
+        # stand-in the test suite uses already carries `.response.status_code`
+        # the same way httpx's real exception does.
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status is None:
+            raise
+        raise _UpstreamStatus(int(status)) from None
     return r.text
 
 
@@ -490,9 +559,9 @@ def satellite_rows_from_tle(text: str) -> list[dict]:
     return out
 
 
-async def fetch_satellites(client) -> tuple[str, list[dict], bool]:
-    """``(source, rows, group_ok)`` for the satellite cache. Raises on a total
-    failure.
+async def fetch_satellites(client) -> tuple[str, list[dict], bool, str | None]:
+    """``(source, rows, group_ok, group_failure)`` for the satellite cache.
+    Raises on a total failure.
 
     The group fetch and the three pinned ids are separate requests and separate
     failures. A group fetch that fails does not cost us the ISS; three pinned
@@ -504,10 +573,16 @@ async def fetch_satellites(client) -> tuple[str, list[dict], bool]:
     rows, and three good rows written over a good 200-row cache is a rig that
     can no longer find 197 satellites -- with a fresh timestamp on the file, so
     nothing about it even looks wrong. The caller merges instead of overwriting
-    when this is False (``merge_satellite_rows``)."""
+    when this is False (``merge_satellite_rows``).
+
+    ``group_failure`` NAMES WHY THE GROUP LEG FAILED (CelesTrak's own status
+    code when it sent one, else the exception's type name; None when the group
+    succeeded), log-safe and URL-free. It exists so the caller's #635 backoff
+    log can say what actually happened instead of the bare word "partial"."""
     rows: list[dict] = []
     source_parts: list[str] = []
     group_ok = False
+    group_failure: str | None = None
     try:
         text = await _get(client, SATELLITE_URL)
         try:
@@ -519,7 +594,8 @@ async def fetch_satellites(client) -> tuple[str, list[dict], bool]:
         source_parts.append("celestrak-visual")
         group_ok = True
     except Exception as e:                       # noqa: BLE001 - outcome only
-        log.warning("satellite group fetch failed: %s", type(e).__name__)
+        group_failure = _outcome_label(e, "CelesTrak")
+        log.warning("satellite group fetch failed: %s", group_failure)
     rows = rows[:MAX_SATELLITES]
 
     have = {r["norad_id"] for r in rows}
@@ -538,10 +614,11 @@ async def fetch_satellites(client) -> tuple[str, list[dict], bool]:
             have.update(r["norad_id"] for r in one)
             source_parts.append(f"celestrak-{catnr}")
         except Exception as e:                   # noqa: BLE001 - outcome only
-            log.warning("satellite %s fetch failed: %s", catnr, type(e).__name__)
+            log.warning("satellite %s fetch failed: %s", catnr,
+                        _outcome_label(e, "CelesTrak"))
     if not rows:
         raise ElementsUnavailable("no satellite elements could be fetched")
-    return "+".join(source_parts) or "celestrak", rows, group_ok
+    return "+".join(source_parts) or "celestrak", rows, group_ok, group_failure
 
 
 async def fetch_comets(client) -> tuple[str, list[dict]]:
@@ -570,6 +647,12 @@ class EphemerisStore:
         self._fetching: set[str] = set()
         self._jobs: set[asyncio.Task] = set()
         self._last: dict[str, str] = {}
+        #: #635: consecutive non-success outcomes per kind, and the unix time
+        #: before which the AUTOMATIC tick will not try that kind again. Both
+        #: are cleared together, only by a fetch that writes a fresh envelope
+        #: -- see ``_fetch_one``.
+        self._backoff_failures: dict[str, int] = {}
+        self._backoff_until: dict[str, float] = {}
 
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> None:
@@ -597,10 +680,18 @@ class EphemerisStore:
                 log.warning("ephemeris tick failed: %s", type(e).__name__)
 
     async def _tick(self) -> None:
+        now = time.time()
         for which in WHICH:
             if which in self._fetching:
                 continue
-            if not is_due(which):
+            if not is_due(which, now):
+                continue
+            until = self._backoff_until.get(which)
+            if until is not None and now < until:
+                # #635: CelesTrak's policy is stop-and-wait, not retry on this
+                # tick's fixed cadence. Only the AUTOMATIC poller reads this --
+                # an operator's explicit refresh calls ``refresh``/
+                # ``start_refresh`` directly and is never gated here.
                 continue
             await self.refresh(which)
 
@@ -649,13 +740,24 @@ class EphemerisStore:
     async def _fetch_one(self, which: str) -> None:
         """One fetch-and-write. NEVER raises: a failure leaves the cache exactly
         as it was and records the outcome, because the poller must survive a
-        network that is down for a week."""
+        network that is down for a week.
+
+        #635: EVERY OUTCOME OTHER THAN A CLEAN "ok" ARMS THE BACKOFF. A
+        "partial" satellite outcome means the group leg itself got a non-200
+        or a dropped connection -- the three pinned ids merely kept it from
+        being total -- and CelesTrak's policy does not carve out an exception
+        for "some of it worked". The backoff is cleared only in the "ok"
+        branch below, so it is EARNED by a write, never by anything a failure
+        produces on its own (that is how the relay client's reconnect backoff
+        went permanently to its ceiling once -- see the module docstring)."""
         import httpx
 
+        host = "CelesTrak" if which == SATELLITES else "the Minor Planet Center"
+        detail: str | None = None        # what the backoff log below will say
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
                 if which == SATELLITES:
-                    source, rows, group_ok = await fetch_satellites(client)
+                    source, rows, group_ok, detail = await fetch_satellites(client)
                 else:
                     source, rows = await fetch_comets(client)
                     group_ok = True     # one file, one request, no half-state
@@ -676,9 +778,22 @@ class EphemerisStore:
             # here and the write can partially update the file. So a failure
             # falls out here having touched nothing: the old envelope is intact,
             # byte for byte, and its fetched_ts has not moved.
-            self._last[which] = type(e).__name__
-            log.warning("ephemeris %s refresh failed: %s", which,
-                        type(e).__name__)
+            self._last[which] = _outcome_label(e, host)
+            detail = self._last[which]
+
+        if self._last[which] == "ok":
+            self._backoff_failures.pop(which, None)
+            self._backoff_until.pop(which, None)
+            return
+
+        failures = self._backoff_failures.get(which, 0) + 1
+        self._backoff_failures[which] = failures
+        delay_s = _backoff_s(failures)
+        self._backoff_until[which] = time.time() + delay_s
+        log.warning(
+            "ephemeris %s stopped: %s; no automatic fetch for %.1fh (an "
+            "operator refresh from Sky settings is not held to this)",
+            which, detail or self._last[which], delay_s / 3600.0)
 
     # -- status --------------------------------------------------------------
     def snapshot(self, now: float | None = None) -> dict:
@@ -687,6 +802,10 @@ class EphemerisStore:
             "comets": cache_state(COMETS, now),
             "fetching": sorted(self._fetching),
             "last_outcome": dict(self._last),
+            #: #635: which -> the unix time before which the AUTOMATIC poller
+            #: will not retry that kind, absent when there is no backoff in
+            #: effect. An explicit operator refresh ignores this entirely.
+            "backoff_until": dict(self._backoff_until),
         }
 
 
