@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Picking the GOES satellite from the site's longitude (stage 6b).
 
 The bug this module closes is not an arithmetic one. ``cloudmap.platform``

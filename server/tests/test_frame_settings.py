@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Frame settings by PURPOSE — one home per (camera, purpose), not per screen.
 
 THE NIGHT THIS CLOSES (2026-08-08): the operator set FILT=R on the Align

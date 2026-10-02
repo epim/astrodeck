@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tilt.ts — pure client helpers for the sensor-tilt / corner-vs-center
 // optical-aberration inspector (PRO-13). No render here; see
 // components/preview/TiltOverlay.tsx for the SVG heatmap that consumes these.

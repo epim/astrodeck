@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sky/sheets/index.ts - the SKY hub's sheet registry (ARCHITECTURE.md section 5).
 //
 // Seven names, four owners, ONE module each. `sites` and `horizon` are shared

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // slewController.ts — framework-agnostic manual-slew controller (touch spec §4.2).
 //
 // THE REVISED HEADLINE MODEL (post-critique R1): there is NO time-based

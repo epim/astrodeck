@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RECONSTRUCTED (lane 1A owns this file) - restored to spec after an isolation
 // type-check overwrote the original. 1A's canonical version takes precedence at
 // merge. See reliability spec §7.3.

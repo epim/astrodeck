@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the Bahtinov live-overlay geometry (polish grab-bag (a)).
 //
 // Same tiny inline-assert harness as reportChart.test.ts / photometry.test.ts —

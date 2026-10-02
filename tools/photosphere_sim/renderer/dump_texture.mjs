@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Write the JavaScript background texture out as raw bytes, for Python to
  * compare with sim.truth.background_texture.

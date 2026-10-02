@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NINA bridge backend, exercised against the mock NINA server.
 
 The mock is driven by the same SimRig as the device tests, so autofocus,

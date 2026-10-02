@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanTargets.tsx - the target list, its search, its ordering and its mosaics.
 //
 // The rebuild of `views/SequenceView.tsx:1010-1400` (the Targets panel).

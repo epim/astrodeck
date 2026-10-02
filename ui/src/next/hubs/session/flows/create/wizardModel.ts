@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wizardModel.ts - the guided NEW FLOW sheet's constants and its blank graph.
 //
 // THE GENERATOR LIVES ON THE SERVER, AND STAYS THERE.

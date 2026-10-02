@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The recovery ladder vouches for the focuser only after a sweep that found
 focus (#457; spec 5.6 step 6, "As built, the recovery ladder's sweep
 counts").

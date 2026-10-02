@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // openFlow.ts - the two doors in and out of the Flows editor, in one
 // component-free module so every surface uses the same one.
 //

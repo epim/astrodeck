@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NativeCamera: the vendor-blind engine that turns a CameraAdapter into a
 Camera. Owns the exposure lifecycle (generalized from alpaca.py:expose), buffer
 assembly, cooling, ROI/binning, and cancellation — written once for every brand.
@@ -8,7 +10,15 @@ CONFIG/write hooks (``start_exposure``, ``set_read_mode``, ``set_cooler``,
 per-device lock via ``_run``. ``abort`` and the exposure-poll reads
 (``image_ready``, ``read_frame``) run WITHOUT the lock on purpose, so a cancel
 can interrupt a blocked ``read_frame``; the Player One SDK binding is internally
-thread-safe for its per-call argtype selection (player_one_sdk.PlayerOneSdk)."""
+thread-safe for its per-call argtype selection (player_one_sdk.PlayerOneSdk).
+
+``connected`` (issue #16): ``_run`` and ``_poll`` are also where it is
+MEASURED rather than remembered — a required hook (or a pre-checked one) that
+fails means the device refused something it already told us it could do, and
+that measures ``connected`` false right there, the same way ``zwo_am5.py``
+derives its mount's ``connected`` from the serial link's ``is_open`` instead
+of a flag that only ever remembers a past ``connect()``. See ``_run``'s own
+docstring for the one caller (``set_read_mode``) that opts out."""
 from __future__ import annotations
 
 import asyncio
@@ -44,10 +54,51 @@ class NativeCamera(Camera):
         #: evict the whole 200-line run log in minutes. See _layout_roi.
         self._roi_complaints: set = set()
 
-    async def _run(self, fn, *a):
-        """Run a sync adapter hook off the event loop, serialized per device."""
+    async def _run(self, fn, *a, measures_connected: bool = True):
+        """Run a sync adapter hook off the event loop, serialized per device.
+
+        ``measures_connected`` (default True, issue #16): ``connected`` used to
+        be a pure memory of "connect() once succeeded" — set True at connect,
+        set False at disconnect, untouched by anything that happened between —
+        so a camera that dropped mid-run still read 'connected' to the
+        reconnect gate (``sequence/engine.py._reconnect_gate``) forever. Every
+        caller of ``_run`` except ``set_read_mode`` already checked the
+        capability it is about to use (``has_cooler``/``has_dew_heater``/
+        ``has_fan_control``) before reaching here, or is invoking one of
+        ``CameraAdapter``'s required hooks (``start_exposure``) that every
+        brand must implement for real — so an exception reaching this point is
+        the device refusing something it already told us it could do: real
+        evidence it dropped, not a brand that hasn't implemented a feature.
+        That evidence is what now measures ``connected`` false, same shape as
+        ``zwo_am5.py``'s ``connected`` deriving from ``link.is_open`` rather
+        than remembering a historical ``connect()``.
+
+        ``set_read_mode`` is the one caller with no capability gate (no
+        ``has_read_modes`` exists to check) — a brand with no selectable read
+        modes raises here BY DESIGN (``CameraAdapter.set_read_mode``'s
+        default), which says nothing about whether the device is present, so
+        it opts out with ``measures_connected=False``."""
         async with self._lock:
+            try:
+                return await asyncio.to_thread(fn, *a)
+            except Exception:
+                if measures_connected:
+                    self.connected = False
+                raise
+
+    async def _poll(self, fn, *a):
+        """Run a REQUIRED, unlocked adapter hook off the event loop —
+        ``image_ready``/``read_frame``/``abort`` (see ``_run``'s docstring for
+        why these three stay outside the lock: a cancel must be able to
+        interrupt a blocked ``read_frame``). All three are ``CameraAdapter``
+        abstractmethods every brand must implement for real, so a failure here
+        is never 'unsupported' — it measures ``connected`` false exactly as
+        ``_run``'s default does (issue #16)."""
+        try:
             return await asyncio.to_thread(fn, *a)
+        except Exception:
+            self.connected = False
+            raise
 
     async def connect(self) -> None:
         # Idempotent: the orchestrator connects via get_device AND the hub's
@@ -98,22 +149,30 @@ class NativeCamera(Camera):
             roi = ROI(x=0, y=0, w=caps.sensor_width, h=caps.sensor_height,
                       bin=binning)
         if read_mode is not None:
-            await self._run(lambda: self._a.set_read_mode(read_mode))
+            # No support to be lost: a brand without read modes failing here
+            # is unsupported, not dropped. See _run's docstring.
+            await self._run(lambda: self._a.set_read_mode(read_mode),
+                            measures_connected=False)
         await self._run(lambda: self._a.start_exposure(
             seconds=seconds, gain=gain, offset=offset, roi=roi, light=light))
         self._exposing = True
         deadline = time.monotonic() + seconds + self.EXPOSURE_POLL_MARGIN_S
         try:
-            while not await asyncio.to_thread(self._a.image_ready):
+            while not await self._poll(self._a.image_ready):
                 if time.monotonic() > deadline:
+                    # The camera never answered "ready" inside its own
+                    # exposure time plus the download/USB margin — the same
+                    # kind of evidence a failed hook call is, just raised
+                    # locally instead of thrown by the adapter. See issue #16.
+                    self.connected = False
                     raise DeviceError("exposure imageready timeout")
                 await asyncio.sleep(min(0.5, max(0.05, seconds / 20)))
         except asyncio.CancelledError:
-            await asyncio.to_thread(self._a.abort)
+            await self._poll(self._a.abort)
             raise
         finally:
             self._exposing = False
-        raw = await asyncio.to_thread(self._a.read_frame)
+        raw = await self._poll(self._a.read_frame)
         applied = await asyncio.to_thread(self._a.applied_roi)
         roi = self._layout_roi(roi, applied, self._roi_complaints)
         data = self._shape(raw, roi, caps)
@@ -239,7 +298,7 @@ class NativeCamera(Camera):
         return arr.reshape((h, w)).astype(np.uint16)
 
     async def abort_exposure(self) -> None:
-        await asyncio.to_thread(self._a.abort)
+        await self._poll(self._a.abort)
 
     async def set_cooler(self, on: bool, target_c: float | None = None) -> None:
         if not self._caps or not self._caps.has_cooler:

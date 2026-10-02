@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Plate-solver selection + the SimSolver false-solve guard (review 5d / P0-1).
 
 The SimSolver is only ever a fallback when ASTAP isn't installed. On a real rig

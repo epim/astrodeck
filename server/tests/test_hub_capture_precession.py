@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regression tests for J2000<->JNOW precession, autofocus-restore, capture mutual-exclusion fixes.
 
 Each test pins one confirmed bug so it can never silently regress:

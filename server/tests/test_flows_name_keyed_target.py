@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A TARGET with a name and no typed coordinates is keyed on the catalogue's
 CANONICAL IDENTITY for its name (#189 A5, #229, spec 3.3).
 

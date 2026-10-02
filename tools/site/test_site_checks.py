@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regression cases for the site gates.
 
 Named mutants are exercised by tools/site/mutate_checks.py from byte backups.

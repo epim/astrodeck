@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The parts of the stack that no manifest describes.
 
 Everything a package manager knows about is read out of the package manager by
@@ -459,8 +461,7 @@ SERVICES: list[dict] = [
         "url": 'https://celestrak.org/usage-policy.php',
         "hosts": ["celestrak.org"],
         "notes": (
-            'CelesTrak supplies the visual GP group and selected catalogue IDs as JSON. AstroDeck keeps an operator-local cache; no active orbital-element cache occurs in the inspected local source tarball. The normal scheduled refresh is 12 hours and requests identify the AstroDeck client.\n\nCurrent CelesTrak policy says to stop automated queries after a non-200 response and report the problem for human investigation. It now describes GP updates every two hours. The nominal AstroDeck interval is conservative, but the failure and manual-refresh paths do not prove this policy is honored. Service conditions are distinct from the origins of the underlying observations; a public-domain label does not dispose of those conditions.'),
-        'flag': "Current error paths can keep retrying a due cache every minute and continue individual queries after group failure. This conflicts with CelesTrak's stop-on-error instructions and needs a separate behavior fix.",
+            'CelesTrak supplies the visual GP group and selected catalogue IDs as JSON. AstroDeck keeps an operator-local cache; no active orbital-element cache occurs in the inspected local source tarball. The normal scheduled refresh is 12 hours and requests identify the AstroDeck client.\n\nCelesTrak policy says to stop automated queries after a non-200 response and report the problem for human investigation. It now describes GP updates every two hours. After a non-200 response (or a network failure), AstroDeck\'s automatic CelesTrak fetch stops for at least six hours, doubling on each further consecutive failure to a twenty-four-hour ceiling, and resumes its normal schedule only once a fetch succeeds, while an operator-initiated refresh from Sky settings is not held to that backoff (#635). Service conditions are distinct from the origins of the underlying observations; a public-domain label does not dispose of those conditions.'),
         'requires': [],
     },
     {

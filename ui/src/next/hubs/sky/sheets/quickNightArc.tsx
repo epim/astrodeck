@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickNightArc.tsx - HOW LONG, drawn on the target's own path to dawn
 // (hub-sky plan D.3, design README section 3, screenshot 05).
 //

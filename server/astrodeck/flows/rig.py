@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Rig facts: what the route knows about the live rig, as one frozen value.
 
 ``compile_plan`` and the doctor are pure: no devices, no config, no clock. A

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Characterisation tests for the guards that are supposed to protect an
 UNATTENDED night (audit, 2026-08-06).
 

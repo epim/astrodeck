@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stepDefaults.ts — the plan editor's step-authoring RULES, as pure functions.
 //
 // Extracted from SequenceView so the three defaults the four-persona UX review

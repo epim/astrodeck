@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A galaxy is not the frame's source size, and the stars say how big is too big.
 
 THE DEFECT, diagnosed on the real 6252x4176 subs of 2026-09-05/06 and fixed

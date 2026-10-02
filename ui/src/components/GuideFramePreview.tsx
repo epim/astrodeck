@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // GuideFramePreview.tsx — a self-contained, collapsible "Guide cam" preview used
 // on BOTH the Capture and Polar screens. Lets the user glance at the guide-camera
 // view to confirm the guide star / field isn't obstructed (clouds, dew, a stray

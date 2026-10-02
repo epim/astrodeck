@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Mount Home — the reference position you START a session from.
 
 Home is NOT Park, and the difference is the whole reason the control exists: a

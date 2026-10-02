@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planGroups.ts — pure helpers for mosaic-group plan editing (Plan panel
 // "apply to all panels" — see docs/superpowers/specs/2026-07-14-mosaic-apply-
 // steps-design.md). No server calls, no store access: takes/returns plain

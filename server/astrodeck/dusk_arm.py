@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Opt-in preparation of an idle rig at dusk (#28).
 
 This service connects and cools; it never commands mount motion or starts a

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // video/index.ts - the VIDEO mode area root (D-RIG-1).
 //
 // This module is the ONE import site for `video.css`, the same discipline

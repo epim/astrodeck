@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowProgressChip.test.tsx - the TARGET card's progress chip ("212/315 subs")
 // on BOTH canvases, and the slice reads that feed it (#189 S1 item 9, spec 1.2;
 // task S1-18).

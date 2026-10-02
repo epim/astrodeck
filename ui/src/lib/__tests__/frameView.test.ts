@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Run with:  npx tsx src/lib/__tests__/frameView.test.ts
 import { neededDeviceWidth, viewWidthFor, shouldRefetch, VIEW_WIDTH_STEPS } from "../frameView";
 

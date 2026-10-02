@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // schedule.test.ts — collapsed-chip summary for the per-target autorun schedule.
 // Run with:  npx tsx src/lib/__tests__/schedule.test.ts   (from ui/)
 

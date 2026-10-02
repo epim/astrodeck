@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A rotation that stopped short of converging is not a failed visit when the
 hop's measured angle is already within the group's angle tolerance (#526, #534;
 release 0.3.37 hotfix).

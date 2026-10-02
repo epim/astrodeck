@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // hubs/index.ts - the hub registry: what each tab is called, what it draws in
 // the tab bar and the rail, what its sub-nav chips say, and which component
 // renders its body.

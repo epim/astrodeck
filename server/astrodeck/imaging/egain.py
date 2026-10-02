@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Conversion-gain (e-/ADU) measurement by the mean-variance / photon-transfer
 method — the auto-learn path for cameras whose driver reports no EGAIN.
 

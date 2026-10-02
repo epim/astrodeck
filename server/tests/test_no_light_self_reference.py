@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The no-light check references itself when the library has nothing (#262).
 
 ``astrodeck.solve.light`` judges a failed solve's frame against the median
@@ -36,6 +38,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+from _deadline import wait_until
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from astrodeck.calibration.matcher import MasterRecord, MatchTolerance
 from astrodeck.devices.base import CameraFrame, DeviceError
@@ -735,10 +738,10 @@ async def test_a_cancel_during_the_self_shot_propagates(tmp_path, bus_lines):
     cam = _Sensor(bias=251.0, fault="hangs")
     hub = _Hub(_elsewhere(tmp_path), cam)
     task = asyncio.ensure_future(_fail(hub, _frame(_dark(251.0))))
-    for _ in range(200):
-        if cam.shots:
-            break
-        await asyncio.sleep(0.01)
+    # A wall-clock deadline (#610): 200 x sleep(0.01) is 2 s on Linux but
+    # 3.1 s on Windows (sleep rounds up to the 15.6 ms timer there), so a
+    # round count gives the two platforms different real patience.
+    await wait_until(lambda: bool(cam.shots), timeout_s=5.0, interval_s=0.01)
     assert cam.shots, "premise: the self-shot started"
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

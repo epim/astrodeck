@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The live cloud-occlusion service (stage 6a) -- the poller and what it holds.
 
 Stages 1 to 5 are a library nothing calls. This module makes them live: one

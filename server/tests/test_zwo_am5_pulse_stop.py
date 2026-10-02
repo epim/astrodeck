@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-02: a pulse's STOP command cannot be delayed by an event-loop stall.
 
 WHAT WENT WRONG (rig, 2026-09-06). ``ZwoAm5Telescope.pulse_guide`` emulates a
@@ -27,6 +29,7 @@ import pytest
 from astrodeck.devices.serial_link import LinkError
 import astrodeck.devices.backends.zwo_am5 as am5
 
+from _deadline import wait_until
 from test_zwo_am5 import FakeLink, FIXED_UTC, _connect_script  # rootdir-relative
 
 
@@ -64,11 +67,15 @@ async def _wait_sent(fl, cmd: str) -> None:
     """Wait until ``cmd`` has left the driver (the pulse is now in flight).
 
     Real time, not ``sleep(0)``: the pulse runs on a worker thread, so a tight
-    yield loop can finish before that thread has been scheduled at all."""
-    for _ in range(400):
-        if cmd in fl.sent:
-            return
-        await asyncio.sleep(0.005)
+    yield loop can finish before that thread has been scheduled at all.
+
+    A wall-clock deadline (#610): 400 x sleep(0.005) is 2 s on Linux but
+    6.2 s on Windows (sleep rounds up to the 15.6 ms timer there), so a
+    round count gives the two platforms different real patience."""
+    ok = await wait_until(lambda: cmd in fl.sent, timeout_s=8.0,
+                          interval_s=0.005)
+    if ok:
+        return
     raise AssertionError(f"{cmd!r} never went out (sent={fl.sent})")
 
 
@@ -298,11 +305,12 @@ async def test_stop_leaves_through_the_real_serial_link_while_stalled(fixed_env)
     tel._connected = True
 
     task = asyncio.create_task(tel.pulse_guide("north", 200))
-    for _ in range(200):
-        if any(w == b":Mn#" for w, _ in ser.writes):
-            break
-        await asyncio.sleep(0.01)
-    else:
+    # A wall-clock deadline (#610): 200 x sleep(0.01) is 2 s on Linux but
+    # 3.1 s on Windows (sleep rounds up to the 15.6 ms timer there), so a
+    # round count gives the two platforms different real patience.
+    ok = await wait_until(lambda: any(w == b":Mn#" for w, _ in ser.writes),
+                          timeout_s=5.0, interval_s=0.01)
+    if not ok:
         raise AssertionError(f"Mn never went out: {ser.writes}")
 
     time.sleep(STALL_S)

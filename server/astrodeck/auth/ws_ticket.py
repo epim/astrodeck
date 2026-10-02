@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Single-use, short-TTL tickets for authenticating a WebSocket (OPEN-011).
 
 A browser cannot set an Authorization header on a WebSocket, so a shared token

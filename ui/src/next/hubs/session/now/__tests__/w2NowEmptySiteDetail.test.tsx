@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2NowEmptySiteDetail.test.tsx - WP-17 (b) on #/next Session/Now's empty
 // state (#258).
 //

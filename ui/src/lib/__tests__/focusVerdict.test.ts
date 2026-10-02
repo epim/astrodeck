@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focusVerdict.test.ts — the Focus panel must not endorse a donut field, must
 // not send someone to coarse focus from one autofocus step away, and must not
 // call a frame full of sharp stars "far out of focus".

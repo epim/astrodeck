@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sheets.tsx - the two Flows sheets this task registers (parity rows A15 and
 // A14's sheet half).
 //

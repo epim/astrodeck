@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/sessionStack.ts: the run's colour composite (server imaging/sessionstack.py).
 //
 // The monitor page has always shown the LAST SUB: one frame, one filter, and

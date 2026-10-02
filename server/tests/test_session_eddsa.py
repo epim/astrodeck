@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Asymmetric EdDSA sessions + the JWS algorithm-confusion defense (W3).
 
 Covers the security-critical seam in ``astrodeck.auth.session`` / ``.eddsa``:

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // QuickActions.tsx - COOL/WARM and PARK/UNPARK, the two things worth doing
 // from the device LIST rather than from inside a sheet (plan A.8).
 //

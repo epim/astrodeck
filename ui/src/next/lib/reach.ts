@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reach.ts - "reach score" ranking for the Sky hub's Suggested targets / reach
 // strip (README "1. Sky (home)" + "Formulas to lift" -> Reach score:
 // "altitude now, minutes above the floor to dawn, cloud % at the target, moon

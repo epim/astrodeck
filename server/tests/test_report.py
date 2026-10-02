@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Session-report tests (Batch 4b §1.7 / report.py).
 
 Covers: record -> finalize -> load round-trip; per-filter headline as the leading

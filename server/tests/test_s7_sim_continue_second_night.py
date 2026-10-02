@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTINUE on a second simulated night, end to end (#189 S7 item 1, the
 third of its four simulator scenarios; spec 5.9, 6.7; S7 orchestrator
 rulings 1 and 7, #473 and #430).

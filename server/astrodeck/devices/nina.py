@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NINA (Nighttime Imaging 'N' Astronomy) backend — the transition bridge.
 
 Talks to a running NINA instance via the **Advanced API** plugin

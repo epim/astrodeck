@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // domeScope.ts - the telescope glyph at the middle of the dome, pointing where
 // the mount points (issue #67).
 //

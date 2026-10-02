@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Persistence durability: atomic write keeps a recoverable ``.bak`` *copy*, the
 replace-retry count is exact (and raises the last error), and ``ConfigStore``
 restores from ``.bak`` and fails closed rather than replacing corrupt security

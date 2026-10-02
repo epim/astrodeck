@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Guide-camera backend: vendor-neutral guide_frame() + the /api/guide/frame.png
 endpoint + the capture-during-polar 409 guard (Lane D).
 

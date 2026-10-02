@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useRef } from "react";
 import { useFrameSettings, useStatus, useStore } from "../store";
 import { polarTier } from "./polar";

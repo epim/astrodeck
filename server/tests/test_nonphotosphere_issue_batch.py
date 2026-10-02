@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regression coverage for #21, #26, #29, #30, #33, #34, #43 and #60.
 
 All hardware is synthetic; no live rig endpoints or site configuration.

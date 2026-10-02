@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // addDevice.tsx - the ADD A DEVICE sheet (plan hub-rig.md A.5 + A.7).
 //
 // The design's device rows assume assignment has already happened; GAP-2 says

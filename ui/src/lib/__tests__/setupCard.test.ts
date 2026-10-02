@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // setupCard.test.ts — pure tests for lib/setupCard.ts (I4 guided "Secure this
 // server" card, 2026-07-17 decisions wave). No browser/store deps — the
 // module under test is pure, so no stubs needed. Inline-assert harness via

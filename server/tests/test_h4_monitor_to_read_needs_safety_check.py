@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A monitor assigned is not enough for a wait to read the weather: the
 plan's own safety check must be on too (the S7 review's E item on
 `_monitor_to_read`, #452; spec 5.8, 6.17).
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import pytest
 
+import astrodeck.sequence.engine as engine_mod
 from astrodeck.config import SafetyConfig
 from astrodeck.devices.base import SafetyReading
 
@@ -70,6 +73,11 @@ async def test_a_plan_with_its_safety_check_off_reads_no_monitor_in_a_wait(
     t0 = run.t0
     plan = _plan(_constraint_waiter("Bravo", t0))
     assert plan.safety_check is False, "premise: the plan's check is off"
+    # The lane wait asks no gate here (that is the premise under test), so
+    # nothing extends its deadline (#299, WP-40's `_Clock.monotonic` fix):
+    # widened past LANE_FREE_S so the wait is graded on whether it asks,
+    # not on racing its own timeout.
+    monkeypatch.setattr(engine_mod, "_CAMERA_LANE_WAIT_S", LANE_FREE_S + 60.0)
     _lane_held_until(run, monkeypatch, t0 + LANE_FREE_S)
     reads: list[float] = []
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RoleBadge.tsx — the unobtrusive "current role" indicator (W2.5).
 //
 // Sits in the header next to the backend chip. It is INTENTIONALLY quiet:

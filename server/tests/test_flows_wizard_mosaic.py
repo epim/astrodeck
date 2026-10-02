@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The wizard's Mosaic kind: the generator behind "Send to Flow Wizard"
 (#196, the generator half; #189 U-09; spec 1.4, 1.7, 1.8, S3 item 4).
 

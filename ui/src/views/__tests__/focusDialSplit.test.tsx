@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focusDialSplit.test.tsx — the Focus screen has ONE control per camera
 // setting, and the two radial controls over its preview do not overlap.
 //

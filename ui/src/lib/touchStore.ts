@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // touchStore.ts — typed accessors for the touch store slice (touch spec §2.2).
 //
 // Why this shim exists: the touch slice (`locked`, `lockAvailable`, `monitorAwake`,

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LiveScreen.tsx - MONITOR - LIVE. The 3 a.m. glance.
 //
 // Read order is the order the questions get asked: is the night OK (health
@@ -450,7 +452,13 @@ export function LiveScreen(): JSX.Element {
         </div>
       )}
 
-      {mount && mount.alt < 0 && (
+      {/* #633, the #24 is_default class (WP-75 guarded VitalsBand.tsx's TO
+          DAWN tile the same way): `mount.alt` is measured against the
+          PLACEHOLDER (0,0) site when none is saved, so with no site saved
+          this is a fact about the Gulf of Guinea, not this rig, and the
+          banner must not judge the horizon from it. `siteIsDefault` is
+          already read above for `weatherMonitored`. */}
+      {mount && !siteIsDefault && mount.alt < 0 && (
         <Pill tone="warn" data-testid="monitor-below-horizon">
           the mount is pointing below the horizon
         </Pill>

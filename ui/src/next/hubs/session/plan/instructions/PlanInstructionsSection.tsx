@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanInstructionsSection.tsx - the conditional sequencer, rebuilt.
 //
 // Optional when-this-then-that rules layered on the fixed plan. An empty list is

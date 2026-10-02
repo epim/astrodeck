@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-1 master stacking — pure numpy reduction (no I/O). Operates on in-memory
 frame lists; the bounded-memory streaming wrapper lives in library.py."""
 from __future__ import annotations

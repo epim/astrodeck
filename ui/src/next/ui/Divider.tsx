@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX } from "react";
 
 /** A 1 px hairline in `--line`. Presentational: no separator role, because

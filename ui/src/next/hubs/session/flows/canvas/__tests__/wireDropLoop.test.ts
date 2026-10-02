@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wireDropLoop.test.ts - the #/next canvas refuses a flow loop at the drop, in
 // the server's words (#149; spec 2026-09-23 section 1.4 item 5, S0 item 2).
 //   Run:  node --import ./test-css-stub.mjs --import tsx src/next/hubs/session/flows/canvas/__tests__/wireDropLoop.test.ts   (from ui/)

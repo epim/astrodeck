@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { bandForAltitude, cameraElevation, cameraPose, projectSweepColumns, robustSpread, traceSkyCoverage, AZ_DEPARTURE, EXPOSURE_TOLERANCE, RE_EXPOSURE_BAND_PCT, RE_EXPOSURE_PCT, OVERHEAD_BAND, type SkyColumn, type SweepFrame } from "../photosphere";

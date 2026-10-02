@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CoverCalibrator/Dome/ObservingConditions COM<->Alpaca handlers (COM-T5).
 
 Host-side only: AstroDeck has no ABC/client for these yet (they belong to the

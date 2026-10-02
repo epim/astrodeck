@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsSaveRace.test.ts - an edit made while a SAVE is in flight is never
 // marked saved (#215).
 //

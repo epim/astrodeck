@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """TPPA engine robustness against inputs that are not a clean three-point arc.
 
 Everything here goes through the public PyO3 boundary —

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ResumeArm says "targets share a name" ONCE per resume (#156, spec 3.5;
 mosaic S1 carry-over 5a).
 

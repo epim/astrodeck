@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Where a vendor SDK library lives, on whatever platform we are running.
 
 Every native camera/accessory binding used to hard-code a Windows DLL basename

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanAutomationSection.tsx - the twenty settings that decide what the rig does
 // at 3am with nobody watching, rebuilt in the design's vocabulary.
 //

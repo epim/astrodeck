@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // canvasDom.test.tsx - SESSION / FLOWS, the rebuilt canvas surface, its toolbar
 // and the phone stage sheet, MOUNTED (wave R7, T-R7-1).
 //

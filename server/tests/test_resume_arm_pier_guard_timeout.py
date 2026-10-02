@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-resume's limits step tells a mount that did not answer from a limit
 (#327; spec 5.1 item 1, 6.9; the P0-2 dead-link policy).
 

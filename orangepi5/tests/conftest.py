@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Host-safe fixtures for the standalone Orange Pi provisioner."""
 
 from __future__ import annotations

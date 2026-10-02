@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RunControls.tsx - FILES, SAVE STACK, PAUSE/RESUME, STOP.
 //
 // FOUR THINGS HERE ARE SCAR TISSUE AND MUST NOT BE SIMPLIFIED AWAY.

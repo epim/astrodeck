@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w1FlowOpenFailureRepeat.test.ts - the second of two identical failed opens
 // must still carry the server's own reason, not the "server answered with a
 // different flow" mismatch sentence (#555).

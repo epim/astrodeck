@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* boundary.css - the handful of rules the review-fix wave needed, kept OUT of
    `shell.css` so two authors are never editing one cascade at once.
    Imported once, by `NextApp.tsx`, after `shell.css` - same contract as the

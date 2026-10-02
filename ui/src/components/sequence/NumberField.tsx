@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NumberField.tsx — the plan editor's numeric text field.
 //
 // WHY THIS EXISTS (UX review 2026-07-28, rank 1 of the whole round).

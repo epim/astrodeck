@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Fold the subs a run ALREADY captured into the session stack.
 
 Switching the session stack on used to mean "stack the next frame and every one

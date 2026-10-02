@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A campaign is not one night, and the machinery for that already exists.
 
 `to_plan` used to report a campaign flow at DANGER weight, saying the run

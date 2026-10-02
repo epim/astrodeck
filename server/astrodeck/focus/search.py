@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Deciding where to move next when you cannot see stars.
 
 Pure decision logic, no I/O — so the part that is easy to get wrong in a way

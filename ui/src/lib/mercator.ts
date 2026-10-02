@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/mercator.ts — pure Web-Mercator slippy-tile math + spherical geometry
 // for the radar map's scope overlay (weather spec §11). No React, no DOM:
 // npx-tsx testable (lib/site.ts precedent).

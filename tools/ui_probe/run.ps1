@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 <#
 .SYNOPSIS
   One-command run of the AstroDeck UI probe: build the UI, start an isolated

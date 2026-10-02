@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Relay secrets load from inline env vars (Fly secrets-as-env), not just files."""
 import base64
 import json

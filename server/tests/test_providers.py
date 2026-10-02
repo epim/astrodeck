@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-capability provider resolution matrix (native parity, spec §3).
 
 Pins the routing policy that autofocus + TPPA consume:

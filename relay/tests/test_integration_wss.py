@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The ONE on-wire WSS integration test (W3.5 / §T7 integration gate).
 
 A NAMED fixture: a LOCAL relay (real Starlette/uvicorn) + a LOCAL fake "home"

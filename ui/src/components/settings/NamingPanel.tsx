@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NamingPanel.tsx — Settings → capture file-naming template (PRO-11).
 // Live client preview (advisory; server render is authoritative). config.site_optics.
 import { useEffect, useState, type JSX } from "react";
@@ -8,11 +10,8 @@ import { useCan } from "../../lib/caps";
 import { Panel, Field } from "../ui";
 import { Icon } from "../icons";
 import {
-  DEFAULT_TEMPLATE, NAMING_TOKENS, renderTemplatePreview,
+  DEFAULT_TEMPLATE, NAMING_TOKENS, PREVIEW_SAMPLE, renderTemplatePreview,
 } from "../../lib/naming";
-
-const SAMPLE = { TARGET: "M42", FRAMETYPE: "Light", FILTER: "Ha", DATE: "2026-07-23",
-  TIME: "213045", DATETIME: "2026-07-23_213045", NIGHT: "2026-07-23", FRAMENR: "0001" };
 
 export default function NamingPanel(): JSX.Element {
   const config = useConfig();
@@ -51,7 +50,7 @@ export default function NamingPanel(): JSX.Element {
         </Field>
         <div className="text-[12px] text-dim">Preview</div>
         <div className="mono text-[12px] text-ink break-all">
-          captures/{renderTemplatePreview(draft || DEFAULT_TEMPLATE, SAMPLE)}
+          captures/{renderTemplatePreview(draft || DEFAULT_TEMPLATE, PREVIEW_SAMPLE)}
         </div>
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Tokens">
           {NAMING_TOKENS.map((t) => (

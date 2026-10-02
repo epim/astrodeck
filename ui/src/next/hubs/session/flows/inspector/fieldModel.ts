@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // fieldModel.ts - the pure decisions the rebuilt inspector makes about ONE
 // parameter row: which control it gets, what number it is holding, and what
 // colour a wheel slot paints in.

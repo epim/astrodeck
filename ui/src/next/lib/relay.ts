@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // relay.ts - is this tab reaching the rig over the RELAY, or on the LAN?
 //
 // WHY A MODULE OF ITS OWN. Two places need the answer and they must never give

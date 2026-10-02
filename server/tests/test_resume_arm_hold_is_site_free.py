@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-resume's start-floor hold tells a viewer nothing about the site (#233;
 mosaic slice H3 task T1; H3 orchestrator ruling 1 (spec, Still waiting on the
 owner, item 10); spec 6.9; the owner's role-visibility ruling of 2026-09-22:

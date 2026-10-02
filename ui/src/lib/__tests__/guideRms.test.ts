@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guideRms.test.ts — pure tests for lib/guideRms.ts's tagGuideRms +
 // selectGuideWindows, the same-night per-provider RMS ingest/read-back logic
 // GuideView's provider-switch panel depends on (P5-T1 fix round C1/I2 — the

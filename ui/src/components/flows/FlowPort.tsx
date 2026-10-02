@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowPort.tsx — one port row on a node card: hit box, dot, label.
 //
 // This is the element the wire system resolves against. §D.4: a drop is decided

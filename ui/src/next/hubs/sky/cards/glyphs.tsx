@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // glyphs.tsx - the five drawings the Sky hub needs that `next/icons.tsx` cannot
 // carry.
 //

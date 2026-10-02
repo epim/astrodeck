@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // glyphs.tsx - the five row icons the Settings hub needs that `next/icons.tsx`
 // does not carry.
 //

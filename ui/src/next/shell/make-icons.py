@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Write ui/public/icon-192.png and icon-512.png with nothing but the standard
 library: no Pillow, no canvas, no build step.
 

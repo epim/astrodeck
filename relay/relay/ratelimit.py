@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-IP token-bucket rate limiting (basic DoS dampening at the relay edge).
 
 The relay is the public front door, so it applies a coarse per-client-IP token

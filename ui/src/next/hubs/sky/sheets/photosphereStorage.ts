@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Photographs stay in this browser. Only the separately saved horizon points
 // are sent to the telescope. One image per site bounds repeated-scan storage.
 async function database(): Promise<IDBDatabase> {

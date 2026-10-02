@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // campaignFetch.test.tsx - ONE `GET /api/flows/{id}/tonight` for five readers,
 // and a campaign that is actually re-read during the night.
 //

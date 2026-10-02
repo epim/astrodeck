@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A resumed ``grid`` mosaic goes on where the ledger left it, in the engine as
 in ResumeArm (#189 S2, #317; spec 5.2, 5.9; `sequence/panel_order.py`).
 

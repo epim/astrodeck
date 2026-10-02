@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Capability taxonomy + role->capabilities map (W2.1).
 
 This is the SINGLE SOURCE OF TRUTH for the capability strings and the role

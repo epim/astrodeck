@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowFieldRow.tsx — one editable parameter of one node. §C.8.
 //
 // THREE controls exist. `select` is a closed option list and `text` is a free

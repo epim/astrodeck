@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T6: ComHostManager spawns/adopts the sidecar, health-checks it, and
 never orphans (loop-kills a stale pidfile process before spawning). The spawn
 is injected with an in-process serve() (no real subprocess)."""

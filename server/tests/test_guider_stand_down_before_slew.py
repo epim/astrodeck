@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The guider is stood down before a hop's slew (#148, spec 5.6 step 2).
 
 `_setup_target` slewed to the next target with the previous target's guide

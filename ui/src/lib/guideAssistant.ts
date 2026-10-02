@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guideAssistant.ts — PURE logic + copy for the Guiding Assistant panel
 // (design 2026-07-24 §4.4). The panel in GuideView.tsx is a thin render shell;
 // all measurement→copy, the apply-payload builder, and the selective-apply

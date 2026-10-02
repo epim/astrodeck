@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A backfill that cannot answer in time is a backfill nobody can run remotely.
 
 2026-08-19: `POST /api/gallery/thumbs/backfill` returned 504 through the relay.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A session answers the observing nights it has run, not its runs (#430,
 S7 orchestrator ruling 7; spec 5.9, Revision 2 ruling 7).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/gallery.ts — typed wrappers for the /api/gallery/* routes this UI calls
 // (gallery design 2026-08-03). Cookie auth is automatic; a non-2xx throws
 // ApiError.

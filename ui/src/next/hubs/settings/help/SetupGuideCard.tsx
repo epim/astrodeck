@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SetupGuideCard.tsx - the setup guide's permanent door (wave R7, T-R7-16).
 //
 // FIRST on the sheet, and that ordering is the whole reason the card exists.

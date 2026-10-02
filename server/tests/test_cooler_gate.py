@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The cooler gate: capture may not start OR RESUME on a sensor that is not cold.
 
 The 2026-08-14 handoff makes this the head of HOLD / RESUME's checklist, ahead of

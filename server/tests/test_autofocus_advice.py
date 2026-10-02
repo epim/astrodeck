@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#114 — the run's OWN account of a failure has to reach the user.
 
 2026-07-31 is why this file exists. Autofocus failed and the panel said "Not

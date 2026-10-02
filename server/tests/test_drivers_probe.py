@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Driver probe engine (equipment-drivers spec §3.2): offers mapping, the 15s
 TTL cache + invalidate(), disabled short-circuit, and the never-raise contract
 (a probe bug becomes a status.error row, not a 500)."""

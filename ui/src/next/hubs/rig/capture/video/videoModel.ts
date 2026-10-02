@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // videoModel.ts - every number and sentence VIDEO mode needs, as pure functions
 // over the wire's own shapes (D-RIG-1).
 //

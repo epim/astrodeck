@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic group driver on the clocked simulator (#189 S2, task T10; spec
 5.1 to 5.4, 5.6 steps 4 and 7, 5.9, 5.10, 6.4, 6.7, the S2 tests list).
 

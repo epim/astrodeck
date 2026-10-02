@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useConfig, useProviders, type ResolvedProviderKind } from "../store";
 import { entryOf, isProfileOverride, overrideProfileName, providerKey } from "../lib/effective";
 import { provVariant } from "../lib/providerChip";

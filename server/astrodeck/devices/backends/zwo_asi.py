@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ZWO ASI camera backend — a native camera over the ASICamera2 SDK.
 
 One hostless backend/session; fills the ``camera`` or ``guide_camera`` role with

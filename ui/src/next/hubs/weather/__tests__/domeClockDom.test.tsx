@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // domeClockDom.test.tsx - WEATHER > SKY keeps ticking, and so do the two marks
 // drawn on top of the dome.
 //

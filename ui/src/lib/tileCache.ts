@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tileCache.ts — pure loader bookkeeping for the tile engine (tile-engine
 // spec §4): fetch priority (distance from view center), the per-frame fetch
 // plan (visible tiles + ancestor fallbacks), an insertion-ordered LRU

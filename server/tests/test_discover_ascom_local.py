@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T1: GET /api/discover/ascom-local returns the registry-enumerated
 drivers (role-tagged offers). Enumeration is monkeypatched so the route is
 provable on any OS (no real registry). Repo convention: in-process via

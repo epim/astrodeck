@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 r"""Every set-aside promise the copy makes names the tests that keep it
 (#208; #189 S2; spec 3.4, 5.3 part 2, 6.7).
 

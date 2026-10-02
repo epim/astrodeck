@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 3: engine <-> session ledger integration (sessions spec §2/§4).
 
 Real sim hub (repo convention: NO FakeHub), CAPTURE_DIR monkeypatched, state

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A mutation harness that cannot leave a mutant in the tree (#96).
 
 Every "show the test red under a named mutation" step patches a source file,

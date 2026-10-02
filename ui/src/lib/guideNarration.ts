@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Plain-language guiding narration + words verdict for novices (NOV-7 design
 // doc, docs/superpowers/specs/2026-07-23-guiding-narration-design.md §1.5).
 //

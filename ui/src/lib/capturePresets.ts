@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // capturePresets.ts — NOV-4: one-tap beginner capture presets for the Capture view.
 // Pure data; CaptureView maps a chip row over CAPTURE_PRESETS and applies a preset
 // via the existing setExposure/setGain/setOffset/setBinning setters (the same path

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SettingsView.tsx — the Settings surface (mounts at VIEWS.settings, replacing the
 // PlaceholderView). A tabbed shell over the three W1.C/W1.6/W2.5 surfaces:
 //   Connect  → DriversPanel (rig connection now lives on the Equipment tab)

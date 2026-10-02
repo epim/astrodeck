@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.87 - the measured autofocus sweep span (#219 tail) + the pipelined
 # sweep. Modelled line for line on deploy_0286.ps1, including the traps it names.
 $ErrorActionPreference = "Stop"

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // files.tsx - the FILES sheet: what tonight (or a past session, or a hand shot)
 // actually produced, and how to get it off the rig.
 //

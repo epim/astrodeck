@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Flows API — library, folders, compile, tonight, calibration health, run.
 
 Three things here are worth more than the coverage:

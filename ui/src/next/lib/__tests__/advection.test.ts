@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for advection.ts. Sabotage check: removing the `Math.max(2, altDeg)`
 // floor clamp or the `Math.max(0.05, r2)` divide-by-zero guard turns "clamps a
 // low starting altitude" / "extreme wind still returns a finite positive alt"

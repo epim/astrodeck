@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Did any light reach the sensor? The question a failed plate solve never asked.
 
 THE DEFECT (#251). On the night of 2026-09-24/25 auto-resume retried its

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A requested ROI is not an applied ROI, and the adapters used to treat it as
 one.
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#166 item 1, the residual left after the T18/T8 fixes landed (backlog
 WP-11, owner-approved 2026-09-30): ``GET /api/sequence/state`` withholds
 ``group.panel``/``pass`` across a meridian wait, and ``live.meridian_eta_s``,

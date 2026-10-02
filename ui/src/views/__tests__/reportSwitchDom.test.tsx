@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reportSwitchDom.test.tsx — the session-report viewer while it is switching
 // nights, and while its index is unreachable.
 //

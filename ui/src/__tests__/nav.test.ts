@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nav.test.ts — the navigation rail's standing rules, enforced against the
 // SOURCE so they cannot drift from what ships.
 //

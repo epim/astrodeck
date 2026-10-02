@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cooling.ts — how a camera warm-down ramp reads on screen.
 //
 // Pure formatting for `status.camera.warm` (server: astrodeck/cooling.py +

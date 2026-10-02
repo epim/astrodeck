@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """On-demand HiPS tile route + pack growth (tile-engine spec §1).
 
 `GET /api/survey/tile/{slug}/{order}/{npix}.jpg` — the browser tile engine's

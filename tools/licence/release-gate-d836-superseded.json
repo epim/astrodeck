@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "source_commit": "d836738e9390dca1ea8d82536883ce1c5cd72ac8",
+  "source_anchor": "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b",
+  "artifacts": {
+    "source": {
+      "artifact": {
+        "name": "astrodeck-0.3.39.tar.gz",
+        "kind": "source-tar",
+        "platform": "source",
+        "sha256": "64fad3765773859691363ff9b866041a3b3ab88c349e3083cd05c00edb0eb535",
+        "bytes": 13702877
+      },
+      "members": 777,
+      "accounted": true,
+      "cleared": false,
+      "finding_counts": {
+        "ARTIFACT": 5,
+        "OWNER_PENDING": 3
+      },
+      "owner_components": [
+        "artwork",
+        "astrospheric",
+        "iau"
+      ]
+    },
+    "native": {
+      "artifact": {
+        "name": "astrodeck_native-0.1.0-cp311-abi3-win_amd64.whl",
+        "kind": "native-wheel",
+        "platform": "windows-x86_64",
+        "sha256": "3bf514969b339b9f96961456b8f96bf565421a147389e2af3b546600ed9c0953",
+        "bytes": 726022
+      },
+      "members": 12,
+      "accounted": true,
+      "cleared": true,
+      "finding_counts": {},
+      "owner_components": []
+    },
+    "frozen": {
+      "artifact": {
+        "name": "astrodeck.exe",
+        "kind": "frozen",
+        "platform": "windows-x86_64",
+        "sha256": "0696b2bfefc3705ce6b6a5b286c415cde5f649b3523c33d5762e3cdc8c55edd7",
+        "bytes": 65137018
+      },
+      "members": 3449,
+      "accounted": false,
+      "cleared": false,
+      "finding_counts": {
+        "ARTIFACT": 2,
+        "CREDIT_MISSING": 1,
+        "CREDIT_VERSION": 1,
+        "NATIVE_RIGHTS_OPEN": 129,
+        "NATIVE_UNREVIEWED": 1,
+        "OWNER_PENDING": 5,
+        "PROVENANCE": 496
+      },
+      "owner_components": [
+        "artwork",
+        "astrospheric",
+        "iau",
+        "playerone",
+        "wcslib"
+      ]
+    }
+  },
+  "frozen_proof": {
+    "retained_input_mismatches": 0,
+    "envelope_verified": true,
+    "method": "pyinstaller-6.22.3-windows-default-byte-reconstruction",
+    "direct_url_members": [
+      "astrodeck_native-0.1.0.dist-info/direct_url.json"
+    ]
+  },
+  "technical_blockers": [
+    {
+      "class": "runtime_source_provenance",
+      "findings": 452,
+      "detail": "Interpreter directory membership does not authenticate CPython inputs; no runtime per-file approval was auto-populated."
+    },
+    {
+      "class": "windows_system_provenance",
+      "findings": 44,
+      "detail": "OS/UCRT inputs match retained bytes but lack authenticated distribution provenance."
+    },
+    {
+      "class": "historical_native_rights",
+      "findings": 129,
+      "detail": "Previously observed native bytes are not platform/subcomponent redistribution clearance."
+    },
+    {
+      "class": "new_native_rights",
+      "findings": 1,
+      "paths": [
+        "psutil/_psutil_windows.pyd"
+      ],
+      "detail": "New native component requires platform/subcomponent review."
+    },
+    {
+      "class": "runtime_credit_scope",
+      "findings": 2,
+      "detail": "Unreviewed runtime inputs have no authenticated current component/version credit mapping."
+    },
+    {
+      "class": "private_installer_metadata",
+      "findings": 1,
+      "gate_counted": false,
+      "paths": [
+        "astrodeck_native-0.1.0.dist-info/direct_url.json"
+      ],
+      "detail": "Independent final member inspection found PEP 610 data reintroduced after explicit metadata filtering. Content was not printed. A coordinated packaging/gate correction is pending."
+    }
+  ],
+  "owner_blockers": [
+    {
+      "component": "artwork",
+      "decision": "issue:637"
+    },
+    {
+      "component": "astrospheric",
+      "decision": "issue:636"
+    },
+    {
+      "component": "iau",
+      "decision": "owner grant required"
+    },
+    {
+      "component": "playerone",
+      "decision": "issues:199,632"
+    },
+    {
+      "component": "wcslib",
+      "decision": "issue:638"
+    }
+  ],
+  "evidence_files": {
+    "source-gate-rebased.json": "b54b869d9960ea9b18863f502ce8cc20b93e35ebd87fec00d63b5226e259cb76",
+    "native-gate-rebased.json": "ed5c341d12233340fb55f1049e63bd6d001d3849d660774ccae5e5aa1bd806f2",
+    "frozen-gate-rebased.json": "3319c54f8fb9cb79b9af4d45b90a5c3102a28a9499a0a93319b3bf243de68a8b",
+    "frozen-provenance-rebased.json": "f2d1559ab66d64726ff9a29f6b10b477799e2923d8898c60e012178f55f2d7d2"
+  },
+  "limits": [
+    "Pre-rebase artifacts and their reports are superseded for this build.",
+    "Counts describe findings, not distinct files; native/provenance categories overlap.",
+    "These local results cover only source and Windows artifacts; Linux/macOS executables remain unbuilt and unapproved.",
+    "Current gate failure is preserved; no owner permission or platform rights were inferred.",
+    "Any future source or copyright-header edit requires explicit source-hash review refresh and rebuilt artifact evidence."
+  ],
+  "status": "superseded_pending_installer_metadata_fix_and_rebuild",
+  "private_report_archive": ".probe/release/evidence/d836-private-metadata"
+}

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.85 - armed banner, sky-stands-in-for-a-monitor, gallery trash count.
 # Modelled line for line on deploy_0274.ps1, including the traps it names.
 $ErrorActionPreference = "Stop"

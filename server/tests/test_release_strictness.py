@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A warning during an unattended build is not a control.
 
 0.2.18 shipped with no survey pack AND online fetch off (the correct

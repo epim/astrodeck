@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Reconciliation core tests.
 
 These drive the REAL :func:`diff` against REAL manifests. There is deliberately

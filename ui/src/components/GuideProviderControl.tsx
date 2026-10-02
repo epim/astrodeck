@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // GuideProviderControl.tsx — the ONE guide-provider control, rendered on two
 // screens (UX-02 + #132).
 //

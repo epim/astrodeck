@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // align.ts — where the instruments point relative to each other.
 import { api } from "../api";
 

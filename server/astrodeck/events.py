@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Async event bus.
 
 Everything that happens in AstroDeck (device status, preview frames, sequence

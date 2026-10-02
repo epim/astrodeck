@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """THE MOUNT QUITS BEFORE THE MERIDIAN, SO THE FLIP HAS TO GO FIRST.
 
 Four nights ended at the same place, and every previous attempt at the fix

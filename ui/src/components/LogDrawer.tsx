@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useStore } from "../store";
 import { Icon } from "./icons";
 import { fmtLogTime, severityWord } from "../lib/logFormat";

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wcsStamp.ts — the only non-render logic behind the per-frame-WCS Settings
 // panel (spec §4.3). Kept pure and out of the .tsx so it is testable without a
 // DOM: the panel itself is a thin shell.

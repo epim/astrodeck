@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.82 - the three UI defects the hands-on review found.
 # Modelled line for line on deploy_0274.ps1, including the traps it names.
 $ErrorActionPreference = "Stop"

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The relay HTTP/WS server shell (Starlette + websockets) -- production wiring.
 
 This is the ONLY module that touches real sockets; everything it depends on

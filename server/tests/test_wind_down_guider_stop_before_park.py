@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The wind-down stops the guider before it parks, reads the park back, and
 parks once more at once (#311; S3 orchestrator ruling 3, spec "Still waiting
 on the owner" item 24, which refines S2 orchestrator ruling 1, item 19).

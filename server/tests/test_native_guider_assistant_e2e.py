@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Guiding Assistant end-to-end on the sim rig + refusal/route paths
 (design 2026-07-24 §5 tests #4/#5).
 

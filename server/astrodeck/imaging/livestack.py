@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Live-stacking (EAA "Live View") accumulator.
 
 The hub owns one ``LiveStacker`` while Live View is armed and feeds it every raw

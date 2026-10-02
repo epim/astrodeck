@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Inspect a PyInstaller artifact without running it.
 
 The checked Windows baseline is evidence of contents, not an allowlist granting

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sequenceTemplates.ts — starter exposure recipes for first-timers (NOV-5). Pure
 // data + a pure template->ExposureStep[] mapping; SequenceView renders a thin
 // gallery over SEQUENCE_TEMPLATES and applies templateSteps() through

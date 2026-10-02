@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Engine automation/safety integration tests (Batch 4b §1.9 / engine.py).
 
 Exercises the lane wired into the engine:

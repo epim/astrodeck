@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Whole-branch review follow-up: NINA bridge honesty for UX-15 (guide RMS
 units) and UX-27 (camera bin ceiling).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native (Rust engine) autoguider.
 
 This is the ``astrodeck`` guide provider: it drives the same expose → measure →
@@ -647,11 +649,14 @@ class NativeGuider(Guider):
         self._reuse_pulse_pending = False
 
         # GN-03 re-lock accounting. ``_lock_xy`` is the last LOCKED guide-star
-        # position in guide-camera px (the engine exposes no lock position
-        # through ``process()`` or ``stats()`` — only ``secondaries`` — so the
-        # host re-finds it from the frame it already has, and only on the
-        # frames that matter: the session's first lock, each re-lock, and the
-        # first settled frame after a dither moved it).
+        # position in guide-camera px. WP-41: a rebuilt wheel publishes the
+        # engine's real lock through ``stats()["lock"]`` (``_note_lock`` reads
+        # it as ``engine_lock``), so this is now a CACHE of that value once one
+        # is known. An older wheel (or a test double) publishes no such key,
+        # so this falls back to the pre-WP-41 behaviour: re-found from the
+        # frame the host already has, only on the frames that matter -- the
+        # session's first lock, each re-lock, and the first settled frame
+        # after a dither moved it.
         # ``_relock_pending`` is raised by a ``star_lost`` and lowered by the
         # first frame that finds a star near the lock while the engine reports
         # a lock again; that transition IS the re-lock, and it is invisible to
@@ -668,10 +673,14 @@ class NativeGuider(Guider):
         # and no star lay within the search radius of ``_lock_xy``.
         self._relock_unconfirmed = 0
         # #219: how far a dither may have moved the engine's lock since
-        # ``_lock_xy`` was measured. The engine shifts its lock by every
-        # dither and publishes neither the lock nor the camera-frame shift, so
-        # the host knows only the magnitude; the re-lock radius widens by it
-        # until the first settled frame re-measures the lock.
+        # ``_lock_xy`` was measured. WP-41: once a wheel publishes the real
+        # lock this is no longer load-bearing (``_note_lock`` reads the exact
+        # post-dither value instead of estimating it), but it is cheap to keep
+        # as a harmless extra margin and it IS still load-bearing for a wheel
+        # that predates the field, which publishes neither the lock nor the
+        # camera-frame shift, leaving the magnitude the only thing the host
+        # can know; the re-lock radius widens by it until the first settled
+        # frame re-measures the lock.
         self._lock_moved_px = 0.0
         # TODO(remove in 0.3.36): the lock as the pre-#204 brightest-first rule
         # would have held it, kept only so each re-lock can log the distance
@@ -1825,13 +1834,15 @@ class NativeGuider(Guider):
         None when there is no wheel to ask or the find itself failed (which is
         no evidence about the sky either way).
 
-        The engine keeps the lock internally and publishes neither the lock nor
-        the primary star through ``process()`` (whose Actions carry only
-        pulses) or ``stats()`` (which carries ``secondaries`` -- the OTHER
-        stars, empty in single-star mode), so the host re-derives it from the
-        frame it has already paid for. Called only on the frames that need it
-        -- the session's first lock, each re-lock, and the first settled frame
-        after a dither -- never on the steady-state path."""
+        WP-41: a rebuilt wheel's ``stats()`` carries the engine's own lock
+        position (``_note_lock``'s ``engine_lock``), but never the CURRENTLY
+        FOUND primary star -- ``process()``'s Actions carry only pulses, and
+        ``stats()["secondaries"]`` is the OTHER tracked stars, empty in
+        single-star mode -- so the host still re-derives which star is near
+        the lock from the frame it has already paid for. Called only on the
+        frames that need it -- the session's first lock, each re-lock, and the
+        first settled frame after a dither -- never on the steady-state
+        path."""
         if _native is None or frame is None:
             return None
         try:
@@ -1853,6 +1864,15 @@ class NativeGuider(Guider):
         back after a loss would then read as no star near the lock at all.
         (The pre-#204 rule had the same hole in another shape: it measured that
         walk as re-lock displacement, 120 arcsec at 21.8 px on this rig; #219.)
+
+        WP-41: with a rebuilt wheel, ``_note_lock`` centres the search on the
+        engine's own exact ``stats()["lock"]`` instead of ``_lock_xy`` when
+        one is published, which needs no estimate of the dither's size at
+        all -- this widening only still MATTERS for a wheel that predates
+        that field (``_lock_xy`` is then the host's own last estimate, and
+        ``_lock_moved_px`` is the only record of how stale a dither may have
+        left it). The call stays unconditional; the extra margin is harmless
+        when the exact value is already known.
         """
         try:
             r = float(self.config.get("search_region",
@@ -1899,16 +1919,22 @@ class NativeGuider(Guider):
         frames in a row while the engine keeps guiding stop the guider -- the
         engine is guiding on a star that is not the lock star.
 
-        RESIDUAL, which the host cannot close. When the engine's full-frame
-        re-acquire (``engine.rs``: a stale loss drops ``search_origin`` and the
-        next frame runs ``select_primary`` over the whole frame) picks a
-        different star while the lock star has ALSO returned inside the
-        radius, the host finds the lock star, reads a near-zero re-lock, and
-        the engine then drives the other star onto the lock. The session's
-        first lock is the same kind of guess: it is the brightest-first pick,
-        and ``select_primary`` skips saturated stars, so on a bright field the
-        baseline can be a star the engine never locked. Both close only when
-        the engine publishes its lock in ``stats()``, the Rust half of #204."""
+        RUST HALF LANDED (WP-41): ``GuideStatsSnapshot`` now carries ``lock``,
+        the engine's own camera-frame lock position, through
+        ``astrodeck_native``'s ``stats()`` (needs a rebuilt native wheel to
+        reach a rig). ``engine_lock`` below reads it, and is ``None`` on an
+        older wheel, in every test double here that scripts a bare ``stats()``
+        dict with no ``"lock"`` key, and before a session's first star is
+        found. When present it REPLACES the host's own guesses at the two
+        points they used to be needed: the session's first lock no longer
+        takes the brightest-first ``stars[0]`` (wrong whenever
+        ``select_primary`` skips a saturated brightest star and locks
+        something else), and the re-lock radius is centred on the engine's
+        real, dither-exact position instead of the host's own last estimate
+        widened by an UNMEASURED dither magnitude (#219's ``_lock_moved_px``
+        fallback, kept below for a wheel that predates this field). Absent the
+        key entirely, every line below behaves exactly as released in
+        0.3.35."""
         kind = action.get("action")
         if kind in ("lock_lost", "cal_step"):
             return
@@ -1918,10 +1944,16 @@ class NativeGuider(Guider):
         # settle window is open, so a moved lock is re-measured only once the
         # star has been driven onto it.
         try:
-            if not self._engine.stats().get("guiding", False):
+            s = self._engine.stats()
+            if not s.get("guiding", False):
                 return
         except Exception:  # pragma: no cover - defensive
             return
+        # WP-41: the engine's own lock, when the wheel publishes one. See the
+        # docstring's "RUST HALF LANDED" paragraph.
+        engine_lock = s.get("lock")
+        if engine_lock is not None:
+            engine_lock = (float(engine_lock[0]), float(engine_lock[1]))
         if (self._lock_xy is not None and not self._relock_pending
                 and self._lock_moved_px <= 0.0):
             return                     # steady state: no star-find to pay for
@@ -1929,18 +1961,26 @@ class NativeGuider(Guider):
         if stars is None:
             return                     # no wheel, or a failed find: no evidence
         if self._lock_xy is None:
-            if not stars:
+            if engine_lock is None and not stars:
                 return                 # nothing locked yet; try the next frame
             # The session's first lock: a baseline, with nothing before it to
             # measure a re-lock against. A loss that came before it leaves no
             # displacement to judge, so the watch it armed is spent too.
-            self._lock_xy = stars[0]
-            self._lock_xy_brightest = stars[0]
+            # #204/WP-41: the real engine lock when published, else the
+            # pre-fix brightest-first guess (kept for a wheel that predates
+            # the field, or a test double that never sets it).
+            self._lock_xy = engine_lock if engine_lock is not None else stars[0]
+            if stars:
+                self._lock_xy_brightest = stars[0]
             self._relock_pending = False
             self._relock_unconfirmed = 0
             return
+        # #204/WP-41: search around the engine's own lock when it is known --
+        # exact, so a dither can never leave it stale -- else the host's own
+        # last estimate, widened for an unmeasured dither (#219).
+        origin = engine_lock if engine_lock is not None else self._lock_xy
         radius = self._relock_radius_px()
-        near = _nearest_within(stars, self._lock_xy, radius)
+        near = _nearest_within(stars, origin, radius)
         if not self._relock_pending:
             # The first settled frame after a dither: find where the lock is
             # now. Not a re-lock -- nothing was lost -- so nothing is counted.
@@ -1980,8 +2020,8 @@ class NativeGuider(Guider):
                     + (f"; {old}" if old else ""), "guide")
             if n >= RELOCK_UNCONFIRMED_FRAMES:
                 if stars:
-                    nearest = min(math.hypot(x - self._lock_xy[0],
-                                             y - self._lock_xy[1])
+                    nearest = min(math.hypot(x - origin[0],
+                                             y - origin[1])
                                   for x, y in stars)
                     seen = (f"the nearest of {len(stars)} star(s) was "
                             f"{nearest:.0f} px away")

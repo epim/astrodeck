@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The compactness gate must read a FIELD, not a brightness (GN-05 follow-up).
 
 WHY THIS FILE EXISTS. On 2026-09-07 the resumed NGC 604 run shot donuts 75

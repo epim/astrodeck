@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The supervisor and the server mirror the same contract constants -- assert they
 never drift (they live in two packages that cannot import each other)."""
 from astrodeck.update import protocol as SRV

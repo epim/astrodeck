@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the star-ellipse geometry helper (PRO-7 §3 Task 3).
 //
 // No vitest/jest is wired into this UI (build is `tsc -b && vite build`), so

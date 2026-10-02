@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionReview.test.ts — pure tests for lib/sessionReview.ts (review drawer
 // filtering / selection / local override). Inline-assert harness via `npx tsx`.
 import {

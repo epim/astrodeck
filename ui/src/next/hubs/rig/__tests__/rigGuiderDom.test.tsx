@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigGuiderDom.test.tsx - the GUIDER sheet, MOUNTED (plan hub-rig.md D.2,
 // T-RIG-5 row).
 //

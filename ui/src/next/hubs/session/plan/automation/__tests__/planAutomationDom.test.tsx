@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planAutomationDom.test.tsx - the plan editor's automation, instructions and
 // sessions sections, MOUNTED.
 //

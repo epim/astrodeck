@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /**
  * The photosphere simulator's renderer: CONTRACT.md's scene drawn with
  * Three.js inside headless Chromium, driven from sim/render.py.

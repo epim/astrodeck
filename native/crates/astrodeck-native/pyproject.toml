@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.5,<2.0"]
+requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -7,8 +7,18 @@ name = "astrodeck-native"
 version = "0.1.0"
 description = "Rust-native astronomy algorithm engine for AstroDeck (star detection, autofocus, TPPA polar alignment)"
 requires-python = ">=3.11"
-license = { text = "MPL-2.0" }
+license = "MPL-2.0"
+# packaging/build_native.py stages the actual texts and matching source here.
+# Bare maturin builds must prepare these files too; missing notices fail closed.
+license-files = ["licenses/*.txt", "licenses/*.md"]
+
+[project.urls]
+Repository = "https://github.com/epim/astrodeck"
+Source = "https://github.com/epim/astrodeck/tree/main/native"
 
 [tool.maturin]
 module-name = "astrodeck_native"
 features = ["pyo3/extension-module"]
+locked = true
+# Corresponding source is ordinary wheel data, not a PEP 639 license text.
+include = [{ path = "sources/native-source.tar.gz", format = "wheel" }]

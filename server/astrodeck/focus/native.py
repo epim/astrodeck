@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native (Rust engine) V-curve autofocus.
 
 This is the ``astrodeck`` autofocus provider: it drives the same move → expose →
@@ -505,9 +507,8 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         Not on a clipped probe, whatever its count: its "few stars" are
         merged ones, and a longer exposure is the one change guaranteed to
         make the next sweep worse (the overexposure branch below says so in
-        its own advice). Not before the probe either (``n0`` -1): a camera
-        that would not expose has measured no field at all."""
-        sparse = 0 <= n0 < SPARSE_FIELD_WARN and probe_sat < OVEREXPOSED_FRAC
+        its own advice)."""
+        sparse = n0 < SPARSE_FIELD_WARN and probe_sat < OVEREXPOSED_FRAC
         return AutofocusResult(False, start_pos, None, pts, reason,
                                advice=advice, sparse_field=sparse,
                                start_stars=n0 if n0 >= 0 else None)

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // monitorLastFrameDom.test.tsx - the classic Monitor's LAST FRAME tile follows
 // the rig's newest frame, not only the live event that happened to arrive (#399).
 //

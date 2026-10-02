@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Integration: frame_tilt over a real synthetic star field through the same
 detect_stars -> star_marks pipeline the hub feeds it from (PRO-13 Task 2).
 

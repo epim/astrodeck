@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LivePreview.tsx — orchestrator that wires the store to the stage + toolbar +
 // histogram + filmstrip + verdict (stream V). Drops into CaptureView in place of
 // the old inline preview Panel. Also reused (compact) on Focus.

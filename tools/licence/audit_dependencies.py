@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Policy gate for a live locked Cargo graph and all npm lock entries.
 
 Build-only npm/Cargo entries are retained as such; inclusion in this report is

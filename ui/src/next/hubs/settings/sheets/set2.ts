@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // set2.ts - T-SET-2's two sheets, handed to the SETTINGS hub as one object.
 //
 // The hub composes the registry (`hubs/settings/sheets.ts`); this file is the

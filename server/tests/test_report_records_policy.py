@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Stage A (#239): the report says what the night actually ran under.
 
 Once twelve settings can come from either the plan or the rig, the plan alone

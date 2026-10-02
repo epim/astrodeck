@@ -1,3 +1,4 @@
+// Copyright (c) 2026 James Penick
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
@@ -1518,7 +1519,7 @@ impl GuideEngine {
 
     /// Current guide-error statistics in the host's `GuideStats` bus shape
     /// (spec §3.2/§3.5): `{guiding, rms_ra, rms_dec, rms_total, snr,
-    /// recent:[[t,ra,dec],...], secondaries:[[x,y],...]}`.
+    /// recent:[[t,ra,dec],...], secondaries:[[x,y],...], lock:[x,y]|None}`.
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = self.inner.stats();
         let d = PyDict::new(py);
@@ -1546,6 +1547,18 @@ impl GuideEngine {
             secondaries.append(PyList::new(py, [x, y])?)?;
         }
         d.set_item("secondaries", secondaries)?;
+        // #204 (WP-41): the engine's own lock position, verbatim -- the
+        // offset reference every pulse this session is measured against.
+        // `None` before a guiding session's first star is found. The host's
+        // different-star guard (`guide/native.py`'s `_note_lock`) used to
+        // have no way to read this and approximated it instead (brightest-
+        // first for a session's first lock, nearest-to-its-own-estimate
+        // after a star loss, widened by a dither's magnitude since the real
+        // post-dither value was unreadable, #219); this is the real value.
+        match s.lock {
+            Some((x, y)) => d.set_item("lock", PyList::new(py, [x, y])?)?,
+            None => d.set_item("lock", py.None())?,
+        }
         Ok(d)
     }
 

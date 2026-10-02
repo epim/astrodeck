@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // WeatherHub.tsx - the WEATHER hub: CONDITIONS · SKY · RADAR.
 //
 // The sub-nav chips are the shell's (`shell/SubNav.tsx` reads `HUB_META`); this

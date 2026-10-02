@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regenerate astrodeck/catalog/data/constellations.tsv from CATALOG.
 
 WHY A SIDECAR, NOT A COLUMN IN ngc.tsv, NOT A GENERATED .py MODULE.

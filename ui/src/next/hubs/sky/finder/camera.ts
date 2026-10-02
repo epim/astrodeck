@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // camera.ts - the AR passthrough behind the finder (hub-sky plan B.10).
 //
 // The prototype fakes this entirely (it draws a CSS star field). This is the real

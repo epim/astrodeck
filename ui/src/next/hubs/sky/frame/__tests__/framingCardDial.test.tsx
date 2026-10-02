@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // framingCardDial.test.tsx - the framing card's rotation controls show the angle
 // the frame is really at, and touching them does not move it away (#173).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 export type BlockKind = 'start' | 'frame' | 'focus' | 'guide' | 'capture' | 'weather' | 'wait' | 'finish';
 export type Block = { id: string; kind: BlockKind; x: number; y: number; label: string; value: string; count: number };
 export type Wire = { id: string; from: string; port: string; to: string };

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Where the guide scope points, relative to where the OTA points.
 
 The guide scope is bolted to the OTA and does not look at the same piece of sky:

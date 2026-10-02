@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Stage 0.3.33 on the astrotown rig. Run ON the rig (elevated ssh session).
 #
 # What 0.3.33 carries, on top of 0.3.32: the dawn park warms the camera at

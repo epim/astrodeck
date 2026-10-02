@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w1FlowStagesWaitForOpen.test.tsx - the phone stage list acts only on the
 // flow its route opened, not on whatever the store still holds (#553).
 //

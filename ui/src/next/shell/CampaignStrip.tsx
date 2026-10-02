@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CampaignStrip.tsx - the purple line under the banners while a multi-night
 // campaign is live (README "Cross-hub chrome").
 //

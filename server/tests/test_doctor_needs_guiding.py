@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-09: a mount whose unguided tracking cannot hold a sub of ordinary length.
 
 At 03:04 on 2026-09-06 the flow was switched to UNGUIDED because the guider was

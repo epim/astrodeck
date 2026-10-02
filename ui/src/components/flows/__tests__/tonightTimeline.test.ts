@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tonightTimeline.test.ts — the rules that decide what the Tonight timeline
 // draws, and more importantly what it REFUSES to draw.
 //   Run:  npx tsx src/components/flows/__tests__/tonightTimeline.test.ts   (from ui/)

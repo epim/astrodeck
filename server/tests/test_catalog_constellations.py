@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Precomputed constellation lookup for every object in CATALOG.
 
 The lookup itself (constellations.py) is a dict read from a flat file — no

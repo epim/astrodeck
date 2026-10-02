@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // panelLayer.test.tsx - the mosaic PanelLayer on its own: where each panel is
 // drawn, how its five states are told apart, and which panel a point is in
 // (#189 S4 item 2; spec 2026-09-23 flows mosaic, 2.3).

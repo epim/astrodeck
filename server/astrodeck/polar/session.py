@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Polar alignment session.
 
 Drives NINA's Three-Point Polar Alignment (TPPA) over its ``/tppa`` websocket

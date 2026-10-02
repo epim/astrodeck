@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // deletedDoorStrings.test.ts - the retired Plan door's strings are gone from
 // ui/src (#196, #154's door half; spec 2026-09-23 flows mosaic, section 8 S6:
 // "a grep test asserts the deleted strings are gone").

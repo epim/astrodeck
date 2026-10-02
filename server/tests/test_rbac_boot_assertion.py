@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """W2 RBAC boot route-assertion tests (T-RBAC-5/6).
 
 ``assert_route_capabilities(app)`` must FAIL ``create_app()`` if any mutating

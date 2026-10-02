@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // UsersSheet.tsx - Settings > USERS > "People" (plan section C.7.3), rebuilt
 // for wave R7 (T-R7-11, cutover table section 7).
 //

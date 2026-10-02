@@ -1,0 +1,90 @@
+{
+  "source": {
+    "artifact": {
+      "name": "astrodeck-0.3.39.tar.gz",
+      "kind": "source-tar",
+      "platform": "source",
+      "sha256": "42a2bc63595e650ac09e27d17cc720ec8a1ea55b20c480c1d3a7fc6cbb0b41a3",
+      "bytes": 13688276
+    },
+    "members": 777,
+    "accounted": true,
+    "cleared": false,
+    "finding_counts": {
+      "ARTIFACT": 5,
+      "OWNER_PENDING": 3
+    }
+  },
+  "native": {
+    "artifact": {
+      "name": "astrodeck_native-0.1.0-cp311-abi3-win_amd64.whl",
+      "kind": "native-wheel",
+      "platform": "windows-x86_64",
+      "sha256": "9b2d8f28005c6d8ef5c0cc3a9d1dd2422da20eb5cb1b6a46df85e0e7fb5cb14e",
+      "bytes": 724323
+    },
+    "members": 12,
+    "accounted": true,
+    "cleared": true,
+    "finding_counts": {}
+  },
+  "frozen": {
+    "artifact": {
+      "name": "astrodeck.exe",
+      "kind": "frozen",
+      "platform": "windows-x86_64",
+      "sha256": "3c7792ff6e9eb118dfb66fa45ab978a378df1dd9cf853ee9d070a3e9c073ff7a",
+      "bytes": 65130357
+    },
+    "members": 3450,
+    "accounted": false,
+    "cleared": false,
+    "finding_counts": {
+      "ARTIFACT": 2,
+      "CREDIT_MISSING": 1,
+      "CREDIT_VERSION": 1,
+      "NATIVE_RIGHTS_OPEN": 129,
+      "NATIVE_UNREVIEWED": 1,
+      "OWNER_PENDING": 5,
+      "PROVENANCE": 496,
+      "UNACCOUNTED": 1
+    }
+  },
+  "frozen_build_proof": {
+    "payloads": 3450,
+    "unmatched_toc_inputs": 0,
+    "envelope": {
+      "verified": true,
+      "method": "pyinstaller-6.22.3-windows-default-byte-reconstruction",
+      "artifact_sha256": "3c7792ff6e9eb118dfb66fa45ab978a378df1dd9cf853ee9d070a3e9c073ff7a",
+      "bootloader_sha256": "581ea23eb35cee8f9df8835c892e91416df95ca629b1a6050289aea19390e08d",
+      "icon_sha256": "6802d6d4839ec6195344deec61c2dcf602161f9d97b24f6273790469e8477adb",
+      "manifest_sha256": "abf8f2022f12f350789d961aceaf9ccfd53e7ec58d8c9934cfce77779b4eac11",
+      "pkg_sha256": "5f8efa67d1eb89cf55d6f7deb82eabc60c503bcad5818055a4644566fc18d494",
+      "inputs": [
+        {
+          "source": "dist:pyinstaller/PyInstaller/bootloader/Windows-64bit-intel/run.exe",
+          "component": "pyinstaller",
+          "version": "6.22.3",
+          "record_verified": true
+        },
+        {
+          "source": "dist:pyinstaller/PyInstaller/bootloader/images/icon-console.ico",
+          "component": "pyinstaller",
+          "version": "6.22.3",
+          "record_verified": true
+        }
+      ],
+      "transforms": [
+        "remove resources",
+        "installed default console icon",
+        "standard asInvoker manifest",
+        "append exact PKG",
+        "build timestamp",
+        "PE checksum"
+      ],
+      "source": "https://github.com/pyinstaller/pyinstaller/blob/v6.22.3/PyInstaller/building/api.py"
+    }
+  },
+  "status": "Pre-rebase evidence only. Required e764e172 rebase invalidates final release results; rebuild and audit afterward."
+}

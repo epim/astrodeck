@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // pendingValue.test.ts - the mount tracking latch (plan hub-rig.md 0.4 shape 2).
 //
 //   Run directly:  npx tsx src/next/hubs/rig/__tests__/pendingValue.test.ts

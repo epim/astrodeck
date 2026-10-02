@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RadarScreen.tsx - WEATHER · RADAR (plan section A.4).
 //
 // `components/weather/RadarMap` is MOUNTED WHOLE and takes no props: it reads

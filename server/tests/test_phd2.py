@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PHD2 guider transport tests (P1-6).
 
 Covers the new resilience behavior that the live rig needs and that previously

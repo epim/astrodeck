@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nowChannelDom.test.tsx - the channel chip fetches the channel (D-SES-1).
 //
 //   Run directly:  npx tsx src/next/hubs/session/__tests__/nowChannelDom.test.tsx

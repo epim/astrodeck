@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Wave S7's additions to the 2 s status frame, each one a fact the UI was
 previously guessing at.
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // projection.ts - screen geometry for the finder: alt/az to pixels, the compass
 // strip's ticks and the altitude grid (hub-sky plan B.3).
 //

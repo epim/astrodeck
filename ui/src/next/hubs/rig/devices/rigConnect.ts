@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigConnect.ts - the ONE connect / simulator / disconnect implementation for
 // this hub (plan hub-rig.md A.7, lifted from `views/EquipmentView.tsx:346-493`).
 //
@@ -27,6 +29,7 @@ import {
   type AssignmentMap,
 } from "../../../../lib/equipment";
 import { useStore } from "../../../../store";
+import { sentenceFrom } from "../profiles/profilesModel";
 import type {
   ConnectRigResult, DriverInfo, Profile, ProfileRow, RoleResult,
 } from "../../../../types";
@@ -194,16 +197,24 @@ export async function activateProfileRow(
         + "The device rows show how far it got.");
     }
   } catch (e) {
-    const msg = e instanceof ApiError && e.code === "running"
-      ? "A sequence, capture loop or polar alignment is running - stop it first, "
-        + "or force-activate from the profiles sheet."
-      : e instanceof ApiError && e.status === 409
-        ? "Another profile is still connecting - wait for it to finish before switching again."
-        : e instanceof Error ? e.message : "activate failed";
-    toast("error", msg, { verbatim: true });
+    toast("error", activateErrorMessage(e), { verbatim: true });
   } finally {
     hooks.setBusy(null);
   }
+}
+
+/** The toast for an activate failure here, where there is no force control of
+ *  its own - this surface always points at the one that has it. Worded from
+ *  the server's own coded-409 detail (#256): auto-resume's recovery ladder
+ *  counts as "running" too (#238), and while it re-centres the mount after a
+ *  restart the engine is idle, so a fixed "a sequence ... is running" sent the
+ *  operator looking for a run the Monitor does not show. */
+export function activateErrorMessage(e: unknown): string {
+  return e instanceof ApiError && e.code === "running"
+    ? `${sentenceFrom(e.message)} Stop it first, or force-activate from the profiles sheet.`
+    : e instanceof ApiError && e.status === 409
+      ? "Another profile is still connecting - wait for it to finish before switching again."
+      : e instanceof Error ? e.message : "activate failed";
 }
 
 /**

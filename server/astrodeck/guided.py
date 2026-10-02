@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Small, bounded sky searches for Guided setup. These functions never move hardware."""
 from __future__ import annotations
 import math

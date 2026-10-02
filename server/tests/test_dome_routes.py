@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-4 Task 7 — /api/dome/state + /api/dome/close routes.
 
 Mirrors test_app_route_concurrency.py's harness: a real ``create_app()`` +

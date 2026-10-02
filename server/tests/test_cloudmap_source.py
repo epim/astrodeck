@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Finding, fetching and evicting GOES granules, stage 3.
 
 Every test here pins one specific way the source can be plausibly wrong: a key

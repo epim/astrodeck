@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Credential and physical-recovery state-machine tests."""
 
 from __future__ import annotations

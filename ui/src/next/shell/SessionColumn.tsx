@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SessionColumn.tsx - the desktop's persistent Session / Now, condensed
 // (ARCHITECTURE.md section 4, plan section E.4).
 //

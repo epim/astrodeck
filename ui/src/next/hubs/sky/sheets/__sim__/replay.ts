@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Replay a recorded case through the real scanner.
 //
 //   node --import tsx src/next/hubs/sky/sheets/__sim__/replay.ts <abs case dir>

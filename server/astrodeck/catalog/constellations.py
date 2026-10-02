@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Constellation lookup for every object in ``objects.CATALOG`` — a dict read
 from a flat file at import, nothing computed here.
 

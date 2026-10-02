@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """W2 RBAC ENFORCEMENT tests -- the require(capability) dependency wired onto
 the live route surface in ``api/app.py``, the field-level POST /api/config +
 PUT /api/site gating, the WS accept-time capability gate, the /api/me identity

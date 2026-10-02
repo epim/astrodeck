@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // degraded.ts - what FRAME mode says when the survey or the catalogue is not
 // answering, and WHY it is not (review #30, #32).
 //

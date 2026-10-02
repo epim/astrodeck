@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // haptics.ts — additive, leaf vibration wrappers (touch spec §7, R26).
 //
 // Design rules baked in here:

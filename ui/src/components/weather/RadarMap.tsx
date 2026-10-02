@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RadarMap.tsx — mini slippy radar/satellite map + scope-pointing overlay
 // (weather spec §11). From scratch (no map lib): absolutely-positioned <img>
 // grid over the SERVER-SIDE IEM proxy (/api/weather/tile/... — the browser

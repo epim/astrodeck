@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Flows node vocabulary — the contract, transcribed from the handoff.
 
 TRANSCRIBED, NOT DESIGNED. Every port id, port kind, label and default parameter

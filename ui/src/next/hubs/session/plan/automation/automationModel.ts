@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // automationModel.ts - the plan editor's automation column, as data.
 //
 // WHY THE LABEL LIST IS A CONSTANT AND NOT A CONSEQUENCE OF THE JSX. Twenty

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // resultCardDom.test.tsx - the capture result card, MOUNTED, pressed, refused
 // and degraded (T-U7b-3, D-SES-4).
 //

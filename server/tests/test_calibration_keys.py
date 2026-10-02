@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 from astrodeck.calibration.keys import (
     CalKey, key_from_header, temp_bin, key_index_id, CAL_FRAME_TYPES)
 

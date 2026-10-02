@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // previewTierDom.test.tsx — which asset the Monitor's live tile asks for (#221).
 //
 //   Run directly:  npx tsx src/components/__tests__/previewTierDom.test.tsx

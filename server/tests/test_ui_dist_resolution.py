@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Which built SPA the server actually serves.
 
 `webui` is a build artifact (packaging/build_binary.py copies ui/dist into it)

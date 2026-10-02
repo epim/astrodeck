@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """server_ctl.py -- start/stop an ISOLATED AstroDeck server for the UI probe.
 
 Owned entirely by tools/ui_probe/. Run with the SYSTEM python (it only shells

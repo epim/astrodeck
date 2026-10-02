@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """rotate_to_pa end-to-end on the sim rig: the loop must DISCOVER the camera's
 clock offset via solve+sync and converge — no shortcuts."""
 import pytest

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Shared radiogroup keyboard model (UX-20). Lifted from SegmentedControl so every
 // hand-rolled `role="radiogroup"` gets the same WAI-ARIA behaviour: arrow keys
 // move+select (wrapping), Home/End jump to ends, Enter/Space select the focused

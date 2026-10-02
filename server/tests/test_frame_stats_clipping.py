@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """`stats.max` cannot tell one railed pixel from a blown field.
 
 The preview's "Stars saturated - shorten exposure or lower gain" banner fired on

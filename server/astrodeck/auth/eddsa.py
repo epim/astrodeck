@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Ed25519 (EdDSA) primitives for ASYMMETRIC session tokens (W3 seam).
 
 Kept SEPARATE from :mod:`astrodeck.auth.session` so the default home-session

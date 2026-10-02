@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """POST /api/mount/tracking_rate + hub status wiring (multi-rate mount
 tracking, 2026-07-21, plan Task 4).
 

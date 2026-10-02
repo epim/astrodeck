@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Outbound alerting tests (Batch 4b §1.8 / alerting.py).
 
 Covers: state-change alerts are NEVER deduped while repetitive warnings ARE;
@@ -11,6 +13,7 @@ import asyncio
 import httpx
 import pytest
 
+from _deadline import wait_until
 from astrodeck.alerting import AlertDispatcher, AlertEvent
 from astrodeck.config import AlertSink, AppConfig, redacted
 from astrodeck.events import EventBus
@@ -322,11 +325,13 @@ async def test_wallclock_pings_deadman_through_a_pause():
     try:
         task = asyncio.create_task(disp._wallclock_loop())
         # Let it tick several times with ZERO frame-loop involvement (the engine
-        # never runs here — this is purely the wall-clock driver).
-        for _ in range(50):
-            if len(hits) >= 3:
-                break
-            await asyncio.sleep(0.01)
+        # never runs here — this is purely the wall-clock driver). A wall-clock
+        # deadline (#610), not a round count: 50 x sleep(0.01) is 0.5 s on
+        # Linux but 0.8 s on Windows (each sleep rounds up to the 15.6 ms
+        # timer), so a fixed round count gives the two platforms different
+        # real patience for the same wait.
+        await wait_until(lambda: len(hits) >= 3, timeout_s=2.0,
+                         interval_s=0.01)
         await disp.stop()
         await task
     finally:

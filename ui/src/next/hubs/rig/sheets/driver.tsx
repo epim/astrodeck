@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // driver.tsx - ADD A DRIVER, one level under ADD A DEVICE (plan A.6, GAP-2
 // "Missing - driver declaration").
 //

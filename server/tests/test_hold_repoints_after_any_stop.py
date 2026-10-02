@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A mount the engine stopped is re-pointed, never resumed in place (#248,
 H3 orchestrator ruling 6).
 

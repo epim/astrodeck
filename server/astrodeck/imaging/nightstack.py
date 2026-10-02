@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One image per night, and an animation of a transient brightening.
 
 The rig shoots the same field night after night. Every other stacking path in

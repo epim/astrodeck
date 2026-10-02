@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure formatting for the Live View readout (NOV-1). No React, tsx-tested.
 import type { LiveStackInfo } from "../types";
 

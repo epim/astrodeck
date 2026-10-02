@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What detect_stars' fixed cutout can and cannot measure, pinned.
 
 Not a bug report — a boundary. ``detect_stars`` feeds the overlay, the star

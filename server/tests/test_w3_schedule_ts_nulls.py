@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``ui/src/types.ts``'s ``SequenceState.schedule`` admits the null the
 server actually sends for ``start_ts`` and ``stop_ts`` (#552, backlog WP-23).
 

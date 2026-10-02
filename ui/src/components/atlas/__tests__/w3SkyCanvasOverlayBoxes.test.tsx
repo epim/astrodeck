@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3SkyCanvasOverlayBoxes.test.tsx - WP-24b (b): the reserved overlay box uses
 // the toggle's MEASURED footprint, and the "Object size" legend's own box is
 // reserved from object labels in turn (#491, third instance; fix shape per

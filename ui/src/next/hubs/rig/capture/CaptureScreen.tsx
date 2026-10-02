@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CaptureScreen.tsx - RIG · CAPTURE, the manual bench (plan §F.1-F.8).
 //
 // "Straight to the camera - one command, one file, no flow." Everything on this

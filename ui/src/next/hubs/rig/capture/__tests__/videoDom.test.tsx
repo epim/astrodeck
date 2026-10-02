@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // videoDom.test.tsx - VIDEO · PLANETS, mounted, pressed, refused (D-RIG-1).
 //
 //   Run directly:  npx tsx src/next/hubs/rig/capture/__tests__/videoDom.test.tsx

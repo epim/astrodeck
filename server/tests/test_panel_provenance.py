@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-panel provenance: FITS ``MOSAIC`` / ``PANEL`` and the ``$$PANEL$$`` token
 (#189 U-08; mosaic spec 2.3 and section 8, S2 item 7).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wsReconnectPreview.test.ts - the socket layer keeps the LAST FRAME honest
 // across a reconnect and across a relay drop (#399).
 //

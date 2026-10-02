@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nowRunOpensThePressedFlow.test.tsx - RUN on a Now row starts the flow that
 // was pressed, or nothing (#499, the S7 integration).
 //

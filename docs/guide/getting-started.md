@@ -1,137 +1,63 @@
+<a id="4-set-your-observing-site"></a>
+
+<a id="where-things-live"></a>
+
 # Getting started
 
-This walks you from a fresh copy of AstroDeck to your first image against the
-built-in simulator — no telescope required. If you already know the app and just
-want a task done, jump to the [guide index](README.md).
-
-**Jargon note.** AstroDeck talks to gear over **ASCOM Alpaca**, an open,
-network-based device protocol. A **rig** is your whole set of devices (camera,
-mount, focuser, filter wheel, etc.) assigned to **roles**. The **simulator rig**
-is a complete fake rig that renders a real star field, so everything below works
-with no hardware attached.
-
----
+Start with a simulator image, then choose how to connect your own equipment. AstroDeck can run standalone, work alongside NINA, or provide planning and weather beside an ASIAIR setup. Hardware control depends on the selected backend; the optional ASIAIR backend remains experimental.
 
 ## 1. Install and run the server
 
-You need **Python 3.11 or newer**. From the repository root:
+Choose [a release binary](install-binary.md), [Docker](install-docker.md), or the source setup below. A source checkout needs Python 3.11 or newer and a built UI; it does not include a ready-made `ui/dist` directory.
+
+From the repository root on Windows, with Node.js 24 and Python available:
 
 ```powershell
-cd server
+cd ui
+npm ci
+npm run build
+cd ../server
 python -m venv .venv
-.venv\Scripts\pip install -e .
-.venv\Scripts\python -m astrodeck          # serves on http://localhost:8800
+.venv/Scripts/python -m pip install -e .
+.venv/Scripts/python -m astrodeck
 ```
 
-The last line starts the server. By default it binds `127.0.0.1:8800` (reachable
-only from the same machine). Flags:
+On Linux or macOS, use `.venv/bin/python` for the last two commands. The initial server listens at `http://localhost:8800`, on this computer only. Leave its terminal open; Ctrl+C stops it. Phone access needs authentication and a network deployment: see [remote access](remote-access-and-roles.md).
 
-- `--host 0.0.0.0` — serve other LAN devices; authentication is required.
-- `--port 8800` — change the port.
+## 2. Open the alternative interface
 
-On start it prints a one-line security posture. An unauthenticated non-loopback
-bind is refused, not merely warned about. Set `ASTRODECK_TOKEN` or configure a
-local/Google method before serving the LAN; read
-[remote-access-and-roles.md](remote-access-and-roles.md).
+1. Open `http://localhost:8800`. The bare address opens the classic interface.
+2. Open `http://localhost:8800/#/next` for this walkthrough. The alternative interface has a different navigation layout. Use `#/classic` to return to classic.
+3. Open `http://localhost:8800/#/rig/devices`. On a fresh, disconnected simulator installation, press **RUN THE SIMULATOR**. Wait for the device rows to report connected.
 
-> **You do not need to build the UI.** A pre-built copy in `ui/dist` is served by
-> the server. Only rebuild if you change the UI source:
->
-> ```powershell
-> cd ui
-> npm install
-> npm run build
-> ```
+This procedure is for a fresh installation with no real equipment connected. Starting the simulator replaces the active device arrangement; do not use it to diagnose a running real session.
 
----
+<a id="3-connect-the-simulator-rig"></a>
 
-## 2. First launch
+## 3. Set a site before planning
 
-Open **http://localhost:8800** in a browser (desktop, tablet, or phone).
+1. Open `http://localhost:8800/#/settings/general` and choose **SITES**.
+2. Press **+ NEW SITE HERE**. Fill **Name**, **Latitude**, **Longitude**, and **Elevation (m)**. Coordinates use positive magnitudes with hemisphere selectors.
+3. Press **SAVE SITE**, then select the radio control beside that saved site to make it active. Saving a library entry alone does not activate it.
 
-- The top of the screen has a **NIGHT** toggle (flips the whole UI to
-  dark-adaptation red, and defaults new sessions to full 100% brightness) and
-  a brightness slider (floor 50%, so you can never dim the screen to
-  unreadable) — handy at the scope, ignore them for now. Below the `lg`
-  breakpoint the slider moves into a small overflow popover behind a sun icon
-  so it doesn't crowd the header.
-- Navigation: on desktop a left rail; on a phone a bottom bar with **Equipment,
-  Align, Mount, Focus, Capture** and a **More** button holding **Guide, Atlas,
-  Plan, Power, Monitor, Settings**. "Equipment" is the exact label everywhere
-  — the internal icon name is "rig", but nothing in the UI ever shows that
-  word to you.
+Use the telescope's location for real observing. For an isolated tutorial, a clearly named public synthetic site is sufficient. Keep your real location out of shared screenshots and support logs. [Site and locations](site-and-locations.md) explains both interfaces.
 
-If you enabled a sign-in method you'll get a login screen first; a fresh open LAN
-install shows the app directly. See
-[remote-access-and-roles.md](remote-access-and-roles.md).
+<a id="2-first-launch"></a>
 
----
+<a id="5-take-your-first-image"></a>
 
-## 3. Connect the simulator rig
+## 4. Take your first image
 
-Go to the **Equipment** view (that's the literal label, on the left rail and
-the bottom bar alike). In the **Rig Actions** panel, press
-**▶ Simulator rig**. This assigns every device role to the simulator *and*
-connects it in one step, so the toast (*"Rig connected — N/N roles up"*), the
-**Devices** panel, and the **Link Status** panel all agree on the same
-connected rig — there's no separate "assign, then connect" dance for the
-simulator.
+1. Open `http://localhost:8800/#/rig/capture`.
+2. Set **EXPOSURE** to `1` second and **COUNT** to `1`. Leave the other camera settings alone for this first test.
+3. Keep **SAVE FITS TO LIBRARY** off for a disposable preview.
+4. Press the capture button. Its label includes the count, exposure and filter, beginning with **CAPTURE**.
+5. Wait for the preview. It is a simulated image, not a photograph from connected equipment.
 
-(For real gear instead: declare your backends under **Settings → Connect →
-Backend Drivers**, assign each device slot to a driver in the **Devices**
-panel on the **Equipment** view, then press **Connect Rig** — see
-[equipment-and-profiles.md](equipment-and-profiles.md).)
-
----
-
-## 4. Set your observing site
-
-Before anything sky-related is correct, set your location. Go to **Settings →
-Connect → Observing Site**, enter your latitude/longitude (magnitude + N/S,
-E/W) and elevation, and press **Set site**. Until you do, AstroDeck uses a
-default (0, 0) site and every altitude, transit, and visibility number is wrong
-— and the panel's persistent **"Active site: ..."** line will keep reading
-*Not set*. Full details: [site-and-locations.md](site-and-locations.md).
-
----
-
-## 5. Take your first image
-
-Go to the **Capture** view. In the **Exposure** panel:
-
-- **Exposure (s)** defaults to `2`. Leave it.
-- Leave **Gain**, **Offset**, **Binning** at their defaults.
-- Press **Single**.
-
-The button reads **Exposing…** then **Reading…**, and the **Live Preview** panel
-shows the frame — a simulated star field that responds to where the mount points
-and how the focuser is set. Try:
-
-- **Loop** to expose continuously (**Stop** to end it).
-- The preview toolbar: **Fit**, **100%**, zoom `−`/`+`, and overlay toggles
-  (**Stars**, **Clip**, **Reticle**, **Center**).
-- Turn on **save FITS to library** and set a **Target name** to keep frames.
-
-From here the simulator supports the whole workflow — [focus](focus.md),
-[framing in the Atlas](sky-atlas.md), [building a plan](plan-and-sequences.md),
-and [multi-night sessions](sessions-multi-night.md) — all without hardware.
-
----
-
-## Where things live
-
-- The server persists site, optics, profiles, plans, auth, and weather config
-  under `server/config/` (or the directory named by `ASTRODECK_CONFIG_DIR`), so
-  they survive restarts and updates.
-- Saved images and session ledgers live under the capture directory.
+Native guiding and native autofocus require `astrodeck_native`, which published releases do not include yet (#630). A simulator connection and one exposure do not prove those engines are installed or that an unattended hardware session is ready. Standalone plate solving needs a separately installed ASTAP executable and star database.
 
 ## Next steps
 
-- [Equipment & profiles](equipment-and-profiles.md) — connect real gear, save a
-  profile.
-- [Capture](capture.md) · [Focus](focus.md) · [Sky Atlas](sky-atlas.md)
-- [Plan & sequences](plan-and-sequences.md) · [Sessions](sessions-multi-night.md)
-- [Troubleshooting](troubleshooting.md) if the server won't start.
+Connect [equipment and profiles](equipment-and-profiles.md), configure a [Windows rig](windows-rig.md), or read the [Orange Pi appliance guide](orange-pi-appliance.md). Continue with [capture](capture.md), [Flows and mosaics](flows-and-mosaics.md), and [unattended nights](unattended-nights.md).
 
-For a high-level tour of the project, see the root
-[`README.md`](../../README.md) and [`docs/quickstart.md`](../quickstart.md).
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

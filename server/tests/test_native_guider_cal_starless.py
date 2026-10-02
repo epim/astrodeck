@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The calibration walk must not wait forever for a star that is gone.
 
 Measured on the rig 2026-08-08 (RA 23h Dec +30, guide cam 2 s at gain 100):

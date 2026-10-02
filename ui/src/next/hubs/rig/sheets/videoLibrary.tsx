@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // videoLibrary.tsx - every SER recording on the rig (D-RIG-1).
 //
 // WHY THE LIST IS A SHEET AND THE CAPTURE SCREEN ONLY SHOWS ONE. A recording

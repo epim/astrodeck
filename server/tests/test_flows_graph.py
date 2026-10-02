@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Flows — the node vocabulary, graph validation, and the ten doctor rules.
 
 The handoff is a SCOPED IMPLEMENTATION task: the design is finished, and the

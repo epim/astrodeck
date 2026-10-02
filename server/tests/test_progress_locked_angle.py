@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The progress route shows a locked angle and where it came from (#189,
 Revision 2 owner ruling 9, the server half; spec 1.2, 6.9).
 

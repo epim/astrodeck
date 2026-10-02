@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Wizard number parsing: house-style refusals, not CPython's own (WP-26,
 backlog ruling D-nn N/A -- no ruling needed, fix shape is the plan's own
 text; #501 (a), #546 (b)).

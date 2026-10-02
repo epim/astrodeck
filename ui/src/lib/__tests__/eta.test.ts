@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for lane-2A's Monitor ETA/format math (monitor spec §10).
 //
 // There is no vitest/jest wired into this UI (build is `tsc -b && vite build`),

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for allocation.ts. Sabotage check: dividing by
 // `filters.length` instead of the CHECKED count turns "6h over 4 filters"
 // red; dropping the OSC branch's own hours*3600 term turns "OSC single

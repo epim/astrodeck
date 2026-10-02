@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A follower fills a mosaic's deferral wait (#304; spec 1.6, 5.1 pass
 boundary item 2, 6.4, 6.18).
 

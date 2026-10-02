@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
 import { AIM_CONE_DEG, DEG, DOME_CELLS, SkyPanorama, cameraLens, dot, lookBasis, orientationBasis, projectRay, skyAngles, skyVector, targetCell, unit, type CameraBasis, type DomeCell, type V3 } from '../photosphereGeometry';
 import { traceSkyCoverage } from '../photosphere';

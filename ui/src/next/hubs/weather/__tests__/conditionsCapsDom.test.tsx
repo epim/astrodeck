@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // conditionsCapsDom.test.tsx - the ignore-tonight two-cap fix on WEATHER ·
 // CONDITIONS, MOUNTED (D-FU-4, T-U7a-H).
 //

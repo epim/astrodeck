@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanRunHeader.tsx - what the run is doing, and the three controls that change
 // it: PAUSE / RESUME, STOP, and the terminal-state actions.
 //

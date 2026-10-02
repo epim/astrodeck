@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Difficulty heuristic (NOV-3): mag + size -> surface brightness -> tier."""
 from astrodeck.catalog.difficulty import (
     surface_brightness_mag, difficulty_score, tier_from_score, difficulty_for,

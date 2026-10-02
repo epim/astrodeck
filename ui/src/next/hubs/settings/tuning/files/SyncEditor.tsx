@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SyncEditor.tsx - the FILE SYNC sheet's body, rebuilt in the design's own
 // vocabulary (wave R7, T-R7-13; replaces the mounted
 // `components/settings/SyncPanel.tsx`, which is NOT edited and keeps serving

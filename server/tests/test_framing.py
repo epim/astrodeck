@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Mosaic framing engine (Owner C — Sky Atlas).
 
 These exercise ``astrodeck.catalog.framing.compute_mosaic`` (the pure, importable

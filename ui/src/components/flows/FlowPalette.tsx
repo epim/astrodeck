@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowPalette.tsx — the add-stage list. ONE component, two shapes.
 //
 // §C.7 and the file plan both say it this way: "Rendered as the 192px rail AND

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // test-css-stub.mjs - makes ".css" a no-op for the plain-Node test runner,
 // on whichever Node version is actually running it.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 6: per-frame review thumbnails (sessions spec §3) — sim frame."""
 import asyncio
 import threading

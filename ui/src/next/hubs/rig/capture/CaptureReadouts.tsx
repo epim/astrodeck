@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CaptureReadouts.tsx - the design's readout grid and its one dial, over the
 // `capture` frame scope.
 //

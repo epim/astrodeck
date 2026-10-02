@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // settings/sheets/index.ts - the SETTINGS hub's sheet registry
 // (`ARCHITECTURE.md` section 5). `hubs/index.ts` composes the global registry
 // from all six hubs' `sheets` exports at module load, and this is settings'.

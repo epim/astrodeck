@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // galleryUnreadableDom.test.tsx - the SESSION / GALLERY shelf with a session
 // file the store cannot read in its list (#242). MOUNTED.
 //

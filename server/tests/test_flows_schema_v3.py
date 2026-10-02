@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """FLOW_SCHEMA 3: the 23.4 migration (#150) and the files this build cannot read (#153).
 
 TWO DEFECTS, ONE FILE FORMAT.

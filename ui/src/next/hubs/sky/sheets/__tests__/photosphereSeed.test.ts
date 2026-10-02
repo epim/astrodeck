@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // A bin that disagrees with the pooled seed is not a blocked dome (#100).
 //
 // Every column is seeded from the pooled median of the top 26 rows of the WHOLE

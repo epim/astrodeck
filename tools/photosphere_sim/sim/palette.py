@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The landmark palette: 24 colours a decoder can tell apart.
 
 Every channel is one of 0, 128 or 255, and the three greys (0, 0, 0),

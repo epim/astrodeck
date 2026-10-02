@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic group driver's pure decisions (mosaic spec 5.1, 5.3, 5.6 steps 4
 and 7, 5.7, 1.6, Appendix A.4; U-01, U-04, #189).
 

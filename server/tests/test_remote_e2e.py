@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """W3 END-TO-END tunnel test: the REAL relay service + the REAL home scope client
 wired through ONE in-memory bidi channel, plus the adversarial security battery.
 
@@ -26,6 +28,7 @@ import json
 
 import pytest
 
+from _deadline import wait_until
 import astrodeck.api.app as app_module
 from astrodeck.auth import (principal_for_role, reset_active_provider,
                             set_active_provider)
@@ -169,10 +172,14 @@ class E2ERig:
         # Relay side: read the HELLO, ack it, then route every subsequent frame.
         self._relay_task = asyncio.create_task(self._relay_loop())
         # Wait until the relay has registered the home (HELLO processed).
-        for _ in range(200):
-            if self.conn.registered and self.conn.mux is not None:
-                return
-            await asyncio.sleep(0.005)
+        # A wall-clock deadline (#610): 200 x sleep(0.005) is 1 s on Linux
+        # but 3.1 s on Windows (sleep rounds up to the 15.6 ms timer there),
+        # so a round count gives the two platforms different real patience.
+        ok = await wait_until(
+            lambda: self.conn.registered and self.conn.mux is not None,
+            timeout_s=5.0, interval_s=0.005)
+        if ok:
+            return
         raise AssertionError("relay never registered the home")
 
     async def _relay_loop(self):
@@ -267,17 +274,16 @@ async def test_http_and_ws_round_trip_through_relay(tmp_path, monkeypatch):
         # a published status event out to exactly that browser.
         browser = FakeBrowserWS()
         await rig.open_browser_ws(browser)
-        # let the home subscribe + emit the hello frame
-        for _ in range(100):
-            if browser.received:
-                break
-            await asyncio.sleep(0.005)
+        # let the home subscribe + emit the hello frame. A wall-clock
+        # deadline (#610): 100 x sleep(0.005) is 0.5 s on Linux but 1.6 s on
+        # Windows (sleep rounds up to the 15.6 ms timer there), so a round
+        # count gives the two platforms different real patience.
+        await wait_until(lambda: bool(browser.received), timeout_s=3.0,
+                         interval_s=0.005)
         from astrodeck.events import bus
         bus.publish("status", phase="e2e")
-        for _ in range(100):
-            if len(browser.received) >= 2:
-                break
-            await asyncio.sleep(0.005)
+        await wait_until(lambda: len(browser.received) >= 2, timeout_s=3.0,
+                         interval_s=0.005)
         assert browser.received, "browser got no /ws frames through the tunnel"
         kinds = [json.loads(t)["type"] for t in browser.received]
         assert "hello" in kinds

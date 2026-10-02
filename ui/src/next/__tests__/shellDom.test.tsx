@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // shellDom.test.tsx - NextApp MOUNTED: the chrome, the router, the hosts and
 // the two gate screens.
 //

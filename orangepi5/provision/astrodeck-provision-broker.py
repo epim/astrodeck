@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Privileged broker for AstroDeck's physically recoverable WiFi setup.
 
 A factory-commissioned identity (or three-short-boot recovery sequence) grants

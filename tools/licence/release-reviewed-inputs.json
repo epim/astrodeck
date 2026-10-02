@@ -1,0 +1,241 @@
+{
+  "schema_version": 1,
+  "base": "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b",
+  "files": [
+    {
+      "path": "native/crates/astrodeck-native/pyproject.toml",
+      "sha256": "fa607ade14cfcb4acc58b766f869f63092b31a9363f710a0b63de3d30a578df9",
+      "review": "Read complete native pyproject delta: PEP639 license-files requires staged full texts/source and adds public source/repository URLs; package version and runtime algorithms unchanged. Final reviewed correction: PEP639 declares only four UTF-8/NUL-free text notices; the exact source archive is ordinary dist-info/source data with a separate sealed hash. Rebuild instructions restore the original archive at the Maturin include path, and maturin>=1.9 with locked builds is required."
+    },
+    {
+      "path": "packaging/astrodeck.spec",
+      "sha256": "17f5fa127111ac73169aaf85fbe391e69aac23a879f035ff07fb60771082220e",
+      "review": "Read complete final spec delta: adds native module and metadata/source/notices, central per-file vendor/DSS2 selection with static-table parity, root notices and packaging probe path. Both application and native copy_metadata trees use reviewed distributable_metadata to omit only root direct_url.json; retained licenses/source and other metadata remain explicit. No blanket unknown payload approval. Final post-Analysis correction: Read exact post-d836 correction: obtains the two copy_metadata root pairs once, reuses them for explicit data expansion, then filters a.datas immediately after Analysis and before PYZ/EXE construction. Automatic metadata hooks cannot reintroduce those roots' installer URL files. All other data remains selected by the prior reviewed spec; no new dependency or general metadata exclusion."
+    },
+    {
+      "path": "packaging/build_native.py",
+      "sha256": "7d1cd8d45e8abcc94a483330c7522621176c7026a59af2479b008d5a49e150f9",
+      "review": "Read complete build/stage/seal/validate code. It stages native source privately, uses locked Cargo and ABI3, supplies full notice/source material, binds source/extension/notices/SBOM hashes and validates RECORD and compatibility. Absolute local SBOM IDs are normalized; this evidence is build provenance, not reproducible-build or compiler correctness proof. Final reviewed correction: PEP639 declares only four UTF-8/NUL-free text notices; the exact source archive is ordinary dist-info/source data with a separate sealed hash. Rebuild instructions restore the original archive at the Maturin include path, and maturin>=1.9 with locked builds is required."
+    },
+    {
+      "path": "packaging/distribution-policy.json",
+      "sha256": "d60926d6c75dbf94d552ae627ca1414ed06fe1a17479d900250d13d071a73e88",
+      "review": "Read every owner decision: Player One pending retains historical per-artifact differences; DSS2 fetch-only; artwork, WCSLIB, Astrospheric and IAU pending. This is not owner permission."
+    },
+    {
+      "path": "packaging/distribution_policy.py",
+      "sha256": "78e25447d2ff50bc3aed9b9a260bda378ec5c3e00d97e8f2d0386c7aa2302deb",
+      "review": "Read complete selector and static package-data parity/check/sync implementation. It rejects unknown modes/kinds and DSS2 redistribution, contains no package install or app/device access. Other fetch-only decisions require gate findings until payload behavior is separately changed."
+    },
+    {
+      "path": "packaging/entry.py",
+      "sha256": "079140ef2011bc22fef2bb5d563453f5f423841b444dbd8262a4700ba647fba2",
+      "review": "Read entry delta: exact --packaging-probe exits before default-state setup and application imports; delegates only to the reviewed native probe."
+    },
+    {
+      "path": "packaging/native_probe.py",
+      "sha256": "67ff1b3686e9528228d66ec6fd03606cf9bc2cfb3e2479cfee5a35d0a3331723",
+      "review": "Read complete deterministic probe. Imports native/NumPy and distribution metadata, invokes blank 32x32 uint16 star detection, emits bounded success metadata and exception type only; no application/device/config imports."
+    },
+    {
+      "path": "server/pyproject.toml",
+      "sha256": "2dbbb056878df286aa173d0bd4c6f58cd758174d73c6f811496ea4bdc0ccf121",
+      "review": "Read final complete metadata delta: static package-data preserves pending Player One server-wheel inclusion and is checked against central policy. The c58ff3e4 pytest retention correction is preserved: count remains 1, failed-only policy removed. Semantic TOML comparison with immutable c58ff3e4 differs only in package-data; no runtime dependency/version change."
+    },
+    {
+      "path": "server/astrodeck/api/app.py",
+      "sha256": "4b79c651dc5350fc6cbe46e9d1609f7d099db37790c76198bb1d531d951face3",
+      "review": "Read complete immutable 6e8..e764 diff: session PATCH validation, singleton disarm and persistence now share session_store.write_locked on the worker thread. Existing application concurrency logic; no new dependency, third-party code or dataset.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/config.py",
+      "sha256": "985af8a1e02b2b82d4adf23c1ad5f72a5421e46a295ba2aca9d4f16302d2236d",
+      "review": "Read complete immutable 6e8..e764 diff: adds monitor_reads_clouds configuration and computes field of view with standard-library math and a nonpositive focal-length guard. No third-party code, data or dependency change.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/focus/native.py",
+      "sha256": "85261e08f8886c17efb53aa5b50bd41298e155bde51b62b5bd97b19d8080cbcd",
+      "review": "Read complete immutable 6e8..e764 diff: sparse-star autofocus comparison now includes negative counts. Existing control logic only; no third-party material or dependency change.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/guide/native.py",
+      "sha256": "6588bdf767326b144618bc555f2d50f9b66edf0490fec3783f6b011ce187322b",
+      "review": "Read complete immutable 6e8..e764 diff: consumes the native engine's authoritative stats lock when available while retaining the older-wheel fallback. Existing binding/control logic; no new dependency or third-party material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/hub.py",
+      "sha256": "ccc18644ac27e0807de341b240f40a8b9eb41386deffbd9e40475a94553d01bd",
+      "review": "Read complete immutable 6e8..e764 diff: adds a rotator command/paired-solve trust test, resets trust on reconnect and refuses rotation after measured failure. Existing project logic and internal imports; no new dependency or third-party material. No live device evidence was read.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/rotation.py",
+      "sha256": "75c1fabbb4c2c41dd742c6846cbd9211a1ecafd09a7fd3fedbe7296e614b8cc0",
+      "review": "Read complete immutable 6e8..e764 diff: adds pure follow_fraction ratio helper with zero-command handling. Existing project mathematics; no dependency or third-party data.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/sequence/engine.py",
+      "sha256": "b3cf336346c7982b99925b19aa8d9d42ed57f811672a0c2059bc34736bcae39a",
+      "review": "Read complete immutable 6e8..e764 diff: closes a fitted cover before panel lighting; records whether each exposure/retake was guided for the RMS quality gate; adds a bounded frame-verdict cloud fallback for a connected monitor configured without cloud sensing. Existing control logic; no new dependency, third-party code or data.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/sequence/resume_arm.py",
+      "sha256": "8226aaf99ea103532a54bc3a44035bd722db001af122ef5b47c807499ade0d5a",
+      "review": "Read complete immutable 6e8..e764 diff: removes an obsolete exception fallback that returned ready from gating_status. Existing scheduling logic; no third-party material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/sequence/session.py",
+      "sha256": "fa276686485da943b0c3bb3779078bb1aa0b8f4c11875c92f59df8b6fd846aa3",
+      "review": "Read complete immutable 6e8..e764 diff: migrated synthetic legacy frames retain the default unstamped timestamp instead of an invented capture time. Existing data migration logic; no third-party dataset or dependency.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "server/astrodeck/weather.py",
+      "sha256": "65ff53e3c1ef4ed604eb178127e46d57281f0649ac7824ce5635dd75d244cbc8",
+      "review": "Read complete immutable 6e8..e764 diff: shutdown delegates to existing aio.reap so caller cancellation propagates after the service task ends. No service endpoint, terms, dependency or data-source change.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/components/flows/flowRunControls.tsx",
+      "sha256": "e48477e12e5384863457c341f11a8e8e3876caaffedff21874bfcd2ffa4c6dde",
+      "review": "Read complete immutable 6e8..e764 diff: propagates disarmed-session warnings, bounds optimistic run display, exposes the actual stop decision for confirmation and moves the shared phase predicate. Existing application state/UI code; no new external package, asset or data.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/components/flows/flowRunState.ts",
+      "sha256": "a39f0974fe3422d8416f703e5a8bda7325d151c43903855359729950635b94e0",
+      "review": "Read complete immutable 6e8..e764 diff: receives the existing live-phase predicate to avoid a module cycle. No third-party material or dependency.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/components/flows/flowsSlice.ts",
+      "sha256": "7d817f2e6f67fcbfc8de862bf6b13a102d1554524ed43b778061e58fa113321d",
+      "review": "Read complete immutable 6e8..e764 diff: timestamps and clears the optimistic run state and returns server disarmed-session information after a successful start. Existing state-management logic; no third-party additions.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/components/flows/flowsTypes.ts",
+      "sha256": "2df3b793ad6978bf2b5573cb45c61ceaea729d088a31c12c15b1746ace007572",
+      "review": "Read complete immutable 6e8..e764 diff: adds startedAt to the existing run state type. No dependency, external code, asset or data.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/components/polar.tsx",
+      "sha256": "bf6d413e951c745b5109ef31cf42350d51098b76b286b0f5a95d6cc0070a0e6a",
+      "review": "Read complete immutable 6e8..e764 diff: guards eased scale and opacity against nonfinite intermediate clock values. Existing drawing arithmetic; no external material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/components/settings/NamingPanel.tsx",
+      "sha256": "4cf8226153af6fecfc1f9dbe1445b36129bc25630537c7c28ab90ce73f59ca3d",
+      "review": "Read complete immutable 6e8..e764 diff: replaces a duplicate naming sample with shared PREVIEW_SAMPLE. The sample is an existing synthetic preview, not captured data; no external material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/components/settings/ProfileList.tsx",
+      "sha256": "0fb2768598fa69db2a18bd7ed4268ea48e2dc77d58036e5d25c6152e1517c1ce",
+      "review": "Read complete immutable 6e8..e764 diff: shares server-detail-aware force confirmation, distinguishes coded running and lane conflicts, and preserves full warning text without repeated force prompts. Existing UI logic; no external material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/lib/disarmed.ts",
+      "sha256": "72311f435f72669b247d7472729a58c8dcaf3787c28469fdea69c030844064c8",
+      "review": "Read all newly added immutable e764 source: shared disarmed-session type and warning sentence format previously local to application run surfaces. No external implementation, dependency, asset or dataset is introduced.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/lib/naming.ts",
+      "sha256": "cb381b140cec0f5b78fe6c9ebcf00196a8f49e22cdc0829d9a4ceafdccdbd689",
+      "review": "Read complete immutable 6e8..e764 diff: adds four capture-setting tokens to the existing server mirror and centralizes synthetic preview values. No third-party dataset, package or code.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/next/hubs/rig/devices/rigConnect.ts",
+      "sha256": "c1c6a1373c65d075a57bc2323ba4adc446d2f8537fe702f47e37a4cd08a8b58a",
+      "review": "Read complete immutable 6e8..e764 diff: profile-activation errors preserve server detail through a shared sentence helper and route to the existing force control. Existing UI code; no external material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/next/hubs/rig/profiles/ProfilesEditor.tsx",
+      "sha256": "deb3dbd3eb8c267cda1a1c21b9dc4e752b5cb02f89204dc9448e2eb61d66e2d6",
+      "review": "Read complete immutable 6e8..e764 diff: uses detail-dependent forceActivateConfirm instead of a fixed confirmation object. No external material or dependency.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/next/hubs/rig/profiles/profilesModel.ts",
+      "sha256": "7b864a7a060657d1840fc63702ce27a654edcfa417d2538f9f6d78137d9537b2",
+      "review": "Read complete immutable 6e8..e764 diff: provides sentence formatting and server-detail-aware force confirmation. Existing application copy/logic; no external material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx",
+      "sha256": "4e0486e9742213496285d93732a74564a8cedc6134fd0b63aed2fa3402545ff6",
+      "review": "Read complete immutable 6e8..e764 diff: gates run confirmation on the actual stop action rather than a possibly optimistic label. Existing application interaction logic; no external material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx",
+      "sha256": "c5734ddcbdc5f7cba13e875b020d85eafd1df885cd63c802af2d34a5d5fe6f27",
+      "review": "Read complete immutable 6e8..e764 diff: passes the actual stop decision to the shared run-confirmation helper on phones. No third-party material or dependency.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/next/hubs/session/now/NowEmpty.tsx",
+      "sha256": "b6d34a603ee7edcada920f2cb0ee438d282bbdb9d3035cf3cb43d48cfa5bb0db",
+      "review": "Read complete immutable 6e8..e764 diff: shows named warnings when starting/resuming disarms another session and imports shared wording. Existing response handling and UI copy; no new service, package or data.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/next/hubs/settings/tuning/files/filesModel.ts",
+      "sha256": "9b3a5e5bad859d576e55854066deb752624a9442a7d581188104ca3deeb9c47f",
+      "review": "Read complete immutable 6e8..e764 diff: removes the duplicate naming sample and uses shared synthetic PREVIEW_SAMPLE. No external material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/next/hubs/settings/tuning/files/index.ts",
+      "sha256": "8d17ef602aa2d7255cdbbc39e3076583fbf501e88a462760372c3f37bc7cc434",
+      "review": "Read complete immutable 6e8..e764 diff: removes the obsolete NAMING_SAMPLE re-export. No third-party material or dependency.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "ui/src/views/EquipmentView.tsx",
+      "sha256": "0455b0f7a60ed7e3a3facbde7f6517210b5c5018504c51cac484e5c5fa252650",
+      "review": "Read complete immutable 6e8..e764 diff: uses server-detail-aware activation error messages and verbatim toasts. Existing UI logic; no external material.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
+    },
+    {
+      "path": "native/crates/astro-guide/src/engine.rs",
+      "sha256": "7298b832941035708a405dab0da1a73207653a3ab53571e0b514f2c75986ec30",
+      "review": "Read the complete 6e8..e764 WP-41 diff: adds authoritative guide-lock coordinates to the existing stats snapshot and exercises lock establishment/dither in Rust tests. Existing project code, unchanged Cargo dependencies and licensing; no new third-party data or code provenance asserted.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea",
+      "reviewer": "parent; complete immutable native diff review"
+    },
+    {
+      "path": "native/crates/astrodeck-native/src/lib.rs",
+      "sha256": "b385fa8908c7cbab4d1617373b951c6cf5bce56a1e72cba0929162b2409317e6",
+      "review": "Read the complete 6e8..e764 WP-41 diff: exposes the existing engine lock as Python stats lock:[x,y] or None and updates its API comment. Existing project binding code, no dependency or license change.",
+      "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea",
+      "reviewer": "parent; complete immutable native diff review"
+    },
+    {
+      "path": "packaging/metadata_payloads.py",
+      "sha256": "491556e9af902e8c1eb347252027d71e092d17def7d1f33f59a8856fa680db2f",
+      "review": "Read complete helper: expands distribution metadata directory pairs into per-file entries, rejects files resolving outside the metadata root and omits only that root's PEP 610 direct_url.json. Other metadata, nested notices, SBOM and native source bytes retain destinations. No application/config/device access or dependency addition. Final post-Analysis correction: Read complete helper and exact post-d836 addition: filter_installer_urls builds only the two selected root destination names for direct_url.json, normalizes slash separators, and filters final TOC destination names without opening metadata contents. Nested files, other distributions, source paths and row order remain unchanged. The existing explicit directory expansion still checks containment."
+    }
+  ],
+  "upstream_review": {
+    "base": "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b",
+    "revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea",
+    "runtime_files_read": 28,
+    "native_files_read_by_parent": 2,
+    "metadata_revision": "c58ff3e4",
+    "scope": "Exact path-specific normalized UTF-8 bytes after complete immutable diffs; not approval of a mutable tree, runtime installation or platform payload."
+  }
+}

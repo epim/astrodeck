@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for lib/framing.ts — the client mirror of the server mosaic engine
 // (design spec §5). Covers the four correctness landmines from the spec:
 //   1. M31 (ra 0.71h) 3×1 mosaic — every emitted RA stays in [0,24) (the %24

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """SER v3 writer: the raw-frame container a planetary/lunar recording lands in.
 
 WHY SER AND NOT FITS-PER-FRAME. A 60 s run at 30 fps is 1800 frames. Written as

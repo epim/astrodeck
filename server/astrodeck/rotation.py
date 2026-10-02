@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pure rotator angle & mechanical-range math.
 
 Direct transcription of docs/native-parity/algorithms/nina-platesolving.md
@@ -155,6 +157,27 @@ def shortest_rotation(target_deg: float, orientation_deg: float,
         return m if m < abs(m2) else m2
     d = mod360(distance)
     return d - 360.0 if d > 180.0 else d
+
+
+def follow_fraction(turned_deg: float, commanded_deg: float) -> float:
+    """What fraction of a commanded move the camera's solved angle actually
+    reached: ``abs(turned_deg) / abs(commanded_deg)`` (D-05, #594).
+
+    Shared by ``Hub._rotate_to_pa_attempts``'s per-move follow check and
+    ``Hub.rotator_self_test``'s nightly dry run -- both ask the exact same
+    question (did the camera turn as far as it was told to), against
+    DIFFERENT thresholds for different reasons (see ``ROTATE_FOLLOW_
+    FRACTION`` and ``ROTATOR_SELF_TEST_FOLLOW_FRACTION`` in hub.py). Sharing
+    this one comparison is what keeps the two from quietly drifting apart on
+    what "followed" even means, while each keeps its own number.
+
+    ``commanded_deg`` of exactly 0 reads as a full 1.0 (nothing commanded
+    cannot be under-followed) rather than dividing by zero -- no caller
+    commands a zero-size move today, but a pure function should not raise on
+    an input its own domain allows."""
+    if commanded_deg == 0.0:
+        return 1.0
+    return abs(turned_deg) / abs(commanded_deg)
 
 
 def mechanical_travel(current_mech: float, target_mech: float) -> float:

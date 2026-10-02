@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tonightDom.test.tsx - the TONIGHT sheet, MOUNTED.
 //
 //   Run directly:  npx tsx src/next/hubs/session/flows/tonight/__tests__/tonightDom.test.tsx

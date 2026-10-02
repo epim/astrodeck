@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Header.tsx - the row every hub wears (README "Cross-hub chrome").
 //
 // Wordmark, the flows shortcut with its saved-flow count, and the rig chips:

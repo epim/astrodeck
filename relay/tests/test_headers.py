@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """§T7(2) bidirectional header transform (pure-function, fully off-wire).
 
 A broken Set-Cookie rewrite is a SILENT remote-only auth break LAN tests cannot

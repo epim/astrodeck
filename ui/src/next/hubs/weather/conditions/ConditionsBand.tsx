@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ConditionsBand.tsx - the six-tile band: WIND, HUMIDITY, SEEING,
 // TRANSPARENCY, DEW, MOON (README section 7).
 //

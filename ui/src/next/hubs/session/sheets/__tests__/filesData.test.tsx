@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filesData.test.tsx - the Files sheet's arithmetic, without a browser.
 //
 //   Run directly:  npx tsx src/next/hubs/session/sheets/__tests__/filesData.test.tsx

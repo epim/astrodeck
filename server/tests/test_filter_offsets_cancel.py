@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#184 — a `filter_offsets` run had no way out but restarting the server.
 
 Found on the rig 2026-08-08: autofocus re-exposed one unmeasurable position

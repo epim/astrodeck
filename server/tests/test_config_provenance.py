@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Effective config with provenance: WHICH LAYER won, not just what it says.
 
 The failure these tests exist to catch is not "the console shows the wrong

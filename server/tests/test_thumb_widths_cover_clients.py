@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every width a client can ASK for must be a width we WARM.
 
 Reported from the rig 2026-08-19: the gallery on a phone showed placeholder

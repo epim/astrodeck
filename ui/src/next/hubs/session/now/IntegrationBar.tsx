@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // IntegrationBar.tsx - one bar, segment per filter, width = planned time.
 //
 // The segment WIDTHS are planned seconds and the FILLS are accepted frames, so

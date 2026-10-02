@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowGraphExtras.ts - the three graph edits the quick-session sheet makes to a
 // flow the SERVER generated (hub-sky plan D.4, D.6, GAP-ANALYSIS 7).
 //

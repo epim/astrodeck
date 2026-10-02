@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // weatherModel.ts - every decision and every sentence the rebuilt Weather
 // settings panel prints (wave R7, T-R7-15; plan section 3.F18).
 //

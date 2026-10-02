@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regression: plate-solve must hand ASTAP the VERTICAL (height) FOV as its
 ``-fov`` hint, not the diagonal (P1-2). The diagonal is ~1.2-1.8x larger and
 over-widens the solver's scale search.

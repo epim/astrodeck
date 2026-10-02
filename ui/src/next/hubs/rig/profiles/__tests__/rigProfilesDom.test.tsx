@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigProfilesDom.test.tsx - the PROFILES sheet, MOUNTED (plan hub-rig.md A.3
 // and wave-r7.md 3.F20 / T-R7-17).
 //
@@ -452,6 +454,13 @@ await testAsync("a coded 409 offers the force retry once, and the retry is force
   const busy = confirmReq();
   assert(busy != null, "the coded 409 offered no way forward at all");
   eq(busy.title, "Rig is busy", "the 409 dialog is not the force-activate one");
+  // #256: the dialog must be worded from the SERVER'S own 409 detail
+  // (`forceActivateConfirm`), not the fixed sentence `FORCE_CONFIRM` used to
+  // carry regardless of why the rig was actually busy. A regression back to
+  // the fixed sentence prints "A connect or sequence is already running."
+  // instead, which would pass `eq(busy.title, ...)` above but fail this.
+  eq(busy.body, "A sequence is running. Force-activate this profile anyway?",
+    `the force dialog is not worded from the server's own detail: ${JSON.stringify(busy.body)}`);
   answer(true);                    // force it
   await settle();
   const posts = asked.filter((a) => a.method === "POST" && /\/activate$/.test(a.url));

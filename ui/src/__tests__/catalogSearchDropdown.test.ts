@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // catalogSearchDropdown.test.ts — pins the suggestion list inside the screen.
 //
 // Run directly:  npx tsx src/__tests__/catalogSearchDropdown.test.ts

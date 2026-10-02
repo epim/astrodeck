@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/ephemeris.ts: satellite and comet elements, and the passes they predict
 // (D-SKY-1). Server: server/astrodeck/catalog/ephemeris/routes.py.
 //

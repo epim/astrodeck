@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // powerDom.test.tsx — PowerView MOUNTED, tapped and dragged.
 //
 //   Run directly:  npx tsx src/views/__tests__/powerDom.test.tsx

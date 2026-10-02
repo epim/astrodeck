@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // VisibilityPanel — tonight's altitude / transit / astro-dark / moon / best
 // window for the framing center (design spec §6). The server
 // (catalog/visibility.py) computes everything; this panel only draws it.

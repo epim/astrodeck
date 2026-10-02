@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#24: the altitude limits cannot be enforced from latitude 0, longitude 0.
 
 `_enforce_mount_floor` is the guard in front of every slew: destination alt/az

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowProgressLive.test.ts - the TARGET chip ("212/315 subs") stays current
 // while the open flow's run is shooting (#214; #189 S1 item 9, spec 1.2).
 //

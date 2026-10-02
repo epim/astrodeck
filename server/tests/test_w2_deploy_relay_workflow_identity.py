@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The deploy-relay.yml workflow's own deploy path carries build identity
 too, and never regains the push trigger that used to make it an automatic,
 unverified deploy (#486).

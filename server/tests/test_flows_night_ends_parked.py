@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The night ends parked and warm, and the preview may not promise otherwise.
 
 THE DEFECT THIS PINS. ``resolve_tonight`` has always closed its timeline with

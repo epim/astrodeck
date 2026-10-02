@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowWireDelete.tsx — the ✕ that removes the selected wire. §C.6.
 //
 // A SIBLING OF THE NODE CARDS, INSIDE THE WORLD TRANSFORM. That is what makes it

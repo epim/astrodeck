@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // telemetry.ts — the pure staleness gate behind the ConnectionBanner.
 //
 // The server's 2s status poller only runs while a rig is connected, so with

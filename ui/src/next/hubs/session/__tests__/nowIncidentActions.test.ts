@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nowIncidentActions.test.ts - every incident button either fires a route the
 // server has, or is not drawn.
 //

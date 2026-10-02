@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // pendingValue.ts - the optimistic control-state latch for mount tracking and
 // tracking rate (plan hub-rig.md section 0.4 shape 2, transcribed from
 // `views/MountView.tsx:54-68`).

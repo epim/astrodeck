@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targetFramingSheet.test.tsx - the Target modal MOUNTED on the real store
 // (#189 S4 items 1 and 4; spec 2026-09-23 flows mosaic, 2.1-2.7, 6.9).
 //

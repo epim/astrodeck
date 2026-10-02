@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A site the satellites cannot serve must say so, permanently and in words.
 
 NEVER RUN END TO END until now, and it was flagged as mattering: a cloud map

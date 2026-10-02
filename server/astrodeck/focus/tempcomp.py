@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Focus follows temperature, and the tube tells you by how much (#D-RIG-2).
 
 A refractor's focus walks as the tube cools, and the walk is close to linear in

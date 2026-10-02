@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // EquipmentView.tsx — the unified per-device Equipment surface (spec §4.1),
 // replacing the old mode-centric connect view under the same "connect" view id.
 // One uniform row grammar: for each server-fed role, pick WHO drives it from
@@ -68,6 +70,7 @@ import BackendLinkGrid from "../components/settings/BackendLinkGrid";
 // for).
 import { waitForProfileActive } from "../components/settings/ProfileList";
 import { ROLE_LABEL } from "../components/settings/backendMeta";
+import { sentenceFrom } from "../next/hubs/rig/profiles/profilesModel";
 import { EmptyState, Field, HonestButton, InfoDot, Led, Panel } from "../components/ui";
 import { Icon } from "../components/icons";
 import { useExperience } from "../guided/experience";
@@ -171,6 +174,23 @@ export function compareRoleIdentity(
   if (want && have && driverType && NAME_ROUND_TRIPS.has(driverType))
     return want === have ? "same" : "different";
   return "unknown";
+}
+
+/** The toast for a profile-activate failure on this screen, which has no force
+ *  control of its own (Settings → Profiles does, and asks first) — so it
+ *  always points there. Worded from the server's own coded-409 detail (#256):
+ *  auto-resume's recovery ladder counts as "running" too (#238), and while it
+ *  re-centres the mount after a restart the engine is idle, so a fixed "a
+ *  sequence ... is running" sent the operator looking for a run the Monitor
+ *  does not show. */
+export function activateErrorMessage(e: unknown): string {
+  return e instanceof ApiError && e.code === "running"
+    ? `${sentenceFrom(e.message)} Stop it first, or force-activate from Settings → Profiles.`
+    : e instanceof ApiError && e.status === 409
+      ? "Another profile is still connecting — wait for it to finish before switching again."
+      : e instanceof Error
+        ? e.message
+        : "activate failed";
 }
 
 export default function EquipmentView(): JSX.Element {
@@ -860,16 +880,13 @@ export default function EquipmentView(): JSX.Element {
         // it, not this button. The uncoded one is _spawn_connect's own lane
         // guard, which force does NOT bypass; saying "already running" raw was
         // the whole of what the user got.
-        const msg =
-          e instanceof ApiError && e.code === "running"
-            ? "A sequence, capture loop or polar alignment is running — stop it first, " +
-              "or force-activate from Settings → Profiles."
-            : e instanceof ApiError && e.status === 409
-              ? "Another profile is still connecting — wait for it to finish before switching again."
-              : e instanceof Error
-                ? e.message
-                : "activate failed";
-        showToast("error", msg);
+        //
+        // `verbatim: true` because the coded branch now carries the server's
+        // own detail (#256), which can run well past the toast's silent
+        // truncation length — and when auto-resume's recovery ladder is the
+        // cause (#238), the clause that is cut is the one saying forcing
+        // disarms that session, exactly what this fix exists to show.
+        showToast("error", activateErrorMessage(e), { verbatim: true });
       } finally {
         setBusyWhat(null);
       }

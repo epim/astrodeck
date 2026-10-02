@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CaptureControls.tsx - CAPTURE / LOOP / LIVE VIEW, and the STOP that replaces
 // the primary while anything is in flight.
 //

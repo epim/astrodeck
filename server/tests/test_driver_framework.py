@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Driver framework: manifest, safety flag, serial addressing, registry-derived
 driver types, and entry-point discovery."""
 from astrodeck.devices import backends as _backends  # noqa: F401  (registration)

@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* files.css - the FILES AND STANDARDS area's own classes (wave R7, T-R7-13).
  *
  * `next.css` is a single shared file that twenty concurrent tasks cannot own,

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``cases.build_case`` against the contract's case directory layout.
 
 Uses the ``flat`` renderer throughout: it is the one renderer this task ships,

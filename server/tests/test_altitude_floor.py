@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A target that sinks below its floor is set aside, not shot through the trees.
 
 `Schedule.min_altitude_deg` gated SELECTION and nothing else. A target picked at
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import types
 
 import pytest
 
@@ -70,6 +73,32 @@ def _engine(hub, target, instructions=None) -> SequenceEngine:
     e = SequenceEngine(hub)
     e.plan = plan
     return e
+
+
+def _empty_run_diagnostic(e, lines) -> str:
+    """#442: a run that takes no frame at all is rare and, so far,
+    unreproduced on purpose (see the class below) — so the fix this round is
+    making the NEXT one explain itself instead of restating that it happened.
+
+    ``end_reason`` is read off ``e.state`` rather than threaded through as an
+    argument because that is exactly what a reader chasing a red run would
+    reach for first, and ``_set_state`` already defaults it to the terminal
+    state itself (``complete``, ``aborted``, ``error``, ...) whenever a
+    caller does not name a more specific one (``dawn_cutoff``,
+    ``cooling_skip``, ``unsafe``, ``incomplete``). ``lines`` is this run's own
+    tail from the ``bus_lines`` fixture, not ``bus.log_history[-N:]``: the
+    ring is one process-wide deque shared by the whole suite, so a slice of
+    it can carry another test's noise, or none of this run's own lines if an
+    xdist worker's ring already holds 200 newer ones from something else.
+    """
+    tail = "\n".join(f"  [{level}] {source}: {message}"
+                     for level, message, source in lines[-30:]) or "  (none)"
+    return (
+        "the run finished without entering the frame loop at all, so this "
+        "test is asserting nothing about the call site -- "
+        f"end_reason={e.state.get('end_reason')!r} "
+        f"state={e.state.get('state')!r} detail={e.state.get('detail')!r}\n"
+        f"this run's log lines:\n{tail}")
 
 
 class TestTheFloorEndsTheTarget:
@@ -227,7 +256,7 @@ class TestTheRealFrameLoopCallsIt:
     """
 
     async def test_a_sinking_target_hands_the_night_to_the_next_one(
-            self, sim_hub, monkeypatch):
+            self, sim_hub, monkeypatch, bus_lines):
         sunk = _target(name="SINKING", floor=30.0, on_floor="advance")
         rises = _target(name="STAYSUP", floor=30.0, on_floor="advance")
 
@@ -265,15 +294,52 @@ class TestTheRealFrameLoopCallsIt:
 
         # THE PRECONDITION, ASSERTED FIRST. Everything below is vacuous if no
         # frame was ever taken, and that is exactly the state this test spent a
-        # day in without saying so.
-        assert done, (
-            "the run finished without entering the frame loop at all, so this "
-            "test is asserting nothing about the call site")
+        # day in without saying so. #442: it is intermittent and unexplained,
+        # so the message now names the run's own end_reason and its log tail
+        # instead of only restating that nothing happened.
+        assert done, _empty_run_diagnostic(e, bus_lines)
         assert _frames(rises) >= 3, (
             f"the target that stayed up did not get its frames: {done}")
         assert _frames(sunk) < 3, (
             f"the sinking target shot its whole quota straight through its own "
             f"floor - the frame loop is not calling the check: {done}")
+
+
+class TestTheEmptyRunDiagnosticNamesACause:
+    """#442's fix is the message above, not a reproduction: three passes and
+    three failures of the real run came within twenty minutes of each other
+    on 2026-09-28 and nobody has pinned a cause since, so a test that waits
+    for the real engine to land in the empty state would be exactly the kind
+    of test this ticket is about (slow, and still a coin flip). This tests
+    the formatter directly instead, against a fake run whose ``state`` and
+    log tail are fixed by hand.
+
+    MUTATION "diagnostic dropped" (``_empty_run_diagnostic``'s body replaced
+    by the bare sentence it used to be, the one issue #442 quoted). Observed:
+        AssertionError: assert "end_reason='dawn_cutoff'" in 'the run finished without entering the frame loop at all, so this test is asserting nothing about the call site'
+    """
+
+    def test_the_message_names_the_end_reason_state_and_log_tail(self):
+        e = types.SimpleNamespace(state={
+            "state": "complete", "end_reason": "dawn_cutoff",
+            "detail": "stopped at dawn (windows closed)"})
+        lines = [("info", "sequence 'nightly' started: 6 frames, "
+                          "30 min integration", "sequence"),
+                ("info", "sequence 'nightly' stopped at dawn: "
+                          "6 frames owed", "sequence")]
+        msg = _empty_run_diagnostic(e, lines)
+        assert "end_reason='dawn_cutoff'" in msg
+        assert "detail='stopped at dawn (windows closed)'" in msg
+        assert "sequence 'nightly' stopped at dawn: 6 frames owed" in msg
+
+    def test_no_log_lines_still_says_so_rather_than_an_empty_tail(self):
+        # An engine that ends before its first `bus.log` call (a lane wait
+        # that times out ahead of "sequence started", say) would otherwise
+        # print a label over nothing, which reads like the capture broke
+        # rather than like the run truly said nothing.
+        e = types.SimpleNamespace(state={"state": "error"})
+        msg = _empty_run_diagnostic(e, [])
+        assert "(none)" in msg
 
 
 class TestTheCampaignFlowNowCarriesIt:

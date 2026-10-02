@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // roster.test.ts - the device list and the rig summary, without a DOM.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/__tests__/roster.test.ts

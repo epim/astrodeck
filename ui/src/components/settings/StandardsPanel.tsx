@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // StandardsPanel.tsx — Settings: the rig's standards for a usable frame.
 //
 // WHY THIS PANEL EXISTS (#239 stage A). These seven settings lived on the PLAN,

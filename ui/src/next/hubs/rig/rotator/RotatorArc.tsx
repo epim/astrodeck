@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RotatorArc.tsx - the 120 px range-of-motion dial, DISPLAY ONLY.
 //
 // Deliberately not drag-interactive, and that decision is older than this

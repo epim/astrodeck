@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Signed session tokens (stdlib HMAC default; optional asymmetric EdDSA).
 
 A session token is a compact, URL-safe, signed envelope carrying the caller's

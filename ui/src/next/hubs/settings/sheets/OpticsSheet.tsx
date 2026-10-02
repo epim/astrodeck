@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // OpticsSheet.tsx - Settings > RIG > Optics (plan section C.5).
 //
 // THE BANNER COMES FIRST, AND IT IS THE POINT. The ACTIVE PROFILE's optics block

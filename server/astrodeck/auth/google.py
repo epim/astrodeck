@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Google OIDC building blocks (W2.4 Stage C) -- the GoogleOIDC client.
 
 This module owns the *mechanics* of the Authorization-Code + PKCE flow against

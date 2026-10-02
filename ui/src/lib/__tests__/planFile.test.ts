@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planFile.test.ts — pure tests for lib/planFile.ts (plan-library import
 // parsing). Inline-assert harness via `npx tsx`.
 import { parsePlanFile, planExportFilename } from "../planFile";

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /** An explicitly illustrative night. This model never sends equipment commands. */
 export const TARGETS = [
   { id: "M31", name: "Andromeda Galaxy", kind: "Galaxy", constellation: "Andromeda", alt: 62, az: 62, color: "mint", note: "A whole galaxy, in your frame.", window: "21:10–03:40", ra: "00h 42m 44s", dec: "+41° 16′ 09″" },

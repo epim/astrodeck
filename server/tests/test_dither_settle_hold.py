@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Consecutive dither settle failures mean the field is walking.
 
 2026-09-10: the mount walked 3.19 degrees off NGC 7331 over 55 minutes while

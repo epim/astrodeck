@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tonightMosaicBand.test.ts - the #/next Tonight sheet's TIMELINE band for a
 // mosaic block (#189 S3 item 5; spec 1.2, 2.3, 6.9).
 //

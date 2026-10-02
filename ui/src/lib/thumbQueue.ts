@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/thumbQueue.ts — how many thumbnails may be in flight at once, and what to
 // do when the far end says "not so fast".
 //

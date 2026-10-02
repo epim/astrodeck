@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """When will it be in view (stage 5) -- how the cloud field is moving.
 
 No network, no file, no clock, no config, no h5py. Two stage-3

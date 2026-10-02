@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // set4.ts - T-SET-4's ten MORE-group sheets (ARCHITECTURE.md section 5; plan
 // hub-weather-monitor-settings.md section E, "File plan and task partition").
 //

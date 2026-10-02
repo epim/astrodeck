@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTINUE against ResumeArm: one starter per session, and no lost frames
 (#189 S1, spec 5.9 "The critical section"; task S1-13).
 

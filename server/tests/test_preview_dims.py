@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A preview event must describe the bytes it was published with.
 
 The Capture stage sizes itself from ``display_width``/``display_height`` and

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The sessions list counts observing nights, as every other surface does
 (#430, H4 task H4-SESSIONS; spec 5.9, S7 orchestrator ruling 7: a session's
 night is the observing night its run started in).

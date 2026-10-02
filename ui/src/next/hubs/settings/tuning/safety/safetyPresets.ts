@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safetyPresets.ts - the safety PRESET table and the sentences that describe it
 // (wave R7, T-R7-9; plan section 3.F1).
 //

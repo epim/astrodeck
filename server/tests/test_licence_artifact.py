@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Artifact regressions use real archive bytes and the real release packager.
 
 Named mutants and exact failing assertions are recorded by
@@ -64,6 +66,9 @@ def test_unregistered_binary_in_real_built_tarball_is_rejected(sample, tmp_path)
     # hand-written inventory. It really reaches the resulting archive.
     (tmp_path / "scripts").mkdir()
     shutil.copy2(ROOT / "scripts/build_release.py", tmp_path / "scripts/build_release.py")
+    (tmp_path / "packaging").mkdir()
+    for name in ("distribution_policy.py", "distribution-policy.json"):
+        shutil.copy2(ROOT / "packaging" / name, tmp_path / "packaging" / name)
     for name, data in sample[0].items():
         p = tmp_path / name
         p.parent.mkdir(parents=True, exist_ok=True)

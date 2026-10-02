@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native backend: direct ASCOM Alpaca (the no-NINA path).
 
 WRAPS ``devices.alpaca`` (``make_device`` + ``discover``) behind the

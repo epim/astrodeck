@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tooltipPlace — pure placement math for the components/ui.tsx Tooltip bubble.
 // Split out (tooltipMachine.ts precedent) so the npx-tsx assert tests can import
 // it under plain Node — no React, no DOM. Takes plain rects/sizes in viewport

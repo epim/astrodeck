@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The pier side, and the switch that pretended to guard it.
 
 TWO DEFECTS, one in each direction.

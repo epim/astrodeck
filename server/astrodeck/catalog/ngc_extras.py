@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """OpenNGC columns describe.py wants but ngc.tsv itself doesn't carry --
 Hubble type, minor axis, redshift, a filtered NED note -- loaded once from
 the sidecar ``build_ngc_extras.py`` precomputed.

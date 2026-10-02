@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 import pathlib, re, unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 class Independence(unittest.TestCase):

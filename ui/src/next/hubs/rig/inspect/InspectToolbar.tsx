@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // InspectToolbar.tsx - the preview toolbar, rebuilt in the design's vocabulary
 // (wave R7, T-R7-19; replaces `components/preview/PreviewToolbar.tsx`, which is
 // NOT edited and keeps serving `#/classic`).

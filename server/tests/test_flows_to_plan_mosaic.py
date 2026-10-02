@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A TARGET block with a grid, as a plan the engine can run (spec 3.3;
 #189 U-09, #170, #151).
 

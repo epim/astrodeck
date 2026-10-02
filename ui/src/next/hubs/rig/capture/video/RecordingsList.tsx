@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RecordingsList.tsx - the .ser files on the rig, and the three things to do
 // with one.
 //

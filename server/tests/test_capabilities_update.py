@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """system.update is admin-only and destructive."""
 from astrodeck.auth.capabilities import (ALL_CAPS, CAP_SYSTEM_UPDATE,
                                           DESTRUCTIVE_CAPS, has_capability)

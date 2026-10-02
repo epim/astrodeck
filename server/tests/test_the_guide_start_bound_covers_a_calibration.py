@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The 180 s guide-start bound cut a fresh calibration and the run went blind.
 
 MEASURED, 2026-09-07 03:39. A meridian-limit recovery parked, unparked and

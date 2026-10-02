@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // atlasHonesty.test.tsx — the Atlas page MOUNTED, and asked the three questions
 // the 2026-08-05 audit found it answering wrongly.
 //

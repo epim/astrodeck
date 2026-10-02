@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // r7Css.test.ts - the wave-R7 rule that every area owns its own stylesheet.
 //
 //   Run directly:  npx tsx src/next/__tests__/r7Css.test.ts

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // equipment.ts — the pure assignment model behind the Equipment tab (spec
 // §4.1). No React, no fetch: the ONE RULE (a driver is offered on a row only
 // if enabled + reachable + actually offering that role), sticky-assignment

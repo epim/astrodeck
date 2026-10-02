@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // set3.ts - T-SET-3's six sheets, handed to the SETTINGS hub as one object,
 // plus the USERS and ABOUT screens the hub mounts directly for the USERS and
 // ABOUT sub-nav entries (plan section E.5).

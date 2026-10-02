@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // hubs/sheets.ts - the sheet contract (ARCHITECTURE.md section 5).
 //
 // A sheet is a plain component that takes the route's query params and its

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // prefs.ts - the Sky hub's per-phone state, all of it, in one place.
 //
 // ARCHITECTURE.md section 9: every key is prefixed `astrodeck-next-`, every read

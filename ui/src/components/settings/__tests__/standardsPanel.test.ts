@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // standardsPanel.test.ts — anti-drift for the imaging-standards block.
 //
 // Same shape as nodeDefs.test.ts, and for the same reason: StandardsConfig is

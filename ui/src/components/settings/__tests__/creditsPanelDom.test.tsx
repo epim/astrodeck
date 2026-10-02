@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // creditsPanelDom.test.tsx — the credits screen, MOUNTED, with the REAL data.
 //
 //   Run directly:  npx tsx src/components/settings/__tests__/creditsPanelDom.test.tsx
