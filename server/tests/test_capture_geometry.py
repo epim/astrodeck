@@ -138,6 +138,19 @@ async def test_inventory_failure_is_an_advisory(tmp_path, monkeypatch):
 
 
 def test_compile_reports_geometry_as_warning_not_unmapped_failure(env):
+    """The geometry mismatch is a ``warn``-level issue, never an ``unmapped``
+    entry -- this is what the test name is about, and what the assertion
+    below checks for.
+
+    RE-PINNED FOR BACKLOG WP-55 (D-08, owner-approved 2026-09-30, #559/#582):
+    ``GRAPH`` (``test_flows_routes.GRAPH``) opens with a DUSK node, and
+    ``to_plan.to_sequence_plan`` now appends one unconditional ``"schedule"``
+    note to every dusk/dawn-scheduled plan's ``unmapped`` list -- compile is
+    pure and has no site to check (the orchestrator's ruling on D-08's
+    compile half), so a made-up saved site on this harness would not make it
+    go away. ``unmapped`` is no longer empty, but the one entry in it is that
+    same note and not a geometry failure, which is what this test exists to
+    rule out."""
     client, root = env
     write_frame(root, "banked.fits")
     result = client.post("/api/flows/compile", json={"graph": GRAPH, "name": "test"})
@@ -145,7 +158,8 @@ def test_compile_reports_geometry_as_warning_not_unmapped_failure(env):
     body = result.json()
     warning = next(i for i in body["issues"] if "largest saved group" in i["text"].lower())
     assert warning["level"] == "warn"
-    assert not body["unmapped"]
+    assert [u["key"] for u in body["unmapped"]] == ["schedule"], body["unmapped"]
+    assert body["unmapped"][0]["level"] == "note"
 
 
 async def test_capture_logs_new_dimensions_once_and_returns_frame(monkeypatch):

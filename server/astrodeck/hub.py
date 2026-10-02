@@ -1077,6 +1077,22 @@ class Hub:
         self._warm_task: asyncio.Task | None = None
         self._warm_state: dict | None = None
         self._warm_lock: asyncio.Lock = asyncio.Lock()
+        # --- teardown epoch fence (#281; WP-66) ---------------------------------
+        # A monotonic counter, bumped as the very first thing ``_teardown`` does
+        # -- before it ever touches ``_warm_lock`` -- so the bump lands even when
+        # the teardown then sits blocked waiting for that lock (its own
+        # ``cancel_warm(finalize=True)`` takes it too). ``warm_camera`` and
+        # ``cool_camera`` read this BEFORE their own first await on the lock and
+        # re-check it after every await that follows: the sensor read, the
+        # ambient read, the lock wait itself. A camera object either of them is
+        # already holding can be mid-disconnect by the time such an await
+        # returns, so a mismatch means "do not trust that reference any
+        # further" -- no ramp is created and no cooler command is sent. Same
+        # shape as ``_motion_epoch`` below and the idle-stop fence (#270,
+        # ``sequence/engine.py``'s ``_idle_stop_epoch``): a long path snapshots
+        # the fence before its awaits and abandons if a teardown has advanced
+        # it, rather than trusting a device handle an await may have outlived.
+        self._teardown_epoch: int = 0
         # --- guide-cam preview (guide_preview_png) ------------------------------
         # The exposure in flight, shared between overlapping callers: the panel
         # swaps a cache-busted <img src> every 2.5s whether or not the previous
@@ -1678,7 +1694,19 @@ class Hub:
         rig nothing was talking to. Now the cleanup sends the cooler-off
         ``cancel_warm`` did not reach, stops and disconnects everything, and the
         cancel is raised again once it is done. A cancel that lands DURING the
-        cleanup waits for it too, and is raised after it."""
+        cleanup waits for it too, and is raised after it.
+
+        FENCES WARM/COOL AGAINST THIS TEARDOWN FIRST (#281; WP-66).
+        ``_teardown_epoch`` is bumped as the very first statement below, with
+        no lock of its own, specifically so the bump still lands when this
+        task is then cancelled sitting in ``cancel_warm``'s wait for
+        ``_warm_lock`` -- the exact window in which #281 was found: a
+        concurrent ``warm_camera`` or ``cool_camera`` already holds that
+        lock, so this teardown's own cleanup (the ``finally`` below) is the
+        only thing that still runs, and it always does. Bumping first means
+        the other call's post-await fence check sees the advance regardless
+        of how far this teardown gets."""
+        self._teardown_epoch += 1
         self.stop_loop()
         self.stop_wcs_worker()              # per-frame-wcs R1: never outlive the hub
         self.live_stacker = None            # NOV-1: release the accumulator on teardown
@@ -2749,6 +2777,19 @@ class Hub:
         result means a STOP/abort landed mid-flight and the command MUST be
         abandoned (the stale-remote-slew-after-local-abort race)."""
         return self._motion_epoch == epoch_at_entry
+
+    def _teardown_committed_clean(self, fence: int) -> bool:
+        """True iff no teardown has begun since ``fence`` (a reading of
+        ``_teardown_epoch``) was taken -- the teardown-epoch twin of
+        ``_motion_committed_clean`` just above, for ``warm_camera`` and
+        ``cool_camera`` instead of a mount command (#281; WP-66). Both read
+        the fence before their first await on ``_warm_lock`` and call this
+        after every await that follows (the lock wait itself, each bounded
+        read); a False result means ``_teardown`` has started -- and, since
+        its cleanup always runs however it ends (#267), the camera either
+        call was holding may already be gone, so neither may touch it
+        further: no ramp, no cooler command."""
+        return self._teardown_epoch == fence
 
     # ----------------------------------------------------- move-axis deadman
 
@@ -4909,9 +4950,30 @@ class Hub:
         Records the target as the STANDING request (``cooling.setpoint_c``) so a
         reconnect or a process restart can put it back. Recorded only after the
         camera accepts it — a target the hardware refused is not a promise worth
-        keeping across a restart."""
+        keeping across a restart.
+
+        TEARDOWN EPOCH FENCE (#281; WP-66). ``cancel_warm`` takes
+        ``_warm_lock`` and, when a ramp is dying, waits out its reap before
+        returning — the exact wait a concurrent teardown's own
+        ``cancel_warm(finalize=True)`` can be stuck behind, since it needs
+        the same lock. ``_teardown`` bumps ``_teardown_epoch`` the moment it
+        starts, with no lock of its own, so that bump lands even while the
+        teardown is stuck there. ``cam`` above was captured before this
+        call's own wait; if the fence has moved by the time it returns, the
+        teardown's cleanup is disconnecting (or has disconnected) that same
+        camera, and sending it a setpoint would be #281 itself: a command
+        reaching a camera nothing manages any more, and a standing setpoint
+        recorded for hardware that never actually held it."""
         cam: Camera = self.require("camera")
+        fence = self._teardown_epoch
         await self.cancel_warm("cooling was requested", finalize=False)
+        if not self._teardown_committed_clean(fence):
+            bus.log("warning",
+                    "cool_camera: a teardown began while this call waited "
+                    "for the warm lock — the cooling request was dropped "
+                    "rather than sent to a disconnecting camera", "camera")
+            raise DeviceError(
+                "the camera disconnected while cooling was starting")
         await cam.set_cooler(True, target_c)
         self._remember_cooling(target_c)
 
@@ -5194,7 +5256,21 @@ class Hub:
         Never raises for "nothing to do" — a camera with no cooler, or one that is
         already at ambient, returns an inactive state with the reason in ``note``.
         It DOES raise DeviceError when there is no camera at all, so the route can
-        answer 400 rather than silently succeeding at nothing."""
+        answer 400 rather than silently succeeding at nothing.
+
+        TEARDOWN EPOCH FENCE (#281; WP-66). The sensor and ambient reads
+        below are bounded awaits taken WHILE ``_warm_lock`` is held, and the
+        lock itself may have to be waited for first. ``_teardown`` bumps
+        ``_teardown_epoch`` the instant it starts, with no lock of its own,
+        so that bump lands even while the teardown is then stuck behind this
+        very lock (its ``cancel_warm(finalize=True)`` needs it too) -- which
+        is exactly the window #281 found: the teardown owes no cooler-off
+        because no ramp exists yet, its cleanup still disconnects every
+        device, and this call then resumes holding a ``cam`` reference that
+        cleanup has already cut loose. ``fence`` is read below before the
+        lock wait and re-checked after it and after each read; a mismatch
+        means abandon the warm as a no-op rather than create a ramp (or send
+        any other command) against a camera nothing manages any more."""
         cam: Camera = self.require("camera")
         # WARMING STOPS THE COOLER. IT DOES NOT CHANGE WHAT TEMPERATURE THIS RIG
         # IMAGES AT.
@@ -5221,7 +5297,11 @@ class Hub:
         if not getattr(cam, "can_cool", False):
             return self._warm_finished_state(source, f"{cam.name} has no cooler",
                                              ramped=False)
+        fence = self._teardown_epoch
         async with self._warm_lock:
+            if not self._teardown_committed_clean(fence):
+                return self._warm_abandoned_by_teardown(source, "waiting for "
+                                                        "the warm lock")
             if self._warm_task is not None and not self._warm_task.done():
                 if ramp:
                     # Two warms must not race. The second one JOINS the first
@@ -5235,9 +5315,20 @@ class Hub:
             if not ramp or not cooling.warm_ramp_enabled(cfg):
                 why = ("at the caller's request" if not ramp
                        else "cooling.warm_ramp is turned off in config")
+                # WP-66 FOLLOW-ON (#281 class): `await self._cancel_warm_locked`
+                # just above can land a teardown in the gap, and this is the
+                # one-shot `cam.set_cooler(False)` inside `_warm_now` -- rechecked
+                # immediately before it is sent, not left to the check this
+                # branch's own caller already passed.
+                if not self._teardown_committed_clean(fence):
+                    return self._warm_abandoned_by_teardown(
+                        source, "about to switch the cooler off with no ramp")
                 return await self._warm_now(cam, source, why, level="warning")
 
             start_c = await self._warm_read_temp(cam)
+            if not self._teardown_committed_clean(fence):
+                return self._warm_abandoned_by_teardown(source, "reading the "
+                                                        "sensor")
             if start_c is None:
                 # The measurement IS the ramp: without a starting temperature we
                 # cannot pick a setpoint schedule, and a made-up one could command
@@ -5249,10 +5340,18 @@ class Hub:
                     "setpoint ramp has nothing to follow", level="warning")
 
             measured_ambient = await self._warm_read_ambient(cam)
+            if not self._teardown_committed_clean(fence):
+                return self._warm_abandoned_by_teardown(source, "reading "
+                                                        "ambient")
             ambient_c, ambient_from = cooling.warm_ambient_c(cfg, start_c,
                                                              measured_ambient)
             rate = cooling.warm_rate_c_per_min(cfg)
             if cooling.warm_is_pointless(start_c, ambient_c):
+                # WP-66 FOLLOW-ON (#281 class): the one-shot `cam.set_cooler(False)`
+                # inside `_warm_now`, rechecked immediately before it is sent.
+                if not self._teardown_committed_clean(fence):
+                    return self._warm_abandoned_by_teardown(
+                        source, "about to switch the cooler off with no ramp")
                 return await self._warm_now(
                     cam, source,
                     f"the sensor is already at {start_c:.1f} °C, at or above "
@@ -5283,6 +5382,15 @@ class Hub:
                 # two rampers stepping one setpoint would fight.
                 minutes = cooling.warm_minutes(start_c, ambient_c, rate)
                 warm_fn = getattr(cam, "warm", None)
+                # WP-66 FOLLOW-ON (#281 class): the delegated backend's own
+                # one-shot command (`warm_fn(minutes)` or `cam.set_cooler(False)`),
+                # rechecked immediately before either is sent -- `_warm_finished_
+                # state` (inside `_warm_abandoned_by_teardown`) overwrites the
+                # "active" `_warm_state` set just above, so no stale ramp is left
+                # claiming to be running.
+                if not self._teardown_committed_clean(fence):
+                    return self._warm_abandoned_by_teardown(
+                        source, "about to hand the backend its timed warm")
                 try:
                     if callable(warm_fn):
                         await asyncio.wait_for(warm_fn(minutes),
@@ -5306,9 +5414,29 @@ class Hub:
                                 f"at {rate:g} °C/min, about "
                                 f"{duration_s / 60.0:.0f} min, in the background",
                         "camera")
+            # WP-66 FOLLOW-ON (#281 class): rechecked once more immediately
+            # before starting the background ramp task -- the delegated
+            # branch just above awaited a command, so a teardown could have
+            # landed in that gap and must not also get a ramp task racing
+            # its cleanup.
+            if not self._teardown_committed_clean(fence):
+                return self._warm_abandoned_by_teardown(
+                    source, "about to start the background ramp")
             self._warm_task = asyncio.create_task(
                 self._warm_ramp(cam, delegated=delegated))
             return self.warm_state() or {}
+
+    def _warm_abandoned_by_teardown(self, source: str, where: str) -> dict:
+        """WP-66 (#281): ``warm_camera``'s teardown-epoch fence tripped while
+        it was ``where``. The camera it was holding may already be
+        disconnected, so no ramp is created and no command is sent to it;
+        reported through the same "already over" shape as every other
+        no-op warm (``_warm_finished_state``), not an exception -- the
+        camera going away mid-call is not a failure of this warm, it is the
+        teardown's own job finishing first."""
+        note = f"a teardown began while this warm was {where}"
+        bus.log("info", f"warm_camera: {note} — no ramp started", "camera")
+        return self._warm_finished_state(source, note, ramped=False)
 
     def _warm_finished_state(self, source: str, note: str, *,
                              ramped: bool) -> dict:
