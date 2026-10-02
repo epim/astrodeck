@@ -8887,13 +8887,24 @@ class SequenceEngine:
             await self._enforce_tracking(step, target)
             await self._enforce_cooling()
 
+            # #560 (WP-58): a 0 px distance is "dithering off", not "dither
+            # by nothing" -- the note on the GUIDER sheet's stepper has always
+            # said so, but this gate used to fire on the cadence alone, so
+            # every `dither_every` frames still paid a full settle wait (1.5
+            # px held 10 s on the native engine) for a move that never
+            # happened. Skipping the block entirely, rather than calling
+            # `dither(0, ...)` and letting the guider no-op, is what skips the
+            # SETTLE too -- the actual cost the operator was trying to avoid.
             if plan.dither_every and self._frames_since_dither >= plan.dither_every \
-                    and self.hub.guider and self.hub.guider.connected:
+                    and self.hub.guider and self.hub.guider.connected \
+                    and self._policy.dither_pixels > 0:
                 self._set_state(detail="dithering")
                 _t0 = time.time()
+                _settle = self._dither_settle_override()
                 try:
-                    await _bounded(self.hub.guider.dither(self._policy.dither_pixels),
-                                   GUIDE_OP_TIMEOUT_S, "dither")
+                    await _bounded(self.hub.guider.dither(
+                                       self._policy.dither_pixels, _settle),
+                                   self._dither_wait_timeout_s(_settle), "dither")
                     self._frames_since_dither = 0
                     self._record_event_cost("dither", time.time() - _t0)
                     self._frame_had_event = True
@@ -14352,6 +14363,57 @@ class SequenceEngine:
         self._dither_settle_fails = 0
         await self._await_guider_quiet("the next frame")
 
+    def _dither_settle_override(self) -> dict[str, float] | None:
+        """The persisted SETTLE overrides for every dither THIS RUN sends
+        (#560, WP-58), in the ``{"pixels", "time", "timeout"}`` shape
+        ``dither()`` already accepts (UX-24) -- the same shape
+        ``POST /api/guide/dither`` builds from the DITHER NOW sheet's three
+        boxes. Before this, a run's own dithers (the cadence block above and
+        the ``dither`` instruction action) passed no settle at all and always
+        waited on the guider's built-in rule, whatever ``GuideConfig`` said;
+        only a manual DITHER NOW press could ever override it.
+
+        ``None`` for a field means "the guider's own default", the same
+        convention the DITHER NOW boxes use for "left blank" -- so only the
+        fields actually set are included, and a config with none of the
+        three set returns ``None`` rather than an empty dict, which
+        ``dither()`` treats identically (``if settle and settle.get(...)``).
+        """
+        cfg = self._cfg or config_store.cfg()
+        gcfg = getattr(cfg, "guide", None)
+        settle = {k: v for k, v in (
+            ("pixels", getattr(gcfg, "dither_settle_pixels", None)),
+            ("time", getattr(gcfg, "dither_settle_time_s", None)),
+            ("timeout", getattr(gcfg, "dither_settle_timeout_s", None)),
+        ) if v is not None}
+        return settle or None
+
+    @staticmethod
+    def _dither_wait_timeout_s(settle: dict[str, float] | None) -> float:
+        """The OUTER bound for one dither's whole await (#560 WP-58 follow-up,
+        found while wiring ``_dither_settle_override`` in above).
+
+        ``GUIDE_OP_TIMEOUT_S`` is a flat 120 s cap shared by dither /
+        stop-guiding / quick guider ops, but ``GuideConfig.dither_settle_
+        timeout_s`` lets an operator ask for up to 600 s on its own. Without
+        this, a configured timeout past 120 s could never get the chance to
+        fire: ``_bounded`` would cancel the dither first -- and raise a
+        ``SafetyAbort`` that tears down the WHOLE NIGHT, not just the one
+        dither -- before the guider's own settle wait ever timed out. That
+        would make the three persisted fields this WP ships actively
+        dangerous to set past 120 s, which is worse than the pre-#560 "the
+        fields do nothing" bug they were meant to fix.
+
+        ``guide/phd2.py``'s own settle wait already adds a 30 s margin onto
+        a caller's timeout (``s["timeout"] + 30``) before it gives up; this
+        matches that margin so the outer bound is never the one that fires
+        first.
+        """
+        configured = settle.get("timeout") if settle else None
+        if configured is None:
+            return GUIDE_OP_TIMEOUT_S
+        return max(GUIDE_OP_TIMEOUT_S, float(configured) + 30.0)
+
     def _note_dither_failure(self, exc: BaseException) -> None:
         """Count a dither failure toward the walking-field gate, if it counts.
 
@@ -14684,9 +14746,17 @@ class SequenceEngine:
                             # was written for.
                             self._rule_failures.pop(fa.instruction_id, None)
                 elif fa.action == "dither":
-                    if self.hub.guider and self.hub.guider.connected:
-                        await _bounded(self.hub.guider.dither(self._policy.dither_pixels),
-                                       GUIDE_OP_TIMEOUT_S, "instruction dither")
+                    # #560 (WP-58): same "0 means off" gate as the built-in
+                    # cadence above -- a flow that fires this action while the
+                    # rig's dither distance is 0 must not pay a settle wait
+                    # for a move that never happens either.
+                    if self.hub.guider and self.hub.guider.connected \
+                            and self._policy.dither_pixels > 0:
+                        _settle = self._dither_settle_override()
+                        await _bounded(self.hub.guider.dither(
+                                           self._policy.dither_pixels, _settle),
+                                       self._dither_wait_timeout_s(_settle),
+                                       "instruction dither")
                         self._frames_since_dither = 0
                         self._frame_had_event = True
             except SafetyAbort:
