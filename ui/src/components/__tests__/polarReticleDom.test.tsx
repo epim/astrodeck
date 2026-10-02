@@ -72,12 +72,11 @@ for (const k of [
 // the ease never reaches 1, and the rAF chain never terminates: the file hangs
 // instead of failing. `reduce` also only becomes true in an effect, so the very
 // first commit always starts a tween that the second one has to cancel.
-g.requestAnimationFrame = (cb: (t: number) => void) =>
-  setTimeout(() => cb(performance.now()), 0) as unknown as number;
-g.cancelAnimationFrame = (h: number) => clearTimeout(h as unknown as ReturnType<typeof setTimeout>);
+installAutoRaf(g, { now: () => performance.now() });
 g.IS_REACT_ACT_ENVIRONMENT = true;   // React 18: makes act() flush updates
 
 // ------------------------------------------------------------------- imports
+import { installAutoRaf } from "../../testing/rafPolyfill";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
