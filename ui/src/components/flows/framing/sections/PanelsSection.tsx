@@ -35,14 +35,20 @@
 // IN RUN MODE (spec 2.6) a row also says what the live run is doing to its
 // panel, in a line under it: "shooting now"; the panel the run is on while
 // it is paused, holding for cloud or stopping, worded by that state and
-// never as shot (#451); or "set aside tonight:" and the engine's reason in
-// the engine's words. The reason is the one thing the sky cannot draw (its
-// "!" says only THAT a panel is set aside), and without it the operator
-// cannot tell a panel that will not centre from one the horizon took. A
-// reason that already names its panel ("centring failed on 2-2 ...") is not
-// prefixed with the label again (#509). The state is framingModel
-// `runPanelsOf`'s, handed in; nothing here reads the run, and no time is
-// shown (a meridian wait's end is the site's).
+// never as shot (#451); or the set-aside words and the engine's reason in
+// the engine's words. SINCE #573 (#534 follow-up; backlog ruling D-07,
+// owner-approved 2026-09-30) the set-aside words are NOT always "set aside
+// tonight": a centring set-aside that may still expire (the engine's
+// `for_now`, carried here as `PanelRunState`'s `forNow`) reads "set aside
+// for now: <reason>; tried once more tonight", because the engine plans to
+// retry it the same night; every other one, and a centring one struck out
+// a second time, reads "set aside tonight" as before. The reason is the one
+// thing the sky cannot draw (its "!" says only THAT a panel is set aside),
+// and without it the operator cannot tell a panel that will not centre from
+// one the horizon took. A reason that already names its panel ("centring
+// failed on 2-2 ...") is not prefixed with the label again (#509). The
+// state is framingModel `runPanelsOf`'s, handed in; nothing here reads the
+// run, and no time is shown (a meridian wait's end is the site's).
 
 import type { JSX, ReactNode } from "react";
 import type { FlowProgressBlock } from "../../../../lib/flowsApi";
@@ -60,8 +66,14 @@ export const GRID_ORDER_NOTE =
 /** A run-mode row's line for the panel the run is shooting: PanelLayer's own
  *  words for the state, so the list and the sky's screen-reader label agree. */
 export const SHOOTING_NOW = "shooting now";
-/** The line for a panel set aside tonight, before the engine's reason. */
+/** The line for a panel set aside for the rest of the night, before the
+ *  engine's reason. */
 export const SET_ASIDE_TONIGHT = "set aside tonight";
+/** The line for a panel set aside only FOR NOW (#573, #534 follow-up,
+ *  backlog ruling D-07): a centring set-aside that may still expire
+ *  tonight, before the engine's reason; `runLine` adds the "tried once
+ *  more tonight" tail itself. */
+export const SET_ASIDE_FOR_NOW = "set aside for now";
 /** The lines for the panel the run is on while no exposure of it is being
  *  made (flowRunState's CURRENT, #451), one per run state. The hold's words
  *  name cloud only when the engine's `hold` does. */
@@ -70,7 +82,12 @@ export const CURRENT_HOLDING_FOR_CLOUD = "current panel, holding for cloud";
 export const CURRENT_HOLDING = "current panel, run holding";
 export const CURRENT_STOPPING = "current panel, run stopping";
 
-/** A run-mode row's line, or null for a panel the run is doing nothing to. */
+/** A run-mode row's line, or null for a panel the run is doing nothing to.
+ *
+ *  A set-aside's words follow `run.forNow` (#573, #534 follow-up, backlog
+ *  ruling D-07): FOR NOW, with the "tried once more tonight" tail, for a
+ *  centring set-aside that may still expire; TONIGHT, as before, for every
+ *  other one. */
 export function runLine(run: PanelRunState | null | undefined): string | null {
   if (!run) return null;
   if (run.kind === "shooting") return SHOOTING_NOW;
@@ -79,7 +96,9 @@ export function runLine(run: PanelRunState | null | undefined): string | null {
     if (run.run === "aborting") return CURRENT_STOPPING;
     return run.hold === "clouds" ? CURRENT_HOLDING_FOR_CLOUD : CURRENT_HOLDING;
   }
-  return run.reason ? `${SET_ASIDE_TONIGHT}: ${run.reason}` : SET_ASIDE_TONIGHT;
+  const label = run.forNow ? SET_ASIDE_FOR_NOW : SET_ASIDE_TONIGHT;
+  const tail = run.forNow ? "; tried once more tonight" : "";
+  return run.reason ? `${label}: ${run.reason}${tail}` : `${label}${tail}`;
 }
 
 /** Does `text` name the panel `label` ("2-2") as a whole label: not inside
@@ -202,20 +221,21 @@ export function panelRows(a: {
     }
   }
   const leastComplete = a.order === "Least complete first" || !ORDERS.includes(a.order);
-  // A PANEL SET ASIDE TONIGHT IS NOT IN TONIGHT'S ORDER (#528). The engine
-  // owes it no visit for the rest of the night (spec 5.10, `_visits_owed`)
-  // and the recovery ladder leaves it out, so numbering it would name, as
-  // the run's next panel, the one the run has given up on; and least
-  // complete first always put it at 1, since it banked nothing (observed on
-  // the S7 probe's forced-solve-failure walk: "1 2-2" in PANELS and a "1"
-  // badge on the sky's dotted 2-2). In run mode such a panel is listed after
-  // the panels that run, unnumbered, and before the skipped ones; its row
-  // still says why, and the sky still draws it dotted with "!".
-  const asideTonight = (c: PanelRow) => c.run?.kind === "set_aside";
-  const live = cells.filter((c) => !c.skipped && !asideTonight(c)).sort((x, y) =>
+  // A PANEL SET ASIDE IS NOT IN TONIGHT'S ORDER (#528), FOR NOW OR FOR THE
+  // REST OF THE NIGHT ALIKE (#573): the engine owes it no visit in THIS
+  // pass (spec 5.10, `_visits_owed`) and the recovery ladder leaves it out
+  // either way, so numbering it would name, as the run's next panel, one it
+  // is not about to visit; and least complete first always put it at 1,
+  // since it banked nothing (observed on the S7 probe's forced-solve-failure
+  // walk: "1 2-2" in PANELS and a "1" badge on the sky's dotted 2-2). In run
+  // mode such a panel is listed after the panels that run, unnumbered, and
+  // before the skipped ones; its row still says why, worded for now or for
+  // the night, and the sky still draws it dotted with "!".
+  const isAside = (c: PanelRow) => c.run?.kind === "set_aside";
+  const live = cells.filter((c) => !c.skipped && !isAside(c)).sort((x, y) =>
     (leastComplete ? x.fraction - y.fraction : 0) || x.snake - y.snake);
   live.forEach((c, i) => { c.order = i + 1; });
-  const aside = cells.filter((c) => !c.skipped && asideTonight(c))
+  const aside = cells.filter((c) => !c.skipped && isAside(c))
     .sort((x, y) => x.row - y.row || x.col - y.col);
   const off = cells.filter((c) => c.skipped).sort((x, y) => x.row - y.row || x.col - y.col);
   return [...live, ...aside, ...off].map(({ snake: _s, fraction: _f, ...row }) => row);

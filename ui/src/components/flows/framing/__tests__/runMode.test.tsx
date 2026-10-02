@@ -60,14 +60,23 @@
 // off-diagonal case too.
 //
 // SINCE S7 (#509) a set-aside line whose engine reason already names its
-// panel is not prefixed with the label: 2-2's line reads "set aside tonight:
-// centring failed on 2-2 ...", where S5 printed "2-2: set aside tonight:
-// centring failed on 2-2 ...". The three cases below that pin 2-2's line were
-// moved for it on purpose (S7-URUNHOLD), and the two mutants that touch the
-// line were run again against the moved pins in scratchpad S7-URUNHOLD-mut
-// (2026-09-28), quoted where they stand. framingSections.test.tsx grades the
-// rule itself, and the words for a run that is paused, holding or stopping
-// (#451) on the recorded states.
+// panel is not prefixed with the label: 2-2's line is the set-aside words
+// and the reason alone, where S5 printed "2-2: " before them too. The three
+// cases below that pin 2-2's line were moved for it on purpose (S7-URUNHOLD),
+// and the two mutants that touch the line were run again against the moved
+// pins in scratchpad S7-URUNHOLD-mut (2026-09-28), quoted where they stand
+// (as "set aside tonight", the wording the recorded night carried then).
+// framingSections.test.tsx grades the rule itself, and the words for a run
+// that is paused, holding or stopping (#451) on the recorded states.
+//
+// SINCE #573 (#534 follow-up; backlog ruling D-07, owner-approved
+// 2026-09-30) the recorded 2-2 is a CENTRING set-aside that has not yet
+// expired, so it is worded "set aside for now: ...; tried once more
+// tonight" (`ASIDE_LINE`, below), not "set aside tonight": the mutants
+// quoted above, from before this change, still read "set aside tonight" in
+// their "got" and "expected" lines, which is what the engine served then.
+// w7SetAsideForNow.test.ts grades the two wordings themselves, against
+// `forNow` alone, with its own mutant.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -120,7 +129,8 @@ const sheetModule = await import("../TargetFramingSheet");
 const Sheet = sheetModule.default;
 const { RUNNING_VIEW_ONLY, EXAMPLE_VIEW_ONLY } = sheetModule;
 const {
-  SHOOTING_NOW, SET_ASIDE_TONIGHT, CURRENT_PAUSED, CURRENT_HOLDING_FOR_CLOUD, CURRENT_STOPPING,
+  SHOOTING_NOW, SET_ASIDE_TONIGHT, SET_ASIDE_FOR_NOW, CURRENT_PAUSED, CURRENT_HOLDING_FOR_CLOUD,
+  CURRENT_STOPPING,
 } = await import("../sections/PanelsSection");
 type FlowNodeRec = import("../../flowsTypes").FlowNodeRec;
 type FlowEdgeRec = import("../../flowsTypes").FlowEdgeRec;
@@ -167,6 +177,14 @@ if (!PROGRESS?.session || !SHOOTING?.group || !WAIT_OPERATOR?.group || !WAIT_VIE
 const BLOCK = PROGRESS.blocks[0];
 const LIVE_GROUP_ID = SHOOTING.group!.id;
 const REASON = SHOOTING.group!.set_aside[0].reason;
+// The recorded 2-2 is a CENTRING set-aside not yet expired (#573, #534
+// follow-up): `for_now` is true, so PANELS words it "set aside for now",
+// with the "tried once more tonight" tail, not "set aside tonight".
+assert(SHOOTING.group!.set_aside[0].for_now === true,
+  "premise: the recorded set-aside is still for now");
+const ASIDE_LINE = `${SET_ASIDE_FOR_NOW}: ${REASON}; tried once more tonight`;
+assert(!ASIDE_LINE.startsWith(SET_ASIDE_TONIGHT),
+  "premise: the recorded for-now set-aside does not read as set aside tonight");
 /** The recorded progress answer, its block given the live group's id: the
  *  answer the progress route gives while this block's own plan is the one
  *  the rig runs (see the header). */
@@ -382,7 +400,7 @@ await test("run mode draws the live group: 1-1 shot with thick stroke and corner
   // PANELS: the run's line under the two panels it names, and no other.
   eq(runRows(), {
     "1-1": `1-1: ${SHOOTING_NOW}`,
-    "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}`,
+    "2-2": ASIDE_LINE,
   }, "PANELS' run lines");
   // A pending panel keeps its progress bar from the route, unchanged.
   eq(doc.querySelector('[data-panel="1-2"] [role="progressbar"]')?.getAttribute("aria-valuenow"),
@@ -420,7 +438,7 @@ await test("the panel being shot is drawn at its own row and column, off the dia
   }, "the sky's panel states with the group on 1-3");
   eq(runRows(), {
     "1-3": `1-3: ${SHOOTING_NOW}`,
-    "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}`,
+    "2-2": ASIDE_LINE,
   }, "PANELS' run lines with the group on 1-3");
 });
 
@@ -545,7 +563,7 @@ await test("a viewer during a meridian wait sees no panel being shot and no timi
   mount();
   eq(q("framing-view-why")?.textContent, RUNNING_VIEW_ONLY, "the viewer's reason");
   eq(doc.querySelectorAll('[data-state="shooting"]').length, 0, "shapes or labels drawn as shooting for the viewer");
-  eq(runRows(), { "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}` }, "the viewer's PANELS run lines");
+  eq(runRows(), { "2-2": ASIDE_LINE }, "the viewer's PANELS run lines");
   eq(skyStates()["2-2"], "set_aside", "2-2 for the viewer");
   const text = String(q("target-framing-sheet")?.textContent ?? "");
   // #166 item 1 (W2 integration): the server now withholds `live.meridian_eta_s`
@@ -745,7 +763,7 @@ await test("the panel a paused, held or stopping run is on keeps its corner tick
     assert(shape(0, 0)?.querySelector('[data-mark="ticks"]'), `1-1 has no corner ticks while ${kind}`);
     eq(skyStates()["2-2"], "set_aside", `2-2 while ${kind}`);
     // Worded as the run is: PANELS and the sky's screen-reader label.
-    eq(runRows(), { "1-1": `1-1: ${words}`, "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}` },
+    eq(runRows(), { "1-1": `1-1: ${words}`, "2-2": ASIDE_LINE },
       `PANELS' run lines while ${kind}`);
     const said = String(q("target-framing-sheet")?.textContent ?? "");
     assert(!said.includes(SHOOTING_NOW), `the sheet says "${SHOOTING_NOW}" while the run is ${kind}`);

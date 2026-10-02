@@ -68,12 +68,13 @@ for (const k of [
 // firing it, so the test can hand that callback whatever timestamp it likes -
 // in particular, one that disagrees with performance.now() about where "now"
 // is, which is the exact disagreement #269 attributes the warning to.
-let queue: Array<(t: number) => void> = [];
-g.requestAnimationFrame = (cb: (t: number) => void) => { queue.push(cb); return queue.length; };
-g.cancelAnimationFrame = () => {};
+const rafQueue = createManualRaf({ cancel: "noop" });
+g.requestAnimationFrame = rafQueue.request;
+g.cancelAnimationFrame = rafQueue.cancel;
 g.IS_REACT_ACT_ENVIRONMENT = true; // React 18: makes act() flush updates
 
 // ------------------------------------------------------------------- imports
+import { createManualRaf } from "../../testing/rafPolyfill";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
@@ -94,8 +95,8 @@ const { PolarReticle } = await import("../polar");
  *  shared bad clock reaching every pending tween at once, same as a real
  *  disagreeing clock would. */
 function fireQueue(now: number): void {
-  const due = queue;
-  queue = [];
+  const due = rafQueue.pending;
+  rafQueue.pending = [];
   act(() => { for (const cb of due) cb(now); });
 }
 
@@ -126,7 +127,7 @@ function badRingAttrs(root: ParentNode): { bad: string[]; checked: number } {
  *  `badNow`, and report every non-finite ring/tier attribute found right
  *  after. */
 function runWithBadFirstFrame(badNow: number): { bad: string[]; checked: number } {
-  queue = [];
+  rafQueue.pending = [];
   const box = win.document.createElement("div");
   win.document.body.appendChild(box);
   const root = createRoot(box);
@@ -137,9 +138,9 @@ function runWithBadFirstFrame(badNow: number): { bad: string[]; checked: number 
   // tween FROM yet - see its own early `if (from === target) return`). Only
   // the SECOND render's frames - the ones a genuine rung CHANGE queues - are
   // what this test is about.
-  queue = [];
+  rafQueue.pending = [];
   act(() => { root.render(React.createElement(PolarReticle, { az: 50, alt: 50, active: true })); });
-  assert(queue.length > 0,
+  assert(rafQueue.pending.length > 0,
     "precondition: moving from a ~0' to a ~70' error did not queue an animation frame - " +
     "the rung did not change, so the first-frame clock below is never exercised");
   fireQueue(badNow);

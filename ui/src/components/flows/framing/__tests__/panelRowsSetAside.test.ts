@@ -69,9 +69,13 @@ const PROGRESS: FlowProgressBlock = {
 } as any;
 
 const REASON = "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo";
+// forNow: false -- a panel struck out a second time, set aside for the rest
+// of the night (#573, #534 follow-up): this file grades the NUMBERING rule,
+// which is the same whichever wording the row carries (panelRowsSetAside
+// only, not the wording itself: w7SetAsideForNow.test.ts grades that).
 const RUN: Record<string, PanelRunState> = {
   "1-1": { kind: "shooting" } as PanelRunState,
-  "2-2": { kind: "set_aside", reason: REASON },
+  "2-2": { kind: "set_aside", reason: REASON, forNow: false },
 };
 
 function rowsOf(run?: Record<string, PanelRunState>) {
