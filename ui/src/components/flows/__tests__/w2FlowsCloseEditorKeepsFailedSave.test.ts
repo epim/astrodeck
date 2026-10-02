@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2FlowsCloseEditorKeepsFailedSave.test.ts - flowsCloseEditor keeps the graph
 // when its own save fails (#500, part of WP-16 (b); backlog ruling,
 // owner-approved 2026-09-30: "flowsCloseEditor keeps the graph when its save

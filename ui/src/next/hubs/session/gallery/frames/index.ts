@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // session/gallery/frames/index.ts - what the FRAME LIBRARY area publishes, and
 // the single import site for `frames.css`.
 //

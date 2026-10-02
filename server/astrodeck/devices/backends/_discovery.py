@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Entry-point discovery for third-party device backends.
 
 External packages declare ``[project.entry-points."astrodeck.backends"]`` whose

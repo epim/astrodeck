@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Render one scored result as a single self-contained ``report.html``.
 
 The report is the artefact a human reads instead of ``scores.json``, so it is

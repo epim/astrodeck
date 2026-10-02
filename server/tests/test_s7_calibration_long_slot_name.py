@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A long wheel-slot name no longer breaks every calibration build (#427).
 
 A flat master's id is its file name (``<capture dir>/_masters/<id>.fits``),

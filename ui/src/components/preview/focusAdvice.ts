@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Which repair to put in front of the operator when a frame is unusable.
 //
 // Extracted from FocusVerdict because the ORDER is the whole behaviour and it

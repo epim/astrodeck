@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A centering that FAILED must not look like one that worked.
 
 Reported 2026-08-19 from the UI: CENTER AFTER SLEW was on, the plate solve

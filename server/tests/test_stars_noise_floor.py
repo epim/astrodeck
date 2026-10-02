@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Noise is not stars.
 
 On 2026-08-01 03:15, under 100% cloud, ``detect_stars`` reported 200 "stars" on

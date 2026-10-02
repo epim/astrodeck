@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // report.tsx - the NIGHT REPORT sheet.
 //
 // WHAT CHANGED IN R7. This file used to mount `views/ReportView` whole, and

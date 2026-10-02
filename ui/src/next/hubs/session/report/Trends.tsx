@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Trends.tsx - HFR, sensor temperature and guide RMS across the night.
 //
 // The PLOT is not design vocabulary and is not invented here: the geometry

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Multi-night Session entity + store (sessions spec §2).
 
 One JSON file per session under ``CAPTURE_DIR/sessions/<id>.json`` (written

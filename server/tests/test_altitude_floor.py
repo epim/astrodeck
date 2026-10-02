@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A target that sinks below its floor is set aside, not shot through the trees.
 
 `Schedule.min_altitude_deg` gated SELECTION and nothing else. A target picked at

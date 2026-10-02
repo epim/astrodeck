@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planLibrary.ts — pure presentation helpers for the unified Plan panel (G2).
 // The panel merges the plan IDENTITY (name + saved/unsaved cue) with the server
 // plan LIBRARY (saved rows); these two pure functions carry the only branching

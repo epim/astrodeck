@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 4: accepted-frame quota engine (sessions spec §3).
 
 Gates tested directly on _check_quality (crafted info dicts + a monkeypatched

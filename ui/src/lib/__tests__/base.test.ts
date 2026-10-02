@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // base.test.ts — regression for the live "Couldn't load drivers — Unexpected token
 // '<', <!doctype…" bug (2026-07-19). The relay mounts the app at `/h/<home_id>/`
 // and serves the SPA HTML for any unmatched deep path, so `window.location.pathname`

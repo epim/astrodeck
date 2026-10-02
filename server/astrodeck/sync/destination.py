@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Where frames get pushed TO, and the one rule every destination obeys.
 
 A destination knows two things and nothing else: what it currently holds, and

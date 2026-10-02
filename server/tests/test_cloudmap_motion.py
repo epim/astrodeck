@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """When will it be in view, stage 5: measuring the cloud field's motion.
 
 Every test here pins one specific way this module can be plausibly wrong: a

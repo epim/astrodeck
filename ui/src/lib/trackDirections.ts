@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /** Screen-space chevrons following the ordered, future-directed path. */
 export function trackDirections(points: readonly {x:number;y:number}[], spacing=64) {
   const out:{x:number;y:number;angle:number}[]=[];

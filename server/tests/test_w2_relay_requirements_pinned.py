@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The relay's runtime requirements are pinned to an exact version (#597).
 
 Since relay v9 (deployed 2026-09-28) the rig's tunnel has dropped once an

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Post-login redirect lands back at the relay base (not the relay root) so a
 tunnelled Google login returns to /h/<home>/ instead of a 404."""
 from astrodeck.auth.routes import _post_login_path

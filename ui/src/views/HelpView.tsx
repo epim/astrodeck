@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // views/HelpView.tsx — the in-app troubleshooting + glossary page (NOV-9 T4).
 // A thin render of the pure T2 content (lib/troubleshoot.ts TROUBLESHOOTING +
 // help.ts HELP) — no logic worth a runtime test, verified by tsc -b.

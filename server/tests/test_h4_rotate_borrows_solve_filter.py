@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every imaging-camera solve that exposes its own frame borrows the solve
 filter, and a failed solve through a narrowband filter says so (#531).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The GOES-R ABI fixed grid, stage 2.
 
 Every test here pins one specific way the module can be plausibly wrong: the

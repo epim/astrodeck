@@ -50,3 +50,5 @@ Use a 64-bit OS and build on the target when possible. A container deployment an
 3. Confirm health and sign in before removing the previous image.
 
 The older bind-mount layout is not automatically imported into named volumes. Keep the old directories, stop the old service, and migrate their contents with deliberate ownership and permissions before deleting any copy.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

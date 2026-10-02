@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#243: the native guider's stop saves a PPEC window only with enough
 measured points in it, and never over a saved model that holds more.
 

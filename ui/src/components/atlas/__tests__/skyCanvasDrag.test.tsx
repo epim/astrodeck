@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyCanvasDrag.test.tsx — the Atlas sky canvas MOUNTED, dragged, and then
 // interrupted the ways a real gesture gets interrupted.
 //

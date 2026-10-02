@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A non-ASCII target name never fails a capture (#277; mosaic spec 9 U-08,
 S3 orchestrator ruling 7).
 

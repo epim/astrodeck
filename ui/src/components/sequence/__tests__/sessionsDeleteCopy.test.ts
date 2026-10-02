@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionsDeleteCopy.test.ts - what the classic Sessions panel's delete
 // confirm says it removes (#266). MOUNTED (jsdom), no JSX so it stays a .ts.
 //

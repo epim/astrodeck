@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A monitor assigned is not enough for a wait to read the weather: the
 plan's own safety check must be on too (the S7 review's E item on
 `_monitor_to_read`, #452; spec 5.8, 6.17).

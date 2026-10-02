@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T7: off Windows, ascom-local degrades cleanly — absent from the backend
 registry, /api/backends, and the drivers surface; /api/discover/ascom-local is
 empty. On Windows these assertions invert (present). One test, both truths."""

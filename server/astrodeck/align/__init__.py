@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Alignment geometry: where the instruments point relative to each other."""
 from .guide_offset import (
     GuideOffset,

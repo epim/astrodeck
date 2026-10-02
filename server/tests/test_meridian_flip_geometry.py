@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A flip that protects against a collision which cannot happen is pure cost.
 
 `_maybe_meridian_flip` decided entirely from

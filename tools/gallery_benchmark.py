@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Synthetic-only gallery benchmark. Run with server on PYTHONPATH.
 
 python tools/gallery_benchmark.py --frames 5000

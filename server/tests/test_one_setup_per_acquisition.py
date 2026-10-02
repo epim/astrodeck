@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Exactly one setup per acquisition (#241, H3 orchestrator ruling 4).
 
 `_setup_target` opens with its pre-slew safety gate, and that gate can open

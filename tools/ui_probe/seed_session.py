@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """seed_session.py -- move a flow's dormant session onto an earlier observing
 night, and arm it, for the UI probe's CONTINUE walk (#189 S7 item 1, the third
 of its four simulator scenarios: "a CONTINUE on a second simulated night").

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // setCoolingConfig must not carry a setpoint the panel does not own.
 //
 // The `delete setpoint_c` in setCoolingConfig BECAME LOAD-BEARING the moment

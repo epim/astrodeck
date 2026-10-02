@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Overlay.tsx — THE overlay primitive. One implementation behind every dialog,
 // sheet and drawer in the app.
 //

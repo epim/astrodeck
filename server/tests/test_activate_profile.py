@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API tests for POST /api/profiles/{id}/activate (Stage B, api/app.py).
 
 Activating a profile sets it active AND connects its rig through the pinned hub

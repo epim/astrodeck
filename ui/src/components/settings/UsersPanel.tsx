@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // UsersPanel.tsx — admin User Management (W2.6), inside Settings. Gated to the
 // `admin.users` capability by SettingsView (this panel assumes it's mounted only
 // for an admin). Lists local users (User.to_public() — no password_hash ever),

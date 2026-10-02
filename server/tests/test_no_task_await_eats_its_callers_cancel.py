@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#235: no await of a task under ``astrodeck/`` eats a cancel of its caller.
 
 The shape::

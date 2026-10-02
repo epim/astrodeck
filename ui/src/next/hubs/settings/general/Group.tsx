@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Group.tsx - a Settings group: the 10 px caps label and the rounded card of
 // rows under it (`proto/22-settings.html`, RIG / SKY / PHONE / LIBRARY).
 //

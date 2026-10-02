@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The recoverable route says why the run stopped, and the card words only
 that (#487; the claim-nothing-keeps class: a sentence stating a cause the
 data behind it does not carry).

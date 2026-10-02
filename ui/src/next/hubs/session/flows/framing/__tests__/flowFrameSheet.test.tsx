@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowFrameSheet.test.tsx - the #/next `flowFrame` sheet, its doors and its
 // registry entry (#189 S4 items 3 and 5; spec 2026-09-23 flows mosaic, 2.1).
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Which GOES satellite sees a site best (stage 6b) -- longitude in, name out.
 
 No I/O, no config, no network, no h5py, no numpy, no clock. One import, of a

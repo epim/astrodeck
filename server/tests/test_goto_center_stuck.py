@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """goto_and_center: a correction slew that changes nothing must stop the loop.
 
 2026-08-06, on the sky: centering attempt 1 read 33.7' off target, attempt 2
@@ -63,3 +65,42 @@ async def test_a_converging_center_never_carries_the_flag(sim_hub):
     result = await sim_hub.goto_and_center(_TARGET_RA, _TARGET_DEC)
     assert result["centered"] is True
     assert "did_not_move" not in result, result
+
+
+def _nan_solver():
+    """A solve_and_sync that reports a non-finite coordinate — the shape a
+    garbled solve result takes (#324 follow-on, WP-45)."""
+    async def solve_and_sync(exposure_s):
+        return {"ra_hours": float("nan"), "dec_deg": _TARGET_DEC}
+    return solve_and_sync
+
+
+@pytest.mark.asyncio
+async def test_a_non_finite_solve_is_not_converged(sim_hub, monkeypatch):
+    """WP-45 follow-on (#324): `goto_and_center`'s centring-error check used
+    to be hub.py's private `_ang_sep_deg`, a copy of the OLD
+    ``coords.angular_sep_deg`` that clamped a NaN cosine to 0 — so a solve
+    that came back with a non-finite RA/Dec measured as a separation of
+    0.0, well inside any tolerance, and the loop published ``centered:
+    True`` for a position nobody actually confirmed. Routed through the
+    hardened, shared ``coords.angular_sep_deg`` (which raises on a
+    non-finite input), this is caught and degrades the same way a plate
+    solve failure does: not converged, no number to report, the loop ends
+    this attempt rather than crashing or claiming success.
+
+    NAMED MUTANT "the centring guard clamps instead of refusing" (the
+    ``except ValueError`` arm in `goto_and_center` replaced with the old
+    clamp-to-zero math, so a non-finite solve reads as ``err = 0.0``):
+    RED, observed:
+
+        AssertionError: a non-finite solve must not read as centered
+        assert True is False
+         +  where True = {'attempts': 1, 'centered': True, ...}['centered']
+    """
+    monkeypatch.setattr(sim_hub, "solve_and_sync", _nan_solver())
+
+    result = await sim_hub.goto_and_center(_TARGET_RA, _TARGET_DEC)
+
+    assert result["centered"] is False, (
+        f"a non-finite solve must not read as centered: {result}")
+    assert result.get("solve_failed") is True, result

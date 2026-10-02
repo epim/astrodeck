@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Server side of the supervisor contract (MIRROR of ``supervisor/protocol.py``).
 
 The server cannot import the standalone ``supervisor`` package -- that package

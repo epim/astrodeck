@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Stage 0.3.35 on the astrotown rig. Run ON the rig (ssh session).
 #
 # THIS DEPLOY RESTARTS THE SERVER MID-RUN ON PURPOSE (owner, 2026-09-27 23:29:

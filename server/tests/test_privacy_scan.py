@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The scanner that keeps the real observing site out of the repository.
 
 Graded with FAKE needles, planted through the environment, against throwaway

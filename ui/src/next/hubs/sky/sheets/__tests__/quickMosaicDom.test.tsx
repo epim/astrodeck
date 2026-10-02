@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickMosaicDom.test.tsx - what the quick sheet does with a framing that was
 // kept, MOUNTED and pressed (review #3, #34, the quick-defaults loop of #4, and
 // S6's converged doors: #196, #154's door half, spec 2026-09-23 flows mosaic

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ResumeArm starts the session as it is AFTER its recovery ladder, and says
 when it is recovering (#211; mosaic slice H1 task T4; spec 5.9, "The critical
 section" and "One starter per session").

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NOV-12 through the hub: arm/disarm toggles state, an armed hub attaches an
 additive `bahtinov` field to the preview event, and an UNARMED hub publishes NO
 bahtinov field (byte-for-byte-unchanged preview path, mirroring live-stacking)."""

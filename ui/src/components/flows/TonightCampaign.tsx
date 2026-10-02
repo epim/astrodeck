@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightCampaign.tsx — how much of the pool each member has actually banked.
 //
 // The fourth Tonight tab, new in the 2026-08-14 export. Per-member rows: name,

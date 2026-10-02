@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
 import {trackDirections} from '../trackDirections';
 import {hourlyTrackSamples} from '../../next/hubs/sky/finder/track';

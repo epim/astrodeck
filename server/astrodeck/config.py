@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Persisted server configuration — the single source of truth for the observing
 site and the imaging optics.
 
@@ -302,7 +304,10 @@ class EscalationConfig(BaseModel):
     #: one setting split across two layers for no reason. 0 = off.
     hfr_reject_factor: float = Field(0.0, ge=0, le=10)
     no_progress_watchdog_s: int = 0        # 0 = off
-    reconnect_resume: bool = False         # Alpaca-only; off by default (C2-15)
+    # Off by default (C2-15). Was "Alpaca-only" -- stale since the gate
+    # (sequence/engine.py._reconnect_gate) started serving the native camera
+    # backends too (#16), not only Alpaca devices.
+    reconnect_resume: bool = False
     reconnect_retries: int = 1
     # Armed safety with NO monitor assigned. A registered-but-disconnected
     # monitor already fails CLOSED; an ABSENT one used to fail open, and the two

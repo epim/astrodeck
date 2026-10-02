@@ -64,3 +64,5 @@ Stop AstroDeck before replacing its binary. Keep the previous executable and a c
 ## Building it yourself
 
 From a source checkout, `python packaging/build_binary.py` builds the UI, installs build dependencies and builds a PyInstaller executable for the current OS and architecture. It performs startup smoke checks. Use a separate build environment; it is not a cross-compiler. See [development](../development.md) for source work.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

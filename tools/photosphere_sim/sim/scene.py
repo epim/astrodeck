@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The declarative scene description: what the simulated world contains.
 
 A scene is a JSON file under ``scenes/``, and the schema is in CONTRACT.md's

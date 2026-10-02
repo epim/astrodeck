@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // framingModel.ts - the Target modal's pure model (#189 S4 item 1, S5 run
 // mode; spec 2026-09-23 flows mosaic, 2.3-2.7, 3.1, 3.2 and A.2).
 //

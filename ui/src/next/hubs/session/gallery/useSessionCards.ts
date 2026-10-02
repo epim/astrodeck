@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useSessionCards.ts - what the Gallery grid is made of.
 //
 // TWO LISTS, ONE SHELF. `GET /api/sessions` is the multi-night ledger and is

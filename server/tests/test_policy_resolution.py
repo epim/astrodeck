@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Stage A (#239): one setting across two layers, resolved in one place.
 
 This is the shape that had Polar running simulated for weeks - the active

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-03: the unreadable-mount hold must escalate, not go quiet (issue #137).
 
 Before this fix, the ``pos is None`` branch of ``SunWatch.tick`` went through

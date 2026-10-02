@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cspBootstrap.test.ts — OPEN-012: the SPA shell carries NO inline script, so
 // the server CSP can drop script-src 'unsafe-inline'. The pre-paint anti-flash
 // code lives in public/bootstrap.js and is loaded as an external blocking

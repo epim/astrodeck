@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.75 - the Flows surface + the weather hold + the flats metering fix.
 # Modelled line for line on deploy_0274.ps1, including the traps it names.
 $ErrorActionPreference = "Stop"

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // drivers.test.ts — pure-logic tests for the Backend Drivers lane (spec §4.2).
 // Inline-assert harness (no vitest in this repo); runs via `npx tsx`.
 import {

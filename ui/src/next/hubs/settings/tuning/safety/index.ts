@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The Safety tuning area (wave R7, T-R7-9). Two entry points, one for each
 // place the rebuilt policy editor is mounted:
 //

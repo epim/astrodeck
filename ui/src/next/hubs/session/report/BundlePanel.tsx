@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // BundlePanel.tsx - the stacking bundle: what tonight would export, the .zip,
 // and the advanced options behind a disclosure.
 //

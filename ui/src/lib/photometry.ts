@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // photometry.ts — F-A: the pure photometry/SNR core (no React, no DOM; tsx-testable).
 // The tested heart shared by NOV-4 (Suggest) and PRO-6 (integration/SNR estimator).
 // Model follows the standard CMOS sub-exposure treatment (Robin Glover / SharpCap

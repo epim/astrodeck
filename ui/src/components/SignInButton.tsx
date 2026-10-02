@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SignInButton.tsx — the Google sign-in / sign-out affordance (W2.5).
 //
 // VISIBILITY RULE (hard): this renders ONLY when a Google auth provider is

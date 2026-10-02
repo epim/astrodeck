@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Score a replayed result directory against the case's own truth.
 
 The scorer reads ``truth/`` and ``result/`` and nothing else. It never reads

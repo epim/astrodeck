@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Flow persistence + the five shipped Examples.
 
 The Definition of Done requires the five examples to "load, validate, and run

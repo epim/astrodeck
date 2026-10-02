@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-IP token-bucket rate limiting (clock-injected, no sleeps)."""
 from __future__ import annotations
 

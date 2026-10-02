@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """How much of a frame a sweep point needs to measure.
 
 WHY THIS EXISTS, in numbers. One native autofocus sweep on astrotown (v0.3.25,

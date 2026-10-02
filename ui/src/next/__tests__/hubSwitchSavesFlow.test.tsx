@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // hubSwitchSavesFlow.test.tsx - an edited flow survives a hub switch: the next
 // flowsOpen from another hub saves it before it reads the other flow (#450).
 //

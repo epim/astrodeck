@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A folder move is not a version: renaming or deleting a flow's folder
 leaves its ``updated_ts`` alone, so the replay notice does not ask for
 edits nobody made (#512; #189 spec 5.9, S7 orchestrator ruling 1; H4).

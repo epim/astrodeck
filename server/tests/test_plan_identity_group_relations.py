@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The group-relation shapes ``plan_identity_errors`` refuses (#307, #287;
 spec 3.5, 6.13).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Survey-cutout proxy (Sky-Atlas, design spec §4.3 / §9, Owner B).
 
 `GET /api/survey/cutout.jpg` proxies a static HiPS cutout from CDS `hips2fits`,

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SessionsPanel.tsx — multi-night session cards (sessions spec §7): name +
 // status chip + per-target accepted/total bars; Resume (dormant), Update from
 // Plan (dormant, id-safe with kept/new/dropped confirm), auto-resume arm (with

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // OpticsPanel.tsx — the imaging train: focal length, the scope's name for the
 // FITS TELESCOP card, and whether pixel size and sensor dimensions come from the
 // camera or are pinned by hand.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # deploy_common.ps1 - the steps every per-version deploy script shares (#403).
 #
 # Each deploy_<ver>.ps1 is copied from the one before it, so a trap in one is

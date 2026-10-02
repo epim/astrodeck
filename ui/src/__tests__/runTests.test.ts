@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // A guard on the test RUNNER itself (`ui/run-tests.mjs`), not on any UI code.
 //
 // Review finding #48 proved two holes in the runner, both in the same place:

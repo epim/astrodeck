@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickModel.ts - the quick-session sheet's arithmetic, with no DOM in it
 // (hub-sky plan D.2-D.4, T-SKY-3).
 //

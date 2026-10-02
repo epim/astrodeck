@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Google OIDC login routes (W2.4 Stage C) -- a self-contained ``APIRouter``.
 
 This router owns the home-terminated OIDC login dance and the AstroDeck session

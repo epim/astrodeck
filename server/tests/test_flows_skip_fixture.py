@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """compile.parse_skip graded against the worked skip cases (spec 2026-09-23
 flows mosaic, 3.1 and 3.2; #189 S4 item 1).
 

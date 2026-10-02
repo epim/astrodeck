@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filters.ts - the wheel's own filter names, mapped onto the eight design
 // tokens, and the per-filter folds every band on this screen shares.
 //

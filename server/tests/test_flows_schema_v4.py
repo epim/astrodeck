@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """FLOW_SCHEMA 4: the counts notice on read, and the version a save stamps
 (#189 Revision 2 ruling 2, spec 3.6, 6.16).
 

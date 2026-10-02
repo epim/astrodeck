@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reg-safety.ts - T-RIG-6's one line into the Rig hub's sheet registry.
 //
 // The registry itself (`hubs/rig/sheets.tsx`) is composed by the Rig devices

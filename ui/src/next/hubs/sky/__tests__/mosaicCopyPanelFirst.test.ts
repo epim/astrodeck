@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mosaicCopyPanelFirst.test.ts - every sentence the Sky hub says about where a
 // framed mosaic GOES, after S6 converged the doors on Send to Flow Wizard
 // (#196, #154's door half; spec 2026-09-23 flows mosaic, section 8 S6,

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // qr.test.ts - six independent layers over the QR encoder.
 //
 //   Run directly:  npx tsx src/next/lib/__tests__/qr.test.ts

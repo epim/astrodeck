@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // bahtinovOverlay.ts — pure geometry for the live Bahtinov spike overlay
 // (polish grab-bag (a)). No React, no DOM: the whole coordinate transform lives
 // here so it can be unit-tested (`npx tsx src/lib/__tests__/bahtinovOverlay.test.ts`),

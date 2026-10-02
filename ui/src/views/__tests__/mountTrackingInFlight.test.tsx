@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mountTrackingInFlight.test.tsx — the tracking switch while the rig is busy.
 //
 //   Run directly:  npx tsx src/views/__tests__/mountTrackingInFlight.test.tsx

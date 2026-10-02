@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for relay.ts - which origin this tab is on.
 //
 //   Run directly:  npx tsx src/next/lib/__tests__/relay.test.ts

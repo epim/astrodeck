@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sendControl.ts - a run control that still works when the socket is dead.
 //
 // TRANSCRIBED from `views/MonitorView.tsx:461-482` (UX-41), because the reason

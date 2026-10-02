@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-resume alerts once and backs off when its recovery solve finds no
 light (#251).
 

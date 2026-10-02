@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T2: the comhost serves the EXACT Alpaca envelope the existing client
 parses. Drive the real AlpacaConnection against a running comhost with a FAKE
 COM factory (no comtypes) — this is the portable proof of the client<->host

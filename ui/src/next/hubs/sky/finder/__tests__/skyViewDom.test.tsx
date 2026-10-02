@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyViewDom.test.tsx - the finder, MOUNTED, in MAP mode with no camera and no
 // gyro (which is what jsdom is, and what a desktop is).
 //

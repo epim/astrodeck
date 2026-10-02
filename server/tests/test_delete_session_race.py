@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """DELETE /api/sessions/{id} decides and unlinks in one locked section (#212).
 
 The route used to load the session in a worker thread, refuse an ``active``

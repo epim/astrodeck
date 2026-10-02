@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-07: a successful `goto_and_center` must record the SOLVE's own result
 into `Hub._solved_pointing`, not the goto's target and not the mount's report
 -- that record is what lets the capture-metadata builder write a header's

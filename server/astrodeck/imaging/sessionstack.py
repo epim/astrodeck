@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Session stack: one running mean per FILTER, composited into a colour preview.
 
 Live View (``livestack.LiveStacker``) stacks whatever the camera is pointed at

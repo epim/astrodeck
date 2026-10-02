@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-04(b) (#542): `SequenceEngine._frame_alerts_tick`'s two calls must
 never block the frame loop, even when the configured monitor or a sink
 never answers.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyDomePanel.tsx — the dome, plus the words the picture cannot say.
 //
 // The panel exists to answer two questions the operator actually asks at the

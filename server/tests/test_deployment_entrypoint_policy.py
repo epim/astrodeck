@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """OPEN-009: every shipped service definition launches the GUARDED entrypoint.
 
 `python -m astrodeck run` (and `python -m relay`) carry the non-loopback

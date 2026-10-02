@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Server-side named plan library.
 
 The only persistence for sequence plans used to be ``localStorage`` in the

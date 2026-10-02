@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """UX review 2026-07-26, pattern S4 ("the system knows the truth and shows
 something else") — the server-side wires.
 

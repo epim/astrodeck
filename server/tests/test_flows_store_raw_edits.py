@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The flow store's bookkeeping writers edit the file they found (carry-over 1,
 #150), a list walks the directory once, and a damaged example-*.json is one
 row, not two (carry-over 7, server half, #153).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tonightPanelDom.test.tsx — the Tonight overlay, MOUNTED.
 //
 //   Run directly:  npx tsx src/components/flows/__tests__/tonightPanelDom.test.tsx

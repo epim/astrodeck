@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The sphere's clip factor, checked against the ray-caster that paints it (#53).
 
 `score._expected_disc_areas` scales a surface disc's expected area by the

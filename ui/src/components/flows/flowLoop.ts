@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowLoop.ts - the rule that keeps a flow lane a lane: a FLOW wire may not
 // close a circle (#149; spec 2026-09-23 section 1.4 item 5, S0 item 2). Pure:
 // no store, no React, no DOM, so both editors and the store can share it.

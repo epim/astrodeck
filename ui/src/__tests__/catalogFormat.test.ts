@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // catalogFormat.test.ts — fmtMag/fmtAlt/altTone (lib/catalogFormat.ts).
 //
 // These three exist because CatalogEntry.mag is `number | null` (no published

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A member an instruction abandons leaves its group (#288 part 2; spec 5.1
 pass boundary, 5.10, 1.2 instructions).
 

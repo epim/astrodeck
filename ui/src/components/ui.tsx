@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import {
   useEffect, useId, useLayoutEffect, useReducer, useRef, useState,
   type ReactNode, type PointerEvent as RPointerEvent,

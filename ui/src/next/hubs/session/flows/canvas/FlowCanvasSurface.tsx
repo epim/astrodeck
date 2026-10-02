@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowCanvasSurface.tsx - the pan/zoom/wire surface the graph is drawn on
 // (wave R7 parity row A3). Tablet and desktop only; the phone's editing path is
 // `FlowStagesPhoneSheet`.

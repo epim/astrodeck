@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyCanvasPanels.test.tsx - the Atlas canvas MOUNTED with a mosaic's panels:
 // labels at the server's coordinates, a grid that moves over a still sky, and
 // a tap that names a panel (#189 S4 item 2; spec 2026-09-23 flows mosaic, 2.3).

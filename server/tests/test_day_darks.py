@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Darks after the night, in the one window where they mean anything.
 
 The campaign's SHUTDOWN COMPLETE -> CALIBRATION QUEUE wire was reported as "this

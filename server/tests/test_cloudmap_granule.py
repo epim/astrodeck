@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Reading a GOES ABI granule off disk, stage 3.
 
 Every test here pins one specific way the reader can be plausibly wrong: raw

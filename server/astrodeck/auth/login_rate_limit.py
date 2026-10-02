@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Bounded, process-local throttling for local password authentication.
 
 The limiter intentionally stores only keyed digests of normalized account

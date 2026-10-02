@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // equipmentConnectClaim.test.tsx — Equipment's Connect Rig button, MOUNTED,
 // against a rig this browser did not start.
 //

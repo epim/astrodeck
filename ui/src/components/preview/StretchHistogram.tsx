@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // StretchHistogram.tsx — interactive display-domain histogram + stretch controls
 // (stream O). Implements spec §5 "Histogram", §11/§12 perceptual+honesty rules.
 //

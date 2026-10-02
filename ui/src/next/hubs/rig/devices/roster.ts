@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // roster.ts - the device list on RIG - Devices, as a PURE function of what the
 // rig publishes (plan hub-rig.md A.4).
 //

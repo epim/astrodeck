@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Tonight brief guides the way the rig will (#506).
 
 2026-09-28, 0.3.36 on the rig: both Tonight briefs read that night said the run

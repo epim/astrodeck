@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX } from "react";
 
 /** The one read-only note: a lock glyph and `Read-only - <reason>`.

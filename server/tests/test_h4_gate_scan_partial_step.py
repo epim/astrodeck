@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The altitude gate's rise scan covers exactly the window (#498; spec 5.1,
 the soonest waiter, and 5.10, the published ``eta_s``).
 
@@ -42,11 +44,30 @@ session's scratch root), never in the shared tree (#254):
   ``int(span / _PEAK_STEP_S)``, the ``max(1, ...)`` dropped and nothing
   rounded up, which is the first fix that stops a scan running past a short
   window's close.
+
+A FOURTH CASE, #586. None of the above ever gave the scan a horizon at or
+before ``now``: every case above asks about a window that is still open. The
+comment at the step count says "nothing is scanned once the horizon is not
+after now", but nothing had asked that. Added here, 2026-10-01:
+
+* "SC1, the closed-window clamp lost": line 908's
+  ``steps = max(0, math.ceil((horizon - now) / _PEAK_STEP_S))`` back to
+  ``max(1, ...)``, the same shape as "the partial last step not scanned"
+  above but applied to a horizon that has already passed, not one still
+  ahead. It forces one step, clamped to the horizon, so the single step
+  lands AT OR BEFORE ``now`` instead of after it; if the target was above
+  the gate there (true of any window closed after a target has set, since
+  it was above the gate to set through it), the bracket the bisection is
+  handed is backwards (``below`` is ``now``, the scan's one point is
+  earlier), the halving loop's `t - below > tol` is never true, and the
+  function returns ``t - now``, negative. A caller that slept on it would
+  read a closed window as due right now.
 """
 from __future__ import annotations
 
 from _group_harness import LAT, LON, T0
 from astrodeck.sequence import schedule
+from astrodeck.sequence.models import Target
 from test_s7_time_to_gate_refined import (TOL, WAIT_BEGINS, _alt, _panel_1_2,
                                           _rise)
 
@@ -59,6 +80,26 @@ def _asked_at_390() -> tuple[object, float, float, float]:
     p12, gate = _panel_1_2()
     now = T0 + WAIT_BEGINS
     return p12, gate, now, _rise(p12, gate, now) - now
+
+
+def _first_set(target: Target, gate: float, after: float) -> float:
+    """The instant ``target`` first drops below ``gate`` after ``after``,
+    given it is above the gate at ``after``: a coarse scan, then a
+    bisection of its bracket to a millisecond. Mirrors ``_rise`` for the
+    descending crossing, which #586's case needs and no helper file has."""
+    assert _alt(target, after) >= gate, "premise: above the gate at 'after'"
+    lo = after
+    while _alt(target, lo + 60.0) >= gate:
+        lo += 60.0
+        assert lo < after + 86400.0, "premise: the target sets within a day"
+    hi = lo + 60.0
+    while hi - lo > 1e-3:
+        mid = (lo + hi) / 2.0
+        if _alt(target, mid) >= gate:
+            lo = mid
+        else:
+            hi = mid
+    return hi
 
 
 def test_a_rise_in_the_partial_last_step_is_found():
@@ -225,3 +266,48 @@ def test_the_answer_is_the_window_wherever_it_closes():
     assert len(wrong) == 0, (
         f"{len(wrong)} of {n} windows answered wrongly (asked at s into the "
         f"night, window s, answer): {wrong[:5]}")
+
+
+def test_a_horizon_at_or_before_now_answers_none_not_a_negative_wait():
+    """#586. Every case above asks about a window still open at ``now``; none
+    gives the scan a ``stop_ts`` (the window's horizon) that has already
+    passed. 1-2 clears its 73.158 deg gate near the start of the night and
+    stays above it for hours, setting back below it only at 12348.3 s in, so
+    a window that closed earlier, back while 1-2 was still above the gate,
+    but is asked about only after 1-2 has since set, is exactly the case the
+    scan's "nothing is scanned once the horizon is not after now" comment
+    promises and nothing had tried: ``stop_ts`` (2396.9 s in) before ``now``
+    (12648.3 s in), with the target above the gate AT the horizon and below
+    it now.
+
+    RED under MUTANT "SC1, the closed-window clamp lost" (observed):
+        AssertionError: a window that closed 2396.9 s in, asked about at
+        12648.3 s in (1-2 set at 12348.3 s in, well before), must answer
+        None, not a negative wait
+        assert -10251.405029296875 is None
+
+    CONTROL, same line: ``stop_ts == now`` is the boundary the comment
+    describes most literally, and it answers ``None`` under SC1 too (the
+    one forced step then lands on ``now`` itself, where 1-2 is already
+    below the gate, so the scan still finds no crossing) -- it is not a
+    kill, which is why the case above needs a ``stop_ts`` where the target
+    was ABOVE the gate, not merely a ``stop_ts`` before ``now``.
+    """
+    p12, gate = _panel_1_2()
+    rise = _rise(p12, gate, T0)
+    set_time = _first_set(p12, gate, rise)
+    stop_ts = rise + 600.0          # comfortably inside the long pass above
+    now = set_time + 300.0          # comfortably after 1-2 has set again
+    assert stop_ts < now, "premise: the window closed before now"
+    assert _alt(p12, stop_ts) >= gate, (
+        "premise: 1-2 was above its gate when the window closed")
+    assert _alt(p12, now) < gate, "premise: 1-2 is below its gate now"
+
+    eta = schedule._time_to_gate(p12, LAT, LON, gate, now, stop_ts)
+    assert eta is None, (
+        f"a window that closed {stop_ts - T0:.1f} s in, asked about at "
+        f"{now - T0:.1f} s in (1-2 set at {set_time - T0:.1f} s in, well "
+        f"before), must answer None, not a negative wait")
+
+    # CONTROL (see docstring): the boundary does not kill SC1 on its own.
+    assert schedule._time_to_gate(p12, LAT, LON, gate, now, now) is None

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A failed non-final (snapshot) report write gets one bounded retry (#579).
 
 ``SessionReporter._persist`` used to log a failed snapshot write and return,

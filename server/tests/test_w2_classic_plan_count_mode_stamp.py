@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#141 (backlog WP-19(c), owner-approved 2026-09-30): a classic Plan-tab
 plan defaults to counting ACCEPTED subs, not every attempt.
 

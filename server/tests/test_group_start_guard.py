@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The start guard refuses a mosaic group only when every panel is blocked,
 and names the blocked panels (spec 6.3; #132; mosaic slice S2 task T17).
 

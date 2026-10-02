@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mosaicNightSummary.ts — pure reduction of a mosaic's per-panel peak altitudes into
 // the few facts the Atlas "Tonight" panel states, INCLUDING the reason for every
 // panel that has none.

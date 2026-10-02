@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The GOES cloud model had no writer, so it could never be switched on.
 
 Stage 6a shipped 4,357 lines across six modules, seven test files, a poller and

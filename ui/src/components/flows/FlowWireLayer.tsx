@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowWireLayer.tsx — every wire in the graph, plus the one being dragged, in a
 // single <svg>. §C.6 / §D.3 / §D.4.
 //

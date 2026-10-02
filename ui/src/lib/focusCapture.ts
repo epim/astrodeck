@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focusCapture.ts — taking a frame FROM the Focus screen, and refusing to sweep
 // on numbers nobody measured.
 //

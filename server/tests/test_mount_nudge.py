@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """D-RIG-4: the relative mount nudge.
 
 TWO LAYERS, AND THE SPLIT IS DELIBERATE.

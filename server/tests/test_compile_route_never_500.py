@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The compile routes and ``/run`` answer every graph of the seed-328 corpus
 with a verdict, never a 500 (#362 at the route; #356's comment).
 

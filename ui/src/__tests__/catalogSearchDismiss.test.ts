@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // catalogSearchDismiss.test.ts — pins the Atlas catalog-search dropdown against
 // the latch that has now shut on a phone user TWICE.
 //

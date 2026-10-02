@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The ledger's summaries, and what the Tonight route costs with thousands of
 reports on disk (#536, H4 orchestrator ruling 6).
 

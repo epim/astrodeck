@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // How much clipping is worth telling the operator about.
 
 /** Fraction of the frame that must be railed before "stars saturated" is news.

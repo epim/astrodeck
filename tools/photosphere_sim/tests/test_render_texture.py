@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The JavaScript background texture against the Python one, texel for texel.
 
 The renderer repaints CONTRACT.md's background from the same declarative

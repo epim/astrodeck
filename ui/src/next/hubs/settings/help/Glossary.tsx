@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Glossary.tsx - the plain-language definitions (wave R7, T-R7-16).
 //
 // Sixteen terms straight from `help.ts` HELP, in declaration order (the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-1 master calibration-frame library — index + match + stack + coverage."""
 from __future__ import annotations
 

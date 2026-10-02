@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regenerate astrodeck/catalog/data/discoverers.tsv from Wikidata: who found
 each object, and when.
 

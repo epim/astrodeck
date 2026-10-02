@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // videoModel.test.ts - the arithmetic and the sentences behind VIDEO mode.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/capture/__tests__/videoModel.test.ts

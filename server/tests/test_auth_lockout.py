@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Nobody can be locked out of their own rig (#205).
 
 WHAT HAPPENED, TWICE. The rig was found with ``methods: ["google"]``, a Google

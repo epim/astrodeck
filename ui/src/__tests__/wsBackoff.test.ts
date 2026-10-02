@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The backoff has to be EARNED, or a logged-out tab hammers the relay forever.
 //
 // The relay accepts a viewer socket unconditionally (relay/server.py:257) and

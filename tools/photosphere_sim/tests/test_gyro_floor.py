@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every chart-yard case records a gyro with a noise floor (issue #76).
 
 An exact gyro reads EXACTLY zero through a hold, and the scanner discards an

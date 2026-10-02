@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The clean-tree gate must grade HEAD, and must not eat the link's target (#78).
 
 Two claims, and both have already failed once in this repository in some form:

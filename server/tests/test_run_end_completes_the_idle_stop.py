@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A run's end completes the idle stop it decided (#247; H3 orchestrator
 ruling 5, spec "Still waiting on the owner" item 14).
 

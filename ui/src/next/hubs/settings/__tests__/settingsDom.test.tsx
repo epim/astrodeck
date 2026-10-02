@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // settingsDom.test.tsx - the SETTINGS hub root, the GENERAL screen, the
 // first-time-setup card and the PHONE preferences (T-SET-1, plan E.3),
 // MOUNTED and pressed.

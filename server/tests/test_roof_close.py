@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-4 Task 4 — the never-crush-the-mount close-ordering guard
 (``sequence/roof.close_observatory``).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sun, Moon and planets in Atlas search — checked against JPL Horizons.
 
 GROUND TRUTH. Every position below came from JPL Horizons (ssd.jpl.nasa.gov,

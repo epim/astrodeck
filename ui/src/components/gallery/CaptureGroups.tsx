@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useMemo, useState } from "react";
 import type { GalleryGeometryGroup } from "../../types";
 

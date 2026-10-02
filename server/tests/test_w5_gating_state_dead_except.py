@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """resume_arm.py's ``_gating_state`` no longer swallows a site-read error it
 can no longer receive (#611, the #543 class: a defensive branch a fix made
 dead).

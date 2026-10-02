@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /**
  * The integers the JavaScript texture has to agree with Python on, checked
  * against the ones tests/test_truth.py pins.

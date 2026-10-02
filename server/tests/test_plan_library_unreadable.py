@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A plan file that no longer validates is listed, and asking for it says
 why (#378; the flow library's #153 and the session store's #242 rule).
 

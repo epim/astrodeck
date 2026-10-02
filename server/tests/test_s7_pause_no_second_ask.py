@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The safety pause does not ask the mount to stop once more after an idle
 stop has confirmed it (#471, #394's second half; spec 6.17 and 5.8).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useNowIncidents.ts - the ONE incident fold this hub renders from.
 //
 // The shell already folds the store into `next/lib/incidents.ts`'s pure inputs

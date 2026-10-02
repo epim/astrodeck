@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pure evaluator for the conditional sequencer (PRO-3).
 
 ``evaluate_instructions`` is a pure function — no engine, hub, or clock access:

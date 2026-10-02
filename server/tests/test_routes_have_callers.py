@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every mutating API route is reachable from the app, or says why it is not.
 
 THE DOMINANT DEFECT CLASS IN THIS PROJECT is a feature that is built,

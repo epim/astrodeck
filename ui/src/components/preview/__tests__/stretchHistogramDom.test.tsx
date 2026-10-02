@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stretchHistogramDom.test.tsx — the stretch handles, MOUNTED and PRESSED.
 //
 //   Run directly:  npx tsx src/components/preview/__tests__/stretchHistogramDom.test.tsx

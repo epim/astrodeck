@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The config file's version marker, and what it is honestly for.
 
 It was added because the cloudmap platform default could not be migrated: a

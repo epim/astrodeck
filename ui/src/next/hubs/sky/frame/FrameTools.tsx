@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FrameTools.tsx - the row of framing tools under the finder while FRAME is on
 // (review #27, #31, #35).
 //

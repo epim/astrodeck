@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // power.tsx - the POWER device sheet (plan hub-rig.md B.2, task T-RIG-2).
 //
 // This is `views/PowerView.tsx` re-skinned, and the four behaviours it carries

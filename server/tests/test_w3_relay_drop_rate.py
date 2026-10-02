@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``relay_client.recent_drop_count`` (#521 fix 3): the one signal the
 session report's drops-per-hour figure reads.
 

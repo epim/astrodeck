@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#615's proof: a forced timeout, not a rerun, shows the enriched message.
 
 test_resume_recovery_focus_counts.py::test_an_auto_resume_after_a_restart
@@ -79,6 +81,21 @@ async def test_a_forced_timeout_without_a_sweeps_double_says_so(
         return False
 
     monkeypatch.setattr(trrfc, "wait_until", always_times_out)
+
+    # The sweep doubles are installed at their seams so the tick resumes,
+    # but the object is withheld from `_resume`: the withholding is what
+    # this test is about. Without them the real ladder sweep ran, and it
+    # resumed only where the native wheel is installed; the Linux runner
+    # has none, so the arm held and the premise failed first (#661). The
+    # wheel is forced absent here so every box is that runner.
+    #
+    # MUTANT "the doubles are not installed" (the `Sweeps(...)` line
+    # removed): RED on any box, observed verbatim:
+    #     AssertionError: premise: the tick resumed. Every bus line it
+    #     emitted: ... auto-resume held: autofocus after restart failed:
+    #     native engine not installed
+    monkeypatch.setattr(trrfc.native_mod, "NATIVE_AVAILABLE", False)
+    Sweeps(rig, monkeypatch)
 
     s = _dormant_armed()
     with pytest.raises(pytest.fail.Exception) as ei:

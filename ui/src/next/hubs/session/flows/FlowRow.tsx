@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowRow.tsx - one row of MY FLOWS: dot, name, meta line, verb
 // (plan section D.1; proto `29-my-flows.html`, screenshot 29).
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Graph → plan. The one function that decides what a flow actually runs.
 
 Transcribed from ``flowOrder()`` + ``compilePlan()`` in the prototype (README

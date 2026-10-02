@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``state.group.visit_elapsed_s`` is the time into the current visit (#189 S2,
 #318; spec 5.10).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureLastFrameDom.test.tsx — CaptureView MOUNTED mid-run: does the stage
 // show the last frame the rig actually saved, instead of the logo?
 //

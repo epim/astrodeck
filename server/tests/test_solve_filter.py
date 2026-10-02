@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#222 — a plate solve must not inherit whatever filter the run is on.
 
 The night this comes from: the 2026-08-10 NGC 6946 meridian flip landed on an

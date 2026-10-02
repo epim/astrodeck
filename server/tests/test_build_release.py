@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Release-eng: build_release.py bundles vendored ASTAP + a baseline survey pack
 into the staged package at the paths the runtime discovers, and --strict refuses
 to ship a bundle that is missing one of them — including one nobody asked for,

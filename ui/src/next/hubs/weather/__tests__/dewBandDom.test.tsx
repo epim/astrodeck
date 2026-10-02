@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // dewBandDom.test.tsx - the dew LOOP line under the WEATHER conditions band
 // (D-RIG-3, task T-U7b-6).
 //

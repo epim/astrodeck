@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Roll astrotown back from 0.3.29 to 0.3.28. Run ON the rig (elevated ssh session).
 # The 0.3.28 release directory is untouched on the box; this points `current`
 # at it and restarts the supervisor, which reads `current` once at startup.

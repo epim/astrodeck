@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // MoreGroup.tsx - Settings > GENERAL > MORE (plan section C.6): the rows into
 // the tuning and admin sheets, and nothing else. Every sheet body is a REUSED
 // panel and belongs to another task (T-SET-4 for ten of them, T-WX-1 for

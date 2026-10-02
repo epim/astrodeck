@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """DELETE of an unreadable session file keeps its ``.bak`` and says so (#266).
 
 #242 let ``DELETE /api/sessions/{id}`` remove a file the store cannot read,

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // searchPickLock.test.tsx - a targets-sheet search pick locks a catalogue
 // object with no tonight's list, and so does a role without coordinates
 // (#504), MOUNTED: the sheet and the hub, side by side, joined only by the

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // opStripsDom.test.tsx — the operation strips (2026-08-07), MOUNTED.
 //
 //   Run directly:  npx tsx src/components/__tests__/opStripsDom.test.tsx

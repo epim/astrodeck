@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """UX-05: user filter slot names + focuser offsets.
 
 Covers the per-profile config store, hub.set_filter_names (apply + persist,

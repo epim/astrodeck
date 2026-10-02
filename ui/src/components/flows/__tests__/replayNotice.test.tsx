@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // replayNotice.test.tsx - the editor's line that an armed auto-resume will
 // replay the version its session froze (#473, S7 orchestrator ruling 1; spec
 // 5.9), graded on what the progress route really answers, then MOUNTED on

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """With no site saved, a window boundary that needs the Sun is not resolved
 (#527, its schedule half; spec 1.6 and 5.1; the #24 class).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An abort that cannot save its disarm still answers, and says so (#189 item
 10 (c); mosaic slice H3 task T1; spec 6.15 "Operator STOP").
 

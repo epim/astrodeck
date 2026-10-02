@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyHubDom.test.tsx - the SKY hub root, MOUNTED, on a plain-HTTP LAN phone
 // (no secure context, so no camera and no gyro - the state a rig on the local
 // network actually renders in).

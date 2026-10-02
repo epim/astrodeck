@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // format.ts - shared display formatters for the next UI: clock, duration,
 // degrees, percent, bytes, RA/Dec.
 //

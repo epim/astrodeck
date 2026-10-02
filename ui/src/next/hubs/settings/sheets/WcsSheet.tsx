@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // WcsSheet.tsx - Settings > MORE > Plate-solve stamp (plan section C.6, row
 // PLATE-SOLVE STAMP).
 //

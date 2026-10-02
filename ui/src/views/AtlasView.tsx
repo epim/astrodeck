@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AtlasView — the Sky Atlas page shell (design spec §6). Owner E.
 //
 // Composes the feature-lane components around the store's FramingSession (the

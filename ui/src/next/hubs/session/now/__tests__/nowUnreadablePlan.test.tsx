@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nowUnreadablePlan.test.tsx - SESSION / NOW's TONIGHT'S LIST with a saved
 // plan file that no longer reads as a plan (#378). MOUNTED.
 //

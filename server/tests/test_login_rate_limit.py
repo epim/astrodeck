@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regression tests for the bounded local-password account limiter."""
 
 from __future__ import annotations

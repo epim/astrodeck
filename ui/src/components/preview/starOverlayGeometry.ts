@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Where the per-star marker goes. Extracted so the geometry is testable without
 // a DOM — the defect it fixes was pure arithmetic, and the FIRST attempt at it
 // was wrong in a way only arithmetic against the real numbers exposes.

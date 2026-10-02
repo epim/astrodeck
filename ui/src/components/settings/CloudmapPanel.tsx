@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CloudmapPanel.tsx — Settings > Connect: the switch for the GOES cloud model.
 //
 // WHY THIS FILE EXISTS. The model shipped complete in stage 6a -- 4,357 lines,

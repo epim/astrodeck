@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Issue #53: the narrowest obstruction the planner honours is, by the owner's
 // ruling, "the distance one could reasonably put two of the dots on the horizon
 // editor". The simulator's scorer carries that as EDITOR_MIN_WIDTH_DEG, and may

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Real component and capture driver, with camera/sensor fixtures only.
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";

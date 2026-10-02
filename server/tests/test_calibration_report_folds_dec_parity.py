@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-06: the calibration report folds the Dec-parity reversal out of the
 orthogonality error.
 

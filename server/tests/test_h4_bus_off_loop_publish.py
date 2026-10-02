@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A publish off the loop's thread hands delivery to the loop (#480; the
 loop-bound-state-from-a-worker-thread class).
 

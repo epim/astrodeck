@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // classicFrameHost.test.tsx - the classic editor HOSTS the Target modal
 // (#189 S4 items 1 and 3; spec 2026-09-23 flows mosaic, 2.1; spec Revision 2
 // ruling 2 and S4 orchestrator ruling 8 for the counts line).

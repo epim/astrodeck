@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The blank-page guard in the Flows visual-parity harness.
 
 ``scripts/flows_visual_check.py`` is what the handoff's "Verify by looking"

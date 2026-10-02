@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // geometry.ts — the canvas's pure maths: card metrics, port anchors, wire
 // paths, fit-to-view. No React, no store, no DOM.
 //

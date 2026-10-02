@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsApplyFraming.test.ts - the TARGET modal's DONE: every param and the
 // loop wire in one write, then one compile (#189 S4 item 3; spec 2.5, 1.4
 // "When the wire is added").

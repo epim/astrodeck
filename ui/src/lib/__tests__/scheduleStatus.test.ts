@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the shared "why nothing is happening" formatter (NOV-8).
 // No vitest/jsdom in this UI — run directly:
 //   npx tsx src/lib/__tests__/scheduleStatus.test.ts

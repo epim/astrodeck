@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A save that cannot read the flow it replaces refuses, rather than
 anchoring as if there were none (#350; #353 item 5; spec 3.3, 3.6).
 

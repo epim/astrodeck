@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RestrictedSheet.tsx - Settings > MORE > Restricted assets (plan section
 // C.6, row RESTRICTED ASSETS).
 //

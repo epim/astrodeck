@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NavMoreSheet.tsx — the "More" overflow sheet (touch spec §5.2).
 //
 // Lets the mobile bottom nav show 5 primary tabs + a 6th fixed "More" button

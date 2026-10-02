@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stepDial.test.ts — the arc's geometry and its commit rule. Inline-assert
 // harness (no vitest); runs via `npx tsx`.
 //

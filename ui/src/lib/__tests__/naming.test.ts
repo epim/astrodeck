@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the PRO-11 client naming mirror (naming.ts). Golden vectors
 // are shared with server/tests/test_naming.py so the TS mirror can't drift
 // silently from the Python engine (design doc §1.3 / Task 5).

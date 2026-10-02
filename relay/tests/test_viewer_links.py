@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Viewer-link registry: jti revocation, max-viewers, renew, audit (W3.3.5)."""
 from __future__ import annotations
 

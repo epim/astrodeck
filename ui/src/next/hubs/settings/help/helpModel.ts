@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // helpModel.ts - the Help area's pure copy helpers (wave R7, T-R7-16).
 //
 // No React, no store, no fetch: everything here is a string in, a string out,

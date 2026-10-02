@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Gated.tsx — the ONE shared capability-gate wrapper for control surfaces (W2.5).
 //
 // VIEWER-READ-ONLY model: a control the caller lacks the capability for is

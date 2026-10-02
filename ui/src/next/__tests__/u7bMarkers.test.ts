@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // u7bMarkers.test.ts - the probe markers wave 2 (U7b) promised, and a scan
 // that proves the tree still emits every one of them.
 //

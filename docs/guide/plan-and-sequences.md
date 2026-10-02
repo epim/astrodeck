@@ -61,3 +61,5 @@ Use [Sessions and multiple nights](sessions-multi-night.md) for accepted-frame q
 ## Related
 
 [Capture](capture.md) · [Safety and automation](safety-and-automation.md) · [Unattended nights](unattended-nights.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

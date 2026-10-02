@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // "Stars saturated - shorten exposure or lower gain" fired on `stats.max >= fw`
 // — ONE railed pixel. Every deep-sky sub rails a bright star core, so the
 // warning was permanently on and meant nothing. Measured on the rig 2026-08-18:

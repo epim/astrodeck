@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mount.tsx - the MOUNT device sheet (plan hub-rig.md B.3, screenshot
 // 15-device-mount.png, fragment proto/15-device-mount.html).
 //

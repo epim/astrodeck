@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-02: the dead mount link (#133) and the park-state claim it hid (#138).
 
 THE NIGHT. 2026-09-23: a USB re-enumeration left the AM5's serial handle dead

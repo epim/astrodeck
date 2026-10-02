@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Typed coordinates graded against one fixture on both sides (#387; spec
 2026-09-23 flows mosaic, 3.1 and 3.3; S7 orchestrator ruling 6).
 

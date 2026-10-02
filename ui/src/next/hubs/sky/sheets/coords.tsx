@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // coords.tsx - the COORDINATES sheet (T-SKY-4, plan A.16). A manual RA/Dec
 // entry point for a target the catalogue does not carry - the one answer
 // that can never be missing (`server/astrodeck/catalog/objects.py`'s own

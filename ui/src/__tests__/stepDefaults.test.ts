@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stepDefaults.test.ts — the plan-editor authoring rules from the four-persona
 // UX review (#29 inherit, #40 flat defaults, #30 silent count shrink, #1's
 // editor half) plus SessionsPanel's date formatter (#35).

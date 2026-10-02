@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The last display-side site consumers ask whether there is a site (#24).
 
 Four functions that computed from the site without asking. Two were already

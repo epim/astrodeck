@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for reach.ts. Sabotage check: dropping the `hidden` short-
 // circuit turns "hidden scores -1 and rankTargets drops it" red; swapping the
 // sort direction (asc instead of desc) turns "ranks descending" red; changing

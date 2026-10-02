@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/weather.ts — pure weather-payload helpers (weather spec §9). No React,
 // no DOM: npx-tsx testable (lib/safety.ts precedent).
 //

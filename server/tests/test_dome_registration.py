@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-4 Task 3 — the ``dome`` role is registered in the canonical role
 vocabulary (``backend.ROLES``), served by the sim rig, AND (once the real
 ``AlpacaDome`` client landed) routed by the Alpaca/ASCOM discovery probe maps so

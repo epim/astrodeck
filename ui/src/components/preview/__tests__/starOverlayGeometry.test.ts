@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The marker must not sit ON the thing it annotates — checked at the numbers
 // THIS RIG ACTUALLY PRODUCES.
 //

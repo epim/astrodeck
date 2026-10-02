@@ -31,7 +31,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-xdist>=3.6"]
+# httpx2 (#651): under the installed starlette, starlette.testclient imports
+# httpx2 first and only falls back to httpx -- with a StarletteDeprecation
+# Warning on every ``TestClient(...)`` construction -- when httpx2 is
+# missing, which is most of this suite's route tests. relay/requirements-
+# dev.txt pins it for the same reason (#629); this is its server-side home,
+# so the dev venv gets it the same way CI does (`pip install -e ".[dev]"`),
+# with no per-test-file edits.
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-xdist>=3.6", "httpx2>=2.13"]
 # Bundled Windows COM->Alpaca host (astrodeck.comhost). comtypes is Windows-only
 # (marker-gated) so Mac/Linux installs never pull it; the Windows bundle installs
 # `.[comhost]`. Absent comtypes -> the host/registry modules degrade (import
@@ -131,18 +138,24 @@ testpaths = ["tests"]
 # Proof (#622): two consecutive full runs leave at most one base directory,
 # under a stated size.
 #
-# POLICY IS BACK TO THE DEFAULT ("all") FOR NOW, and only `count = 1` stays.
-# "failed" deletes each passed test's tmp_path during that test's teardown,
+# "failed" DELETES EACH PASSED TEST'S tmp_path during that test's teardown,
 # inside the real-config guard's window (conftest.py, _watch_the_real_config).
 # On Linux, shutil.rmtree deletes through names relative to an open directory
-# fd, and the guard resolves every path against the CWD (server/). A test
-# whose tmp_path holds a `config` subdir (test_rig_precheck_says_whether_the_
-# rig_is_watched.py) then reads as "os.rmdir of ./ (the real config
-# directory)": five false failures on the CI runner (run 36937456993), none on
-# Windows, whose rmtree uses full paths. Restore "failed" once the guard
-# understands dir_fd-relative paths (#659); until then each run's base dir is
-# bounded only by `count`, which is why #622 stays open.
+# fd, and the guard used to resolve every path against the CWD (server/)
+# regardless. A test whose tmp_path holds a `config` subdir
+# (test_rig_precheck_says_whether_the_rig_is_watched.py) then read as
+# "os.rmdir of ./ (the real config directory)": five false failures on the CI
+# runner (run 36937456993), none on Windows, whose rmtree uses full paths.
+#
+# POLICY IS BACK TO "failed" (WP-72 (b)): the guard now tells a dir_fd-
+# relative path apart from a CWD-relative one (#659, conftest.py's
+# ``_dir_fd_relative_positions`` and ``_open_is_fd_relative``), so the false
+# positive above cannot recur. #622 stays open until branch CI on Linux
+# confirms it green with this policy restored -- the failure was Linux-only
+# and cannot be reproduced on this (Windows) box, so "all tests pass here" is
+# not the proof; the CI run is.
 
+tmp_path_retention_policy = "failed"
 tmp_path_retention_count = 1
 # Run in parallel by default (pytest-xdist). Full suite ~800s serial -> ~250s at
 # -n 12. Capped at 12 (NOT `-n auto`) on purpose: the heavy native-guiding timing

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The recovery ladder's sweep counts as the resumed run's good sweep (#402).
 
 2026-09-27, the 0.3.35 deploy restarted the server mid-run and auto-resume

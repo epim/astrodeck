@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // framingCatalogPick.test.tsx - a WHERE catalogue result in the Target modal
 // is picked with ONE tap (#492; spec 2026-09-23 flows mosaic, 2.2 and 2.4
 // WHERE).

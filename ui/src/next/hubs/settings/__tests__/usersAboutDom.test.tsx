@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // usersAboutDom.test.tsx - the USERS and ABOUT screens and their sheets
 // (T-SET-3, plan section E.5), MOUNTED and pressed; extended for wave R7's
 // rebuild of the three PEOPLE panels (T-R7-11, plan sections 3.F4-3.F6).

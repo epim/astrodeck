@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """S7L drop-in: POST /api/capture must refuse while a video recording runs.
 
 Harness-validated against the UNPATCHED app.py (it fails with 200 != 409, which

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """seed_session.py writes only a directory the probe's own server made (#539).
 
 tools/ui_probe/seed_session.py moves a flow's dormant session onto an earlier

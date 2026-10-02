@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The user store — ONE account list, whatever a person signs in with.
 
 A tiny JSON-backed user database living at ``server/config/users.json``, written

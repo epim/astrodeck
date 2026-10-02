@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every relay drop is followed by a check of the rig's own link (#521).
 
 The rig's tunnel to the Fly relay drops in clusters: seven drops on
@@ -52,6 +54,21 @@ case it turned red.
                                  ``time.monotonic()`` instead of to the
                                  recorded end of the read (added by the
                                  verifier; it survived M1-M11's cases).
+
+Every case above injects a ``LinkProbes`` and so never calls the two
+functions that compose and run the SYSTEM probes themselves. #581 (found by
+the H4 adversarial review, 2026-10-01) added the two below, in the "system
+probes' parsing" section, which graded the parsers but not this:
+
+  RC1 "no default route reads as unknown"
+                                 ``_system_gateway_probe`` answers None, not
+                                 False, when ``_default_gateway`` finds no
+                                 default route (an empty string, not the
+                                 unreadable-table None).
+  RC2 "every Linux ping a reply" ``_ping``'s non-Windows verdict, the one
+                                 the Orange Pi appliance's answer runs on,
+                                 returns True regardless of the ping's exit
+                                 code.
 """
 from __future__ import annotations
 
@@ -557,3 +574,74 @@ def test_the_dns_probe_says_no_on_a_failed_lookup(monkeypatch):
     monkeypatch.setattr(rc.socket, "getaddrinfo",
                         lambda *a, **k: [("family", "type", 6, "", ("x", 0))])
     assert rc._system_dns_probe(RELAY_HOST, 1.0) is True
+
+
+def test_the_gateway_probe_joins_the_route_read_and_the_ping(monkeypatch):
+    """#581. ``_system_gateway_probe`` is the join every other case in this
+    file steps around by injecting ``LinkProbes`` directly: an unreadable
+    route table (``_default_gateway`` answers None) stays unknown, no
+    default route at all (it answers "") is a definite False with no ping
+    attempted, and a real gateway is pinged with HALF the probe's budget,
+    its answer returned as-is (not recomputed into a fresh True/False).
+
+    RED under MUTANT "RC1, no default route reads as unknown" (observed):
+        AssertionError: no default route must answer False
+        assert None is False
+    """
+    pinged: list[tuple[str, float]] = []
+    routes_asked: list[float] = []
+
+    def ping(address, timeout_s):
+        pinged.append((address, timeout_s))
+        return "the ping's own answer"      # a sentinel: proves it is RETURNED
+
+    def route_unreadable(timeout_s):
+        routes_asked.append(timeout_s)
+        return None
+
+    def no_default_route(timeout_s):
+        routes_asked.append(timeout_s)
+        return ""
+
+    def has_a_gateway(timeout_s):
+        routes_asked.append(timeout_s)
+        return "192.0.2.1"
+
+    monkeypatch.setattr(rc, "_ping", ping)
+
+    monkeypatch.setattr(rc, "_default_gateway", route_unreadable)
+    assert rc._system_gateway_probe(2.0) is None, (
+        "an unreadable route table must stay unknown")
+    assert pinged == [], f"an unreadable route must not be pinged: {pinged}"
+
+    monkeypatch.setattr(rc, "_default_gateway", no_default_route)
+    assert rc._system_gateway_probe(2.0) is False, (
+        "no default route must answer False")
+    assert pinged == [], f"no default route must not be pinged: {pinged}"
+
+    monkeypatch.setattr(rc, "_default_gateway", has_a_gateway)
+    assert rc._system_gateway_probe(2.0) == "the ping's own answer", (
+        "a real gateway's answer must be the ping's own, not recomputed")
+    assert pinged == [("192.0.2.1", 1.0)], pinged
+    assert routes_asked == [1.0, 1.0, 1.0], (
+        f"the route read must get half the budget too: {routes_asked}")
+
+
+def test_linux_ping_is_the_exit_code(monkeypatch):
+    """#581. ``test_windows_ping_needs_an_echo_reply`` above grades the
+    Windows branch; the OTHER branch of the same function, which decides
+    the Orange Pi appliance's answer (it runs Linux, not Windows), was
+    graded by nothing.
+
+    RED under MUTANT "RC2, every Linux ping a reply" (observed):
+        AssertionError: exit 1 read as True
+        assert True is False
+    """
+    monkeypatch.setattr(rc.sys, "platform", "linux")
+    for code, want in ((0, True), (1, False), (2, False)):
+        monkeypatch.setattr(
+            rc.subprocess, "run",
+            lambda *a, _code=code, **k: subprocess.CompletedProcess(
+                a, _code, stdout=b"", stderr=b""))
+        got = rc._ping("192.0.2.1", 1.0)
+        assert got is want, f"exit {code} read as {got!r}"

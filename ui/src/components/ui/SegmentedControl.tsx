@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SegmentedControl — an accessible tri-/multi-state segmented "pill" (mount
 // tracking-rate spec, Task 5). A single XOR selector styled as a modern
 // instrument control: a recessed track with the ACTIVE segment lifted as a

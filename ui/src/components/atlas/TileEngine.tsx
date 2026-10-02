@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TileEngine.tsx — the WebGL survey layer SkyCanvas mounts when a WebGL probe
 // passes (tile-engine spec §4). Fetches raw HiPS tiles from /api/survey/tile,
 // warps them through the exact TAN projection, upsamples from parent tiles so it

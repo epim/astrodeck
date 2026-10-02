@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CloudmapTuningPanel.tsx - the body of the `cloudmap` sheet, rebuilt in the
 // design's own vocabulary (wave R7, T-R7-15; plan section 3.F19 and the cutover
 // table in section 7).

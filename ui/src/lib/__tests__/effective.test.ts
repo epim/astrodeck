@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // effective.test.ts — the layer resolver (#129).
 //
 // Run with:  npx tsx src/lib/__tests__/effective.test.ts   (from ui/)

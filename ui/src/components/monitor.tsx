@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ============================================================================
 // Monitor presentational cells (monitor spec §11). Lane 2E.
 //

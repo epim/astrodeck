@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // framingSkyDegraded.test.tsx - the Target modal's sky on a rig with no survey
 // source says so, instead of LOADING for good (#404, UX-07; spec 2026-09-23
 // flows mosaic, 2.3); what it says is right for the rig's online fetch and for

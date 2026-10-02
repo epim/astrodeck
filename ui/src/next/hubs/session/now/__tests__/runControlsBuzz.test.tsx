@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // runControlsBuzz.test.tsx - the run-ended buzz fires on ENTERING error or
 // aborted while mounted, never on mounting in it (#467). MOUNTED.
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // scheduleStatus.ts — pure plain-language copy for the Monitor/Sequence "why
 // nothing is happening" line (NOV-8). Turns the engine's sequence.schedule /
 // sequence.live blocks into ONE calm sentence, shared by MonitorView (prominent

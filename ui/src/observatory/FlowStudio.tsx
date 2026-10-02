@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { BLOCKS, blockDetail, connect, makeFlow, outputs, readDraft, trace, validate, type Block, type BlockKind, type Flow } from './flowModel';
 import './flowStudio.css';

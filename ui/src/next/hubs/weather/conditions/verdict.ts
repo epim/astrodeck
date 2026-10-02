@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // verdict.ts - the Conditions headline, and the 24 h window that both it and
 // the chart under it are computed from.
 //

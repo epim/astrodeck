@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/alerts.ts — typed client for the alert-sink CRUD/test/health surface
 // (PRO-9). Thin over the shared `api` fetch wrapper (api.ts): same ApiError
 // throwing. token is write-only (AlertSinkInput) — the server always blanks

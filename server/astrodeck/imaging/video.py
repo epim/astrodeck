@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """VideoRecorder: one bounded, cancellable SER recording at a time.
 
 HOW A FAST-CADENCE ROI LOOP IS ACHIEVED HERE - THE HONEST ANSWER.

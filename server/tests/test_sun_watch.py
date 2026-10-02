@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sun watch — the net under a tube the Sun is coming TO (task #150).
 
 ``Hub._check_solar`` refuses a SLEW whose destination is inside the cone. It has

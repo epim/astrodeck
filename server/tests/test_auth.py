@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Optional shared-token auth (P0-4).
 
 Auth is OFF by default — when ``ASTRODECK_TOKEN`` is unset the server behaves

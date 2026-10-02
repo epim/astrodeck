@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The slew gate's pier-guard reads are bounded, and the mount's own side is
 read once per selection (#314, S3 orchestrator ruling 2; spec 5.1 item 1,
 section 7's P0-2 dead-link policy).

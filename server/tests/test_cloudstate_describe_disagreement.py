@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The sky line must not say "cloudy" and "clear" in the same breath.
 
 SEEN VERBATIM ON THE RIG, 04:06, during a real hold:

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigSafetyDom.test.tsx - the SAFETY MONITOR sheet, MOUNTED (plan B.9, D.2).
 //
 //   Run directly:  npx tsx src/next/hubs/rig/__tests__/rigSafetyDom.test.tsx

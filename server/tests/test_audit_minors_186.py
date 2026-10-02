@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The three server-side halves of #186 — audit minors C, D and E.
 
 Each is small, none was the reported bug, and all three are the same species:

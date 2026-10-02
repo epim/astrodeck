@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tools/qa_ui_relay.mjs — walk the operator's actual screens over the RELAY and
 // capture what they LOOK like, not what their DOM claims.
 //

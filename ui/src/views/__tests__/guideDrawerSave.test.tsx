@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guideDrawerSave.test.tsx — the Guide Tuning drawer's Save, MOUNTED, against a
 // rig whose guide block holds settings this screen never shows.
 //

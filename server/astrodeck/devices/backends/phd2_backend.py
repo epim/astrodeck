@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PHD2 guider backend adapter (Stage A) -- GUIDER ONLY.
 
 WRAPS the existing ``guide.phd2.PHD2Guider`` (JSON-RPC over the PHD2 event socket,

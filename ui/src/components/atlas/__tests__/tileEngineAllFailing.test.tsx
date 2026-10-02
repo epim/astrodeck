@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tileEngineAllFailing.test.tsx - when the tile engine calls a blank view
 // "all failing" (#493; #404 for the degraded state that call feeds).
 //

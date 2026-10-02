@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reg-guider-rotator.ts - T-RIG-5's two sheets, ready for the Rig hub's
 // registry to compose (plan hub-rig.md D.1 "No file is edited by two tasks").
 //

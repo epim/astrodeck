@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """HTTP surface for local auth + user management + the create-admin CLI (W2.6).
 
 Covers, via FastAPI ``TestClient`` (repo convention: in-process fakes +

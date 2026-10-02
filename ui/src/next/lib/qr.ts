@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // qr.ts - a QR Code encoder, byte mode, error correction level M, versions
 // 1 to 10. Pure and React-free, so `next/lib/index.ts` may re-export it.
 //

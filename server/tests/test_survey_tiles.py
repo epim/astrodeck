@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the on-demand HiPS tile route (tile-engine spec §1, §7)."""
 from __future__ import annotations
 

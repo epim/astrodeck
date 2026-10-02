@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FieldOverlay.tsx — the catalogued objects in THIS frame, on THIS frame (#182).
 //
 // Draws only from `preview.field.objects`, which the server populates ONLY when

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Self-tests for the S7 probe (#189 S7 item 1b, routes_s7.json). Run with the
 probe's Playwright Python, like test_probe_s5_s6.py:
 
@@ -59,7 +61,28 @@ import server_ctl  # noqa: E402
 
 ROUTES_PATH = HERE / "routes_s7.json"
 REPO_ROOT = HERE.parents[1]
-VENV_PYTHON = REPO_ROOT / "server" / ".venv" / "Scripts" / "python.exe"
+
+
+def _resolve_venv_python() -> Path:
+    """The interpreter for SeedSessionScriptTest's two end-to-end cases below.
+
+    A wave worktree gets a `ui/node_modules` junction but no `server/.venv` of
+    its own, so the repo-relative default always pointed at a venv that was
+    not there, and both cases silently SKIPPED in every wave run and the
+    integration worktree (#653) -- the only cases that run seed_session.py,
+    the script that arms a dormant session for unattended auto-resume, end to
+    end against a real store. ASTRODECK_PROBE_VENV_PYTHON lets the wave
+    tooling (and a post-merge check in the main tree) point this file at a
+    venv that exists, while `cd tools/ui_probe && python -m unittest
+    test_probe_s7` in the main tree keeps resolving the same path as before.
+    """
+    override = os.environ.get("ASTRODECK_PROBE_VENV_PYTHON")
+    if override:
+        return Path(override)
+    return REPO_ROOT / "server" / ".venv" / "Scripts" / "python.exe"
+
+
+VENV_PYTHON = _resolve_venv_python()
 SCENARIOS = {
     "1": ["s7-rot-run-phone", "s7-rot-frame-phone", "s7-rot-classic-phone",
           "s7-rot-classic-desktop"],
@@ -1002,6 +1025,35 @@ class RunFlowSeedTest(_Seeding):
 
 
 # ------------------------------------------------------------ seed_session
+
+class VenvPythonResolutionTest(unittest.TestCase):
+    """#653: wave worktrees have no server/.venv, so VENV_PYTHON's old
+    repo-relative-only resolution always missed and the two end-to-end cases
+    below always SKIPPED there. These hold the resolution function itself,
+    not the module-level VENV_PYTHON (computed once at import time, so an
+    env var set after import would not move it)."""
+
+    def test_the_environment_variable_overrides_the_repo_relative_venv(self):
+        """The wave tooling's and the post-merge check's way in.
+
+        Mutation "the override ignored" (`_resolve_venv_python` returns the
+        repo-relative path unconditionally, never reading the environment
+        variable), observed red (2026-10-01, this worktree):
+            AssertionError: WindowsPath('<repo-relative server/.venv path>')
+            != WindowsPath('C:/elsewhere/python.exe')"""
+        with mock.patch.dict(os.environ,
+                             {"ASTRODECK_PROBE_VENV_PYTHON": "C:/elsewhere/python.exe"}):
+            self.assertEqual(_resolve_venv_python(), Path("C:/elsewhere/python.exe"))
+
+    def test_with_no_override_it_falls_back_to_the_repo_relative_venv(self):
+        """The main tree's unchanged path: no env var, same default VENV_PYTHON
+        above was always computed from."""
+        env = dict(os.environ)
+        env.pop("ASTRODECK_PROBE_VENV_PYTHON", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(_resolve_venv_python(),
+                             REPO_ROOT / "server" / ".venv" / "Scripts" / "python.exe")
+
 
 class SeedSessionScriptTest(unittest.TestCase):
 

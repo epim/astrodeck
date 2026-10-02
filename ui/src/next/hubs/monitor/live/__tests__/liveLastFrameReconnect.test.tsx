@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // liveLastFrameReconnect.test.tsx - MONITOR - LIVE's LAST FRAME tile follows
 // the rig across a dropped socket (#399).
 //

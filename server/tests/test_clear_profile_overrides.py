@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API tests for POST /api/profiles/{id}/clear-overrides (#129).
 
 The provenance block added in the same change can finally SAY "profile X pins

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RotatorCard.tsx — Equipment card for the rotator/CAA (spec §5.1). Readouts
 // (sky PA + mechanical — both, honesty when unsynced), manual move/nudge/halt,
 // reverse (only when supported), solve-driven "Rotate to PA", and the ROM

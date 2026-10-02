@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The golden group trace at every hour of the wall clock (#320, #298).
 
 #320: `test_group_rotation.py`'s golden trace failed at some times of day

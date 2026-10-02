@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Ground truth for a scene: what a ray from a given point actually meets.
 
 This is the oracle every later stage is scored against, so it is analytic and

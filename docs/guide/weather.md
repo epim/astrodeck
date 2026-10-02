@@ -51,3 +51,5 @@ The settings include an optional Astrospheric API key for its forecast data. Sup
 ## Related
 
 [Safety and automation](safety-and-automation.md) · [Unattended nights](unattended-nights.md) · [Monitor](monitor.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

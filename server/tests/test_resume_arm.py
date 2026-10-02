@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 8: ResumeArm auto-resume service (sessions spec §5) — injected clock
 (monkeypatched time source / _window_open, schedule-test precedent), real sim
 hub + engine (no FakeHub)."""

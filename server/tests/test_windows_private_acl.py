@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Portable regression tests for Windows private-state ACL orchestration.
 
 The independent live Win32 assertions live in

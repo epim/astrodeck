@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // canvasMount.ts - the one handle on the mounted canvas element, and the one
 // thing that needs it: where a newly added stage goes.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A panel set aside for tonight is marked skipped in the session report
 (#189 S2, #318; spec 6.7; the docstring of `SequenceEngine._set_panel_aside`).
 
@@ -71,6 +73,14 @@ async def test_a_panel_set_aside_is_marked_skipped_once(group_hub, monkeypatch):
         AssertionError: ['skipped M31 2-2', 'skipped M31 2-2']
         assert ['skipped M31...pped M31 2-2'] == ['skipped M31 2-2']
           Left contains one more item: 'skipped M31 2-2'
+
+    RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): ``mark_skipped`` now
+    takes the reason `_set_panel_aside` already held and appends it after a
+    colon (spec 6.7, "the report names every set-aside panel and its
+    reason"), so the bare "skipped {name}" text this test pinned before is
+    gone on purpose; the assertion below pins the full reason-suffixed line
+    the last set-aside (the mosaic's anti-spin, out of passes) actually
+    writes.
     """
     def goto(who, n, result):
         if who == f"{GROUP_NAME} 2-2":
@@ -83,7 +93,11 @@ async def test_a_panel_set_aside_is_marked_skipped_once(group_hub, monkeypatch):
     assert [(r["target_id"], bool(r.get("expired")))
             for r in stored.set_aside] == [("p11", True), ("p11", False)], (
         "premise: 2-2 was set aside for now, and then for the night")
-    assert _skips(night) == [f"skipped {GROUP_NAME} 2-2"], _skips(night)
+    assert _skips(night) == [
+        f"skipped {GROUP_NAME} 2-2: 2-2 (the mosaic's last live panel) has "
+        f"been held for 6 passes in a row with no panel struck and no "
+        f"progress made; set aside for tonight",
+    ], _skips(night)
 
 
 async def test_a_mosaic_set_aside_whole_marks_every_panel_skipped(
@@ -99,6 +113,12 @@ async def test_a_mosaic_set_aside_whole_marks_every_panel_skipped(
     monkeypatch.setattr(engine_mod.SequenceEngine, "_run_step", exposes_nothing)
     night = await _night(group_hub, monkeypatch, grid_plan())
     assert night.done, night.trace[-3:]
-    assert sorted(_skips(night)) == [f"skipped {GROUP_NAME} {lb}"
+    # RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): same reason-suffixed
+    # text as above, this time the anti-spin's own line ("a full pass over 4
+    # panels took no exposures; setting the mosaic aside for tonight"), once
+    # per panel.
+    reason = ("a full pass over 4 panels took no exposures; setting the "
+              "mosaic aside for tonight")
+    assert sorted(_skips(night)) == [f"skipped {GROUP_NAME} {lb}: {reason}"
                                      for lb in ("1-1", "1-2", "2-1", "2-2")], (
         _skips(night))

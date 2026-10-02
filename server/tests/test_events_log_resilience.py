@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The night log has to survive the night (2026-09-06 22:13:46).
 
 A recursion in the sequence engine published "holding for clear sky" 323 times

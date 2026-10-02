@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The dome grid is fetched ONCE per cycle, not once per widget (T-R7-21a #21).
 //
 //   Run directly:  npx tsx src/api/__tests__/cloudmapDomeCache.test.ts

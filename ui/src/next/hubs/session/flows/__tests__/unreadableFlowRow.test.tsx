@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // unreadableFlowRow.test.tsx - SESSION / FLOWS draws a flow this build cannot
 // open as a row that says why ONCE, and never opens, runs, targets or claims
 // it (#153; spec 2026-09-23 section 3.6; mosaic slice S1-10, carry-overs 6

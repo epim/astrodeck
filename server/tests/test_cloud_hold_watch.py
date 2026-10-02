@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The cloud hold watches the mount on its own clock (#203, #205).
 
 A cloud hold keeps the mount tracking by design, and the checks that watch a

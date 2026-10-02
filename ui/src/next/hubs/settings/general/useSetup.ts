@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useSetup.ts - the live snapshot the setup card and the setup sheet share.
 //
 // The snapshot is assembled here, ONCE, from narrow store selectors plus the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Orchestrator: connect a live rig from a RigSpec (Stage A, W1.3.0/W1.3).
 
 The T2 fault-injecting suite drives ``connect_profile`` over in-process

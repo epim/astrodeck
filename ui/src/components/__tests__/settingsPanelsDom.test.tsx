@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // settingsPanelsDom.test.tsx — the Settings panels, MOUNTED, and driven over
 // time: type something, let a config frame land, and see whether what you typed
 // is still there; press a roof control and see whether the switch reports the

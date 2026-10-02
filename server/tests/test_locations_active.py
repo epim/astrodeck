@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``AppConfig.active_location_id``: WHICH saved location is live (#D-FU-1).
 
 The Sky hub's site picker used to keep this in the browser

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsSlice.test.ts — the graph-edit rules and the write discipline.
 //   Run:  npx tsx src/components/flows/__tests__/flowsSlice.test.ts   (from ui/)
 //

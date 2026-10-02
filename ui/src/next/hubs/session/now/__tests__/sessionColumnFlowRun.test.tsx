@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionColumnFlowRun.test.tsx - the #/next desktop SESSION COLUMN over a
 // flow's mosaic run, MOUNTED, graded on what the server really answers (#468;
 // spec 5.10 published state and ETA, U-07; the ui-copy-must-carry-information

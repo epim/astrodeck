@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // incidents.ts - derives the Session hub's incident list from engine state
 // (ARCHITECTURE.md #10 "Incident model"; the exact engine fields per kind are
 // fixed by the Session plan's section A.3). Pure: `IncidentInputs` is plain

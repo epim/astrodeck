@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // subContext.ts - the ONE place the shell assembles what the sub-nav chips are
 // allowed to know (`hubs/index.ts`'s `SubContext`).
 //

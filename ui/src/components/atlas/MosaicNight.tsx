@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // MosaicNight — what tonight looks like across the WHOLE mosaic, and the stated
 // reason for every panel it could not answer for.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What the no-op retry's warning says about the next frame is what
 `_enforce_flip_owed` then does with it, for each of `_flip_owed_words`' five
 sentences (#482, S7 finding B13; #366, S5 orchestrator ruling 2, spec 5.7;

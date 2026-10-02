@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTINUE over a mosaic whose every panel is skipped (#335; spec 1.2, 2.5,
 3.3 and 5.9's dropped-steps row).
 

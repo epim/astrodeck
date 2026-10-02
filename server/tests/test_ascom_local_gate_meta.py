@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T7 portable coverage for the parts of the acceptance gate that DON'T need
 a real ASCOM Platform / comtypes / simulators — so the task has real green
 coverage on this box, not just a skipped gate:

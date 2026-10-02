@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Push a night's frames to a destination while the run is still going.
 
 Phase 1 gave the rig a manifest a puller could read. This is the same

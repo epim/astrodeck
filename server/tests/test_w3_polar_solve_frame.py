@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-30a (b): the polar alignment solve writes its frame through
 ``_write_solve_frame`` / ``_retire_solve_frame``, with the same retry every
 other solve path already got in H4 (#189, #532 hub half). See

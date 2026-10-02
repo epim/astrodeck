@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // clouds.ts - the rig's own cloud dome, turned into the finder's tiles
 // (hub-sky plan B.8 / H.10).
 //

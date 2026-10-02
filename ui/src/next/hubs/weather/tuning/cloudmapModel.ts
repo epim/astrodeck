@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cloudmapModel.ts - every decision and every sentence the rebuilt Cloud model
 // panel prints (wave R7, T-R7-15; plan section 3.F19).
 //

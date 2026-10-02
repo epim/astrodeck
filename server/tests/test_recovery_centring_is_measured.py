@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """After a tracking-refusal recovery, "centred" is a measurement (#171).
 
 `_setup_target`'s GoTo can die on a mount pinned at its meridian limit
@@ -115,6 +117,13 @@ def _misses(lines) -> list[str]:
     return [m for _lvl, m, _src in lines
             if ("centering" in m or "re-centring after the recovery" in m)
             and "continuing" in m]
+
+
+def _recovered_line(lines) -> str:
+    """The single `recovered in Ns` summary line, or "" if none was logged."""
+    matches = [m for _lvl, m, _src in lines if "recovered in" in m]
+    assert len(matches) <= 1, f"expected at most one recovered-in line: {matches}"
+    return matches[0] if matches else ""
 
 
 def _assert_recovered(st: dict) -> None:
@@ -235,6 +244,62 @@ async def test_the_recovery_re_centres_with_the_targets_own_settings(
     assert recovery == [want], (
         f"the recovery re-centred to the hub's defaults, not the target's: "
         f"setup {setup}, recovery {recovery}")
+
+
+# ----------------------------------- the summary line itself (#200) --------
+
+
+async def test_recovered_line_says_recentred_only_when_it_converged(
+        sim_hub, monkeypatch, bus_lines):
+    """#200: the "recovered in Ns" summary line said "the target is
+    re-centred" from the final tracking readback alone, never from the
+    re-centre's own `goto_and_center` result. A recovery whose re-centre did
+    not converge used to log two contradictory lines in a row: this one
+    claiming "re-centred", immediately followed by `_do_tracking_recovery`'s
+    own "re-centring after the recovery ... could not plate solve". Build the
+    clause from `found["centered"]` instead.
+
+    Mutant "fixed wording" (the clause stays "and the target is re-centred"
+    whatever `found` says): RED -
+        AssertionError: a recovery that did not converge still claims
+        "re-centred": 'Alpha: recovered in 0s - the mount is tracking again
+        and the target is re-centred'
+    """
+    st = _pinned_mount(sim_hub, monkeypatch,
+                       [{"centered": False, "error_arcmin": None}])
+    e, t = _engine(sim_hub)
+    await e._enforce_tracking(t.steps[0], t)       # recovers, so no StopTarget
+    assert "park" in st["events"] and "goto" in st["events"], (
+        f"premise: the recovery must run: {st['events']}")
+    line = _recovered_line(bus_lines)
+    assert line, f"premise: the recovered-in line must be logged: {bus_lines}"
+    assert "re-centred" not in line, (
+        f'a recovery that did not converge still claims "re-centred": '
+        f"{line!r}")
+    assert "did not converge" in line, (
+        f"the line does not say the re-centre missed: {line!r}")
+
+
+async def test_control_recovered_line_says_recentred_when_it_converged(
+        sim_hub, monkeypatch, bus_lines):
+    """CONTROL. A re-centre that converges keeps the "re-centred" wording.
+
+    Mutant "always say it missed" (the clause is always "but the re-centre
+    did not converge"): RED -
+        AssertionError: a recovery that converged does not say "re-centred":
+        'Alpha: recovered in 0s - the mount is tracking again but the
+        re-centre did not converge'
+    """
+    st = _pinned_mount(sim_hub, monkeypatch,
+                       [{"centered": True, "error_arcmin": 0.4}])
+    e, t = _engine(sim_hub)
+    await e._enforce_tracking(t.steps[0], t)       # recovers, so no StopTarget
+    assert "park" in st["events"] and "goto" in st["events"], (
+        f"premise: the recovery must run: {st['events']}")
+    line = _recovered_line(bus_lines)
+    assert line, f"premise: the recovered-in line must be logged: {bus_lines}"
+    assert "re-centred" in line, (
+        f'a recovery that converged does not say "re-centred": {line!r}')
 
 
 async def test_control_an_unset_target_recovers_with_todays_call(

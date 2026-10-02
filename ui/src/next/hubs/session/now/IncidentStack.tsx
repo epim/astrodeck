@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // IncidentStack.tsx - the incident card, and the ones underneath it.
 //
 // The README shows ONE card. The engine can raise several at once (a cloud hold

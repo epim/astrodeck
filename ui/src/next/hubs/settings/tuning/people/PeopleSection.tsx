@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PeopleSection.tsx - the layout shell every PEOPLE surface renders through,
 // and the area's SINGLE `people.css` import site (wave R7, T-R7-11).
 //

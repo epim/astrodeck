@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A safety pause that a panel's own pre-slew gate opened closes out fully,
 even when the floor re-check that ends it refuses the hop (item 11; S3
 orchestrator ruling 1, spec 5.1's reach-wait row and 5.8).

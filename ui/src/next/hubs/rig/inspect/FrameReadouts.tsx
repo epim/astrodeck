@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FrameReadouts.tsx - `PreviewMeta` and `FrameStats`, rebuilt as the design's
 // readout grids (wave R7, T-R7-19). The two legacy files are NOT edited and keep
 // serving `#/classic`.

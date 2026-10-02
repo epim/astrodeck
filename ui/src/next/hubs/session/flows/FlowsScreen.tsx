@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowsScreen.tsx - SESSION / FLOWS: MY FLOWS, and the door to the canvas
 // (plan section D; proto `29-my-flows.html`, screenshot 29).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
 import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H, CELL_SAMPLES, gradient, noiseGradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS } from '../photosphereStability';
 

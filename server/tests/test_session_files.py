@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """S5: GET /api/sessions/{id}/files + /api/sessions/current/files.
 
 The index an operator reads to answer "which subs did I keep, and what did they

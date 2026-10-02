@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A LIGHT FRAME ON A MOUNT THAT IS NOT TRACKING IS A STREAK.
 
 2026-08-19, 00:54: the AM5 hit its own meridian limit five minutes after the

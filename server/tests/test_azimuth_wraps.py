@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Azimuth stays inside [0, 360) after rounding.
 
 FOUND BY CI, as `assert 360.0 < 360.0` on Polaris from Greenwich, on a commit

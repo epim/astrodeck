@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tonightVerdict.ts - `GET /api/flows/{id}/tonight` folded into ONE line a
 // phone can read at arm's length, and the four answers it is allowed to give.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The focus frame-settings scope reached the in-run sweep through nothing.
 
 `run_autofocus` declares its sweep frame as SIGNATURE DEFAULTS, and of its three

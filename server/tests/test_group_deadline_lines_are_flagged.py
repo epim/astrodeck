@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The two lines a flip-point deadline times are flagged ``site_derived`` and
 never reach a viewer (#189 S2, #318; spec 5.3, 5.7, 6.9; #166).
 

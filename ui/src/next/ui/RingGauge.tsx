@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX, ReactNode } from "react";
 
 /** The camera sheet's cooler gauge: a 92 px ring with the value inside and the

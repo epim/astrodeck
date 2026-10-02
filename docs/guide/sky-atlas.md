@@ -47,3 +47,5 @@ The schematic sky can be used offline. Survey imagery is separate: no DSS2 tile 
 ## Related
 
 [Site and locations](site-and-locations.md) · [Flows and mosaics](flows-and-mosaics.md) · [Weather](weather.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

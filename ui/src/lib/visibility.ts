@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // visibility.ts — pure FORMATTING for the VisibilityPanel. The server
 // (catalog/visibility.py) is the single source of truth for every number; this
 // module only turns a VisibilityNight into memoizable SVG geometry + display

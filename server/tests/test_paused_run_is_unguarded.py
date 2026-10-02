@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A paused run is an unguarded run. 2026-09-10/11 cost nine hours to it.
 
 The night: the meridian flip was refused by a mount that would not track, the

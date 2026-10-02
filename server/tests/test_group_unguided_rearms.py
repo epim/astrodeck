@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A guider that starts again takes a mosaic out of unguided mode (owner
 ruling 5; spec 5.6 step 7).
 

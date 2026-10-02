@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Engine device-I/O timeout bounds (P0-2) + escalation-knob wiring (P1-7).
 
 These cover the operational-review fixes that the existing sim suites can't

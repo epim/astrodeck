@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // horizonStrip.ts - pure geometry for the horizon editor's unrolled 360-deg
 // strip (plan A.15): `viewBox="0 0 340 150"`, azimuth across the width,
 // altitude down the height, a dashed floor at 25 deg. Point EDITING

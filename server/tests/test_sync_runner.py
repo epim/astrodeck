@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The thing that CALLS push_once — the seam Phase 2 deliberately left empty.
 
 Phase 2's core was built, tested and then reached by nothing. So the properties

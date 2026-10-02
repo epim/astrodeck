@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // equatorial.ts - the horizon <-> equatorial pair the finder needs.
 //
 // `ui/src/lib/altaz.ts` already owns the FORWARD direction (RA/Dec -> alt/az)

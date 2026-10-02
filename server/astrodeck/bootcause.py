@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What the PC's previous session ended as, written to the night log at startup.
 
 Issue #125. On 2026-09-08 the rig PC reset itself twice on a hot afternoon, and

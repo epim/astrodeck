@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Armed safety with no monitor: the frames are still evidence.
 
 Observed on the rig 2026-08-17 at 00:22:59, on a run recovering 58 frames:

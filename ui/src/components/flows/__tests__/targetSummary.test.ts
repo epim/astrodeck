@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targetSummary.test.ts - the TARGET card's footer line and the loop wire's
 // words (#189 S4 item 6; spec 2026-09-23 flows mosaic, 1.2 "Card footer" and
 // 1.4 "How it is drawn"; S4 orchestrator ruling 1: a grid is written columns

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionData.ts - ONE fetch of the running session, shared by every component
 // on the Now screen.
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // index.ts - Send to Flow Wizard's door (#196; spec 2026-09-23 flows mosaic,
 // Revision 2 ruling 4, D13, 2.1's lazy-door rule D-FU-2).
 //

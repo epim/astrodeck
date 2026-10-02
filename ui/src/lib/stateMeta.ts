@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stateMeta(state) — the honest sequence-state presentation map for the Monitor
 // (monitor spec §4.2 / resolves D3/E.1/E.2). Returns an icon NAME (from the
 // project's Batch-1 icon set, NOT lucide-react — staying in-lane and consuming

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``compile_plan`` never raises (#328; spec 1.4's "the compile routes compile
 half-built graphs" class).
 

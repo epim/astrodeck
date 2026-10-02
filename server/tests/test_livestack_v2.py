@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Live stacking: sub-pixel accumulation, trail rejection, weak alignment.
 
 test_livestack.py covers the v1 contract (seed, coverage plane, drift-reject,

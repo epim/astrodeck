@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """UX-25: the autofocus route moves the filter wheel to the requested slot and
 threads binning into run_autofocus (per-filter / per-binning autofocus). Uses
 the in-process app + sim rig, pumping the background _spawn task via status GETs

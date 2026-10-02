@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NOV-11 — query string for GET /api/preview/{id}/share.jpg. Caption target +
 // sub count live only in SequenceState (never on PreviewInfo), so the client
 // forwards them as query params; the server fills exposure/gain/date from

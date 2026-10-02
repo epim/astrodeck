@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // domeOverlay.test.ts - the four things about the dome overlay that a rendered
 // picture cannot tell you, because every one of them is wrong in a way that
 // still looks right.

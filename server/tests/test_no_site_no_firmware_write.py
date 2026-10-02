@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A default site is not written into the mount's firmware (#24).
 
 `push_site_to_mount` sends latitude, longitude and elevation to a connected

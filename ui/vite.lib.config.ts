@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Library build for the AstroDeck design system (src/design-system.ts).
 //
 // SEPARATE from vite.config.ts, which builds the rig's APP. Same source tree,

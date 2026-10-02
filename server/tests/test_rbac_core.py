@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """RBAC core unit tests (W2) -- the auth package + AuthConfig.
 
 Repo convention: in-process fakes + FastAPI ``TestClient`` + ``monkeypatch``,

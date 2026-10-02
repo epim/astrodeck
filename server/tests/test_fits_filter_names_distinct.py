@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Two wheel slots whose names fold alike never share a grouping key (#332).
 
 The #277 fold writes every free-text card as printable ASCII, and a letter

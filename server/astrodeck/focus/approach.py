@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Which way the drawtube is moving when it ARRIVES.
 
 One rule, in one place, for every focuser move the product makes outside a

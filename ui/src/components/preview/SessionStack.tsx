@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SessionStack.tsx: the run's colour composite, under the last sub on Monitor.
 //
 // The tile above this one shows ONE frame. Five minutes of a nine-hour night,

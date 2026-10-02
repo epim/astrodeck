@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/mount.ts: the mount's RELATIVE move - "nudge the tube 10 arcminutes east"
 // (D-RIG-4). Server: server/astrodeck/mount_offset.py (the geometry) routed as
 // `POST /api/mount/nudge` in api/app.py's mount block.
