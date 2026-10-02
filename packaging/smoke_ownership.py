@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Build-only process ownership for frozen-server smoke tests.
 
 PID, creation time, command, executable and observed ancestry must agree before

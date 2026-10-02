@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Build a licensed ABI3 native wheel from this tree without changing an environment.
 
 python packaging/build_native.py --out .probe/release/native-wheels

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Behavioral release policy/native fixtures. No server, device or install calls."""
 from contextlib import ExitStack, redirect_stdout
 import copy

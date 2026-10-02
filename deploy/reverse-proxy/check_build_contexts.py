@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Check host COPY inputs for every checked-in edge Compose build and relay Fly.
 
 This checks context paths, stage references and local COPY existence/ignores.

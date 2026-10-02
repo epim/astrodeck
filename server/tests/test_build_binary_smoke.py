@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Re-pinned for #654: these tests previously asserted the unsafe image-name
 cleanup hazard and raw server-log reads. Cleanup now delegates only to proven
 process identities; all OS and ownership calls in this file are mocked.

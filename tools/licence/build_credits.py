@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Generate build-only credits from this release environment, without installing.
 
 Missing core dependencies remain fatal. Absent optional roots/closures are named

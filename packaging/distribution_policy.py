@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One owner decision source for release payload selection.
 
 Pending records preserve historical inclusion; inclusion is not legal approval.

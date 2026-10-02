@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No real process or network access: synthetic ownership graph fixtures."""
 from pathlib import Path
 import sys

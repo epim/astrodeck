@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Release gates: real archive/RECORD mutations; no application execution."""
 from __future__ import annotations
 import base64

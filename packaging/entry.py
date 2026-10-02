@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Entry point for the single-file build.
 
 Not a copy of ``astrodeck.__main__`` — it defers to it, so the CLI can never

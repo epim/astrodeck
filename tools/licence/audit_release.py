@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Inventory an actual release artifact before upload.
 
 No observed baseline is an approval. Unknown payloads, missing provenance/notices

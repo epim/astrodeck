@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COPY checks inspect fixture files; no daemon, network or production config."""
 import importlib.util
 from pathlib import Path

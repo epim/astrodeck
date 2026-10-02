@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Serial, assertion-specific source mutation evidence for release packaging.
 
 Run only while no artifact build is reading these sources. Every mutated file
