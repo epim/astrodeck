@@ -18,6 +18,7 @@ MUTANTS = [
     ("CSS-RESOURCES", "check_site.py", "refs, problems = css_references(css_source)", "refs, problems = [], []", "SiteChecks.test_css_uppercase_url"),
     ("ENTITY-PRIVACY", "check_site.py", "html.unescape(text)", "text", "SiteChecks.test_encoded_privacy"),
     ("DIAGNOSTIC-PRIVACY", "check_site.py", 'errors.append(f"{rel}: missing local reference")', 'errors.append(f"{rel}: missing local reference {ref}")', "SiteChecks.test_diagnostics_do_not_echo_references"),
+    ("MONEY-SITE", "check_site.py", "if MONEY.search(masked):", "if False:  # MONEY-SITE", "SiteChecks.test_money_metaphor"),
     ("FRESH-CONFIG", "capture_sim.py", "if config.exists() or captures.exists():", "if False:  # FRESH-CONFIG", "CaptureBoundary.test_refuses_reused_config"),
     ("FAILED-LAUNCH-CLEANUP", "capture_sim.py", 'if (config / ".astrodeck-probe").is_file():', "if False:  # FAILED-LAUNCH-CLEANUP", "CaptureLifecycle.test_failed_launch_stops_owned_process"),
     ("PARENT-PID-REUSE", "capture_sim.py", 'if info is None or info["created"] > child_created:', "if info is None:", "CaptureLifecycle.test_refuses_parent_pid_reuse"),
