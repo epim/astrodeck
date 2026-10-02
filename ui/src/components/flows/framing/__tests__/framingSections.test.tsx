@@ -87,8 +87,8 @@ const { ANY_ANGLE_ON_A_GRID, NO_ANGLE_ON_A_GRID, NO_OPTICS, NO_ROTATOR, runPanel
 const { ROTATE_LABEL, WHEN_WAITING_NO_MOSAIC } = await import("../sections/RunSection");
 const {
   GRID_ORDER_NOTE, SETTING_FIRST_NOTE, PanelsSection, panelRows, runLine, runRowText, namesPanel,
-  SHOOTING_NOW, SET_ASIDE_TONIGHT, CURRENT_PAUSED, CURRENT_HOLDING_FOR_CLOUD, CURRENT_HOLDING,
-  CURRENT_STOPPING,
+  SHOOTING_NOW, SET_ASIDE_TONIGHT, SET_ASIDE_FOR_NOW, CURRENT_PAUSED, CURRENT_HOLDING_FOR_CLOUD,
+  CURRENT_HOLDING, CURRENT_STOPPING,
 } = await import("../sections/PanelsSection");
 // The classic overview's copy of the no-mosaic line, which RUN's is held
 // equal to (the overview cannot import the sheet's: the classic flows chunk
@@ -1033,6 +1033,12 @@ function panelRunLines(): Record<string, string> {
   return Object.fromEntries(pairs.sort(([a], [b]) => a.localeCompare(b)));
 }
 const RUN_REASON: string = RUN_FX.shooting.group.set_aside[0].reason;
+// The recorded 2-2 is a CENTRING set-aside not yet expired (#573, #534
+// follow-up, backlog ruling D-07): its `for_now` is true, so PANELS words
+// it "set aside for now", with the "tried once more tonight" tail.
+assert(RUN_FX.shooting.group.set_aside[0].for_now === true,
+  "premise: the recorded set-aside is still for now");
+const ASIDE_LINE = `${SET_ASIDE_FOR_NOW}: ${RUN_REASON}; tried once more tonight`;
 
 // MUTANT "state check dropped" (flowRunState.ts `panelStateOf` answering
 // `shooting` for the group's panel whatever the run's state). Observed, 22/23
@@ -1050,7 +1056,7 @@ const RUN_REASON: string = RUN_FX.shooting.group.set_aside[0].reason;
 //     for cloud, stopping: a hold that names no reason: expected "current panel, run holding", got
 //     "current panel, holding for cloud"
 await test("PANELS says what the run is doing to its panel, on the recorded states: shot, paused, holding for cloud, stopping", async () => {
-  const aside = `${SET_ASIDE_TONIGHT}: ${RUN_REASON}`;
+  const aside = ASIDE_LINE;
   const cases: [string, string][] = [
     ["shooting", SHOOTING_NOW], ["paused", CURRENT_PAUSED],
     ["holding", CURRENT_HOLDING_FOR_CLOUD], ["aborting", CURRENT_STOPPING],
@@ -1110,14 +1116,18 @@ await test("the set-aside line names its panel once: a reason that names it stan
   assert(RUN_REASON.startsWith("centring failed on 2-2"), `premise: the engine's reason names its panel: ${RUN_REASON}`);
   mountRunPanels(RUN_FX.shooting);
   const line = panelRunLines()["2-2"];
-  eq(line, `${SET_ASIDE_TONIGHT}: ${RUN_REASON}`, "2-2's line on the recorded state");
+  eq(line, ASIDE_LINE, "2-2's line on the recorded state");
   eq(line.split("2-2").length - 1, 1, "times 2-2's line says 2-2");
   // CONTROL: the engine's words for a mosaic set aside when guiding never
-  // started name no panel, so the line must.
+  // started name no panel, so the line must. Set aside for the night (never
+  // for now), as a "guiding did not start" group set-aside always is.
   const guiding = "guiding did not start on any panel of M31";
   const other = {
     ...RUN_FX.shooting,
-    group: { ...RUN_FX.shooting.group, set_aside: [{ panel: "2-2", reason: guiding }] },
+    group: {
+      ...RUN_FX.shooting.group,
+      set_aside: [{ panel: "2-2", reason: guiding, kind: "group", for_now: false }],
+    },
   };
   mountRunPanels(other);
   eq(panelRunLines()["2-2"], `2-2: ${SET_ASIDE_TONIGHT}: ${guiding}`, "a reason that does not name the panel");
@@ -1126,7 +1136,7 @@ await test("the set-aside line names its panel once: a reason that names it stan
   eq(namesPanel("centring failed on 2-21 on 3 consecutive visits", "2-2"), false, "2-21 is not 2-2");
   eq(namesPanel("M31 2-2: below the floor", "2-2"), true, "a reason that ends the name with 2-2");
   eq(namesPanel("2-2", "2-2"), true, "the label alone");
-  eq(runRowText("2-2", { kind: "set_aside", reason: "centring failed on 12-2" }),
+  eq(runRowText("2-2", { kind: "set_aside", reason: "centring failed on 12-2", forNow: false }),
     `2-2: ${SET_ASIDE_TONIGHT}: centring failed on 12-2`, "a reason naming 12-2, on 2-2's line");
   eq(runRowText("1-1", null), null, "a panel the run is doing nothing to");
 });
