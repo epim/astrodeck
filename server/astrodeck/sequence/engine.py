@@ -16260,25 +16260,55 @@ class SequenceEngine:
                                               ) -> None:
         """Under ``af_failure_action`` "warn", after a sweep and its retry at
         twice the exposure both failed on a sparse field (#507, H4
-        orchestrator ruling 4): say where the run carries on, in words, and
-        owe a sweep at the first light frame whose star count reaches
+        orchestrator ruling 4): MOVE the focuser to the last sweep that found
+        focus THIS run, when there has been one, and say so, in the night log
+        and the session report. With none (the initial autofocus), stay
+        where the sweeps started, as before, and say that instead. Either
+        way owe a sweep at the first light frame whose star count reaches
         ``SPARSE_FIELD_WARN`` (`_note_sparse_resweep`).
 
-        WHERE IT CARRIES ON is where the sweeps started, which is where each
-        put the focuser back on failing (the native sweep never leaves it at
-        a sweep point), so the failed result's ``best_position`` names it with
-        no device read. The last sweep that found focus is named beside it
-        when this run has one, since offsets and temperature compensation may
-        have moved the focuser since; the night's log then says both numbers
-        the morning needs.
+        D-09 (owner-approved 2026-09-30, #590) SUPERSEDES THE OLDER READING:
+        ruling 4 as first worded ("the run continues at the last good
+        position") was built as "stays where the sweeps started", because
+        the native sweep leaves the focuser there on a failure and nothing
+        commanded a move. The owner's ruling resolves that literally: move
+        there, when there is one to move to. Filter offsets and temperature
+        compensation stay OUT OF SCOPE, as #507's own follow-up comment and
+        D-09's wording both leave them — the position moved to is the raw
+        one a successful sweep measured, never corrected for either.
+
+        WHERE THE SWEEPS STARTED is where each put the focuser back on
+        failing (the native sweep never leaves it at a sweep point), so the
+        failed result's ``best_position`` names it with no device read —
+        this is also where the run lands when there is no good sweep to move
+        to, or the move to one fails.
 
         SAVE AFTER A SWEEP THROUGH LUMINANCE (``restored``, the filter
         `_sweep_through_luminance` put back): the move to luminance applied
         its offset before the sweeps started, and putting ``restored`` back
-        undid it, so where the sweeps started is not where the run carries on
-        (120 steps apart for Ha on the simulator's wheel). The position is
-        then read, bounded, after the filter is back; a read that fails names
-        no number rather than the wrong one.
+        undid it, so where the sweeps started is not where the run would
+        otherwise carry on (120 steps apart for Ha on the simulator's
+        wheel). That position is read, bounded, after the filter is back; a
+        read that fails names no number rather than the wrong one.
+
+        THE MOVE ITSELF IS BEST-EFFORT, exactly like the read above: "warn"
+        promises the run carries on whatever happens, so a stuck or missing
+        focuser logs a warning and falls back to staying where the sweeps
+        started rather than ending the night over a corrective move —
+        ``_bounded`` (which turns a timeout into a ``SafetyAbort``) is
+        deliberately not used here, for the same reason the read above does
+        not use it. The move goes through `focus.approach`, the one path
+        every other focuser move outside a sweep uses, so it arrives from
+        above like any other and never asks the focuser for more than its
+        own ``move_to`` and ``max_position`` already allow (the EAF limits
+        the focus module enforces everywhere else).
+
+        THE CARRY-ON IS RECORDED IN THE SESSION REPORT AS WELL AS THE NIGHT
+        LOG (#507 (b), WP-57): the same sentence that goes to `bus.log` also
+        goes through `_record_safety`, the bridge every other safety-style
+        event (a roof close, the no-progress watchdog) already uses to
+        reach it, so the morning report shows the carry-on beside its
+        other safety events and not only in the log file.
 
         The owed sweep's own failure owes nothing more: it says so instead."""
         pos = getattr(result, "best_position", None)
@@ -16304,29 +16334,58 @@ class SequenceEngine:
             started = (f"the focus it had before the sweeps, since putting "
                        f"{restored!r} back after they ran through luminance "
                        f"undid the filter offset")
-        where = (f"focuser position {int(pos)}"
-                 if isinstance(pos, (int, float)) else "the focuser position")
         good = self._last_good_focus
+        moved = False
+        if good is not None:
+            # D-09: move there instead of merely naming it. Best-effort, as
+            # the docstring above explains — a timeout or a device error
+            # here falls back to `where`/`started` below, computed exactly
+            # as they were before this move existed.
+            try:
+                foc = self.hub.devices.get("focuser")
+                cur = int(pos) if isinstance(pos, (int, float)) else None
+                await asyncio.wait_for(
+                    approach(foc, int(good[0]), overshoot=configured_overshoot(),
+                            current=cur),
+                    FOCUSER_MOVE_TIMEOUT_S)
+                moved = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:   # noqa: BLE001 - "warn" never ends a run
+                                     # over a corrective move, a timeout
+                                     # included (see the docstring above)
+                bus.log("warning",
+                        f"{label}: could not move to the last good sweep's "
+                        f"position {good[0]} ({e}); carrying on at "
+                        f"{started} instead", "sequence")
+        if moved:
+            where = f"focuser position {int(good[0])}"
+            started = "moved to the last good sweep's position (D-09)"
+        else:
+            where = (f"focuser position {int(pos)}"
+                     if isinstance(pos, (int, float)) else "the focuser position")
         if good is None:
             since = "no sweep has found focus yet this run"
         else:
             since = (f"the last sweep that found focus left it at {good[0]}, "
                      f"{(time.monotonic() - good[1]) / 60:.0f} min ago")
         if resweep:
-            bus.log("warning",
-                    f"{label} failed on a sparse field again, at both "
-                    f"exposures: the run carries on at {where}, {started} "
-                    f"({since}). No further "
-                    f"sweep is owed for the sparse field; the next is the "
-                    f"plan's own (autofocus_every, the temperature trigger or "
-                    f"the next target)", "sequence")
+            msg = (f"{label} failed on a sparse field again, at both "
+                   f"exposures: the run carries on at {where}, {started} "
+                   f"({since}). No further "
+                   f"sweep is owed for the sparse field; the next is the "
+                   f"plan's own (autofocus_every, the temperature trigger or "
+                   f"the next target)")
+            bus.log("warning", msg, "sequence")
+            self._record_safety(msg, "focus_carry_on")
             return
         self._sparse_resweep_owed = True
-        bus.log("warning",
-                f"{label} failed on a sparse field at both exposures: the "
-                f"run carries on at {where}, {started} ({since}), and "
-                f"sweeps again at the first frame "
-                f"that finds at least {SPARSE_FIELD_WARN} stars", "sequence")
+        msg = (f"{label} failed on a sparse field at both exposures: the "
+               f"run carries on at {where}, {started} ({since}), and "
+               f"sweeps again at the first frame "
+               f"that finds at least {SPARSE_FIELD_WARN} stars")
+        bus.log("warning", msg, "sequence")
+        self._record_safety(msg, "focus_carry_on")
 
     def _note_sparse_resweep(self, info, step, target: Target) -> None:
         """A light frame's star count against a sweep owed since two
