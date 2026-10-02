@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native TPPA end to end against a mount that answers a meridian crossing the
 way a German equatorial really does: with a pier flip.
 

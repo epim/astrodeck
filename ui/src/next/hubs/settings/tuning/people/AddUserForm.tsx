@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AddUserForm.tsx - "create a local account", rebuilt in the design's
 // vocabulary (wave R7, T-R7-11; plan section 3.F4).
 //

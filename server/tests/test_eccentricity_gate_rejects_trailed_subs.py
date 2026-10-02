@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-04: trailed subs are REJECTED, on the real grading path, by default.
 
 THE DEFECT. Every staircase-trailed sub of 2026-09-06 was accepted at HFR 3.10

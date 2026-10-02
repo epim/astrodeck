@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The flip gate's one retry waits past the meridian, and a retry that flips
 nothing is never logged as a completed flip (#366, S5 orchestrator ruling 2;
 #367).

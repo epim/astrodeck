@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CommonProblems.tsx - the symptom guide (wave R7, T-R7-16).
 //
 // Ten `Disclosure`s, one per `TROUBLESHOOTING` entry, keyed by the entry's

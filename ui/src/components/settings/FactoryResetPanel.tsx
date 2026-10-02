@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FactoryResetPanel.tsx — "return it to a naive state in between people trying
 // it out". The QA-handoff button: one tester finishes, this puts the box back to
 // a genuine fresh install, the next tester sets it up from scratch.

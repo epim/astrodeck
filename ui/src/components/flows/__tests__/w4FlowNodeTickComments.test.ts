@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w4FlowNodeTickComments.test.ts - the three "flow.node tick" comments #593
 // found left uncorrected after H4's #464 sweep are fixed (backlog plan WP-36
 // (c), docs/superpowers/plans/2026-09-30-open-issue-backlog.md; spec

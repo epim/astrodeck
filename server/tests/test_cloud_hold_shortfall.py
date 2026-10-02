@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A weather hold tops the dark library up; it does not re-shoot it.
 
 The darks leg landed taking the full quota on every hold. On a cloudy night that

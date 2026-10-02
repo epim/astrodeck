@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsSlice.ts — the Flows domain's state and the actions that write it.
 //
 // It lives in its own module rather than inline in store.ts for one practical

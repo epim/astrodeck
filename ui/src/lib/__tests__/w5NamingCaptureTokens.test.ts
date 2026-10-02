@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5NamingCaptureTokens.test.ts - WP-42 (#278): the client naming mirror
 // (naming.ts) must offer every token the server's render_relative_path
 // actually substitutes, or the settings preview lies about where a frame

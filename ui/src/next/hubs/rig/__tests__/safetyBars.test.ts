@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safetyBars.test.ts - one bar per key the monitor ACTUALLY sent.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/__tests__/safetyBars.test.ts

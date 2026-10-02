@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Semver parse/compare/select for the self-update feature."""
 from astrodeck.update import version as V
 

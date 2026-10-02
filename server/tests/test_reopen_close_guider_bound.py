@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The auto-reopen roof close waits for the guider only briefly, and reads
 its park back (#343, the #270 class; spec 6.17).
 

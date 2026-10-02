@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // primitivesDom.test.tsx - the next-UI primitives, MOUNTED and pressed.
 //
 //   Run directly:  npx tsx src/next/ui/__tests__/primitivesDom.test.tsx

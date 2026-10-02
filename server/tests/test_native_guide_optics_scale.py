@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A4 (P2-T3 review F2): native_guider() computes a real image_scale_arcsec
 from Optics.guide_focal_length_mm + the guide camera's pixel_size_um, instead
 of the 1.0 default that mis-scales the arcsec badge on a real rig. Needs no

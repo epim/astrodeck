@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // fov.ts - field-of-view, sampling and mosaic math for the Settings "Optics"
 // sheet (README "11. Settings" -> Optics sheet; "Formulas to lift" -> FoV +
 // Mosaic):

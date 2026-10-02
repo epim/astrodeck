@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sites.tsx - the SITES sheet (T-SKY-4, plan A.14). Shared between the Sky
 // and Settings hubs (ARCHITECTURE.md section 5: sheet names are global; this
 // component is registered ONCE and both hubs point at it).

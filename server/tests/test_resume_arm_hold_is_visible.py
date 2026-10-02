@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Why nothing is happening has to leave the process.
 
 On 2026-08-16 a session sat armed and weather-held with 58 frames owed, and

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tileCache.test.ts — pure cache/queue bookkeeping (tile-engine spec §4).
 import { tilePriority, planFetches, LruSet, NegativeCache } from "../tileCache";
 import { ang2pixNested, parentOf } from "../healpix";

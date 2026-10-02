@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowZoomCluster.tsx - the canvas's zoom trio and its percent readout
 // (wave R7 parity row A9).
 //

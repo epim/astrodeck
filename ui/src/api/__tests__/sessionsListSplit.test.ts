@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionsListSplit.test.ts - who sees an unreadable session file (#242), and
 // what the recovery sentence may say (#246). Pure: a stubbed fetch, no DOM.
 //

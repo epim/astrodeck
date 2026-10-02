@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TargetFramingSheet.tsx - the Target modal, "FRAME" (#189 S4 items 1 and 4,
 // S5 run mode; spec 2026-09-23 flows mosaic, 2.1-2.7).
 //

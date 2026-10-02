@@ -77,3 +77,5 @@ Flow wires carry the sequence path; event wires express conditions and actions. 
 ## Related
 
 [Plan editor](plan-and-sequences.md) · [Unattended nights](unattended-nights.md) · [Monitor](monitor.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

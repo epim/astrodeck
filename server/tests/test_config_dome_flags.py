@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-4 Task 5 — the two additive ``SafetyConfig`` dome flags.
 
 Both default False (every existing rig/test byte-identical); a round-trip through

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // fieldAnnotationDom.test.tsx — the target name and the frame markers, mounted.
 //
 //   Run directly:  npx tsx src/components/capture/__tests__/fieldAnnotationDom.test.tsx

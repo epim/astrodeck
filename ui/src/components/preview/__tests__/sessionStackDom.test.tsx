@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionStackDom.test.tsx: the Session stack panel, MOUNTED and SWITCHED.
 //
 //   Run directly:  npx tsx src/components/preview/__tests__/sessionStackDom.test.tsx

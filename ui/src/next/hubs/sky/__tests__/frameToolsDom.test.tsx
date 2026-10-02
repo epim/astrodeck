@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // frameToolsDom.test.tsx - the FRAME-mode tools the legacy Atlas had and the
 // new hub had lost, MOUNTED and pressed (review #27, #28, #29, #30, #31, #32,
 // #33, #35, #36).

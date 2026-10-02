@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NOV-12 Bahtinov focus verdict render. Mirrors FocusVerdict's structure — a
 // word + tone class inside role="status" aria-live="polite" (never color alone).
 // All logic lives in the pure, tsx-tested lib/bahtinov.ts.

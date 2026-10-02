@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """§T7(5) device registration + generation fencing (W3.3.4).
 
 A ``HELLO{device_token}`` pins ``home_id``; a duplicate token with a HIGHER

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planGroups.test.ts — pure tests for lib/planGroups.ts (mosaic "apply to all
 // panels" helper). Inline-assert harness (no vitest); runs via `npx tsx`.
 import { applyStepsToGroup } from "../planGroups";

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // providerChip.ts — which visual treatment a resolved provider gets.
 //
 // Lives in lib/ rather than beside the component for one reason: the component

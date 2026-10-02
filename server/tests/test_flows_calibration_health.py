@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The LIBRARY HEALTH matrix — the thing that decides "if library stale".
 
 Two consumers read this and neither of them is a page of text: the inspector

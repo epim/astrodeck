@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quick.tsx - QUICK FLOW: one target, this many subs, these filters, go
 // (wave R7 row A17; rebuild of `components/flows/QuickFlow.tsx` in the design's
 // vocabulary, proto `05-quick-session-setup.html`).

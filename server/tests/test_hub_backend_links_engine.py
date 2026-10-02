@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """backend_links must report ENGINE-served roles honestly (UX review #52).
 
 The boot-LED grid joins each retained ``RoleResult`` with the role's LIVE

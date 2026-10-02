@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // surveyView.test.ts — transform math for the pan/zoom-tracking survey frame.
 // Run with:  npx tsx src/lib/__tests__/surveyView.test.ts   (from ui/)
 

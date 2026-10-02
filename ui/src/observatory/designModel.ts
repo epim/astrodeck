@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 export type Phase = 'planned' | 'running' | 'paused' | 'weather' | 'complete' | 'stopped';
 export type Session = { phase: Phase; connected: boolean; accepted: number; total: number };
 export type SessionAction = { type: 'start'; ready: boolean; total: number } | { type: 'pause' | 'resume' | 'cloud' | 'clear' | 'disconnect' | 'reconnect' | 'frame' | 'finish' | 'stop' };

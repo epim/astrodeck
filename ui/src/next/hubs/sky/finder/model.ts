@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // model.ts - `useSkyModel()`, the ONE hook that reads the store and the server on
 // the Sky hub's behalf and hands back everything the finder, the lock card, the
 // reach strip and the lens dial render (hub-sky plan section B).

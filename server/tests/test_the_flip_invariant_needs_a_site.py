@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The rest of the flip machinery asks whether there is a site (#24).
 
 `_maybe_meridian_flip` already declines the flip at the 0,0 default and says so

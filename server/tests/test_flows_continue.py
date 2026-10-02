@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Run CONTINUE: night two banks on night one's ledger (#189 S1, spec 5.9, D6;
 task S1-13).
 

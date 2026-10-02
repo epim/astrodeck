@@ -49,3 +49,5 @@ The classic preset form and the alternative **SITES** sheet both use the saved-l
 A saved site's horizon can affect target visibility and motion guards. Review the horizon for the observing position; do not copy someone else's values or infer a safe park position from a site preset.
 
 Precise site details are admin-only by default. Operators can see weather and site-derived planning information; viewers do not receive those capabilities. Raw FITS access is separately controlled. Keep private coordinates and labels out of shared screenshots, exported profiles and support material. See [remote access and roles](remote-access-and-roles.md).
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

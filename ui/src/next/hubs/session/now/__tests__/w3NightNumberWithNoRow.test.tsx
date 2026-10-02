@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3NightNumberWithNoRow.test.tsx - WP-25 (c), #430's remaining item 1.
 //
 //   Run directly:  npx tsx src/next/hubs/session/now/__tests__/w3NightNumberWithNoRow.test.tsx

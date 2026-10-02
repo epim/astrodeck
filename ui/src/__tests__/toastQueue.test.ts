@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // toastQueue.test.ts — UX review #33 regression ("two identical toasts
 // sometimes, zero other times").
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // framingLayout.test.tsx - the Target modal's layout contract (#189 S4 item 4;
 // spec 2026-09-23 flows mosaic, 2.2).
 //

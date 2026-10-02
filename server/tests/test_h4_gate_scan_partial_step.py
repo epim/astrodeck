@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The altitude gate's rise scan covers exactly the window (#498; spec 5.1,
 the soonest waiter, and 5.10, the published ``eta_s``).
 

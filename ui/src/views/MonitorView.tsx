@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ============================================================================
 // MonitorView — the unified glanceable run dashboard (monitor spec §4 / §7).
 // Lane 2E. Reads ONLY store slices via the landed narrow hooks (no polling of

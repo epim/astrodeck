@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Where a satellite is, right now, from HERE.
 
 SATELLITES ARE SITE-DERIVED, WHOLE. This is the one thing to understand before

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sparkGeometry.test.ts — mini altitude-chart geometry for the Plan tab's
 // per-target cards (wave-3 §3). Run with:
 //   npx tsx src/lib/__tests__/sparkGeometry.test.ts   (from ui/)

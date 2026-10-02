@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w1TonightRowParamAgreesWithTheSheet.test.tsx - FlowStagesPhoneSheet's
 // TONIGHT row and FlowTonightSheet agree on the deep-link's param name
 // (#553, backlog WP-08).

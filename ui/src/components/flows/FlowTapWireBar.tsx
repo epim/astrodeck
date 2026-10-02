@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowTapWireBar.tsx — the armed tap-to-wire hint bar. §C.15, §F.1, ref
 // `10b-phone-tap-to-wire-armed.png`.
 //

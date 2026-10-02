@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sitesModel.test.ts - pure tests for the Sites sheet's distance/coordinate/
 // horizon-summary helpers (T-SKY-4 plan G, siteModel.test.ts renamed
 // `sitesModel.test.ts` to match this task's file-prefix rule).

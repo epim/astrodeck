@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The angle check on every hop of a mosaic (#189 U-04, task T15; spec 5.6
 step 4, 6.12, Appendix A.2, D11).
 

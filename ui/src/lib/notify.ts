@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // notify.ts — opt-in push (Web Notification) + short audible beep for
 // sequence error/complete and sustained link loss (reliability spec §11).
 // No-ops unless the user opted in AND the browser granted permission.

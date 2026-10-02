@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Which V-curves locate focus, judged on shape rather than on R² (#143).
 
 The rig, 2026-08-08, Oiii slot of a per-filter offset run: HFR 1.67 px at

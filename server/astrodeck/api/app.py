@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """FastAPI application: REST command surface + WebSocket event stream.
 
 Quick queries answer inline. Long operations (slews, autofocus, sequences,

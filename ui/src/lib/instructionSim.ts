@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // instructionSim.ts — pure, client-side DRY RUN for the conditional sequencer.
 // "Given this state, which rules would fire and why." Preview ONLY: the server
 // evaluator (sequence/instructions.py) stays authoritative at run time.

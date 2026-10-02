@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // env.d.ts - the two build-time constants the new front end reads.
 //
 // Deliberately NOT `/// <reference types="vite/client" />`: that pulls in a

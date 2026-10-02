@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A refused re-point keeps holding; a dead mount link still ends the run
 (#240, H3 orchestrator ruling 3).
 

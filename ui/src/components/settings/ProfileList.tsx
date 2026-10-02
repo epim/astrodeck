@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ProfileList.tsx — profile management (W1.6). Lists saved profiles, shows which
 // is ACTIVE (and that the active one auto-connects on boot), and offers:
 //   Activate  → POST /api/profiles/{id}/activate (sets active AND connects; the

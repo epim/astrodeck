@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // plan/index.ts - what the rebuilt plan editor exports.
 //
 // The mount file (`session/sheets/planEditor.tsx`) composes exactly three of

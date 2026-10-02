@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A pause opened inside a frame-loop cloud hold runs no setup (#263, the
 #241 class, H3 orchestrator ruling 4).
 

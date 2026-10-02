@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-resume re-centres a flipped mosaic on a panel past the meridian (#312,
 S3 orchestrator ruling 4; spec 5.7, 5.9).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure formatting + countdown math for the Monitor view (monitor spec §10).
 // No React, no DOM — unit-tested in eta.test.ts. Also the single source of truth
 // for the Monitor's shared timing constants (master §A.7).

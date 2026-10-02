@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // EquipmentView.tsx — the unified per-device Equipment surface (spec §4.1),
 // replacing the old mode-centric connect view under the same "connect" view id.
 // One uniform row grammar: for each server-fed role, pick WHO drives it from

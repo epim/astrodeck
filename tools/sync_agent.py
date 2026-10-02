@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pull a night off an AstroDeck rig, incrementally, while it is still running.
 
 Run this on the machine that has PixInsight. It asks the rig what it holds,

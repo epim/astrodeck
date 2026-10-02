@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-night stacking, the meridian flip, the shared stretch and the ratio
 light curve — on synthetic 400x300 skies small enough to run in seconds.
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CalibrationLibraryPanel.tsx — the Settings → Calibration tab (PRO-1). Mirrors
 // PlanLibraryPanel's library-panel shape: a header "Rebuild library" action, a
 // loadErr/empty/list tri-state body, and per-row delete. Masters are grouped by

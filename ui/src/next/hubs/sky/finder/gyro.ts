@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // gyro.ts - the finder follows the phone (hub-sky plan B.10).
 //
 // Three things the prototype does not do, all of them required by the README's

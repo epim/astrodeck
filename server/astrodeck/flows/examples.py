@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The eight Examples flows - read-only fixtures, the first seven transcribed
 from ``PRESETS``.
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useState } from "react";
 import { useWeather } from "../../store";
 import { SkyDomePanel } from "./SkyDomePanel";

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """`state` and `running` must not contradict each other (#117).
 
 Between `SequenceEngine.start()` returning and `_run` reaching its first

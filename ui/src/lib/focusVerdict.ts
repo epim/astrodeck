@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focusVerdict.ts — is this frame in focus, or so far out that HFR is a lie?
 //
 // detect_stars measures inside a 15px box, so its HFR SATURATES around 5-7px no

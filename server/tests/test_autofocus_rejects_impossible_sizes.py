@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A half-pixel star is a pixel (#219).
 
 THE MEASUREMENT, 2026-08-17 00:23-00:36, NGC 7129, Ha, 24 s at gain 200, bin 1 -

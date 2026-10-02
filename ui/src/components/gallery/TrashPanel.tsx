@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // components/gallery/TrashPanel.tsx — the bin: what was deleted, when it goes,
 // whether it can come back, and the two ways to end it early.
 //

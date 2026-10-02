@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GitHub release selection logic (pick_release)."""
 from astrodeck.update import github as G
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API regression tests for the FIX-B backend changes.
 
 - P1-3: a calibration-only plan (darks/bias/flats) must pass the below-horizon

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#168 — sync the rotator against the sky WITHOUT moving it (2026-08-07 22:02).
 
 The sky↔mechanical offset always existed (``Rotator.sync_offset_deg``) and

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureGate.test.ts - every row of the manual bench's refusal table.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/capture/__tests__/captureGate.test.ts

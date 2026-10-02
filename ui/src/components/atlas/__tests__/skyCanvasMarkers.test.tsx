@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyCanvasMarkers.test.tsx — the Atlas canvas MOUNTED, with objects in the
 // sky, asserted as DOM at a computed coordinate and then tapped.
 //

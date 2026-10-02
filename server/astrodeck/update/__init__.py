@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Self-update subsystem (spec: docs/superpowers/specs/2026-06-19-self-update-design.md).
 
 Import-light by design: the version/health endpoints (Phase 1) import only

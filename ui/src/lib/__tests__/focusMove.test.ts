@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focusMove.test.ts — pressing Go must never look identical to not pressing Go.
 import {
   ARRIVAL_TOLERANCE_STEPS, ARRIVED_LINGER_MS, MOVE_IN_FLIGHT_REASON,

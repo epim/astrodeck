@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """RotatorConfig validation + the /api/config/rotator route (422 contract)."""
 import pytest
 from fastapi.testclient import TestClient

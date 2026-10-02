@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A hold's re-point from elsewhere starts a new idle spell, warning included
 (#189 item 10 (a)).
 

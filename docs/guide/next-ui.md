@@ -33,3 +33,5 @@ A locked control can explain why it cannot act. Read that reason before changing
 ## Related
 
 [Getting started](getting-started.md) · [Capture](capture.md) · [Flows and mosaics](flows-and-mosaics.md) · [Remote access and roles](remote-access-and-roles.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

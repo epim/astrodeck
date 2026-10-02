@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // blankFlow.test.ts — START BLANK draws a TARGET and a CAPTURE LOOP made the way
 // a palette drop makes them, in both UIs.
 //

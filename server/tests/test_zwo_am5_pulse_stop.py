@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-02: a pulse's STOP command cannot be delayed by an event-loop stall.
 
 WHAT WENT WRONG (rig, 2026-09-06). ``ZwoAm5Telescope.pulse_guide`` emulates a

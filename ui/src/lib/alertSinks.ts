@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/alertSinks.ts - pure logic behind the Settings → Alerts panel (PRO-9).
 // Load-bearing: per-kind draft defaults, per-kind validation, and the health/
 // deadman verdict derivation. The panel (AlertsPanel.tsx) binds to these

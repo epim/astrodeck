@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Tests for components/atlas/mosaicNightSummary.ts — the reduction that decides what
 // the Atlas says about a mosaic's panels, and what it says about the ones it
 // could not answer for.

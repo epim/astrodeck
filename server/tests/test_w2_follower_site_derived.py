@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Two follower defects in S2 T18, found by the verifier and left open
 (#302, backlog WP-11 (b), owner-approved 2026-09-30):
 

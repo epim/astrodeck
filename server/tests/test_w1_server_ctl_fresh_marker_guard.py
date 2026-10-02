@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``server_ctl.py start --fresh`` refuses to wipe a directory a probe start
 did not mark (#541).
 

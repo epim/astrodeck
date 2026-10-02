@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2FlowCardRunIdentity.test.tsx - the Sky flow card reads run state off the
 // rig's own identity, never off the client's phase latch alone (#162).
 //

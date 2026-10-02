@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // missingOptics.test.ts — the merged-optics gate names the ACTUAL missing
 // fields (wave-1 §3.2). Run with:  npx tsx src/lib/__tests__/missingOptics.test.ts
 // (from ui/)

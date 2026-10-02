@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NOV-11 — save/share first-light JPEG: caption formatters + compositor."""
 import io
 import re

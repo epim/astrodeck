@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
 // Use the repository runner's explicit tally (it imports each test module).
 export const result = {passed:0,failed:0,total:0};

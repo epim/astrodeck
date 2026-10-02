@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CampaignLedger.tsx - the purple card: what is banked, per filter, over the
 // whole campaign, and what tonight is adding to it.
 //

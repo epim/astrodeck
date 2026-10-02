@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTINUE: carrying a flow's dormant session onto tonight's compile (#189 S1,
 spec 5.9 and D6).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // explain.ts - the channel a locked control uses to say why it is locked
 // (ARCHITECTURE.md section 6).
 //

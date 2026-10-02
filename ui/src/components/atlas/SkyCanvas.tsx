@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyCanvas — the Atlas sky view (design spec §6). A double-buffered survey
 // <img> under an SVG we fully own + an HTML label layer, with drag / rotate /
 // zoom / nudge / keyboard interaction. All geometry is gnomonic (TAN) so the

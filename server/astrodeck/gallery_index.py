@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Disposable on-disk FITS metadata cache. Never stores image pixels or site cards."""
 from __future__ import annotations
 

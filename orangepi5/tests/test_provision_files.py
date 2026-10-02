@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Private-file and configuration-emission regression tests."""
 
 from __future__ import annotations

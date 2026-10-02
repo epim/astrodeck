@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An unset site must not produce a confident altitude (#121).
 
 `_frame_altitude` returned `None` only when something raised. At a default site

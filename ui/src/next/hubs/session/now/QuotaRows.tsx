@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // QuotaRows.tsx - the quota rules, READ-ONLY, beside the ledger
 // (GAP-ANALYSIS section 7: "expose the quota rules read-only with the ledger,
 // editable on tablet").

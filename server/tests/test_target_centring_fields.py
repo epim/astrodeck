@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Target gains its centring and hop-focus fields (#170 U-03, #189 U-05; spec
 3.4, 5.6 steps 3 and 6, S1 item 1).
 

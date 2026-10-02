@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The PINNED ``require(capability)`` FastAPI dependency + the active-provider
 resolver (W2.2 enforcement).
 

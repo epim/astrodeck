@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // preflight.ts — single source of truth for run-readiness derivation
 // (onboarding spec §3). Pure + unit-testable; reused by the inline strip and
 // the modal. Includes the safety-monitor row (UX review #2) — see below.

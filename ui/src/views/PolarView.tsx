@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { api } from "../api";
 import { useFrameSettings, useStore, usePolar, useProviders, useStatus } from "../store";
 import { PolarReticle, knobHint, polarTier, polarInstruction, type KnobDir } from "../components/polar";

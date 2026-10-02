@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#127: a mount that cannot flip before the meridian should only have to
 demonstrate that once.
 

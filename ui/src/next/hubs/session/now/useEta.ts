@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useEta.ts - the finish clock, anchored ONCE per server frame.
 //
 // The client renders the countdown AND the absolute clock from one instant

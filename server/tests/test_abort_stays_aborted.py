@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An abort is a decision, not a fault -- auto-resume must not undo it.
 
 Observed on the rig 2026-08-24 over ten minutes (0.3.7): three consecutive

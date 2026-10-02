@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Guide-provider SELECTION + badge honesty (P5-T1 fix round C1).
 
 The per-profile guide override must be a REAL selection input, not just a badge

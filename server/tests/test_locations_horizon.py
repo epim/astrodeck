@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """S1 -- the per-site horizon POLYLINE: drawn on a saved location, carried into
 ``config.safety.horizon`` when that location becomes the site.
 

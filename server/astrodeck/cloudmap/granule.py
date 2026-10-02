@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Reading a GOES ABI granule off disk (stage 3) -- raw counts to physical units.
 
 No network, no config, no rig, no clock. One file in, numpy arrays out. Nothing

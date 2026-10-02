@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Satellite and comet ephemerides, from elements cached on disk.
 
 The two kinds of object in here are not one feature with two data sources. They

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // storeSiteMirror.test.ts — the site slice is a MIRROR of config.site, and
 // loadConfig() is the one place that keeps them in lock-step.
 //

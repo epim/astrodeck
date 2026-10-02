@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PhoneGroup.tsx - Settings > GENERAL > PHONE (plan section C.2.3).
 //
 // Every row here is an EXISTING preference that had to survive the migration,

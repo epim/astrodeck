@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // aim.ts - sky <-> canvas pixels for ATLAS mode, in both directions.
 //
 // ONE PROJECTION, NOT A SECOND ONE. `skyToBox` is `lib/atlasFov.ts`'s

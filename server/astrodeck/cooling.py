@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Cooler warm-down policy — the ramp that replaces cutting the TEC dead.
 
 WHY THIS MODULE EXISTS (the bug it was written for, 2026-08-04)

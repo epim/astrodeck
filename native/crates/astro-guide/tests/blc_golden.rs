@@ -1,3 +1,4 @@
+// Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
 //
 // Provenance: golden-vector tests for static backlash compensation (BLC) in

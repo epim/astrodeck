@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/capture.ts: the one unsaved frame the rig is holding, and the decision to
 // keep it (D-SES-4). Server: server/astrodeck/hub.py's promote buffer
 // (`PendingSave`, `promotable_summary`, `promote_last_frame`), routed in

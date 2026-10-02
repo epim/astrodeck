@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useCropZoom — debounced, quantized, cached, abortable sensor-1:1 crop fetches.
 // (crop+render UI design §2.1, §4.3, risks R2/R3/R4)
 //

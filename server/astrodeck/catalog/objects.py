@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Curated deep-sky target catalog (J2000). RA in hours, Dec in degrees.
 
 The popular imaging targets: full set of crowd-pleaser Messiers plus the

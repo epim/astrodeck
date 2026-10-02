@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // profileDelete.test.ts — the two judgements behind Profiles -> Delete.
 //
 // Run: npx tsx src/lib/__tests__/profileDelete.test.ts

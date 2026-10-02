@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What the console shows is what the rig runs — the same layer, on both sides.
 
 THE PROMISE: a value on screen describes THIS rig, now.

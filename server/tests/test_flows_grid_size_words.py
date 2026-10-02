@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A grid's size in words (S4 orchestrator ruling 1, #339; the compile and
 doctor half).
 

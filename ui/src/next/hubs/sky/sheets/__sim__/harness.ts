@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The browser the recorded case is replayed in.
 //
 // Everything the scanner reaches for outside itself is stubbed here, and every

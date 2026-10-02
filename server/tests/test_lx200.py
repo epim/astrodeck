@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """LX200 codec golden tests — vectors from the captured AM5N session
 (docs/hardware/zwo-am5-lx200-protocol.md). All geographic coordinates here are
 FICTIONAL (site privacy)."""

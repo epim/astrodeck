@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A RUN MUST ASSERT ITS OWN SENSOR TEMPERATURE, EVERY FRAME.
 
 Two nights running, frames were shot at ambient while the operator believed the

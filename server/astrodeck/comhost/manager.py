@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ComHostManager (COM-T6): the server-owned lifecycle for the bundled COM host.
 
 Server-spawned (plan lifecycle decision): a process-lifetime singleton spawns

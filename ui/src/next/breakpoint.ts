@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // breakpoint.ts - which of the three layouts is on the glass
 // (ARCHITECTURE.md section 4).
 //

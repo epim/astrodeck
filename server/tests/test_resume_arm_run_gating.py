@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-resume's re-centre honours the run's gating (#283, #159 follow-up).
 
 WHAT WAS WRONG. ``recentre_candidates`` listed what the run could still shoot

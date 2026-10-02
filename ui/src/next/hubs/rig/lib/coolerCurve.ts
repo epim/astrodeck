@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // coolerCurve.ts - the camera sheet's ring arc and its cooling curve, as pure
 // maths (no React, no store, no fetch) so both can be asserted without mounting
 // a sheet.

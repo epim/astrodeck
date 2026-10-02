@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyModel.test.ts - the finder's math, without a DOM.
 //
 //   Run directly:  npx tsx src/next/hubs/sky/finder/__tests__/skyModel.test.ts

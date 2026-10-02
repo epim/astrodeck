@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // monState.ts - the one mono line under MONITOR / LOG / ALERTS.
 //
 // The prototype computes `a_monState` from its simulated run (`logic.js:591`);

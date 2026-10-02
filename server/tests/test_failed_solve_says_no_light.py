@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A failed plate solve says whether light reached the sensor (#251).
 
 On 2026-09-24/25 auto-resume logged "plate solve failed: Not enough stars."

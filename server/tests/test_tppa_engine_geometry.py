@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """TPPA engine geometry and accuracy, through the Python binding.
 
 What this file is for

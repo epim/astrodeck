@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight's visible satellite passes.
 
 THREE CONDITIONS, AND ALL THREE ARE REAL. A satellite being "up" is not the

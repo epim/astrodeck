@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // focusCapture.test.ts — the Focus screen must be able to take a frame, and the
 // sweep must never pretend it copied one that does not exist.
 //

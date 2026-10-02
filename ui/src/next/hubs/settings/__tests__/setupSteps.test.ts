@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // setupSteps.test.ts - the FIRST-TIME SETUP machine (T-SET-1, plan C.2.1).
 //
 //   Run directly:  npx tsx src/next/hubs/settings/__tests__/setupSteps.test.ts

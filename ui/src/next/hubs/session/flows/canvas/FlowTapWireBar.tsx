@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowTapWireBar.tsx - the armed tap-to-wire hint bar (wave R7 parity row A8).
 //
 // It exists ONLY while `tapWire` is armed, which is what makes

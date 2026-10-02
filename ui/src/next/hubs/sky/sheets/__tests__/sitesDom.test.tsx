@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sitesDom.test.tsx - the SITES sheet, mounted and driven (T-SKY-4 plan G).
 //
 //   Run directly:  npx tsx src/next/hubs/sky/sheets/__tests__/sitesDom.test.tsx

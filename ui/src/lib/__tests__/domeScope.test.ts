@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import assert from "node:assert/strict";
 import { DOME_TILT_DEG, projectAltAz } from "../domeProjection";
 import { TUBE_SCREEN, drawDomeScope, tubeOutline } from "../domeScope";

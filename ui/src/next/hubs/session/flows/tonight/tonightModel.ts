@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tonightModel.ts - the pure half of the Tonight sheet: how the server's
 // payload is read, and every string the sheet says that the pixels do not.
 //

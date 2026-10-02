@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-22: (a) hub._check_horizon reads cfg.safety.horizon (issue #132; plan
 docs/superpowers/plans/2026-09-30-open-issue-backlog.md, WP-22 row). (b) For
 WP-21: goto_and_center's single solve_transient key splits into

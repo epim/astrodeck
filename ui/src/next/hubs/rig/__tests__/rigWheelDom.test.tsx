@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigWheelDom.test.tsx - the FILTER WHEEL device sheet, MOUNTED (plan
 // hub-rig.md B.6, task T-RIG-4).
 //

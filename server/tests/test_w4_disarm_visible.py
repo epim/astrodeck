@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#595, backlog ruling D-04 (owner-approved 2026-09-30): starting a run
 disarms every OTHER session's auto_resume through engine.start's singleton,
 and this used to happen in silence -- no log line, no response field. The

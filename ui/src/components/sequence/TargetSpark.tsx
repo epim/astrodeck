@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TargetSpark.tsx — a ~120×28 altitude sparkline chip for the Plan tab's
 // per-target cards (wave-3 §3). It lazily fetches tonight's visibility for the
 // target's (rounded) coords + horizon limit and draws three layers a chip can

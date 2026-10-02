@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Relay runtime configuration (env-driven; no secrets in code).
 
 The relay is deployed by the owner (Docker + Fly.io), so its config comes from

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // runCopy.ts - what the RUN button says and what the run readouts show, read
 // off the two answers the run-mode surfaces hold (#189 S5; spec 5.9 button
 // copy, 5.10 published state and ETA, U-07).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // countsNotice.ts - the one line both editors show while a flow still counts
 // every sub taken (#189; spec Revision 2, ruling 2; S4 orchestrator ruling 8).
 // Pure: no store, no React, no DOM.

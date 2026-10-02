@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowNode.tsx - one stage on the graph, and one port row on that stage
 // (wave R7 parity rows A4 and A5).
 //

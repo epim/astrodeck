@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """CONTINUE exempts a skipped panel from the dropped-steps refusal (#189 S1
 item 8, the server half built in S2; spec 5.9 "Other cases" row 1, 2.5, 3.3,
 3.4).

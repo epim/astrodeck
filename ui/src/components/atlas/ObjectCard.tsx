@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ObjectCard — what the app can honestly say about the object you just tapped.
 //
 // THE ORDERING RULE is "by how much the app can stand behind it", and the

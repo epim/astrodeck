@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The dew heater's level has to be READ BACK, not remembered by the browser.
 
 ``set_dew_heater`` was write-only across the entire device contract, so after a

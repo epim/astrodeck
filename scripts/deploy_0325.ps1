@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.25 - the guider-night fixes (spec GN-01..GN-09, 2026-09-06):
 # recalibrate after a pier change, the AM5 pulse on a worker thread with a
 # 1000 ms cap, re-lock counting with a hold, the eccentricity gate on by

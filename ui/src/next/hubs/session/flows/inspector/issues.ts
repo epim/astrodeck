@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // issues.ts - the compile result's `unmapped[]` split into the statements it
 // actually makes, and the one vocabulary every surface that renders one uses.
 // Pure.

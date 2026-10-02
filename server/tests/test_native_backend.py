@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native (direct Alpaca) backend: role->dev_type mapping, per-endpoint
 connection POOL, and close-aclose-every-connection contract (Stage A, W1.2/W1.9).
 

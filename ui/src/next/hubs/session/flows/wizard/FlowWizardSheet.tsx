@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowWizardSheet.tsx - the #/next `flowWizard` sheet: Send to Flow Wizard
 // (#196; spec 2026-09-23 flows mosaic, Revision 2 ruling 4, D13, section 8 S6).
 //

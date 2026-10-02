@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // incidentActions.ts - what an incident's buttons actually DO, and what the
 // card is allowed to claim (plan section A.3).
 //

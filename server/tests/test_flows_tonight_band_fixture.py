@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``fixtures/tonight_mosaic_2x3.json``: ``resolve_tonight``'s answer for a
 night with a mosaic, which the #/next Tonight sheet's band test reads
 (#353 item 7; #189 S3 item 5, spec 1.2, 2.3, 6.9).

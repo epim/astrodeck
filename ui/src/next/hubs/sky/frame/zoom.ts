@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // zoom.ts - FRAME mode's field of view: the arithmetic, with no DOM in it.
 //
 // WHY THIS FILE EXISTS AT ALL. `SkyCanvas` writes `fovZoomDeg` from a wheel

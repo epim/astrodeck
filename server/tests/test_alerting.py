@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Outbound alerting tests (Batch 4b §1.8 / alerting.py).
 
 Covers: state-change alerts are NEVER deduped while repetitive warnings ARE;

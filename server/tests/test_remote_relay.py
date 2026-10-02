@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """W3 SCOPE-SIDE relay dial-out client + RemoteConfig tests (§T7).
 
 Repo convention (mirrors tests/test_rbac_enforcement.py): in-process fakes via

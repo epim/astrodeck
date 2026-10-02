@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Small JSON persistence helpers.
 
 A single place for the load-bearing "write a dict to disk without losing the old

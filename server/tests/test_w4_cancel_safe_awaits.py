@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#252: two representative sites WP-35 converted to ``astrodeck.aio.reap``.
 
 #235 found the "eats its caller's cancel" shape once, as ``with

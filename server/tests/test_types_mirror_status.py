@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``ui/src/types.ts`` mirrors a mosaic panel and the status frame's sky angle
 (#174, spec 3.7's last bullet, I-25).
 

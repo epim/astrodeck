@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.8 - a pinned sub outlived the focus session that pinned it, plus
 # the orphaned setCoolingConfig payload guard.
 #

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // slewPadDom.test.tsx — the slew pad, MOUNTED, re-rendered, and released.
 //
 //   Run directly:  npx tsx src/components/__tests__/slewPadDom.test.tsx

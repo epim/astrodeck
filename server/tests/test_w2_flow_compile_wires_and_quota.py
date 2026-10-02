@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-19: lanes scoped by wires in ordinary multi-target flows (#151's
 general case), and one definition of a pool member's "done" (#155).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A group's per-night pier state is kept in the session (#312, S3
 orchestrator ruling 4; spec 5.7, 3.4, 5.9).
 

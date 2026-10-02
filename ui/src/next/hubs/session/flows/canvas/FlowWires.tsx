@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowWires.tsx - every wire in the graph, the one being dragged, and the
 // control that removes the selected one (wave R7 parity rows A6 and A7).
 //

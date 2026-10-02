@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A no-field block's anchor completes (#351, S4 orchestrator ruling 4; spec
 3.3, 2.5).
 

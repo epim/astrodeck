@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No site, no meridian (#24).
 
 Every flip decision in this tree is hour angle, and hour angle is longitude. At

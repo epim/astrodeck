@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5ActivateFailureOutcome.test.ts - what the profiles panel's force-activate
 // flow does for a given error and retry state (#256): the force dialog is
 // worded from the server's own coded-409 detail, and a forced retry that is

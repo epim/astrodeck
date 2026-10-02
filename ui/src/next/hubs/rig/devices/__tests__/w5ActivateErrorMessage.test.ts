@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5ActivateErrorMessage.test.ts - the Rig hub's activate-failure toast shows
 // the server's own coded-409 reason (#256), not a fixed sentence that reads
 // "a sequence is running" over an idle engine while auto-resume re-centres

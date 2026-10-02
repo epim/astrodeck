@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // holdButtonDom.test.tsx — HoldButton, MOUNTED, held, and interrupted.
 //
 //   Run directly:  npx tsx src/components/__tests__/holdButtonDom.test.tsx

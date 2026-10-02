@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Constellation registration — the translation between two star fields.
 
 Every test here is a failure mode the single-brightest-star anchor it replaces

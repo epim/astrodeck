@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // noSiteParamsInQueryStrings.test.ts - no URL the UI builds carries a place or
 // a pointing (#520).
 //

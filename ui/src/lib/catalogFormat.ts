@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // catalogFormat.ts — display helpers for a CatalogEntry row (types.ts).
 //
 // WHY THIS EXISTS. Not every catalogued object has a published magnitude

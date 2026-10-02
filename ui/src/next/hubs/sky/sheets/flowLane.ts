@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowLane.ts - the flow card's two lists, derived from the graph the server
 // saved (hub-sky plan D.5, T-SKY-3). Pure: a graph in, rows out, no DOM.
 //

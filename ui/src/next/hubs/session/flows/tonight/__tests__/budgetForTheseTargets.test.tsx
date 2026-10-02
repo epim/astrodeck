@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // budgetForTheseTargets.test.tsx - the #/next TONIGHT sheet's BUDGET rows say
 // whose hours they hold (#536, H4 orchestrator ruling 6).
 //

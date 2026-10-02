@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/autofocus.ts - pure helpers for the persisted latest-autofocus-run
 // record (F5: R2-FOC-01/DOC-FOC-01). No React, no DOM: npx-tsx testable
 // (lib/weather.ts precedent).

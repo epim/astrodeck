@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the NOV-9 in-app help content cores: the glossary (help.ts,
 // T1) and the failure→diagnosis map + troubleshooting page content
 // (lib/troubleshoot.ts, T2). Both are pure, so this is the same tiny

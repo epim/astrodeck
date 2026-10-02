@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/backends.ts — typed client functions for the pluggable-backend / profile /
 // RBAC surfaces (W1.C / W1.6 / W2.x). A thin module over the shared `api` fetch
 // wrapper (api.ts): no new data-fetching lib, same ApiError throwing + per-path

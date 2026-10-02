@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#609: scripts/deps_floor_check.py reads the release's dependency floors.
 
 A rig deploy runs this checker as the gate that refuses to start a release on

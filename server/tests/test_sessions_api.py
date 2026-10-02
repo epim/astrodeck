@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 7: /api/sessions surface (sessions spec §6/§8) — RBAC per route, 409s,
 id-merge, frame regrade + metrics merge, path redaction, thumb cap.
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ProfilesEditor.tsx - the PROFILES library, rebuilt in the design's own
 // vocabulary (wave R7, T-R7-17; plan section 3.F20). Replaces
 // `components/settings/ProfileList.tsx` at its one mount inside the new UI,

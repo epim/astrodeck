@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A defocused star is a ring, and the detector must measure the ring (#219).
 
 THE BUG THIS FILE WAS WRITTEN FOR, and now guards against coming back.

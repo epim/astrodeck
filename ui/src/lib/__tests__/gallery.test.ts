@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // gallery.test.ts — the pure half of the image gallery (lib/gallery.ts).
 //
 //   Run directly:  npx tsx src/lib/__tests__/gallery.test.ts

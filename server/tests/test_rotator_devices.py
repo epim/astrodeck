@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Rotator ABC sync math + SimRotator behavior + SimSolver rotation truth."""
 import asyncio
 

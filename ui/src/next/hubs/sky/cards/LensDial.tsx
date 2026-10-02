@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LensDial.tsx - the radial kind filter behind the funnel button (plan A.6).
 //
 // It is an OVERLAY, not a `Popover`. A popover anchored to a 44 px button would

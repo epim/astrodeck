@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureRestDom.test.tsx — CaptureView MOUNTED: does each control REST when
 // resting is right, and STAY ENGAGED when staying engaged is what it means?
 //

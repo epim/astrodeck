@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cooling.test.ts — the Capture screen's warm-down readout (lib/cooling.ts).
 //
 // Why these assertions and not others: the warm ramp is a ten-minute background

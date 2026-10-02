@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A wire the engine answers by another route is not a lost wire.
 
 Three rules in the shipped campaign example ask for something the engine

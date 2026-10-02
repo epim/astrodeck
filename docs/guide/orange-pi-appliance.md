@@ -28,3 +28,5 @@ Native guiding and native autofocus still need a separately built `astrodeck_nat
 Three distinct short boots within the recovery window can authorize a new setup window and restore the printed factory Wi-Fi password. The implemented thresholds are boots shorter than 60 seconds within 180 seconds. This is Wi-Fi recovery; it does not reset AstroDeck accounts, captures or plans. Follow the appliance's commissioning instructions before relying on it.
 
 If a commissioned appliance fails to rejoin, use its local console to inspect the provisioning services. Do not factory-reset the application to repair a Wi-Fi problem. The [recorded hardware gate](../hardware/orange-pi-5-hardware-gate-2026-09-03.md) lists what was tested and what remained unverified.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

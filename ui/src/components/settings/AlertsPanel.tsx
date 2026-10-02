@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AlertsPanel.tsx — Settings → Alerts: add/edit/test/delete outbound alert
 // sinks (ntfy / webhook / Telegram / Discord / Slack / email) + per-sink
 // health + the dead-man's-switch card (PRO-9 spec §3 task U3).

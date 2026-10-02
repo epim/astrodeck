@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ArmedRules.tsx - what will act on its own tonight, as chips.
 //
 // Every one of these is DERIVED from the plan the engine is running plus the

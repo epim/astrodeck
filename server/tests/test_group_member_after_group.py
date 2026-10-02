@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A member's ``after_group`` holds its whole group (#330; spec 1.6 "Wait for
 the mosaic", 3.5).
 

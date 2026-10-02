@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Models Chromium's own deviceorientation change threshold (spec 2.1): an
 // event fires only when alpha, beta or gamma moves by at least 0.1 degree.
 export interface OrientationAngles { alpha:number; beta:number; gamma:number }

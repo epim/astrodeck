@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowCanvasToolbar.tsx - the canvas's own 48 px row (wave R7 parity row A1).
 //
 // NINE THINGS, LEFT TO RIGHT, AND NOTHING THE SHELL ALREADY RENDERS. The shell

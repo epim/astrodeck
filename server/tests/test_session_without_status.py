@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A session file with no ``status`` key has no status (#218, H2
 orchestrator ruling 12, spec "Still waiting on the owner" item 9).
 

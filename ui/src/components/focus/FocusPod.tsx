@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FocusPod.tsx — the reach shortcut over the Focus preview (#125).
 //
 // WHAT THIS IS NOT: a second implementation of anything. Every control on this

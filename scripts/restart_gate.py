@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Gate a server restart that is MEANT to land mid-run (deploy 0.3.35).
 
 rig_precheck.py refuses to restart under any running sequence, which is right

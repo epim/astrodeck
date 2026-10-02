@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for guideNarration (NOV-7 design doc §1.5/§3 Task 1).
 //
 // No vitest/jest wired into this UI (build is `tsc -b && vite build`), so

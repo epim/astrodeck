@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Coordinate parsing, and specifically the characters a coordinate ARRIVES in.
 
 Nobody types a declination. They copy it — from Stellarium, from SIMBAD, from a

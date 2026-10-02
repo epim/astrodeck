@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // apiError.test.ts — pure tests for lib/apiError.ts's parseApiError, which
 // api.ts's req() wires into ApiError.message/.code. FastAPI's
 // `HTTPException(status, detail={"detail": "...", "code": "..."})` idiom

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Image-based cloud detection: starless / low-contrast frames read cloudy,
 rich bright-star fields read clear, the score tracks star loss, and — the case
 that motivated the design — a hundred faint NOISE peaks on a bright cloudy

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ConfirmDialog.tsx — promise-based confirm modal + the singleton <ConfirmHost/>
 // (onboarding spec §1e). Resolves critique3 #2 (focus trap / initial focus /
 // Escape / focus return) and #12 (a hard block uses a plain single OK — never a

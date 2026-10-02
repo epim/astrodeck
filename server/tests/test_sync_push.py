@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sync Phase 2 — pushing frames off the rig while the run is still going.
 
 The property under test throughout is the one Phase 1 was built on: **state is

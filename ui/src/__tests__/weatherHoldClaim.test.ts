@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // A FALSE CLAIM guard, not a copy-style test.
 //
 // Two surfaces in the classic shell told the user that a high-cloud FORECAST

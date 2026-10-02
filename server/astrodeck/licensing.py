@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Restricted-asset decisions and the application's fetch/acknowledgement flows.
 
 The August audit identified unresolved permissions. October artifact inspection

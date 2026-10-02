@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // equipmentProfiles.test.ts — pins the profile decision layer that UX review
 // round 4 found wrong in three different ways at once (S1).
 //

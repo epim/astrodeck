@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filesSheetsDom.test.tsx - the four FILES-AND-STANDARDS sheets, MOUNTED
 // (wave R7, T-R7-13): FILE SYNC, FILE NAMING, PLATE-SOLVE STAMP and IMAGING
 // STANDARDS, each now rendering a rebuilt editor from

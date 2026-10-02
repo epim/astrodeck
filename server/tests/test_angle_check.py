@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic angle check: a pure verdict on the sky angle a hop's centring
 solve recorded, and the Appendix A.2 tolerance it is judged against (mosaic
 spec 5.6 step 4, Appendix A.2, S1 item 11; U-04, #189).

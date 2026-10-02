@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigProfilesDom.test.tsx - the PROFILES sheet, MOUNTED (plan hub-rig.md A.3
 // and wave-r7.md 3.F20 / T-R7-17).
 //

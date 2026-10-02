@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3SkyFrameNoSiteReason.test.tsx - the finder's FRAME refusal on a default
 // site, MOUNTED (#568, backlog ruling WP-24a (a), owner-approved 2026-09-30).
 //

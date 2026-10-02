@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ReportSummary.tsx - the header block: how the run ended, when it ran, and
 // the three numbers that are the night.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A cloud hold follows the mount it has (#224, #221, #228).
 
 The hold of #203 and #205 watches the target it holds: its floor, its keep-out

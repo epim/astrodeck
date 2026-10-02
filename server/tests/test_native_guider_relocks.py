@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-03: a re-lock is a WALK, and three of them in ten minutes end the frame.
 
 The defect, measured on the AM5N on the night of 2026-09-05/06

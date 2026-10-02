@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ids.test.ts — pure tests for lib/ids.ts (sessions spec §1 client-side
 // id generation + backfill). Inline-assert harness; runs via `npx tsx`.
 import { ensurePlanIds, uid } from "../ids";

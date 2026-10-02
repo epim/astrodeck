@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """End-of-night session report (Batch 4b §1.7).
 
 v1 is a *summary*, not an analytics product (C1-19, C2-12): a header that leads

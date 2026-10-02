@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """`GET /api/cloudmap/at` reads the mount itself (#520).
 
 The panels used to build `/api/cloudmap/at?alt=&az=` from the mount's alt/az,

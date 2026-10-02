@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Session gains the night's set-aside records and the locked angles (#189
 S2 T1, #208; spec 3.4, 5.1, 6.7, Revision 2 ruling 9).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tooltipMachine — pure open/close state machine for components/ui.tsx Tooltip.
 // Split out (rotatorDial.ts precedent) so the npx-tsx assert tests can import
 // it under plain Node — no React, no DOM.

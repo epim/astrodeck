@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PanelLayer - a mosaic's panels on the Atlas sky, drawn from the SERVER's
 // panel coordinates (#189 S4 item 2; spec 2026-09-23 flows mosaic, 2.3).
 //

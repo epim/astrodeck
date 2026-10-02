@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Is the rig idle enough to restart the server under it?
 
 Run ON the rig with the install's venv python. Mints a session through the

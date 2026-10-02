@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // framing/reg.ts - the registry ENTRY for the #/next framing sheet, and
 // nothing else (#189 S4 item 5; spec 2026-09-23 flows mosaic, 2.1).
 //

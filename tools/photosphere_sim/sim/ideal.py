@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The result directory a perfect scanner would have written.
 
 The scorer has to be developed against an output whose every number is known

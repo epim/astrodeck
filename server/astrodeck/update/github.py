@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GitHub Releases client for self-update.
 
 Lists releases, picks the newest for the configured channel that is strictly

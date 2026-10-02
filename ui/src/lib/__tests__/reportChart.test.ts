@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the report-viewer pure shaping lib (report viewer spec §3
 // Task 1). Same tiny inline-assert harness as eta.test.ts / healthStrip.test.ts —
 // no vitest/jest wired into this UI. Compiles under `tsc -b`; run directly with a

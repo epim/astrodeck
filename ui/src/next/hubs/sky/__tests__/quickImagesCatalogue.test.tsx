@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickImagesCatalogue.test.tsx - the quick sheet says where GENERATE FLOW
 // images when a kept framing is centred somewhere else (#459), MOUNTED.
 //

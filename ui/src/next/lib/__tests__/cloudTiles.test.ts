@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for cloudTiles.ts. Sabotage check: using `Math.round` instead
 // of `Math.floor` for the bin index turns "bins a sample into its 6deg tile"
 // red at a boundary; dropping the `/160` divisor in tileOpacity turns the

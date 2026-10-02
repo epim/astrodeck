@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nowLedger.test.tsx - `banked_h: null` is not `banked_h: 0`, on screen.
 //
 //   Run directly:  npx tsx src/next/hubs/session/__tests__/nowLedger.test.tsx

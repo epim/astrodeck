@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Run directly; no background service or physical equipment is involved.
 import nodeAssert from "node:assert/strict";
 

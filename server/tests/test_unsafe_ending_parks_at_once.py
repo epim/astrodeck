@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An unsafe or parking ending never waits for the idle stop (#270, S2
 orchestrator ruling 1, which refines #247, H3 orchestrator ruling 5).
 

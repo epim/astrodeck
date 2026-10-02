@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ViewBoundary.tsx — the Suspense + error boundary that renders a code-split
 // view (see lib/lazyViews.ts for why the views are split at all).
 //

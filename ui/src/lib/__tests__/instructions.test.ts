@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the conditional-sequencer pure helpers (PRO-3). Same tiny
 // inline-assert harness as eta.test.ts — no jsdom, no runner: compiles under
 // `tsc -b` and runs directly with:  npx tsx src/lib/__tests__/instructions.test.ts

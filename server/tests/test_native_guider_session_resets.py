@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The session resets H1 left unguarded (#204, #210 follow-ups; H2, #189).
 
 H1 added per-session host state to the native guider and reset it at the

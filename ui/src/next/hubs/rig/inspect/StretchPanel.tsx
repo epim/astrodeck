@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // StretchPanel.tsx - the histogram and its controls, rebuilt (wave R7, T-R7-19;
 // replaces `components/preview/StretchHistogram.tsx`, which is NOT edited and
 // keeps serving `#/classic`).

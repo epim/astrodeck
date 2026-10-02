@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rotatorDial.ts — pure SVG geometry for the RotatorCard arc dial (CAA spec
 // §5.1). Split out of RotatorCard.tsx so the assert-file tests can import these
 // under plain `tsx`/node: the component module eagerly touches `window` through

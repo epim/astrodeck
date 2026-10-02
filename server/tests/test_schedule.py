@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pure window-resolution tests (Batch 4b §1.6 / schedule.py).
 
 Covers: the polar-latitude sun-solver guard returning None (C2-13); the

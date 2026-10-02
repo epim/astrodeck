@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Run with:  npx tsx src/components/preview/__tests__/linearReason.test.ts
 import { linearUnavailableReason } from "../linearReason";
 

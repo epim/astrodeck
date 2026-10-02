@@ -311,3 +311,5 @@ mine. See [`docs/development.md`](docs/development.md).
 Apache-2.0 for the top-level project; native components and third-party materials
 have their own terms in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Not affiliated with ZWO, Player One, Wanderer Astro, or the NINA or
 PHD2 projects.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pluggable-backend contract (Stage A).
 
 The goal: choosing Simulator / NINA / Native(Alpaca) for each device role becomes

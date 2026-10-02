@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightTimelineCard.tsx - tonight as a picture, drawn from the server's
 // TIMES (parity row A19).
 //

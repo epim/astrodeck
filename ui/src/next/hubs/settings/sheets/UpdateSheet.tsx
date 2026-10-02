@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // UpdateSheet.tsx - Settings > ABOUT > Update (plan section C.8).
 //
 // STAGE 2 (wave R7, T-R7-12), closing the stage-1 decision this file used to

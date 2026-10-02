@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guiderModel.ts - the Guider sheet's pure sentences and readouts
 // (plan hub-rig.md B.7). No React, no store, no fetch: every function here is
 // data in, string out, so the copy that used to be tangled through

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A3 (final-branch-review tonight-risk #5): AlpacaCamera.expose enforces an
 overall imageready poll deadline (exposure_s + 30 s) so a responsive-but-stuck
 camera cannot hang the guide loop forever."""

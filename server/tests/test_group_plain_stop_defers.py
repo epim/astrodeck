@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A plain StopTarget in a panel's visit defers the panel; it does not drop it
 for the run (#316, S3 orchestrator ruling 5; spec 5.1 outcome table, 5.6 step
 7, 6.4, 6.8).

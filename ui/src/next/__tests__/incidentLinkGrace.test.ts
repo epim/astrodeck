@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // incidentLinkGrace.test.ts - the LINK LOST card must not be the first thing a
 // cold start says (review #16).
 //

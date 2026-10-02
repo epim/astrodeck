@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // laneConflict.test.ts — the raw lane name must never reach a person.
 //
 //   Run directly:  npx tsx src/lib/__tests__/laneConflict.test.ts

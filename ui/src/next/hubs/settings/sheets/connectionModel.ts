@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // connectionModel.ts - which origin this browser tab is on, what the other one
 // would be, and whether it is even addressable from here.
 //

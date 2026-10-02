@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AlertsScreen.tsx - MONITOR - ALERTS. Three stacked sections, because the
 // design's screen and the gap analysis are asking for different halves of the
 // same question.

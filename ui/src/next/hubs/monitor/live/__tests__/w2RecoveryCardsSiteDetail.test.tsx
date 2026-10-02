@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2RecoveryCardsSiteDetail.test.tsx - WP-17 (b) on the #/next Monitor's RUN
 // ARMED card (#258).
 //

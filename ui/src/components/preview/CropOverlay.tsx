@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CropOverlay — the sensor-1:1 crop painted over the CSS-upscaled base.
 // (crop+render UI design §2.1 "Render", §4.4)
 //

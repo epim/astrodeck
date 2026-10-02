@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A group's pier record is saved only when it moves (#353 item 6; #312, S3
 orchestrator ruling 4; spec 5.7 "only when the state has moved", 3.4).
 

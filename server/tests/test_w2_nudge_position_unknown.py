@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-20 / #144: a nudge refuses rather than guess from an unknown position.
 
 A nudge computes its destination by reading the mount's CURRENT position and

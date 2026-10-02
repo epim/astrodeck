@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // F-C1 guard — every bare component CSS class referenced in the app MUST have a
 // definition in index.css. Tailwind v4 silently no-ops an undefined custom class
 // (it only generates utilities it recognizes), so a class like `alert-pulse` or

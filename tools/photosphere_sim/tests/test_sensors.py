@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Change-driven orientation events and frame delivery records.
 
 Built on the arc075 route (the still route reports the same orientation

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AccountPanel.tsx — the account / sign-in surface inside Settings (W2.5). Shows
 // the resolved principal (role + email) and a "View-only" badge for viewers, and
 // hosts the Google sign-in / sign-out affordance.

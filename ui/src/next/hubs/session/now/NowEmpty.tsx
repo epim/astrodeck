@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NowEmpty.tsx - the screen when nothing is running, which is most of the day.
 //
 // "NO SESSION RUNNING" ON ITS OWN IS A DEAD END, so this screen answers the

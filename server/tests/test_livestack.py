@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Live-stacking core: brightest-star alignment, running-mean accumulation with
 per-pixel coverage, drift-reject, and auto re-anchor. Synthetic shifted frames."""
 import math

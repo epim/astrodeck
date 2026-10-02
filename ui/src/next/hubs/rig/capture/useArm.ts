@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useArm.ts - the acceptance-gated progress latch, lifted from CaptureView.tsx
 // (610-646 and the four effects around it) with its guarantees intact.
 //

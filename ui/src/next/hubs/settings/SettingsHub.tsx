@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SettingsHub.tsx - the SETTINGS hub root (plan section C.1).
 //
 // The shell draws the GENERAL / USERS / ABOUT chips (`shell/SubNav.tsx` reads

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Outbound push/ntfy alerting (Batch 4b §1.8).
 
 A single long-running bus subscriber (started in the app lifespan) that maps the

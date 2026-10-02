@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the one-tap calibration capture pure logic
 // (calibration-capture spec §3 Task 1).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // domeProjection.test.ts — the geometry, without a browser.
 //
 // Every bug this catches is one that would look plausible on screen: a dome

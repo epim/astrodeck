@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A solve frame another process holds, end to end: the real hub's write
 fails with a sharing violation on every retry, and the panel it cost a
 centring is not struck for it (#532; H4 orchestrator contract 1; spec 5.1's

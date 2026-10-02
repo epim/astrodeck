@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // viewBoundaryDom.test.tsx — ViewBoundary's two failure panes (ViewBoundary.tsx).
 //
 // The bug this guards against: every render throw used to land on the SAME

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3FlowCardLoadingCopy.test.tsx - WP-61 (#592): the Sky flow card's loading
 // copy must say something the empty card does not already show.
 //

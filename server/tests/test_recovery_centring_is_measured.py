@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """After a tracking-refusal recovery, "centred" is a measurement (#171).
 
 `_setup_target`'s GoTo can die on a mount pinned at its meridian limit

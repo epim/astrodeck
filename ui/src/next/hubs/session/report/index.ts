@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // session/report/index.ts - what the night-report area publishes.
 //
 // The mount file (`session/sheets/report.tsx`) imports `ReportScreen` and

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safetyChain.ts - the WHEN A LIMIT TRIPS chain, BUILT FROM CONFIG.
 //
 // Plan hub-rig.md B.9 item 2, deviation E12. The prototype

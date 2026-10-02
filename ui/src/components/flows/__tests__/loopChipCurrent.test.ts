@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // loopChipCurrent.test.ts - the loop wire's chip counts panels only while the
 // compile answer in hand is the answer for the graph on screen, on BOTH
 // canvases, MOUNTED over the real slice (#356; S7; spec 2026-09-23 flows

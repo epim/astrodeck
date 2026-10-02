@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Three.js renderer against hand-specified views of the chart yard.
 
 The renderer is the one part of the simulator that is not analytic, so it is

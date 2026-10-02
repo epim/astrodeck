@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* Apply before paint; keep the controls usable when storage is unavailable. */
 (function () {
   "use strict";

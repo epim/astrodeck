@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Guiding Assistant — pure measurement reducers, backlash state machine, and
 the guide-parameter recommender (design 2026-07-24-guiding-assistant-design).
 

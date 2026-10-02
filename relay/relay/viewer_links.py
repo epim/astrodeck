@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Viewer-link issuance + the revocation registry (W3.3.5).
 
 A viewer link is a scoped, expiring URL (``GET /share/{token}``) that mints a

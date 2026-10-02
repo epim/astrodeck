@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the client-side dry-run simulator (control-flow expansion).
 // Same tiny inline-assert harness as instructions.test.ts — no jsdom, no runner:
 // compiles under `tsc -b` and runs directly with:

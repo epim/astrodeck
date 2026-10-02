@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pluggable auth providers (W2.3).
 
 A provider resolves an inbound request -> ``Principal | None``. The active

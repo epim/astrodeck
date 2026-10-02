@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No-go wedges: the hard-edged obstruction guard.
 
 `SafetyConfig.nogo_box` shipped in the very first automation-safety spec and was

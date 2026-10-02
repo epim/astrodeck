@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Drive ``renderer/render.js`` in headless Chromium and hand back frames.
 
 This module is the Python half of Task 4's renderer: it serves

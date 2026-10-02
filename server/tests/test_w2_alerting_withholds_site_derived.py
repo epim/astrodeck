@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A line flagged ``site_derived`` never reaches an external alert sink
 (#166, #302, backlog WP-11 (a), owner-approved 2026-09-30).
 

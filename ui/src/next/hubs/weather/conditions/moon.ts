@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // moon.ts - the MOON tile's number, its sentence, and the one target both it
 // and the dome are allowed to be about.
 //

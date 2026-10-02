@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """End-to-end self-update selftest with REAL I/O (no mocked crypto/network).
 
 Marked ``selftest`` so the release workflow runs it on a Windows+Linux matrix on

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* SequenceRunStrip — the "check the phone at 2am" glance (2026-08-07).
 
    While a sequence runs, the facts someone half-asleep actually wants are:

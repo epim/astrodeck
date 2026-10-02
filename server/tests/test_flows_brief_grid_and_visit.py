@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The STORY brief's mosaic sentences: the grid written columns by rows (S4
 orchestrator ruling 1, #339), the visit the run really makes (spec 5.3, S3
 item 5, #353), and every capture stage the pass is made of (#395).

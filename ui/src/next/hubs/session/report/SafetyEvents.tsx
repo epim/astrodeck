@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SafetyEvents.tsx - what the safety monitor did during the run.
 //
 // The legacy view rendered this panel ONLY when there was at least one event,

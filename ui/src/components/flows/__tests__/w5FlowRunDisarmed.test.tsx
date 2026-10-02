@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5FlowRunDisarmed.test.tsx - the classic flow run controls show D-04's
 // disarmed-session warning for POST /api/flows/{id}/run (#643, W5
 // integration, remainder of WP-65).

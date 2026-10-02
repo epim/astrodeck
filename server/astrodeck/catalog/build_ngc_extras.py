@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regenerate astrodeck/catalog/data/ngc_extras.tsv from OpenNGC's own CSVs —
 the columns tools/build_ngc_catalog.py reads and then throws away.
 

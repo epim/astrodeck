@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The auto-reopen roof close ends the idle stop's task before it parks
 (#306, the #270 class).
 

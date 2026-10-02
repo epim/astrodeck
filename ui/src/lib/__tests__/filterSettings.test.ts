@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filterSettings.test.ts — what a filter pick fills in (#215).
 //
 //   Run directly:  npx tsx src/lib/__tests__/filterSettings.test.ts

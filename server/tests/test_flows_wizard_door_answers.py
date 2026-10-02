@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The door's answers to POST /api/flows/wizard (#196, the server half; #412
 item 2; #189 spec Revision 2 ruling 4, 1.4, 1.5, 1.8, S3 item 4, S6).
 

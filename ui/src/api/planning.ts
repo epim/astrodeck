@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/planning.ts: the planning surface's persisted state (D-FU-1). Server:
 // server/astrodeck/planning.py over config.py:1094-1189.
 //

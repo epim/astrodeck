@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // unreadableFlowCard.test.tsx - the classic library draws a flow this build
 // cannot open as a card that SAYS SO, once, and never opens it (#153; spec
 // 2026-09-23 section 3.6; carry-over 6).

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """goto_and_center: a correction slew that changes nothing must stop the loop.
 
 2026-08-06, on the sky: centering attempt 1 read 33.7' off target, attempt 2

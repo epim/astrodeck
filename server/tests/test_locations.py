@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Saved-locations LocationStore unit tests (spec §4/§6): round-trip, atomic
 write + .bak recovery, case-insensitive name-collision, library-full, rename
 collision vs OTHER ids, unknown-id delete. Pure store — no TestClient."""

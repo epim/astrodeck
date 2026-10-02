@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2CloudHoldIgnoreWeatherNotPrimary.test.ts - WP-17 (c), the lib half (#260).
 // Pure: literal inputs, no DOM.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``region_rows`` + ``GET /api/catalog/region`` -- the Atlas viewport query.
 
 ``objects_in_region`` (tests/test_catalog_region.py) answers "which deep-sky

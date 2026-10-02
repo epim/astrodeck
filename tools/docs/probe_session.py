@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Owned, isolated simulator/browser console for documentation procedure review.
 
 This tool starts a never-used configuration on a private loopback port, proves

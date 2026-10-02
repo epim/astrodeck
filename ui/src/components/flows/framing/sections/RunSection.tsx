@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RunSection.tsx - the Target modal's RUN section (#189 S4 item 1; spec
 // 2026-09-23 flows mosaic, 2.4 RUN, 1.4, 1.6; Revision 2 rulings 1 and 2; S4
 // orchestrator ruling 8).

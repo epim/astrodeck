@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reportModel.ts - the pure shaping and the copy for the night report.
 //
 // No React, no DOM, no fetch: every function here is a string or a number in,

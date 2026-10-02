@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A safety pause that closes out with its stop confirmed closes the idle
 latch that stop satisfied (#530, H4-ENG-C; spec 5.8 and 6.17, the safety
 pause and the idle watch, #236).

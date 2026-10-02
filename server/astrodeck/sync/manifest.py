@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The reconciliation core: what a side HAS, and what the difference is.
 
 THE ONE DESIGN DECISION, and everything else follows from it: **sync state is

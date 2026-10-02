@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A forced solve failure on one panel of a rotating 2x2, end to end (#189 S7
 item 1, the second of its four simulator scenarios; spec 5.1's table, 5.6
 step 4, 6.7, 6.8; Revision 2 ruling 5, ``max_failed_visits`` 3; since H4,

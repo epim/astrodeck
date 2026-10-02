@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // r7Parity.test.ts - the new UI mounts no legacy presentation component.
 //
 //   Run directly:  npx tsx src/next/__tests__/r7Parity.test.ts

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // set2.ts - the sheets THIS task owns, handed to whichever task composes the
 // SESSION hub's registry.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NINA backend adapter (Stage A): the wrapper around ``build_nina_rig``.
 
 These tests pin the WRAPPER contract, not NINA itself -- they monkeypatch

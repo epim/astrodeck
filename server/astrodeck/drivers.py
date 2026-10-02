@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Driver registry surface — configured + implicit drivers, availability
 probes, and the offers mapping the Equipment/Settings UI renders from
 (equipment-drivers spec 2026-07-08 §3.2).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AlertsEditor.tsx - the sink list and the dead-man's-switch, rebuilt in the
 // design's own vocabulary for wave R7 (T-R7-10). Replaces the mounted
 // `components/settings/AlertsPanel.tsx`, which is NOT edited and keeps serving

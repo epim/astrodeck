@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targetSummary.ts - what the canvas says about a TARGET block: the card's
 // footer line, and the dashed loop wire that makes it a rotating mosaic (#189
 // S4 item 6; spec 2026-09-23 flows mosaic, 1.2 "Card footer" and 1.4 "How it

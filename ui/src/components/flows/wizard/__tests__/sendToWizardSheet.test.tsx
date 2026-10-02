@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sendToWizardSheet.test.tsx - Send to Flow Wizard's stepped sheet MOUNTED on
 // the real store, and its classic host (#196; spec 2026-09-23 flows mosaic,
 // Revision 2 ruling 4, D13, D-FU-2, section 8 S6).

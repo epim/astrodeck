@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-15 (#135): the calibration-REUSE path must prove the mount is live
 before it claims "calibrated and guiding" and persists what it just reused.
 

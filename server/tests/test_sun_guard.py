@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """W1.10 sun-avoidance exclusion-cone gate (solar-scope aware).
 
 THE GAP this closes: ``hub._check_horizon`` is inert on a default site and only

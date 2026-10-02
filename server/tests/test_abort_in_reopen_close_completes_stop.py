@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An Abort that lands in the auto-reopen roof close completes the idle stop
 the close ended (#393, the #345 follow-up; spec 6.17 and owner list items 14
 and 19).

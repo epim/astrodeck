@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The stage-A routes turned into camera trajectories.
 
 Every expectation is arithmetic on the route files' own declared numbers

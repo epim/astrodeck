@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A save's bookkeeping comes from the one read that can refuse (#364; spec
 3.3, #350's sibling).
 

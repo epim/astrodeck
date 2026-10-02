@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the manual-slew controller (touch spec §4.2 checklist).
 //
 // Same inline-assert harness as eta.test.ts / foundation.test.ts (no vitest wired

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight shows the compiled DUSK WINDOW: a Clock-time Start/Stop, and a
 Stop of None (#191).
 

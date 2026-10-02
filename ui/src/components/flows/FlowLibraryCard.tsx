@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowLibraryCard.tsx -- one flow card, plus the `+ NEW FLOW` cell that closes
 // the My-flows grid.
 //

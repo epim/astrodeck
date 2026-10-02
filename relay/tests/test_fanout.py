@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """§T7(4) fan-out isolation + per-browser bounded egress buffer (W3.3.3/W3.3.5).
 
 A ``WS_DATA`` for ws_id A goes ONLY to browser A. A SLOW browser's egress buffer

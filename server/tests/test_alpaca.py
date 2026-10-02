@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """AlpacaTelescope tracking-rate mapping against a recording fake connection
 (multi-rate mount tracking, 2026-07-21). Mirrors test_alpaca_rotator.py's
 RecConn pattern -- no real network, no unittest.mock."""
