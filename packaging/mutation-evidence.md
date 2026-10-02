@@ -2,7 +2,7 @@
 
 Run with the test interpreter: `python -B packaging/mutation_check.py --run`. No artifact build may run concurrently.
 
-All 45 named mutants failed the selected assertion, without test errors. The full new packaging suite passed before and after. Every source was restored byte for byte in `finally`; SHA-256 values are in mutation-evidence.json.
+All 48 named mutants failed the selected assertion, without test errors. The full new packaging suite passed before and after. Every source was restored byte for byte in `finally`; SHA-256 values are in mutation-evidence.json.
 
 All process and HTTP behavior is mocked. Wheel builds use synthetic projects without dependency installation. This is regression evidence, not cross-platform runtime certification.
 
@@ -15,6 +15,9 @@ All process and HTTP behavior is mocked. Wheel builds use synthetic projects wit
 | static-package-table-drift | `test_release_packaging.ReleasePolicy.test_static_table_drift_is_rejected` |
 | tar-policy-consumer | `test_release_packaging.ReleasePolicy.test_real_tar_follows_selected_policy` |
 | installer-url-metadata-excluded | `test_release_packaging.MetadataSelection.test_only_installer_local_url_is_omitted` |
+| post-analysis-metadata-filter | `test_release_packaging.ReleasePolicy.test_spec_removes_metadata_reintroduced_by_analysis` |
+| post-analysis-url-excluded | `test_release_packaging.MetadataSelection.test_post_analysis_filter_is_exact_and_never_reads_metadata` |
+| post-analysis-url-scope | `test_release_packaging.MetadataSelection.test_post_analysis_filter_is_exact_and_never_reads_metadata` |
 | spec-native-import | `test_release_packaging.ReleasePolicy.test_spec_collects_native_module_and_metadata` |
 | spec-native-metadata | `test_release_packaging.ReleasePolicy.test_spec_collects_native_module_and_metadata` |
 | spec-policy-selection | `test_release_packaging.ReleasePolicy.test_spec_filters_actual_sdk_and_tile_files` |

@@ -9,8 +9,8 @@
     },
     {
       "path": "packaging/astrodeck.spec",
-      "sha256": "3558a7a60d7c196697bc59a8634fb66ac764569e5f10cae31f64eb20ae4f2f0f",
-      "review": "Read complete final spec delta: adds native module and metadata/source/notices, central per-file vendor/DSS2 selection with static-table parity, root notices and packaging probe path. Both application and native copy_metadata trees use reviewed distributable_metadata to omit only root direct_url.json; retained licenses/source and other metadata remain explicit. No blanket unknown payload approval."
+      "sha256": "17f5fa127111ac73169aaf85fbe391e69aac23a879f035ff07fb60771082220e",
+      "review": "Read complete final spec delta: adds native module and metadata/source/notices, central per-file vendor/DSS2 selection with static-table parity, root notices and packaging probe path. Both application and native copy_metadata trees use reviewed distributable_metadata to omit only root direct_url.json; retained licenses/source and other metadata remain explicit. No blanket unknown payload approval. Final post-Analysis correction: Read exact post-d836 correction: obtains the two copy_metadata root pairs once, reuses them for explicit data expansion, then filters a.datas immediately after Analysis and before PYZ/EXE construction. Automatic metadata hooks cannot reintroduce those roots' installer URL files. All other data remains selected by the prior reviewed spec; no new dependency or general metadata exclusion."
     },
     {
       "path": "packaging/build_native.py",
@@ -226,8 +226,8 @@
     },
     {
       "path": "packaging/metadata_payloads.py",
-      "sha256": "83429b1290fee006aa6f4dd587dec27734bd093170c53b05e1e601c274c28672",
-      "review": "Read complete helper: expands distribution metadata directory pairs into per-file entries, rejects files resolving outside the metadata root and omits only that root's PEP 610 direct_url.json. Other metadata, nested notices, SBOM and native source bytes retain destinations. No application/config/device access or dependency addition."
+      "sha256": "491556e9af902e8c1eb347252027d71e092d17def7d1f33f59a8856fa680db2f",
+      "review": "Read complete helper: expands distribution metadata directory pairs into per-file entries, rejects files resolving outside the metadata root and omits only that root's PEP 610 direct_url.json. Other metadata, nested notices, SBOM and native source bytes retain destinations. No application/config/device access or dependency addition. Final post-Analysis correction: Read complete helper and exact post-d836 addition: filter_installer_urls builds only the two selected root destination names for direct_url.json, normalizes slash separators, and filters final TOC destination names without opening metadata contents. Nested files, other distributions, source paths and row order remain unchanged. The existing explicit directory expansion still checks containment."
     }
   ],
   "upstream_review": {

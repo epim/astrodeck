@@ -200,7 +200,7 @@ class ReleasePolicy(unittest.TestCase):
             self.assertTrue((staged / "vendor/playerone/LICENSE").is_file())
             self.assertFalse((staged / "catalog/_bundled_pack/dss2color/tile.jpg").exists())
 
-    def execute_spec(self):
+    def execute_spec(self, analysis_datas=()):
         (self.root / "server/pyproject.toml").write_text('[tool.setuptools.package-data]\nastrodeck=[]\n', encoding="utf-8")
         policy.sync_package_data(self.root)
         webui = self.pkg / "webui"
@@ -218,10 +218,12 @@ class ReleasePolicy(unittest.TestCase):
         calls = {}
         def analysis(*args, **kwargs):
             calls.update(kwargs)
-            return types.SimpleNamespace(pure=[], scripts=[], binaries=[], datas=[])
+            return types.SimpleNamespace(pure=[], scripts=[], binaries=[], datas=list(analysis_datas))
+        def executable(*args, **kwargs):
+            calls["final_datas"] = args[3]
         with patch.dict(sys.modules, {"PyInstaller.utils.hooks":hooks}):
             exec(compile((ROOT / "packaging/astrodeck.spec").read_text(encoding="utf-8"), "fixture.spec", "exec"),
-                 {"SPECPATH":str(self.root / "packaging"), "Analysis":analysis, "PYZ":lambda *a:None, "EXE":lambda *a,**kw:None})
+                 {"SPECPATH":str(self.root / "packaging"), "Analysis":analysis, "PYZ":lambda *a:None, "EXE":executable})
         return calls
 
     def test_spec_collects_native_module_and_metadata(self):
@@ -229,6 +231,17 @@ class ReleasePolicy(unittest.TestCase):
         self.assertIn("astrodeck_native", calls["hiddenimports"])
         self.assertIn((str(self.root / "metadata/astrodeck-native.dist-info/METADATA"), "astrodeck-native.dist-info"), calls["datas"])
         self.assertFalse(any(Path(source).name == "direct_url.json" for source,dest in calls["datas"]))
+
+    def test_spec_removes_metadata_reintroduced_by_analysis(self):
+        private=[("astrodeck-native.dist-info/direct_url.json","do-not-open-native","DATA"),
+                 ("astrodeck.dist-info\\direct_url.json","do-not-open-server","DATA")]
+        keep=[("astrodeck-native.dist-info/RECORD","record","DATA"),
+              ("astrodeck-native.dist-info/licenses/LICENSE.txt","notice","DATA"),
+              ("astrodeck-native.dist-info/source/native-source.tar.gz","source","DATA"),
+              ("astrodeck-native.dist-info/nested/direct_url.json","nested","DATA"),
+              ("other-1.0.dist-info/direct_url.json","other-distribution","DATA")]
+        calls=self.execute_spec(private+keep)
+        self.assertEqual(keep,calls["final_datas"])
 
     def test_spec_filters_actual_sdk_and_tile_files(self):
         self.policy["decisions"]["playerone"]["mode"] = "fetch-only"
@@ -241,6 +254,22 @@ class ReleasePolicy(unittest.TestCase):
 
 
 class MetadataSelection(unittest.TestCase):
+    def test_post_analysis_filter_is_exact_and_never_reads_metadata(self):
+        roots=[("ignored-native-source","astrodeck_native-0.1.0.dist-info"),
+               ("ignored-server-source","astrodeck-0.3.39.dist-info")]
+        private=[("astrodeck_native-0.1.0.dist-info/direct_url.json","never-read-A","DATA"),
+                 ("astrodeck-0.3.39.dist-info\\direct_url.json","never-read-B","DATA")]
+        keep=[("astrodeck_native-0.1.0.dist-info/RECORD","record","DATA"),
+              ("astrodeck_native-0.1.0.dist-info/METADATA","metadata","DATA"),
+              ("astrodeck_native-0.1.0.dist-info/licenses/NOTICE.txt","notice","DATA"),
+              ("astrodeck_native-0.1.0.dist-info/source/native-source.tar.gz","source","DATA"),
+              ("astrodeck_native-0.1.0.dist-info/sboms/native.json","sbom","DATA"),
+              ("astrodeck_native-0.1.0.dist-info/nested/direct_url.json","nested","DATA"),
+              ("astrodeck-unrelated-1.0.dist-info/direct_url.json","other","DATA"),
+              ("other-1.0.dist-info/direct_url.json","other","DATA")]
+        with patch.object(Path,"read_bytes",side_effect=AssertionError("metadata bytes read")),patch.object(Path,"read_text",side_effect=AssertionError("metadata text read")):
+            self.assertEqual(keep,metadata_payloads.filter_installer_urls(private+keep,roots))
+
     def test_only_installer_local_url_is_omitted(self):
         with tempfile.TemporaryDirectory(prefix="metadata-test-",dir=ROOT / ".probe/release") as name:
             root=Path(name)

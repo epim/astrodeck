@@ -26,13 +26,15 @@ ROOT = Path(SPECPATH).resolve().parent
 SERVER = ROOT / "server"
 sys.path.insert(0, str(ROOT / "packaging"))
 from distribution_policy import load_policy, selected_files, check_package_data
-from metadata_payloads import distributable_metadata
+from metadata_payloads import distributable_metadata, filter_installer_urls
 policy = load_policy(ROOT)
 check_package_data(ROOT, policy)
 
+native_metadata = copy_metadata("astrodeck-native")
+server_metadata = copy_metadata("astrodeck")
 datas = []
-datas += distributable_metadata(copy_metadata("astrodeck-native"))   # native version, real notices, source archive
-datas += distributable_metadata(copy_metadata("astrodeck"))          # entry points -> native backends
+datas += distributable_metadata(native_metadata)   # native version, real notices, source archive
+datas += distributable_metadata(server_metadata)   # entry points -> native backends
 datas += collect_data_files("astropy")
 datas += collect_data_files("astropy_healpix")
 
@@ -92,6 +94,9 @@ a = Analysis(
               "PyQt5", "PyQt6", "PySide2", "PySide6"],
     noarchive=False,
 )
+# Automatic importlib.metadata hooks can add whole metadata directories.
+# Apply the same narrow omission to the final data TOC after those hooks run.
+a.datas = filter_installer_urls(a.datas, native_metadata + server_metadata)
 pyz = PYZ(a.pure)
 
 exe = EXE(

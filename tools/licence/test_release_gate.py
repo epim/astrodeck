@@ -127,6 +127,18 @@ class NativeFixture(unittest.TestCase):
         return {x['code'] for x in self.errors(platform)}
     def test_complete_nested_native_fixture_has_no_findings(self):
         self.assertEqual(self.errors(), [])
+    def test_frozen_native_installer_markers_remain_allowed(self):
+        self.files[self.stem+'/INSTALLER']=b'pip\n'
+        self.files[self.stem+'/REQUESTED']=b''
+        record(self.files)
+        errors,_=gate.native_review(self.files,'windows-x86_64',self.credits,self.root,wheel=False)
+        self.assertEqual(errors,[])
+    def test_frozen_native_direct_url_is_rejected_even_with_wheel_hash(self):
+        path=self.stem+'/direct_url.json'
+        self.files[path]=json.dumps({'archive_info':{'hashes':{'sha256':'0'*64}}}).encode()
+        record(self.files)
+        errors,_=gate.native_review(self.files,'windows-x86_64',self.credits,self.root,wheel=False)
+        self.assertTrue(any(e['code']=='UNACCOUNTED' and e['path']==path for e in errors))
     def test_new_binary_cannot_hide_in_valid_resealed_wheel(self):
         self.files['vendor/surprise.dll'] = b'MZunreviewed'
         self.reseal()
@@ -503,6 +515,23 @@ class AdditionalBoundaryTests(unittest.TestCase):
             with patch.object(gate,'checked_ui',return_value=([],False)),patch.object(gate,'review_ui_inputs',return_value=[]),patch.object(gate.audit_artifact,'review',return_value=([],[])):
                 errors,_=gate.frozen_review(files,{name:'x'},evidence,'artifact',{'groups':[],'licenses':{}},b'{}',{},root)
             self.assertTrue(any(e['code']=='UNACCOUNTED' and e['path']==name for e in errors))
+
+    def test_frozen_app_and_native_direct_url_block_even_with_verified_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'tools/licence').mkdir(parents=True)
+            (root/'tools/licence/release_provenance.py').write_bytes(b'fixture')
+            (root/'tools/licence/dependency-current-windows-archive.json').write_text('{"files":[]}',encoding='utf-8')
+            (root/'tools/licence/artifact-registry.json').write_text('{"assets":[]}',encoding='utf-8')
+            (root/'ui').mkdir(); (root/'ui/package-lock.json').write_bytes(b'{}')
+            # No real URL is needed: path-based refusal must precede content use.
+            names=['astrodeck-0.3.39.dist-info/direct_url.json','astrodeck_native-0.1.0.dist-info/direct_url.json']
+            files={name:b'{"archive_info":{"hashes":{"sha256":"verified"}}}' for name in names}
+            evidence={'artifact_sha256':'artifact','generator_sha256':proof.sha(b'fixture'),
+                      'files':[{'path':name,'sha256':proof.sha(files[name]),'record_verified':True,'method':'exact-input-bytes','component':'AstroDeck','source':'dist:astrodeck/'+name} for name in names]}
+            with patch.object(gate,'checked_ui',return_value=([],False)),patch.object(gate,'review_ui_inputs',return_value=[]),patch.object(gate.audit_artifact,'review',return_value=([],[])),patch.object(gate,'native_review',return_value=([],[])):
+                errors,_=gate.frozen_review(files,{name:'x' for name in names},evidence,'artifact',{'groups':[],'licenses':{}},b'{}',{},root)
+            self.assertEqual({e['path'] for e in errors if e['code']=='PRIVATE_METADATA'},set(names))
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,6 @@
 # Release workflow mutation evidence
 
-Run 2026-10-01T23:04:42.164237+00:00
+Run 2026-10-01T23:36:46.461058+00:00
 
 These tests inspect real workflow commands and dependency/upload order. No workflow is dispatched. Every mutation is killed by its named assertion; exact bytes are restored in finally and SHA-256 checked.
 

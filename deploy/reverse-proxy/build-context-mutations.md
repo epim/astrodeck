@@ -1,6 +1,6 @@
 # Build-context mutation evidence
 
-Run 2026-10-01T22:57:38.135432+00:00
+Run 2026-10-01T23:36:49.117904+00:00
 
 Each fixture is local. No Docker daemon or network is used. Mutations are killed by the named assertion, then exact source bytes are restored in finally and SHA-256 checked.
 
@@ -39,7 +39,7 @@ Each fixture is local. No Docker daemon or network is used. Mutations are killed
 ```text
 ..............
 ----------------------------------------------------------------------
-Ran 14 tests in 0.053s
+Ran 14 tests in 0.052s
 
 OK
 ```

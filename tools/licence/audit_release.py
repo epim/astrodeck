@@ -454,13 +454,11 @@ def native_review(files, platform_id, credits, root=ROOT, wheel=True):
     init_expected = 'from .astrodeck_native import *\n\n__doc__ = astrodeck_native.__doc__\nif hasattr(astrodeck_native, "__all__"):\n    __all__ = astrodeck_native.__all__\n'
     for path, raw in files.items():
         accepted = path in extensions or path in sbom_paths or path in notice_paths.values() or path.startswith(stem + "/") and path[len(stem)+1:] in allowed_meta
-        if not wheel and path.startswith(stem + "/") and path[len(stem)+1:] in {"INSTALLER", "REQUESTED", "direct_url.json"}:
-            # frozen_review still requires current installed RECORD/TOC proof.
+        if not wheel and path.startswith(stem + "/") and path[len(stem)+1:] in {"INSTALLER", "REQUESTED"}:
+            # Frozen RECORD/TOC proof authenticates benign installer markers.
+            # PEP 610 direct_url.json remains forbidden even with a wheel hash.
             tail = path[len(stem)+1:]
-            try:
-                accepted = (tail == "INSTALLER" and raw.strip() == b"pip") or (tail == "REQUESTED" and not raw) or (tail == "direct_url.json" and isinstance(json.loads(raw).get("archive_info", {}).get("hashes", {}).get("sha256"), str))
-            except (ValueError, AttributeError):
-                accepted = False
+            accepted = (tail == "INSTALLER" and raw.strip() == b"pip") or (tail == "REQUESTED" and not raw)
         if path == "astrodeck_native/__init__.py":
             try:
                 accepted = provenance.code_shape(compile(raw, "<native-init>", "exec")) == provenance.code_shape(compile(init_expected, "<native-init>", "exec"))
@@ -558,6 +556,10 @@ def frozen_review(files, kinds, proof, artifact_sha, credits, credits_bytes, ui,
         errors += native_errors
     warm_base(root, [r["source"][5:] for r in expected.values() if r.get("source", "").startswith("repo:") and not canonical(r["path"]).startswith("ui/dist/")])
     for name, data in sorted(files.items()):
+        # Analysis can add metadata after the spec's explicit data selection.
+        # Never parse or report the installer URL; its exact path is sufficient.
+        if re.fullmatch(r"(?:astrodeck|astrodeck[_-]native)-[^/]+\.dist-info/direct_url\.json", name):
+            errors.append(finding("PRIVATE_METADATA", "Installer-local application/native URL metadata must not be distributed", name))
         row = expected.get(name, {})
         record = {"path": name, "bytes": len(data), "sha256": provenance.sha(data),
                   "component": row.get("component", "UNKNOWN"), "provenance": row.get("source", "unclassified")}

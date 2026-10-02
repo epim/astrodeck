@@ -24,3 +24,15 @@ def distributable_metadata(rows):
             target = PurePosixPath(destination.replace("\\", "/")) / PurePosixPath(relative.parent.as_posix())
             result.append((str(path), str(target)))
     return result
+
+
+def filter_installer_urls(toc, metadata_rows):
+    """Remove only the selected roots' installer URL after Analysis hooks.
+
+    TOC rows are destination, source, type. Compare destination names only;
+    never open the installer metadata. Nested and other distributions' files
+    remain unchanged, including their original row order and source paths.
+    """
+    excluded = {str(PurePosixPath(str(destination).replace("\\", "/")) / "direct_url.json")
+                for source, destination in metadata_rows}
+    return [row for row in toc if row[0].replace("\\", "/") not in excluded]

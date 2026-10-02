@@ -13,6 +13,8 @@ GATE = "tools/licence/audit_release.py"
 PROOF = "tools/licence/release_provenance.py"
 PREFIX = "tools.licence.test_release_gate."
 MUTANTS = [
+    ("frozen-private-metadata-bypass", GATE, 'if re.fullmatch(r"(?:astrodeck|astrodeck[_-]native)-[^/]+\\.dist-info/direct_url\\.json", name):', 'if False:', "AdditionalBoundaryTests.test_frozen_app_and_native_direct_url_block_even_with_verified_record"),
+    ("native-installer-url-auto-approved", GATE, 'accepted = path in extensions or path in sbom_paths', 'accepted = path.endswith("/direct_url.json") or path in extensions or path in sbom_paths', "NativeFixture.test_frozen_native_direct_url_is_rejected_even_with_wheel_hash"),
     ("ignore-runtime-code-names", PROOF, 'code.co_code.hex(), code.co_name, code.co_qualname,', 'code.co_code.hex(),', "AdditionalBoundaryTests.test_code_name_and_qualname_are_runtime_visible_proof"),
     ("pyz-duplicate-member-bypass", PROOF, ' or name in seen:', ':', "AdditionalBoundaryTests.test_pyz_duplicate_member_is_rejected_before_dict_conversion"),
     ("pyz-hidden-gap-bypass", PROOF, 'if start != cursor or end <= start:', 'if end <= start:', "AdditionalBoundaryTests.test_pyz_unexplained_payload_bytes_are_rejected"),
