@@ -41,9 +41,7 @@ for (const k of [
 // A REAL clock and a real cancel: the two-frame bloom schedules through rAF,
 // and a stub that hands the callback a constant 0 leaves transitions that
 // never settle (the trap the reticle test documents).
-g.requestAnimationFrame = (cb: (t: number) => void) =>
-  setTimeout(() => cb(win.performance.now()), 0) as unknown as number;
-g.cancelAnimationFrame = (id: number) => clearTimeout(id as unknown as NodeJS.Timeout);
+installAutoRaf(g, { now: () => win.performance.now() });
 g.IS_REACT_ACT_ENVIRONMENT = true;
 // React's ChangeEventPlugin falls back to an IE8 polyfill (`attachEvent`) unless
 // it can see `oninput` on the document, and jsdom does not expose it. Opening
@@ -64,6 +62,7 @@ g.ResizeObserver = class {
 };
 
 // ------------------------------------------------------------------- imports
+import { installAutoRaf } from "../../testing/rafPolyfill";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react";

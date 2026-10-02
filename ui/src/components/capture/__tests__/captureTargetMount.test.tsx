@@ -19,6 +19,11 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// A plain static import, not dynamic: this module has no react/DOM dependency
+// of its own, so (unlike the dynamic imports below) it is safe to evaluate
+// before the jsdom bootstrap hoists it ahead of them.
+import { installAutoRaf } from "../../../testing/rafPolyfill";
+
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
   `<!doctype html><html><body><div id="root"></div></body></html>`,
@@ -43,10 +48,9 @@ g.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 g.IntersectionObserver = class {
   observe() {} unobserve() {} disconnect() {} takeRecords() { return []; }
 };
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
 // CameraDial's bloom effect cancels its own frame on unmount, and half of what
 // this file asserts happens ACROSS an unmount.
-g.cancelAnimationFrame = (id: any) => clearTimeout(id);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // DYNAMIC imports, and that is load-bearing: a static import evaluates before
