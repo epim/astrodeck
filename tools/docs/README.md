@@ -10,7 +10,9 @@ python -m unittest discover -s tools/docs -p "test_*.py"
 python tools/docs/mutation_check.py
 ~~~
 
-The checker reads Markdown without executing examples or fetching links. It verifies local targets and anchors, the old guide URL/anchor inventory, quoted UI labels against cited source lines, claim-source references, UTF-8, house style and the existing external privacy scanner. A source citation establishes traceability, not independent proof of behavior. Reviews and simulator evidence cover that distinction.
+The checker reads Markdown without executing examples or fetching links. It verifies local targets and anchors, the old guide URL/anchor inventory, quoted UI labels, claim-source references, UTF-8, house style (including a ban on money metaphors for things that do not involve money, such as "earned" hours or a time "budget") and the existing external privacy scanner. A source citation establishes traceability, not independent proof of behavior. Reviews and simulator evidence cover that distinction.
+
+A quoted UI label is matched by its text anywhere in the cited source file, not by the recorded line: the line is kept only as a hint for resolving more than one hit and for diagnostics. An unrelated edit above a label no longer fails this check; only the label's own wording going missing, or becoming genuinely ambiguous, does (#660).
 
 The UI-label ledgers register bold labels. The claim ledgers say whether a statement was source-traced or exercised. Dynamic labels may register their fixed prefix; surrounding prose explains the variable part. The old anchor inventory was extracted from the base revision and must not shrink when headings change.
 

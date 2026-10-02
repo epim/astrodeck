@@ -1,6 +1,6 @@
 # Documentation gate mutation evidence
 
-Run 2026-10-01T19:27:56.964109+00:00.
+Run 2026-10-02T15:56:01.928588+00:00.
 
 Behavioral fixtures use synthetic text and temporary files; procedure lifecycle tests mock processes, sockets and privacy inputs. No application server or device is contacted. Every changed source is restored from exact bytes in a finally block and SHA-256 checked.
 
@@ -32,13 +32,19 @@ Behavioral fixtures use synthetic text and temporary files; procedure lifecycle 
   `AssertionError: 'UI label lacks a UI source file' not found in ''`
 
 - LABEL-LINE: `DocsChecks.test_label_line_valid`
-  `AssertionError: 'UI label has an invalid source line' not found in 'docs/guide/demo.md: quoted UI label is absent at its source'`
+  `AssertionError: 'UI label has an invalid source line' not found in ''`
 
 - LABEL-DRIFT: `DocsChecks.test_label_source_drift`
   `AssertionError: 'quoted UI label is absent at its source' not found in ''`
 
 - LABEL-COVERAGE: `DocsChecks.test_label_coverage`
   `AssertionError: 'bold UI label has no provenance record' not found in ''`
+
+- LABEL-EXACT-LINE: `DocsChecks.test_label_survives_insertion_above`
+  `AssertionError: '' != 'docs/guide/demo.md: quoted UI label is absent at its source'`
+
+- MONEY-METAPHOR: `DocsChecks.test_money_metaphor`
+  `AssertionError: 'money metaphor is not permitted' not found in ''`
 
 - CLAIM-SOURCE: `DocsChecks.test_claim_source_exists`
   `AssertionError: 'claim source file is missing' not found in ''`
@@ -82,9 +88,9 @@ Behavioral fixtures use synthetic text and temporary files; procedure lifecycle 
 ## Restored suite
 
 ```text
-............................................
+.................................................
 ----------------------------------------------------------------------
-Ran 44 tests in 0.208s
+Ran 49 tests in 0.170s
 
 OK
 ```

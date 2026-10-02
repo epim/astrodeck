@@ -16,7 +16,7 @@ Native guiding and native autofocus require `astrodeck_native`, which published 
 
 4. To remove a stage, select it, choose **DELETE STAGE**, then **CONFIRM DELETE**. Its incoming and outgoing wires are also deleted, and this surface has no undo. Reconnect the intended flow path and review the compiler result; deletion does not create a bypass or disable engine defaults such as target autofocus.
 
-5. For a brief simulator check once the required providers work, select **CAPTURE LOOP** and set **Exposure** to 1 second, **Count** to 1 and **Integration goal** to 0. The goal is a planning budget, not a run quota. Review the dusk window, target visibility and any other capture stages too; a small frame count does not skip waiting, autofocus or centring.
+5. For a brief simulator check once the required providers work, select **CAPTURE LOOP** and set **Exposure** to 1 second, **Count** to 1 and **Integration goal** to 0. The goal is a planning estimate, not a run quota. Review the dusk window, target visibility and any other capture stages too; a small frame count does not skip waiting, autofocus or centring.
 
 6. Select **SAVE**, wait for the saved state, then read the checks and any run refusal. For a new flow, select **RUN**, then **CONFIRM RUN**. An existing dormant session instead offers continuation with its flow name and recorded progress. Use [Monitor](monitor.md) to follow the actual run. Saving or generating a flow has not yet captured anything.
 
@@ -36,11 +36,11 @@ After a completed flow, the toolbar can still show **STOP** ([#647](https://gith
 
 6. Under **RUN**, choose **Rotate panels every pass** if the sequence should revisit panels in turns. This manages the pass-loop wire. With rotation off, the lane works panel by panel. Review **PASSES PER VISIT** and **AT LEAST** when rotation is enabled.
 
-7. Select **DONE**, wait for the compile, and review its checks. If a changed framing would restart recorded counts, read the confirmation before choosing **RE-FRAME**. The old banked subs stay on disk, but the affected layout starts counting from zero. Running flows and read-only examples open framing for inspection rather than editing.
+7. Select **DONE**, wait for the compile, and review its checks. If a changed framing would restart recorded counts, read the confirmation before choosing **RE-FRAME**. The old saved subs stay on disk, but the affected layout starts counting from zero. Running flows and read-only examples open framing for inspection rather than editing.
 
 ## Continue on another night
 
-New target blocks count accepted subs. Review banked progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.
+New target blocks count accepted subs. Review saved progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.
 
 ## Node reference
 
@@ -57,11 +57,11 @@ Read **CHECKS**, **NOT HONOURED BY A RUN** and **BEFORE YOU RUN** after each cha
 | **SLEW + CENTER** | Legacy block: saved flows can still contain it, but it is not offered in the palette. Set centring on TARGET; the legacy block's tolerance, retry count and solver choice are not used. |
 | **AUTOFOCUS** | Flow-derived targets request autofocus at their start with or without this block. Sweep geometry comes from the focuser, not this card's method, step size or samples. A working provider is required. |
 | **GUIDE** | Its presence enables guiding. Provider, settle and dither settings come from the guider configuration, not these card fields. |
-| **CAPTURE LOOP** | Captures the selected filter, exposure, gain, binning and frame count. Integration hours are a planning budget, not a run quota; absolute reject-HFR on the card is not the rig's grading rule. |
+| **CAPTURE LOOP** | Captures the selected filter, exposure, gain, binning and frame count. Integration hours are a planning estimate, not a run quota; absolute reject-HFR on the card is not the rig's grading rule. |
 | **FILTER CYCLE** | Interleaves the configured wheel-slot table over passes. Capture settings reach the plan; the card's absolute reject-HFR setting does not. |
 | **DUSK FLATS** | Visible in the vocabulary, but this stage is not connected to the execution engine. It will not take dusk flats. |
-| **CALIBRATION QUEUE** | Can fund dark frames during a cloud hold. A shutdown-complete wire can fund day darks after a normal night. Queue ordering, bias and flat legs are not implemented. |
-| **TARGET POOL** | Supplies candidate targets to the scheduler. Completed quotas are skipped across nights; targets set aside still owe frames. Frame counts end the campaign, not its estimated integration hours. |
+| **CALIBRATION QUEUE** | Can take dark frames during a cloud hold. A shutdown-complete wire can take day darks after a normal night. Queue ordering, bias and flat legs are not implemented. |
+| **TARGET POOL** | Supplies candidate targets to the scheduler. Completed quotas are skipped across nights; targets set aside still need frames. Frame counts end the campaign, not its estimated integration hours. |
 | **CONDITION** | Creates a supported trigger and threshold. Read compile losses for unsupported triggers; its window and fire-once fields are not carried. Rules are evaluated at frame boundaries. |
 | **HOLD / RESUME** | A pause event invokes the self-releasing cloud hold, which keeps dawn and safety checks active. The engine uses its 45-minute bound; the card's Max hold and other policy fields do not override it. |
 | **NOTIFY** | A supported event can call the engine's notification action. Sink routing comes from configured alerts; message text and severity on this node are not carried. |
@@ -70,7 +70,7 @@ Read **CHECKS**, **NOT HONOURED BY A RUN** and **BEFORE YOU RUN** after each cha
 | **ABORT + PARK** | A supported event invokes abort and park. Warming depends on the configured unsafe action, not the card alone. This is different from the operator's manual STOP, which does not park. |
 | **SESSION REPORT** | The engine writes a report for every run, even without this block. Its format and destination fields do not override the engine's report location. |
 
-The current shutdown warning can incorrectly say that no darks are taken after shutdown ([#646](https://github.com/epim/astrodeck/issues/646)). A funded shutdown-complete calibration lane can take day darks after a normal night, between park and warm-up. See [Unattended nights](unattended-nights.md) for the abort and unsafe-trip limits.
+The current shutdown warning can incorrectly say that no darks are taken after shutdown ([#646](https://github.com/epim/astrodeck/issues/646)). A wired shutdown-complete calibration lane can take day darks after a normal night, between park and warm-up. See [Unattended nights](unattended-nights.md) for the abort and unsafe-trip limits.
 
 Flow wires carry the sequence path; event wires express conditions and actions. Connect compatible port kinds. A mosaic pass loop is an event wire from the last stage's pass output to the owning target's next-panel input, not an arbitrary cycle in the sequence path.
 
