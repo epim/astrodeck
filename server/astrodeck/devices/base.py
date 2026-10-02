@@ -1117,11 +1117,24 @@ class DomePolicy:
     #: safety reading does to the shutter, whatever the flow is doing.
     ON_UNSAFE = "close"
 
-    # TODO(flows-handoff): the engine half of this invariant is backend item 7.
-    # When it lands, the unsafe path must route EVERY connected dome through
-    # ``sequence/roof.close_observatory``, whether or not the running flow
-    # contains a DOME CONTROL node — a dome that is absent from the graph still
-    # gets rained on, and doctor rule 9 only warns about the graph.
+    # WHAT THE ENGINE ACTUALLY DOES NOW (#657, closed 2026-10-01). The unsafe
+    # path in ``sequence/engine.py`` DOES route every connected dome through
+    # ``sequence/roof.close_observatory`` on a SafetyAbort, over the fenced
+    # park, and it never reads this node or the compiled flow's
+    # ``automation.dome`` block to decide whether to — a dome absent from the
+    # graph closes exactly like one wired through a DOME CONTROL node, because
+    # the engine has no notion of "the graph" at that point at all, only the
+    # rig. Proven at flow level in
+    # ``server/tests/test_w9_dome_close_flow_independence.py``, alongside the
+    # existing bare-plan proofs in ``test_engine_dome_close.py``.
+    #
+    # What the close DOES follow is ``config.SafetyConfig.close_dome_on_unsafe``
+    # — a single flag, defaulting to OFF. With the default, no unsafe ending
+    # closes a connected dome, node or no node; only the "remote" safety
+    # preset turns it on today. Whether a connected dome should flip that
+    # default to True, the way D-16 did for ``close_dome_when_done``, is an
+    # open owner question (#657 part b) and is NOT decided here — this
+    # comment describes the code as it stands, not as it might be ruled.
 
     @classmethod
     def from_node_params(cls, params: dict) -> "DomePolicy":
