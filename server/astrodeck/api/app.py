@@ -764,10 +764,42 @@ def _sequence_envelope(engine) -> dict:
     follows an abort, and "aborting" or "aborted" is the true thing to say
     there - rewriting it to "running" would reinstate, on the abort path, the
     same lie this removes from the start path.
+
+    `live` IS RECOMPUTED HERE TOO, FRESH, ON EVERY CALL (#665). `_set_state`
+    only calls `SequenceEngine._live_block` AT a published transition (a
+    frame boundary, a hold starting or ending, ...), so `engine.state["live"]`
+    is whatever that one instant cached - and an open-ended wait with no
+    transition in the middle (a meridian wait, a cloud hold, an idle
+    park-hold) can span the whole rest of the hold with nothing re-publishing
+    it. A GET made minutes into such a wait served the meridian ETA and the
+    sensor temperature exactly as they stood at the START of the wait, not
+    as of the GET (confirmed on the harness's clocked meridian-straddle
+    night: `hub.last_meridian` already read "not tracking" while the state
+    read minutes later still carried the stale pre-wait countdown).
+    `_live_block` is already documented "best-effort, sync, no device I/O",
+    which is exactly what makes it safe to call again here, at the one seam
+    both polling consumers (this route and the monitor snapshot) share,
+    rather than teaching every open-ended wait to re-publish on a timer or
+    editing the engine's own publish schedule (`engine.py` is WP-56's this
+    wave). The WS stream is UNCHANGED: it only ever carries what a publish
+    sends, and a long hold still sends none until something happens - this
+    fixes every caller that POLLS, which is what #665 was about.
+
+    A fake engine with no `_live_block` (as the lightweight doubles in
+    test_sequence_envelope_agrees.py use) is left exactly as it serves
+    `state`'s own `live`, if any: this only overrides it for an engine
+    that actually offers a fresh answer.
     """
     payload = engine.state | {"running": engine.running, "paused": engine.paused}
     if engine.running and payload.get("state") == "idle":
         payload["state"] = "running"
+    compute_live = getattr(engine, "_live_block", None)
+    if callable(compute_live):
+        live = compute_live()
+        if live:
+            payload["live"] = live
+        else:
+            payload.pop("live", None)
     return payload
 
 
@@ -4415,6 +4447,55 @@ def create_app(*, bind_host: str | None = None,
                     "code": "below_horizon", "preflight": pf}
         return None
 
+    def _ceiling_block(t: Target) -> dict | None:
+        """Return a 409 detail dict if ``t`` is in the mount's zenith keep-out
+        (#619 a, first leg). Asks the SAME verdict function the engine's slew
+        gate asks mid-run (``SequenceEngine._altitude_limit_verdict``) rather
+        than a second copy of the ceiling maths, so pre-flight and the first
+        slew cannot disagree about where the ceiling is -- the gap #619
+        reported: a target that cleared the floor but sat above
+        ``cfg.safety.max_alt_deg`` passed this gate and was only caught by
+        the engine's own gate on the first slew.
+
+        Skipped on the default site exactly like ``_horizon_block`` (no
+        un-configured location is trusted to call a slew unsafe) and touches
+        no device, like the verdict function itself.
+
+        NOT BYPASSED BY ``force``. Unlike the horizon/floor leg above, this
+        is the same kind of hazard the Sun check below is: a mount that
+        reaches its own tripod is a hardware cost, not the lost-a-night
+        tradeoff ``force`` exists to let an operator accept."""
+        if hub.site.get("is_default", True):
+            return None
+        verdict = engine._altitude_limit_verdict(t, projected=True,
+                                                  cfg=config_store.cfg())
+        if verdict is not None and verdict.kind == "ceiling":
+            return {"detail": verdict.sentence, "code": "ceiling",
+                    "site_detail": verdict.site_detail}
+        return None
+
+    async def _pier_block(t: Target, plan: SequencePlan) -> dict | None:
+        """Return a 409 detail dict if a slew to ``t`` would need a pier flip
+        while ``plan.meridian_flip`` is off (#619 a, second leg) -- the SAME
+        pier-collision guard, over the SAME bounded mount read, the engine's
+        slew gate asks mid-run (``SequenceEngine._mount_floor_verdict``), so
+        a plan the first slew would refuse cannot pass pre-flight first.
+
+        A disconnected mount, or one that does not report a destination pier
+        side, answers None -- nothing to compare the destination side
+        against, exactly as the engine's own guard reads an unreadable side.
+
+        NOT BYPASSED BY ``force``, for the same reason as the ceiling above:
+        a pier-side change with flips disabled is a collision risk, not a
+        lost-frames tradeoff."""
+        verdict = await engine._mount_floor_verdict(t, projected=True,
+                                                     cfg=config_store.cfg(),
+                                                     plan=plan)
+        if verdict is not None and verdict.kind == "pier":
+            return {"detail": verdict.sentence, "code": "pier_flip",
+                    "site_detail": verdict.site_detail}
+        return None
+
     def _solar_block(ra_hours: float, dec_deg: float) -> dict | None:
         """Return a 409 detail dict if a GOTO should be blocked by the sun-
         exclusion cone (W1.10), else None. Unlike the horizon check this is
@@ -4429,16 +4510,21 @@ def create_app(*, bind_host: str | None = None,
             return {"detail": str(e), "code": "sun_exclusion"}
         return None
 
-    def _start_preflight(plan: SequencePlan, *, force: bool) -> list[dict]:
-        """The horizon and Sun pre-flight of the HTTP start paths,
-        ``/api/sequence/start`` and ``/api/flows/{id}/run``, and of the two
-        that resume a stored session, ``/api/sessions/{id}/resume`` and
+    async def _start_preflight(plan: SequencePlan, *, force: bool) -> list[dict]:
+        """The horizon, ceiling, pier and Sun pre-flight of the HTTP start
+        paths, ``/api/sequence/start`` and ``/api/flows/{id}/run``, and of the
+        two that resume a stored session, ``/api/sessions/{id}/resume`` and
         ``/api/sequence/recover``, which hand it only the targets the session
         still owes (``_owed_plan``; #291): one helper, so the four cannot
-        drift (spec 6.3; #132). Raises 409 for a refusal. Returns
+        drift (spec 6.3; #132, #619). Raises 409 for a refusal. Returns
         the panels of a mosaic group that are below the horizon now and did
         not refuse the start, for the caller to name in its response and its
         log line (``_name_panels_below``) once the run has started.
+
+        ASYNC SINCE #619: the pier leg needs a bounded live telescope read
+        (``_pier_block`` -> ``SequenceEngine._mount_floor_verdict``), the
+        same read the engine's own slew gate makes. Every caller already
+        awaits inside an ``async def`` route.
 
         A TARGET OUTSIDE A GROUP gets exactly the engine's own floor
         verdict (#132 a): it refuses through ``_horizon_block`` ->
@@ -4468,15 +4554,25 @@ def create_app(*, bind_host: str | None = None,
         waives it without a look. A forced group's members are still looked
         at, so the panels a forced start leaves below the horizon are named.
 
-        THE SUN IS UNCHANGED: any target in the cone refuses, a panel
-        included, forced or not. Everything else here costs you a night;
-        this one costs you a sensor.
+        THE CEILING AND THE PIER (#619 a) ARE ALSO UNCHANGED BY GROUPING OR
+        ``force``, exactly like the Sun: every sky target is asked, panel or
+        not, forced or not. Both are hardware hazards (the mount reaching its
+        own tripod; a pier-side change with flips disabled) rather than the
+        lost-a-night tradeoff the horizon/floor leg lets ``force`` accept, so
+        neither gets the mosaic's "some panels are up" leniency or the
+        force bypass -- a mosaic with one panel in the zenith keep-out
+        refuses the whole start, the same as one target would.
 
-        Refusals come in plan order, every horizon refusal before any Sun
-        refusal, as the two loops ran. Calibration targets (darks, bias,
-        flats) carry mandatory dummy coordinates and never slew, so both
-        checks skip them: a dark-library build at a configured site must not
-        be refused because (0, 0) is below the horizon."""
+        THE SUN IS ALSO UNCHANGED: any target in the cone refuses, a panel
+        included, forced or not. Everything else here costs you a night;
+        the ceiling, the pier and the Sun cost you a sensor or a collision.
+
+        Refusals come in plan order: every horizon refusal (group-aware),
+        then every ceiling refusal, then every pier refusal, then every Sun
+        refusal, as the loops run. Calibration targets (darks, bias, flats)
+        carry mandatory dummy coordinates and never slew, so every check
+        skips them: a dark-library build at a configured site must not be
+        refused because (0, 0) is below the horizon or in the keep-out."""
         groups = {g.id: g for g in plan.groups}
         sky = [t for t in plan.targets if not t.calibration
                and getattr(t, "ra_hours", None) is not None
@@ -4519,6 +4615,18 @@ def create_app(*, bind_host: str | None = None,
                         "mosaic": mosaic(g),
                         "panels": [{"panel": e["panel"], "target": e["target"]}
                                    for e in (entry(m, g) for m in members)]})
+        # Ceiling and pier (#619 a): per-target hazards, never waived by
+        # ``force`` and never given the group's "some panels are up"
+        # leniency (see the docstring) -- asked over every sky target, in
+        # plan order, ceiling fully before pier starts.
+        for t in sky:
+            ceiling = _ceiling_block(t)
+            if ceiling is not None:
+                raise HTTPException(409, detail={**ceiling, "target": t.name})
+        for t in sky:
+            pier = await _pier_block(t, plan)
+            if pier is not None:
+                raise HTTPException(409, detail={**pier, "target": t.name})
         for t in sky:
             solar = _solar_block(t.ra_hours, t.dec_deg)
             if solar is not None:
@@ -6951,7 +7059,7 @@ def create_app(*, bind_host: str | None = None,
         # helper /api/sequence/start calls (spec 6.3): a mosaic group refuses
         # only when every panel is below the horizon, and the ones that are
         # below on a start that goes ahead are named once it has started.
-        below_horizon = _start_preflight(plan, force=body.force)
+        below_horizon = await _start_preflight(plan, force=body.force)
         if hub.looping:
             # Awaited, not fired: the preview loop must have released the camera
             # before the engine's first exposure.
@@ -7253,8 +7361,8 @@ def create_app(*, bind_host: str | None = None,
         # group refuses only when every panel is below. Over the targets
         # the session still owes, not the whole plan (``_owed_plan``).
         owed = _owed_plan(s)
-        below_horizon = _start_preflight(owed,
-                                         force=bool(body and body.force))
+        below_horizon = await _start_preflight(owed,
+                                               force=bool(body and body.force))
         try:
             hub.require("camera")
             _refuse_while_resume_recovers()          # no await until the start
@@ -9490,7 +9598,7 @@ def create_app(*, bind_host: str | None = None,
         # forced run bypasses only the visible-horizon 409, never sun avoidance.
         # Disarming requires a solar session (config.solar_override), which makes
         # _check_solar inert. One helper, shared with /api/flows/{id}/run.
-        below_horizon = _start_preflight(plan, force=force)
+        below_horizon = await _start_preflight(plan, force=force)
         # Auto-stop the live preview loop before the run owns the camera (the
         # natural ASIAIR-style flow: frame with the loop, then hit Start Plan).
         # Awaited so the loop's in-flight expose fully releases the camera +
@@ -9662,6 +9770,50 @@ def create_app(*, bind_host: str | None = None,
         they plan sequences here."""
         return _preflight_alt(ra_hours, dec_deg)
 
+    def _never_rises_scan(ra_h: float, dec_deg: float, lat: float, lon: float,
+                          start_ts: float | None, stop_ts: float | None,
+                          floor_base: float,
+                          horizon: list[tuple[float, float]] | None,
+                          nogo_box: list[dict] | None) -> tuple[float, bool]:
+        """Sample ``[start_ts, stop_ts]`` for the plan-wide 'never rises'
+        warning (#619 b), asking ``schedule.effective_floor`` at EACH
+        sample's OWN azimuth rather than one flat number.
+
+        Before this, the warning compared the window's peak altitude
+        against a single scalar floor -- exactly ``effective_floor`` with an
+        empty horizon mask and no no-go wedges -- so a target hidden behind
+        a drawn obstruction, or inside a wedge, for its whole window never
+        triggered the warning unless the flat floor alone already caught it
+        (#132 sibling: the mask is azimuth-dependent by design, and the
+        target's track moves through azimuth as it moves through the sky,
+        so only a per-sample check can see what a single peak-vs-floor
+        comparison cannot).
+
+        Same coarse 10-minute cadence as ``schedule.target_max_altitude``
+        (the scalar scan this augments) -- fine enough for a non-blocking
+        warning, not a slew gate; an open-ended window (``stop_ts`` None)
+        is capped the same way, at one day ahead, so a transit is always
+        captured. Returns ``(peak_alt, clears)``: ``peak_alt`` for the
+        message (unchanged meaning), ``clears`` True from the first sample
+        at or above ITS OWN azimuth's effective floor.
+        """
+        from ..catalog import altaz as _target_altaz
+        t0 = start_ts if start_ts is not None else time.time()
+        t1 = stop_ts if stop_ts is not None else t0 + 86400.0
+        if t1 < t0:
+            t0, t1 = t1, t0
+        peak = -90.0
+        clears = False
+        steps = max(1, int((t1 - t0) / 600.0))
+        for i in range(steps + 1):
+            t = t0 + (t1 - t0) * (i / steps)
+            alt, az = _target_altaz(ra_h, dec_deg, lat, lon, t)
+            peak = max(peak, alt)
+            if alt >= schedule_mod.effective_floor(floor_base, horizon, az,
+                                                   nogo_box):
+                clears = True
+        return peak, clears
+
     @app.post("/api/sequence/preflight", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def sequence_preflight_plan(plan: SequencePlan):
@@ -9672,9 +9824,18 @@ def create_app(*, bind_host: str | None = None,
         whole window (``never_rises``). The UI shows a confirm dialog defaulting to
         "Run anyway"; this endpoint never refuses a run on its own.
 
-        Floor = ``max(per-target start gate, site horizon_min, safety floor)`` —
-        the realistic altitude the target must clear to be worth slewing to. A
-        default (un-configured) site yields no warnings: we don't trust an un-set
+        THE FLOOR IS THE EFFECTIVE ONE, AZIMUTH BY AZIMUTH (#619 b):
+        ``max(per-target start gate, site horizon_min, safety floor)`` is the
+        FLAT base, and ``_never_rises_scan`` asks ``schedule.effective_floor``
+        -- the same formula the engine's slew gate enforces mid-run -- at
+        every sampled point of the target's track, raising that base by the
+        drawn obstruction-horizon mask (``cfg.safety.horizon``) and any
+        no-go wedge (``cfg.safety.nogo_box``) at THAT point's azimuth.
+        Before this, the comparison was peak altitude vs. the flat base
+        alone, so a target hidden behind a horizon-mask obstruction (or
+        inside a wedge) for its whole window was never reported as never
+        rising unless the flat base alone already caught it. A default
+        (un-configured) site yields no warnings: we don't trust an un-set
         location to call a target un-observable.
 
         Two BLOCKING checks were added (``"blocking": true`` on the warning, and
@@ -9761,25 +9922,52 @@ def create_app(*, bind_host: str | None = None,
                     "message": (f"{subject} in {', '.join(unset)} {verb} no "
                                 f"filter set — {where}")})
         if not is_default:
+            # #619 b: the floor used to be ONE scalar
+            # (max(gate, site_floor, safety_floor)) compared against the
+            # window's peak altitude -- exactly `schedule.effective_floor`
+            # with an empty horizon mask and no no-go wedges, so a target
+            # hidden behind a drawn obstruction (or inside a wedge) for its
+            # WHOLE window never warned unless the flat floor alone already
+            # caught it. The floor is azimuth-dependent by design
+            # (`effective_floor`'s whole point) and a target's track moves
+            # through azimuth as it moves through the sky, so only a
+            # per-sample check -- `_never_rises_scan`, below -- can see a
+            # mask or wedge that a single peak-vs-floor comparison cannot.
+            horizon = cfg.safety.horizon
+            nogo = cfg.safety.nogo_box
             for t in plan.targets:
                 if t.calibration:
                     continue
                 gate = float(getattr(t.schedule, "min_altitude_deg", 0.0) or 0.0)
-                floor = max(gate, site_floor, safety_floor)
-                if floor <= 0.0:
-                    continue
+                floor_base = max(gate, site_floor, safety_floor)
+                if floor_base <= 0.0 and not horizon and not nogo:
+                    continue    # no limit of any kind is configured
                 start_ts, stop_ts = schedule_mod.resolve_window(
                     t.schedule, site, twilight, now)
-                peak = schedule_mod.target_max_altitude(
-                    t.ra_hours, t.dec_deg, lat, lon, start_ts, stop_ts)
-                if peak < floor:
-                    warnings.append({
-                        "target": t.name,
-                        "kind": "never_rises",
-                        "message": (f"{t.name or 'target'} never rises above "
-                                    f"{floor:g} deg during its window "
-                                    f"(peaks at {peak:.0f} deg)"),
-                    })
+                peak, clears = _never_rises_scan(
+                    t.ra_hours, t.dec_deg, lat, lon, start_ts, stop_ts,
+                    floor_base, horizon, nogo)
+                if clears:
+                    continue
+                if peak >= floor_base:
+                    # the FLAT floor alone would have let it in -- what
+                    # actually keeps it down for the whole window is the
+                    # obstruction mask or a no-go wedge at the azimuths it
+                    # occupies (the exact gap #619 b reported: the old
+                    # comparison could not see this at all).
+                    message = (f"{t.name or 'target'} never clears the "
+                               f"horizon mask or a no-go wedge during its "
+                               f"window (peaks at {peak:.0f} deg; the "
+                               f"open-sky floor there is {floor_base:g} deg)")
+                else:
+                    message = (f"{t.name or 'target'} never rises above "
+                               f"{floor_base:g} deg during its window "
+                               f"(peaks at {peak:.0f} deg)")
+                warnings.append({
+                    "target": t.name,
+                    "kind": "never_rises",
+                    "message": message,
+                })
         # --- calibration coverage (PRO-1) — folded into this same non-blocking
         # surface (NOT a separate preflight route). ``coverage`` returns [] when
         # no masters exist, so a user who never built a library is never nagged;
@@ -9863,8 +10051,8 @@ def create_app(*, bind_host: str | None = None,
         # the same resume by another door, and a door without the Sun check
         # is the one a stale plan walks through.
         owed = _owed_plan(s)
-        below_horizon = _start_preflight(owed,
-                                         force=bool(body and body.force))
+        below_horizon = await _start_preflight(owed,
+                                               force=bool(body and body.force))
         try:
             hub.require("camera")
             _refuse_while_resume_recovers()          # no await until the start
