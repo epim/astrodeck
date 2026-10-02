@@ -196,7 +196,7 @@ jobs:
       # test-css-stub.mjs's header comment), so CI and dev now share one
       # tested code path instead of a fix being verified only on a developer's
       # machine and never on the Node CI actually runs.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -371,7 +371,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: npm
