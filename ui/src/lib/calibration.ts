@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // calibration.ts — pure logic for the one-tap calibration capture feature
 // (calibration-capture spec §1.3). No React, no DOM: npx-tsx testable
 // (exposure.ts/eta.ts precedent).

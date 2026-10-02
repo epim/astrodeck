@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The comet two-body solvers and the pipeline they feed.
 
 FOUR GROUND TRUTHS, none of which is this code:

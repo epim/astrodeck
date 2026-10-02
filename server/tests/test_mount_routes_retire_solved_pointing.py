@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-07 follow-through: a COMMANDED move retires the plate-solved centre.
 
 ``Hub.capture`` used to call ``note_pointing_moved()`` on every saved frame,

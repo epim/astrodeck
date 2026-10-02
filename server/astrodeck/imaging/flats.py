@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pure ADU-target flat-exposure solver (PRO-5). No numpy, no I/O — a bounded,
 iterative linear solver so it is exercisable with a synthetic panel in pytest and
 reusable by the sequence engine (and, later, the twilight sky-flat re-solve).

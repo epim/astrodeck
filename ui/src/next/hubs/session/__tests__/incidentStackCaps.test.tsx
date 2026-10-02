@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // incidentStackCaps.test.tsx - the ignore-weather two-cap fix on SESSION / NOW's
 // incident stack (D-FU-4-follow-up, T-U7a-H's `capLockReason`).
 //

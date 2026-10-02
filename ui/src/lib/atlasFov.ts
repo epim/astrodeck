@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // atlasFov.ts — where the telescope is ACTUALLY pointing, as Atlas geometry.
 //
 // The Atlas could draw where you INTEND to point (FovOverlay's planned box) and

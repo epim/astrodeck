@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A visit that ends below the panel's own floor still counts toward its pass
 (#288 part 1; spec 5.1 outcome table and pass boundary, 5.6 step 7).
 

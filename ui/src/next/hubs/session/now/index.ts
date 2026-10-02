@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // now/index.ts - what SESSION / NOW exports.
 //
 // The seven components at the top are the ones the desktop `SessionColumn`

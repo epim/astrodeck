@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/lastSessionFrame.ts — WHICH already-saved frame may stand in for the live
 // one on the Capture stage, and when nothing may.
 //

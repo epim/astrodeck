@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Raw-socket tests for the unprivileged captive portal parser and guards."""
 
 from __future__ import annotations

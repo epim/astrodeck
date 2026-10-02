@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#203: a solar-system row must not be a function of where the rig stands.
 
 THE FINDING. `catalog/solar_system.position` evaluated every body

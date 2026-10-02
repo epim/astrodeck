@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // unreadableFlowRow.test.tsx - SESSION / FLOWS draws a flow this build cannot
 // open as a row that says why ONCE, and never opens, runs, targets or claims
 // it (#153; spec 2026-09-23 section 3.6; mosaic slice S1-10, carry-overs 6
@@ -275,7 +277,15 @@ function seed(role: string, caps: string[], rig: Rig = {}): void {
         ...f,
         record: (rig.record ?? null) as never,
         dirty: false,
-        run: { ...f.run, phase: rig.phase ?? "idle" },
+        // `startedAt` alongside a live `phase` (#647, W5 integration): the
+        // real `flowsRun` always stamps both together, and
+        // `useFlowRunControls`'s `running` now trusts an optimistic
+        // "running" phase only within `RUN_PHASE_BRIDGE_MS` of its OWN
+        // `startedAt` - a phase with no fresh timestamp reads as a STALE
+        // latch, not as a page that just pressed RUN, which is what
+        // `rig.phase` here means.
+        run: { ...f.run, phase: rig.phase ?? "idle",
+               startedAt: rig.phase ? Date.now() : null },
         ui: { ...f.ui, screen: "library", query: "", folderChip: "all", highlightId: null },
       } as never,
     } as never);

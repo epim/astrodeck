@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sequence engine: runs an imaging plan autonomously.
 
 Per target: slew → (center) → (autofocus) → start guiding → for each step:
@@ -1462,6 +1464,12 @@ class SequenceEngine:
         # because _safety_gate is reachable on an engine that was constructed
         # but never started.
         self._warned_no_safety_source = False
+        #: "a monitor is assigned but does not read clouds" (#193), said once
+        #: per RUN -- its own flag, kept apart from `_warned_no_safety_source`
+        #: above, because the two describe different rigs (one with no
+        #: monitor at all, one with a real monitor that just does not cover
+        #: clouds) and must not silence each other's one-time line.
+        self._warned_monitor_no_clouds = False
         #: "nothing can report a failure" is said once per RUN, same as above.
         self._warned_no_destination = False
         # Set by the no-progress watchdog task, consumed by the RUN task's
@@ -1516,6 +1524,20 @@ class SequenceEngine:
         # optics the science frames used - a probe through a different filter
         # scores differently and the debounced state would read that as weather.
         self._hold_step = None
+        #: Whether the frame now being graded was actually guided (#142 /
+        #: D-06), set from the SAME ``_frame_was_guided()`` read each real
+        #: capture site already takes for ``_record_frame``'s #72 bound, read
+        #: back by ``_check_quality``'s guide-RMS gate. None (the default, and
+        #: what every direct ``_check_quality(info)`` call in the tests
+        #: leaves it at) means "not known for this call" and falls back to
+        #: the plain numeric comparison, so a synthetic ``info`` dict built
+        #: without going through a real frame loop is ungated exactly as
+        #: before. A dedicated field rather than a new keyword argument:
+        #: ``_check_quality`` is monkeypatched wholesale by several tests
+        #: (``test_session_quota.py``'s ``_script_gate``) with a fixed
+        #: signature, and a new required/keyword parameter at the real call
+        #: sites would raise ``TypeError`` through one of those replacements.
+        self._frame_guided: bool | None = None
         # Measured ONCE per hold and counted down, so the library walk happens
         # once rather than before every frame. None = not yet measured.
         self._hold_darks_want: int | None = None
@@ -1892,6 +1914,7 @@ class SequenceEngine:
         self._unsafe_streak = 0
         self._safe_streak = 0
         self._warned_no_safety_source = False
+        self._warned_monitor_no_clouds = False
         self._warned_no_destination = False
         self._watchdog_tripped = None
         self._last_frame_at = self._started_at
@@ -3028,9 +3051,26 @@ class SequenceEngine:
                 plan.park_when_done, plan.warm_cooler_when_done,
                 close_dome=bool(self._cfg and self._cfg.safety.close_dome_when_done))
         except asyncio.CancelledError:
-            bus.log("warning", "sequence aborted", "sequence")
+            # #565: THIS ARM IS REACHED TWO WAYS, and until now both finalized
+            # "aborted". ``abort()`` (an operator's STOP, `/api/disconnect`, a
+            # profile apply or activate — see `_finalize_report`'s "KEYED ON
+            # `_aborting`" comment) sets ``_aborting`` before it cancels this
+            # task, awaits it, and only THEN publishes end_reason="aborted".
+            # A POLITE SERVER SHUTDOWN NEVER GOES THROUGH ``abort()`` AT ALL:
+            # the lifespan's own teardown stops every other background
+            # service but never this one, so the run task is cancelled by the
+            # event loop's own shutdown (Ctrl+C, a service stop), lands here
+            # with ``_aborting`` still False, and used to finalize the same
+            # word a STOP leaves. ``GET /api/sequence/recoverable`` then read
+            # "aborted" from the report (`_why_dormant`, app.py) and the
+            # recoverable card told the operator "You stopped it" for a
+            # restart they may never have asked for.
+            reason = "aborted" if self._aborting else "shutdown"
+            bus.log("warning",
+                    "sequence aborted" if self._aborting
+                    else "sequence cancelled by a server shutdown", "sequence")
             await self._safe_stop()
-            self._finalize_report("aborted")
+            self._finalize_report(reason)
             raise
         except Exception as e:
             bus.log("error", f"sequence failed: {e}", "sequence")
@@ -3187,6 +3227,7 @@ class SequenceEngine:
         "quality": "warn",
         "cooling_skip": "warn",
         "aborted": "warn",          # somebody stopped it on purpose
+        "shutdown": "warn",         # #565: nobody did - the process went away
         "unsafe": "bad",
         "error": "bad",
     }
@@ -3313,7 +3354,7 @@ class SequenceEngine:
                 for _t in [t for t in remaining if t.name in self._pending_skips]:
                     bus.log("info", f"{_t.name}: skipped by instruction", "sequence")
                     if self.reporter:
-                        self.reporter.mark_skipped(_t)
+                        self.reporter.mark_skipped(_t, "skipped by instruction")
                     self._group_member_gone(_t, self._group_of(_t),
                                             "skipped by instruction")
                     remaining.remove(_t)
@@ -3479,7 +3520,7 @@ class SequenceEngine:
                                 f"not done, so the next night takes it up",
                         "sequence")
                 if self.reporter:
-                    self.reporter.mark_skipped(target)
+                    self.reporter.mark_skipped(target, why)
                 self._drop_from(remaining, target)
             if not remaining:
                 # Nothing left: the night ran its course. Not a dawn cutoff,
@@ -3528,7 +3569,8 @@ class SequenceEngine:
                                     f"{late_min:.0f} min ago — skipping (if missed: "
                                     f"skip)", "sequence")
                     if self.reporter:
-                        self.reporter.mark_skipped(ready)
+                        self.reporter.mark_skipped(
+                            ready, "its start window was missed")
                     self._group_member_gone(ready, group,
                                             "its start window was missed")
                     remaining.remove(ready)
@@ -3583,7 +3625,7 @@ class SequenceEngine:
                     # scheduling-only stop: skip this target, keep the night going.
                     bus.log("info", f"{ready.name}: skipped — {e}", "sequence")
                     if self.reporter:
-                        self.reporter.mark_skipped(ready)
+                        self.reporter.mark_skipped(ready, str(e))
                     if isinstance(e, FloorStop):
                         # Its own floor sets it aside for TONIGHT, recorded
                         # so a restart tonight does not take it up (#208).
@@ -3669,7 +3711,7 @@ class SequenceEngine:
                 # finalize the night as a dawn cutoff (§1.9-C).
                 for target in remaining:
                     if self.reporter:
-                        self.reporter.mark_skipped(target)
+                        self.reporter.mark_skipped(target, "window closed")
                     bus.log("info", f"{target.name}: window closed — skipping", "sequence")
                 self._dawn_cutoff = True
                 return
@@ -3807,7 +3849,7 @@ class SequenceEngine:
                 return True
             bus.log("info", f"instruction: skipping target {name!r}", "sequence")
             if self.reporter:
-                self.reporter.mark_skipped(dest)
+                self.reporter.mark_skipped(dest, "skipped by instruction")
             if dest is not ready:
                 _drop(dest)
                 return False
@@ -3832,7 +3874,7 @@ class SequenceEngine:
             self.reporter.record_safety(
                 f"instruction run_target {name!r} ({left})", "jump")
             if not complete:
-                self.reporter.mark_skipped(ready)
+                self.reporter.mark_skipped(ready, "abandoned by an instruction")
         return True
 
     # ------------------------------------------------ the mosaic group driver
@@ -4536,7 +4578,7 @@ class SequenceEngine:
                 "sequence")
         for t in members:
             if self.reporter:
-                self.reporter.mark_skipped(t)
+                self.reporter.mark_skipped(t, why)
             self._group_member_gone(t, group, why)
             self._drop_from(remaining, t)
 
@@ -5033,7 +5075,7 @@ class SequenceEngine:
                             f"a restart tonight does not retry it, the next "
                             f"night does", "sequence")
             if self.reporter:
-                self.reporter.mark_skipped(t)
+                self.reporter.mark_skipped(t, reason)
             self._drop_from(remaining, t)
 
     def _every_owed_step_set_aside(self, target: Target) -> bool:
@@ -5376,7 +5418,7 @@ class SequenceEngine:
         # its window closing while it waited (`_expire_or_wait`,
         # `_end_pending_expiries`), and once however it goes.
         if self.reporter and not expires:
-            self.reporter.mark_skipped(target)
+            self.reporter.mark_skipped(target, reason)
         return expires
 
     def _may_expire(self, target_id: str) -> bool:
@@ -5418,7 +5460,7 @@ class SequenceEngine:
                 continue
             self._persist_set_aside(t.id, reason, kind=kind)
             if self.reporter:
-                self.reporter.mark_skipped(t)
+                self.reporter.mark_skipped(t, reason)
             self._drop_from(remaining, t)
 
     def _expire_or_wait(self, group: TargetGroup, run: GroupRun,
@@ -5454,6 +5496,11 @@ class SequenceEngine:
         coming, and the panel is then set aside for the rest of the night
         rather than asked again at once."""
         gone: list[Target] = []
+        # Keyed by id(t), not ``gone``'s own order: the caller
+        # (`_eligibility_now`) extends ``gone`` straight into its own result,
+        # so its element type cannot grow a second field without touching
+        # that caller's file.
+        gone_reasons: dict[int, str] = {}
         mosaic = group.name or group.id
         for t in list(remaining):
             if self._group_of(t) is not group \
@@ -5469,6 +5516,7 @@ class SequenceEngine:
                                 f"rest of the night: its window closed before "
                                 f"its set-aside expired", "sequence")
                 gone.append(t)
+                gone_reasons[id(t)] = "its window closed before its set-aside expired"
                 continue
             cause = set_aside_expiry(now=now, set_at=ts)
             if cause is not None:
@@ -5482,6 +5530,7 @@ class SequenceEngine:
                 bus.log("info", f"{mosaic}: {label} stays set aside for the "
                                 f"rest of the night", "sequence")
                 gone.append(t)
+                gone_reasons[id(t)] = "its set-aside expiry window has already passed"
                 continue
             elig[t.id] = _Eligibility(
                 False, wake, None, "expiry",
@@ -5491,7 +5540,7 @@ class SequenceEngine:
             _kind, ts = self._set_aside_meta.get(t.id) or (None, None)
             self._set_aside_meta[t.id] = ("final", ts)
             if self.reporter:
-                self.reporter.mark_skipped(t)
+                self.reporter.mark_skipped(t, gone_reasons.get(id(t)))
         return gone
 
     def _expire_set_aside(self, group: TargetGroup, run: GroupRun,
@@ -8352,13 +8401,29 @@ class SequenceEngine:
                     # Only the panel COMMANDS stay gated on a panel existing.
                     if ("covercalibrator" in self.hub.devices
                             and step.panel_brightness is not None):
+                        # #194: CLOSE BEFORE LIGHTING, not after. A device with
+                        # both a cover and a calibrator is typically a
+                        # flip-flat, whose light panel is the underside of the
+                        # cover itself — flats are shot with the cover CLOSED
+                        # over the aperture and the panel lit through it. The
+                        # order used to be calibrator_on() then open_cover(),
+                        # which on a flip-flat points the lit panel away from
+                        # the aperture (at night, a dark sky; at dusk, a sky
+                        # flat) while the exposure solver chases a light
+                        # source that is not in the beam. ``_panel_off_safe``
+                        # closes it again at the end of this step exactly as
+                        # it already did before this fix, so a run that shot
+                        # flats and nothing else is unaffected; nothing here
+                        # opens the cover for a LATER light target (#192, a
+                        # separate open gap: no code anywhere auto-opens the
+                        # cover for light frames today).
+                        cc = self.hub.calibrator
+                        if getattr(cc, "has_cover", False):
+                            await _bounded(self.hub.close_cover(),
+                                           CALIBRATOR_CMD_TIMEOUT_S, "close cover")
                         await _bounded(self.hub.calibrator_on(step.panel_brightness),
                                        CALIBRATOR_CMD_TIMEOUT_S, "calibrator on")
                         panel_lit = True
-                        cc = self.hub.calibrator
-                        if getattr(cc, "has_cover", False):
-                            await _bounded(self.hub.open_cover(),
-                                           CALIBRATOR_CMD_TIMEOUT_S, "open cover")
                     self._set_state(detail=f"{target.name}: solving flat exposure")
                     solved_exp, _ = await self._solve_flat_exposure(step, target)
                 for i in range(self._done.get(key, 0), step.count):
@@ -8842,8 +8907,12 @@ class SequenceEngine:
             info = await self._capture(step, target)
             # Read right as the shutter closes (#134): whichever branch below
             # banks this frame hands it to `_record_frame`, which clears the
-            # #72 recovery bound only on this evidence.
+            # #72 recovery bound only on this evidence. #142 / D-06: the same
+            # read also tells `_check_quality`'s guide-RMS gate whether this
+            # frame was actually guided, since a stopped guider's cached RMS
+            # reads as a flat 0.00 rather than as "unreadable".
             guided = await self._frame_was_guided()
+            self._frame_guided = guided
             # The frame loop's last look at the mount (#165). Accepted or
             # rejected, the exposure is what the idle clock runs from.
             self._idle_since = time.time()
@@ -9132,16 +9201,20 @@ class SequenceEngine:
             self._frame_had_event = True   # retake wall-time is not per-frame overhead
             self._begin_frame(*(self._active_step or (ti, 0)), step.exposure_s)
             new_info = await self._capture(step, target)
+            # This retake's OWN exposure (#134): the guider may have come
+            # back, or gone down, since the frame that was rejected. Read
+            # once, fed to both `_check_quality`'s guide-RMS gate (#142 /
+            # D-06) and `_record_frame` below.
+            guided = await self._frame_was_guided()
+            self._frame_guided = guided
             # the rejected original was NOT folded into the running median (only
             # ACCEPTED frames anchor it now), so let an accepted retake contribute
             # its single good sample — one logical frame, at most one median sample.
             accepted = self._check_quality(new_info)
             self._reporter_record(target, step, new_info, accepted=accepted)
             if accepted:
-                # This retake's OWN exposure (#134): the guider may have come
-                # back, or gone down, since the frame that was rejected.
                 self._record_frame(key, i, target, step, new_info,
-                                   guided=await self._frame_was_guided())
+                                   guided=guided)
                 return True
             # retaken frame still bad → discard and stop retaking this one.
             self._unlink_saved(new_info)
@@ -9277,6 +9350,17 @@ class SequenceEngine:
             else:
                 self._unsafe_streak = 0
                 self._safe_streak += 1
+            # (a) #193: this monitor exists and is connected, but it may not
+            # be reading clouds at all -- the SAFETY node can be scoped to
+            # "rain + wind + power" precisely so a CLOUD WATCH node carries
+            # the transient tier instead, and nothing enforces that the flow
+            # actually wires one. `monitor_reads_clouds` is what distinguishes
+            # "this rig already has a cloud source" from "it does not", so the
+            # frame-verdict fallback engages here exactly as it would with no
+            # monitor assigned at all, independently of whatever the reading
+            # above decided about rain/wind/power.
+            if not getattr(cfg.safety, "monitor_reads_clouds", True):
+                await self._monitor_lacks_cloud_source(target)
 
         # The mount limits — floor, horizon, no-go wedges, pier collision and
         # the zenith keep-out. Enforced on every slew independently of the
@@ -9588,6 +9672,60 @@ class SequenceEngine:
                     "the weather for this run. Assign a safety monitor, or turn safety "
                     "off so the run does not claim a guard it does not have.",
                     "safety")
+
+    async def _monitor_lacks_cloud_source(self, target: Target | None) -> None:
+        """#193: a safety monitor IS assigned and connected, but it does not
+        read clouds (``cfg.safety.monitor_reads_clouds`` False — a rig whose
+        monitor covers only rain, wind or power, e.g. the SAFETY node's "pair
+        with Cloud Watch" scope with no CLOUD WATCH actually wired into the
+        flow). ``_safety_gate`` already ran the monitor's own unsafe check for
+        whatever it DOES read; this supplies the one thing it structurally
+        cannot: a cloud verdict.
+
+        Mirrors ``_no_safety_source``'s frame-verdict fallback (same
+        simulated-frame guard, same re-entrancy guard against
+        ``_hold_for_clear``'s own loop, same target-None/day-darks handling,
+        same opt-out through ``sky_fallback_hold``) because the hazard is
+        identical — no source is watching the sky — for a different reason a
+        source is missing. Kept as its own function, with its own
+        once-per-run warning flag (``_warned_monitor_no_clouds``), rather than
+        folded into ``_no_safety_source``: that function's
+        ``require_safety_monitor`` branch and its wording are specifically
+        about an ABSENT monitor, and would misstate a rig that has one
+        assigned and connected.
+        """
+        cfg = self._cfg
+        simulated = getattr(self.hub, "mode", "") == "sim"
+        if not (cfg is not None and not simulated
+                and getattr(cfg.safety, "sky_fallback_hold", False)):
+            return
+        verdict = self._clouds.cloudy(time.time())
+        if verdict is True:
+            # See `_no_safety_source`'s identical guard: the hold's own probe
+            # loop re-enters this gate every pass, and answering a cloudy
+            # verdict it already owns with another hold recurses one stack
+            # frame per pass for as long as the sky stays shut.
+            if self._holding_for_clear:
+                return
+            if not self._warned_monitor_no_clouds:
+                self._warned_monitor_no_clouds = True
+                bus.log("warning",
+                        "the assigned safety monitor does not read clouds, so "
+                        "the sky verdict from the frames is standing in for "
+                        f"one — {self._clouds.describe(time.time())}", "safety")
+            # A HOLD NEEDS A TARGET (#221): see `_no_safety_source` for why.
+            if target is None:
+                if not self._day_darks_gate:
+                    self._note_hold_deferred()
+                return
+            await self._hold_for_clear(
+                "the assigned safety monitor does not read clouds and the "
+                "frames say the sky has closed in", target)
+            return
+        if target is None and self._hold_deferred is not None:
+            # The sky no longer reads cloudy, so the wait's note is over.
+            self._hold_deferred = None
+            self._set_state()
 
     #: What ``sky.hold_deferred`` says while a cloudy sky has no target to hold
     #: for (`_note_hold_deferred`). Words only: it is published.
@@ -15067,9 +15205,17 @@ class SequenceEngine:
         # a recovery line — so recording it there was a measurement with no
         # consumer, which reads as coverage that is not there. Here it is
         # visible to the person reading the night log, which is who wants it.
+        # #200: this used to say "the target is re-centred" from the tracking
+        # readback alone, never from `found["centered"]` — the re-centre's own
+        # measurement, taken two lines above. A re-centre that missed then
+        # logged a claim of success immediately followed by
+        # `_do_tracking_recovery`'s own report of the miss, contradicting
+        # itself on consecutive lines.
+        centred_clause = ("and the target is re-centred" if found.get("centered")
+                           else "but the re-centre did not converge")
         bus.log("info",
                 f"{target.name}: recovered in {time.time() - _t0:.0f}s — the "
-                f"mount is tracking again and the target is re-centred",
+                f"mount is tracking again {centred_clause}",
                 "sequence")
         return True
 
@@ -15429,14 +15575,33 @@ class SequenceEngine:
                                    f"{self._policy.min_stars}", "sequence")
                 accepted = False
         if accepted and not calibration and self._policy.max_guide_rms > 0:
-            rms = self._guide_rms()
-            if rms is None and self._guiding_now():
-                self._warn_rms_unit_once()
-            if rms is not None and rms > self._policy.max_guide_rms:
+            # #142 / D-06: a frame shot while guiding had actually stopped
+            # carries no REAL rms -- the native guider reports a flat 0.00
+            # once it has stopped (not an unreadable value), which sails
+            # under any ceiling and reads as a perfectly guided frame. A
+            # ceiling this plan has set means every banked frame must
+            # actually have been guided, so this is rejected on that
+            # evidence alone, whatever number happens to be cached.
+            # ``self._frame_guided`` is None (not this gate's business, see
+            # its docstring) for a synthetic ``info`` built outside the real
+            # frame loop, which is every direct ``_check_quality(info)`` call
+            # the test suite makes -- so only a real capture that actually
+            # observed the guider stopped is held to the stricter rule.
+            if self._frame_guided is False:
                 self._rejected += 1
-                bus.log("warning", f'guide RMS {rms:.2f}" above ceiling '
-                                   f'{self._policy.max_guide_rms:.2f}"', "sequence")
+                bus.log("warning",
+                        "guide RMS ceiling is set, but this frame was shot "
+                        "with the guider stopped — rejected", "sequence")
                 accepted = False
+            else:
+                rms = self._guide_rms()
+                if rms is None and self._guiding_now():
+                    self._warn_rms_unit_once()
+                if rms is not None and rms > self._policy.max_guide_rms:
+                    self._rejected += 1
+                    bus.log("warning", f'guide RMS {rms:.2f}" above ceiling '
+                                       f'{self._policy.max_guide_rms:.2f}"', "sequence")
+                    accepted = False
         if accepted and not calibration and self._policy.max_eccentricity > 0:
             # TWO statistics, ONE dial: the median ceiling plus the
             # elongated-star fraction that catches a staircase whose truncated

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``compile._num`` reads float-shaped whole-number text as a number (#547).
 
 THE DEFECT. ``_num`` computed ``int(v) if float(v).is_integer() else

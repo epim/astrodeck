@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // slewStops.ts - the two ladders the mount sheet's tiles offer, and the one
 // sentence that says what the deadman costs at the top of the first (D-RIG-4).
 // Pure: no store, no fetch, no React.

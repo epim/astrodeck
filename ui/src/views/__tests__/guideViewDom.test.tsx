@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guideViewDom.test.tsx — the Guide view's controls, MOUNTED, against a rig that
 // is part-way through a start.
 //

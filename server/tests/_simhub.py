@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Shared sim_hub fixture: fresh Hub on the sim rig, isolated captures dir,
 isolated rotator config, and a forced SimSolver (no real ASTAP pickup).
 Used by test_rotate_to_pa.py and test_goto_rotation.py."""

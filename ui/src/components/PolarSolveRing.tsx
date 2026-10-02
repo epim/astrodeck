@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* PolarSolveRing — what the solve frame is doing RIGHT NOW, over the reticle.
 
    A TPPA solve is up to a second of shutter and then 5-15 s of ASTAP, during

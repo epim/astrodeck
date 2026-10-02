@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the Settings → Alerts pure logic (PRO-9 spec §3 task U2).
 //
 // There is no vitest/jest wired into this UI (build is `tsc -b && vite build`),

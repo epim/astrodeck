@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """goto_and_center + rotation: rotate-before-center order, degrade-on-failure,
 meridian-flip mod-180 no-op, sequence/route threading."""
 import pytest

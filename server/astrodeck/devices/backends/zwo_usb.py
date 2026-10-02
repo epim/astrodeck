@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ZWO USB accessories — native CAA (rotator) + EAF (focuser) over the SDK.
 
 One hostless backend, one session owning both SDK handles (sub-project C spec

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // A SATURATED FRAME MUST NOT BE TOLD TO LENGTHEN ITS EXPOSURE.
 //
 // FocusVerdict computes `clipped` and then returns from the `fewStars` branch

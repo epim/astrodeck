@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """W3.7 MOTION SERIALIZATION invariant (owner-pinned).
 
 The single mount has ONE motion authority. These tests prove the two halves of

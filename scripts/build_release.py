@@ -1,43 +1,25 @@
 #!/usr/bin/env python3
-"""Assemble a release bundle: server source + ui/dist + optional vendored assets
-+ manifest -> ``.tar.gz``.
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
+"""Assemble a platform-independent source release with a prebuilt UI.
 
-    python scripts/build_release.py --version 0.2.0 --out dist \
-        --astap-dir release-assets/astap \
-        --survey-pack release-assets/dss2color
+    python scripts/build_release.py --version 0.3.39 --out dist \
+        --strict --allow-missing astap
 
-Layout inside the tarball (single top dir ``astrodeck-<version>/``):
+The archive contains server source, ui/dist, manifest.json and available native
+source/build tooling. It does not install a native runtime wheel during an
+application self-update. Build a matching wheel on the target platform with
+packaging/build_native.py, or use that platform's frozen executable.
 
-    server/astrodeck/...                            the package
-    server/astrodeck/vendor/astap/                  bundled ASTAP binary + D05 DB
-    server/astrodeck/catalog/_bundled_pack/dss2color/  baseline survey pack
-    server/pyproject.toml
-    ui/dist/...                                     the prebuilt SPA
-    manifest.json                    {name, version, built_at, contents, omitted}
+Strict builds require a built UI and ASTAP unless explicitly waived. ASTAP is
+optional only when the caller records --allow-missing astap; standalone solving
+then requires the operator's separate solver and star database. --astap-dir
+must have the executable and database side by side, as the runtime expects.
 
-The UI dist and BOTH vendored asset trees are OPTIONAL by default (a warning is
-printed and that asset is omitted) so the bundler can be smoke-tested without a
-node build or the ~150 MB of binaries; CI populates them before calling this.
-
-``--strict`` — what .github/workflows/release.yml passes — turns every one of
-those omissions into a failed build, INCLUDING an asset the command line never
-mentioned: #100 was not a flag that failed, it was a flag nobody passed. An
-omission has to be named (``--allow-missing astap``) to be allowed, so it is a
-decision at the call site and a line in the shipped ``manifest.json`` rather than
-something a user discovers after installing (see ``_ASSETS`` and ``build``).
-
-Producing the assets (separate, network-heavy — not this script's job):
-  * ASTAP: ``python scripts/fetch_astap.py --platform <plat> --out <dir>``, then
-    move ``<dir>/<plat>/astap_cli*`` UP beside the ``.290`` files before pointing
-    ``--astap-dir`` at ``<dir>``. That step is not optional and not cosmetic:
-    fetch_astap nests the binary per platform while the star DB lands flat, and
-    ``solve/astap.py`` reads ONE flat directory — so the fetched tree as-is has
-    no binary the runtime can see, and ``--strict`` says so rather than shipping
-    102 MB of database next to a solver nothing will run.
-  * Survey pack (order-3 baseline, ~45 MB):
-      python -m astrodeck.catalog.survey_pack fetch --order 3 --dest release-assets/dss2color
-
-Prints the tarball path on success.
+No DSS2 tiles are distributed. The obsolete --survey-pack input is refused for
+DSS2, including a tile tree already present under the package. Atlas can use its
+offline schematic sky, with personal survey downloads on the operator's machine.
+The shared packaging/distribution-policy.json controls vendor inclusion.
 """
 from __future__ import annotations
 
@@ -46,43 +28,29 @@ import datetime
 import json
 import shutil
 import tarfile
+import sys
+import subprocess
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
+from distribution_policy import load_policy, include_file, decision_records
 
 _IGNORE = shutil.ignore_patterns(
     "__pycache__", "*.pyc", "*.pyo", ".venv", "venv",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", "config",
 )
 
-#: Vendored directories whose BINARIES we may not redistribute (#199). The
-#: directory itself still ships — its LICENSE and README are the whole point,
-#: since they are what tell the operator what to fetch and on what terms — but
-#: the libraries do not.
-#:
-#: Player One's SDK licence grants use ("You can use our company's products and
-#: this SDK to develop any products without any restrictions") and contains no
-#: distribution verb anywhere. `vendor/playerone/README.md` asserted for weeks
-#: that it "permits redistribution"; it does not, and six binaries shipped on
-#: that reading.
-_UNSHIPPABLE_VENDOR_DIRS = frozenset({"playerone"})
-_LIBRARY_SUFFIXES = (".dll", ".so", ".dylib", ".lib", ".a")
-
-
-def _package_ignore(directory: str, names: list[str]) -> set[str]:
-    """``_IGNORE`` plus the vendored libraries we have no right to pass on.
-
-    A function rather than more ``ignore_patterns`` entries because the rule is
-    path-dependent: `.dll` is fine everywhere except inside a vendor directory
-    we are not licensed to redistribute, and ``ignore_patterns`` only sees
-    basenames."""
+def _package_ignore(directory: str, names: list[str], policy: dict | None = None) -> set[str]:
+    """Preserve docs while selecting libraries through the shared policy."""
+    policy = policy if policy is not None else load_policy()
     skip = set(_IGNORE(directory, names))
     parts = Path(directory).parts
-    if "vendor" in parts:
-        i = parts.index("vendor")
-        vendor_name = parts[i + 1] if i + 1 < len(parts) else ""
-        if vendor_name in _UNSHIPPABLE_VENDOR_DIRS:
-            skip |= {n for n in names
-                     if any(s in n.lower() for s in _LIBRARY_SUFFIXES)}
+    for marker in ("vendor", "catalog"):
+        if marker in parts:
+            base = "/".join(parts[parts.index(marker):])
+            skip.update(n for n in names if not include_file(base + "/" + n, "source-tar", policy))
     return skip
+
 
 # MPL-2.0 lets us redistribute the astap_cli binary inside the release as long as
 # we ship this notice (license text + source link) and the Gaia DB credit.
@@ -226,10 +194,26 @@ def build(version: str, repo_root: Path, out_dir: Path,
     # `_package_ignore`, not `_IGNORE`: it also drops the vendored libraries we
     # are not licensed to redistribute (#199). Their LICENSE and README still
     # ship — they are what tell the operator what to fetch and on what terms.
-    shutil.copytree(srv / "astrodeck", pkg_root, ignore=_package_ignore)
+    policy = load_policy(repo_root if (repo_root / "packaging/distribution-policy.json").is_file() else Path(__file__).resolve().parents[1])
+    shutil.copytree(srv / "astrodeck", pkg_root,
+                    ignore=lambda directory, names: _package_ignore(directory, names, policy))
     shutil.copy2(srv / "pyproject.toml", staging / "server" / "pyproject.toml")
 
     contents = ["server"]
+    # Include the policy beside source installs and the native rebuild route.
+    for relative in ("packaging/distribution-policy.json", "packaging/distribution_policy.py",
+                     "packaging/build_native.py", "packaging/native_probe.py",
+                     "LICENSE", "THIRD-PARTY-NOTICES.md", "tools/licence_texts/mpl-2.0.txt",
+                     "tools/licence_texts/apache-2.0.txt"):
+        source = repo_root / relative
+        if source.is_file():
+            dest = staging / relative
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, dest)
+    if (repo_root / "native/Cargo.toml").is_file():
+        shutil.copytree(repo_root / "native", staging / "native",
+                        ignore=shutil.ignore_patterns("target", ".venv", "__pycache__", "*.pyc"))
+        contents.append("native source (requires a platform build; not installed by self-update)")
 
     # Missing assets are collected and decided ONCE, at the end: one build names
     # every absence, because one rebuild per discovery is how a release takes an
@@ -293,11 +277,18 @@ def build(version: str, repo_root: Path, out_dir: Path,
                 "you mean to leave out (--allow-missing <asset>) so the omission "
                 "ships in the manifest instead of being discovered on the box.")
 
+    source_commit = None
+    if (repo_root / ".git").exists():
+        source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
+    elif (repo_root / "manifest.json").is_file():
+        source_commit = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8")).get("source_commit")
     manifest = {
         "name": "astrodeck",
+        "source_commit": source_commit,
         "version": version,
         "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "contents": contents,
+        "distribution_policy": decision_records(policy, "source-tar"),
         # What this release does NOT have, and what that costs. 0.2.18's only
         # record of its missing survey pack was a line in a build log nobody
         # read; a manifest travels with the bundle to the box that has the

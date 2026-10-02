@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // WP-20 / #144: the default slew-rate ladder gains a rung at the driver's
 // own ceiling (`Telescope.max_rate_deg_s`), instead of topping out forever at
 // the 0.5 deg/s stop that shipped before any mount could say how fast it

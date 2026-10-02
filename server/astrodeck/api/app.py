@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """FastAPI application: REST command surface + WebSocket event stream.
 
 Quick queries answer inline. Long operations (slews, autofocus, sequences,
@@ -1360,10 +1362,10 @@ def _why_dormant(session: Session,
 
     THE REPORT'S OWN WORD, VERBATIM, WHEN IT RECORDED ONE. Every ending the
     engine reaches in-process stamps the report through
-    ``_finalize_report``: "aborted" for a STOP, "incomplete", "dawn_cutoff",
-    "error", "unsafe" and the rest. Until #487 the route carried none of
-    them, and the card said "The server restarted" after every one,
-    including an operator's STOP.
+    ``_finalize_report``: "aborted" for a STOP, "shutdown" for a polite
+    server stop, "incomplete", "dawn_cutoff", "error", "unsafe" and the
+    rest. Until #487 the route carried none of them, and the card said "The
+    server restarted" after every one, including an operator's STOP.
 
     ``RESTART_END_REASON`` FOR THE EVIDENCE A RESTART LEAVES, and only for
     it. A process that stops under a run (a power cut, a crash, a kill by
@@ -1377,12 +1379,15 @@ def _why_dormant(session: Session,
     is no evidence of a restart, and neither is a report that is missing or
     unreadable: those answer None, and the card then states no cause.
 
-    A POLITE STOP OF THE SERVER IS NOT TOLD FROM A STOP. A teardown that
-    cancels the run task (Ctrl+C, a service stop) lands on the engine's
-    ``except CancelledError`` arm and finalizes "aborted", as STOP does;
-    only STOP disarms the session (``_finalize_report``, keyed on
-    ``_aborting``), and nothing records which it was, so both read
-    "aborted" here (#565)."""
+    A POLITE STOP OF THE SERVER IS TOLD FROM A STOP (#565, fixed). A
+    teardown that cancels the run task (Ctrl+C, a service stop) lands on
+    the engine's ``except CancelledError`` arm too, but that arm now
+    finalizes "shutdown" there and "aborted" only when the cancel came
+    through ``abort()`` (keyed on ``_aborting``, same as the disarm in
+    ``_finalize_report``). This function reads whichever word the report
+    recorded, verbatim, so the card can tell the two apart without asking
+    this function to re-derive anything: a hard kill (no ending recorded
+    at all) still falls through to ``RESTART_END_REASON`` below."""
     if last is None:
         return None
     if isinstance(last.end_reason, str) and last.end_reason:
@@ -7253,111 +7258,166 @@ def create_app(*, bind_host: str | None = None,
                dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)
     async def patch_session(session_id: str, body: SessionPatchBody):
-        try:
-            s = await asyncio.to_thread(session_store.load, session_id)
-        except KeyError:
-            raise HTTPException(404, "session not found")
-        merge = None
-        if body.plan is not None:
-            # id-safe plan edit (spec §4): DORMANT only; running never editable.
-            if s.status != "dormant":
-                raise HTTPException(409, "plan edits require a dormant session")
-            # The same kept/new/dropped rule Run CONTINUE applies, from one
-            # function so the two cannot drift. A PATCH reports and never
-            # refuses; the dropped-steps 409 is CONTINUE's alone.
-            merge = plan_replace_report(s, body.plan).merge()
-            s.plan = body.plan
-            s.name = body.plan.name or s.name
-            # A PLAN NO FLOW SAVE PRODUCED (#473): the session no longer
-            # holds the version ``plan_saved_ts`` names, and nothing here
-            # knows when this one was saved, so it says none rather than
-            # let the editor date a replay by the version it replaced.
-            s.plan_saved_ts = None
-        if body.status is not None:
-            if body.status != "abandoned":
-                raise HTTPException(422, "status can only be set to 'abandoned'")
-            if s.status == "active":
-                raise HTTPException(409, "cannot abandon a running session")
-            s.status = "abandoned"
-            s.auto_resume = False
-        disarmed: list[dict] = []
-        if body.auto_resume is not None:
-            # ARMING AN ACTIVE SESSION IS THE POINT, NOT AN EDGE CASE.
-            #
-            # This was dormant-only, written for the feature's original purpose
-            # ("I have stopped for tonight, resume at dusk tomorrow"), where
-            # dormant is true by definition. But a restart destroys an ACTIVE
-            # session: boot_sweep then finds it dormant and UNARMED, and nobody
-            # is awake at 2am to arm it. So the run that most needed to come
-            # back was the exact run that could not be told to.
-            #
-            # Demonstrated on the rig 2026-08-02 by rebooting the observatory PC
-            # mid-sequence: the box auto-logged in, the server returned, every
-            # device reconnected and the boot sweep correctly rescued the run --
-            # which then sat dormant and idle all night, because of this line.
-            #
-            # 'complete'/'abandoned' stay refused: there is nothing left to resume.
-            if body.auto_resume and s.status not in ("dormant", "active"):
-                raise HTTPException(
-                    409, "auto-resume arms only dormant or active sessions")
-            if body.auto_resume:
-                # server-enforced singleton (spec §5): arming here disarms others.
-                for other in await asyncio.to_thread(session_store.load_all):
-                    if other.id != s.id and other.auto_resume:
-                        other.auto_resume = False
-                        # A disarm like any other, so it stops a ladder that
-                        # is recovering ``other`` (#220, below); the next
-                        # tick then recovers the session armed here.
-                        resume_arm.stop_recovery(
-                            "another session was armed in its place while "
-                            "the recovery ladder was working, so the ladder "
-                            "stopped before its next step",
-                            session_id=other.id)
-                        await asyncio.to_thread(session_store.save, other)
-                        disarmed.append({"id": other.id,
-                                         "name": other.name or other.plan.name})
-            s.auto_resume = body.auto_resume
-        if disarmed:
-            # NAMED, NOT SILENT (#595, backlog ruling D-04, owner-approved
-            # 2026-09-30). #595's own text: "the same applies to PATCH
-            # auto_resume" -- this route runs its own copy of the singleton
-            # `engine.start` disarms with (above), so it owes the same
-            # warning and the same `disarmed` field in its response, not
-            # left for a caller to notice only by re-reading /api/sessions.
-            names = ", ".join(d["name"] or d["id"] for d in disarmed)
-            bus.log("warning",
-                    f"arming '{s.name or s.plan.name or s.id}' disarmed "
-                    f"auto-resume for: {names}",
-                    "sequence")
-        # A DISARM STOPS THE LADDER RECOVERING THIS SESSION (#220). It used to
-        # be read only after the ladder, by ResumeArm's re-check, so the mount
-        # was solved and re-centred, minutes of motion, for a session the
-        # operator had just withdrawn. ``stop_recovery`` names this session,
-        # so disarming any OTHER session leaves a running ladder alone, and
-        # it is called after every refusal above (a refused request changes
-        # nothing, the ladder included) and before the save's await, so the
-        # ladder cannot take a step between the request and the stop. Not an
-        # abort: the session was disarmed by this request's own write, and
-        # nothing else about it changes.
-        if body.status == "abandoned" or body.auto_resume is False:
-            resume_arm.stop_recovery(
-                ("it was abandoned" if body.status == "abandoned"
-                 else "it was disarmed")
-                + " while the recovery ladder was working, so the ladder "
-                  "stopped before its next step",
-                session_id=s.id)
-        await asyncio.to_thread(session_store.save, s)
-        out = {"id": s.id, "status": s.status, "auto_resume": s.auto_resume,
-               "remaining": s.remaining()}
-        if merge is not None:
-            out["merge"] = merge
-        if disarmed:
-            # #595, D-04: present only when this PATCH actually disarmed
-            # another session, exactly as engine.start's own callers carry
-            # it (above), so a caller that arms a session here is told the
-            # same way a fresh run or CONTINUE would tell it.
-            out["disarmed"] = disarmed
-        return out
+        """Load, check, mutate and save, ALL IN ONE LOCKED SECTION ON A
+        WORKER THREAD (#167).
+
+        It used to load, check and save through separate ``asyncio.to_thread``
+        calls, each its own await, with nothing holding the gap between them.
+        ResumeArm starts a dormant session on its own tick, inside its own
+        ``session_store.write_locked()`` section (``ResumeArm.tick``), and a
+        start landing in the gap between this route's load and its save left
+        the save overwriting a run that had JUST begun: the frames it had
+        already banked, and its ``active`` status, both went back to whatever
+        this route's stale copy said. The request still answered 200, so
+        nothing said the write had been lost.
+
+        ONE SECTION, UNDER THE STORE'S LOCK, AND ON A WORKER THREAD rather
+        than the event loop. A session can hold thousands of frames
+        (``session_text``, #514), and reading and writing one is real file
+        I/O; Run CONTINUE's own locked section (``run_flow``) can afford to
+        run straight on the loop because it never touches a ledger that
+        size, but a PATCH does. ``write_locked()``'s ``RLock`` is what closes
+        the race either way: whichever side — this call, or ResumeArm's own
+        section — asks for the lock first runs to completion, load through
+        save, before the other is let in, so neither can read a copy the
+        other is mid-way through changing. See ``SessionStore.write_locked``.
+
+        Raising ``HTTPException`` from ``_locked`` crosses ``asyncio.
+        to_thread`` back to this await exactly as it would from here
+        directly, so every refusal below reads the same as it always did.
+        """
+        def _locked() -> dict:
+            with session_store.write_locked():
+                try:
+                    s = session_store.load(session_id)
+                except KeyError:
+                    raise HTTPException(404, "session not found")
+                merge = None
+                if body.plan is not None:
+                    # id-safe plan edit (spec §4): DORMANT only; running never
+                    # editable. Read fresh, under the lock, so a start that
+                    # landed since the last time anybody looked is the status
+                    # this refusal sees, not one read before the lock.
+                    if s.status != "dormant":
+                        raise HTTPException(
+                            409, "plan edits require a dormant session")
+                    # The same kept/new/dropped rule Run CONTINUE applies,
+                    # from one function so the two cannot drift. A PATCH
+                    # reports and never refuses; the dropped-steps 409 is
+                    # CONTINUE's alone.
+                    merge = plan_replace_report(s, body.plan).merge()
+                    s.plan = body.plan
+                    s.name = body.plan.name or s.name
+                    # A PLAN NO FLOW SAVE PRODUCED (#473): the session no
+                    # longer holds the version ``plan_saved_ts`` names, and
+                    # nothing here knows when this one was saved, so it says
+                    # none rather than let the editor date a replay by the
+                    # version it replaced.
+                    s.plan_saved_ts = None
+                if body.status is not None:
+                    if body.status != "abandoned":
+                        raise HTTPException(
+                            422, "status can only be set to 'abandoned'")
+                    if s.status == "active":
+                        raise HTTPException(
+                            409, "cannot abandon a running session")
+                    s.status = "abandoned"
+                    s.auto_resume = False
+                disarmed: list[dict] = []
+                if body.auto_resume is not None:
+                    # ARMING AN ACTIVE SESSION IS THE POINT, NOT AN EDGE CASE.
+                    #
+                    # This was dormant-only, written for the feature's
+                    # original purpose ("I have stopped for tonight, resume
+                    # at dusk tomorrow"), where dormant is true by
+                    # definition. But a restart destroys an ACTIVE session:
+                    # boot_sweep then finds it dormant and UNARMED, and
+                    # nobody is awake at 2am to arm it. So the run that most
+                    # needed to come back was the exact run that could not be
+                    # told to.
+                    #
+                    # Demonstrated on the rig 2026-08-02 by rebooting the
+                    # observatory PC mid-sequence: the box auto-logged in,
+                    # the server returned, every device reconnected and the
+                    # boot sweep correctly rescued the run -- which then sat
+                    # dormant and idle all night, because of this line.
+                    #
+                    # 'complete'/'abandoned' stay refused: there is nothing
+                    # left to resume.
+                    if body.auto_resume and s.status not in ("dormant",
+                                                             "active"):
+                        raise HTTPException(
+                            409,
+                            "auto-resume arms only dormant or active "
+                            "sessions")
+                    if body.auto_resume:
+                        # server-enforced singleton (spec §5): arming here
+                        # disarms others, read fresh under the same lock this
+                        # whole section holds, so a session armed by another
+                        # request in the gap cannot survive this one's write.
+                        for other in session_store.load_all():
+                            if other.id != s.id and other.auto_resume:
+                                other.auto_resume = False
+                                # A disarm like any other, so it stops a
+                                # ladder that is recovering ``other`` (#220,
+                                # below); the next tick then recovers the
+                                # session armed here.
+                                resume_arm.stop_recovery(
+                                    "another session was armed in its place "
+                                    "while the recovery ladder was working, "
+                                    "so the ladder stopped before its next "
+                                    "step",
+                                    session_id=other.id)
+                                session_store.save(other)
+                                disarmed.append(
+                                    {"id": other.id,
+                                     "name": other.name or other.plan.name})
+                    s.auto_resume = body.auto_resume
+                if disarmed:
+                    # NAMED, NOT SILENT (#595, backlog ruling D-04,
+                    # owner-approved 2026-09-30). #595's own text: "the same
+                    # applies to PATCH auto_resume" -- this route runs its
+                    # own copy of the singleton `engine.start` disarms with
+                    # (above), so it owes the same warning and the same
+                    # `disarmed` field in its response, not left for a
+                    # caller to notice only by re-reading /api/sessions.
+                    names = ", ".join(d["name"] or d["id"] for d in disarmed)
+                    bus.log("warning",
+                            f"arming '{s.name or s.plan.name or s.id}' "
+                            f"disarmed auto-resume for: {names}",
+                            "sequence")
+                # A DISARM STOPS THE LADDER RECOVERING THIS SESSION (#220).
+                # It used to be read only after the ladder, by ResumeArm's
+                # re-check, so the mount was solved and re-centred, minutes
+                # of motion, for a session the operator had just withdrawn.
+                # ``stop_recovery`` names this session, so disarming any
+                # OTHER session leaves a running ladder alone, and it is
+                # called after every refusal above (a refused request
+                # changes nothing, the ladder included) and before the save,
+                # inside the same locked section, so the ladder cannot take
+                # a step between the request and the stop.
+                if body.status == "abandoned" or body.auto_resume is False:
+                    resume_arm.stop_recovery(
+                        ("it was abandoned" if body.status == "abandoned"
+                         else "it was disarmed")
+                        + " while the recovery ladder was working, so the "
+                          "ladder stopped before its next step",
+                        session_id=s.id)
+                session_store.save(s)
+                out = {"id": s.id, "status": s.status,
+                       "auto_resume": s.auto_resume,
+                       "remaining": s.remaining()}
+                if merge is not None:
+                    out["merge"] = merge
+                if disarmed:
+                    # #595, D-04: present only when this PATCH actually
+                    # disarmed another session, exactly as engine.start's own
+                    # callers carry it (above), so a caller that arms a
+                    # session here is told the same way a fresh run or
+                    # CONTINUE would tell it.
+                    out["disarmed"] = disarmed
+                return out
+        return await asyncio.to_thread(_locked)
 
     @app.patch("/api/sessions/{session_id}/frames/{frame_id}",
                dependencies=[Depends(require(CAP_CONTROL_MOUNT))])

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A saved frame says which way the telescope was facing (#23).
 
 Altitude per frame is what separates a tree, a cloud bank and plain extinction

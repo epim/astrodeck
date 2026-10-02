@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Small asyncio helpers shared across the server.
 
 Only what more than one module needs and asyncio does not already say in one

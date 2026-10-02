@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A HOP DOES NOT MOVE THE FOCUSER, SO A MOSAIC PANEL REUSES A GOOD FOCUS
 (#189 U-05, spec 5.6 step 6, A.3, risk 15, section 8 S1 item 5).
 

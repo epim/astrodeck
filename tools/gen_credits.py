@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Generate the credits data the UI ships, FROM THE REAL MANIFESTS.
 
     python tools/gen_credits.py            # write ui/src/credits.generated.json
@@ -365,6 +367,26 @@ def collect_python(pool: TextPool) -> list[Entry]:
 # npm
 # ---------------------------------------------------------------------------
 
+def _require_node_modules() -> None:
+    """Refuse, before any collector runs, if ``ui/node_modules`` is absent.
+
+    collect_npm() below reads the package LIST from ``ui/package-lock.json``,
+    which exists whether or not dependencies are installed -- so a missing
+    ``node_modules`` does not make the npm group empty, it makes it WRONG:
+    every per-package licence text silently disappears (``pkg_dir.is_dir()``
+    is false for each) while the entry still claims "Upstream ships no
+    licence file in the package", which is not true -- the package was simply
+    never there to read. A fresh clone, a Python-only CI job, or a wave
+    worktree (``ui/node_modules`` arrives there only as a junction that
+    workflow tooling sets up) would otherwise launder a missing dependency
+    tree into a fabricated licence claim, and silently: nothing else in the
+    output says so. Checked first, ahead of every collector, so both
+    ``--check`` and a real regeneration refuse the same way. See issue #642.
+    """
+    if not (REPO / "ui" / "node_modules").is_dir():
+        raise Fatal("ui/node_modules is missing: run npm ci in ui/ first")
+
+
 def collect_npm(pool: TextPool) -> list[Entry]:
     lock = json.loads(_read_text(REPO / "ui" / "package-lock.json"))
     node_modules = REPO / "ui"
@@ -619,6 +641,7 @@ def input_fingerprints() -> dict[str, str]:
 
 
 def build() -> dict:
+    _require_node_modules()
     pool = TextPool()
     entries: list[Entry] = []
     entries += collect_python(pool)
@@ -652,6 +675,7 @@ def build() -> dict:
             "name": "AstroDeck",
             "version": pyproject["project"]["version"],
             "spdx": "Apache-2.0",
+            "copyright": "Copyright (c) 2026 James Penick",
         },
         "scope": (
             "Declared dependencies, observed artifact subcomponents, external "

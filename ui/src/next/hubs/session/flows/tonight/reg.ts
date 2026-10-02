@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tonight/reg.ts - the registry ENTRY for this area's sheet, and nothing else
 // (wave R7 follow-up T-R7-21a item 16).
 //

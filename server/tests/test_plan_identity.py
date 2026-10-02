@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Plan identity at the start paths (#156; spec 3.5, 6.13, S0 item 4).
 
 The session ledger counts frames by step id alone (``Session.accepted_by_step``)

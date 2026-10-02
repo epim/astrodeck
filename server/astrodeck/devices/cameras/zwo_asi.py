@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ZWO ASI camera adapter — maps the ASICamera2 SDK onto the CameraAdapter waist.
 On this rig the ASI220MM is the GUIDE camera (uncooled mono, no read modes); the
 same adapter serves an imaging ASI just as well. Vendor-specific logic lives here

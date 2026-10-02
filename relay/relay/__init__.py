@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """AstroDeck remote-access RELAY service (standalone, host-agnostic).
 
 A small public service the home "scope" dials OUTBOUND over ONE persistent WSS.

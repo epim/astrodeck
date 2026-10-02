@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureDom.test.tsx — CaptureView MOUNTED, driven by status frames.
 //
 //   Run directly:  npx tsx src/views/__tests__/captureDom.test.tsx

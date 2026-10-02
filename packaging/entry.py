@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Entry point for the single-file build.
 
 Not a copy of ``astrodeck.__main__`` — it defers to it, so the CLI can never
@@ -39,6 +41,14 @@ def main() -> None:
     # PyInstaller + multiprocessing: without this, a child process re-runs the
     # bootloader and starts a SECOND server instead of the worker it meant to.
     multiprocessing.freeze_support()
+
+    # Packaging proof must precede default paths, private-tree setup, and every
+    # application import. It does no server/device/config work, even elevated.
+    if "--packaging-probe" in sys.argv[1:]:
+        if sys.argv[1:] != ["--packaging-probe"]:
+            raise SystemExit("--packaging-probe accepts no other arguments")
+        from native_probe import main as native_probe
+        raise SystemExit(native_probe())
 
     state = default_state_dir()
     # Only fill these in when the user has not. An explicit env var, a service

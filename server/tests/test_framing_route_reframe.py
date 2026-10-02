@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``POST /api/framing/mosaic`` answers ``reframe`` when it is given an anchor
 (#189 Revision 2 ruling 3; spec 2.5 and 3.3).
 

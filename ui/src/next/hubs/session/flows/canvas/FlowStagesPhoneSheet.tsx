@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowStagesPhoneSheet.tsx - the phone's whole relationship with a flow's
 // graph (wave R7 parity row A24, plan section 4).
 //
@@ -497,7 +499,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   const canViewSiteDerived = useCapability("view.site_derived");
   const phone = useBreakpoint() === "phone";
   const {
-    running, reason: hookRunReason, explain, act, copy, startOver,
+    running, reason: hookRunReason, explain, act, copy, startOver, stopsOnPress,
   } = useFlowRunControls();
 
   const openId = record?.id ?? null;
@@ -640,10 +642,11 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
             lockedReason={runReason}
             onExplain={explain}
             // The toolbar's own arm (#474): CONFIRM and the copy's verb with
-            // its night and counts, and none for STOP, a plain single tap,
-            // since emergency motion stops are never armed, held or
-            // confirmed.
-            arm={runArm(copy)}
+            // its night and counts, and none for a press that really stops
+            // (`stopsOnPress`, #647) - a plain single tap, since emergency
+            // motion stops are never armed, held or confirmed. Gated on
+            // `stopsOnPress`, not `copy.verb`: see `runArm`'s own doc.
+            arm={runArm(copy, stopsOnPress)}
             onPress={act}
           >
             <RunCopyWords copy={copy} />

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Session stack core: one running mean per filter, composited into colour.
 
 The composite is the only place in the app where several filters are shown as

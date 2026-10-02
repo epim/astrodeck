@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { ReactNode } from "react";
 
 /** Keep the active tool mounted when the overview covers it. Local form drafts,

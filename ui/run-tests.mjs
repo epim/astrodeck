@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Run every UI test file and fail the process if any assertion failed.
 //
 //   npm test
@@ -115,6 +117,25 @@ export function computeOk({ counts, byExit, err, timedOut }) {
   return (counts !== null && counts.failed === 0) || byExit;
 }
 
+/** On a timeout, whether the file's own cases had already finished.
+ *
+ *  Issue #614: flowInspectorNotes.test.tsx printed its "7/7 passed" tally and
+ *  then the child never exited, on a loaded CI runner. A kill that lands AFTER
+ *  a file's tally (or throw-on-failure completion phrase) means whatever hung
+ *  is in code that runs after the file's own cases — this runner's `runOne`
+ *  has nothing left to do but `await import()` itself resolving and call
+ *  `process.exit()`, so that import is what never returned. A kill with no
+ *  tally at all hung somewhere inside the cases, before the file ever got to
+ *  summarise them — a different bug shape, and worth telling apart on sight
+ *  rather than re-deriving from the raw output every time. Exported so this
+ *  is a pure-function unit test on captured output, not a fixture file that
+ *  has to actually survive TIMEOUT_MS to prove the message is right. */
+export function timeoutPhase(output) {
+  return (parseCounts(output) !== null || assertionStyle(output))
+    ? "after its own tally -- the default export never resolved"
+    : "during its test cases -- no tally was ever printed";
+}
+
 export function runOne(file) {
   // The child imports the file, which runs its assertions, then reports the
   // file's own exported `result` when it has one.
@@ -221,7 +242,8 @@ async function main() {
     passed += r.counts?.passed ?? 0;
     failed += r.counts?.failed ?? 0;
     if (!r.ok) {
-      const why = r.timedOut ? `timed out after ${TIMEOUT_MS / 1000}s`
+      const why = r.timedOut
+        ? `timed out after ${TIMEOUT_MS / 1000}s (${timeoutPhase(r.output)})`
         : r.counts ? `${r.counts.failed} failed`
           : "no pass/fail tally in its output — cannot be scored";
       broken.push({ name: relative(ROOT, r.file), why, output: r.output });

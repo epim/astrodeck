@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The overlap budget for angle: meridian convergence and a fixed camera's
 angle error (#189; spec 2.4 ANGLE, A.1, A.2 and its Revision 1 combined rule).
 

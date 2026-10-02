@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 5: graceful resume semantics (sessions spec §4).
 
 Resume re-enters the FULL normal start path; _done seeds from the id-keyed

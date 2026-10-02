@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigRotatorDom.test.tsx - the ROTATOR sheet, MOUNTED (plan hub-rig.md D.2 and
 // wave-r7.md 3.E / T-R7-8; deviation E28).
 //

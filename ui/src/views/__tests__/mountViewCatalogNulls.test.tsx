@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mountViewCatalogNulls.test.tsx — the NGC 604 crash.
 //
 // GET /api/catalog?q=604 returns rows whose `mag` is null (NGC 604 and IC 1604

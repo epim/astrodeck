@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every imaging-camera plate solve records its sky angle and calibrates the
 rotator from it (owner request, 2026-09-23).
 

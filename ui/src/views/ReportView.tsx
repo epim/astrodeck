@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // views/ReportView.tsx — end-of-night session report viewer (report viewer
 // spec §3 Task 3). Thin render over the Task-1 tested `reportChart` helpers +
 // the existing api/graphs/ui primitives: a report picker, header block,

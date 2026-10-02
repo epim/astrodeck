@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Equipment hub: owns connected devices and rig-level operations.
 
 The hub is the single place that knows which physical device fills each role
@@ -280,6 +282,20 @@ ROTATE_MIN_GAIN_DEG = 0.5
 #: the flip turned the camera +0.5 degrees, and the loop said only that it was
 #: not converging; the line names the commanded and the solved numbers, so
 #: play or slip in the train is told apart from a sign or wrap error.
+#:
+#: NOT D-05's threshold. D-05 (backlog ruling, owner-approved 2026-09-30;
+#: #594) asks a stricter version of this same question -- 90%, refused
+#: outright -- but as the dedicated, once-a-night ``Hub.rotator_self_test``,
+#: not this per-attempt warning: this loop is bounded by its own convergence
+#: test a few lines below (``ROTATE_MIN_GAIN_DEG``) across up to
+#: ``max_attempts`` tries at an uncertain target, and a scripted correction
+#: that merely slow-converges (a real possibility the tests in
+#: test_rotate_to_pa_convergence.py and test_h4_rotator_backlash.py exercise
+#: on purpose) can legitimately under-follow one attempt without the whole
+#: rotation being untrustworthy. ``rotator_self_test`` commands one KNOWN
+#: step for the sole purpose of measuring the coupling, with nothing else
+#: (a retry, a target-seeking adjustment) able to blur the answer -- see its
+#: own ``ROTATOR_SELF_TEST_FOLLOW_FRACTION``.
 ROTATE_FOLLOW_FRACTION = 0.5
 
 #: The least mechanical OR sky travel ``learn_rotator_sign`` (R-4, #145) will
@@ -290,6 +306,24 @@ ROTATE_FOLLOW_FRACTION = 0.5
 #: mis-sizing it (2026-08-08). Well under the default 2° step, so a healthy
 #: rotator clears it with room to spare.
 ROTATOR_SIGN_MIN_DEG = 0.5
+
+#: The commanded step ``Hub.rotator_self_test`` uses (D-05, #594): large
+#: enough that solve noise (a few hundredths of a degree) and the measured
+#: reversal backlash (0.1-0.2°) cannot masquerade as a passing fraction the
+#: way they could near ``ROTATOR_SIGN_MIN_DEG``, and the size #594's own
+#: suggested fix names ("a rotator self-test that commands +/-20 deg").
+ROTATOR_SELF_TEST_STEP_DEG = 20.0
+
+#: D-05's own number (backlog ruling, owner-approved 2026-09-30; #594): a
+#: self-test step followed by less than this fraction FAILS it, which takes
+#: rotation off for the rest of the night (``Hub._rotation_trusted = False``,
+#: ``rotate_to_pa`` then refuses outright). 0.9, not ``ROTATE_FOLLOW_FRACTION``
+#: (0.5, the per-attempt warning's older, looser number) -- #594 measured the
+#: astrotown CAA's real coupling slipping to 0.03-0.15 of commanded on moves
+#: over a few degrees, so this is the number meant to catch exactly that,
+#: deliberately kept separate from the rotate loop's own in-flight check (see
+#: ``ROTATE_FOLLOW_FRACTION``'s docstring for why the two must not share one).
+ROTATOR_SELF_TEST_FOLLOW_FRACTION = 0.9
 
 #: Where every plate-solve frame is written, under ``CAPTURE_DIR`` (#532).
 #: The gallery and the calibration library both skip it by name.
@@ -901,6 +935,20 @@ class Hub:
         #: bring back different, unmeasured hardware (``_teardown``), and the
         #: simulator's own physics are a KNOWN +1, set once on ``connect_sim``.
         self._rotator_sky_sign: int | None = None
+        #: Whether ``Hub.rotator_self_test`` (D-05, backlog ruling, owner-
+        #: approved 2026-09-30; #594) found the camera follows the rotator:
+        #: True (passed), False (failed -- ``rotate_to_pa`` then refuses
+        #: outright, "rotation is off for the night" per D-05), or None when
+        #: no self-test has run yet THIS session. None does NOT refuse --
+        #: unlike ``_rotator_sky_sign``, D-05's self-test is required only
+        #: "before the first rotating mosaic", not before every rotation, so
+        #: a fresh connect (and every test that never calls it) must rotate
+        #: exactly as it always did; only a MEASURED failure gates anything.
+        #: Process memory only, like ``_rotator_sky_sign`` beside it: a
+        #: reconnect may bring back a DIFFERENT rotator, or the same one
+        #: re-coupled since the last self-test (#594's own hardware fix),
+        #: and nothing before this process started may be trusted either way.
+        self._rotation_trusted: bool | None = None
         #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
         #: ``from_mount_frame``. One entry, because a mount points at one place.
         self._precess_memo: tuple[tuple[float, float], float,
@@ -1654,6 +1702,11 @@ class Hub:
         # or re-declare the known simulator default (``connect_sim``) --
         # never carry a sign measured against hardware that is gone.
         self._rotator_sky_sign = None
+        # D-05 (#594): the same reasoning, for the same reason, beside it --
+        # a reconnect may bring back a rotator the night's self-test never
+        # saw (or one re-coupled since a failure), so neither a PASS nor a
+        # FAIL survives it.
+        self._rotation_trusted = None
         # Warm ramp: FINALIZE (cooler off), do not merely cancel. The devices are
         # about to be disconnected a few lines below, so a cancelled ramp would
         # leave the camera holding whatever mid-ramp setpoint it happened to be
@@ -2563,9 +2616,27 @@ class Hub:
         cone = getattr(safety, "solar_exclusion_deg", 30.0)
         if cone <= 0:
             return
-        from .catalog.coords import sun_radec
+        from .catalog.coords import angular_sep_deg, sun_radec
         sun_ra, sun_dec = sun_radec()
-        sep = _ang_sep_deg(ra_hours, dec_deg, sun_ra, sun_dec)
+        try:
+            sep = angular_sep_deg(ra_hours, dec_deg, sun_ra, sun_dec)
+        except ValueError:
+            # #324 follow-on (WP-45): a separation that cannot be measured
+            # (a non-finite target coordinate) must never read as "clear of
+            # the Sun" -- the old `_ang_sep_deg` clamped a NaN cosine to 0,
+            # which this guard would have read as sep=0.0, well inside any
+            # cone. REFUSE the slew instead, with a line that says why,
+            # rather than letting `angular_sep_deg`'s ValueError propagate
+            # as an uncaught exception.
+            bus.log("warning",
+                    f"sun-exclusion check: target position is not finite "
+                    f"(ra_hours={ra_hours!r}, dec_deg={dec_deg!r}); refusing "
+                    f"the slew rather than guessing it clear of the Sun",
+                    "mount")
+            raise DeviceError(
+                "target position could not be checked against the Sun "
+                "exclusion cone (non-finite coordinates); refusing the "
+                "slew") from None
         if sep < cone:
             raise DeviceError(
                 f"target is within {sep:.0f} deg of the Sun (exclusion "
@@ -3969,8 +4040,20 @@ class Hub:
 
     def _note_pointing(self, ra_hours: float | None, dec_deg: float | None) -> None:
         """Record the mount's own report, from a read somebody else already paid
-        for. Never triggers device I/O of its own."""
+        for. Never triggers device I/O of its own.
+
+        REFUSES a non-finite report (#324) the same way it already refuses a
+        missing one: a NaN or infinite RA/Dec recorded here would reach the
+        staleness check, the pointing-vs-plate disagreement note and the
+        pointing-derived preview (``_current_field_solve``, ``_field_block``,
+        ``_pointing_field``), none of which could measure anything against
+        it once ``angular_sep_deg`` stopped clamping a bad value to a
+        plausible 0.0 and started raising instead. Treating a garbled report
+        as "nothing to go on" keeps the last known-good pointing (or None)
+        rather than overwriting it with noise."""
         if ra_hours is None or dec_deg is None:
+            return
+        if not (math.isfinite(ra_hours) and math.isfinite(dec_deg)):
             return
         self._last_pointing = (float(ra_hours), float(dec_deg), time.time())
 
@@ -4023,7 +4106,19 @@ class Hub:
         from .catalog.coords import angular_sep_deg
 
         ra, dec, _at = self._last_pointing
-        moved = angular_sep_deg(fs.mount_ra, fs.mount_dec, ra, dec)
+        try:
+            moved = angular_sep_deg(fs.mount_ra, fs.mount_dec, ra, dec)
+        except ValueError:
+            # A non-finite mount report cannot be measured against -- and
+            # "cannot tell" must not read as "has not moved" (#324), the same
+            # direction a clamped 0.0 separation would have silently taken.
+            # _note_pointing already refuses a non-finite report at the door,
+            # so this is the defense for whatever reached ``fs.mount_ra``
+            # some other way.
+            self.invalidate_field_solve(
+                "the mount's last report is not a number, so the field "
+                "cannot be trusted as current")
+            return None
         if moved > self._field_stale_threshold_deg():
             self.invalidate_field_solve(
                 f"the mount has moved {moved:.2f}° since the last plate solve")
@@ -4163,8 +4258,18 @@ class Hub:
 
             ra, dec, _at = self._last_pointing
             c = frame["center"]
-            off = angular_sep_deg(ra, dec, c["ra_hours"], c["dec_deg"])
-            if off > self._field_stale_threshold_deg():
+            try:
+                off = angular_sep_deg(ra, dec, c["ra_hours"], c["dec_deg"])
+            except ValueError:
+                # Cannot be judged (#324): say nothing rather than invent a
+                # degree figure for a comparison that could not be made.
+                # _note_pointing already refuses a non-finite mount report
+                # and note_field_solve never adopts a frame whose own centre
+                # failed the same check (its ``objects_in_frame`` call raises
+                # the same way), so this is defense for the two together, not
+                # a path exercised by either alone today.
+                off = None
+            if off is not None and off > self._field_stale_threshold_deg():
                 block["pointing_disagrees_deg"] = round(off, 3)
         if preview_id is not None and fs.preview_id == preview_id:
             w = fs.wcs
@@ -6504,6 +6609,12 @@ class Hub:
             # light path.
             borrowed_slot = (await self._borrow_wheel_for_solve()
                              if borrow else None)
+            # Read while the solve filter is still loaded (#531): the wheel is
+            # back on the run's filter by the time a failed solve is judged
+            # for light (#264), so a capped optic on a narrowband frame must
+            # not be called NO_LIGHT. Only the imaging frame borrows the
+            # wheel, so only it has a filter worth naming here.
+            through = await self._narrowband_filter_loaded() if borrow else None
             try:
                 async with self.exposure_guard("guide-scope offset"):
                     frame = await device.expose(seconds, 200, 30,
@@ -6515,7 +6626,7 @@ class Hub:
                                            instrument=device.name)
             bus.log("info", f"guide-offset: solving {device.name} "
                             f"(fov hint {fov or 'auto'})…", "solve")
-            return tmp
+            return tmp, frame, through
 
         async def _solve_guide_frame(path):
             # THE GUIDE CAMERA'S SOLVE, kept apart from the main one so the
@@ -6529,8 +6640,8 @@ class Hub:
         # the position angle the offset is stored against, so a run that dies
         # after one solve has produced the more useful half.
         main_angle = await _sky_angle.exposure_context(self, cam)
-        main_path = await _expose(cam, exposure_s, "guide_offset_main",
-                                  main_fov, 2, borrow=True)
+        main_path, main_frame, main_through = await _expose(
+            cam, exposure_s, "guide_offset_main", main_fov, 2, borrow=True)
         try:
             main = await solver.solve(main_path, ra_hint=ra_hint,
                                       dec_hint=dec_hint, fov_deg_hint=main_fov)
@@ -6538,9 +6649,9 @@ class Hub:
             await _retire_solve_frame(main_path, "guide_offset_main")
         await _sky_angle.note_solved_rotation(
             self, main, source="guide-scope offset", context=main_angle)
-        guide_path = await _expose(guide_cam, guide_exposure_s,
-                                   "guide_offset_guide", guide_fov, 1,
-                                   borrow=False)
+        guide_path, _guide_frame, _guide_through = await _expose(
+            guide_cam, guide_exposure_s, "guide_offset_guide", guide_fov, 1,
+            borrow=False)
         try:
             guide = await _solve_guide_frame(guide_path)
         finally:
@@ -6558,8 +6669,29 @@ class Hub:
         if not (main.success and guide.success):
             out["offset"] = None
             which = "main" if not main.success else "guide"
-            out["reason"] = (f"the {which} frame did not solve, so there is no "
-                             f"pair to difference: {out[which]['message']}")
+            if which == "main":
+                # #264: the IMAGING frame's own failure is judged for light,
+                # like every other solve path that exposes its own frame
+                # (#251) -- a capped optic must not read as "Not enough
+                # stars." with no hint that no light reached the sensor. The
+                # measurement still never raises (callers collect a result
+                # from a lane, not an exception): the classifier's words go
+                # into this same "reason" field instead of main["message"].
+                from .solve import light as _light
+
+                err = await _light.failed_solve_error(
+                    main_frame, main,
+                    prefix="guide-scope offset: plate solve failed",
+                    hub=self, narrowband_filter=main_through)
+                out["reason"] = str(err)
+            else:
+                # THE GUIDE CAMERA'S FRAME IS NOT JUDGED: the dark library
+                # keys masters on readout, not camera, so there is no
+                # no-light reference for it (see NEVER_RAISES in
+                # test_failed_solve_says_no_light.py).
+                out["reason"] = (f"the {which} frame did not solve, so there "
+                                 f"is no pair to difference: "
+                                 f"{out[which]['message']}")
             # STORED AND PUBLISHED ON FAILURE TOO. Two solves take about forty
             # seconds, so this runs in a lane and the caller collects the
             # result later -- a failure that is not recorded is a button that
@@ -6959,6 +7091,143 @@ class Hub:
         return {"sign": sign, "mechanical_travel_deg": round(mech_travel, 2),
                 "sky_travel_deg": round(sky_travel, 2)}
 
+    async def rotator_self_test(self, step_deg: float = ROTATOR_SELF_TEST_STEP_DEG,
+                                exposure_s: float = 3.0) -> dict:
+        """D-05 (backlog ruling, owner-approved 2026-09-30; #594): once per
+        night, before the first rotating mosaic, command one KNOWN mechanical
+        step and solve before and after it, to measure whether the camera
+        actually follows the rotator. "A loose coupling reads as a healthy
+        rotator to everything except a plate solve" (the owner, #594) -- this
+        runs that plate solve deliberately, rather than waiting to find out
+        from a mosaic's panels.
+
+        PASS sets ``self._rotation_trusted = True`` and changes nothing else.
+        FAIL sets it ``False``, and every ``rotate_to_pa`` call after this
+        refuses outright (D-05: "rotation is off for the night") until the
+        next self-test passes -- a caller that still wants frames shoots them
+        at whatever fixed angle the camera already sits, by simply not asking
+        for a rotation, the same as any other target with no rotator.
+
+        A SEPARATE MEASUREMENT FROM THE PER-MOVE FOLLOW CHECK
+        (``_rotate_to_pa_attempts``'s own ``ROTATE_FOLLOW_FRACTION``, a
+        warning WP-32a already built), on purpose: that one guards a
+        correction toward an uncertain target through up to ``max_attempts``
+        retries, so a single under-followed attempt along the way is not
+        proof the coupling is bad -- the next attempt may converge anyway
+        (test_rotate_to_pa_convergence.py and test_h4_rotator_backlash.py
+        both script exactly that). This one commands a single KNOWN step for
+        the sole purpose of measuring the coupling, with nothing else -- a
+        retry, a target-seeking adjustment -- able to blur the result, which
+        is what lets it use D-05's stricter, refusing number
+        (``ROTATOR_SELF_TEST_FOLLOW_FRACTION``, 0.9) without that number
+        reaching into every ordinary rotation's in-flight retries. Both read
+        the same pure comparison (``rotation.follow_fraction``), just against
+        different thresholds for different questions.
+
+        Leaves the rotator wherever the second solve found it (``step_deg``
+        past where it started) -- like ``learn_rotator_sign``, this is a
+        calibration, not a framing command; the first real ``rotate_to_pa``
+        of the night moves it to wherever a panel needs anyway.
+
+        Raises DeviceError when either solve fails, or the rotator did not
+        move far enough to measure safely (the floor is
+        ``ROTATOR_SIGN_MIN_DEG`` -- the same number ``learn_rotator_sign``
+        uses, for the same reason: solve noise swamping too small a measured
+        step). A raised DeviceError leaves ``self._rotation_trusted``
+        UNCHANGED: a self-test that could not run said nothing about the
+        coupling, so it must not flip a prior PASS to untested or a prior
+        FAIL back to trusted."""
+        rot = self.require("rotator")
+        cam: Camera = self.require("camera")
+        from . import providers as _providers
+        solver = _providers.pick_solver(self)
+        await self.yield_camera_for("rotator self-test")
+        tel = self.devices.get("telescope")
+        ra_hint = dec_hint = None
+        if tel is not None and tel.connected:
+            with contextlib.suppress(Exception):
+                ra_hint, dec_hint = await tel.get_position()
+                if ra_hint is not None:
+                    ra_hint, dec_hint = await self.from_mount_frame(
+                        tel, ra_hint, dec_hint)
+
+        async def _solve_once() -> tuple[float, float]:
+            """One exposure + solve: (solved sky PA, mechanical angle read
+            right after) -- the same pair ``learn_rotator_sign`` and
+            ``_rotate_to_pa_attempts`` read."""
+            borrowed_slot = await self._borrow_wheel_for_solve()
+            try:
+                angle = await _sky_angle.exposure_context(self, cam)
+                through = await self._narrowband_filter_loaded()
+                async with self.exposure_guard("rotator self-test"):
+                    frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
+            self.last_frame = frame
+            await self._publish_preview(frame)
+            tmp = await _write_solve_frame(frame, "rotselftest",
+                                           ra_hours=ra_hint, dec_deg=dec_hint,
+                                           instrument=cam.name)
+            opt = self.effective_optics()
+            try:
+                result = await solver.solve(
+                    tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                    fov_deg_hint=opt["fov_h_deg"] or None)
+            finally:
+                await _retire_solve_frame(tmp, "rotselftest")
+            if not result.success:
+                from .solve import light as _light
+                raise await _light.failed_solve_error(
+                    frame, result,
+                    prefix="rotator self-test: plate solve failed",
+                    hub=self, narrowband_filter=through)
+            rec = await _sky_angle.note_solved_rotation(
+                self, result, source="rotator self-test", context=angle)
+            if rec is None:
+                raise DeviceError("rotator self-test: the solve reported "
+                                  "no usable position angle")
+            return rec["pa_deg"], float(await rot.get_mechanical_position())
+
+        sky0, mech0 = await _solve_once()
+        await rot.move_mechanical(_rotation.mod360(mech0 + step_deg))
+        sky1, mech1 = await _solve_once()
+
+        mech_travel = _rotation.mechanical_travel(mech0, mech1)
+        if abs(mech_travel) < ROTATOR_SIGN_MIN_DEG:
+            raise DeviceError(
+                f"rotator self-test: commanded {step_deg:g}° but the "
+                f"rotator only moved {mech_travel:+.2f}° mechanically -- "
+                f"too little to measure safely; check it is connected and "
+                f"free to turn")
+        # The signed-shortest-delta idiom ``_rotate_to_pa_attempts`` and
+        # ``learn_rotator_sign`` already use: a sky angle, not a mechanical
+        # one, so ``mechanical_travel`` (tied to the rotator's own range
+        # conventions) is the wrong reuse here.
+        sky_travel = ((sky1 - sky0 + 180.0) % 360.0) - 180.0
+        fraction = _rotation.follow_fraction(sky_travel, mech_travel)
+        passed = fraction >= ROTATOR_SELF_TEST_FOLLOW_FRACTION
+        self._rotation_trusted = passed
+        if passed:
+            bus.log("info",
+                    f"rotator self-test passed: the camera followed "
+                    f"{fraction:.0%} of the {mech_travel:+.2f}° commanded "
+                    f"move", "rotator")
+        else:
+            bus.log("warning",
+                    f"rotator self-test FAILED (D-05, #594): the camera "
+                    f"followed only {fraction:.0%} of the "
+                    f"{mech_travel:+.2f}° commanded move (sky "
+                    f"{sky_travel:+.2f}°); rotation is off for the night "
+                    f"and panels will be shot at a fixed angle until the "
+                    f"next self-test passes", "rotator")
+        bus.publish("rotator", action="self_test", passed=passed,
+                    fraction=round(fraction, 3),
+                    mechanical_travel_deg=round(mech_travel, 2),
+                    sky_travel_deg=round(sky_travel, 2))
+        return {"passed": passed, "fraction": round(fraction, 3),
+                "mechanical_travel_deg": round(mech_travel, 2),
+                "sky_travel_deg": round(sky_travel, 2)}
+
     async def rotate_to_pa(self, target_pa_deg: float,
                            exposure_s: float = 3.0,
                            max_attempts: int = 5) -> dict:
@@ -6966,7 +7235,9 @@ class Hub:
         enforce a sky position angle. Syncs the ROTATOR only (never the mount).
         The solver is resolved up front (motion-guarded — a sim solver can
         never drive a real rotator) and a solve failure raises DeviceError;
-        goto_and_center degrades it to rotation_skipped."""
+        goto_and_center degrades it to rotation_skipped. Refuses outright
+        while the sign is unmeasured (R-4, #145) or the nightly self-test has
+        FAILED (D-05, #594); see each check below for why."""
         rot = self.require("rotator")
         cam: Camera = self.require("camera")
         # R-4 (#145): refused OUTRIGHT, before any exposure, while the sign is
@@ -6981,6 +7252,22 @@ class Hub:
                 "rotation is refused — guessing could turn the camera the "
                 "wrong way (R-4, #145); run the sign calibration (two solves "
                 "around a small known move, see learn_rotator_sign) first")
+        # D-05 (backlog ruling, owner-approved 2026-09-30; #594): a self-test
+        # that has RUN and FAILED refuses every rotation outright, the same
+        # shape as the sign check above -- a loose coupling already measured
+        # bad does not get another chance per panel, it is off for the whole
+        # night until the next self-test passes (``rotator_self_test``). A
+        # self-test that has never run (``None``) does NOT refuse here: D-05
+        # requires it only "before the first rotating mosaic", not before
+        # every rotation, and a fresh connect must behave exactly as it did
+        # before D-05 -- the per-move follow check below is what catches a
+        # slipping camera on a call nobody self-tested first.
+        if self._rotation_trusted is False:
+            raise DeviceError(
+                "rotator: the nightly self-test found the camera does not "
+                "reliably follow the rotator (D-05, #594), so rotation is "
+                "refused for the rest of the night; panels should be shot "
+                "at a fixed angle until rotator_self_test passes again")
         from . import providers as _providers
         solver = _providers.pick_solver(self)
         rcfg = config_store.cfg().rotator
@@ -7110,9 +7397,14 @@ class Hub:
                 # convergence test and the not-converging abort below, so the
                 # line that tells play or slip in the train apart from a sign
                 # error is in the log before the abort that ends the loop.
+                # NOT D-05's refusal (see ``ROTATE_FOLLOW_FRACTION``'s
+                # docstring): this loop may legitimately under-follow one
+                # attempt of several while still converging overall, so this
+                # stays a warning, same as WP-32a left it. D-05's refusal is
+                # ``rotator_self_test``'s own, separate check, below.
                 pa_before, mech_before, commanded = last_move
                 turned = ((orientation - pa_before + 180.0) % 360.0) - 180.0
-                if abs(turned) < ROTATE_FOLLOW_FRACTION * abs(commanded):
+                if _rotation.follow_fraction(turned, commanded) < ROTATE_FOLLOW_FRACTION:
                     reported = ((float(mech) - mech_before + 180.0)
                                 % 360.0) - 180.0
                     bus.log("warning",
@@ -7550,7 +7842,29 @@ class Hub:
                         | ({"centring_solve_transient": True,
                             "solve_transient": True}
                            if isinstance(e, SolveFrameTransient) else {}))
-            err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
+            from .catalog.coords import angular_sep_deg
+            try:
+                err = angular_sep_deg(solved["ra_hours"], solved["dec_deg"],
+                                      ra_hours, dec_deg)
+            except ValueError:
+                # #324 follow-on (WP-45): a solve that comes back with a
+                # non-finite coordinate must never read as "on target" --
+                # the old `_ang_sep_deg` clamped a NaN cosine to a
+                # separation of 0.0, a plausible wrong answer that would
+                # have published "centered". Degrades the same way a plate
+                # solve failure does, just above (never hang, never
+                # propagate the exception): not converged, no number to
+                # report for this attempt.
+                bus.log("warning",
+                        f"centering attempt {attempt}: the solve returned a "
+                        f"non-finite position (ra_hours="
+                        f"{solved.get('ra_hours')!r}, dec_deg="
+                        f"{solved.get('dec_deg')!r}); treating this attempt "
+                        f"as not converged", "solve")
+                self.note_pointing_verified(
+                    False, reason=str("centering did not converge"))
+                return {"centered": False, "error_arcmin": None,
+                        "attempts": attempt, "solve_failed": True} | _rot_keys
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
                 bus.publish("mount", action="centered", error_arcmin=err * 60)
@@ -8643,15 +8957,6 @@ class Hub:
         except Exception:  # noqa: BLE001 — never break status over bookkeeping
             pass
         return out
-
-
-def _ang_sep_deg(ra1_h: float, dec1: float, ra2_h: float, dec2: float) -> float:
-    import math
-    ra1, ra2 = math.radians(ra1_h * 15), math.radians(ra2_h * 15)
-    d1, d2 = math.radians(dec1), math.radians(dec2)
-    cos_sep = (math.sin(d1) * math.sin(d2)
-               + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
-    return math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
 
 
 def _angle_apart_deg(a: float, b: float) -> float:

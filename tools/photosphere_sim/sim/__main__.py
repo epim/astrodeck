@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``python -m sim <command> ...``, from CONTRACT.md's Commands section.
 
 ``score`` writes ``report.html`` beside ``scores.json``; ``report`` re-renders

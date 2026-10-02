@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // WcsStampPanel.tsx — Settings → Connect: per-frame WCS solve + write-back.
 //
 // Progressive disclosure (spec §4.2): the novice surface is ONE off-by-default

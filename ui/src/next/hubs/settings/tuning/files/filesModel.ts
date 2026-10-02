@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filesModel.ts - the pure half of the four FILES-AND-STANDARDS editors (wave
 // R7, T-R7-13): file sync, file naming, the plate-solve stamp and the rig's
 // imaging standards.
@@ -17,7 +19,7 @@
 // copy of the naming renderer would be a second answer to "where will this
 // frame land".
 
-import { DEFAULT_TEMPLATE, renderTemplatePreview } from "../../../../../lib/naming";
+import { DEFAULT_TEMPLATE, PREVIEW_SAMPLE, renderTemplatePreview } from "../../../../../lib/naming";
 import type { StandardsConfig, SyncPushStatus } from "../../../../../types";
 
 // ---------------------------------------------------------------- copy rules
@@ -148,20 +150,19 @@ export const SYNC_SUBJECT = "changing file sync";
 export const PUSH_SUBJECT = "pushing frames now";
 
 // ---------------------------------------------------------------- F12 naming
-/** The values the preview substitutes. Verbatim from `NamingPanel.tsx:232` -
- *  a preview built from different sample values than the classic panel's would
- *  be a second answer to the same question. */
-export const NAMING_SAMPLE: Record<string, string> = {
-  TARGET: "M42", FRAMETYPE: "Light", FILTER: "Ha", DATE: "2026-07-23",
-  TIME: "213045", DATETIME: "2026-07-23_213045", NIGHT: "2026-07-23",
-  FRAMENR: "0001",
-};
-
 /** The advisory path a frame would land on. ADVISORY: the server's own
  *  `render_relative_path` is authoritative, and `lib/naming.ts` is the mirror
- *  that keeps this honest (its golden vectors are shared with the Python). */
+ *  that keeps this honest (its golden vectors are shared with the Python).
+ *
+ *  The sample values come from `lib/naming.ts`'s `PREVIEW_SAMPLE`, not a
+ *  second hand-copied table here - this file used to carry its own
+ *  `NAMING_SAMPLE` with no GAIN/EXPOSURE/BINNING/SENSORTEMP entries (#278
+ *  remainder), so the #/next naming editor's preview silently dropped those
+ *  four tokens even after WP-42 taught `lib/naming.ts` about them. Two
+ *  samples answering the same question is exactly how #278 happened in the
+ *  first place (see that file's own header comment on `PREVIEW_SAMPLE`). */
 export function namingPreview(template: string): string {
-  return `captures/${renderTemplatePreview(template || DEFAULT_TEMPLATE, NAMING_SAMPLE)}`;
+  return `captures/${renderTemplatePreview(template || DEFAULT_TEMPLATE, PREVIEW_SAMPLE)}`;
 }
 
 /** The text a token chip inserts, and what it prints. One function so the chip

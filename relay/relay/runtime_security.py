@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Fail-closed operating-system privilege checks for relay startup.
 
 This copy is intentionally component-local: the standalone relay image does not

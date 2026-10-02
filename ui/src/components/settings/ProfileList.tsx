@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ProfileList.tsx — profile management (W1.6). Lists saved profiles, shows which
 // is ACTIVE (and that the active one auto-connects on boot), and offers:
 //   Activate  → POST /api/profiles/{id}/activate (sets active AND connects; the
@@ -55,6 +57,9 @@ import {
 } from "../../lib/equipment";
 import { useCanConfigBackend } from "../../lib/caps";
 import { profileOverrideSummary } from "../../lib/effective";
+import {
+  forceActivateConfirm, isLaneConflict, isRunningConflict, sentenceFrom,
+} from "../../next/hubs/rig/profiles/profilesModel";
 
 const MODE_LABEL: Record<ProfileRow["mode"], string> = {
   alpaca: "Native / Alpaca",
@@ -109,6 +114,49 @@ export async function waitForProfileActive(
     if (rows.some((r) => r.id === id && r.active)) return rows;
   }
   return null;
+}
+
+/** What `onActivateFailed` should do for a given error and retry state,
+ *  decoupled from `confirmDialog`/`showToast` so the decision is testable
+ *  without mounting the DOM (#256). */
+export type ActivateFailureOutcome =
+  | { kind: "force"; confirm: ReturnType<typeof forceActivateConfirm> }
+  | { kind: "toast"; level: "warning" | "error"; message: string; verbatim?: boolean };
+
+/** The coded 409 is the sequence / capture-loop / polar guard, OR auto-resume's
+ *  recovery ladder re-centring the mount after a restart (#238) — and `force`
+ *  is what bypasses either (it stops the ladder and disarms that session, as
+ *  Abort does, before it tears the rig down). The dialog is worded from the
+ *  server's own detail (#256), so when the cause is the ladder it says plainly
+ *  that forcing turns that session's auto-resume off, instead of a fixed "a
+ *  connect or sequence is already running" that sends the operator looking for
+ *  a run the Monitor does not show. Offered once, never twice, or a server
+ *  that keeps saying "running" becomes a dialog loop.
+ *
+ *  Forced and STILL coded "running" is its own case (`wasForced` true): that
+ *  is `_wait_for_the_ladder` (app.py) raising because the ladder did not stop
+ *  within LADDER_STOP_WAIT_S, so NOTHING was torn down — the rig is untouched,
+ *  and the session's auto-resume is already off. Falling through to the lane
+ *  guard's "another profile connect is still running" told the operator
+ *  something false, since no connect was ever in flight. */
+export function activateFailureOutcome(e: unknown, wasForced: boolean): ActivateFailureOutcome {
+  if (isRunningConflict(e)) {
+    const detail = (e as ApiError).message;
+    if (!wasForced) return { kind: "force", confirm: forceActivateConfirm(detail) };
+    return { kind: "toast", level: "warning", message: sentenceFrom(detail), verbatim: true };
+  }
+  // The UNCODED 409 is `_spawn_connect`'s own lane guard ("'profile' is
+  // already running"), raised before `force` is even looked at — so a force
+  // retry there would 409 again, and the raw quoted lane name is not a
+  // sentence. Say what is happening and what to do about it.
+  if (isLaneConflict(e)) {
+    return {
+      kind: "toast",
+      level: "warning",
+      message: "Another profile connect is still running — wait for it to finish before switching again.",
+    };
+  }
+  return { kind: "toast", level: "error", message: e instanceof Error ? e.message : "activate failed" };
 }
 
 export default function ProfileList(): JSX.Element {
@@ -227,33 +275,13 @@ export default function ProfileList(): JSX.Element {
   };
 
   const onActivateFailed = async (e: unknown, row: ProfileRow, wasForced: boolean) => {
-    // The coded 409 is the sequence / capture-loop / polar guard, and `force`
-    // is exactly what bypasses it (it aborts the engine first) — so offer that,
-    // but never twice, or a server that keeps saying "running" becomes a dialog
-    // loop.
-    if (e instanceof ApiError && e.code === "running" && !wasForced) {
-      const ok = await confirmDialog({
-        title: "Rig is busy",
-        body: "A connect or sequence is already running. Force-activate this profile anyway?",
-        mode: "confirm",
-        tone: "danger",
-        confirmLabel: "Force activate",
-      });
+    const outcome = activateFailureOutcome(e, wasForced);
+    if (outcome.kind === "force") {
+      const ok = await confirmDialog(outcome.confirm);
       if (ok) await activateAndWait(row, true);
       return;
     }
-    // The UNCODED 409 is `_spawn_connect`'s own lane guard ("'profile' is
-    // already running"), raised before `force` is even looked at — so a force
-    // retry there would 409 again, and the raw quoted lane name is not a
-    // sentence. Say what is happening and what to do about it.
-    if (e instanceof ApiError && e.status === 409) {
-      showToast(
-        "warning",
-        "Another profile connect is still running — wait for it to finish before switching again.",
-      );
-      return;
-    }
-    showToast("error", e instanceof Error ? e.message : "activate failed");
+    showToast(outcome.level, outcome.message, outcome.verbatim ? { verbatim: true } : undefined);
   };
 
   // Rename uses an in-card themed input (no OS window.prompt, which breaks

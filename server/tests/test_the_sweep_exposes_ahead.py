@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The next frame is exposing while this one is measured.
 
 THE IDLE HALF OF EVERY SWEEP. A point costs `move -> expose -> measure`, and on

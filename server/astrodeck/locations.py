@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Saved-locations library — named observing sites, INDEPENDENT of rig profiles
 and of AppConfig (spec §4). Precise coordinates live ONLY in this module's own
 JSON file and are served ONLY by the four /api/locations routes, so they never

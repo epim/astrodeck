@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """FILTER CYCLE: one sub per filter per pass, many passes per night.
 
 The night an imager actually wants is L R G B S Ha O3, forty-five times over,

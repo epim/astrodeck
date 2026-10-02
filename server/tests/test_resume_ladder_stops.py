@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Abort and disarm stop ResumeArm's recovery ladder, and the resume-arm
 route says it is recovering (#220; mosaic slice H2 task T3; spec 5.9 "Starts
 are refused while auto-resume re-centres", 6.15 "Operator STOP").

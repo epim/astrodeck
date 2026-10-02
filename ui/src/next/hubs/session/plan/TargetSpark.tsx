@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TargetSpark.tsx - tonight's altitude for one target, as a chip.
 //
 // The rebuild of `components/sequence/TargetSpark.tsx`: the same three layers

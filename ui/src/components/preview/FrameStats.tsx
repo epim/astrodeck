@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FrameStats.tsx — min/median/mean/max/σ + HFR/stars readout, extracted from the
 // old inline CaptureView block so Focus can reuse it (spec §3 stream O, §10).
 //

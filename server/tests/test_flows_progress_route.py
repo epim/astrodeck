@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GET /api/flows/{id}/progress: what a flow has banked, readable by a viewer
 (#189 S1 item 9, the route half; spec 8 S1 and 6.9; task S1-16).
 

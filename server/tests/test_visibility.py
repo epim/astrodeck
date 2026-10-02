@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Visibility ephemeris (Owner D — Sky Atlas).
 
 These exercise ``astrodeck.catalog.visibility`` directly (the pure ``compute_night``

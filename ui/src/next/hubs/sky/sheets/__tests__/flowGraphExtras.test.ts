@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowGraphExtras.test.ts - the three edits the quick sheet makes to a graph the
 // SERVER generated.
 //

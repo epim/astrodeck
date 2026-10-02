@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Session-epoch invalidation on the auth-enable transition (R4B-AUTH-01).
 
 Live-verified root cause (review 4b): a browser tab that signed in during an

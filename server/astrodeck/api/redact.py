@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Shared site-precision redaction helpers + the WS re-auth cadence constant.
 
 ``view.site_precise`` (admin-only; EXCLUDED from viewer/operator) is the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 import pytest
 import astrodeck.devices.backends.player_one as pob
 

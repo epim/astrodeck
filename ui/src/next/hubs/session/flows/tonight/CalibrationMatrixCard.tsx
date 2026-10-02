@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CalibrationMatrixCard.tsx - LIBRARY HEALTH, rebuilt (parity row A23).
 //
 // It renders `GET /api/calibration/health` through `flowsFetchCalHealth`, and

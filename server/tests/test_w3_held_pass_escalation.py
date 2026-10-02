@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic hold escalation (backlog ruling D-03, owner-approved
 2026-09-30; #563 (a), #576 (b); WP-21 of the 2026-09-30 open-issue backlog).
 

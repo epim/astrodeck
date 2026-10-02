@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // DomeCard.tsx - the hemisphere, on the Sky finder (decision D-SKY-2).
 //
 // WHAT THIS REVERSES. `StatusRow`'s header used to carry the argument for NOT

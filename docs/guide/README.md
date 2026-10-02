@@ -1,109 +1,48 @@
 # AstroDeck User Guide
 
-Task-focused how-to guides for running AstroDeck — the open, vendor-neutral
-astrophotography rig controller. For a high-level tour of the project, see the
-root [`README.md`](../../README.md); for install/architecture background, see
-[`docs/overview.md`](../overview.md) and [`docs/quickstart.md`](../quickstart.md).
-
----
+Start with a simulator image, then connect your equipment and build a night plan. AstroDeck can run standalone, accompany NINA, or provide planning beside ASIAIR; the available control paths depend on your backend.
 
 ## Start here
 
-New to AstroDeck? Follow this path:
-
-1. **[Getting started](getting-started.md)** — install, run the server, open the
-   UI, connect the simulator rig, and take a first image (no hardware needed).
-2. **[Site & locations](site-and-locations.md)** — set your observing site (do
-   this early — everything sky-related depends on it).
-3. **[Equipment & profiles](equipment-and-profiles.md)** — connect real gear and
-   save a profile.
-4. **[Capture](capture.md)**, **[Focus](focus.md)**, and **[Guiding](guiding.md)**
-   — take exposures, get the stars sharp, and keep the mount tracking true.
-5. **[Sky Atlas](sky-atlas.md)** → **[Plan & sequences](plan-and-sequences.md)**
-   → **[Sessions](sessions-multi-night.md)** — frame a target, build an
-   autonomous run, and accumulate it across nights.
-6. **[Monitor](monitor.md)** — the live dashboard to leave up once a
-   sequence is running.
-
----
+1. [Getting started](getting-started.md): install, connect the simulator, set a site and take one image.
+2. Choose [a release binary](install-binary.md), [Docker](install-docker.md), a [Windows rig](windows-rig.md), or an [Orange Pi appliance](orange-pi-appliance.md).
+3. Set [equipment and profiles](equipment-and-profiles.md) and [site and locations](site-and-locations.md).
+4. Learn the [alternative interface](next-ui.md), then [build a Flow and a mosaic](flows-and-mosaics.md).
+5. Review [unattended nights](unattended-nights.md) and [safety and automation](safety-and-automation.md) before leaving a run unattended.
 
 ## All guides
 
-| Guide | What it covers |
-|-------|----------------|
-| [Getting started](getting-started.md) | Install, first launch, simulator rig, first image |
-| [Equipment & profiles](equipment-and-profiles.md) | Drivers, device assignment, task providers, rotator, profiles |
-| [Capture](capture.md) | Exposure, live preview, pixel-peeping, histogram/stretch, sensor gain, WCS tagging, cooler, filter wheel |
-| [Focus](focus.md) | Manual focus, autofocus, reading the V-curve, HFR, Bahtinov mask |
-| [Guiding](guiding.md) | Native autoguider, Guiding Assistant, calibration, tuning, PHD2 fallback, same-night RMS compare |
-| [Sky Atlas](sky-atlas.md) | What's up tonight, search, framing, mosaics, visibility, offline survey pack |
-| [Plan & sequences](plan-and-sequences.md) | Targets, steps, automation, instructions, scheduling, plan library |
-| [Sessions & multi-night](sessions-multi-night.md) | Sessions, accepted-frame quotas, review/regrade, resume, stacking bundle |
-| [Monitor](monitor.md) | Live dashboard, stall detection, pause/recovery, weather panels (operator + admin) |
-| [Weather](weather.md) | Cloud forecast, night warning, auto-resume veto, radar map, Astrospheric |
-| [Remote access & roles](remote-access-and-roles.md) | Relay, sign-in, viewer/operator/admin, site privacy |
-| [Site & locations](site-and-locations.md) | Observing site, hemispheres, GPS, saved locations |
-| [Safety & automation](safety-and-automation.md) | Sun avoidance, safety monitor, floors, meridian, alerts |
-| [Troubleshooting](troubleshooting.md) | Server/port, sim connect, night mode, relay, logs |
-
----
+| Task | Guide |
+| --- | --- |
+| Take and inspect an exposure | [Capture](capture.md) |
+| Focus the telescope | [Focus](focus.md) |
+| Set up guiding | [Guiding](guiding.md) |
+| Find and frame a target | [Sky Atlas](sky-atlas.md) |
+| Build a classic plan | [Plan and sequences](plan-and-sequences.md) |
+| Build a visual program or mosaic | [Flows and mosaics](flows-and-mosaics.md) |
+| Reuse progress across nights | [Sessions and multi-night](sessions-multi-night.md) |
+| Watch or recover a running session | [Monitor](monitor.md) |
+| Understand weather and cloud holds | [Weather](weather.md) |
+| Configure stop conditions and recovery | [Safety and automation](safety-and-automation.md), [Unattended nights](unattended-nights.md) |
+| Use a phone, relay or limited account | [Remote access and roles](remote-access-and-roles.md) |
+| Diagnose a failed step | [Troubleshooting](troubleshooting.md) |
 
 ## Find it by task
 
-- **"How do I make it resume at dusk?"** →
-  [Sessions](sessions-multi-night.md#resuming--manual-and-auto-at-dusk)
-- **"Why can't I see the coordinates / weather?"** →
-  [Remote access & roles](remote-access-and-roles.md#site-privacy-for-remote-and-low-role-users)
-- **"How do I stop it imaging in clouds?"** → [Weather](weather.md)
-- **"What can a viewer / operator do?"** →
-  [Remote access & roles](remote-access-and-roles.md#the-three-roles-and-what-they-actually-gate)
-- **"How do I connect my camera / mount?"** →
-  [Equipment & profiles](equipment-and-profiles.md)
-- **"Server won't start."** → [Troubleshooting](troubleshooting.md)
-- **"My capture looks stalled — what do I check?"** →
-  [Monitor](monitor.md#stall-detection--what-you-actually-see) and
-  [Troubleshooting](troubleshooting.md#the-run-looks-stuck-stall-diagnosis)
-- **"What do RMS / HFR actually mean?"** → **HFR** (half-flux radius, lower
-  is sharper) is explained on [Capture](capture.md#reading-the-live-preview)
-  and [Focus](focus.md#the-verdict); guide **RMS** shows up live on
-  [Monitor](monitor.md#last-frame-guiding-thermal).
-- **"The radar map is blank — is that clear sky?"** → No — see
-  [Weather](weather.md#the-radar-map); a blank/failed tile layer always shows
-  a **"loading…"** or **"tiles unavailable"** badge, never silence.
-- **"A run got interrupted — how do I get it back?"** →
-  [Sessions](sessions-multi-night.md#what-survives-a-reboot) and
-  [Monitor](monitor.md#recovering-an-interrupted-run)
-- **"Can I search for a planet in the Atlas?"** → Not yet — see
-  [Sky Atlas](sky-atlas.md#searching-for-a-target)
-- **"What should my guide settings be?"** →
-  [Guiding](guiding.md#guiding-assistant) — the Guiding Assistant measures your
-  mount (it does move it) and recommends settings.
-- **"What can I image tonight?"** →
-  [Sky Atlas](sky-atlas.md#what-can-i-image-tonight) — the **Tonight** view;
-  it works with the rig switched off.
-- **"How do I get my night into PixInsight / Siril / APP?"** →
-  [Sessions](sessions-multi-night.md#getting-your-frames-out-the-stacking-bundle)
-- **"Can it save where each photo was pointing?"** →
-  [Capture](capture.md#recording-where-each-photo-points-plate-solving-into-the-file)
-- **"How do I switch guiding back to PHD2 / NINA?"** →
-  [Guiding](guiding.md#provider--phd2-fallback)
-- **"Is native guiding actually better than PHD2 on my rig?"** →
-  [Guiding](guiding.md#same-night-rms-native-vs-phd2) — a same-night
-  head-to-head RMS comparison once you've guided under both.
-
----
+- Resume at dusk: [Unattended nights](unattended-nights.md).
+- Recover after a restart: [Sessions and multi-night](sessions-multi-night.md).
+- Understand missing coordinates or permission controls: [Remote access and roles](remote-access-and-roles.md).
+- Diagnose a stalled run: [Monitor](monitor.md) and [Troubleshooting](troubleshooting.md).
+- Export frames for processing: [Sessions and multi-night](sessions-multi-night.md).
+- Find a Flow node or understand its ports: [Flows and mosaics](flows-and-mosaics.md).
+- Distinguish classic from the alternative interface: [Alternative interface](next-ui.md).
 
 ## Who this is written for
 
-- **First light?** Start at [Getting started](getting-started.md) — every step is
-  followable cold.
-- **Mid-session and tired?** The task index above and each page's headings get you
-  straight to the answer.
-- **Remote, maybe limited role?** [Remote access & roles](remote-access-and-roles.md).
-- **Back after a while?** [Sessions](sessions-multi-night.md) and
-  [Site & locations](site-and-locations.md) explain naming, finding, and what
-  survives a reboot.
+Use the first-light path on a fresh simulator installation. For an existing rig, begin with the task you need and check its prerequisites before changing device or safety settings. Hardware support, a simulator result and an unattended field test are different kinds of evidence.
 
-Every UI label, route, and default in these guides is drawn from the AstroDeck
-source. When the app and a guide disagree, the app is right — please open an
-issue.
+The [project overview](../overview.md) describes how the pieces fit together. The [quickstart](../quickstart.md) collects launch commands. The [project README](../../README.md) and [website](../../site/index.html) give the broader introduction.
+
+These guides were checked against the source at the revision recorded in the [documentation evidence](../../tools/docs/README.md). Executed simulator procedures and source-only checks are identified separately there. Native autofocus and guiding require the optional native engine; its current release packaging gap is tracked in [#630](https://github.com/epim/astrodeck/issues/630). Standalone plate solving also needs ASTAP and its star database installed separately.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

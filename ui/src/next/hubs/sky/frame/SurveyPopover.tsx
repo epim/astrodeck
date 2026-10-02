@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SurveyPopover.tsx - which survey, how bright, and survey-or-schematic
 // (hub-sky plan C's `mode` row, review #31).
 //

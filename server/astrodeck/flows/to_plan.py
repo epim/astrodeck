@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A compiled flow, as something ``SequenceEngine`` can actually run.
 
 ``compile_plan`` produces the README's documented five-key dict - the shape the
@@ -1049,9 +1051,10 @@ NODE_LOSS: dict[str, str] = {
         "is here: every flow's night ends with the mount parked and the dust "
         "cover shut whether or not this node is on the canvas, and the dome "
         "closes only if Settings > Safety has 'close dome when done' ticked. "
-        "What does NOT happen is the cooler setting - the camera is warmed at "
-        "the end of every run, so 'Hold cold (day darks)' is not honoured and "
-        "no darks are taken after a shutdown"),
+        "What does NOT happen because of THIS node is the cooler setting - the "
+        "camera is warmed at the end of every run regardless of 'Hold cold "
+        "(day darks)'. Darks after a shutdown come from a calibration step "
+        "wired to on_shutdown_complete, not from this node's cooler setting"),
 }
 
 

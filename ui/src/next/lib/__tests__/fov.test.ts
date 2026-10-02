@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for fov.ts. Sabotage check: swapping the >2 / <0.7
 // thresholds turns the sampling-verdict boundaries red; not rotating the
 // base order turns "panelOrder: 2x1 mosaic, pass 0 is row-major; pass 1

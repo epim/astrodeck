@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """D-FU-1: the rig-level planning block (``/api/planning``) and the active
 location id.
 

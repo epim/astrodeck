@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A plan that asks for a temperature never shoots warm in silence.
 
 MEASURED COST, 2026-08-12/13. A redeploy at 23:39 restarted the server; the run

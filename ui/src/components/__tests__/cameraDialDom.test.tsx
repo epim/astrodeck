@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cameraDialDom.test.tsx — the fan-out camera dial, MOUNTED.
 //
 //   Run directly:  npx tsx src/components/__tests__/cameraDialDom.test.tsx

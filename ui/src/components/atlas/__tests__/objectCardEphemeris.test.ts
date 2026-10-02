@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // #203: the Atlas card explains a geocentric position, and there are now TWO
 // reasons for one. Only one of them is something the reader can act on.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Set aside for tonight survives a crash, and only tonight (#208, #147 part
 2, #189 S2; spec 3.4, 6.7).
 

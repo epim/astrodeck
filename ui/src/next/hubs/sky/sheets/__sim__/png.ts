@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // A PNG codec, small and complete enough for the replay and nothing more.
 //
 // The replay runs under Node with no browser image decoder, so the recorded

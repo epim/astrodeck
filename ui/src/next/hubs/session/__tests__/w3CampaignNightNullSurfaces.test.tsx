@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3CampaignNightNullSurfaces.test.tsx - #430 remainder (WP-25 new defect),
 // backlog wave 3 integration.
 //

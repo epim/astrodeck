@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Self-tests for the S4 frame probe (#189 S4, routes_s4_frame.json). Run with
 the probe's Playwright Python, like test_probe_isolation.py:
 

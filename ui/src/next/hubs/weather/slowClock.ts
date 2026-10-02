@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // slowClock.ts - the Weather hub's shared minute clock.
 //
 // WHY A CLOCK AT ALL, when `Date.now()` is right there. Because `Date.now()`

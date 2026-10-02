@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The engine answers ahead of its own measurement, and names each move.
 
 A sweep point costs `move -> expose -> measure`, and on a 26 MP frame the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """SerialLink cancel/close race: the single-owner-port invariant.
 
 ``asyncio.to_thread`` cannot cancel its worker. If a cancelled ``request``

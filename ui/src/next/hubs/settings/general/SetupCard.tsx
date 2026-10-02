@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SetupCard.tsx - the FIRST-TIME SETUP card at the top of Settings - GENERAL
 // (`proto/22-settings.html`, `a_setupPending`).
 //

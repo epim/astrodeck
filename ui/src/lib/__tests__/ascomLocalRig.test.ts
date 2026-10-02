@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ascomLocalRig.test.ts — buildRigSpec compiles an ascom-local assignment to a
 // backend:"ascom-local" ConnSpec with NO driver_id (implicit backend, like
 // sim), carrying the picked dev_type/dev_num. Run: npx tsx src/lib/__tests__/ascomLocalRig.test.ts

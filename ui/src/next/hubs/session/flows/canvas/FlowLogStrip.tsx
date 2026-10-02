@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowLogStrip.tsx - the canvas's bottom log rail (wave R7 parity row A10).
 //
 // WHAT IT IS ALLOWED TO SHOW, AND WHY THAT MATTERS MORE THAN THE GEOMETRY. This

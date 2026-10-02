@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.90 - a press affordance for every button, not just the ones
 # wearing .btn. Found by pressing all 172 controls and diffing their pixels.
 $ErrorActionPreference = "Stop"

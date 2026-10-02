@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowInspectorFrame.test.tsx - the classic inspector's half of the Target
 // modal's door, and the flow overview's whenWaiting setting (#189 S4; spec
 // 2026-09-23 flows mosaic, 2.1 and 1.6).

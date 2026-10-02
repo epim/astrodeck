@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // next/ui/index.ts - the primitives library (ARCHITECTURE.md section 6).
 //
 // Every component here is store-free and fetch-free: props in, DOM out. That is

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Two of the flip gate's own lines carry ``site_derived`` (#166, #302,
 backlog WP-11 (a), owner-approved 2026-09-30): a completed flip is taken at
 the computed crossing (#127), and the idle park-hold's "has reached its

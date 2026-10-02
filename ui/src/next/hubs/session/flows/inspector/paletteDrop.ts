@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // paletteDrop.ts - where a stage lands when the palette drops one.
 //
 // WHERE THE TWO HELPERS COME FROM, AND WHY FROM THERE. They come from the

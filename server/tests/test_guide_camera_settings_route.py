@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PUT /api/guide/camera-settings actually accepts a JSON body.
 
 Measured on the rig 2026-08-08, mid guide-calibration: reaching for a longer

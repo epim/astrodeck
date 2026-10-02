@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A live capture loop must not be allowed to fight a plate solve.
 
 THE FIELD REPORT (rig, server log verbatim):
@@ -31,6 +33,7 @@ import pytest
 from astrodeck.devices.base import DeviceError
 from astrodeck.events import bus
 
+from _deadline import wait_until
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 
@@ -70,10 +73,13 @@ def _hang_the_loop(sim_hub, monkeypatch):  # noqa: F811
 async def _start_wedged_loop(hub) -> None:
     """Start the live loop and wait until it actually owns the capture lock."""
     await hub.start_loop(0.01, LOOP_MARKER_GAIN, 10)
-    for _ in range(200):
-        if hub._capture_lock.locked():
-            return
-        await asyncio.sleep(0.01)
+    # A wall-clock deadline (#610): 200 x sleep(0.01) is 2 s on Linux but
+    # 3.1 s on Windows (sleep rounds up to the 15.6 ms timer there), so a
+    # round count gives the two platforms different real patience.
+    ok = await wait_until(lambda: hub._capture_lock.locked(), timeout_s=5.0,
+                          interval_s=0.01)
+    if ok:
+        return
     raise AssertionError("the wedged live loop never took the capture lock")
 
 

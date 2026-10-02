@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { computeWizard, WIZARD_STEPS, type WizardSnapshot } from "../firstRunWizard";
 let passed = 0, failed = 0; const failures: string[] = [];
 function test(n: string, f: () => void){ try { f(); passed++; } catch(e){ failed++; failures.push(`✗ ${n}: ${(e as Error).message}`);} }

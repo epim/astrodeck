@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Segmented — a small radiogroup with 2-3 options (settings spec §2.8).
 // Selection is shown by filled background + bold label (shape/weight), never
 // hue-only, so it survives the all-red night palette. 44px-tall on touch.

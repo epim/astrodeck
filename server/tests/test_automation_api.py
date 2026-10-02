@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """API tests for the Batch 4b automation surface (api/app.py §1.10).
 
 Covers the endpoints owned by the Api lane:

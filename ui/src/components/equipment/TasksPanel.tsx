@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TasksPanel.tsx — the Equipment tab's TASKS section (spec §4.1): who runs
 // autofocus / polar align / plate solve / guiding. Same row grammar as the
 // device slots: a dropdown of concrete eligible providers (THE ONE RULE, task

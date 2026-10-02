@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-4 Task 1 — the ``Dome`` role ABC + ``DomeShutterState`` (base.py).
 
 Mirrors the ``SafetyMonitor``/``CoverCalibrator`` role pattern: a minimal

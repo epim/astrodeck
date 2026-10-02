@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Supervisor state machine: apply-on-92, health-probe, rollback, crash backoff.
 
 Deterministic: the process + health + clock + sleep are all injected, so no real

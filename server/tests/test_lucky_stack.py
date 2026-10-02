@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Lucky imaging: the selection, the ranking metric, and the alignment.
 
 The frames are synthetic planetary discs - a limb, some banding, a background

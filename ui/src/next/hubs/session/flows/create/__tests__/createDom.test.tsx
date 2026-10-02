@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // createDom.test.tsx - SESSION / FLOWS / CREATE: the guided wizard and the
 // quick flow, MOUNTED (wave R7 task T-R7-4, rows A16 and A17).
 //

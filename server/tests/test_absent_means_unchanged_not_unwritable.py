@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """POST /api/config must be able to write back what GET /api/config hands out.
 
 THE DEFECT CLASS, found by grepping for the shape that cost the cooling

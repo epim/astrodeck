@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SlewPad.tsx — predictable fixed-rate slew + tap-to-pulse nudge (touch spec §4).
 //
 // THE revised headline control. Replaces the old 3-chip "slow/med/fast" pad and

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CloudChart.tsx - CLOUD · NEXT 24 H.
 //
 // The chart maths are LIFTED from `components/weather/SkyConditionsPanel.tsx`

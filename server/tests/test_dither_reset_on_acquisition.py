@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A fresh acquisition starts the dither cadence over (#163, spec 5.6 step 9).
 
 `_frames_since_dither` counted frames across targets: target B inherited

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A frame with no light in it is not a clear sky.
 
 MEASURED, 2026-08-13. A cloud hold parked the wheel on the blackout slot to

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyAtlasDom.test.tsx - ATLAS mode: the fourth button on the Sky toolbar and
 // the classic Atlas's only door in this UI.
 //

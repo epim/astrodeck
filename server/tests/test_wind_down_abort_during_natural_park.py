@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An Abort that lands in a natural parking end's park cancels neither the
 park nor the idle stop handed to it (#305, a #270 follow-up).
 

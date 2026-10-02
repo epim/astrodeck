@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanResume.tsx - "the server restarted mid-run" as a state with its own two
 // actions (`views/SequenceView.tsx:712-727`).
 //

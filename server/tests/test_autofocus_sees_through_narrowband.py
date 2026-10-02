@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A two-second sweep through a 3 nm passband cannot see enough stars to fit.
 
 Watched on the rig 2026-08-16. The meridian flip landed between the S and

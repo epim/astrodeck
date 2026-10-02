@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ZWO AM5/AM5N native serial mount driver (sub-project B).
 
 Speaks Meade LX200 ASCII over the mount's USB CDC serial port — no ZWO software,

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CreditsPanel.tsx — everything AstroDeck is built on, and what each licence
 // asks of us.
 //
@@ -222,8 +224,9 @@ export default function CreditsPanel({ data }: { data?: CreditsDoc }): JSX.Eleme
   return (
     <Panel title="Credits">
       <p className="text-sm text-dim">
-        {doc.project.name} {doc.project.version} is released under{" "}
-        {doc.project.spdx} and is built on the work below —{" "}
+        {doc.project.copyright}. {doc.project.name} {doc.project.version} is
+        released under {doc.project.spdx} and is built on the work below
+        —{" "}
         <span className="mono">{total}</span> components, with each licence
         reproduced in full rather than linked, so this page works with no
         internet.

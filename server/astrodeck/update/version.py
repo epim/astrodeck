@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Semantic-version parsing + comparison for the self-update feature.
 
 GitHub Release tags look like ``v0.2.0`` or ``v0.2.0-rc1``. We parse a restricted

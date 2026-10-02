@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # RigRestart.ps1 - restart the rig server and PROVE it happened (#103).
 #
 # Every deploy script up to 0.3.33 found the server to kill like this:

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PassesCard.tsx - when and where to look for a satellite (D-SKY-1).
 //
 // A satellite is the one target on this screen that is not a night. It is a

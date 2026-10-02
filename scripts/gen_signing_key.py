@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Generate an Ed25519 release-signing keypair for AstroDeck self-update.
 
     python scripts/gen_signing_key.py

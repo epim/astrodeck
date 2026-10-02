@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Calibration during a weather hold.
 
 A hold is dead time with a cooled sensor under a closed sky, which is exactly

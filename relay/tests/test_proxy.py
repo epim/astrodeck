@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """§T7(1) browser<->frame round-trip + orphan/dedup rules (W3.3.5).
 
 A browser HTTP request becomes a ``REQ_OPEN`` (+ ``REQ_DATA``); a

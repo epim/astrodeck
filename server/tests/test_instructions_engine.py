@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-3 engine integration: the conditional-sequencer eval + dispatch path.
 
 Proves (a) empty instructions => the eval/dispatch path is never entered

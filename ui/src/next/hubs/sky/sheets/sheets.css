@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 .photosphere-capture { border: 1px solid #476b74; background: #101b25; border-radius: 16px; padding: 12px; min-width: 0; scroll-margin-top: 16px; }
 .photosphere-capture[hidden] { display: none; }
 .photosphere-preview { position: relative; overflow: hidden; border-radius: 10px; background: #05090d; }

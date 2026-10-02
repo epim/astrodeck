@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Backfill: the subs the run shot BEFORE the stack was switched on.
 
 The stack used to start from the next frame, so arming it at 2am showed two of

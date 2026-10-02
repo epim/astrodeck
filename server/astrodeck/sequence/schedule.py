@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pure autorun window resolution — no I/O, fully unit-testable (Batch 4b §1.6).
 
 Resolves a per-target :class:`~astrodeck.sequence.models.Schedule` into concrete

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // loopArcNext.test.tsx - SESSION / FLOWS, the #/next wire layer draws the panel
 // loop as the back-arc, with its own dash and its label chip, and puts the
 // selected loop wire's remove control on the arc, MOUNTED (#189 S4 item 6;

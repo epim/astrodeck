@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/plans.ts - typed wrappers for the saved-plan library.
 //
 // WHY THIS FILE EXISTS NOW. `components/sequence/PlanLibraryPanel.tsx` reached

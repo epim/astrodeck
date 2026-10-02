@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cameraSettingsAgreement.test.tsx — one rig, one answer.
 //
 //   Run directly:  npx tsx src/__tests__/cameraSettingsAgreement.test.tsx

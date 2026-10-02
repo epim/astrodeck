@@ -41,7 +41,7 @@ Two WPs that both edit engine.py may share a wave when the engine functions each
 3. A coder edits only the files its WP owns. If it needs any other file, it stops and reports without editing that file. New test files carry a wave prefix (`test_w1_...`, `test_w2_...`) so parallel WPs cannot collide.
 4. Coders never commit, never push, never write to GitHub (reading with `gh issue view` is fine), never deploy, never ssh, and never make a network call to astrotown.
 5. Coders never write the site's latitude, longitude or label, or any mount alt/az number, into code, tests, comments or their return. Tests use a made-up site. WPs marked Privacy get the needles scan from the orchestrator before commit (`grep -l -F -f C:/Users/bear/.astrodeck/privacy-needles.txt <changed files>`), which reports file names only.
-6. Files are UTF-8 without a BOM. No emojis. Control characters are written as escapes.
+6. Files are UTF-8 without a BOM. No emojis. Control characters are written as escapes. From wave 6 on (after 155c5898), every NEW first-party source file opens with the two-line copyright header in its own comment syntax: "Copyright (c) 2026 James Penick", then "SPDX-License-Identifier: Apache-2.0" (or, in the four MPL-2.0 native crates, the copyright line above the crate's MPL notice). server/tests/test_copyright_headers.py fails otherwise.
 7. Isolation (recommended in D-01): each WP runs in its own git worktree cut from the wave's base commit. Mutation runs happen only inside that worktree, from a byte backup, with a grep afterwards to confirm the mutant is gone. Dependencies are linked read-only. Before removing a worktree, remove any junction inside it first (the scratch-junction trap).
 8. Done means: tests for the owned area pass, the full server suite (`-n auto`) passes in the worktree, and UI WPs also pass vitest for the touched area, typecheck and build. The return lists changed files, new tests, the mutant evidence, suite results, and any new defect found. The orchestrator checks `gh issue list` and files each new defect.
 9. The orchestrator commits each WP separately with explicit pathspecs (`git commit -F msg -- <paths>`), and only after verifying it.
@@ -366,7 +366,7 @@ Fix shapes:
 
 ## Wave 6
 
-No harness owner in this wave.
+Harness owner: `conftest.py` goes to WP-72.
 
 | WP | Title | Issues | Sev | Owned files | Effort | Depends on |
 |---|---|---|---|---|---|---|
@@ -377,6 +377,12 @@ No harness owner in this wave.
 | WP-47 | Camera `connected` is measured | #16 | P1 | server/astrodeck/config.py; server/astrodeck/devices/backends/zwo_asi.py; server/astrodeck/devices/backends/player_one.py; server/astrodeck/devices/backends/ascom_local.py; server/astrodeck/devices/cameras/engine.py; server/astrodeck/devices/alpaca.py | L | WP-37, D-10 |
 | WP-48a | #/next card and classic quick-flow copy | #554 (a), #588 (b) | P2 | ui/src/next/hubs/session/flows/canvas/FlowNode.tsx; ui/src/components/flows/QuickFlow.tsx; ui/src/next/hubs/session/flows/create/quick.tsx | L | none |
 | WP-48b | Classic flow card footer and never-run copy | #357 (a), #232 (b) | P3 | ui/src/components/flows/targetSummary.ts; ui/src/components/flows/__tests__/cardFooterDom.test.tsx; ui/src/components/flows/FlowLibraryCard.tsx; ui/src/components/flows/__tests__/unreadableFlowCard.test.tsx | M | D-14, D-15 |
+| WP-72 | The real-config guard reads fd-relative paths; per-run temp bounded again | #659 (a), #622 (b), #651 (c) | P2 | server/tests/conftest.py; server/pyproject.toml; server/tests/test_w5_tmp_path_retention_config.py; server/tests/test_real_config_guard_fd_relative.py (new); .github/workflows/ci.yml (server job's install line only) | M | none |
+| WP-73 | PARK+CLOSE warning says where shutdown darks come from | #646 | P3 | server/astrodeck/flows/to_plan.py; server/tests/test_parkclose_shutdown_darks_note.py (new) | S | none |
+| WP-74 | CelesTrak fetch stops after a failure | #635 | P2 | server/astrodeck/catalog/ephemeris/elements.py; server/tests/test_celestrak_stops_after_failure.py (new) | M | none |
+| WP-75 | #/next Monitor: no-site and outside-darkness truths | #633 (a), #640 (b) | P2 | ui/src/next/hubs/monitor/live/VitalsBand.tsx; ui/src/next/hubs/monitor/live/__tests__/vitalsBandTruths.test.tsx (new) | M | none |
+| WP-76 | Credits generator refuses an empty npm tree; probe seed cases run in worktrees | #642 (a), #653 (b), #635 credits sentence (c) | P3 | tools/gen_credits.py; tools/ui_probe/test_probe_s7.py; server/tests/test_gen_credits_preflight.py (new); ui/src/credits.generated.json (regenerated, fingerprint only) | M | WP-74 for (c) |
+| WP-77 | #/next Dial takes a tap on a stop | #656 | P3 | ui/src/next/ui/Dial.tsx; ui/src/next/ui/__tests__/dialTap.test.tsx (new) | S | none |
 
 Fix shapes:
 
@@ -401,6 +407,21 @@ Fix shapes:
 - WP-48b
   - (a) Build what D-15 rules.
   - (b) Build what D-14 rules.
+- WP-72
+  - (a) The audit hook stops resolving a relative path against the CWD when the operation is fd-relative: events that carry `dir_fd` resolve through it or are skipped, and a relative `open` raised from inside `shutil.rmtree` or pytest's tmpdir cleanup is not a reach. One test reproduces the Linux false positive deterministically (an rmtree of a tmp dir holding `config/`, with dir_fd semantics); a control proves a real CWD-relative reach of the real config still fails.
+  - (b) With (a) in, `tmp_path_retention_policy = "failed"` comes back and test_w5_tmp_path_retention_config.py is re-pinned to it (its message already says so). #622 closes only when branch CI on Linux is green with the policy restored.
+  - (c) httpx2 joins the test dependencies where the server CI job installs from, per #651's own shape; no per-test-file edits. If one turns out to be needed, list the files in the return instead.
+  - Harness owner: this WP owns conftest.py in wave 6.
+- WP-73: The node-loss note covers only what PARK+CLOSE's own "Hold cold" setting fails to do, and names the lane that does take day darks (a calibration step wired to on_shutdown_complete). The test reads the note text from to_plan.py's own table. The user docs already say this (e764e172).
+- WP-74: After a non-200, the fetcher stops, publishes the condition (a status field and a log line naming CelesTrak's response) and waits for an operator action or a backoff of hours, never a fixed short interval. The test drives a failing fetch and proves the next attempt waits. The credits sentence that describes the policy is part (c) of WP-76: WP-74 returns the sentence, and the orchestrator hands it over at integration.
+- WP-75
+  - (a) With no site saved, the Monitor says that a site is needed instead of computing darkness and pointing from the placeholder (the #24 is_default class).
+  - (b) Outside darkness, TO DAWN counts to tonight's darkness, not to the next night's dawn.
+- WP-76
+  - (a) A preflight refuses, for `--check` and for regeneration, when ui/node_modules is missing, with the message the issue gives. The test runs against a temporary copy with no node_modules. Named mutant: the preflight removed.
+  - (b) test_probe_s7 takes its interpreter from an environment variable and falls back to the repo-relative venv; the wave tooling sets it to the main tree's venv, and the post-merge check asserts the two seed cases ran.
+  - (c) The CelesTrak credits text says what WP-74 built.
+- WP-77: A tap on a stop sets the value, as drag, the arrow keys and the text input already do. Named mutant: the tap handler removed.
 
 ## Wave 7
 
@@ -412,6 +433,10 @@ Harness owners: `_group_harness.py` goes to WP-49 and sim.py to WP-51.
 | WP-50 | Tonight: per-block budget, dashes, honest dome and auto-resume claims; dome close default | #562 (a), #561 (b), #192 (c) | P1 | server/astrodeck/flows/tonight.py; server/astrodeck/api/app.py; server/astrodeck/config.py; ui/src/next/hubs/session/flows/tonight/TonightStoryList.tsx; ui/src/next/hubs/session/flows/tonight/__tests__/tonightDom.test.tsx; ui/src/components/flows/nodeDefs.ts | L | WP-44, WP-34, D-16 (for the default only) |
 | WP-51 | Meridian countdown while not tracking | #519 | P2 | server/astrodeck/hub.py; server/astrodeck/devices/sim.py; server/tests/test_s7_sim_meridian_straddle.py | M | WP-45, D-11 |
 | WP-52 | Resumable-run card titles | #487 | P2 | ui/src/next/hubs/session/now/Interrupted.tsx; ui/src/next/hubs/session/plan/PlanResume.tsx; ui/src/next/hubs/monitor/live/RecoveryCards.tsx | S | WP-44, WP-17, D-13 |
+| WP-78 | Open-Meteo data carries its source link | #634 | P2 | the Sky DomeCard and DomeLegend, the Weather DomeScreen, ui/src/next/hubs/session/flows/create/quick.tsx (the coder lists exact paths before editing) | M | WP-48a (quick.tsx) |
+| WP-79 | One requestAnimationFrame polyfill | #652 | P3 | the UI test setup file; the UI test files that copy the polyfill, minus any this wave's other WPs own | M | WP-48b (unreadableFlowCard.test.tsx) |
+| WP-80 | A cold ?open= link opens the flow | #658 | P3 | the #/next ?open= reader (located first, reported before editing; not a file this wave's other WPs own) | M | none |
+| WP-81 | The guider lock follows the star it re-acquired | #649 | P2 | native/crates/astro-guide/src/engine.rs; server/astrodeck/guide/native.py | M | WP-41 |
 
 Fix shapes:
 
@@ -423,6 +448,10 @@ Fix shapes:
   - Effort: (c) counts as copy plus one default, not as the whole issue, which is why the WP is L.
 - WP-51: Build what D-11 rules. While tracking is off, the hub publishes `hours_to_flip` as None and a status of "not tracking", so `_live_block` in engine.py reads it unchanged and engine.py needs no edit. The simulator's RA drifts with the sidereal clock while tracking is off. test_s7_sim_meridian_straddle.py, where the issue was seen, is re-recorded here. Any other sim test that needs new recorded values is reported in the return, not edited.
 - WP-52: Build what D-13 rules.
+- WP-78: Each of the three surfaces shows the Open-Meteo source link next to the data, as the licence requires. One DOM test per surface.
+- WP-79: The polyfill lives once in the shared test setup, guarded the way #614 found it must be, and every copy is deleted. A guard test fails if a test file defines its own.
+- WP-80: Reproduce with a fresh browser context opening the link directly. The open waits for its prerequisites, or retries once after them, and says precisely why if it still fails. A cold-load test with a named mutant.
+- WP-81: The published lock moves with a re-acquire, so a different star next to the true one reads as a re-acquire on a different star, not a healthy re-lock. The deploy that carries it rebuilds the native wheel.
 
 ## Wave 8
 
@@ -490,6 +519,7 @@ No issue was classified unclear. This one is listed because its named failure is
 
 | Issue | Check | Then |
 |---|---|---|
+| #657 | Read the engine's unsafe-trip path with a dome connected and a flow that has no DOME CONTROL node, and drive it once on the simulator with a sim dome. DomePolicy's TODO says that half ('backend item 7') is not built. | If the dome closes, close the issue with the trace. If it does not, file the build item for the engine lane and link it here. A rig with a dome is the only one at risk, so it is not a P0 for astrotown. DONE 2026-10-01: graph-independent, config-gated; see the homes table. |
 | #289 | Run test_session_thumbs.py under -n 8 ten times. | If it is green, close it, and file the reap-by-poll wind-down latency (up to 0.25 s) as its own P3 issue if it is not already filed. |
 
 ## Rig-gated (the next step is rig or device work, not code)
@@ -509,6 +539,14 @@ Rig validation is also owed after the deploys that carry WP-02 (USB replug), WP-
 ## Owner-decision-only
 
 These four issues get no code. Their homes are the owner-decisions table: D-01 (process), D-17, D-19 and D-20.
+
+Licence questions from codex's job 2 audit, asked of the owner on 2026-10-01. Each gets code only after the owner answers, and codex's job 4 (not yet merged) adds a switch for each to the release payload gates:
+
+- #632: Player One SDK in published binaries, the wheel and the repo.
+- #636: Astrospheric's API terms against a public client.
+- #637: provenance of ui/public/bg_nebula.png.
+- #638: LGPL-3.0 WCSLIB and the GCC-exception runtime inside the onefile binaries.
+- #657 (b): should `close_dome_on_unsafe` default to True when a dome is connected? Recommended yes.
 
 ## Backlog features (ordered; they fill free slots in waves 8-13)
 
@@ -546,7 +584,7 @@ These four issues get no code. Their homes are the owner-decisions table: D-01 (
 | Relay v10 | H4-RELAY (tunnel-end line, relay logger fix) + WP-13 | Deploy through scripts/deploy_relay.ps1 after wave 2, independent of the rig version. For 24 h, watch the tunnel-end lines to learn which side closes the hourly drop and whether the pins cure it. Never let the CI workflow do a bare deploy (WP-13 (c)). |
 | 0.3.39 | Waves 2 and 3 | Site timing redaction, ResumeArm fixes, guider reuse, flow run and Monitor UI, AM5 park lock, compile lanes, slew pad, mosaic hold escalation, pre-flight horizon and the split solve-transient keys, solve path, report retry and drop count, one FOV for both UIs and the server. This is the build for the supervised S7 mosaic night, at a fixed angle if the rotator is still loose. Deploy pre-step for #609: the rig venv runs fastapi 0.138 and starlette 1.3.1 under a pyproject that requires 0.141.1 and 1.6.0. Before the restart, the deploy script compares the venv with the release's floors (`pip check` plus a floor check read from pyproject). It installs from a wheelhouse shipped in the release, never from PyPI on the rig, and refuses the deploy if the venv still falls short. Daytime only, with a `pip freeze` taken first so the venv can be rolled back. |
 | 0.3.40 | Waves 4 and 5 | Run-start visibility (server in wave 4, UI in wave 5) and setup gating, rotator approach fixes (WP-32a), rotator trust (WP-32b; its validation waits for the coupling), last-panel hold, DUSK single night, cancel-safe part A, frame gate, session lock, Rust guider lock. The deploy must rebuild the native wheel for WP-41. |
-| 0.3.41 | Waves 6 to 8 | Report and log truth, solve bookkeeping, camera liveness (astrotown profile change per D-10), set-aside for-now marker, Tonight fixes and the dome close default (D-16), meridian display, rotator manual moves, event-loop fault handling. |
+| 0.3.41 | Waves 6 to 8 | Also the #630-#661 homes (WP-72 to WP-81): the guard fix and the temp policy, CelesTrak backoff, Monitor truths, the Open-Meteo links, and the guider re-acquire lock, which needs the native wheel rebuilt. Report and log truth, solve bookkeeping, camera liveness (astrotown profile change per D-10), set-aside for-now marker, Tonight fixes and the dome close default (D-16), meridian display, rotator manual moves, event-loop fault handling. |
 | 0.3.42 | Waves 9 to 13 | The rest of the engine lane, the teardown epoch fence (WP-66) and the teardown 409 wording (WP-67). |
 
 Every release: the orchestrator updates the mosaic tracking issue's status, and pushing upstream needs the owner's explicit OK.
@@ -567,7 +605,7 @@ Still to file:
 - The reap-by-poll wind-down latency (from the verify-first item, if it is not already filed).
 - Whatever defects coders and verifiers report in their returns.
 
-## Filed while waves 1 to 4 ran (homes)
+## Filed while waves 1 to 5 ran (homes)
 
 | Issue | State | Home |
 |---|---|---|
@@ -591,3 +629,34 @@ Still to file:
 | #627 | open | A daytime connect logs 'no run is armed or due' while a session is armed. Wave 10 with #619 (hub.py free). |
 | #628 | open | WeatherService.stop swallows its caller's cancel. WP-37 (f) in wave 5. |
 | #629 | open | Relay tests use the deprecated starlette TestClient shim. WP-71 in wave 5. |
+| #630 | open | No release carries the native engine. Codex job 4 (ca9e8773); closes when job 4 merges. |
+| #631 | open | release.yml still fetches the DSS2 pack. Codex job 4 (ca9e8773). |
+| #632 | open | Player One SDK in published artifacts. Owner decision (see Owner-decision-only). |
+| #633 | open | The #/next Monitor with no site saved. WP-75 (a) in wave 6. |
+| #634 | open | Open-Meteo data without its source link. WP-78 in wave 7. |
+| #635 | open | CelesTrak retried every 60 s after a failure. WP-74 in wave 6; credits text in WP-76 (c). |
+| #636 | open | Astrospheric API terms. Owner decision. |
+| #637 | open | bg_nebula.png provenance. Owner decision. |
+| #638 | open | LGPL and GCC-exception obligations in the onefile binaries. Owner decision. |
+| #639 | closed | Release 0.3.39 left the credits version at 0.3.38. Fixed in 7cae8a2d (codex's licence audit, merged in b79c271f). |
+| #640 | open | TO DAWN counts to the next night outside darkness. WP-75 (b) in wave 6. |
+| #642 | open | gen_credits.py builds npm credits from nothing without node_modules. WP-76 (a) in wave 6. |
+| #643 | open | flowsRun() drops the disarmed field. Fixed in wave 5's integration (b8ebcf77); closes after branch CI is green. |
+| #644 | closed | capture_sim.py read the simulator mount's altitude. Fixed in 6e8dad9d. |
+| #645 | open | The relay compose file's build context. Codex job 4 (ca9e8773). |
+| #646 | open | The PARK+CLOSE warning about shutdown darks. Docs fixed in e764e172; the node copy is WP-73 in wave 6. |
+| #647 | open | STOP after a completed run via hash navigation. Fixed in wave 5's integration (b8ebcf77); closes after branch CI is green. |
+| #648 | open | D-05 half-built: no nightly rotator self-test, and a failed one defers every rotating panel. Needs engine.py: the first engine slot after WP-53 (wave 9). |
+| #649 | open | #204 residual 1: the published lock is fixed for the session. WP-81 in wave 7. |
+| #650 | open | Two camera-lane wait tests rested on an impossible premise. Fixed in WP-40 (wave 5); closes after branch CI is green. |
+| #651 | open | server/tests on the deprecated TestClient shim. WP-72 (c) in wave 6. |
+| #652 | open | The unguarded rAF polyfill copied into more UI test files. WP-79 in wave 7. |
+| #653 | open | test_probe_s7's seed cases skip in wave worktrees. WP-76 (b) in wave 6. |
+| #654 | open | The binary smoke test kills every astrodeck.exe. Codex job 4 (ca9e8773). |
+| #655 | open | The container image lacks the native engine and an inventory gate. Release engineering follow-up after job 4 (codex). |
+| #656 | open | The #/next Dial ignores a tap on a stop. WP-77 in wave 6. |
+| #657 | open | Verified 2026-10-01 (comment on the issue): the unsafe close ignores the graph and follows `close_dome_on_unsafe`, which defaults to False. (a) A flow-level test and the stale TODO: the first engine slot after WP-53. (b) Whether the flag defaults to True with a dome connected, as D-16 did for the end-of-night close: an owner question (recommended yes). |
+| #658 | open | A cold ?open= link 404s. WP-80 in wave 7. |
+| #659 | open | The real-config guard misreads Linux rmtree's fd-relative paths. WP-72 (a) in wave 6. |
+| #660 | open | The docs gate pins labels to exact lines. Codex job 5. |
+| #661 | open | A wave 5 test reached its assertion only where the native wheel is installed. Fixed in 1cf7cdd9; closes after branch CI is green. |

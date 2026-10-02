@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // next/ui/types.ts - the shared vocabulary of the primitives library.
 //
 // Deliberately structural, not imported from `next/lib/*`: the primitives may

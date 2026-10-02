@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The numbers the Target modal's RUN section prints (#189 spec 2.4, S4 item 1).
 
 "Every number comes from the server compile, never computed in the client"

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Deterministic ids for what a flow compiles to (#189, spec 3.3, D4, D5).
 
 WHY AN ID HAS TO BE A FUNCTION OF THE GRAPH

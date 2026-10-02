@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A line whose TIME is the site reaches only a holder of the site-derived
 view, and so does the panel a mosaic waits on at the meridian (#166, spec
 6.9; #189, spec 5.10; mosaic slice S2 task T8).

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A cloud hold that turns tracking back on ends the idle-stop retry first.
 
 The idle park-hold reads its stop back, and a stop the mount did not confirm

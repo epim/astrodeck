@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // next/hubs/rig/profiles - the PROFILES sheet's body, rebuilt (wave R7,
 // T-R7-17).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useVideoLibrary.ts - the recordings on disk, and the two verbs that change
 // them. Shared by the capture screen (which shows the newest one inline) and
 // the VIDEO LIBRARY sheet (which shows them all), so there is one fetch policy

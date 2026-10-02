@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """With no site saved, a DUSK window is not applied, and the run and
 auto-resume each say so, in words (#527, its engine and resume_arm lines;
 spec 1.6, 5.1 and 5.9; the #24 class).

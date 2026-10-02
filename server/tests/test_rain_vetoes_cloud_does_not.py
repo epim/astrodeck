@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A CLOUD FORECAST MAY NOT VETO. RAIN MAY. They are different hazards.
 
 The auto-resume gate refused to start a night whenever the forecast predicted

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planModel.ts - what every piece of the rebuilt plan editor agrees on.
 //
 // Pure except for the two hooks at the bottom, both of which only wrap a fetch

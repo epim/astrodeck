@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Self-tests for the S7 probe (#189 S7 item 1b, routes_s7.json). Run with the
 probe's Playwright Python, like test_probe_s5_s6.py:
 
@@ -59,7 +61,28 @@ import server_ctl  # noqa: E402
 
 ROUTES_PATH = HERE / "routes_s7.json"
 REPO_ROOT = HERE.parents[1]
-VENV_PYTHON = REPO_ROOT / "server" / ".venv" / "Scripts" / "python.exe"
+
+
+def _resolve_venv_python() -> Path:
+    """The interpreter for SeedSessionScriptTest's two end-to-end cases below.
+
+    A wave worktree gets a `ui/node_modules` junction but no `server/.venv` of
+    its own, so the repo-relative default always pointed at a venv that was
+    not there, and both cases silently SKIPPED in every wave run and the
+    integration worktree (#653) -- the only cases that run seed_session.py,
+    the script that arms a dormant session for unattended auto-resume, end to
+    end against a real store. ASTRODECK_PROBE_VENV_PYTHON lets the wave
+    tooling (and a post-merge check in the main tree) point this file at a
+    venv that exists, while `cd tools/ui_probe && python -m unittest
+    test_probe_s7` in the main tree keeps resolving the same path as before.
+    """
+    override = os.environ.get("ASTRODECK_PROBE_VENV_PYTHON")
+    if override:
+        return Path(override)
+    return REPO_ROOT / "server" / ".venv" / "Scripts" / "python.exe"
+
+
+VENV_PYTHON = _resolve_venv_python()
 SCENARIOS = {
     "1": ["s7-rot-run-phone", "s7-rot-frame-phone", "s7-rot-classic-phone",
           "s7-rot-classic-desktop"],
@@ -1003,6 +1026,35 @@ class RunFlowSeedTest(_Seeding):
 
 # ------------------------------------------------------------ seed_session
 
+class VenvPythonResolutionTest(unittest.TestCase):
+    """#653: wave worktrees have no server/.venv, so VENV_PYTHON's old
+    repo-relative-only resolution always missed and the two end-to-end cases
+    below always SKIPPED there. These hold the resolution function itself,
+    not the module-level VENV_PYTHON (computed once at import time, so an
+    env var set after import would not move it)."""
+
+    def test_the_environment_variable_overrides_the_repo_relative_venv(self):
+        """The wave tooling's and the post-merge check's way in.
+
+        Mutation "the override ignored" (`_resolve_venv_python` returns the
+        repo-relative path unconditionally, never reading the environment
+        variable), observed red (2026-10-01, this worktree):
+            AssertionError: WindowsPath('<repo-relative server/.venv path>')
+            != WindowsPath('C:/elsewhere/python.exe')"""
+        with mock.patch.dict(os.environ,
+                             {"ASTRODECK_PROBE_VENV_PYTHON": "C:/elsewhere/python.exe"}):
+            self.assertEqual(_resolve_venv_python(), Path("C:/elsewhere/python.exe"))
+
+    def test_with_no_override_it_falls_back_to_the_repo_relative_venv(self):
+        """The main tree's unchanged path: no env var, same default VENV_PYTHON
+        above was always computed from."""
+        env = dict(os.environ)
+        env.pop("ASTRODECK_PROBE_VENV_PYTHON", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(_resolve_venv_python(),
+                             REPO_ROOT / "server" / ".venv" / "Scripts" / "python.exe")
+
+
 class SeedSessionScriptTest(unittest.TestCase):
 
     def test_a_run_moves_back_whole_calendar_days_at_the_same_wall_clock(self):
@@ -1047,12 +1099,54 @@ class SeedSessionScriptTest(unittest.TestCase):
         first shipped: it refused server/ alone while its docstring said it
         protected the developer's captures), observed red (verifier's
         scratchpad S7-PROBE-verify-mut, 2026-09-29):
-            AssertionError: SeedRefused not raised : <the copy's root>\\captures"""
-        for own in (REPO_ROOT / "server" / "config", REPO_ROOT / "server",
-                    REPO_ROOT / "captures", REPO_ROOT / "captures" / "sessions"):
-            with self.assertRaises(seed_session.SeedRefused, msg=str(own)) as caught:
-                seed_session._private(str(own), "--capture-dir")
-            self.assertIn("developer's own", str(caught.exception))
+            AssertionError: SeedRefused not raised : <the copy's root>\\captures
+
+        Issue #624: server/config and captures/ (and captures/sessions) are
+        .gitignore'd runtime output, written only once a server has actually
+        run against this checkout. A fresh clone, CI checkout or wave worktree
+        does not have them, so `seed_session._private`'s own `is_dir()` check
+        refused first, with "... is not a directory" -- never reaching the
+        marker-absence refusal this case exists to grade, and the assertIn
+        below failed on the wrong message. Each missing one is made here, as
+        an empty stand-in for the span of this case, and removed after:
+        creating a throwaway directory under these exact names is safe (a
+        real server run would make the same ones, and `_private` never writes
+        into them -- it only reads `is_dir()` and the marker file).
+        `REPO_ROOT / "server"` is tracked and always present, so it is never
+        among `created`.
+
+        Named mutant: delete the `if not marker.is_file(): raise ...` ownership
+        check in seed_session.py's `_marker` (the one piece of this script that
+        decides whether a directory is proven to be a probe server's). Observed
+        red with every one of these four directories present and empty (2026-10
+        -01, this worktree): the later `open(marker, "rb")` still raises on the
+        now-unchecked missing file, but as a plain OSError its own `except`
+        catches and rewords, so this reaches the assertIn instead of crashing,
+        and fails there --
+            AssertionError: "developer's own" not found in '--capture-dir
+            ...\\server\\config: its .astrodeck-probe marker cannot be read
+            (FileNotFoundError), so it is not one server_ctl.py start wrote'
+        (a SeedRefused is still raised, so assertRaises is satisfied -- the
+        ownership wording the removed check alone was responsible for is
+        what is gone)."""
+        checked = (REPO_ROOT / "server" / "config", REPO_ROOT / "server",
+                   REPO_ROOT / "captures", REPO_ROOT / "captures" / "sessions")
+        created = [own for own in checked if not own.is_dir()]
+        for own in created:
+            own.mkdir(parents=True, exist_ok=True)
+        try:
+            for own in checked:
+                with self.assertRaises(seed_session.SeedRefused, msg=str(own)) as caught:
+                    seed_session._private(str(own), "--capture-dir")
+                self.assertIn("developer's own", str(caught.exception))
+        finally:
+            # Deepest first: captures/sessions before captures, so the parent
+            # is empty by the time its own rmdir runs. suppress rather than
+            # assert -- a cleanup slip must never stand in for this case's
+            # own result.
+            for own in sorted(created, key=lambda p: len(p.parts), reverse=True):
+                with contextlib.suppress(OSError):
+                    own.rmdir()
         with self.assertRaises(seed_session.SeedRefused):
             seed_session._private(None, "--capture-dir")
         with tempfile.TemporaryDirectory() as tmp:

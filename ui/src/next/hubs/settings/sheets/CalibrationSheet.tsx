@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CalibrationSheet.tsx - Settings > MORE > Calibration (plan section C.6, row
 // CALIBRATION; wave R7, T-R7-14 cutover).
 //

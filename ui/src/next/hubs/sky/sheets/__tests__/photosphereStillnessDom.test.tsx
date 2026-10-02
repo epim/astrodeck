@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The REAL capture driver, driven the way a still phone drives it.
 //
 // photospherePose and photosphereStability are each well tested alone, but the

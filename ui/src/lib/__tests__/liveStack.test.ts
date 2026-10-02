@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { integratedLabel, formatLiveStack, alignmentState } from "../liveStack";
 import type { LiveStackInfo } from "../../types";
 let passed = 0, failed = 0; const failures: string[] = [];

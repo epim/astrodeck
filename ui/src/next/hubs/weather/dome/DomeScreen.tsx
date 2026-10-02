@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // DomeScreen.tsx - WEATHER · SKY, the cloud dome (plan section A.3).
 //
 // `components/cloudmap/SkyDomePanel` is MOUNTED WHOLE. Every behaviour in it is

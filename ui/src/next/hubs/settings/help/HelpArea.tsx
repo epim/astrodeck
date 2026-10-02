@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // HelpArea.tsx - Help and troubleshooting, rebuilt in the design's vocabulary
 // (wave R7, T-R7-16; replaces the mount of `views/HelpView.tsx`).
 //

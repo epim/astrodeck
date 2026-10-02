@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One flat 420 s bounded a flip that had to contain a 600 s calibration.
 
 MEASURED, 2026-09-09, NGC 6946, 105 frames planned (times are minutes:seconds

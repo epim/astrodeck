@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """astrodeck-comhost — the bundled minimal COM->Alpaca host (Windows-only).
 
 A standalone sidecar (`python -m astrodeck.comhost`) that serves a spec-shaped

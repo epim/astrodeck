@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The flow graph, and the library record that wraps it.
 
 **THE GRAPH IS THE SOURCE OF TRUTH; THE PLAN IS DERIVED.** That sentence is from

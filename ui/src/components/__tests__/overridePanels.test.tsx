@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // overridePanels.test.tsx — the INTEGRATION half of #129: do the panels that
 // showed the losing layer now show the winning one, and say whose it is?
 //

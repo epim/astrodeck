@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Guard: production code must not branch on a test flag (WP-31 integration
 follow-up, backlog wave 4, owner-approved 2026-09-30).
 

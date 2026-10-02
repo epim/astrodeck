@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NowEmpty.tsx - the screen when nothing is running, which is most of the day.
 //
 // "NO SESSION RUNNING" ON ITS OWN IS A DEAD END, so this screen answers the
@@ -57,6 +59,7 @@ import { fmtIntegration } from "../../../../api/sessionStack";
 import { getPlan, listPlans, type PlanRow } from "../../../../api/plans";
 import { listReports } from "../../../../api/reports";
 import { resumeRecoveryLine, resumeSession } from "../../../../api/sessions";
+import { disarmedWarningLine, type DisarmedSession } from "../../../../lib/disarmed";
 import { endReasonMeta } from "../../../../lib/reportChart";
 import { planUnreadableReason } from "../../../../lib/planLibrary";
 import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
@@ -164,6 +167,33 @@ export const MORE_IN_FLOWS = "MORE IN FLOWS ›";
 const DEFAULT_SITE: SiteInfo = {
   latitude: 0, longitude: 0, is_default: true, horizon_min_deg: 15,
 };
+
+// ------------------------------------------------------- disarmed, named (D-04)
+//
+// Starting or resuming a run is a SINGLETON (`SequenceEngine.start`): the
+// session it arms is the only one left auto_resume'd, and until #595/D-04
+// every other armed session lost that switch with nothing on screen to say
+// so - on 2026-09-29 a 7331 starter cost the owner's explicitly-armed NGC
+// 1499 mosaic its auto-resume, found by chance five minutes later. WP-31 (a)
+// made the server name what it disarmed; this is the UI half (backlog ruling
+// D-04, owner-approved 2026-09-30): the two routes this screen calls directly
+// (`POST /api/sequence/start` below, `POST /api/sessions/{id}/resume` via
+// `resumeSession`) answer with a `disarmed` list, present only when it is
+// non-empty - the codebase's own convention (`below_horizon`) - and it is
+// shown as a warning naming every session in it.
+//
+// READ OFF THE PARSED JSON, NOT A WIDENED TYPE. `resumeSession`'s return type
+// (`api/sessions.ts`) does not carry `disarmed`; that file belongs to another
+// work package. `api.post` never validates or strips fields (`api.ts`'s `req`
+// returns `res.json() as Promise<T>`), so the field is on the runtime object
+// exactly as the server sent it regardless of what a narrower type claims -
+// only the type-level cast below is local to this file.
+//
+// `DisarmedSession` and `disarmedWarningLine` moved to `lib/disarmed.ts` at W5
+// integration (#643), when the classic flow run controls grew a second
+// surface that needed the exact same sentence - imported above, not
+// redeclared, since two copies of the same wording is how they drift apart
+// (the naming-preview sample, #278, is the same class of bug).
 
 type ReportsState =
   | { kind: "loading" }
@@ -496,9 +526,22 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
     const reason = reasonFor(kind);
     if (reason) { explainLock(reason); return; }
     void resumeSession(sessionId).then(
-      (r) => enqueueToast(r.resumed
-        ? { level: "success", title: "Session resumed", detail: `${r.remaining} frames still owed` }
-        : { level: "warning", title: "Nothing to resume", detail: "The session owes no frames." }),
+      (r) => {
+        enqueueToast(r.resumed
+          ? { level: "success", title: "Session resumed", detail: `${r.remaining} frames still owed` }
+          : { level: "warning", title: "Nothing to resume", detail: "The session owes no frames." });
+        // See "disarmed, named (D-04)" above: `r`'s declared type carries no
+        // `disarmed` field, but the parsed response does when the resume's
+        // own singleton armed this session over another.
+        const disarmed = (r as unknown as { disarmed?: DisarmedSession[] }).disarmed;
+        if (disarmed && disarmed.length > 0) {
+          enqueueToast({
+            level: "warning",
+            title: "Resuming this session disarmed another",
+            detail: disarmedWarningLine(disarmed),
+          });
+        }
+      },
       (e: Error) => enqueueToast({
         level: "error", title: "Resume did not land", detail: e.message,
       }),
@@ -593,7 +636,17 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
       setLoadedPlanId(row.id);
       startedAt.current = Date.now();
       try {
-        await api.post("/api/sequence/start", { ...plan, force: false });
+        const res = await api.post<{ disarmed?: DisarmedSession[] }>(
+          "/api/sequence/start", { ...plan, force: false });
+        // See "disarmed, named (D-04)" above: present only when this start's
+        // own singleton armed this plan over another session.
+        if (res.disarmed && res.disarmed.length > 0) {
+          enqueueToast({
+            level: "warning",
+            title: `Starting '${plan.name}' disarmed another session`,
+            detail: disarmedWarningLine(res.disarmed),
+          });
+        }
       } catch (e) {
         enqueueToast({
           level: "error",

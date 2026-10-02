@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ResultCard.tsx - what landed, and what can still be done about it.
 //
 // SAVE TO GALLERY IS REAL NOW (D-SES-4). This file used to say the opposite,

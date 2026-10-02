@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The hub's rotate shortcut (#189 U-06; mosaic spec 5.6 step 3 and 5.7).
 
 ``goto_and_center`` rotates before it centres, and until this shortcut the

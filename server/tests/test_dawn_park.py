@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Dawn park — the net under a night that ended without a run (task #139).
 
 Every park in this codebase lives inside ``engine._wind_down``, so a session
@@ -16,6 +18,7 @@ import asyncio
 
 import pytest
 
+from _deadline import wait_until
 from astrodeck import dawn_park as dawn_park_mod
 from astrodeck.catalog.coords import sun_altaz
 from astrodeck.config import AppConfig
@@ -467,10 +470,11 @@ async def test_the_loop_outlives_a_tick_that_raises(cfg, bus_lines):
     d.tick = _boom                          # type: ignore[assignment]
     d.start()
     try:
-        for _ in range(200):
-            if calls["n"] >= 3:
-                break
-            await asyncio.sleep(0.01)
+        # A wall-clock deadline (#610): 200 x sleep(0.01) is 2 s on Linux but
+        # 3.1 s on Windows (sleep rounds up to the 15.6 ms timer there), so a
+        # round count gives the two platforms different real patience.
+        await wait_until(lambda: calls["n"] >= 3, timeout_s=5.0,
+                         interval_s=0.01)
         assert calls["n"] >= 3, "the loop kept ticking after the first failure"
         assert d._task is not None and not d._task.done()
         assert _said(bus_lines, "dawn-park tick failed")

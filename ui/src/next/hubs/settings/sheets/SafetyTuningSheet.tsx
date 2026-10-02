@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SafetyTuningSheet.tsx - Settings > MORE > Safety (ARCHITECTURE.md section 5;
 // plan hub-weather-monitor-settings.md section C.6, row SAFETY; wave R7,
 // T-R7-9 and ruling 3).

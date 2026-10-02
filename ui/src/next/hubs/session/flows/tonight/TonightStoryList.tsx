@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightStoryList.tsx - the same night, in sentences the operator can argue
 // with (parity row A20).
 //

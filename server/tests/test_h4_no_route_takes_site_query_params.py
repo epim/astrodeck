@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No route takes a place or a pointing in its query string (#520).
 
 A URL is written down by every hop it crosses: the Fly relay's access log, any

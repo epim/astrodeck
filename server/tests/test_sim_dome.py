@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-4 Task 2 — ``SimDome`` + ``build_sim_rig`` wiring (sim.py).
 
 The self-checking collision model is the sim half of the correctness contract:

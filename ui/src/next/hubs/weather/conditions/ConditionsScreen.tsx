@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ConditionsScreen.tsx - WEATHER · CONDITIONS (plan section A.1).
 //
 // Reading order, top to bottom: the verdict and who said it, the standing

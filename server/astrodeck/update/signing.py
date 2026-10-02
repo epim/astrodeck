@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Ed25519 detached-signature primitives for release artifacts.
 
 A release ships three files alongside the tarball:

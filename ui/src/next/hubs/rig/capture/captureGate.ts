@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureGate.ts - every reason the manual-capture bench refuses a press, as
 // PURE functions over the state the screen already holds.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """G4: loopback-trust test mode (``AuthConfig.trust_loopback``).
 
 Codex R3-ROLE-01 (BLOCKED): the server treated EVERY loopback caller as

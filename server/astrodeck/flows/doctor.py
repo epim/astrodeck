@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The doctor: the graph checks, transcribed from the handoff, and the mosaic
 rules of spec 2026-09-23 (flows mosaic) 1.8.
 

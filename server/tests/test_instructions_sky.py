@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The sky and rig triggers: clouds, safety, panel readiness.
 
 Every test here is really about ONE question — what happens when nobody knows?

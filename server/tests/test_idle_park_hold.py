@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The idle mount is park-held on the HAZARD's clock (#165).
 
 A mount left tracking with no frame loop watching it has nothing checking its
@@ -105,13 +107,28 @@ async def sim_hub(temp_store, monkeypatch):
 # ---------------------------------------------------------------------- harness
 
 class _Clock:
-    """engine.py's `time`: `time()` reads the fake clock, the rest is real."""
+    """engine.py's `time`: `time()` and `monotonic()` read the fake clock,
+    the rest is real.
+
+    MONOTONIC WAS A WALL-CLOCK RACER (#299). `_setup_target` prices a hop's
+    cost from `time.monotonic() - hop_t0`, and until this fix only `time()`
+    was faked: `monotonic()` fell through `__getattr__` to the real module,
+    so that price was measured in real microseconds of CPU work rather than
+    in fake seconds, and a result that depends on which side of a Windows
+    15.625 ms tick the real clock landed on is exactly the class this file's
+    own module docstring (THE HARNESS IS A CLOCKED SIMULATOR...) says a test
+    must not have. Every one of the thirteen files built on `_Clocked`
+    shares this one class, so the fix lives here once, as
+    tests/_group_harness.py's `_Clock` already has it."""
 
     def __init__(self, real, t0: float):
         self._real = real
         self.t = t0
 
     def time(self) -> float:
+        return self.t
+
+    def monotonic(self) -> float:
         return self.t
 
     def __getattr__(self, name):

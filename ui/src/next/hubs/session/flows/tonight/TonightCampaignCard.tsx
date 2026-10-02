@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightCampaignCard.tsx - how much of the pool each member has actually
 // banked (parity row A22).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ReadOnlyBadge.tsx — a small "VIEW ONLY" pill surfaced next to a control panel's
 // title when the viewer lacks the capability to operate it (W2.5).
 //

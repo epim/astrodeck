@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic group data model and its identity checks (#189 U-01, S2 T1;
 advances #156; spec 3.4, 3.5, 6.13).
 

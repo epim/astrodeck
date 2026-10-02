@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // firstRunFlowCount.test.tsx - the classic first-run guide's "Pick a target"
 // step ticks for a flow the wizard saved (#458; the S5/S6 integration).
 //

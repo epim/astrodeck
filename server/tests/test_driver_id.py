@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """driver_id resolution + primary:"none" plumbing (equipment-drivers spec §3.3,
 §5, cache-honesty §3.2 / Phase 2).
 

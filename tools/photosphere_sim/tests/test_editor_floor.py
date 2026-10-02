@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#53: the narrowest obstruction the planner honours comes from the editor.
 
 The owner's ruling (2026-09-23): the narrowest obstruction is "the distance one

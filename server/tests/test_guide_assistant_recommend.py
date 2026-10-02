@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pure-logic tests for guide/assistant.py (design 2026-07-24 §5): the
 ``recommend`` rules (one parametrized fn), ``reduce_phaseA`` on a synthetic
 drift+sinusoid, and ``BacklashRun.compute`` on synthetic N/S traces. No hardware,

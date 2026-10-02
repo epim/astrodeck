@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#156 — an overexposed sweep must not be told to expose LONGER.
 
 2026-08-06, on the sky: autofocus at 3s/gain 200 failed with "lack of stars"

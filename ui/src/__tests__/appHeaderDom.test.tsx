@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // appHeaderDom.test.tsx - the classic (`#/classic`) header strip, mounted for
 // real, under a VIEWER-shaped status.
 //

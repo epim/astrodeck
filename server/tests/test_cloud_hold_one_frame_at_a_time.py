@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A cloud hold builds darks ONE frame at a time, never in a batch.
 
 THE DEFECT THIS PINS, which was mine and shipped. `_hold_darks` took the whole

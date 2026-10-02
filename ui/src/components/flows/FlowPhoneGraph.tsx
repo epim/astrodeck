@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowPhoneGraph.tsx — the phone FLOW tab: the real graph, auto-laid for one
 // thumb. §C.15, README §5, ref `10-phone-flow-autograph-390px.png`.
 //

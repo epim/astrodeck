@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 const {JSDOM}=await import("jsdom");const dom=new JSDOM('<div id="root"></div>',{url:"http://local/",pretendToBeVisual:true});const win=dom.window as any;
 for(const key of ["window","document","navigator","HTMLElement","Event","MouseEvent","localStorage"])Object.defineProperty(globalThis,key,{value:key==="window"?win:win[key],configurable:true});
 Object.assign(globalThis,{IS_REACT_ACT_ENVIRONMENT:true});

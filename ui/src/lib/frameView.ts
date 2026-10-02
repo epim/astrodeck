@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // How big a render to ask for when someone OPENS a frame.
 //
 // Not the grid. The grid tile is a scanning aid pinned to 256px; this is the

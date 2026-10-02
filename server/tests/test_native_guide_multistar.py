@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Smoke tests for multi-star guide-star search + tracking (dossier
 docs/native-parity/algorithms/phd2-guiding.md §2.6/§4; P3-T1).
 

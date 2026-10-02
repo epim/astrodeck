@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The live cloud-occlusion service, stage 6a -- the poller and what it holds.
 
 Stages 1-5 are a library nothing calls. This is the thing that calls them on a
@@ -36,6 +38,7 @@ import numpy as np
 import pydantic
 import pytest
 
+from _deadline import wait_until
 from astrodeck.cloudmap.abi_grid import GridSpec
 from astrodeck.cloudmap.granule import (
     CloudmapUnavailable, GranuleWindow, SiteOutsideSector)
@@ -694,10 +697,11 @@ async def test_the_poller_survives_an_exception_in_a_tick(svc, monkeypatch):
     monkeypatch.setattr(service, "tick", _explode)
     service.start()
     try:
-        for _ in range(200):
-            await asyncio.sleep(0.001)
-            if ticks["n"] >= 3:
-                break
+        # A wall-clock deadline (#610): 200 x sleep(0.001) is 0.2 s on Linux
+        # but 3.1 s on Windows (sleep rounds up to the 15.6 ms timer there),
+        # so a round count gives the two platforms very different patience.
+        await wait_until(lambda: ticks["n"] >= 3, timeout_s=5.0,
+                         interval_s=0.001)
     finally:
         await service.stop()
     assert ticks["n"] >= 3, "the loop stopped after its first bad tick"
@@ -737,10 +741,10 @@ async def test_the_pollers_catch_all_logs_a_type_and_never_the_text(
     monkeypatch.setattr(service, "tick", _explode)
     service.start()
     try:
-        for _ in range(200):
-            await asyncio.sleep(0.001)
-            if ticks["n"] >= 2:
-                break
+        # A wall-clock deadline (#610): see the sibling test above for why a
+        # round count of sub-0.1 s sleeps is platform-dependent.
+        await wait_until(lambda: ticks["n"] >= 2, timeout_s=5.0,
+                         interval_s=0.001)
     finally:
         await service.stop()
     assert ticks["n"] >= 2
@@ -784,10 +788,10 @@ async def test_the_poller_outlives_a_bus_that_cannot_take_the_log(
     monkeypatch.setattr(service, "tick", _explode)
     service.start()
     try:
-        for _ in range(400):
-            await asyncio.sleep(0.001)
-            if ticks["n"] >= 3:
-                break
+        # A wall-clock deadline (#610): see the first test in this file for
+        # why a round count of sub-0.1 s sleeps is platform-dependent.
+        await wait_until(lambda: ticks["n"] >= 3, timeout_s=8.0,
+                         interval_s=0.001)
         alive = service._task is not None and not service._task.done()
         assert ticks["n"] >= 3, (
             "the poller died on the log line of the handler that is supposed "

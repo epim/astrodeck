@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FrameViewer — the picture someone opened, at the size of the screen showing it.
 //
 // Asked for 2026-08-19: tap the centre of a tile, get the frame big; rotate the

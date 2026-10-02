@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // next/hubs/settings/tuning/files - the four FILES-AND-STANDARDS editors,
 // rebuilt (wave R7, T-R7-13).
 //
@@ -19,7 +21,7 @@ export { StandardsEditor } from "./StandardsEditor";
 // finding: importing a helper out of a presentation module drags that module's
 // whole legacy render tree into the lazily-split next bundle).
 export {
-  filesLockSentence, formatBytes, lastPassLine, namingPreview, NAMING_SAMPLE,
+  filesLockSentence, formatBytes, lastPassLine, namingPreview,
   plainDashes, pushBlockedReason, STANDARDS_INPUT, syncCadenceLine,
   syncEnableBlockedReason, syncSummary, tokenText,
   type SyncTone,

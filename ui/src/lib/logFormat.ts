@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // logFormat.ts — pure formatting helpers for the Event Log drawer (R2-LOG-01
 // partial: entries showed source + message but no timestamp or severity
 // word). Both GET /api/logs and the WS "log" event already carry a top-level

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-session files index with grades (Session hub, task S5).
 
 WHAT THIS EXISTS FOR. ``GET /api/sessions/{id}`` already returns the whole

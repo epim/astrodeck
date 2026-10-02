@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the NOV-3 difficulty display helpers (design spec §1.3/§8).
 //
 // There is no vitest/jest wired into this UI (build is `tsc -b && vite build`),

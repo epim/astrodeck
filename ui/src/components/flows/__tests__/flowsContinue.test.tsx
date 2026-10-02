@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsContinue.test.tsx - CONTINUE's three questions and START OVER, on both
 // run paths (#189 S1-17, spec 5.9).
 //
@@ -211,6 +213,10 @@ async function answerInTurn(
   let ans = await s.a.flowsRun();
   for (const yes of yeses) {
     assert(ans !== null, `the server asked fewer questions than the test answers (stopped before "${yes}")`);
+    // "started" (#643, W5 integration) is not a question - it means the run
+    // already went, which this helper's callers never expect mid-sequence.
+    assert(ans.kind !== "started",
+      `the run already started before answering "${yes}" - no question was asked`);
     ans = await s.a.flowsRun(nextRunFlags(ans.flags, yes));
   }
   return ans;

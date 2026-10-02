@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanLibrary.tsx - which plan am I editing, is it saved, and what else is
 // saved. The rebuild of `components/sequence/PlanLibraryPanel.tsx` (439 ln).
 //

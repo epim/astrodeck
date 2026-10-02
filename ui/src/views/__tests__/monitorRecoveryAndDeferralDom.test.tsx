@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // monitorRecoveryAndDeferralDom.test.tsx - the classic Monitor's run panel says
 // what the rig is doing in the two states it used to leave blank (#246, #244).
 //

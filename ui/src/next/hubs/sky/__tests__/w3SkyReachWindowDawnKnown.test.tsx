@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3SkyReachWindowDawnKnown.test.tsx - the reach strip's window with no dawn
 // known yet, MOUNTED (#551, backlog ruling WP-24a (b), owner-approved
 // 2026-09-30).

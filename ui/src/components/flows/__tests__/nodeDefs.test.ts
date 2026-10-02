@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nodeDefs.test.ts — the anti-drift test for the Flows node vocabulary.
 //
 // WHY THIS FILE IS UNUSUAL. `nodeDefs.ts` is a SECOND transcription of a table

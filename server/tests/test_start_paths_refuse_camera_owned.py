@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every HTTP start path refuses while the camera is someone else's (#323).
 
 ``_refuse_if_camera_owned`` answers 409 ``video_owns_camera`` while a .ser

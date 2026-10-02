@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Simulator solver: answers with the sim mount's true pointing.
 
 This makes the full goto→solve→sync→re-slew centering loop work end to end

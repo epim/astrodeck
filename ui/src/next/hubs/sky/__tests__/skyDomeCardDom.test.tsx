@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyDomeCardDom.test.tsx - the skydome card on the Sky finder (D-SKY-2).
 //
 //   Run directly:  npx tsx src/next/hubs/sky/__tests__/skyDomeCardDom.test.tsx

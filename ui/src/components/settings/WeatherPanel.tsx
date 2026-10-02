@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // WeatherPanel.tsx — Settings → Connect weather config (weather spec §2/§10).
 // SitePanel idiom: drafts seeded from a signature of exactly the fields this
 // form edits (never config.version); bounded inputs validated client-side

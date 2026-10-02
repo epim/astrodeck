@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickOscDom.test.tsx - the quick-session sheet on a rig with NO FILTER WHEEL.
 //
 //   Run directly:  npx tsx src/next/hubs/sky/sheets/__tests__/quickOscDom.test.tsx

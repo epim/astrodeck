@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A clocked-simulator night for the mosaic group driver (#189 S2, spec 5.1
 to 5.10, the S2 tests list).
 

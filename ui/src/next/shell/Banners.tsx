@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Banners.tsx - the notification strip under the header (README "Cross-hub
 // chrome"): at most two, dismissible, the whole text is the CTA.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Named naked-eye stars (J2000) — the targets you reach for when nothing works.
 
 WHY THIS FILE EXISTS. ``objects.py`` is a deep-sky imaging list: no stars at

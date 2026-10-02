@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // UpdateEditor.tsx - Settings > UPDATE, rebuilt in the design vocabulary
 // (wave R7, T-R7-12; parity table 3.F7).
 //

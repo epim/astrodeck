@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targets.tsx - SUGGESTED TARGETS, ranked by tonight's score
 // (hub-sky plan A.10, design README section 2, screenshot 03).
 //

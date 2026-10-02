@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The M31 mosaic Example's tagline says only what holds (spec S3 item 5,
 #353).
 

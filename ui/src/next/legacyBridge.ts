@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // legacyBridge.ts - the one-way door from the OLD navigation model into the new
 // router (ARCHITECTURE.md sections 2 and 9; store-api.md section 1.5).
 //

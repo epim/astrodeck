@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The meridian flip's re-centre carries the angle (#160; mosaic spec Revision
 2 ruling 9, 5.7).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filterSlots.ts — the naming rule behind the blackout checkbox.
 //
 // The name and the blackout flag were independent fields: you ticked "blackout"

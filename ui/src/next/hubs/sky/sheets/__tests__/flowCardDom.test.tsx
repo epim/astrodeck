@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowCardDom.test.tsx - the flow card, MOUNTED, and RUN NOW pressed into a 409.
 //
 //   Run directly:  npx tsx src/next/hubs/sky/sheets/__tests__/flowCardDom.test.tsx

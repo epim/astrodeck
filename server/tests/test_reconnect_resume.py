@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``escalation.reconnect_resume`` — the setting that was read by nothing.
 
 Before 2026-08-06 the whole feature was a claim nothing kept, in the project's

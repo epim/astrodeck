@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // r7Parity.test.ts - the new UI mounts no legacy presentation component.
 //
 //   Run directly:  npx tsx src/next/__tests__/r7Parity.test.ts
@@ -48,7 +50,7 @@
 
 const { readFileSync, readdirSync, statSync } = await import("node:fs");
 const { fileURLToPath } = await import("node:url");
-const { dirname: pdirname, resolve: presolve } = await import("node:path");
+const { dirname: pdirname, resolve: presolve, relative: prelative } = await import("node:path");
 
 const NEXT = fileURLToPath(new URL("../", import.meta.url));
 const SRC = fileURLToPath(new URL("../../", import.meta.url));
@@ -570,6 +572,22 @@ const pick = (m: RegExpMatchArray): string => (m[1] ?? m[2] ?? m[3]) as string;
 const IMPORT_FROM_RE = new RegExp(`import\\s+([\\s\\S]*?)\\s+from\\s+(?:${QUOTED})`, "g");
 /** `import(<spec>)` - a dynamic import. */
 const IMPORT_DYN_RE = new RegExp(`import\\(\\s*(?:${QUOTED})\\s*\\)`, "g");
+// #198: a re-export is a live dependency on the named module too, and the
+// scan used to have no pattern for either form - `export { default as
+// LegacyFlowsView } from ".../FlowsView"` produced no record at all, so no
+// allow-list rule ever saw it (reproduced again in #198's S4-UHOSTN comment).
+/** `export (type )?{ <names> } from <spec>` - group 1 is the clause
+ *  (including an optional leading `type `), groups 2-4 are `QUOTED`.
+ *  `bindingsOf` already handles an `export type { ... }` clause identically
+ *  to `import type { ... }` - same "type " prefix, same braces. */
+const EXPORT_NAMED_RE = new RegExp(`export\\s+((?:type\\s+)?\\{[\\s\\S]*?\\})\\s+from\\s+(?:${QUOTED})`, "g");
+/** `export * from <spec>` and `export * as ns from <spec>` - a re-export of
+ *  EVERYTHING the module exports. There is no per-binding name to check
+ *  against an allow-list, so this is recorded as a single "*" binding, the
+ *  same convention `IMPORT_DYN_RE` uses for a dynamic import (rule 5): only a
+ *  module-wide allowance (`LOGIC_MODULES`) or a module-level ban
+ *  (`REBUILT_SURFACES`, rule 4) can judge a record with no name. */
+const EXPORT_STAR_RE = new RegExp(`export\\s+\\*\\s*(?:as\\s+[A-Za-z_$][\\w$]*\\s*)?from\\s+(?:${QUOTED})`, "g");
 
 /** A path under a `__tests__` directory, in native form. */
 const isTestFile = (p: string): boolean => p.includes(`${SEP}__tests__${SEP}`);
@@ -636,22 +654,48 @@ function bindingsOf(clause: string): { name: string; typeOnly: boolean }[] {
   return out;
 }
 
-const RECORDS: Record_[] = [];
-for (const file of FILES) {
-  const text = stripComments(readFileSync(file, "utf8"));
-  const rel = file.slice(NEXT.length).replace(/\\/g, "/");
+/** Every legacy-module record one file's (already comment-stripped) `text`
+ *  produces: `import ... from`, `import(...)`, `export { ... } from`
+ *  (including `export type { ... }`) and `export * from` / `export * as ns
+ *  from`. Pulled out of the walk loop so the export forms (#198) can be
+ *  driven directly, on synthetic text, by the vacuity tests below - adding a
+ *  real file under next/ for the walk to find is not an option here (a test
+ *  file is excluded from the scan unless DRIFT_TESTS names it, and this is
+ *  not a drift pin). */
+function recordsForFile(file: string, rel: string, text: string): Record_[] {
+  const out: Record_[] = [];
   for (const m of text.matchAll(IMPORT_FROM_RE)) {
     const mod = moduleOf(file, (m[2] ?? m[3] ?? m[4]) as string);
     if (mod == null || !/^(components|views)\//.test(mod)) continue;
     for (const b of bindingsOf(m[1])) {
-      RECORDS.push({ file: rel, module: mod, name: b.name, typeOnly: b.typeOnly, dynamic: false });
+      out.push({ file: rel, module: mod, name: b.name, typeOnly: b.typeOnly, dynamic: false });
     }
   }
   for (const m of text.matchAll(IMPORT_DYN_RE)) {
     const mod = moduleOf(file, pick(m));
     if (mod == null || !/^(components|views)\//.test(mod)) continue;
-    RECORDS.push({ file: rel, module: mod, name: "*", typeOnly: false, dynamic: true });
+    out.push({ file: rel, module: mod, name: "*", typeOnly: false, dynamic: true });
   }
+  for (const m of text.matchAll(EXPORT_NAMED_RE)) {
+    const mod = moduleOf(file, (m[2] ?? m[3] ?? m[4]) as string);
+    if (mod == null || !/^(components|views)\//.test(mod)) continue;
+    for (const b of bindingsOf(m[1])) {
+      out.push({ file: rel, module: mod, name: b.name, typeOnly: b.typeOnly, dynamic: false });
+    }
+  }
+  for (const m of text.matchAll(EXPORT_STAR_RE)) {
+    const mod = moduleOf(file, pick(m));
+    if (mod == null || !/^(components|views)\//.test(mod)) continue;
+    out.push({ file: rel, module: mod, name: "*", typeOnly: false, dynamic: false });
+  }
+  return out;
+}
+
+const RECORDS: Record_[] = [];
+for (const file of FILES) {
+  const text = stripComments(readFileSync(file, "utf8"));
+  const rel = file.slice(NEXT.length).replace(/\\/g, "/");
+  RECORDS.push(...recordsForFile(file, rel, text));
 }
 
 /** A PascalCase binding is component-shaped. SCREAMING_CASE (NODE_DEFS, TL_W,
@@ -769,6 +813,103 @@ test("the import scan sees a single-quoted, double-quoted and template-literal s
   const substituted = probeImport("`", "../../${area}/Foo", "`");
   assert([...substituted.matchAll(IMPORT_FROM_RE)].length === 0,
     "the scan treated a substituted template literal as if it were static");
+});
+
+// ============================================== 1c. export re-exports (#198)
+// `export { x } from`, `export type { x } from`, `export * from` and
+// `export * as ns from` are each a live dependency on the named module, and
+// the scan had no pattern for any of them - reproduced again in #198's
+// S4-UHOSTN comment, where `export { default as LegacyFlowsView } from
+// ".../components/flows/FlowsView"` passed every rule.
+//
+// Same reasoning as `probeImport` above for building these at runtime rather
+// than as a literal contiguous `export ... from` in this file's own text.
+const probeExportNamed = (open: string, clause: string, spec: string, close: string): string =>
+  ["ex" + "port", clause, "fr" + "om", `${open}${spec}${close};`].join(" ");
+const probeExportStar = (open: string, spec: string, close: string, ns?: string): string =>
+  ns === undefined
+    ? ["ex" + "port", "*", "fr" + "om", `${open}${spec}${close};`].join(" ")
+    : ["ex" + "port", "*", "as", ns, "fr" + "om", `${open}${spec}${close};`].join(" ");
+
+test("the export scan sees a named re-export and a type re-export", () => {
+  const named = probeExportNamed('"', "{ Foo }", "../../components/Foo", '"');
+  const namedHit = [...named.matchAll(EXPORT_NAMED_RE)][0];
+  assert(namedHit != null, `the export scan missed ${JSON.stringify(named)}`);
+  assert((namedHit[2] ?? namedHit[3] ?? namedHit[4]) === "../../components/Foo",
+    `the export scan resolved ${JSON.stringify(named)} to the wrong specifier`);
+  assert(bindingsOf(namedHit[1]).some((b) => b.name === "Foo" && !b.typeOnly),
+    `export { Foo } from ... did not bind Foo: ${JSON.stringify(bindingsOf(namedHit[1]))}`);
+
+  // `export type { ... } from` - `bindingsOf` already handles the leading
+  // "type " the same way it does for `import type { ... }`; this just proves
+  // EXPORT_NAMED_RE's capture group hands it the whole clause, "type " included.
+  const typed = probeExportNamed('"', ["ty" + "pe", "{ Foo }"].join(" "), "../../components/Foo", '"');
+  const typedHit = [...typed.matchAll(EXPORT_NAMED_RE)][0];
+  assert(typedHit != null, `the export scan missed the type form ${JSON.stringify(typed)}`);
+  assert(bindingsOf(typedHit[1]).some((b) => b.name === "Foo" && b.typeOnly),
+    `export type { Foo } from ... must bind Foo as typeOnly: ${JSON.stringify(bindingsOf(typedHit[1]))}`);
+});
+
+test("the export scan sees a bare star re-export and a namespaced star re-export", () => {
+  const star = probeExportStar('"', "../../components/Foo", '"');
+  assert([...star.matchAll(EXPORT_STAR_RE)].length === 1,
+    `the export scan missed a bare star re-export: ${JSON.stringify(star)}`);
+
+  const starAs = probeExportStar('"', "../../components/Foo", '"', "Legacy");
+  const starAsHit = [...starAs.matchAll(EXPORT_STAR_RE)][0];
+  assert(starAsHit != null, `the export scan missed a namespaced star re-export: ${JSON.stringify(starAs)}`);
+  assert(pick(starAsHit) === "../../components/Foo",
+    `the export scan resolved ${JSON.stringify(starAs)} to the wrong specifier`);
+});
+
+test("an export re-export reaches RECORDS exactly like an import, including the #198 scenario", () => {
+  // A synthetic file path three levels under next/, so a short ".." chain
+  // reaches src/components the same way a real hub file's would. No file is
+  // written to disk: `recordsForFile` only does path arithmetic (`moduleOf`)
+  // and regex matching, so a path that resolves correctly is enough.
+  const fakeFile = `${NEXT}hubs${SEP}fake${SEP}w5Probe.tsx`;
+  const fakeRel = "hubs/fake/w5Probe.tsx";
+  const targetAbs = `${SRC}components${SEP}flows${SEP}FlowsView`;
+  const toSpec = (abs: string): string => {
+    const r = prelative(pdirname(fakeFile), abs).split(SEP).join("/");
+    return r.startsWith(".") ? r : `./${r}`;
+  };
+  const spec = toSpec(targetAbs);
+
+  // The #198 S4-UHOSTN scenario, reproduced exactly: a re-export of a
+  // REBUILT_SURFACES component's default export, under a local alias.
+  // Before this fix, recordsForFile produced NOTHING for this line, so rule
+  // 4 ("nothing under next/ imports a surface wave R7 rebuilt") never saw it.
+  //
+  // Named mutant "export scan ignores re-exports": comment out the four
+  // `EXPORT_NAMED_RE`/`EXPORT_STAR_RE` loops inside `recordsForFile`. Observed
+  // red: "rule 4 would not have caught the #198 S4-UHOSTN re-export (no
+  // record reached REBUILT_SURFACES)".
+  const uhostn = probeExportNamed('"', "{ default as LegacyFlowsView }", spec, '"');
+  const uhostnRecords = recordsForFile(fakeFile, fakeRel, uhostn);
+  const uhostnProblems = uhostnRecords.filter((r) => REBUILT_SURFACES.includes(r.module));
+  assert(uhostnProblems.length > 0,
+    "rule 4 would not have caught the #198 S4-UHOSTN re-export (no record reached REBUILT_SURFACES)");
+
+  // `export * from` and `export * as ns from` carry EVERY export of the
+  // module past any per-name allow-list, so they are recorded with name "*" -
+  // the same convention a dynamic import uses - and only a module-wide
+  // allowance or a module-level ban can judge them.
+  const starRecords = recordsForFile(fakeFile, fakeRel, probeExportStar('"', spec, '"'));
+  assert(starRecords.some((r) => r.module === "components/flows/FlowsView" && r.name === "*"),
+    `export * from ... produced no record: ${JSON.stringify(starRecords)}`);
+  const starAsRecords = recordsForFile(fakeFile, fakeRel, probeExportStar('"', spec, '"', "Legacy"));
+  assert(starAsRecords.some((r) => r.module === "components/flows/FlowsView" && r.name === "*"),
+    `export * as ns from ... produced no record: ${JSON.stringify(starAsRecords)}`);
+
+  // A legitimate re-export from a LOGIC_MODULES entry must still clear rule
+  // 3 - adding the export scan must not turn an allowed module into a
+  // problem just because the import now arrives through "export" instead of
+  // "import".
+  const logicSpec = toSpec(`${SRC}components${SEP}flows${SEP}geometry`);
+  const logicRecords = recordsForFile(fakeFile, fakeRel, probeExportNamed('"', "{ FlowTier }", logicSpec, '"'));
+  assert(logicRecords.length === 1 && logicRecords[0].module === "components/flows/geometry",
+    `export { FlowTier } from a LOGIC_MODULES module produced the wrong record: ${JSON.stringify(logicRecords)}`);
 });
 
 // ================================== 2. no legacy presentation component is mounted

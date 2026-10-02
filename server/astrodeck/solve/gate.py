@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The per-frame-WCS solve gate (per-frame-wcs spec §2.2).
 
 Pure + dependency-free on purpose: the hub's background WCS worker asks this

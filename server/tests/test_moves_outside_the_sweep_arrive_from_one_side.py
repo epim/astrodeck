@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The approach rule is not the sweep's private habit.
 
 `test_the_focuser_arrives_from_one_side.py` pins it inside an autofocus run.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureStandInGuards.test.tsx — the parts of the saved-frame stand-in that
 // captureLastFrameDom.test.tsx does not reach.
 //

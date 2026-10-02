@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#195: DUSK WINDOW's `repeat` -> `SequencePlan.resume_across_nights`, through
 `compile.compile_plan` and `to_plan.plan_extras`.
 

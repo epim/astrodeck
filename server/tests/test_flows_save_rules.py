@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The save rules: ruling 2's counts switch and ruling 3's server-owned
 anchor (#189 Revision 2, spec 3.1, 3.3, S3 tests).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 import pytest
 import astrodeck.hub as hub_module
 from astrodeck.hub import Hub

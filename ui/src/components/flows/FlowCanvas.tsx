@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowCanvas.tsx — the pan/zoom surface the graph is drawn on. §C.4, all of §D.
 //
 // WHY THIS IS NOT A SECOND POINTER SYSTEM. §D.1 is explicit that

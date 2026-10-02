@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Registry-driven provider-override vocabulary (equipment-drivers spec §3.4).
 
 Write-time rule (review finding 2): a value is valid iff it is ``auto``, the

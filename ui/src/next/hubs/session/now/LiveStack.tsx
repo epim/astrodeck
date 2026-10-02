@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LiveStack.tsx - the picture the night is actually making.
 //
 // The last-sub tile answers "is the rig still working". This answers "is this

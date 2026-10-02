@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-18 (#342): park cannot lose its command or interleave with a pulse.
 
 Fix shape (plan 2026-09-30, backlog ruling: "Send `:Td#` every time before
@@ -25,6 +27,7 @@ import pytest
 
 import astrodeck.devices.backends.zwo_am5 as am5
 
+from _deadline import wait_until  # rootdir-relative
 from test_zwo_am5 import FakeLink, FIXED_UTC, _connect_script  # rootdir-relative
 
 
@@ -149,11 +152,12 @@ async def test_park_and_pulse_never_run_at_the_same_time(fixed_env,
     fl.sent.clear()
 
     pulse_task = asyncio.create_task(tel.pulse_guide("north", 300))
-    for _ in range(400):                   # the move is genuinely on the wire
-        if "Mn" in fl.sent:
-            break
-        await asyncio.sleep(0.005)
-    else:
+    # The move is genuinely on the wire. A wall-clock deadline (#610, WP-68
+    # remainder): 400 x sleep(0.005) is 2.0 s on Linux but longer on Windows
+    # (sleep rounds up to the ~15.6 ms timer there), so a round count gives
+    # the two platforms different real patience.
+    ok = await wait_until(lambda: "Mn" in fl.sent, timeout_s=2.0, interval_s=0.005)
+    if not ok:
         raise AssertionError(f"Mn never went out: {fl.sent}")
 
     park_task = asyncio.create_task(tel.park())
@@ -201,11 +205,9 @@ async def test_pulse_waits_for_an_in_flight_park(fixed_env, monkeypatch):
         _connect_script(Gps=["0", "0", "0", "2"], GAT="0", Td="1"))
 
     park_task = asyncio.create_task(tel.park())
-    for _ in range(400):
-        if "hP" in fl.sent:
-            break
-        await asyncio.sleep(0.005)
-    else:
+    # A wall-clock deadline (#610, WP-68 remainder), same reasoning as above.
+    ok = await wait_until(lambda: "hP" in fl.sent, timeout_s=2.0, interval_s=0.005)
+    if not ok:
         raise AssertionError(f"hP never went out: {fl.sent}")
 
     pulse_task = asyncio.create_task(tel.pulse_guide("north", 50))

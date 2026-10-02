@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One answer to "when is tonight?" — #229 and #228.
 
 #229: auto-resume had no outer bound. The default ``Schedule`` is

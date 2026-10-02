@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // catalogHint.ts — FALLBACK zero-state copy for the Atlas catalog search.
 //
 // The server now answers this itself: /api/catalog?explain=1 returns notes

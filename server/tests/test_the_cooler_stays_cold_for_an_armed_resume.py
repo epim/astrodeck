@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Do not warm the camera when another session is armed to shoot tonight.
 
 MEASURED 2026-09-08. The NGC 7331 run ended with

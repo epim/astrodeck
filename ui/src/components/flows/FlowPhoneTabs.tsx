@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowPhoneTabs.tsx — the phone editor's bottom tab bar. §C.15, README §5,
 // ref `10-phone-flow-autograph-390px.png` / `11-phone-monitor-390px.png`.
 //

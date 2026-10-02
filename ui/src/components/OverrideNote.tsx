@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // OverrideNote.tsx — the permanent, information-carrying disclosure that a
 // control's value is NOT the one the rig is running (#129).
 //

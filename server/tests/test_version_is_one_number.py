@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The version lives in two files and they must agree.
 
 Found during the 0.2.71 deploy. ``pyproject.toml`` was bumped and

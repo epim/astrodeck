@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/video.ts: SER recording and the lucky stack (D-RIG-1). Server:
 // server/astrodeck/imaging/video_routes.py over imaging/video.py.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A flat panel that fails must not take the dust cover down with it.
 
 `_panel_off_safe` had ONE try around TWO independent duties, and the lamp went

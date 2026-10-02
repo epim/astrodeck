@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the PRO-10 stacking-bundle view helpers (Task 5). Same tiny
 // inline-assert harness as eta.test.ts (no vitest/jest wired in):
 //   npx tsx src/lib/__tests__/bundleView.test.ts

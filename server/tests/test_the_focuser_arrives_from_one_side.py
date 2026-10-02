@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every point of a sweep is reached moving IN, including the last one.
 
 THE MEASUREMENT THIS EXISTS FOR. The EAF on this rig has backlash measured in

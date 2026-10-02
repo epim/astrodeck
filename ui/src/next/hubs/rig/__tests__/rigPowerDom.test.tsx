@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigPowerDom.test.tsx - the POWER device sheet, MOUNTED (plan hub-rig.md B.2,
 // task T-RIG-2).
 //

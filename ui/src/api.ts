@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api.ts — robust fetch with per-endpoint timeouts, typed errors, and an
 // AbortController fallback for old Safari/WebView (reliability spec §12,
 // settings spec §2.1).

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#128: the rig's site can be checked without printing any of it.
 
 WHY THIS EXISTS. Nothing on the rig reported whether a site was saved.

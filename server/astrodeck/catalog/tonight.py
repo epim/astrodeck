@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Rank the catalog by tonight's visibility for the beginner picker (NOV-3).
 
 Pure ranking only — the astropy ephemeris is computed upstream by

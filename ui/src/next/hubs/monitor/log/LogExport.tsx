@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LogExport.tsx - the two download buttons under the Log screen, and the body
 // of Settings > MORE > Log export (plan §B.2.4; T-SET-4 imports `LogExportPanel`
 // from here, the one pre-authorised cross-directory import in this programme).

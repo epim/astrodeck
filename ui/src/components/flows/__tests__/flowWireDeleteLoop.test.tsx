@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowWireDeleteLoop.test.tsx - the classic remove control of a panel loop
 // wire sits ON the arc, MOUNTED (#355; spec 2026-09-23 flows mosaic, 1.4 "How
 // it is drawn").

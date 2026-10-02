@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 .classic-sky-tools { --text-faint: var(--text-dim); }
 .cst-atlas { display:grid; gap:12px; min-width:0; }
 .cst-atlas > [hidden] { display:none; }

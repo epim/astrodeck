@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ZWO AM5N native serial driver: link double, telescope behavior, backend +
 framework integration. All coordinates fictional (site privacy)."""
 from __future__ import annotations
@@ -7,6 +9,7 @@ import time
 
 import pytest
 
+from _deadline import wait_until
 from astrodeck.devices.serial_link import LinkError, SerialLink
 
 
@@ -668,10 +671,11 @@ async def test_pulse_guide_cancel_restores_state(fixed_env):
     fl.script["Td"] = "1"
     fl.script["Te"] = "1"
     task = asyncio.create_task(tel.pulse_guide("east", 5000))
-    for _ in range(400):                       # the suspend is on the wire
-        if "Td" in fl.sent:
-            break
-        await asyncio.sleep(0.005)
+    # The suspend is on the wire, on a wall-clock deadline (#610): 400 x
+    # sleep(0.005) is 2 s on Linux but 6.2 s on Windows (sleep rounds up to
+    # the 15.6 ms timer there), so a round count gives the two platforms
+    # different real patience.
+    await wait_until(lambda: "Td" in fl.sent, timeout_s=8.0, interval_s=0.005)
     cancelled_at = time.monotonic()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

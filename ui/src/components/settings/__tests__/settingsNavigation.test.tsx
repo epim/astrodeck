@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Exercise the real Settings shell while panel bodies are stand-ins: the
 // contract under test is arriving at and focusing the right editor, including

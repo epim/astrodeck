@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rmsCompare.test.ts — pure tests for lib/rmsCompare.ts's compareRmsWindows,
 // the same-night head-to-head RMS comparison GuideView's provider-switch
 // panel renders (P5-T1, spec §6 P5). Copies the apiError.test.ts idiom

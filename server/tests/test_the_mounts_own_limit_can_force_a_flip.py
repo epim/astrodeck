@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """THE TUBE NOT HITTING THE PIER IS NOT THE ONLY REASON TO FLIP.
 
 `_maybe_meridian_flip` declines the flip when the target's lower culmination

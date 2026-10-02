@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // profiles.tsx - the PROFILES sheet (plan hub-rig.md A.3 / deviation E29).
 //
 // The popover on the devices screen is the quick switch. This is the library:

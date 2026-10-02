@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#204 — a reconnect dropped the cooler, lost the target, and said nothing.
 
 MEASURED on the rig 2026-08-09. The morning reconnect (issued to recover the

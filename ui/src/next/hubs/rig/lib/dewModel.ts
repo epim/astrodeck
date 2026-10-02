@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // dewModel.ts - what the dew loop is doing, as ONE value two panels render
 // (D-RIG-3, task T-U7b-6).
 //

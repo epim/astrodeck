@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX } from "react";
 
 /** ASTRO<accent>DECK</accent> - Chakra Petch 600, 11 px, .22em tracking. */

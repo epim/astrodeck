@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w1FlowsCanvasHostWaitForOpen.test.tsx - the tablet/desktop canvas host acts
 // only on the flow its route opened, not on whatever the store still holds
 // (#553).

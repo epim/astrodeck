@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Which switch ports the server REFUSES to switch while a run is live (D-RIG-5).
 
 The rule itself is old: "mount, camera and USB are locked while a session runs".

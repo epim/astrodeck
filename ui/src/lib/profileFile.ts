@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // profileFile.ts — profile-library import/export file helpers (F7 #5b,
 // PlanLibraryPanel/planFile.ts precedent, commit de2839a). Profiles have no
 // server-side export route (unlike GET /api/plans/{id}/export), so export is

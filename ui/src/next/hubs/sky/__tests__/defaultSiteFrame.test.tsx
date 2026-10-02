@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // defaultSiteFrame.test.tsx - the Sky hub with no site saved (#466), MOUNTED.
 //
 //   Run directly:  node --import ./test-css-stub.mjs --import tsx src/next/hubs/sky/__tests__/defaultSiteFrame.test.tsx

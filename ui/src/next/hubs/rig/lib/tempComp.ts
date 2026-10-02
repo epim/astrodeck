@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tempComp.ts - the words and the arithmetic behind TEMPERATURE COMPENSATION
 // (D-RIG-2, task T-U7b-5). Pure: a status node and two numbers in, sentences
 // out, so the copy the operator reads is graded by a test rather than by

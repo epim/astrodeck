@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The gallery lists a target by the name as typed (#333).
 
 Since #277 a target whose name has no ASCII form is saved with the name

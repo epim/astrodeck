@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NextApp.tsx - the root of the new front end (ARCHITECTURE.md section 2).
 //
 // One of the two roots `main.tsx` can mount; the other is the legacy `App`. Only

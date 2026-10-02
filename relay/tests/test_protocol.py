@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Wire-codec round-trip + fail-closed decode (W3.2 framing)."""
 from __future__ import annotations
 

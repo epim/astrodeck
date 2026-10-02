@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Mixed capture settings are visible and advisory, including beyond page one."""
 import asyncio
 import threading

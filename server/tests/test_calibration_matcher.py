@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 from astrodeck.calibration.matcher import (
     LightNeed, MasterRecord, MatchTolerance, Gap,
     dark_matches, flat_matches, best_master, coverage_for)

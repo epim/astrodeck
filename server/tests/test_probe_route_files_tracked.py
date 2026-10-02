@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every probe route file a TRACKED test names is tracked (#415).
 
 test_probe_s4.py was committed (da875537, mosaic slice S4) reading

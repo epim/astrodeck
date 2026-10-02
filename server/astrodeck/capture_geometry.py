@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Advisory comparisons with the frames already on disk. Never gates capture."""
 from __future__ import annotations
 

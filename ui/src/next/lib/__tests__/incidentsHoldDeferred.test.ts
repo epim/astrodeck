@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // incidentsHoldDeferred.test.ts - the cloud card for a hold the engine DEFERRED
 // rather than opened (#221, #244). Pure: literal inputs, no DOM.
 //

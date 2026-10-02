@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the F-A photometry/SNR core (spec docs/superpowers/specs/2026-07-23-photometry-snr-design.md §3).
 //
 // There is no vitest/jest wired into this UI (build is `tsc -b && vite build`),

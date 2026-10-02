@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PointingFrame — where the telescope is ACTUALLY pointing, drawn on the Atlas.
 //
 // Pure SVG geometry, like FovOverlay: NO text inside the scaled viewBox (spec

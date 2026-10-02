@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Star detection and HFR (half-flux radius) measurement.
 
 HFR is the focus metric: the radius containing half a star's flux. Smaller

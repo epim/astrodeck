@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/caps.ts — capability-gate hooks (W2.5). FAIL-CLOSED: until the principal
 // resolves, treat the caller as a viewer (caps = []), so a control surface never
 // flashes enabled before /api/me lands. Under the `none` provider the server

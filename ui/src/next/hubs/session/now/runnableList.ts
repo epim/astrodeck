@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // runnableList.ts - one ordered list of everything a phone can START tonight:
 // saved flows AND saved plans, in the order the operator is likeliest to want.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Persisted server configuration — the single source of truth for the observing
 site and the imaging optics.
 
@@ -17,6 +19,7 @@ Longitude sign convention — load-bearing:
 """
 from __future__ import annotations
 
+import math
 import os
 import secrets
 import sys
@@ -145,13 +148,26 @@ class SafetyConfig(BaseModel):
     enabled: bool = True
     preset: str = "backyard"               # backyard | remote | custom
     poll_each_frame: bool = True
-    #: FALL BACK TO THE SKY ITSELF when safety is armed and no monitor is
-    #: assigned - the shipped default, and the state this rig has run in for
-    #: months. The engine already takes a cloud verdict off every frame (it logs
-    #: "sky verdict: clear (200 bright stars, 17x noise)"), and until now that
-    #: measurement fed only rule-driven holds. A Plan-built night with no
-    #: instructions therefore had NOTHING watching the sky once it started: the
-    #: weather veto guards the START, not the running night.
+    #: Does the assigned safety monitor's own reading cover cloud cover at
+    #: all? True (the default) is the common case, a standalone cloud+rain
+    #: sensor. False is the SAFETY node's "Rain + wind + power (pair with
+    #: Cloud Watch)" scope (`flows/wizard.py`'s `_WATCH_PAIRED`): a monitor
+    #: that only reads rain, wind or power, meant to be paired with a CLOUD
+    #: WATCH node for the transient tier. Nothing enforces that the flow
+    #: actually wires one (#193), so this flag is what lets
+    #: `sky_fallback_hold` below tell the difference between "this rig has a
+    #: real cloud source" and "this rig does not", instead of only ever
+    #: asking "is a monitor assigned at all".
+    monitor_reads_clouds: bool = True
+    #: FALL BACK TO THE SKY ITSELF when safety is armed and either no monitor
+    #: is assigned, or one is assigned but does not read clouds
+    #: (`monitor_reads_clouds` False) - the shipped default, and the state
+    #: this rig has run in for months. The engine already takes a cloud
+    #: verdict off every frame (it logs "sky verdict: clear (200 bright
+    #: stars, 17x noise)"), and until now that measurement fed only
+    #: rule-driven holds. A Plan-built night with no instructions therefore
+    #: had NOTHING watching the sky once it started: the weather veto guards
+    #: the START, not the running night.
     #:
     #: A cloudy verdict engages the existing self-releasing hold - stand down
     #: the guider, probe, resume on a clear streak, and only abort+park if it
@@ -164,8 +180,9 @@ class SafetyConfig(BaseModel):
     #: frames showed 200 bright stars at 17x noise; a forecast that wrong must
     #: never be allowed to park a mount. This reads the sky, not a prediction.
     #:
-    #: Inert unless safety is armed AND no monitor is assigned, so a rig with a
-    #: real monitor is untouched.
+    #: Inert unless safety is armed AND the assigned monitor does not cover
+    #: clouds (which includes no monitor at all, #193) - so a rig whose
+    #: monitor already reads clouds is untouched.
     sky_fallback_hold: bool = True
     #: Lead time for the live meridian-flip ETA chip (#239 stage A: moved off
     #: SequencePlan). Operator preference about how much warning they want, not
@@ -287,7 +304,10 @@ class EscalationConfig(BaseModel):
     #: one setting split across two layers for no reason. 0 = off.
     hfr_reject_factor: float = Field(0.0, ge=0, le=10)
     no_progress_watchdog_s: int = 0        # 0 = off
-    reconnect_resume: bool = False         # Alpaca-only; off by default (C2-15)
+    # Off by default (C2-15). Was "Alpaca-only" -- stale since the gate
+    # (sequence/engine.py._reconnect_gate) started serving the native camera
+    # backends too (#16), not only Alpaca devices.
+    reconnect_resume: bool = False
     reconnect_retries: int = 1
     # Armed safety with NO monitor assigned. A registered-but-disconnected
     # monitor already fails CLOSED; an ABSENT one used to fail open, and the two
@@ -1668,21 +1688,28 @@ def fov_deg(focal_mm: float, pixel_um: float, w_px: int, h_px: int) -> tuple[flo
     a mosaic tiled from config and a UI's preview of that config no longer
     disagree over a recorded one.
 
-    NOT A BIT-EXACT MATCH WITH THE CLIENT MIRRORS, otherwise (found during
-    W3 integration, #623, not fixed here -- a wider change
-    than one fix belongs in): this function still goes through
-    ``image_scale_arcsec_px``'s rounded ``ARCSEC_PER_RAD`` (206.265, not the
-    exact 206264.806.../1000), where ``fovDegFromSensorMm`` computes the
-    exact-trig ``(sensor_mm / focal_mm) * (180 / pi)`` directly. The two
-    client mirrors agree with EACH OTHER exactly (what #168 asked for); the
-    gap from this function is on the order of 1e-6 deg at typical amateur
-    rigs -- far below anything a plate solve or a mosaic tiling measures,
-    but real, and a test comparing the two bit-for-bit will see it
-    (``ui/src/components/flows/framing/__tests__/framingSections.test.tsx``).
+    THE EXACT TRIG FORMULA (#623), not ``image_scale_arcsec_px``'s rounded
+    ``ARCSEC_PER_RAD`` (206.265, not the true 206264.806.../1000). #168 made
+    the two client mirrors agree with EACH OTHER exactly by routing both
+    through ``fovDegFromSensorMm``'s ``(sensor_mm / focal_mm) * (180 / pi)``,
+    but left this function going through the rounded constant, so the server
+    and the UIs disagreed with each other by about 1e-6 deg at typical
+    amateur rigs -- far below anything a plate solve or a mosaic tiling
+    measures, but real, and a cross-language test pins all three to the same
+    value at 1e-9 (``tests/test_w5_fov_deg_exact_formula.py``). Computed the
+    same way the UIs build ``sensorMm`` (pixel pitch in microns times pixel
+    count, divided by 1000 for millimetres) so the three stay in lockstep by
+    construction rather than by rounding to the same number of digits.
+    ``image_scale_arcsec_px`` itself is UNCHANGED: the arcsec/px readout is a
+    separate, still-rounded figure that both UIs also still round the same
+    way, and only the angular FOV this function returns needed the exact
+    formula.
     """
-    s = image_scale_arcsec_px(focal_mm, pixel_um, binning=1)
-    fw = s * w_px / 3600.0
-    fh = s * h_px / 3600.0
+    if focal_mm <= 0:
+        return 0.0, 0.0, 0.0
+    rad_per_deg = 180.0 / math.pi
+    fw = (pixel_um * w_px / 1000.0) / focal_mm * rad_per_deg
+    fh = (pixel_um * h_px / 1000.0) / focal_mm * rad_per_deg
     return fw, fh, (fw * fw + fh * fh) ** 0.5
 
 

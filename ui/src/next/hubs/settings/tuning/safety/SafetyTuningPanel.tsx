@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SafetyTuningPanel.tsx - the body of Settings > MORE > SAFETY after the
 // reduction (wave R7, T-R7-9; plan section 3.F1 and ruling 3).
 //

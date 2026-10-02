@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowNodeDom.test.tsx — the node card and its port rows, MOUNTED.
 //
 //   Run directly:  npx tsx src/components/flows/__tests__/flowNodeDom.test.tsx

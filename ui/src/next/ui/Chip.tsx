@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX, ReactNode } from "react";
 import { lockedAttrs, lockedClass, honestPress } from "./honest";
 import type { Tone } from "./types";

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // equipment.test.ts — pure-logic tests for the Equipment assignment lane
 // (spec §4.1). Inline-assert harness (no vitest); runs via `npx tsx`.
 import {

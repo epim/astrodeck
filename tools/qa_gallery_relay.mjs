@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tools/qa_gallery_relay.mjs — gallery QA against the RELAY, not localhost.
 //
 // WHY THE RELAY. The rig binds 127.0.0.1 and every remote client's traffic is

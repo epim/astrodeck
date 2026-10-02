@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-1 calibration index keys — pure header → key extraction (no I/O)."""
 from __future__ import annotations
 

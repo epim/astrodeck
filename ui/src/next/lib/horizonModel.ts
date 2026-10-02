@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // horizonModel.ts - the per-site horizon polyline: altitude lookup, edit
 // helpers (add/move/remove a point) and the photosphere auto-trace (README
 // "12. Sites and Horizon" + "Formulas to lift" -> Horizon: "polyline of (az,

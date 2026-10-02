@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // connectionOpticsDom.test.tsx - the Connection and Optics sheets, MOUNTED.
 //
 //   Run directly:  npx tsx src/next/hubs/settings/__tests__/connectionOpticsDom.test.tsx

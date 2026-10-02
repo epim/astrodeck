@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#531 - a Rotate to PA solve must not shoot through the filter the run left.
 
 The night this comes from: 2026-09-29, the first rig mosaic (NGC 1499,

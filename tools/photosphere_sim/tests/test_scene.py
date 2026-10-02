@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The chart yard scene file and the landmark palette.
 
 These tests read `scenes/chartyard.json` as an artifact and check it against

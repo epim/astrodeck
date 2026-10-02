@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A run whose failures can reach nobody must say so, once, at the start.
 
 The dispatcher, the sinks and the wall-clock dead-man's-switch are all built and

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsReanchorToast.test.ts - a save that restarts a block's counts says so
 // in a toast as well as on the flow log (#189; spec 3.3, Revision 2 ruling 3;
 // S4 orchestrator ruling 8).

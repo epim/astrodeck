@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every plate-solve frame gets its own name, and a sharing violation on its
 write is retried, never a centring strike (#532, hub half; H4 contract 1).
 

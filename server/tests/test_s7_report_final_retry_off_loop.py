@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The report's sleeps stay off the event loop (#477, S7 orchestrator ruling 5).
 
 Two sleeps live in ``sequence/report.py``, and both were blocking calls
@@ -46,6 +48,8 @@ from astrodeck.persist import write_json_atomic
 from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
 from astrodeck.sequence.report import FrameRecord, SessionReporter
 from astrodeck.sequence.session import Session, SessionFrame, session_store
+
+from _deadline import wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -166,10 +170,11 @@ async def test_a_failed_final_write_retries_while_the_loop_runs(monkeypatch):
     r = SessionReporter(SequencePlan(name="t"), report_id="retry-off-loop",
                         started_at=1.0)
     r.finalize("unsafe")
-    for _ in range(300):
-        if "writes_done" in seen:
-            break
-        await asyncio.sleep(0.01)
+    # A wall-clock deadline (#610): 300 x sleep(0.01) is 3 s on Linux but
+    # 4.7 s on Windows (sleep rounds up to the 15.6 ms timer there), so a
+    # round count gives the two platforms different real patience.
+    await wait_until(lambda: "writes_done" in seen, timeout_s=6.0,
+                     interval_s=0.01)
     assert seen.get("writes_done") == 0, (
         f"the loop was held through the retry: its callback ran after "
         f"{seen.get('writes_done')} writes")
@@ -262,10 +267,12 @@ async def test_a_snapshot_older_than_the_retry_does_not_replace_it(
     r = SessionReporter(SequencePlan(name="t"), report_id="late-vs-retry",
                         started_at=1.0)
     r.record_frame(FrameRecord(ts=1.0, target="M31"))
-    for _ in range(500):               # the snapshot is built and held
-        if "thread" in held:
-            break
-        await asyncio.sleep(0.01)
+    # The snapshot is built and held, on a wall-clock deadline (#610): 500 x
+    # sleep(0.01) is 5 s on Linux but 7.8 s on Windows (sleep rounds up to
+    # the 15.6 ms timer there), so a round count gives the two platforms
+    # different real patience.
+    await wait_until(lambda: "thread" in held, timeout_s=10.0,
+                     interval_s=0.01)
     assert "thread" in held, "premise: the snapshot's worker is held"
     r.finalize("unsafe")
     got = await _landed("late-vs-retry")
@@ -330,10 +337,9 @@ async def test_a_retry_that_fails_again_is_said_on_the_loop(monkeypatch):
                         started_at=1.0)
     rep = r.finalize("unsafe")
     assert rep.end_reason == "unsafe"
-    for _ in range(300):
-        if len(lines) >= 2:
-            break
-        await asyncio.sleep(0.01)
+    # A wall-clock deadline (#610): see the first case in this file for why
+    # a round count of sub-0.1 s sleeps is platform-dependent.
+    await wait_until(lambda: len(lines) >= 2, timeout_s=6.0, interval_s=0.01)
     assert calls["n"] == 2
     assert [m.split(" at ")[0] for m, _ in lines] == [
         "session report write failed (final report, retrying once)",

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#166 / backlog W2 WP-11: the hub's own meridian-flip line is site-derived.
 
 `Hub.meridian_flip` logs "meridian flip: stopping guiding and re-slewing" at

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ringDial.ts — the seat geometry behind BOTH camera-dial layouts: the quarter
 // arc that fans out of the parked disc, and the full ring a crowded category
 // opens instead (2026-08-08).

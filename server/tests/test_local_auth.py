@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Local-auth core tests (W2.3-bis + W2.6): bcrypt helpers, UserStore CRUD,
 multi-method resolution.
 

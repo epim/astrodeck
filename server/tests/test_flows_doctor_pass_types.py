@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The doctor reads a pass wire from every type the vocabulary gives the port
 (#375; spec 2026-09-23 flows mosaic, 1.3, 1.4 item 4, 1.5 items 5-6, 1.8 M3,
 M4 and M12).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safety.tsx - the SAFETY MONITOR device sheet (plan hub-rig.md B.9, T-RIG-6).
 //
 // WHAT THIS SHEET IS FOR. Everything on it answers one of two questions: what

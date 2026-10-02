@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """probe.py -- Playwright walk of the AstroDeck UI, driven by a JSON route list.
 
 Run with the SYSTEM python (has Playwright + Chromium; the server venv does

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """/healthz answers the build identity baked into the image (#462 item 2).
 
 Before this, ``GET /healthz`` answered only ``{"ok": true, "ts": ...}``, so
@@ -20,6 +22,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -200,3 +204,31 @@ def test_the_runtime_stage_declares_the_build_args_and_passes_them_to_env():
                          f"so /healthz cannot see the build arg")
         assert runtime.index(args[0]) < env_idx[0], (
             f"ENV {name} is set before ARG {name} is declared")
+
+
+def test_the_test_client_import_avoids_the_deprecated_httpx_shim():
+    """#629: under the pinned starlette==1.7.0, ``starlette.testclient``
+    tries ``import httpx2 as httpx`` first and only falls back to the real
+    ``httpx`` -- with a StarletteDeprecationWarning -- when httpx2 is
+    missing. That probe runs once, at module-import time: by the time any
+    test function here executes, this file's own ``from
+    starlette.testclient import TestClient`` above (and every other test
+    file's) has already imported the module and cached the result, so a
+    plain ``pytest.warns`` in-process can no longer observe it. A fresh
+    subprocess is the only way to see the real, once-per-process check.
+
+    MUTATION "drop httpx2 from the dev requirement" (the ``httpx2`` line
+    removed from relay/requirements-dev.txt, reproduced by uninstalling it
+    from an otherwise-identical venv). Observed:
+      starlette.exceptions.StarletteDeprecationWarning: Using `httpx` with
+      `starlette.testclient` is deprecated; install `httpx2` instead.
+    """
+    result = subprocess.run(
+        [sys.executable, "-W", "error::UserWarning", "-c",
+         "import starlette.testclient"],
+        capture_output=True, text=True, timeout=30)
+
+    assert result.returncode == 0, (
+        "starlette.testclient still falls back to the deprecated httpx "
+        f"shim (relay/requirements-dev.txt should pin httpx2): "
+        f"{result.stderr.strip()}")

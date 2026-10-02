@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The rig server's uvicorn log carries the path of a request, never its query
 string (#550): the fix WP-05a in backlog ruling D-nn (owner-approved
 2026-09-30), which gave the relay a path-only formatter in #520 to the rig

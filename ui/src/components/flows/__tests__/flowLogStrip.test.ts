@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowLogStrip.test.ts — the rules the log strip cannot get wrong quietly.
 //   Run:  npx tsx src/components/flows/__tests__/flowLogStrip.test.ts   (from ui/)
 //

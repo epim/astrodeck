@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // difficulty.ts — pure display helpers for the beginner difficulty tag (NOV-3).
 // The tier is DERIVED SERVER-SIDE (catalog/difficulty.py); this module only turns
 // it into a label / glyph / tone / hint. Glyph is the primary channel, tone the

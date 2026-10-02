@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // preflight-gate.test.ts — FIX-D / F-P0.1 safety regression.
 //
 // The ship-blocker fix wires the pre-flight gate into Run Sequence. The Run

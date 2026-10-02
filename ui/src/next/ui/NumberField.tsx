@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useId, useRef, useState, type ChangeEvent, type FocusEvent, type JSX, type KeyboardEvent } from "react";
 import { Field } from "./Field";
 import { lockedAttrs, lockedClass } from "./honest";

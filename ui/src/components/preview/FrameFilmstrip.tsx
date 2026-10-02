@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FrameFilmstrip.tsx — thumbnail-backed frame history (stream T).
 // (spec §5 "Filmstrip", decisions #11, §10 Monitor reuse)
 //

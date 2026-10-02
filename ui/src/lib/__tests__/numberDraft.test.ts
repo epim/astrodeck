@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the plan editor's numeric-field reading (UX review
 // 2026-07-28, rank 1: "plan numeric fields cannot be cleared; every edit
 // concatenates").

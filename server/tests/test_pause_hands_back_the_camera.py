@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pausing a run must hand the camera back, and must stay paused.
 
 Reported from the rig 2026-08-26: "when I paused the flow it just auto resumed

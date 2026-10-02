@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A focuser read taken only to fill in a log number must never end the run
 (#577, an #507 residual; backlog ruling WP-01 (b), owner-approved 2026-09-30).
 

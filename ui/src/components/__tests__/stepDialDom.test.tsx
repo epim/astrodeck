@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stepDialDom.test.tsx — the step dial's arc, and the tap that has to close it.
 //
 //   Run directly:  npx tsx src/components/__tests__/stepDialDom.test.tsx

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // finder/index.ts - the boundary the rest of the Sky hub imports.
 //
 // T-SKY-2 (the hub shell, the cards, the lens dial, FRAME) codes against exactly

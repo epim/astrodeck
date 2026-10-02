@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Cloud occlusion geometry, stage 1.
 
 Every test here pins one specific way the module can be plausibly wrong: a

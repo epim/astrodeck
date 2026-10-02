@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // coolerCurve.test.ts - the camera sheet's ring arc and cooling curve, as maths.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/__tests__/coolerCurve.test.ts

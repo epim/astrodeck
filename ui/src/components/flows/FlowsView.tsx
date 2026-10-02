@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowsView.tsx — the Flows route entry (MILESTONE2-CONTRACT §C.1).
 //
 // It renders three things and decides nothing else: the view marker, the tier,

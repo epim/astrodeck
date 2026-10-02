@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-07: the FITS header must carry the BEST KNOWN pointing, not necessarily
 the mount's own report -- see
 docs/superpowers/specs/2026-09-06-guider-night-defects-triage.md, GN-07/GN-10.

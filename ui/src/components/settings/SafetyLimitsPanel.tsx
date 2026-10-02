@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SafetyLimitsPanel.tsx — the safety limits that decide when a night stops.
 //
 // Every field here was config-file-and-API-only until now. They are not obscure

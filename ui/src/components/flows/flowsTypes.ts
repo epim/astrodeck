@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsTypes.ts — the shapes the Flows surface shares with the server.
 //
 // These mirror server/astrodeck/flows/models.py. Two of them carry a trap that
@@ -188,6 +190,16 @@ export interface FlowSelection {
 
 export interface FlowRunState {
   phase: FlowRunPhase;
+  /** When `flowsRun` last optimistically set `phase` to a live value, or null.
+   *  `phase` is written the instant a run's POST returns, before the engine's
+   *  first publish (#189 S5) - a guess that needs a bound, since nothing
+   *  server-side confirms it. Bridges a live-reading `phase` for at most
+   *  `RUN_PHASE_BRIDGE_MS` (`flowRunControls.tsx`) past this moment, after
+   *  which the displayed state defers to the server's own answer (`ours`)
+   *  alone; cleared back to null the moment `onSequence` below sees the
+   *  server report the run that set it has ended (#647), so a run that ends
+   *  well inside the bridge does not go on reading live for the rest of it. */
+  startedAt: number | null;
   /** Seconds remaining, or null when the server has not said.
    *
    *  NEVER a client-side countdown from an assumed total. An ETA the client

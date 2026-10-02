@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // galleryTile.test.tsx — the gallery grid tile (components/gallery/FrameTile).
 //
 //   Run directly:  npx tsx src/components/__tests__/galleryTile.test.tsx

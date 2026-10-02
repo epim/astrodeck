@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ConnectOnceCard.tsx - FIRST NIGHT / CONNECT ONCE (plan A.2).
 //
 // This card is also where `components/NotConnectedInterstitial.tsx` goes to

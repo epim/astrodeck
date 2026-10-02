@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A panel's missing peak altitude is explained in the operator's words (#405
 item 1).
 

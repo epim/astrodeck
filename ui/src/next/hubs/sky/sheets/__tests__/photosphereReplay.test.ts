@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The replay driver, checked on its own three moving parts: the PNG codec, the
 // area-averaging resampler the canvas stub is built on, and the driver's
 // determinism on a case small enough to build here.
@@ -9,8 +11,8 @@
 // byte-identical files.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
@@ -759,9 +761,6 @@ await test('capture outcomes: only the waits before the overlap test keep a refu
 // exactly the scanner's own analysis canvas for a 3:4 frame, so the
 // resampler neither shrinks nor magnifies on this pair - the two `resample`
 // cases at the top of this file grade that path on their own.
-/** The repository root: somewhere that is emphatically NOT tmpdir, used by
- *  the #88 guard case to prove the delete refuses a path it does not own. */
-const REPO_ROOT = fileURLToPath(new URL('../../../../../../../', import.meta.url));
 const FIXTURES = fileURLToPath(new URL('../../../../../../../tools/photosphere_sim/fixtures/', import.meta.url));
 const FIXTURE_RIGHT_LENS = 'chartyard-shortpan-60';
 const FIXTURE_WRONG_LENS = 'chartyard-shortpan-70';
@@ -883,9 +882,23 @@ await test('#88 the recursive delete refuses a path it does not own', () => {
   // MUTATION: delete the `throw` from rmTemp. Observed: the probe directory
   // and its file are gone and the "still there" assertion fails -- which is
   // precisely what happened to chartyard-arc075-60 and -70.
-  const probe = join(REPO_ROOT, '.rmtemp-guard-probe');
+  //
+  // Issue #612: this used to anchor the probe at the repository root (seven
+  // `../` up from this file), reasoning that a checkout is never inside the
+  // OS temporary directory. Every wave worktree lives under the Temp scratch
+  // root (see the plan's "one git worktree" setup), so that reasoning fails
+  // in exactly the environment every WP runs in: the repo root THEN starts
+  // with `tmpdir() + sep`, rmTemp's guard waves the delete through instead of
+  // refusing it, and the probe is gone before the `finally` below runs
+  // `rmdirSync` on it -- which throws ENOENT and buries the real failure
+  // under a confusing cleanup error. `homedir()` has no such relationship to
+  // `tmpdir()` on any platform this suite runs on (Windows nests Temp inside
+  // the profile; Linux CI keeps /tmp and $HOME as unrelated siblings), so a
+  // probe anchored there stays outside tmpdir() regardless of where this
+  // checkout happens to sit. `mkdtempSync` gives it a unique name too, so two
+  // worktrees' suites running at once on one machine do not collide on it.
+  const probe = mkdtempSync(join(homedir(), '.rmtemp-guard-probe-'));
   const witness = join(probe, 'stand-in-for-a-recording.txt');
-  mkdirSync(probe, { recursive: true });
   writeFileSync(witness, 'not a real recording, but it is not tmpdir either');
   try {
     let threw = '';
@@ -909,10 +922,11 @@ await test('#88 the recursive delete refuses a path it does not own', () => {
     rmTemp(mine);
     assert(!existsSync(mine), 'rmTemp did not delete a directory under tmpdir');
   } finally {
-    // Non-recursive on purpose: this case is about not reaching for a
-    // recursive delete on a path outside tmpdir.
-    rmSync(witness, { force: true });
-    rmdirSync(probe);
+    // `force: true` and a plain recursive rmSync, not rmdirSync: issue #612
+    // was masked by exactly this cleanup throwing ENOENT (the probe already
+    // gone) in place of the real assertion failure above. Cleanup must never
+    // out-shout the test it is cleaning up after.
+    rmSync(probe, { recursive: true, force: true });
   }
 });
 

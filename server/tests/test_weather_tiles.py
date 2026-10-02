@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Weather tile proxy tests (weather spec §6/§14): Literal/range 422, disabled
 = 404 no-store + zero-httpx (_Boom), verbatim IEM slugs, TTL disk cache hit
 skips the network, PNG-magic validation, failure never cached, RBAC gate."""

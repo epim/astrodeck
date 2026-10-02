@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // allocation.ts - quick-session filter allocation (README "3. Quick session
 // setup" + "Formulas to lift" -> Filter allocation):
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the Alpaca binary ImageBytes decoder
 (``AlpacaCamera._parse_imagebytes``, server/astrodeck/devices/alpaca.py).
 

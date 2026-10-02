@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """python -m astrodeck.comhost — the bundled COM->Alpaca host entry (COM-T2).
 
 Binds loopback-only, publishes its chosen ephemeral port to --portfile, prints

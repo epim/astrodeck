@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyPackEditor.tsx - the online survey toggle and the offline HiPS pack (wave
 // R7, T-R7-14; plan section 3.F17, cutover table section 7).
 //

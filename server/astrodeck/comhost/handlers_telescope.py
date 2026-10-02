@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Telescope COM<->Alpaca handlers (COM-T3). Each entry maps an Alpaca method
 (exactly what AlpacaTelescope in devices/alpaca.py calls) to its ASCOM COM
 member. Handlers run on the device's STA thread: obj is the live COM object."""

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sequence plan data model (pydantic, shared with the REST API)."""
 from __future__ import annotations
 

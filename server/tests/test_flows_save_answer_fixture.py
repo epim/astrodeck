@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The save answer's ``reanchored`` rows, recorded where the UI can read them
 (#352, S4 orchestrator ruling 6; #353 item 7's shape).
 

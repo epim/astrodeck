@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Ground truth for the chart yard, all from c_ref = [0, 0.75, 1.4].
 
 Every expectation is arithmetic on the scene's own declared numbers, written

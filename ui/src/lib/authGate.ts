@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/authGate.ts — what the console may SAY, and what it may still be HOLDING,
 // while a sign-in gate stands in front of it (#117).
 //

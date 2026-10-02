@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Multi-night Session entity + store (sessions spec §2).
 
 One JSON file per session under ``CAPTURE_DIR/sessions/<id>.json`` (written
@@ -114,6 +116,13 @@ class SessionFrame(BaseModel):
     """One ledger entry (spec §2). ``metrics`` is an open float dict so a later
     PixInsight integration adds keys without a schema migration (spec §10)."""
     id: str = Field(default_factory=lambda: uuid4().hex)
+    # 0.0 (the default) means "never stamped a real capture time" -- the
+    # engine always stamps a banked frame with the exposure's own clock, so
+    # 0.0 only ever appears on a frame this store SYNTHESIZED rather than
+    # recorded (``migrate_legacy_resume``, #265). ``continuation._usable``
+    # already reads it that way ("a frame the engine never stamped carries
+    # 0.0") for ADOPT's ephemeris check, so a synthesized frame is left at
+    # 0.0 rather than given a fabricated one: see ``migrate_legacy_resume``.
     ts: float = 0.0
     night: str = ""                 # report_id this frame was captured under
     target_id: str = ""
@@ -1301,7 +1310,22 @@ def migrate_legacy_resume() -> Session | None:
     even when unparseable — it is single-slot garbage either way, and this
     function must never raise on a corrupt legacy file. A bad top-level
     ``ts`` falls back to ``now()``; a bad individual ``done`` entry (bad key
-    or non-numeric count) is skipped and the rest of the migration proceeds."""
+    or non-numeric count) is skipped and the rest of the migration proceeds.
+
+    SYNTHESIZED FRAMES CARRY NO ``ts`` (#265). The legacy file names only ONE
+    instant for the whole run (its own top-level ``ts``, read above as
+    ``created_ts``), never one per frame, so stamping each synthesized frame
+    with ``now()`` — the migration's own clock, not a capture's — invented a
+    capture time out of nothing. A body step's ADOPT match (H3 orchestrator
+    ruling 7, ``continuation._capture_times``) reads a frame's ``ts`` as when
+    it was taken and checks the old pointing against the ephemeris at that
+    instant; fed the migration time instead, it almost always finds the body
+    elsewhere and leaves the step unmatched for the wrong reason, and could in
+    principle find it RIGHT by coincidence and match wrongly. Left at the
+    model default (0.0, "never stamped"), ``_capture_times``'s existing
+    ``_usable`` filter already treats these frames exactly like a frame the
+    engine never got to stamp, so the step is unmatched by the rule that
+    says "no real capture time", not by luck."""
     legacy = _hubmod.CAPTURE_DIR / ".sequence_resume.json"
     try:
         raw = json.loads(legacy.read_text(encoding="utf-8"))
@@ -1334,8 +1358,11 @@ def migrate_legacy_resume() -> Session | None:
         except (TypeError, ValueError, IndexError):
             continue
         for _ in range(n):
+            # NO ``ts`` (#265): see the "SYNTHESIZED FRAMES" note above. The
+            # model default (0.0) is what marks a synthesized frame apart
+            # from a captured one.
             s.frames.append(SessionFrame(
-                ts=now, night=report_id, target_id=target.id,
+                night=report_id, target_id=target.id,
                 step_id=step.id, path="", auto_accepted=True))
     session_store.save(s)
     _safe_unlink(legacy)

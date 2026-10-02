@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef } from 'react';
 import type { PhotosphereSweep } from './photosphere';
 import { projectRay, skyVector, type V3 } from './photosphereGeometry';

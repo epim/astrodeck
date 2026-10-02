@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cropRoi.test.ts — the load-bearing geometry behind the pixel-peep zoom.
 // Pure lib only; the render shells (CropOverlay/LoupePanel/useCropZoom) are
 // deliberately DOM-untested because all their logic lives here.

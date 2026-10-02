@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-30a (a): ``hub.last_sky_angle`` keeps the record with the newest
 ``exposed_at``, not the record from whichever solve happened to finish last
 (#292).

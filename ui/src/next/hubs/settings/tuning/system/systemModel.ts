@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // systemModel.ts - the pure half of the four SYSTEM editors (wave R7, T-R7-12:
 // Update, Factory reset, Credits, Restricted assets).
 //

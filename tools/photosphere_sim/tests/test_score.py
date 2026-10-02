@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``score.score_case`` against the ideal result ``ideal.make_ideal_result`` builds.
 
 The scorer is developed against an output that is right by construction, so

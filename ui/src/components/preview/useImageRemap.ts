@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useImageRemap — client-side LUT remap for the LINEAR/raw path (sim, Alpaca).
 // (live-preview spec §7 "useImageRemap", §2 render-strategy table — stream S)
 //

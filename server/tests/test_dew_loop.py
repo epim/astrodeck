@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """D-RIG-3: the dew-margin heater loop (``astrodeck/dew.py``).
 
 The loop turns one number - air temperature minus dew point - into a heater

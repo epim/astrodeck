@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for horizonModel.ts. Sabotage check: dropping the wrap
 // extension points (first-before-last / last-after-first) turns the
 // 315-degree wrap test red; loosening movePoint's neighbour clamp turns
