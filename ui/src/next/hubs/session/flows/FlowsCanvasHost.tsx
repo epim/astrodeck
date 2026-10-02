@@ -95,6 +95,41 @@ export const CANVAS_LOADING_HINT =
   "The open this host asked for has not answered yet, so there is nothing "
   + "here to show.";
 
+/** How long the cold-load retry below will wait, mid-attempt, for the flows
+ *  list to land before giving up on it and retrying anyway (#658). Not tied to
+ *  `flows.libraryError`: `flowsOpen` writes that same field for BOTH the
+ *  list's own load failure and this very read's failure (`openFlow.ts`'s own
+ *  comment on `flowOpenFailure`), so there is no clean signal in the store for
+ *  "the list failed" that could be told apart from "this read just failed".
+ *  A bound this generous is invisible on a live rig and still finite on a dead
+ *  one. */
+const LIBRARY_RETRY_WAIT_MS = 5000;
+
+/** True once `FlowsScreen`'s own `flowsLoadLibrary()` - started the SAME
+ *  render this host mounts on a fresh tab - has answered. */
+function libraryHasLoaded(): boolean {
+  return useStore.getState().flows.libraryLoaded;
+}
+
+/** Resolves once the flows list has loaded, or after {@link
+ *  LIBRARY_RETRY_WAIT_MS}, whichever comes first - the one wait the cold-load
+ *  retry (#658) gives the list before trying again anyway. */
+function waitForLibrary(): Promise<void> {
+  if (libraryHasLoaded()) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    const unsubscribe = useStore.subscribe((s) => { if (s.flows.libraryLoaded) finish(); });
+    const timer = setTimeout(finish, LIBRARY_RETRY_WAIT_MS);
+  });
+}
+
 /* THE TWO BOXES THIS FILE NEEDS LIVE IN `canvas/canvas.css` NOW.
  *
  * They were inline styles, on the argument that a cutover should not add a
@@ -143,13 +178,34 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
   // goes through; while it is false the host shows a waiting card instead,
   // never the three panels above. A late answer to an earlier attempt
   // (another id, or the record changed under it) is dropped.
+  //
+  // ONE RETRY FOR THE COLD-LOAD RACE (#658). A fresh tab on `#/session/flows
+  // ?open=<id>` mounts this host with the store exactly as `FLOWS_INIT` leaves
+  // it - nothing loaded - the same render `FlowsScreen`'s own
+  // `flowsLoadLibrary()` starts the flows-list GET. On a server whose
+  // single-flow read can lose that race, firing straight to `setFailure` below
+  // turned a timing loss into a permanent "That flow did not open", identical
+  // to a truly missing id. So a failure that happened before the list had
+  // loaded is held back - the waiting card above already covers it, since
+  // nothing has visibly changed - and retried once the list lands (or this
+  // host gives up waiting for it, `waitForLibrary`). Only a SECOND failure is
+  // reported; a flow opened from an already-loaded list never takes this
+  // branch at all, because `libraryHasLoaded()` is already true by then.
   useEffect(() => {
     if (!named || openId === named) return;
     let current = true;
     const before = libraryErrorNow();
-    void openFlowById(named).then((landed) => {
-      if (current && !landed) setFailure({ id: named, from: openId, reason: flowOpenFailure(before) });
-    });
+    void (async () => {
+      const landed = await openFlowById(named);
+      if (!current || landed) return;
+      if (!libraryHasLoaded()) {
+        await waitForLibrary();
+        if (!current) return;
+        const retried = await openFlowById(named);
+        if (!current || retried) return;
+      }
+      setFailure({ id: named, from: openId, reason: flowOpenFailure(before) });
+    })();
     return () => { current = false; };
   }, [named, openId]);
 
