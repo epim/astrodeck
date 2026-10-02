@@ -269,10 +269,17 @@ class SimRig:
     """Shared state tying the simulated devices together."""
 
     def __init__(self) -> None:
-        self.ra_hours = 5.59          # roughly M42 for a pretty default
+        self._ra_hours = 5.59         # roughly M42 for a pretty default
         self.dec_deg = -5.39
-        self.tracking = True
-        self.parked = False
+        #: The hour angle held constant while ``ra_hours`` drifts (#519), or
+        #: None while nothing is holding it -- see ``ra_hours``'s property
+        #: below for the model. Backing fields, not plain attributes, because
+        #: ``tracking`` and ``parked`` both gate the drift and the drift must
+        #: start and stop exactly at the instant either one changes, not at
+        #: the next unrelated read.
+        self._ra_anchor_ha: float | None = None
+        self._tracking = True
+        self._parked = False
         self.focuser_pos = 19_200
         self.best_focus = 20_000      # the autofocus routine must find this
         #: Focuser steps of defocus per pixel of added star sigma — how STEEPLY
@@ -368,6 +375,122 @@ class SimRig:
         # opt-in idiom). ``SimCoverCalibrator.calibrator_on`` sets it; the camera
         # render (below) reads it.
         self.flat_illumination = 0.0
+
+    # ---------------------------------------------- RA drift while not tracking
+    #
+    # A real GEM with tracking off holds its AXES still against the ground,
+    # not its sky coordinate: the hour angle (HA = LST - RA) is what stays
+    # constant, so the RA it reports increases at the sidereal rate (#519).
+    # Before this, ``ra_hours`` was a plain attribute that just sat at
+    # wherever the last slew left it, so a park-held mount's hour angle
+    # visibly changed with the clock while the mount did not move -- the
+    # simulator was answering a geometry question without modeling the thing
+    # that answers it (the #298/#392 class).
+    #
+    # Modeled as a property pair rather than a periodic tick because nothing
+    # in this rig ticks the simulator on a clock of its own: it is read
+    # on demand (``get_position``, the pier-side oracles, every test that
+    # reads ``tel.rig.ra_hours`` directly), on whatever clock is reading it
+    # -- the real one in production, the fake one `catalog.coords` is put on
+    # for a clocked test. Computing the drift at read time, from an anchored
+    # hour angle, is correct under either clock with no tick of its own.
+    #
+    # Drift runs only while NOT TRACKING AND NOT PARKED: `park`/`find_home`
+    # leave the mount pointed at the pole, where RA is not a quantity a real
+    # mount's hour angle meaningfully holds, and existing park/home tests
+    # read a fixed RA back from that position.
+    def _drift_active(self) -> bool:
+        return not self._tracking and not self._parked
+
+    @staticmethod
+    def _site_longitude_deg() -> float | None:
+        """The configured site's longitude, or None with no site saved (issue
+        #24: the 0,0 default is the Gulf of Guinea, not a real hour angle to
+        hold) or none readable -- a sim must never fail a geometry query (the
+        ``_side_for_ra`` precedent on ``SimTelescope`` below) over a config
+        read."""
+        from ..config import config_store
+        from ..site_gate import site_lat_lon
+        try:
+            ll = site_lat_lon(config_store.cfg().site)
+        except Exception:
+            return None
+        return None if ll is None else ll[1]
+
+    def _lst_now(self) -> float | None:
+        from ..catalog.coords import lst_hours
+        lon = self._site_longitude_deg()
+        return None if lon is None else lst_hours(lon)
+
+    def _enter_drift(self) -> None:
+        """Freeze the CURRENT hour angle as the anchor the getter below
+        drifts ``ra_hours`` away from. None (no site, or an unreadable one)
+        falls back to the old, wrong-but-safe behavior: RA held constant."""
+        lst = self._lst_now()
+        self._ra_anchor_ha = None if lst is None else (lst - self._ra_hours)
+
+    def _settle_drift(self) -> None:
+        """Write the drifted RA back into storage and drop the anchor, so
+        the next direct read or write (a slew, a sync, a pulse) starts from
+        where the clock actually left the mount pointing, not from the RA at
+        the moment the drift began."""
+        if self._ra_anchor_ha is not None:
+            self._ra_hours = self._drifted_ra_hours()
+        self._ra_anchor_ha = None
+
+    def _drifted_ra_hours(self) -> float:
+        lst = self._lst_now()
+        if lst is None or self._ra_anchor_ha is None:
+            return self._ra_hours
+        return (lst - self._ra_anchor_ha) % 24.0
+
+    @property
+    def ra_hours(self) -> float:
+        if self._drift_active():
+            return self._drifted_ra_hours()
+        return self._ra_hours
+
+    @ra_hours.setter
+    def ra_hours(self, value: float) -> None:
+        self._ra_hours = value
+        if self._drift_active():
+            # A write while the mount is holding its hour angle (a sync, a
+            # manual nudge) is itself an authoritative repositioning, so the
+            # hold re-anchors from here rather than being overridden by the
+            # next read.
+            self._enter_drift()
+
+    @property
+    def tracking(self) -> bool:
+        return self._tracking
+
+    @tracking.setter
+    def tracking(self, on: bool) -> None:
+        on = bool(on)
+        if on == self._tracking:
+            return
+        was_drifting = self._drift_active()
+        self._tracking = on
+        if self._drift_active() and not was_drifting:
+            self._enter_drift()
+        elif was_drifting and not self._drift_active():
+            self._settle_drift()
+
+    @property
+    def parked(self) -> bool:
+        return self._parked
+
+    @parked.setter
+    def parked(self, value: bool) -> None:
+        value = bool(value)
+        if value == self._parked:
+            return
+        was_drifting = self._drift_active()
+        self._parked = value
+        if self._drift_active() and not was_drifting:
+            self._enter_drift()
+        elif was_drifting and not self._drift_active():
+            self._settle_drift()
 
     def guide_star_px(self, now_s: float) -> tuple[float, float]:
         """Ground-truth guide-star pixel position at instant ``now_s`` —

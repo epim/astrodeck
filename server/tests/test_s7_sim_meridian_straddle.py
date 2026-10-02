@@ -16,13 +16,26 @@ first crossing (spec 5.7, "Cost 1, the pre-flip idle"), changes pier side
 once at the hop that ends the wait, and from then on shoots only panels
 past the meridian, as they cross ("Cost 2").
 
-THE CHIP DURING THE WAIT IS THE SIMULATOR'S. The engine park-holds the
-mount at the wait's start ("stopping tracking"), and the simulator keeps
-its RA with tracking off (#519), so the hub's meridian block goes on
-counting down to 2-2's crossing for a mount that is not moving, and the
-chip is published from it. The checks below read the chip against where
-the mount points, as tests/test_s7_meridian_chip_cleared.py does, so they
-hold either way; the countdown's values during the wait are not graded.
+#519 LIVES HERE: this is the scenario it was seen on. Before its fix, the
+engine park-holds the mount at the wait's start ("stopping tracking"), and
+the simulator kept its RA fixed with tracking off, so the hub's meridian
+block went on counting down to 2-2's crossing for a mount that was not
+moving. Fixed two ways, both exercised below: the simulator now advances
+``rig.ra_hours`` with the sidereal clock while tracking is off, so its HOUR
+ANGLE is what holds still (a real GEM's axes do not move when the motor is
+off); and the hub reports ``status: "not tracking"`` with ``hours_to_flip``
+null whenever the mount says it is not tracking, D-11 (backlog ruling,
+owner-approved 2026-09-30). The premise check below reads ``hub.
+last_meridian`` directly -- the hub's own, freshly computed at the harness's
+hold -- rather than the engine's ``live`` chip: `_live_block` only runs on a
+published transition, and this wait is one long sleep with none in the
+middle, so ``live.meridian_eta_s`` in a state read mid-wait is simply
+whatever the last transition (entering the wait) cached, unrefreshed until
+the hop that ends it. That staleness is a separate, pre-existing property of
+how the chip is served, not graded here; the checks below read the chip
+against where the mount points, as tests/test_s7_meridian_chip_cleared.py
+does, so they hold either way, and the countdown's values during the wait
+are not graded.
 
 MUTANTS, each run in a private copy of ``server/`` (scratchpad
 ``S7-E2E-mut``), from a byte backup, never in the shared tree; each failure
@@ -147,6 +160,20 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
     assert "panel" not in seen and "pass" not in seen and {
         k: v for k, v in group.items() if k not in ("panel", "pass")} == seen, (
         f"{at}: a viewer is served {seen} across the meridian wait")
+    # #519, THE HUB HALF, AT THE INSTANT THE BUG WAS SEEN ON. The mount is
+    # genuinely park-held (not merely reporting "unknown"), and the hub's OWN
+    # block -- freshly computed by the harness's hold, not the engine's
+    # publish-cached ``live`` chip checked below -- says so: no countdown,
+    # status "not tracking" (D-11). The exact RA the simulator's sidereal
+    # drift holds is not graded here (that is `test_w7_sim_ra_drifts_while_
+    # not_tracking.py`'s job); this is only the hub treating a park-held
+    # mount as stopped.
+    assert tel.rig.tracking is False, (
+        f"{at}: premise, the mount is park-held across the meridian wait")
+    mer = night.hub.last_meridian or {}
+    assert (mer.get("status"), mer.get("hours_to_flip")) == (
+        "not tracking", None), (
+        f"{at}: the hub's own meridian block while park-held: {mer} (#519)")
     # ``live.meridian_eta_s`` IS #166 ITEM 1's: the same countdown the status
     # redaction strips as ``meridian.hours_to_flip`` (api/redact.py), republished
     # unredacted a level up because the sequence node was never in
