@@ -367,7 +367,13 @@ async def test_a_panel_struck_out_again_is_set_aside_for_the_night(
     assert [t for t, _m in lines] == [set_at, expiry + 3000.0]
     assert "a restart tonight does not retry it, the next night does" in (
         lines[1][1]), lines[1][1]
-    assert _skips(night) == [f"skipped {MISSES}"]
+    # RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): the report line now
+    # carries `mark_skipped`'s reason after a colon -- here the D-03
+    # held-pass escalation's own line (the same text `lines[1][1]` holds).
+    assert _skips(night) == [
+        f"skipped {MISSES}: 2-2 (the mosaic's last live panel) has been "
+        f"held for 6 passes in a row with no panel struck and no progress "
+        f"made; set aside for tonight"]
     first, second = night.stored.set_aside
     assert (first["kind"], first.get("expired"), second["kind"],
             second.get("expired")) == (CENTRING, True, "group", None)
@@ -473,7 +479,13 @@ async def test_a_mosaic_set_aside_whole_takes_a_panel_set_aside_for_now(
     assert night.done, night.lines[-3:]
     assert [t for t, _m in _set_aside_lines(night)] == [540.0]
     assert night.said("a full pass over 3 panels took no exposures")
-    assert _skips(night).count(f"skipped {MISSES}") == 1, _skips(night)
+    # RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): the report line now
+    # carries `mark_skipped`'s reason (the anti-spin's own line) after a
+    # colon, so the bare name no longer matches; counted on the full line.
+    reason = ("a full pass over 3 panels took no exposures; setting the "
+              "mosaic aside for tonight")
+    assert _skips(night).count(f"skipped {MISSES}: {reason}") == 1, (
+        _skips(night))
     mine = [r for r in night.stored.set_aside if r["target_id"] == "p11"]
     assert [r["kind"] for r in mine] == [CENTRING, "group"], mine
     assert not any(r.get("expired") for r in mine)
@@ -570,8 +582,13 @@ async def test_a_floor_or_a_reject_set_aside_never_expires(
     assert not any(r.get("expired") for r in stored.set_aside)
     end = max(e[0] for e in night.trace if e[1] == "state")
     assert end < SET_ASIDE_EXPIRY_S, f"the run went on to {end} s"
-    assert sorted(_skips(night)) == [f"skipped {_name('1-2')}",
-                                     f"skipped {_name('2-1')}"]
+    # RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): each report line
+    # now carries `mark_skipped`'s reason (the floor stop's and the
+    # every-filter-set-aside's own text) after a colon.
+    assert sorted(_skips(night)) == [
+        f"skipped {_name('1-2')}: 1-2 sank below its own altitude floor",
+        f"skipped {_name('2-1')}: every filter 2-1 still owes is set "
+        f"aside"]
     assert stored.owed() > 0 and stored.status == "dormant"
 
 

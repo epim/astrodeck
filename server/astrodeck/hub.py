@@ -2616,9 +2616,27 @@ class Hub:
         cone = getattr(safety, "solar_exclusion_deg", 30.0)
         if cone <= 0:
             return
-        from .catalog.coords import sun_radec
+        from .catalog.coords import angular_sep_deg, sun_radec
         sun_ra, sun_dec = sun_radec()
-        sep = _ang_sep_deg(ra_hours, dec_deg, sun_ra, sun_dec)
+        try:
+            sep = angular_sep_deg(ra_hours, dec_deg, sun_ra, sun_dec)
+        except ValueError:
+            # #324 follow-on (WP-45): a separation that cannot be measured
+            # (a non-finite target coordinate) must never read as "clear of
+            # the Sun" -- the old `_ang_sep_deg` clamped a NaN cosine to 0,
+            # which this guard would have read as sep=0.0, well inside any
+            # cone. REFUSE the slew instead, with a line that says why,
+            # rather than letting `angular_sep_deg`'s ValueError propagate
+            # as an uncaught exception.
+            bus.log("warning",
+                    f"sun-exclusion check: target position is not finite "
+                    f"(ra_hours={ra_hours!r}, dec_deg={dec_deg!r}); refusing "
+                    f"the slew rather than guessing it clear of the Sun",
+                    "mount")
+            raise DeviceError(
+                "target position could not be checked against the Sun "
+                "exclusion cone (non-finite coordinates); refusing the "
+                "slew") from None
         if sep < cone:
             raise DeviceError(
                 f"target is within {sep:.0f} deg of the Sun (exclusion "
@@ -7824,7 +7842,29 @@ class Hub:
                         | ({"centring_solve_transient": True,
                             "solve_transient": True}
                            if isinstance(e, SolveFrameTransient) else {}))
-            err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
+            from .catalog.coords import angular_sep_deg
+            try:
+                err = angular_sep_deg(solved["ra_hours"], solved["dec_deg"],
+                                      ra_hours, dec_deg)
+            except ValueError:
+                # #324 follow-on (WP-45): a solve that comes back with a
+                # non-finite coordinate must never read as "on target" --
+                # the old `_ang_sep_deg` clamped a NaN cosine to a
+                # separation of 0.0, a plausible wrong answer that would
+                # have published "centered". Degrades the same way a plate
+                # solve failure does, just above (never hang, never
+                # propagate the exception): not converged, no number to
+                # report for this attempt.
+                bus.log("warning",
+                        f"centering attempt {attempt}: the solve returned a "
+                        f"non-finite position (ra_hours="
+                        f"{solved.get('ra_hours')!r}, dec_deg="
+                        f"{solved.get('dec_deg')!r}); treating this attempt "
+                        f"as not converged", "solve")
+                self.note_pointing_verified(
+                    False, reason=str("centering did not converge"))
+                return {"centered": False, "error_arcmin": None,
+                        "attempts": attempt, "solve_failed": True} | _rot_keys
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
                 bus.publish("mount", action="centered", error_arcmin=err * 60)
@@ -8917,15 +8957,6 @@ class Hub:
         except Exception:  # noqa: BLE001 — never break status over bookkeeping
             pass
         return out
-
-
-def _ang_sep_deg(ra1_h: float, dec1: float, ra2_h: float, dec2: float) -> float:
-    import math
-    ra1, ra2 = math.radians(ra1_h * 15), math.radians(ra2_h * 15)
-    d1, d2 = math.radians(dec1), math.radians(dec2)
-    cos_sep = (math.sin(d1) * math.sin(d2)
-               + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
-    return math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
 
 
 def _angle_apart_deg(a: float, b: float) -> float:

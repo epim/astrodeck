@@ -25,10 +25,10 @@ import astrodeck.api.app as app_module
 from astrodeck.auth import (CAP_CONFIG_SAFETY, CAP_CONFIG_SOLAR_OVERRIDE,
                             CAP_VIEW_STATUS, Principal, principal_for_role,
                             reset_active_provider, set_active_provider)
-from astrodeck.catalog.coords import sun_radec
+from astrodeck.catalog.coords import angular_sep_deg, sun_radec
 from astrodeck.config import ConfigStore, Site
 from astrodeck.devices.base import DeviceError
-from astrodeck.hub import Hub, _ang_sep_deg
+from astrodeck.hub import Hub
 
 
 # --------------------------------------------------------------------- harness
@@ -187,13 +187,49 @@ def test_site_independent_default_site_still_protected(tmp_path, monkeypatch):
         h._check_solar(ra, dec)
 
 
+def test_a_non_finite_target_refuses_the_slew(tmp_path, monkeypatch):
+    """WP-45 follow-on (#324): `_check_solar` used to call hub.py's private
+    `_ang_sep_deg`, a copy of the OLD ``coords.angular_sep_deg`` that clamped
+    a NaN cosine to 0, so a non-finite target coordinate measured as a
+    separation of 0.0 -- which in THIS guard's case happens to still be
+    "within the cone" and so still refuses by coincidence. Routed through
+    the hardened, shared ``coords.angular_sep_deg`` (which raises
+    ``ValueError`` on a non-finite input), the guard must still REFUSE the
+    slew -- not by luck, and not by letting ``ValueError`` escape uncaught
+    (a 500, not the clean ``DeviceError`` every other refusal in this file
+    raises) -- with a log line naming why.
+
+    NAMED MUTANT "the Sun guard swallows a non-finite separation and lets
+    it through" (the ``except ValueError`` arm's ``raise DeviceError(...)``
+    replaced with a bare ``return``, so an unmeasurable separation is
+    treated as "nothing to refuse" instead of "cannot say it is safe"):
+    RED, observed:
+
+        Failed: DID NOT RAISE <class 'astrodeck.devices.base.DeviceError'>
+    """
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    import astrodeck.hub as hub_mod
+    monkeypatch.setattr(hub_mod, "config_store", store)
+    h = Hub()
+    with pytest.raises(DeviceError) as ei:
+        h._check_solar(float("nan"), 10.0)
+    assert "Sun" in str(ei.value)
+
+
 def test_sep_matches_ang_sep_deg(tmp_path):
     """Sanity: the Dec-offset target really is the intended separation from the
-    Sun (so the in/out fixtures are geometrically honest)."""
+    Sun (so the in/out fixtures are geometrically honest).
+
+    RE-PINNED FOR WP-45 FOLLOW-ON (#324, 2026-09-30, deliberate): hub.py's own
+    ``_ang_sep_deg`` (a copy that clamped a NaN cosine to 0) is deleted, and
+    ``_check_solar`` now calls the shared, hardened
+    ``catalog.coords.angular_sep_deg`` directly -- so this sanity check reads
+    off that same shared helper instead of the private copy that no longer
+    exists."""
     when = time.time()          # one Sun, read once, used by both calls
     sun_ra, sun_dec = _sun_now(when)
     ra, dec = _target_at_sep(IN_CONE, when)
-    sep = _ang_sep_deg(ra, dec, sun_ra, sun_dec)
+    sep = angular_sep_deg(ra, dec, sun_ra, sun_dec)
     assert abs(sep - IN_CONE) < 1e-6
 
 

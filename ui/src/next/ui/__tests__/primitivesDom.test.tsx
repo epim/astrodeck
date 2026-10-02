@@ -46,6 +46,12 @@ win.matchMedia = () => ({
 win.Element.prototype.setPointerCapture = function () { /* jsdom has none */ };
 win.Element.prototype.releasePointerCapture = function () { /* jsdom has none */ };
 
+// jsdom does no layout, so "what real element sits under this point" has to be
+// told to it, the same stand-in dialTap.test.tsx (#656) uses for a tap's own
+// release-time hit test.
+let hitTarget: any = null;
+win.document.elementFromPoint = () => hitTarget;
+
 const g = globalThis as any;
 for (const k of [
   "window", "document", "navigator", "HTMLElement", "HTMLInputElement",
@@ -285,7 +291,26 @@ const DIAL_OPTS = [
   });
 
   test("Dial selects by TAP on a stop", () => {
-    click(q('.nx-dial-stop[data-value="-10"]'));
+    // #656 (found against the rebuilt user docs' "build and run a simple
+    // Flow" procedure): a real finger never gets a free `click` event. The
+    // browser synthesizes one from pointerdown/pointerup, and `onPointerDown`
+    // calls `setPointerCapture` on the TRACK for the whole gesture, which in
+    // some browsers retargets the synthesized click's hit test onto the
+    // track - so the stop's own onClick is never reached there. A bare
+    // `click()` dispatched straight at the stop (as this case did before)
+    // skips that retargeting entirely and so cannot prove the tap path;
+    // dispatching pointerdown/pointerup on the TRACK, with `elementFromPoint`
+    // answering the stop (dialTap.test.tsx's own hit-test stand-in), is what
+    // a real tap actually produces.
+    //
+    // Named mutant (dialTap.test.tsx's own, #656): the pointerup tap
+    // resolution in Dial.tsx's `endDrag` removed, reverting it to doing
+    // nothing but release pointer capture. RED under that mutant, observed:
+    //   x Dial selects by TAP on a stop: tapping a stop did nothing - on a
+    //     phone that is the only route in (expected 1, got 0)
+    hitTarget = q('.nx-dial-stop[data-value="-10"]');
+    pointer(track(), "pointerdown", 0);
+    pointer(track(), "pointerup", 0);
     eq(picked.length, 1, "tapping a stop did nothing - on a phone that is the only route in");
     eq(picked[0], "-10", "the tap picked the wrong stop");
   });

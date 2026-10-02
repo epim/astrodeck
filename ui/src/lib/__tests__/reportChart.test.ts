@@ -116,6 +116,16 @@ test("endReasonMeta: dawn_cutoff -> DAWN CUTOFF/good", () => {
 test("endReasonMeta: aborted -> ABORTED/warn", () => {
   deepEq(endReasonMeta("aborted"), { word: "ABORTED", tone: "warn" });
 });
+// WP-44 (#565): the server finalizes a polite shutdown (a process restart,
+// never an operator STOP) with end_reason "shutdown". Its own word, distinct
+// from ABORTED, so the chip never tells an operator they stopped it when
+// nobody did. MUTANT "the shutdown case removed": the switch falls to the
+// default arm, which uppercases the raw reason to "SHUTDOWN" (still tone
+// warn) rather than "SERVER SHUTDOWN" — a different word, so this case
+// cannot pass by accident under the fallback.
+test("endReasonMeta: shutdown -> SERVER SHUTDOWN/warn", () => {
+  deepEq(endReasonMeta("shutdown"), { word: "SERVER SHUTDOWN", tone: "warn" });
+});
 test("endReasonMeta: quality -> QUALITY STOP/warn", () => {
   deepEq(endReasonMeta("quality"), { word: "QUALITY STOP", tone: "warn" });
 });

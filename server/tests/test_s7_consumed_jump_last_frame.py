@@ -223,13 +223,18 @@ async def test_a_consumed_jump_on_an_earlier_frame_still_skips(
     GREEN under "consumed jump marks skipped", "completion owed twice" and
     "owed completion left in place" (observed): none of them touches a
     target that is not complete.
+
+    RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): the report line now
+    carries the reason `mark_skipped` was called with, "abandoned by an
+    instruction", after a colon.
     """
     dest = "B" if who == "A" else "Later"
     night, _ = await _run(group_hub, monkeypatch,
                           _night_plan(who, "run_target", dest, count=2))
     assert night.done, night.lines[-4:]
     assert _shot(night, who) == 1, night.shots()
-    assert _skips(night) == [f"skipped {who}"], _skips(night)
+    assert _skips(night) == [f"skipped {who}: abandoned by an instruction"], (
+        _skips(night))
     assert night.said(f"(abandoning {who})"), night.said("instruction")
     assert night.said(f"{who} is done") == []
     if who == P12:
@@ -356,6 +361,10 @@ async def test_every_window_closing_leaves_the_complete_target_complete(
     its rule never run, as #490 recorded:
         AssertionError: []
         assert [] == ['A is done']
+
+    RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): the report line now
+    carries the reason `mark_skipped` was called with, "window closed",
+    after a colon.
     """
     from astrodeck.sequence.models import Schedule
     a = single("A", schedule=Schedule(max_run_min=2))
@@ -366,6 +375,6 @@ async def test_every_window_closing_leaves_the_complete_target_complete(
     night, _ = await _run(group_hub, monkeypatch, plan)
     assert night.done, night.lines[-4:]
     assert night.said("A is done") == ["A is done"], night.said("done")
-    assert _skips(night) == ["skipped B"], _skips(night)
+    assert _skips(night) == ["skipped B: window closed"], _skips(night)
     assert night.shots() == [("A", "L")], night.shots()
     assert night.engine.reporter.build().end_reason == "dawn_cutoff"
