@@ -26,13 +26,22 @@ import { useStore } from "../../../../store";
 import { explainLock } from "../../../shell/explain";
 import { ActionButton, Card, Label, LockNote, Mono } from "../../../ui";
 import { sendControl } from "../now";
+import { resumeTitle } from "../now/resumeTitle";
 import type { Recoverable } from "./planModel";
 
 export const RESUME_REASON =
   `Resuming or discarding an interrupted run needs ${accessPhrase("control.mount")}.`;
 
 export function PlanResume({ rec, onDone }: {
-  rec: Recoverable;
+  // `& { end_reason?: ... }` rather than widening `planModel.ts`'s
+  // `Recoverable` itself: that hook does not read `end_reason` off
+  // `GET /api/sequence/recoverable` yet (filed separately - D-13 names three
+  // cards, and this one's data does not reach it until that gap closes), so
+  // `rec.end_reason` is `undefined` in production today and `resumeTitle`
+  // below falls back to RESUME INTERRUPTED RUN, same as the literal title
+  // this replaces. The optional field lets this card honour the real value
+  // the moment the caller starts sending one, with no further change here.
+  rec: Recoverable & { end_reason?: string | null };
   /** Called once the offer has been taken or given up, so the card retires
    *  without waiting for the next `running` edge. */
   onDone: () => void;
@@ -92,7 +101,10 @@ export function PlanResume({ rec, onDone }: {
   return (
     <Card tone="accent" data-testid="plan-resume-card">
       <div className="nx-plan-stack">
-        <Label size={11}>RESUME INTERRUPTED RUN</Label>
+        {/* D-13's title, shared with Interrupted.tsx and RecoveryCards.tsx
+            through resumeTitle.ts - see the blocked data-plumbing note on
+            this component's props above. */}
+        <Label size={11}>{resumeTitle(rec.end_reason)}</Label>
         <Mono size={10.5} tone="dim">
           {rec.name} stopped at frame {rec.frames_done} of {rec.frames_total}
           {when ? ` at ${when}` : ""}. Resume picks up where it left off; the frames
