@@ -902,8 +902,15 @@ export interface SequenceGroupState {
   visit_elapsed_s: number;
   panels_done: number;
   panels_total: number;
-  /** Panels set aside tonight, each with its reason in words. */
-  set_aside: { panel: string; reason: string }[];
+  /** Panels set aside, each with its reason in words, what kind of
+   *  set-aside it is ("centring" | "floor" | "rejects" | "group" | ...,
+   *  `GroupRun.set_aside_kind`'s word) and whether it is set aside only FOR
+   *  NOW (#573, #534 follow-up; backlog ruling D-07): a centring set-aside
+   *  that may still expire tonight, with the panel tried once more before
+   *  the night is over, true; one that lasts the rest of the night, false.
+   *  The engine always sends both keys, so a reader cannot mistake a
+   *  for-now panel for one that is done tonight. */
+  set_aside: { panel: string; reason: string; kind: string; for_now: boolean }[];
   /** True while the group waits for a panel's meridian crossing. */
   meridian_wait: boolean;
 }
