@@ -838,12 +838,15 @@ class FlipPoint(NamedTuple):
     #: When the target crosses its own meridian: transit, whatever the zero.
     transit_at: float
     #: What the countdown is measured from: ``"meridian"``, or ``"mount
-    #: limit"`` when the mount reported a limit nearer than the meridian.
+    #: limit"`` when the mount reported a limit nearer than the meridian, or
+    #: the operator configured one (`SafetyConfig.mount_tracking_limit_min`,
+    #: #566) that is nearer-or-equal to it.
     zero: str
     #: The lead taken off the zero, in seconds (never negative).
     lead_s: float
     #: The band added past the zero, in seconds: `_flip_retry_past_s` at the
-    #: meridian, and 0 past a limit the mount reported.
+    #: meridian, and 0 past a limit the mount reported or the operator
+    #: configured.
     past_s: float
 
 
@@ -8223,6 +8226,20 @@ class SequenceEngine:
         # only a completed hop is a sample.
         self._record_event_cost("hop", time.monotonic() - hop_t0 - sweep_s)
 
+        # THE HOP IS PRICED ABOVE; IT MUST NOT ALSO FEED THE OVERHEAD EMA
+        # (#297). `_record_frame` folds the gap since the last frame into
+        # `_overhead_ema` unless this flag says the gap carried an event
+        # (dither/AF/flip), and until now nothing set it for a hop or for a
+        # scheduler wait that ends in one -- so the FIRST frame after every
+        # setup fed the whole hop (or wait) into "per-frame overhead",
+        # counting it a second time and pulling the flip gate's frame
+        # window and the mosaic meridian rule's pre-flip room in early. Set
+        # here, at the end of every setup, so it covers a hop, a wait that
+        # released into a setup, and the run's own opening acquisition
+        # alike -- exactly like a dither or an autofocus sweep, see
+        # `_begin_frame`'s NB.
+        self._frame_had_event = True
+
         # setup complete — capture is about to begin. Arm the no-progress watchdog
         # and anchor its clock to NOW so a slow slew/solve/AF that just finished
         # doesn't instantly read as a stall against the last target's frame stamp.
@@ -13695,15 +13712,21 @@ class SequenceEngine:
            nearer than that (``device_h``, its ``time_to_meridian_flip`` in
            hours: positive, and less than the countdown to the meridian),
            which it enforces whatever our geometry says. Today only NINA
-           reports one; the AM5 and Alpaca paths answer None.
+           reports one; the AM5 and Alpaca paths answer None. Failing that,
+           the operator's own figure for this mount
+           (`SafetyConfig.mount_tracking_limit_min`, #566) when one is
+           configured and nearer than the meridian too -- see
+           `_configured_tracking_limit_min`.
         2. THE LEAD, ``lead_s`` before the zero (`_flip_lead_s`, the
            caller's), never negative.
         3. THE BAND, `_flip_retry_past_s` past the zero for a zero-lead
-           attempt, ONLY WHEN THE ZERO IS THE MERIDIAN ITSELF. The band is
-           there because at the crossing a goto's side is the mount's own
-           reckoning of the hour angle (#366, #455); a limit the mount
-           states before the meridian is not the crossing, and 15 s past it
-           is 15 s past a limit the mount has said it stops at.
+           attempt, ONLY WHEN THE ZERO IS THE MERIDIAN ITSELF -- NEITHER THE
+           DEVICE NOR THE OPERATOR NAMED A NEARER ONE. The band is there
+           because at the bare crossing a goto's side is still the mount's
+           own reckoning of the hour angle (#366, #455); a limit the device
+           reports, or the operator states, before the meridian is not that
+           uncertainty, and 15 s past it would be 15 s past a limit already
+           known.
 
         The gate built its window from the mount's limit and the band,
         while its hold measured from the true meridian, so a mount that
@@ -13713,13 +13736,20 @@ class SequenceEngine:
         to the hold (`_flip_point_handed`), and the goto reads its
         ``transit_at`` for #127's learning (#489).
 
-        LEFT OPEN, a GEM whose tracking limit sits AT the meridian and does
-        not report it (#505's E item, filed as #566): with nothing reported
-        the zero is the meridian and the band applies, so a zero-lead
-        attempt comes 15 s after such a mount has stopped, and the flip's
-        goto meets a mount that is not tracking (the refusal recovery, which
-        re-acquires past the meridian). No mount measured so far behaves so:
-        the AM5 stops 4.7 to 7.6 min before transit, well before the band.
+        A GEM WHOSE TRACKING LIMIT SITS AT THE MERIDIAN AND DOES NOT REPORT
+        IT (#505's E item, filed as #566): with nothing live and nothing
+        configured the zero is the bare meridian and the band applies, so a
+        zero-lead attempt comes 15 s after such a mount has stopped, and the
+        flip's goto meets a mount that is not tracking (the refusal
+        recovery, which re-acquires past the meridian). `mount_
+        tracking_limit_min` is the way out: set to 0 for exactly this mount,
+        it is nearer-or-equal to the meridian, so it is taken as the zero
+        with no band, and a zero-lead attempt lands AT the meridian instead
+        of past it. Set negative, it lands that much BEFORE the meridian,
+        the way a reported device limit already could. Left at None (every
+        rig today), nothing here changes: no mount measured so far behaves
+        this way anyway -- the AM5 stops 4.7 to 7.6 min before transit, well
+        before the band.
 
         ``now`` is the engine clock's reading to measure from (the caller's
         own, when it has one); the times answered are on that clock. The
@@ -13746,10 +13776,58 @@ class SequenceEngine:
         if dev is not None and 0.0 < dev < transit_h:
             zero_h, zero = dev, "mount limit"
         else:
-            past_s = self._flip_retry_past_s(target)
+            # #566: NOTHING LIVE SAID WHERE THIS MOUNT STOPS, so ask the
+            # operator's own figure, when one is configured. UNLIKE ``dev``
+            # ABOVE, a configured limit AT the meridian (0 minutes) counts:
+            # it is not a possibly-stale live reading that a 0 or a NaN
+            # could mean nothing from, it is literally the #566 scenario,
+            # stated on purpose -- so the comparison is ``<=``, not ``<``,
+            # and the band below is never added past it either way.
+            #
+            # ``getattr`` WITH A FALLBACK, not a plain attribute access: a
+            # handful of spec-claims tests call this method on a bare
+            # stand-in that carries only the surface H4 documented
+            # (``hub`` and a stubbed `_flip_retry_past_s`), unbound, and
+            # must keep working unchanged -- the method's own contract is
+            # "never raises", so an older or minimal caller gets exactly
+            # today's bare-meridian-plus-band answer, not an AttributeError.
+            configured_fn = getattr(self, "_configured_tracking_limit_min",
+                                    None)
+            configured_min = configured_fn() if configured_fn else None
+            configured_h = (None if configured_min is None
+                            else transit_h + configured_min / 60.0)
+            if configured_h is not None and configured_h <= transit_h:
+                zero_h, zero = configured_h, "mount limit"
+            else:
+                past_s = self._flip_retry_past_s(target)
         return FlipPoint(at=now + zero_h * 3600.0 - lead + past_s,
                          transit_at=now + transit_h * 3600.0, zero=zero,
                          lead_s=lead, past_s=past_s)
+
+    def _configured_tracking_limit_min(self) -> float | None:
+        """The operator's stated mount tracking limit, minutes of hour angle
+        from the meridian and negative before it
+        (`SafetyConfig.mount_tracking_limit_min`, #566), or None when
+        nothing is configured -- the state of every rig today.
+
+        Never raises: an older config snapshot with no such field, or a
+        nonsense value from a hand-edited store, must fall back to
+        `_flip_point`'s existing bare-meridian-plus-band behaviour rather
+        than take down the flip gate."""
+        cfg = self._cfg or config_store.cfg()
+        try:
+            value = cfg.safety.mount_tracking_limit_min
+        except AttributeError:
+            return None
+        if value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        if value != value:                       # NaN
+            return None
+        return value
 
     def _plan_flip_lead_s(self) -> float:
         """The PLAN's flip lead in seconds, clamped the way `_flip_lead_s`
