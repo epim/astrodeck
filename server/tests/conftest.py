@@ -334,6 +334,99 @@ _DIRECTORY_EVENTS = frozenset({
 #: Of those, the ones whose first two arguments are both paths.
 _TWO_PATH_EVENTS = frozenset({"os.rename", "shutil.copyfile"})
 
+#: For each of ``_DIRECTORY_EVENTS`` whose audit signature carries a
+#: ``dir_fd`` (Python's audit-events table), the position(s) of that dir_fd
+#: WITHIN THE FULL AUDIT TUPLE, one per path ``audited`` checks (position 0
+#: for a single-path event, positions 0 and 1 for a two-path one) (#659).
+#: ``open`` is not here: its own audit arguments are always ``(path, mode,
+#: flags)``, with no dir_fd slot at all, whether or not the call that raised
+#: it passed one -- it is told apart a different way, below.
+_DIR_FD_ARG_INDEX: dict[str, tuple[int, ...]] = {
+    "os.mkdir": (2,),        # (path, mode, dir_fd)
+    "os.rmdir": (1,),        # (path, dir_fd)
+    "os.remove": (1,),       # (path, dir_fd)
+    "shutil.rmtree": (1,),   # (path, dir_fd) -- shutil's own top-level audit
+    "os.rename": (2, 3),     # (src, dst, src_dir_fd, dst_dir_fd)
+}
+
+
+def _dir_fd_given(value: object) -> bool:
+    """True when ``value`` is a real, open directory file descriptor, i.e.
+    this particular call passed a ``dir_fd`` rather than leaving it unset.
+
+    CPython spells "unset" two different ways depending on where the audit
+    call is raised: the C-implemented ``os.*`` functions (mkdir/rmdir/
+    remove/rename) pass the sentinel ``-1`` (confirmed live against a
+    running CPython 3.12 on this platform -- ``os.mkdir``'s own audit event
+    shows ``-1``, never ``None``, when no ``dir_fd`` is given), while
+    ``shutil.rmtree``'s own pure-Python ``sys.audit("shutil.rmtree", path,
+    dir_fd)`` passes Python's own default, ``None``. A real fd is always a
+    non-negative int, so one check tells both sentinels from a real one."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _dir_fd_relative_positions(event: str, args: tuple) -> frozenset[int]:
+    """Which of ``audited``'s checked path argument(s) (index 0, or 0 and 1
+    for a two-path event) must NOT be resolved against the CWD for this
+    particular call, because the event fired with a real ``dir_fd`` rather
+    than the "unset" sentinel (#659): ``os.path.abspath`` on a path that is
+    actually relative to an already-open directory fd is not an
+    approximation of the right answer, it is simply the wrong operation --
+    which is how a tmp_path holding a directory literally named ``config``
+    read as "os.rmdir of ./ (the real config directory)" on the Linux CI
+    runner. ``shutil.rmtree``'s fd-based walk (``_rmtree_safe_fd``) descends
+    into and removes each child by its BARE NAME relative to the
+    already-open PARENT fd, and that bare name can coincide with a real
+    config entry's name with nothing in the event to say it was never
+    resolved against the CWD at all. Events this guard watches with no
+    dir_fd argument at all (``os.listdir``, ``os.scandir``,
+    ``os.truncate``, ``shutil.copyfile``, and ``open`` -- see
+    ``_open_is_fd_relative``) return empty: unchanged behaviour."""
+    fd_positions = _DIR_FD_ARG_INDEX.get(event)
+    if fd_positions is None:
+        return frozenset()
+    return frozenset(path_index for path_index, fd_index in enumerate(fd_positions)
+                      if len(args) > fd_index and _dir_fd_given(args[fd_index]))
+
+
+#: (filename, function name) marking a frame as shutil's REAL fd-based
+#: delete walk (``_rmtree_safe_fd``) -- reached either directly
+#: (``shutil.rmtree`` on Linux) or through pytest's own tmp-dir cleanup,
+#: which calls ``shutil.rmtree`` the very same way (``_pytest/pathlib.py``'s
+#: ``rm_rf``), so one signature covers both halves of #659's fix shape ("a
+#: relative open raised from inside shutil.rmtree or pytest's tmpdir
+#: cleanup"). Matched by normcased filename so a different venv's absolute
+#: prefix still lines up.
+_FD_RELATIVE_OPEN_FRAME = (os.path.normcase(shutil.__file__), "_rmtree_safe_fd")
+
+
+def _open_is_fd_relative(frame) -> bool:
+    """True when an ``open`` audit event -- whose own arguments never carry
+    a dir_fd, ``(path, mode, flags)`` whether or not the call that raised it
+    passed one -- was raised while a frame on the stack is shutil's
+    fd-based delete walk: the one place this codebase's dependencies open a
+    bare, CWD-unresolvable name relative to an already-open directory fd
+    (#659).
+
+    Takes the starting frame as a plain parameter, rather than reading
+    ``sys._getframe`` itself, so it can be driven directly by a test with a
+    constructed stand-in frame chain. That is not a shortcut: dir_fd is not
+    implemented on Windows at all for the calls ``_rmtree_safe_fd`` makes
+    (``os.open`` and ``os.rmdir`` are both absent from
+    ``os.supports_dir_fd`` here), and the module constant the real code path
+    reads before it ever gets that far (``os.O_NONBLOCK``) does not even
+    exist on this platform -- confirmed live, not assumed -- so the real
+    call cannot be executed here under any amount of monkeypatching, and a
+    constructed frame is the only honest way to drive this one branch."""
+    while frame is not None:
+        key = (os.path.normcase(frame.f_code.co_filename),
+               frame.f_code.co_name)
+        if key == _FD_RELATIVE_OPEN_FRAME:
+            return True
+        frame = frame.f_back
+    return False
+
+
 #: What the sweep leaves on the real config, by name: the two locations
 #: ``_RealConfig`` records, which are also the defaults a ``ConfigStore()``
 #: or ``ProfileLibrary()`` built with no path falls back to (the guard's
@@ -551,7 +644,21 @@ def _watch_the_real_config():
         if event not in _DIRECTORY_EVENTS or not armed[0]:
             return
         try:
-            for path in args[:2] if event in _TWO_PATH_EVENTS else args[:1]:
+            # #659: a relative path audited here is not necessarily CWD-
+            # relative. ``open`` carries no dir_fd in its own arguments at
+            # all (told apart by the call stack instead); the other events
+            # DO carry one, and a path whose call passed a real dir_fd is
+            # skipped rather than wrongly resolved against the CWD.
+            if event == "open":
+                if _open_is_fd_relative(sys._getframe(1)):
+                    return
+                checked, skip = args[:1], frozenset()
+            else:
+                checked = args[:2] if event in _TWO_PATH_EVENTS else args[:1]
+                skip = _dir_fd_relative_positions(event, args)
+            for i, path in enumerate(checked):
+                if i in skip:
+                    continue
                 entry = _RealConfig.entry(path)
                 if entry is not None:
                     _RealConfig.note(
