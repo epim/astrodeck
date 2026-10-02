@@ -4022,8 +4022,20 @@ class Hub:
 
     def _note_pointing(self, ra_hours: float | None, dec_deg: float | None) -> None:
         """Record the mount's own report, from a read somebody else already paid
-        for. Never triggers device I/O of its own."""
+        for. Never triggers device I/O of its own.
+
+        REFUSES a non-finite report (#324) the same way it already refuses a
+        missing one: a NaN or infinite RA/Dec recorded here would reach the
+        staleness check, the pointing-vs-plate disagreement note and the
+        pointing-derived preview (``_current_field_solve``, ``_field_block``,
+        ``_pointing_field``), none of which could measure anything against
+        it once ``angular_sep_deg`` stopped clamping a bad value to a
+        plausible 0.0 and started raising instead. Treating a garbled report
+        as "nothing to go on" keeps the last known-good pointing (or None)
+        rather than overwriting it with noise."""
         if ra_hours is None or dec_deg is None:
+            return
+        if not (math.isfinite(ra_hours) and math.isfinite(dec_deg)):
             return
         self._last_pointing = (float(ra_hours), float(dec_deg), time.time())
 
@@ -4076,7 +4088,19 @@ class Hub:
         from .catalog.coords import angular_sep_deg
 
         ra, dec, _at = self._last_pointing
-        moved = angular_sep_deg(fs.mount_ra, fs.mount_dec, ra, dec)
+        try:
+            moved = angular_sep_deg(fs.mount_ra, fs.mount_dec, ra, dec)
+        except ValueError:
+            # A non-finite mount report cannot be measured against -- and
+            # "cannot tell" must not read as "has not moved" (#324), the same
+            # direction a clamped 0.0 separation would have silently taken.
+            # _note_pointing already refuses a non-finite report at the door,
+            # so this is the defense for whatever reached ``fs.mount_ra``
+            # some other way.
+            self.invalidate_field_solve(
+                "the mount's last report is not a number, so the field "
+                "cannot be trusted as current")
+            return None
         if moved > self._field_stale_threshold_deg():
             self.invalidate_field_solve(
                 f"the mount has moved {moved:.2f}° since the last plate solve")
@@ -4216,8 +4240,18 @@ class Hub:
 
             ra, dec, _at = self._last_pointing
             c = frame["center"]
-            off = angular_sep_deg(ra, dec, c["ra_hours"], c["dec_deg"])
-            if off > self._field_stale_threshold_deg():
+            try:
+                off = angular_sep_deg(ra, dec, c["ra_hours"], c["dec_deg"])
+            except ValueError:
+                # Cannot be judged (#324): say nothing rather than invent a
+                # degree figure for a comparison that could not be made.
+                # _note_pointing already refuses a non-finite mount report
+                # and note_field_solve never adopts a frame whose own centre
+                # failed the same check (its ``objects_in_frame`` call raises
+                # the same way), so this is defense for the two together, not
+                # a path exercised by either alone today.
+                off = None
+            if off is not None and off > self._field_stale_threshold_deg():
                 block["pointing_disagrees_deg"] = round(off, 3)
         if preview_id is not None and fs.preview_id == preview_id:
             w = fs.wcs
@@ -6557,6 +6591,12 @@ class Hub:
             # light path.
             borrowed_slot = (await self._borrow_wheel_for_solve()
                              if borrow else None)
+            # Read while the solve filter is still loaded (#531): the wheel is
+            # back on the run's filter by the time a failed solve is judged
+            # for light (#264), so a capped optic on a narrowband frame must
+            # not be called NO_LIGHT. Only the imaging frame borrows the
+            # wheel, so only it has a filter worth naming here.
+            through = await self._narrowband_filter_loaded() if borrow else None
             try:
                 async with self.exposure_guard("guide-scope offset"):
                     frame = await device.expose(seconds, 200, 30,
@@ -6568,7 +6608,7 @@ class Hub:
                                            instrument=device.name)
             bus.log("info", f"guide-offset: solving {device.name} "
                             f"(fov hint {fov or 'auto'})…", "solve")
-            return tmp
+            return tmp, frame, through
 
         async def _solve_guide_frame(path):
             # THE GUIDE CAMERA'S SOLVE, kept apart from the main one so the
@@ -6582,8 +6622,8 @@ class Hub:
         # the position angle the offset is stored against, so a run that dies
         # after one solve has produced the more useful half.
         main_angle = await _sky_angle.exposure_context(self, cam)
-        main_path = await _expose(cam, exposure_s, "guide_offset_main",
-                                  main_fov, 2, borrow=True)
+        main_path, main_frame, main_through = await _expose(
+            cam, exposure_s, "guide_offset_main", main_fov, 2, borrow=True)
         try:
             main = await solver.solve(main_path, ra_hint=ra_hint,
                                       dec_hint=dec_hint, fov_deg_hint=main_fov)
@@ -6591,9 +6631,9 @@ class Hub:
             await _retire_solve_frame(main_path, "guide_offset_main")
         await _sky_angle.note_solved_rotation(
             self, main, source="guide-scope offset", context=main_angle)
-        guide_path = await _expose(guide_cam, guide_exposure_s,
-                                   "guide_offset_guide", guide_fov, 1,
-                                   borrow=False)
+        guide_path, _guide_frame, _guide_through = await _expose(
+            guide_cam, guide_exposure_s, "guide_offset_guide", guide_fov, 1,
+            borrow=False)
         try:
             guide = await _solve_guide_frame(guide_path)
         finally:
@@ -6611,8 +6651,29 @@ class Hub:
         if not (main.success and guide.success):
             out["offset"] = None
             which = "main" if not main.success else "guide"
-            out["reason"] = (f"the {which} frame did not solve, so there is no "
-                             f"pair to difference: {out[which]['message']}")
+            if which == "main":
+                # #264: the IMAGING frame's own failure is judged for light,
+                # like every other solve path that exposes its own frame
+                # (#251) -- a capped optic must not read as "Not enough
+                # stars." with no hint that no light reached the sensor. The
+                # measurement still never raises (callers collect a result
+                # from a lane, not an exception): the classifier's words go
+                # into this same "reason" field instead of main["message"].
+                from .solve import light as _light
+
+                err = await _light.failed_solve_error(
+                    main_frame, main,
+                    prefix="guide-scope offset: plate solve failed",
+                    hub=self, narrowband_filter=main_through)
+                out["reason"] = str(err)
+            else:
+                # THE GUIDE CAMERA'S FRAME IS NOT JUDGED: the dark library
+                # keys masters on readout, not camera, so there is no
+                # no-light reference for it (see NEVER_RAISES in
+                # test_failed_solve_says_no_light.py).
+                out["reason"] = (f"the {which} frame did not solve, so there "
+                                 f"is no pair to difference: "
+                                 f"{out[which]['message']}")
             # STORED AND PUBLISHED ON FAILURE TOO. Two solves take about forty
             # seconds, so this runs in a lane and the caller collects the
             # result later -- a failure that is not recorded is a button that
