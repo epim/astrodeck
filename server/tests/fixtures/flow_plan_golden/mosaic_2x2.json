@@ -319,6 +319,7 @@
     "nodes.guide",
     "nodes.refocus",
     "nodes.report",
+    "schedule",
     "targets[NGC 7331].steps[0].integration_goal_h"
   ]
 }

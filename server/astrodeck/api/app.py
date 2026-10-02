@@ -938,9 +938,16 @@ def _refuse_while_resume_recovers() -> None:
 #: (test_connect_rig_guard.py pins it as written).
 _TEARDOWN_BUSY = "a sequence, capture loop or polar alignment is running"
 
+#: Names the Monitor, as ``_RESUME_RECOVERING`` does, and not the route
+#: (WP-67, #272). H3 wrote this naming ``GET /api/sequence/resume-arm``,
+#: the only place to read the ladder's step at the time, but neither UI
+#: drew a 409's own detail then (#256), so the wording was latent. WP-39
+#: made both UIs draw it, so what this says now reaches the operator, and
+#: it is reworded to send them to the same place #246 sends
+#: ``_RESUME_RECOVERING``'s reader.
 _TEARDOWN_WHILE_RECOVERING = (
     "auto-resume is re-centring the mount after a restart "
-    "(GET /api/sequence/resume-arm reports the step it is on); force stops "
+    "(the Monitor shows the step it is on); force stops "
     "the re-centring before its next step and turns that session's "
     "auto-resume off, as Abort does, then goes ahead")
 
@@ -987,11 +994,13 @@ async def _wait_for_the_ladder() -> None:
     if await resume_arm.wait_stopped():
         return
     from ..sequence import resume_arm as _resume_arm_mod
+    # Names the Monitor, not the route, for the same reason
+    # ``_TEARDOWN_WHILE_RECOVERING`` does (WP-67, #272).
     raise HTTPException(409, detail={
         "detail": ("auto-resume's re-centring was asked to stop and has not "
                    f"stopped within {_resume_arm_mod.LADDER_STOP_WAIT_S:g} s, "
                    "so nothing was torn down; its session's auto-resume is "
-                   "off. GET /api/sequence/resume-arm reports it until it "
+                   "off. The Monitor reports it until it "
                    "has stopped; try again then."),
         "code": "running"})
 

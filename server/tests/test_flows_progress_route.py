@@ -83,6 +83,16 @@ SESSION_COOKIE = "ad_session"       # providers.SessionCookieProvider.COOKIE_NAM
 SITE_A = (41.2345678, -73.9876543)
 SITE_B = (12.3456789, -45.6789012)
 
+#: The harness's own made-up SAVED site (backlog WP-55, D-08, owner-approved
+#: 2026-09-30): a third fictional location, distinct from SITE_A/SITE_B
+#: above (those two exist to prove a route's answer does not move when the
+#: real site does, not to stand in for "a site is saved"). Every other
+#: coordinate in this module is already a stand-in; this one is picked the
+#: same way -- not round, nowhere near 0,0 or either SITE_A/SITE_B -- so a
+#: test that overrides it with SITE_A or SITE_B cannot collide with it by
+#: coincidence.
+HARNESS_SITE = (33.9988776, -84.1122334)
+
 
 # ------------------------------------------------------------------ graphs
 
@@ -201,9 +211,27 @@ def _isolate(tmp_path, monkeypatch) -> ConfigStore:
     the #19 scan's own vacuum, see test_no_route_leaks_the_site_coordinates.
     py), flow library and captures directory; the camera and the Sun check
     stubbed on the app's hub so ``/run`` can start (the CONTINUE test). The
-    default site never blocks the horizon check."""
+    site is a made-up SAVED one (``HARNESS_SITE``, backlog WP-55 fallout,
+    D-08 owner-approved 2026-09-30): ``sequence.engine.start`` now refuses a
+    dusk/dawn-scheduled run with no site saved (``site_gate.site_lat_lon`` of
+    ``hub.site`` is ``None``), and the shipped ``example-m31-mosaic`` this
+    module's own ``TestTheContinueFixture`` and ``test_s7_progress_armed_
+    replay.py`` run through ``/api/flows/{id}/run`` opens with a DUSK node.
+    A test about no-site behaviour specifically (none here) would clear this
+    with ``store.set_site(Site(is_default=True, ...))`` or run with no site
+    override of its own; every test that calls ``set_site`` itself (SITE_A /
+    SITE_B below) already overrides this default, so neither collides.
+    ``_check_horizon`` is stubbed alongside ``_check_solar``, both for the
+    same reason: inert on the real DEFAULT site (``is_default``), it is not
+    on a saved one, and it reads ``altaz`` off real wall-clock sidereal time
+    (no mocked-clock parameter reaches it) -- without this stub, whichever
+    moment a test happens to run at would decide whether a fixed-RA/Dec
+    target such as M42 or M31 is below the horizon, which is exactly the
+    kind of real-world-state dependency this harness exists to remove."""
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     _sweep_config_store(monkeypatch, store)
+    store.set_site(Site(name="harness site", latitude=HARNESS_SITE[0],
+                        longitude=HARNESS_SITE[1], elevation_m=250.0))
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path / "captures")
     monkeypatch.delenv(app_module.AUTH_ENV_VAR, raising=False)
@@ -213,6 +241,7 @@ def _isolate(tmp_path, monkeypatch) -> ConfigStore:
     monkeypatch.setattr(app_module, "flow_store", flows)
     monkeypatch.setattr(flow_store_module, "flow_store", flows)
     monkeypatch.setattr(app_module.hub, "_check_solar", lambda *a, **kw: None)
+    monkeypatch.setattr(app_module.hub, "_check_horizon", lambda *a, **kw: None)
     monkeypatch.setattr(app_module.hub, "require", lambda role: object())
     monkeypatch.setattr(app_module.hub, "last_frame", None, raising=False)
     reset_active_provider()
