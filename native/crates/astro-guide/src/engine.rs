@@ -283,6 +283,32 @@ pub struct GuideStatsSnapshot {
     /// actually guiding against, instead of reconstructing an estimate of
     /// it from the frame.
     pub lock: Option<(f64, f64)>,
+
+    /// The star the engine is CURRENTLY using to compute a correction
+    /// (camera-frame px) — `self.search_origin` verbatim. Unlike `lock`,
+    /// this MOVES whenever a bounded auto-reselect (`ingest_guiding`'s
+    /// stale-loss branch, P2-T2 hardening) re-acquires a star through the
+    /// full-frame `auto_find`/`select_primary` pass instead of the narrow
+    /// local search: `lock` stays the session's fixed offset reference by
+    /// design (see the `lock` field doc), so a re-acquire that picks a
+    /// DIFFERENT star than the one originally locked leaves `lock` pointing
+    /// at the old star's position while every correction from that frame on
+    /// is actually driven by the new one.
+    ///
+    /// #649 (WP-81, WP-41 residual 1): before this field existed, the host's
+    /// different-star guard (`guide/native.py`'s `_note_lock`) could only
+    /// tell a healthy re-lock apart from a different-star re-lock by
+    /// re-scanning the frame itself and picking whichever candidate star sat
+    /// NEAREST the published (fixed) `lock` — which finds the TRUE star
+    /// whenever it also happens to have returned near its old spot, even
+    /// though the engine's full re-acquire actually selected a different,
+    /// nearby star and is driving every correction against THAT one.
+    /// Publishing the engine's own answer removes the guess: a re-lock is
+    /// now judged against the star the engine actually accepted, not the
+    /// host's independently re-derived nearest match. `None` exactly when
+    /// `search_origin` is `None` (no star currently tracked — a fresh
+    /// session, or a stale loss before the next star is found).
+    pub tracking: Option<(f64, f64)>,
 }
 
 /// Fast-recenter-after-dither state (dossier §11.2; `guider.cpp:912-919`
@@ -1714,6 +1740,7 @@ impl GuideEngine {
             recent: self.recent.iter().copied().collect(),
             secondaries: self.secondaries.iter().map(|s| (s.x, s.y)).collect(),
             lock: self.lock, // #204: the authoritative offset reference, verbatim
+            tracking: self.search_origin, // #649 (WP-81): the currently-tracked star, verbatim
         }
     }
 
@@ -2379,6 +2406,122 @@ mod tests {
             Some(after),
             Some(e.lock.expect("engine retains its lock across a dither")),
             "stats() must mirror the engine's own post-dither lock exactly"
+        );
+    }
+
+    /// #649 (WP-81, WP-41 residual 1): `stats().tracking` is `self.search_
+    /// origin` verbatim and MOVES when a stale loss's full re-acquire picks
+    /// a star other than the one `lock` still points at — `lock` itself
+    /// stays the fixed offset reference (unchanged by this WP; see
+    /// `stats_publishes_the_live_lock_position`). This is the scenario
+    /// `stale_star_reacquired_by_full_frame_autofind_against_old_lock`
+    /// (`tests/engine_scenarios.rs`) exercises for the correction pulse;
+    /// this test exercises the same transitions for the published stat the
+    /// host's different-star guard now reads instead of re-scanning the
+    /// frame for whichever star sits nearest the old, unchanged `lock`.
+    ///
+    /// Named mutant: `stats()`'s `tracking` field hardcoded to `self.lock`
+    /// (i.e. published lock instead of the live search origin) — RED,
+    /// observed verbatim (fails earlier than the final assertion, at the
+    /// mid-test check that tracking drops to `None` after a stale loss,
+    /// since the mutant makes it mirror `lock`, which never clears there):
+    ///
+    ///     assertion `left == right` failed: tracking drops once the search
+    ///     origin is cleared
+    ///       left: Some((100.0, 100.0))
+    ///      right: None
+    #[test]
+    fn stats_tracking_follows_a_stale_loss_reacquire_unlike_lock() {
+        let mut e = GuideEngine::new(EngineConfig::default());
+        e.set_calibration(test_cal());
+        e.begin_guiding();
+
+        // t=0: the lock establishes at (100, 100); tracking mirrors it (both
+        // are `self.search_origin`'s value on the lock-establishing frame).
+        e.ingest(
+            &FrameMeta {
+                timestamp_s: 0.0,
+                exposure_s: 1.0,
+            },
+            &[found_star()],
+        );
+        assert_eq!(e.stats().lock, Some((100.0, 100.0)));
+        assert_eq!(
+            e.stats().tracking,
+            Some((100.0, 100.0)),
+            "tracking mirrors the just-established lock"
+        );
+
+        // The star vanishes long enough to cross the 20s staleness threshold
+        // (same budget as the sibling integration test) -> LockLost, and the
+        // search origin (therefore tracking) drops to None, same as a fresh
+        // session before its first star. `lock` is untouched.
+        let lost = MeasuredStar {
+            x: 100.0,
+            y: 100.0,
+            snr: 0.0,
+            mass: 0.0,
+            hfd: 0.0,
+            found: false,
+        };
+        let mut last = Action::Idle;
+        for i in 1..=11 {
+            last = e.ingest(
+                &FrameMeta {
+                    timestamp_s: i as f64 * 2.0,
+                    exposure_s: 1.0,
+                },
+                &[lost],
+            );
+        }
+        assert!(matches!(last, Action::LockLost), "got {:?}", last);
+        assert_eq!(
+            e.stats().lock,
+            Some((100.0, 100.0)),
+            "a stale loss must not move the fixed offset reference"
+        );
+        assert_eq!(
+            e.stats().tracking,
+            None,
+            "tracking drops once the search origin is cleared"
+        );
+
+        // A full re-acquire finds a star 30px away -- beyond the narrow
+        // local search_region, reachable only by the full-frame fallback
+        // the stale branch's comment describes -- and it is ACCEPTED (same
+        // mass/snr as the original lock star, so neither gate rejects it;
+        // confirmed by the sibling integration test's correction-pulse
+        // assertion).
+        let decoy = MeasuredStar {
+            x: 130.0,
+            y: 100.0,
+            snr: 20.0,
+            mass: 1000.0,
+            hfd: 3.0,
+            found: true,
+        };
+        e.ingest(
+            &FrameMeta {
+                timestamp_s: 24.0,
+                exposure_s: 1.0,
+            },
+            &[decoy],
+        );
+
+        // THE FIX: tracking follows the reacquired star even though the
+        // fixed offset reference does not -- this is what lets the host
+        // tell a healthy re-lock (the true star returning near its own old
+        // spot) apart from the engine quietly driving corrections against a
+        // DIFFERENT, nearby star it picked up on the full re-acquire.
+        assert_eq!(
+            e.stats().lock,
+            Some((100.0, 100.0)),
+            "lock remains the fixed offset reference -- unchanged by this WP"
+        );
+        assert_eq!(
+            e.stats().tracking,
+            Some((130.0, 100.0)),
+            "tracking must follow the star the engine actually reacquired"
         );
     }
 }

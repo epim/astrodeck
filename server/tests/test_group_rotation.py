@@ -1327,6 +1327,13 @@ async def test_a_member_dropped_for_this_run_leaves_its_group_too(
         'rotate', 'name': 'M31', ...}]
           Right contains one more item: {'panel': '2-1', 'reason': 'skipped by
         instruction'}
+
+    W7 INTEGRATION RE-PIN (WP-49 / D-07, owner-approved 2026-09-30):
+    ``_group_state`` now always publishes ``kind`` and ``for_now`` on a
+    ``set_aside`` record. A drop for this run carries no ``set_aside_kind``
+    entry, so ``kind`` reads its default, ``"panel"``, and ``for_now`` is
+    ``False`` (every kind but a centring strike never expires). WP-49
+    changed this deliberately; it is not a regression.
     """
     plan = grid_plan(instructions=[Instruction(
         id="skip-rule", trigger="on_hfr_above", threshold=1.0, once=True,
@@ -1336,7 +1343,8 @@ async def test_a_member_dropped_for_this_run_leaves_its_group_too(
     assert _gotos(night, "2-1") == [], night.gotos
     later = [c["group"] for c in night.captures if c["target"] == _name("1-2")]
     assert later and later[0]["set_aside"] == [
-        {"panel": "2-1", "reason": "skipped by instruction"}], later[:1]
+        {"panel": "2-1", "reason": "skipped by instruction",
+         "kind": "panel", "for_now": False}], later[:1]
     assert night.stored.set_aside == [], night.stored.set_aside
 
 

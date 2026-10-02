@@ -126,11 +126,19 @@ export type HeldRun = "paused" | "holding" | "aborting";
  *  winding down from an Abort (#451): it is still the panel the visit is on,
  *  so it is drawn as the current one, and nothing is exposing it, so it is
  *  never worded as shot. `run` is the run's state, and `hold` the engine's
- *  reason for a hold ("clouds") while `run` is "holding", null otherwise. */
+ *  reason for a hold ("clouds") while `run` is "holding", null otherwise.
+ *
+ *  `forNow` (#573, #534 follow-up, backlog ruling D-07) is `panelStateOf`'s
+ *  read of the record's `for_now`: true for a centring set-aside that may
+ *  still expire tonight, false for one that lasts the rest of the night.
+ *  OPTIONAL HERE, not on the wire (`SequenceGroupState.set_aside` always
+ *  carries it): a `PanelRunState` built by hand, by a caller that predates
+ *  #573, carries none, and reads as not for now, PANELS' wording before
+ *  this change. */
 export type PanelRunState =
   | { kind: "shooting" }
   | { kind: "current"; run: HeldRun; hold: string | null }
-  | { kind: "set_aside"; reason: string };
+  | { kind: "set_aside"; reason: string; forNow?: boolean };
 
 /** What `panelStateOf` reads of the run: the sequence state's `state` and,
  *  for a hold, its `hold`. The sequence state itself is one. */
@@ -142,8 +150,11 @@ export type PanelRunSource = Pick<SequenceState, "state" | "hold">;
  *  doing (the sequence state the group came from).
  *
  *  SET ASIDE first, with the engine's reason in its own words: a panel set
- *  aside tonight stays set aside for the night, whatever else the group or
- *  the run is doing (spec 6.7).
+ *  aside stays set aside, whatever else the group or the run is doing (spec
+ *  6.7). `forNow` carries the record's `for_now` (#573, #534 follow-up,
+ *  backlog ruling D-07): true for a centring set-aside that may still
+ *  expire tonight, false for one that lasts the rest of the night. PANELS
+ *  words the two differently; this reader only passes the flag through.
  *
  *  Then the panel the group names as current (`group.panel`), and never
  *  while the group waits on the meridian rule (`meridian_wait`). The panel
@@ -181,7 +192,8 @@ export function panelStateOf(label: string,
     ? group.set_aside.find((a) => a && a.panel === label)
     : undefined;
   if (aside) {
-    return { kind: "set_aside", reason: typeof aside.reason === "string" ? aside.reason : "" };
+    return { kind: "set_aside", reason: typeof aside.reason === "string" ? aside.reason : "",
+             forNow: aside.for_now === true };
   }
   if (group.meridian_wait) return null;
   if (typeof group.panel !== "string" || group.panel !== label) return null;

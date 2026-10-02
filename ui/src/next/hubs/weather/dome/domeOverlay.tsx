@@ -297,6 +297,25 @@ export function DomeLegend({ hasTarget, wind, drawn = NOTHING_DRAWN }: {
       <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
         {wind ? <WindArrow towardDeg={wind.towardDeg} size={22} /> : null}
         <Mono size={10} tone="dim">{wind ? wind.label : WIND_ABSENT}</Mono>
+        {/* #634: Open-Meteo's CC BY 4.0 terms ask for a LINK next to any
+            location the data are displayed, not just the name - the same
+            anchor-is-the-compliance argument ConditionsScreen.tsx:258-269
+            and SkyConditionsPanel.tsx:349-356 already make for the forecast
+            pill. The wind reading is Open-Meteo's (`weather.now.wind_*`); the
+            cloud fill swatches above it are the satellite feed's own and
+            carry a separate credit, so the anchor sits beside the wind
+            reading specifically, not the whole legend. Present even when
+            `wind` is null: the dome is still built from an Open-Meteo
+            session, and "wind not reported" is itself a reading from it. */}
+        <a
+          href="https://open-meteo.com/"
+          target="_blank"
+          rel="noreferrer"
+          data-testid="wx-dome-wind-source"
+          style={{ textDecoration: "underline dotted", textUnderlineOffset: 2, color: "inherit" }}
+        >
+          Open-Meteo
+        </a>
       </span>
     </div>
   );

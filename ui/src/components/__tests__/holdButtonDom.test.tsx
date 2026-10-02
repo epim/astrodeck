@@ -24,6 +24,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { createManualRaf } from "../../testing/rafPolyfill";
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
@@ -45,13 +47,10 @@ win.Element.prototype.releasePointerCapture = function () { /* jsdom has none */
 // exactly one animation frame. Nothing advances unless a test says so, so
 // "700ms of wall clock passed but only one frame ran" is expressible.
 let clock = 1000;
-const frames: FrameRequestCallback[] = [];
+const rafQueue = createManualRaf();
 win.performance.now = () => clock;
-win.requestAnimationFrame = ((cb: FrameRequestCallback) => {
-  frames.push(cb);
-  return frames.length;
-}) as any;
-win.cancelAnimationFrame = ((id: number) => { delete frames[id - 1]; }) as any;
+win.requestAnimationFrame = rafQueue.request as any;
+win.cancelAnimationFrame = rafQueue.cancel as any;
 
 const g = globalThis as any;
 for (const k of [
@@ -85,7 +84,7 @@ function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(m
 function pump(count: number, stepMs: number): void {
   act(() => {
     for (let i = 0; i < count; i++) {
-      const due = frames.splice(0, frames.length).filter(Boolean);
+      const due = rafQueue.pending.splice(0, rafQueue.pending.length).filter(Boolean);
       if (due.length === 0) break;
       clock += stepMs;
       for (const cb of due) cb(clock);

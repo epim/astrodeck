@@ -26,6 +26,8 @@
 // ui/ (scratchpad/s3-u2-readouts-m5q8/mut/), never in the shared tree.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { installAutoRaf } from "../../../testing/rafPolyfill";
+
 // ---------------------------------------------------------------- jsdom first
 // The module under test reads the Tonight answer out of the store for the
 // mosaic band (`withMosaicBands`), and the store reaches lib/base.ts, which
@@ -54,8 +56,7 @@ win.WebSocket = class { close() {} addEventListener() {} send() {} };
     const v = k === "window" ? win : win[k];
     Object.defineProperty(gl, k, { value: v, writable: true, configurable: true });
   }
-  gl.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
-  gl.cancelAnimationFrame = (h: any) => clearTimeout(h);
+  installAutoRaf(gl);
   gl.IS_REACT_ACT_ENVIRONMENT = true;
 }
 

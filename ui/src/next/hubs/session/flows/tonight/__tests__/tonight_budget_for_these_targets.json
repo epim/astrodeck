@@ -25,13 +25,13 @@
    {
     "t_unix": null,
     "label": "BUDGET",
-    "msg": "Ha: 1 h banked for these targets / 2 h goal \u2014 tonight adds \u22482 h; the session ledger resumes the remainder next clear night",
+    "msg": "Ha: 1 h banked for these targets / 2 h goal - tonight adds \u22482 h; the session ledger resumes the remainder next clear night",
     "tone": "good"
    },
    {
     "t_unix": null,
     "label": "BUDGET",
-    "msg": "L, R cycle: no integration goal (a FILTER CYCLE sets none), 0.2 h banked in its filters for these targets \u2014 its 10 cycles owe \u22480.33 h of shutter; the session ledger resumes the remainder next clear night",
+    "msg": "L, R cycle: no integration goal (a FILTER CYCLE sets none), 0.2 h banked in its filters for these targets - its 10 cycles owe \u22480.33 h of shutter; the session ledger resumes the remainder next clear night",
     "tone": "good"
    }
   ]

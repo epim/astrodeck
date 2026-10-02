@@ -24,6 +24,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { installAutoRaf } from "../testing/rafPolyfill";
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
@@ -52,7 +54,7 @@ g.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 g.IntersectionObserver = class {
   observe() {} unobserve() {} disconnect() {} takeRecords() { return []; }
 };
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------------- imports

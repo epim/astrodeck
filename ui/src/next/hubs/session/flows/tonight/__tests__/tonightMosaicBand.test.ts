@@ -53,6 +53,7 @@
 
 // @ts-ignore  node built-ins; tsx supplies them at runtime
 import { readFileSync } from "node:fs";
+import { installAutoRaf } from "../../../../../../testing/rafPolyfill";
 
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
@@ -76,8 +77,7 @@ for (const k of [
   const v = k === "window" ? win : win[k];
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
 }
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
-g.cancelAnimationFrame = (h: any) => clearTimeout(h);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------------- imports

@@ -241,16 +241,23 @@ class SafetyConfig(BaseModel):
     resume_when_safe: bool = True
     resume_safe_consecutive: int = 3
     max_pause_min: int = 120               # 0 = no cap; escalates to park on timeout
-    # Roll-off roof / dome auto-close (PRO-4). All default False → every existing
-    # rig/test byte-identical (the rotator_pa_offset/polar_misalignment opt-in
-    # precedent). close_dome_on_unsafe: a rain/cloud trip ESCALATES to the
-    # park-and-close teardown (a closeable roof closes over the parked gear rather
-    # than pause-holding under open sky). close_dome_when_done: close the roof at a
-    # normal end-of-night. Two flags (not one) so protective close-on-rain and
-    # end-of-night close are independently choosable. Enacting the close still
-    # requires a connected dome.
+    # Roll-off roof / dome auto-close (PRO-4). close_dome_on_unsafe: a
+    # rain/cloud trip ESCALATES to the park-and-close teardown (a closeable
+    # roof closes over the parked gear rather than pause-holding under open
+    # sky); False (the rotator_pa_offset/polar_misalignment opt-in precedent)
+    # so every existing rig/test is byte-identical, and it is an OPEN owner
+    # question left alone here (#657, #192). Two flags, not one, so
+    # protective close-on-rain and end-of-night close stay independently
+    # choosable. Enacting either close still requires a connected dome, so
+    # both flags are inert on a rig that has none.
     close_dome_on_unsafe: bool = False
-    close_dome_when_done: bool = False
+    # close_dome_when_done: close the roof at a normal end-of-night. D-16
+    # (owner-approved 2026-09-30, #192): True by default, because leaving the
+    # roof open through the day is the worse of the two failures #192 found -
+    # unlike close_dome_on_unsafe above, this is not a surprise ESCALATION
+    # mid-night, only what already happens at the dawn wind-down anyway.
+    # Harmless on a rig with no dome (the comment above: enacting needs one).
+    close_dome_when_done: bool = True
     # reopen_dome_when_safe (PRO-4 D3): OPT-IN advanced flag that ONLY matters when
     # close_dome_on_unsafe is also set. OFF (default) ⇒ close_dome_on_unsafe is
     # byte-identical to before: an unsafe trip closes the roof and ENDS the run. ON

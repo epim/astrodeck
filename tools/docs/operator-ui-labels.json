@@ -155,25 +155,25 @@
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "CAPTURE LOOP",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 473
+      "line": 481
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "Exposure",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 488
+      "line": 496
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "Count",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 491
+      "line": 499
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "Integration goal",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 496
+      "line": 504
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
@@ -303,19 +303,19 @@
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "PANELS",
       "source": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
-      "line": 238
+      "line": 260
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "ORDER",
       "source": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
-      "line": 240
+      "line": 262
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "SHOOT",
       "source": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
-      "line": 252
+      "line": 274
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
@@ -393,91 +393,91 @@
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "FLAT PANEL",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 399
+      "line": 407
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "SLEW + CENTER",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 418
+      "line": 426
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "AUTOFOCUS",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 435
+      "line": 443
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "GUIDE",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 456
+      "line": 464
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "FILTER CYCLE",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 503
+      "line": 511
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "DUSK FLATS",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 529
+      "line": 537
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "CALIBRATION QUEUE",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 551
+      "line": 559
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "TARGET POOL",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 587
+      "line": 595
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "CONDITION",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 627
+      "line": 635
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "HOLD / RESUME",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 657
+      "line": 665
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "NOTIFY",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 695
+      "line": 703
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "REFOCUS",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 713
+      "line": 721
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "PARK + CLOSE",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 730
+      "line": 738
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "ABORT + PARK",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 757
+      "line": 765
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
       "label": "SESSION REPORT",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 776
+      "line": 784
     },
     {
       "page": "docs/guide/plan-and-sequences.md",
@@ -976,8 +976,8 @@
     {
       "page": "docs/guide/monitor.md",
       "label": "RESUME INTERRUPTED RUN",
-      "source": "ui/src/next/hubs/session/now/Interrupted.tsx",
-      "line": 158
+      "source": "ui/src/next/hubs/session/now/resumeTitle.ts",
+      "line": 34
     },
     {
       "page": "docs/guide/weather.md",
@@ -1229,13 +1229,13 @@
       "page": "docs/guide/unattended-nights.md",
       "label": "HOLD / RESUME",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 657
+      "line": 665
     },
     {
       "page": "docs/guide/unattended-nights.md",
       "label": "Max hold",
       "source": "ui/src/components/flows/nodeDefs.ts",
-      "line": 675
+      "line": 683
     }
   ]
 }

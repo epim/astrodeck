@@ -8257,7 +8257,13 @@ class Hub:
         down toward the pier, so the engine declines the flip (see
         ``schedule.flip_unnecessary_over_pole``). Counting down to a flip that
         will not happen is the same broken promise as any other — the strip has
-        to say what the run will actually do."""
+        to say what the run will actually do.
+
+        A mount reporting tracking off is the same broken promise again: its
+        hour angle is fixed, so it is not moving toward its meridian whatever
+        the countdown says. ``status`` is ``"not tracking"`` with
+        ``hours_to_flip`` null, ahead of every other reading below (D-11,
+        issue #519)."""
         from .catalog.coords import lst_hours
         meridian: dict[str, Any] = {
             "status": "unknown", "hours_to_flip": None,
@@ -8278,6 +8284,14 @@ class Hub:
             side = (await tel.pier_side()).value
         except Exception:
             side = "unknown"
+        try:
+            # D-11 (backlog ruling, owner-approved 2026-09-30, issue #519):
+            # False, not None/unknown -- a mount that declines to say is
+            # handled below like any other unanswered read, not promoted to
+            # "stopped".
+            tracking = await tel.get_tracking()
+        except Exception:
+            tracking = None
         meridian.update(self._note_pier_side(side))
         # AND THE REST OF THIS FUNCTION READS THE RESOLVED SIDE, not the raw
         # one. `_is_gem` below decides `status` and `flip_enabled` from it, so
@@ -8321,7 +8335,21 @@ class Hub:
         # whatever the tube geometry says.
         meridian["flip_enabled"] = (self._is_gem(side)
                                     and self._plan_flip_enabled())
-        if not self._is_gem(side):
+        if tracking is False:
+            # NO COUNTDOWN WHILE THE MOUNT IS NOT MOVING (D-11, backlog ruling
+            # owner-approved 2026-09-30, issue #519). A stopped mount's hour
+            # angle is fixed, so `ttf` above (whether the device's own or the
+            # one derived from HA) would hold at whatever value it had when
+            # tracking stopped, or keep counting down if the simulator's RA
+            # still advanced on its own -- either way a promise about motion
+            # that is not happening. This beats every branch below, GEM or
+            # not, flip-disabled or not: those describe a mount that IS
+            # tracking; this one says it is not, which is the simpler and
+            # more honest fact. `flip_enabled` above is left alone -- it is a
+            # capability (GEM + plan), not a claim about this instant.
+            meridian["status"] = "not tracking"
+            meridian["hours_to_flip"] = None
+        elif not self._is_gem(side):
             meridian["status"] = "n_a_fork" if side != "unknown" else "unknown"
         elif not self._plan_flip_enabled():
             meridian["status"] = "flip_disabled"          # GEM but plan disabled it

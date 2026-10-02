@@ -21030,6 +21030,15 @@ def test_2_1_and_2_6_say_run_mode_as_s5_built_it():
         assert ((True, False...nding'], True) == ((True, True)...nding'], True)
           At index 0 diff: (True, False) != (True, True)
           Use -v to get more diff
+
+    W7 INTEGRATION RE-PIN (WP-49 / D-07, owner-approved 2026-09-30): WP-49
+    rewrote `runLine`'s set-aside branch so the label is `run.forNow ?
+    SET_ASIDE_FOR_NOW : SET_ASIDE_TONIGHT` with a "tried once more
+    tonight" tail for a for-now panel, in place of the fixed
+    `` `${SET_ASIDE_TONIGHT}: ${run.reason}` ``. 2.6 now says both
+    wordings, and this test's `words` check and its `_says` phrase for
+    2.6 are re-pinned to the new source and text; this was deliberate,
+    not a regression.
     """
     host = _ui("components/flows/FlowEditor.tsx")
     classic = re.search(r"function FramingHostSheet\(.*?\n\}\n", host,
@@ -21058,13 +21067,19 @@ def test_2_1_and_2_6_say_run_mode_as_s5_built_it():
                        _ts_function(model, "panelDrawState"))
     drawn = [w for m in order for w in m if w]
     panels = _ui("components/flows/framing/sections/PanelsSection.tsx")
-    now, aside = (_ts_const(panels, "SHOOTING_NOW"),
-                  _ts_const(panels, "SET_ASIDE_TONIGHT"))
+    now, aside, for_now_word = (_ts_const(panels, "SHOOTING_NOW"),
+                                _ts_const(panels, "SET_ASIDE_TONIGHT"),
+                                _ts_const(panels, "SET_ASIDE_FOR_NOW"))
     line = _ts_function(panels, "runLine")
     # Since S7 PANELS prints `runRowText`, the label and `runLine`, the
-    # label left out where the reason names the panel (#509).
+    # label left out where the reason names the panel (#509). Since W7
+    # (WP-49 / D-07) the label is for-now or tonight by `run.forNow`, with
+    # a tried-once-more tail for a for-now panel.
     words = ("return SHOOTING_NOW;" in line
-             and "`${SET_ASIDE_TONIGHT}: ${run.reason}`" in line
+             and "const label = run.forNow ? SET_ASIDE_FOR_NOW : "
+                 "SET_ASIDE_TONIGHT;" in line
+             and "run.reason ? `${label}: ${run.reason}${tail}` : "
+                 "`${label}${tail}`" in line
              and "return `${label}: ${line}`;" in _ts_function(
                  panels, "runRowText")
              and "runRowText(r.label, r.run)" in panels)
@@ -21096,6 +21111,9 @@ def test_2_1_and_2_6_say_run_mode_as_s5_built_it():
                 f"reason", "drawn shooting while the run is paused, holding "
                 "for cloud or aborting too (#451)",
                 "no meridian countdown and no visit clock (5.10)",
+                f"\"2-1: {for_now_word}: \" and the engine's reason, with a "
+                "\"; tried once more tonight\" tail, which `run.forNow` "
+                "decides",
                 "(#449)"), "2.6")
     kept = "neither host passes run mode's `viewOnly`" in _section("2.1")
     assert not kept, "2.1 still says no host passes viewOnly; S5 built it"
@@ -23714,8 +23732,14 @@ def test_2_6_says_run_mode_as_s7_built_it():
     panels = _ui("components/flows/framing/sections/PanelsSection.tsx")
     row = ('if (run?.kind === "set_aside" && namesPanel(run.reason, label)) '
            'return line;' in _ts_function(panels, "runRowText"))
+    # W7 INTEGRATION RE-PIN (WP-49 / D-07, owner-approved 2026-09-30):
+    # `panelRows` renamed its helper `asideTonight` to `isAside`, because
+    # since WP-49 a set-aside panel is pulled out of the run order whether
+    # it is aside for now or for the whole night alike (#528, #573); the
+    # helper's old name no longer matched what it tests. Deliberate, not a
+    # regression.
     aside = ("const live = cells.filter((c) => !c.skipped && "
-             "!asideTonight(c))" in _ts_function(panels, "panelRows"))
+             "!isAside(c))" in _ts_function(panels, "panelRows"))
     words = [_ts_const(panels, n) for n in (
         "CURRENT_PAUSED", "CURRENT_HOLDING_FOR_CLOUD", "CURRENT_STOPPING")]
     current = ('return { kind: "current", run: state, hold: null };'
@@ -24498,6 +24522,16 @@ def test_s3_item_5_says_every_block_as_s7_built_it():
         assert (['M31', 'M33'], True, False) == (['M31', 'M33'], True, True)
           At index 2 diff: False != True
           Use -v to get more diff
+
+    W7 INTEGRATION RE-PIN (WP-50, #562, D-16 owner-approved 2026-09-30):
+    WP-50 added a third callable off the same cached `summaries()`,
+    `banked_by_target=lambda: banked_hours_by_target_from_reports(
+    summaries()),`, the per-block BUDGET fold (a flow of several blocks
+    sharing a filter needs each row's own target's hours, not the whole
+    flow's total). It is read on the same worker thread as the other two
+    folds, off the same cached tuple, so it costs no extra disk read; this
+    is the intended third call, not a regression, and the loader's call
+    count below moves from 2 to 3 to match it.
     """
     from astrodeck.flows import tonight
     lanes = _flow([("t", "target", {"name": "M31", "ra": "00h 42m 44s",
@@ -24534,10 +24568,14 @@ def test_s3_item_5_says_every_block_as_s7_built_it():
               and "return tuple(SessionReporter.summaries())" in route
               and "banked=lambda: banked_hours_from_reports(\n"
                   "                summaries(), " in route
+              # WP-50 (#562, D-16): the per-block BUDGET fold, off the same
+              # cached summaries() tuple, costing no extra read.
+              and "banked_by_target=lambda: banked_hours_by_target_from_"
+                  "reports(\n                summaries())," in route
               and "frames_by_target=lambda: frames_by_target_from_reports(\n"
                   "                summaries())," in route
               and route.count("summaries(),") + route.count("summaries()),")
-              == 2)
+              == 3)
     got = (armed, head, loader)
     assert got == (["M31", "M33"], True, True), (
         f"(the blocks the brief arms, in order; the #/next head line; the "

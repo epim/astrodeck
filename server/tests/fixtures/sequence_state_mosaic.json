@@ -55,7 +55,9 @@
     "set_aside": [
      {
       "panel": "2-2",
-      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo",
+      "kind": "centring",
+      "for_now": true
      }
     ],
     "meridian_wait": false
@@ -118,7 +120,9 @@
     "set_aside": [
      {
       "panel": "2-2",
-      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo",
+      "kind": "centring",
+      "for_now": true
      }
     ],
     "meridian_wait": true
@@ -187,7 +191,9 @@
     "set_aside": [
      {
       "panel": "2-2",
-      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo",
+      "kind": "centring",
+      "for_now": true
      }
     ],
     "meridian_wait": true
@@ -256,7 +262,9 @@
     "set_aside": [
      {
       "panel": "2-2",
-      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo",
+      "kind": "centring",
+      "for_now": true
      }
     ],
     "meridian_wait": false
@@ -319,7 +327,9 @@
     "set_aside": [
      {
       "panel": "2-2",
-      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo",
+      "kind": "centring",
+      "for_now": true
      }
     ],
     "meridian_wait": false
@@ -374,7 +384,9 @@
     "set_aside": [
      {
       "panel": "2-2",
-      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo",
+      "kind": "centring",
+      "for_now": true
      }
     ],
     "meridian_wait": false

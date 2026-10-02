@@ -165,6 +165,7 @@ class SmokeOwnership(unittest.TestCase):
 
     def exercise_early_failure(self, *, occupied=False, launch_error=None):
         scratch=ROOT / ".probe/release"
+        scratch.mkdir(parents=True,exist_ok=True)  # gitignored, absent on a fresh checkout (#666)
         with tempfile.TemporaryDirectory(prefix="smoke-early-test-",dir=scratch) as name:
             root=Path(name)
             sock=types.SimpleNamespace(bind=lambda addr:None,getsockname=lambda:("127.0.0.1",8899))
