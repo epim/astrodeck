@@ -1484,6 +1484,14 @@ class SequenceEngine:
         # boundary that passes mid-target actually stops the target (it was only
         # checked at target SELECTION before — the running target shot into dawn).
         self._frozen: dict[int, tuple[float | None, float | None]] = {}
+        # Per-run {id(target): unix ts} of each target's FIRST ATTEMPT -- the
+        # first time the scheduler selected it to visit, whatever that visit's
+        # setup then did (backlog ruling for #164, orchestrator 2026-10-02,
+        # owner-approved plan 2026-09-30). `max_run_min` counts from here, not
+        # from the run's start, so a later target in a multi-target plan keeps
+        # its own full budget: see `_schedule_loop`'s selection (where this is
+        # written, once per id) and `schedule.apply_max_run_cap`.
+        self._first_attempt: dict[int, float] = {}
         self._watchdog_task: asyncio.Task | None = None
         self._retakes_per_target: dict[int, int] = {}   # ti -> retakes spent
         # PRO-3 conditional sequencer: per-instruction fire bookkeeping (edge/
@@ -1932,6 +1940,10 @@ class SequenceEngine:
         self._last_frame_at = self._started_at
         self._progress_expected = False
         self._frozen = {}
+        # A resumed run starts fresh here too, like `_frozen` above: this
+        # run's own scheduler has attempted nothing yet, whatever an earlier
+        # run (before a restart) attempted (#164 ruling).
+        self._first_attempt = {}
         self._retakes_per_target = {}
         self._fire_state = {}
         self._clouds = CloudState()
@@ -3309,8 +3321,18 @@ class SequenceEngine:
         # to tomorrow, so window_closed / dawn_cutoff / max_run were unreachable
         # and a dusk-start evaluated after dusk waited ~23h. resolve_window now
         # searches backward too, so a dusk already past still opens tonight.
-        frozen = {id(t): schedule.resolve_window(t.schedule, site, twilight,
-                                                 run_start)
+        #
+        # NO TARGET HAS BEEN ATTEMPTED YET (#164 ruling): `_first_attempt` is
+        # empty right after `start`'s reset, so every target's initial frozen
+        # stop carries no `max_run_min` cap at all, only its own dawn/clock
+        # stop (if any) -- `_schedule_loop`'s selection updates a target's own
+        # entry here, in place, the first time it is picked, once its own
+        # first-attempt anchor is known. Until then a later "now" target in a
+        # multi-target plan is never found window_closed by a budget it never
+        # started spending.
+        frozen = {id(t): schedule.resolve_window(
+                      t.schedule, site, twilight, run_start,
+                      max_run_from=self._first_attempt.get(id(t)))
                   for t in plan.targets}
         # publish the frozen windows so _run_step can re-check each target's stop
         # boundary at every frame boundary (not just at selection — the running
@@ -3558,6 +3580,30 @@ class SequenceEngine:
                 self._note_meridian_waits(ready, remaining, elig)
 
             if ready is not None:
+                # THE TARGET'S OWN FIRST ATTEMPT (backlog ruling for #164,
+                # orchestrator 2026-10-02, owner-approved plan 2026-09-30):
+                # the first time the scheduler selects a target to visit is
+                # its max_run_min anchor, whether or not the visit that
+                # follows (a slew, a centre, a rotate) then succeeds -- a
+                # refused or failed attempt still starts its give-up timer.
+                # Recorded once per target id; every later selection of the
+                # same target is a no-op here, including the pass-boundary
+                # re-selection just below (which only reaches a target
+                # already visited, so its first attempt was already
+                # recorded). `frozen[id(ready)]` is updated IN PLACE -- it is
+                # the same dict object as `self._frozen` -- so every other
+                # reader of the frozen window (gating_status above,
+                # `_enforce_stop_boundary`, the group/mosaic hold-pass
+                # closure sweep `_expire_or_wait`, the reach-wait set-aside
+                # path `_hop_refused_by_a_limit`, the all-closed dawn-cutoff
+                # check above) sees the same per-target stop from here on.
+                if id(ready) not in self._first_attempt:
+                    self._first_attempt[id(ready)] = now
+                    sched_r = ready.schedule
+                    if sched_r is not None and sched_r.max_run_min:
+                        start_ts, stop_ts = frozen.get(id(ready), (None, None))
+                        frozen[id(ready)] = (start_ts, schedule.apply_max_run_cap(
+                            stop_ts, sched_r.max_run_min, now))
                 ti = index_of[id(ready)]
                 group = self._group_of(ready)
                 if (group is not None and group.id in self._group_runs
@@ -6722,8 +6768,10 @@ class SequenceEngine:
     def _enforce_stop_boundary(self, target: Target) -> None:
         """Raise :class:`WindowClosed`, a :class:`StopTarget`, when the
         target's FROZEN stop boundary has passed (§1.6). ``resolve_window``
-        folds ``stop_mode`` (dawn/time) AND ``max_run_min`` into a single
-        frozen ``stop_ts`` at run start; the scheduler
+        folds ``stop_mode`` (dawn/time) into the frozen ``stop_ts`` at run
+        start, and ``max_run_min`` into that SAME ``stop_ts`` the first time
+        this target is attempted (#164: its own anchor, not the run's); the
+        scheduler
         only consulted it when SELECTING a target, so once a target was running the
         stop boundary was dead — the engine shot every remaining frame straight
         through dawn into daylight. Re-checking it here, at each frame boundary,
