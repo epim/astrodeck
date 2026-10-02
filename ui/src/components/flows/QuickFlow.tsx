@@ -36,6 +36,30 @@ import { defaultExposureFor, resolveWheel } from "./cyclePlanRows";
 export const QUICK_SAVE_FAILED = "Could not create the quick flow";
 export const QUICK_RUN_FAILED = "The flow was saved, but it did not start";
 
+/** doctor.py `UNGUIDED_SUB_LINE_S`, seconds -- where the doctor's rule 2 warns
+ *  that stars trail with no GUIDE stage, and so where `wizard.quick` refuses an
+ *  unguided sub, 422 `invalid_quick_flow` naming the filter (#518, H4 ruling
+ *  5). H4 built the mirror on the #/next quick sheet only
+ *  (next/hubs/session/flows/create/quick.tsx); the classic sheet's Guide
+ *  toggle showed no note and met the same 422 from its own 180 s narrowband
+ *  default (#588). This is the classic sheet's copy of the SAME number, the
+ *  established shape this file already uses for its other copied constants
+ *  (`QUICK_SAVE_FAILED` beside the next sheet's own, `quickPayload` beside its
+ *  `quickPayload.ts`): WP-48a could not move both sheets' copies into one
+ *  shared module (that needs a new file outside the three this WP owns), so
+ *  w6QuickFlowUnguidedNote.test.tsx holds this value equal to quick.tsx's and
+ *  both equal to doctor.py's, the same two-check shape
+ *  quickUnguidedLimit.test.tsx already runs for the #/next copy. */
+export const UNGUIDED_SUB_LINE_S = 120;
+
+/** The Guide toggle's note while Guide is off, word for word the #/next
+ *  sheet's `UNGUIDED_NOTE` (#588): one rule, said the same way on both front
+ *  ends, so an operator who has seen it on one sheet is not re-learning it on
+ *  the other. */
+export const UNGUIDED_NOTE =
+  `no GUIDE stage: every sub must be under ${UNGUIDED_SUB_LINE_S} s, where `
+  + "unguided stars start to trail. A longer one is refused.";
+
 /** What the sheet calls the single channel of a rig with no filter wheel. It is
  *  a LABEL, not a slot: the payload's `filters` is empty in that case and the
  *  server builds a capture loop with no filter name, because an invented name is
@@ -433,21 +457,32 @@ export default function QuickFlow() {
       </div>
 
       {/* ── 4. guiding */}
-      <button
-        type="button"
-        aria-pressed={guided}
-        onClick={() => setGuided((g) => !g)}
-        className={`flex items-center justify-between gap-3 min-h-[44px] px-3
-          rounded-[10px] border font-mono text-[11px] cursor-pointer
-          transition-colors ${guided
-            ? "border-accent text-accent bg-accent-fill"
-            : "border-line2 text-dim bg-transparent"}`}
-      >
-        <span>Guide</span>
-        <span className="font-display font-semibold text-[10px] tracking-[0.16em]">
-          {guided ? "ON" : "OFF"}
-        </span>
-      </button>
+      <div className="flex flex-col gap-1.5">
+        <button
+          type="button"
+          aria-pressed={guided}
+          onClick={() => setGuided((g) => !g)}
+          className={`flex items-center justify-between gap-3 min-h-[44px] px-3
+            rounded-[10px] border font-mono text-[11px] cursor-pointer
+            transition-colors ${guided
+              ? "border-accent text-accent bg-accent-fill"
+              : "border-line2 text-dim bg-transparent"}`}
+        >
+          <span>Guide</span>
+          <span className="font-display font-semibold text-[10px] tracking-[0.16em]">
+            {guided ? "ON" : "OFF"}
+          </span>
+        </button>
+        {/* #588: the wheel's narrowband rows default to 180 s (cyclePlanRows'
+            defaultExposureFor), past the unguided line, so with Guide off the
+            operator's first SAVE used to be a 422 on numbers the sheet filled
+            in itself. The note says where the line is before that press. */}
+        {!guided && (
+          <p className="text-[10.5px] text-faint leading-[1.5]" data-quick-unguided-note>
+            {UNGUIDED_NOTE}
+          </p>
+        )}
+      </div>
 
       {/* The night this will produce, in the numbers the operator gave. */}
       <p className="text-[11px] text-dim leading-[1.5] [text-wrap:pretty]"
