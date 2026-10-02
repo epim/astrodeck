@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """HTTP surface for SER video capture (D-RIG-1) and its lucky-imaging stack.
 
 A router rather than more lines in api/app.py, following catalog/visibility.py:

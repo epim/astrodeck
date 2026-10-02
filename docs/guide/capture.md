@@ -63,3 +63,5 @@ Open the guider device for its camera preview and guiding state. The imaging cam
 ## Related
 
 [Focus](focus.md) · [Guiding](guiding.md) · [Sessions and downloads](sessions-multi-night.md)
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

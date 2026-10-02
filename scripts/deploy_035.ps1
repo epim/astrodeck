@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.5 - rain vetoes the night, cloud only advises. The old gate refused
 # two clear nights and blocked auto-resume after the meridian-limit crash on 2026-08-21.
 # Also carries cloudmap stages 1-2 (inert: nothing imports them yet).

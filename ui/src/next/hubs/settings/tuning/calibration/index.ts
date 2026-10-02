@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // The Calibration and Sky-pack tuning area (wave R7, T-R7-14). Three editors
 // across two sheets:
 //

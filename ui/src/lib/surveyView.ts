@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // surveyView — pure math mapping the last-fetched survey frame onto the live
 // Atlas view (Wave-1 spec §1.2). NO React, no DOM: importable by the npx-tsx
 // assert tests (rotatorDial.ts precedent).

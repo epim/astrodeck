@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The guided wizard's generator — and the one bar the handoff sets for it.
 
 README §9 ends with a sentence that is the whole feature: "Every generated graph

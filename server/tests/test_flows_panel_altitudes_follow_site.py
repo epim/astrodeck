@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A mosaic's panel altitudes in Tonight follow the site ``resolve_tonight``
 is handed, not the hub's (#336; spec section 8 S3 item 5, 6.9).
 

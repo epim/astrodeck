@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic panel order's server copy graded against the table the Target
 modal's copy is graded against too (#412 item 1; spec 5.2, 2.4 PANELS).
 

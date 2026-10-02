@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // hubs/rig/capture/index.ts - what the RIG hub's sub-nav mounts for `capture`.
 //
 // One named export. The RIG hub task wires `#/rig/capture` to it; nothing here

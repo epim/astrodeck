@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Re-framing through the routes: a small move keeps every compiled id, a
 large one restarts them and the save's answer says so (#189 Revision 2
 ruling 3, spec 3.3, 2.5; task S3-A).

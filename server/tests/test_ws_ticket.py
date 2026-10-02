@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """OPEN-011: single-use WS tickets replace a long-lived token in the query.
 
 A browser cannot set a WS Authorization header, so a shared token had to ride

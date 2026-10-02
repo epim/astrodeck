@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-filter focuser offsets from measured best-focus positions (pure math).
 
 The offset EDITOR already ships (FilterNamesModal -> ``hub.set_filter_names``)

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Build a case directory (CONTRACT.md's "Case directory" section) from a
 case definition, a scene, a route and a renderer.
 

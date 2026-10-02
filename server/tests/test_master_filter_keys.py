@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A master flat keeps its slot's name, and never shares a file (#371, #372).
 
 #371. Since #332 a frame whose slot name the #277 fold changed carries the

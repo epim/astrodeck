@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-logic tests for lib/connection.ts (H1). Run:
 //   npx tsx ui/src/lib/__tests__/connection.test.ts
 // No test runner, no @types/node: a tiny inline assert + a guarded process.exit

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cardActions.ts - the six verbs on a Gallery card, their availability, and
 // the sentence each destructive one has to say first.
 //

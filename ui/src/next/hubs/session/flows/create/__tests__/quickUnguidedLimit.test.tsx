@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // quickUnguidedLimit.test.tsx - the quick sheet shows the unguided limit
 // beside the Guide switch whenever Guide is off (#518, H4 orchestrator
 // ruling 5).

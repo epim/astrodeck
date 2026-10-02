@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A guide loop with nobody driving it is a motor turning on nobody's behalf.
 
 2026-09-11, the four and a half hours this exists to prevent: the operator

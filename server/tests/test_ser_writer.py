@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """SER v3 writer, graded against the published spec rather than against itself.
 
 THE PARSER IN THIS FILE IS DELIBERATELY HAND-WRITTEN. Reading the file back with

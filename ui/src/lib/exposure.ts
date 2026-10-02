@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // exposure.ts — pure bounds check for the Capture view's manual exposure
 // field. No React, no DOM: npx-tsx testable (safety.ts/schedule.ts precedent).
 //

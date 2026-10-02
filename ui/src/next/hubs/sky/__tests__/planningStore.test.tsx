@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planningStore.test.tsx - the planning store: one fetch, two merge rules, one
 // rename, and a fallback that cannot delete anything (D-FU-1, T-U7b-11).
 //

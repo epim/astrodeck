@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // catalogHint.test.ts — pure zero-state copy helpers (spec R2-ATL-01 minimal).
 // Inline assert harness like site.test.ts. Run: npx tsx src/lib/__tests__/catalogHint.test.ts
 import {

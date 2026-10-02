@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AnnotationMarkers — the catalogued sky, drawn as geometry.
 //
 // Sits inside SkyCanvas's existing <svg viewBox="0 0 1000 1000"> (layer 3),

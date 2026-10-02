@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SubNav.tsx - the chips row under the banners: the hub's own sections.
 //
 // A sub-nav change REPLACES the history entry rather than pushing one

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CaptureStage.tsx - the manual bench's picture: the shared PreviewStage in the
 // design's 250 px card, with the four overlays the prototype draws on it.
 //

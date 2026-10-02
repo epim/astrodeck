@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Restart, concurrent render, and changing-library regressions (#79-81, #84)."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor

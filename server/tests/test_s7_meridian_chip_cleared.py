@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The engine clears the ``live`` meridian chip once there is nothing to
 count down to (#422; spec 5.7 and 5.10 as built S5, S7-ENG-FLIP).
 

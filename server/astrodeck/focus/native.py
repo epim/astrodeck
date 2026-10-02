@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Native (Rust engine) V-curve autofocus.
 
 This is the ``astrodeck`` autofocus provider: it drives the same move → expose →

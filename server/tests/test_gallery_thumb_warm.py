@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#225 — the gallery renders nothing on a desktop, and the cause is a burst.
 
 MEASURED against the relay 2026-08-10, 1920x1080 @2x: the grid put 41 tiles in

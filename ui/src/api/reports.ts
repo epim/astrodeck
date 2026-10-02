@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/reports.ts — typed wrappers for the session-report routes (report viewer
 // spec §3 Task 1). Cookie auth is automatic; ApiError on non-2xx.
 import { api } from "../api";

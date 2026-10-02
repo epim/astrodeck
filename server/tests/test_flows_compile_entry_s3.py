@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The TARGET block's compile entry (spec 3.2; #189 U-09, #170, #151).
 
 A TARGET node still compiles to ONE entry, so the PLAN tab shows one block as

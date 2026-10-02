@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // GeneralScreen.tsx - Settings > GENERAL (`#/settings/general`, plan C.2).
 //
 // The setup card, then five groups of rows: RIG, SKY, PHONE, LIBRARY, MORE.

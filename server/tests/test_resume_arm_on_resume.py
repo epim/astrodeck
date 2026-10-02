@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A RESUMED session must be armed too, or a multi-night run can never resume.
 
 MEASURED ON THE RIG, 2026-08-11. I deployed 0.2.73 into a live plan

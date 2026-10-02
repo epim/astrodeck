@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // profilesModel.ts - every string and every pure decision the PROFILES area
 // makes (wave R7, T-R7-17; plan section 3.F20).
 //

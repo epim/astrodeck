@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The em-dash compatibility shim and the copy-rules scan (S7k, decision D-SKY-4).
 
 CORRECTING A CLAIM IN DEVIATIONS.md. D-SKY-4's ledger entry says the Atlas

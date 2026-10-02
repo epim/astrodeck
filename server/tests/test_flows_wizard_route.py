@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """POST /api/flows/wizard — the route that was missing under the sheet.
 
 `flows/wizard.py` shipped complete: `generate()`, `generate_record()` and

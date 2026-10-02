@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SitePanel.tsx — Settings → "Observing Site" (site-location-privacy spec §5).
 // The ONE place the observing site is edited: name + latitude (magnitude 0-90 +
 // N/S) + longitude (magnitude 0-180 + E/W) + elevation, converted to the signed

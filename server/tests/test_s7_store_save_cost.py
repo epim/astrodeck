@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A flow save reads the one flow it writes, however many the library holds
 (#433; spec 3.3, the store owns the save).
 

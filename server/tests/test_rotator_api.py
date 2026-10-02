@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Rotator route contracts: 409 without device, exposure refusal, reverse
 gating, range-mapped move response. Uses the drivers-api client fixture and
 manipulates the app module's hub directly (routes read the module-global hub

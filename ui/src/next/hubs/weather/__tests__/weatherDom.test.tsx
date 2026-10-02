@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // weatherDom.test.tsx - the WEATHER hub, MOUNTED: the verdict, the band, the
 // attribution, the override, the dome's wind arrow, and the two refusals.
 //

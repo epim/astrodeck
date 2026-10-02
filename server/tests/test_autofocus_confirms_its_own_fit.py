@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A sweep must not move to a position its own confirming frame calls worse.
 
 The engine measures ONE frame at the fitted vertex before reporting done. On the

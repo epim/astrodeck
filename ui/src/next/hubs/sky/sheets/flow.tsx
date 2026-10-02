@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flow.tsx - the FLOW CARD: what GENERATE FLOW actually built, and the one
 // button that starts it (hub-sky plan D.5, D.7, screenshot 06).
 //

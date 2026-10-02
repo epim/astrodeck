@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TonightPanel.tsx — "what is this flow actually going to do tonight?", in
 // three readings of the same answer: the night as a picture, the night as
 // sentences, and the plan the engine will literally run.

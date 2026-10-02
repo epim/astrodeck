@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ADOPT asks the catalogue off the event loop and outside the store's write
 lock (#249, route half; spec 5.9, the CONTINUE critical section).
 

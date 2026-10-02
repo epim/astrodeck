@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Factory reset (Settings -> Danger zone). Real logic with a real blast radius,
 so this pins BOTH halves of the contract:
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Registry guard: every role a backend ADVERTISES is actually serviceable.
 
 W1.9 / W1.2 drift guard. A backend that lists a role in ``Backend.roles`` it

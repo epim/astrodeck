@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The sequencer's filter change never runs for a calibration target.
 
 ``_apply_filter`` is a well-covered function. Every test it has calls it

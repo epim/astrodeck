@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-4 — the correctness-critical roof/dome close-ordering state machine.
 
 This module holds ONE pure, engine-free async function, ``close_observatory``,

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Move-axis deadman + touch rate clamp + STOP-zeroes-both-axes (Batch 3, 3C).
 
 The single move-axis watchdog (master plan §A.5 / §C-Risk-5) is the safety

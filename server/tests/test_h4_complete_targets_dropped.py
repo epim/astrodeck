@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A complete target does not keep a run alive, idle, until its gate opens
 (#537; spec 5.1 selection and 5.9 resume; the #374 class: a run kept alive
 by a target that cannot contribute).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lazyViews.test.ts — guards the invariants that make route-level code splitting
 // safe on a telescope box (see lib/lazyViews.ts).
 //

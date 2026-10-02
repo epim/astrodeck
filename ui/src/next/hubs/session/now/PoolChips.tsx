@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PoolChips.tsx - which target of the pool is being shot, and which are done.
 //
 // The prototype marks them with a tick, a filled dot and a hollow dot. At the

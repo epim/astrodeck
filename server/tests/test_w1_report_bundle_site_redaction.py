@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#567: a viewer's session report and bundle downloads carry the site.
 
 TWO CARRIERS in the report itself, both the #19/#166 class this codebase has

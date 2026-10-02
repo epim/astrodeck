@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // next/hubs/settings/tuning/files - the four FILES-AND-STANDARDS editors,
 // rebuilt (wave R7, T-R7-13).
 //

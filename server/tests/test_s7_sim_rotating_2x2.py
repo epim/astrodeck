@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A rotating 2x2 end to end, from a stored flow to the readers (#189 S7
 item 1, the first of its four simulator scenarios; spec 5.1, 5.2, 5.4, 5.10,
 6.9).

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A name's IDENTITY is resolved at one shared instant; its COORDINATES at the
 caller's own (#249, flows half; spec 3.3).
 

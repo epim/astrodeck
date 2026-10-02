@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Focuser/FilterWheel/Rotator/Switch/SafetyMonitor COM<->Alpaca handlers
 (COM-T4). Maps exactly the Alpaca methods the corresponding Alpaca* client
 classes in devices/alpaca.py call. Handlers run on the device STA thread."""

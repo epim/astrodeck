@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic group's meridian rule on the clocked simulator (#189 S2, task
 T18; spec 5.7, 5.3, 5.6 step 5, 5.10, 6.9, 6.11, Appendix A.4, D10, I-38;
 #136, #166).

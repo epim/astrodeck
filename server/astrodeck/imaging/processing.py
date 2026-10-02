@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Image display pipeline: auto-stretch, histogram, PNG/JPEG encoding.
 
 The stretch is the classic midtones-transfer-function (MTF) screen stretch

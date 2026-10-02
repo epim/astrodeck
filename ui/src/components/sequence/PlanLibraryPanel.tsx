@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanLibraryPanel.tsx — the unified Plan panel (G2 merge). ONE harmonious
 // surface that carries the plan IDENTITY (editable name + saved/unsaved cue +
 // frames/integration) AND the server plan LIBRARY (Save / Save as… / Import in

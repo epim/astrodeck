@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """/healthz answers the build identity baked into the image (#462 item 2).
 
 Before this, ``GET /healthz`` answered only ``{"ok": true, "ts": ...}``, so

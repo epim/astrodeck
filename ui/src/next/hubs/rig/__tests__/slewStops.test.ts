@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // slewStops.test.ts - the two ladders the mount sheet offers, and the sentence
 // that says what the deadman costs on THIS mount (D-RIG-4).
 //

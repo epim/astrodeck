@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // backends.test.ts — pure-logic tests for the pluggable-backend picker lane
 // (W1.C / W1.6). No DOM, no store: just the tri-state link mapping and the
 // RigSpec ConnSpec builder. Matches the inline-assert harness used across the UI

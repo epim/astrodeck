@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5DisarmedWarning.test.tsx - WP-65, the UI half of WP-31 (a): the #/next
 // Now empty state names every session a run start or resume disarmed.
 //

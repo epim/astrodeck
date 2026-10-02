@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the additive haptics leaf (touch spec §7, R26 checklist).
 //
 // Same inline-assert harness as eta.test.ts (no vitest wired into this UI).

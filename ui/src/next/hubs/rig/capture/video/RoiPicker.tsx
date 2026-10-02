@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RoiPicker.tsx - the subframe a recording will be written at.
 //
 // A planetary recording is small and fast: the whole point of the ROI is that a

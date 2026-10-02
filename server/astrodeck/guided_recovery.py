@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Controller-owned, same-night Guided checkpoints.
 
 These are deliberately not configuration. A controller restart, a new observing

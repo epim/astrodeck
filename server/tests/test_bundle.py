@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-10 stacking-bundle tests: additive FrameRecord fields + `_frame_altitude`
 + the pure bundle core (weighting / grouping / group-normalization / serializers
 / injection-safe build script / PRO-1 library adapter) + the zip route.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The #72 guiding-recovery count is the HOP'S, not the engine's (#329; spec
 5.6 step 7).
 

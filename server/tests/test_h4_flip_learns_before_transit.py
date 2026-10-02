@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What a flip attempt teaches about the mount is learned only from an
 attempt made before transit, read at its goto (#489, H4-ENG-C; spec 5.7,
 #127, the "margin is the plan's lead" paragraph).

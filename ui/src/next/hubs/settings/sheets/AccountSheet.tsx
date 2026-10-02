@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AccountSheet.tsx - Settings > USERS > "Signed in" (plan section C.7.1), and
 // the tablet/desktop panel host for the SAME content the USERS screen renders
 // inline (route table: "account ... renders inline; the sheet form is the

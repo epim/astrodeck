@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rig/sheets/index.ts - the RIG hub's sheet registry (ARCHITECTURE.md section 5).
 //
 // Twelve sheets, six tasks, ONE file that names them - so the composition is a

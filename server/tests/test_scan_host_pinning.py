@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The manual-scan SSRF guard must dial the address it approved.
 
 ``validate_scan_host`` resolved the host, checked the resulting IPs and then

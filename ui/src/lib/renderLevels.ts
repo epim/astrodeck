@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // renderLevels.ts — the WYSIWYG bridge for GET /api/preview/{id}/render.png.
 // (crop+render UI design §1.5, §2.2, §4.2, Decision A1)
 //

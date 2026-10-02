@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NamingSheet.tsx - Settings > MORE > File naming (plan section C.6, row
 // FILE NAMING).
 //

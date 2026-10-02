@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planningRevert.test.tsx - a write that FAILS must not revert a later write
 // that SUCCEEDED (R4/R9 P1, `planning.ts:322,345,371`).
 //

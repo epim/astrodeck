@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SnrChip.tsx — absolute per-SUB SNR readout over the preview (polish grab-bag
 // (b)). Thin shell: every number comes from lib/photometry's tested core.
 //

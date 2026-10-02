@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 import numpy as np, pytest
 from astrodeck.devices.sim import build_sim_rig, SimCoverCalibrator
 from astrodeck.devices.base import CoverCalibrator, CoverState

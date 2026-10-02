@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#591 (backlog ruling D-03, owner-approved 2026-09-30): a mosaic's last
 live panel is held, not charged.
 

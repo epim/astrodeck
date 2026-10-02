@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Pure-lib test for gate.ts. Sabotage check: reordering the priority checks
 // (e.g. testing cap before link) turns "link down beats a cap block" red;
 // dropping the roleLabel translation table turns the telescope/switch/

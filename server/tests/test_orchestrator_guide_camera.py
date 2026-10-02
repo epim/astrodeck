@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Task 13: the guide_camera role resolves from its OWN endpoint (native two-
 vendor rigs) while the sim/NINA one-session accessor path is preserved."""
 from astrodeck.devices import orchestrator as orch

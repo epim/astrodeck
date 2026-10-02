@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // autofocus.test.ts — normalizeAutofocusResult (terminal-only gate, defensive
 // point/fit parsing) + filterNameFromStatus + afResultAgeLabel (F5: R2-FOC-01).
 // Run with:  npx tsx src/lib/__tests__/autofocus.test.ts   (from ui/)

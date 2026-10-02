@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // caps.test.ts — capability-gate logic (W2.5 / spec §T8). VIEWER-READ-ONLY: the
 // pure helpers in lib/caps decide whether a control surface is operable; the
 // React hooks are thin wrappers over them, so testing the helpers tests the gate.

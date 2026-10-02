@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lastFrameId.ts - which frame the Monitor's LAST FRAME tile shows (#399).
 //
 // The tile has two sources for "the newest frame". The live `preview` event

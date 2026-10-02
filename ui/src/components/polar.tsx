@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /** Polar alignment bullseye reticle (HERO 2 — the TPPA wizard's spatial view).
  *  Center = the true pole; the dot is the mount's axis; the vector is the skew,
  *  drawn dot → center so its head names the CORRECTION and not the error.

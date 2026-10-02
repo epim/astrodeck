@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """GN-01: a pier-side change RECALIBRATES the native guider; it never reuses a
 flipped calibration.
 

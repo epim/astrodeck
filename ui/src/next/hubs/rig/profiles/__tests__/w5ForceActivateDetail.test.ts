@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5ForceActivateDetail.test.ts - the force-activate confirm is worded from
 // the server's own coded-409 detail, not a fixed sentence (#256).
 //

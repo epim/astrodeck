@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planning.ts - the quick-plan defaults and the target pool, held on the RIG
 // (D-FU-1). One fetch per app session, three consumers, one write path.
 //

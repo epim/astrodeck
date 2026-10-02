@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A session that keeps crashing gets stowed, not restarted forever.
 
 CONTINUITY IS THE RIGHT DEFAULT and it already worked: `_finalize_report` leaves

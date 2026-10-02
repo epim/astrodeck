@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // portSettings.ts - the per-port policies the POWER sheet edits (D-RIG-5, and
 // the port half of D-RIG-3), and the one place that decides what a port row is
 // allowed to claim.

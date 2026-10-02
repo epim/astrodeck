@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyEphemerisDom.test.tsx - satellites and comets on the Sky targets sheet,
 // MOUNTED (wave U7b, T-U7b-1; decision D-SKY-1).
 //

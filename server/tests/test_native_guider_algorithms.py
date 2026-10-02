@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """P3 gate (P3-T2): end-to-end proof that the non-default guide algorithms
 (Lowpass, Lowpass2, ZFilter) are wired all the way from the AlgoKind
 selection strings through to a converging sim guide loop -- not just

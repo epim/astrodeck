@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ctypes bindings for the ZWO EAF/CAA SDKs (native accessory drivers).
 
 The SDKs are closed binaries under ZWO's MIT-style license (bundleable —

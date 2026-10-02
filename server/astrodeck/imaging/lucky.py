@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Lucky imaging: rank a burst by sharpness, keep the best few, stack them.
 
 The whole premise of planetary work is that seeing is not a constant blur but a

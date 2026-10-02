@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // DevicesScreen.tsx - RIG · DEVICES, the hub root (plan hub-rig.md A).
 //
 // Top to bottom: the RIG title with the one-line rig summary, the FIRST NIGHT

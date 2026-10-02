@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A camera that claims to be connected and produces nothing is dropped (#16).
 
 2026-09-12: an ASI guide camera stranded in `VIDEO_MODE_ACTIVE` went on

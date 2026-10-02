@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* create.css - the two flow-creation sheets' own classes (wave R7 rule:
    `next.css` belongs to T-R7-0 alone, so every area writes its own file and
    imports it from the area root - here `create/index.ts`).

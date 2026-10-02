@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ZWO native accessories: SDK loader/bindings, EafFocuser, CaaRotator,
 zwo-usb backend + framework integration. Hardware-free (fake SDK doubles);
 the vendored-DLL export test runs only where the DLLs exist."""

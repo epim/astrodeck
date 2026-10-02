@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A flow-driven night cools to the rig's own setpoint.
 
 THE DEFECT. The flow vocabulary has no cooling node, and neither ``compile_plan``

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FocusVerdict.tsx — plain-language focus verdict line (decisions log #8, §5).
 // (stream V)
 //

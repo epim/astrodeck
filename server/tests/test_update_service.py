@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Update service: preconditions/safety gate, check, and the apply pipeline."""
 import json
 from pathlib import Path

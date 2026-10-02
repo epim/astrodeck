@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3FlowLoadingCopyClass.test.tsx - the #592 class, in the two places WP-61
 // did not reach (WP-61 new defect, backlog wave 3 integration).
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CloudmapSheet.tsx - the `cloudmap` sheet.
 //
 // The body is `hubs/weather/tuning/CloudmapTuningPanel`, the wave-R7 rebuild of

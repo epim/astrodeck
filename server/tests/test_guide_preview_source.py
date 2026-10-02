@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Where the "Guide cam" panel's picture actually comes from.
 
 Field report, 2026-07-31: turning on Guide cam under Capture did nothing. The

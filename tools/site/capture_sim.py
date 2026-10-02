@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Capture the local simulator for the public site, with provenance.
 
 Only a server_ctl-created config in this checkout's .probe directory is allowed.

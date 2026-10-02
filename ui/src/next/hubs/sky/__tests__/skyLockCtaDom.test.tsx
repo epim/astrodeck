@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyLockCtaDom.test.tsx - the lock card's two claims: what IMAGE will queue,
 // and what + PLAN will do.
 //

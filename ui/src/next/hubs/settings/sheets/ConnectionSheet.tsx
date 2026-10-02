@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ConnectionSheet.tsx - Settings > RIG > Connection (plan section C.4).
 //
 // THE ONE HONESTY FIX ON THIS SCREEN. The design draws three radio buttons

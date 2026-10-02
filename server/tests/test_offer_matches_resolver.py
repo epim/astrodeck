@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every provider the product OFFERS is one the resolver will actually run.
 
 THE PROMISE: if AstroDeck lets you pick X for a capability, X is what runs it.

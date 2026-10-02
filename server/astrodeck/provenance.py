@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Effective config with PROVENANCE: which LAYER won, and what the losers hold.
 
 The bug class this module exists to end: the ACTIVE PROFILE's values beat global

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-04(a) (#549): a sink that never answers must not delay a healthy
 sink's delivery of the same alert, and evicting a queued alert to make room
 for a newer one must be counted and said, not silent.

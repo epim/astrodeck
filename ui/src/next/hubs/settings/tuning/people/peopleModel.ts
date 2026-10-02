@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // peopleModel.ts - every string and every decision the three PEOPLE editors
 // share, with no React and no store in the file (wave R7, T-R7-11; plan
 // sections 3.F4, 3.F5, 3.F6).

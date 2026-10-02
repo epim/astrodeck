@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#250: a source tree that moves under the suite is ONE verdict, not twelve errors.
 
 conftest's tree guard watches `server/astrodeck/*.py` for the length of a run,

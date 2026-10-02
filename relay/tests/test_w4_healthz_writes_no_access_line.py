@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The relay keeps its tunnel evidence: no access line per health probe (#617).
 
 Fly's HTTP check (relay/fly.toml, ``path = "/healthz"``, ``interval =

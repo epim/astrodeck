@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* CameraPickers — ONE set of camera-setting pickers, shared by every screen
    that shoots a frame (2026-08-07 21:27).
 

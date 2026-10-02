@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#342: the AM5 driver notices a silent ``:hP#`` no-op within seconds.
 
 WHAT WAS WRONG. The AM5 takes ``:hP#`` fire-and-forget: no ack, and a park

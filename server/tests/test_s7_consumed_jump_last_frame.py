@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A jump that consumes its target on that target's LAST owed frame leaves a
 complete target, not a skipped one (#481, S7 finding A2, S7 orchestrator
 ruling 2; spec 5.1's ``JumpTarget`` row, 1.2 instructions; S5 orchestrator

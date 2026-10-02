@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rotation.test.ts — table-driven tests for lib/rotation (spec §5.2). Inline-
 // assert harness (no vitest); runs via `npx tsx`. SAME vectors as
 // server/tests/test_rotation.py — keep the tables in sync.

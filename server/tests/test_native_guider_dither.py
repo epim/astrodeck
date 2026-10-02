@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """P2-T1 e2e: ``NativeGuider.dither`` against the sim rig — exercises the
 REAL engine dither + fast-recenter + settle lifecycle (dossier §11/§12),
 wired end to end through the settle-wait handshake (P2-T1 punch-list #3:

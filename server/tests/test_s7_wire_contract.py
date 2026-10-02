@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The wave-S7 wire contract: every route the UI wave codes against, present
 on the real app with the method and the capability the contract names.
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Refusing a run protects a roof only when the roof would otherwise stay open.
 
 A flow with a DOME CONTROL node could not start at all on a rig with a dome

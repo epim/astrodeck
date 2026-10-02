@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // whenWaitingSelectFits.test.tsx - the flow's "While a mosaic waits" setting
 // shows its whole value in all three places it is edited (#469; mosaic slice
 // S7, spec 1.6 and 2.4 RUN).

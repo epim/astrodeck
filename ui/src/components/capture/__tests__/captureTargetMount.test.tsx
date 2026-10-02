@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureTargetMount.test.tsx — CaptureView actually wired up (#181/#182).
 //
 //   Run directly:  npx tsx src/components/capture/__tests__/captureTargetMount.test.tsx

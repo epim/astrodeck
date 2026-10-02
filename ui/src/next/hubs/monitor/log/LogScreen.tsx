@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LogScreen.tsx - MONITOR - LOG. Everything the engine did tonight, newest
 // first, plus the nights before it and a way to get the raw file off the rig.
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wcsStamp.test.ts — the only non-render logic behind the per-frame-WCS Settings
 // panel (spec §7 item 7). Inline-assert harness (no vitest); runs via `npx tsx`.
 import {

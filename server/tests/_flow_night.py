@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A stored flow run end to end on the clocked simulator (#189 S7 item 1,
 spec section 8 S7, 5.1 to 5.10, 6).
 

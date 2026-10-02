@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX, ReactNode } from "react";
 
 /** The 34 px tile that fronts every device row, with the driver's state as an

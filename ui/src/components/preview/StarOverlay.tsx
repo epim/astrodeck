@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // StarOverlay.tsx — per-star HFR overlay inside the shared transform (stream O).
 // (spec §5 "Star overlay", §11 perceptual rules, decisions log #2/#16)
 //

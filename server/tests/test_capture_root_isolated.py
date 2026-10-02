@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No test writes the developer's real captures/ (#309).
 
 The session store, the report store and the night log resolve

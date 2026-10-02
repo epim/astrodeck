@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight's CAMPAIGN tab reads a stored count that is no count without
 raising, and says so in words (#362 item 4, the #328 class).
 

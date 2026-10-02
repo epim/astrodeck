@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // setupCard.ts — pure state logic for the guided "Secure this server" setup
 // card (Settings → Auth, 2026-07-17 decisions wave I4). Extracted out of
 // AuthMethodPanel.tsx so the step-ORDERING rule is unit-testable without

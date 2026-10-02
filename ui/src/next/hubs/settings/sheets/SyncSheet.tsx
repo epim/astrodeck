@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SyncSheet.tsx - Settings > MORE > File sync (plan section C.6, row FILE
 // SYNC).
 //

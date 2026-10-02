@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // panelRowsSetAside.test.ts - in run mode, a panel set aside tonight has no
 // place in tonight's order (#528; #189 S7, found by the real-page probe's
 // forced-solve-failure walk, tools/ui_probe/routes_s7.json scenario 2).

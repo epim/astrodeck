@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lens.ts - the lens dial's geometry and its hold-to-learn copy, kept pure so
 // both can be tested without mounting a 300 px stage (hub-sky plan A.6, H.1).
 //

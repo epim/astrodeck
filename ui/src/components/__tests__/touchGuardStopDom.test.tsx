@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // touchGuardStopDom.test.tsx — the locked screen's EMERGENCY STOP.
 //
 //   Run directly:  npx tsx src/components/__tests__/touchGuardStopDom.test.tsx

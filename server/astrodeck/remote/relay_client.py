@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The SCOPE-SIDE dial-out client (W3.3.0).
 
 ONE opt-in lifespan background task. When ``RemoteConfig.enabled`` and a

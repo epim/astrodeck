@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safetyBars.ts - one bar per input the monitor ACTUALLY REPORTED.
 //
 // Plan hub-rig.md B.9 item 1, deviation E11. The design asks for five bars -

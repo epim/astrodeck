@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // StandardsSheet.tsx - Settings > MORE > Imaging standards (plan section
 // C.6, row IMAGING STANDARDS).
 //

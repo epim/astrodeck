@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The native TPPA measurement PROCEDURE, driven against controllable fakes.
 
 ``polar/native.py`` is the one loop in the system that commits a telescope to an

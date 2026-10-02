@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A report read says why it found nothing (#370).
 
 ``test_unsafe_aborts_and_parks_under_remote_preset`` failed once in a loaded

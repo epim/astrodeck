@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Stage B: hub connect-by-profile / connect-by-rig (W1.6).
 
 Drives the PINNED hub methods (``connect_rigspec`` / ``connect_profile_id`` /

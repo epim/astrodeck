@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sun, Moon and the planets — computed for a time and a place, never stored.
 
 WHY THIS IS NOT A TABLE. Every other row in this package is a fixed J2000

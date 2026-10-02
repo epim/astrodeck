@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Is the focuser actually turning? The status payload must be able to say.
 
 Background: POST /api/focuser/move returns ``{"started": "focuser"}`` the moment

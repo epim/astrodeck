@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T4: focuser/filterwheel/rotator/switch/safetymonitor DEVICE_API mapping
 to ASCOM COM members. Portable fake-COM objects; no comtypes/hardware.
 

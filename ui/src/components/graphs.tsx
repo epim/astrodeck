@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /** Hand-rolled SVG instrument graphs: histogram, V-curve, guide scatter.
  *  Night-safe strokes (data numbers -> --text-dim, gridline strokes -> --text-faint),
  *  larger relative label fonts, no preserveAspectRatio="none" for data graphs

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The CLOUD WATCH threshold is a dial wired to nothing, and now it says so.
 
 THE DEFECT. `_eval_predicate` reads `threshold` for the MEASURED triggers —

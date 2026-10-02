@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TouchGuard.tsx — monitor-safe screen lock (touch spec §8, R11/R12/R13).
 //
 // NOT a translucent scrim (the draft's wash could hide the one alert you must

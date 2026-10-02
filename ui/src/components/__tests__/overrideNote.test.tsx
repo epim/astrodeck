@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // overrideNote.test.tsx — the disclosure that a control is showing a value the
 // rig is not running (#129), plus the provider-chip variant map.
 //

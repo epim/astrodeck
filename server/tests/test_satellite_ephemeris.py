@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The satellite propagator, graded against two independent ground truths.
 
 WHY TWO, AND WHY THEY ARE DIFFERENT IN KIND.

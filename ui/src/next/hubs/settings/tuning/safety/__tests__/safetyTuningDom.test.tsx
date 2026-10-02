@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safetyTuningDom.test.tsx - Settings > MORE > SAFETY after the reduction
 // (wave R7, T-R7-9; plan sections 3.F1, 3.F2 and 6.1 defects 5 and 6).
 //

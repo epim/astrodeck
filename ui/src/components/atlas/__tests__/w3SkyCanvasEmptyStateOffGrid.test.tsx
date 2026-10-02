@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3SkyCanvasEmptyStateOffGrid.test.tsx - #491 remainder (WP-24b new defect,
 // backlog wave 3 integration).
 //

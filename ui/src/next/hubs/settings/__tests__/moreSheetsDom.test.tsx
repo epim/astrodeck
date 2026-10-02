@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // moreSheetsDom.test.tsx - the MORE-group tuning/admin sheets (T-SET-4),
 // MOUNTED, and since wave R7 the four SYSTEM sheets end to end.
 //

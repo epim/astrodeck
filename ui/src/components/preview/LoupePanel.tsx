@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LoupePanel — the advanced 1:1 pixel-peep loupe (opt-in, off by default).
 // (crop+render UI design §1.4, §4.5, Decision D)
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NamingPanel.tsx — Settings → capture file-naming template (PRO-11).
 // Live client preview (advisory; server render is authoritative). config.site_optics.
 import { useEffect, useState, type JSX } from "react";

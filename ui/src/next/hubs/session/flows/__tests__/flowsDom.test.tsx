@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsDom.test.tsx - SESSION / FLOWS, MOUNTED, AFTER THE CUTOVER.
 //
 //   Run directly:  npx tsx src/next/hubs/session/flows/__tests__/flowsDom.test.tsx

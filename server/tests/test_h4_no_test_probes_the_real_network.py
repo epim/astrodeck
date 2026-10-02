@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No test in this suite runs the relay client's system link probes (#521, H4;
 filed as #571).
 

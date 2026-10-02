@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowRunControls.ts — the one implementation of "start this flow" and "stop
 // this flow", shared by the header's RUN/STOP button (§C.3) and the phone
 // MONITOR tab's full-width one (README §5).

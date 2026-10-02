@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // preflightSafety.test.ts — UX review #2 regression.
 //
 // Preflight reported a green READY while /api/safety/state returned

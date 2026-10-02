@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // canvas/index.ts - the Flows canvas area's public surface (wave R7, T-R7-1).
 //
 // The cutover task composes this with the inspector, tonight and creation areas

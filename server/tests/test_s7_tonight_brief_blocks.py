@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The STORY brief names every block where its lane runs (#470 items 1 and
 2), and a DUSK offset that is no finite number never raises (#423).
 

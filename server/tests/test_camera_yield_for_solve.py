@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A live capture loop must not be allowed to fight a plate solve.
 
 THE FIELD REPORT (rig, server log verbatim):

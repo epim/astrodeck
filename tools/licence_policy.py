@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What each licence actually *requires* of us — the one place that judgement lives.
 
 Naming a licence is not compliance. MIT does not ask to be named; it asks for its

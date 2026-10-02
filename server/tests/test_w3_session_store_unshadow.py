@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The ``session_store`` singleton's instance dict is unshadowed between
 tests (#522, backlog WP-27b).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Autofocus converges on the simulator's true focus position."""
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.focus import run_autofocus

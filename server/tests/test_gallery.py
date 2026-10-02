@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Gallery: listing, night filter, thumbnails, streamed bulk download, trash.
 
 The four tests that carry the design are named in the spec and are the reason

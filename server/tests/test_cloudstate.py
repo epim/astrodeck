@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The debounced cloud verdict — and the three ways a naive one would lie.
 
 This is the state a running telescope is steered by, so each test below names

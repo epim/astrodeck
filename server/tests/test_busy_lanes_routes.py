@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Lanes the UI cannot see — /api/polar, /api/dome/close, and the 409s.
 
 ``hub.busy_lanes()`` rides every status frame and is how a control answers "is

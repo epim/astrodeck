@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // capturePreviewMobileOverflow.test.tsx — the Live Preview panel must not
 // spill off the right edge of a phone.
 //

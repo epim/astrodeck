@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A mosaic's progress: its panels, found through its plan group (#189 S3,
 spec 1.2, 2.5, 3.3, 5.9, 6.9).
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The report's sleeps stay off the event loop (#477, S7 orchestrator ruling 5).
 
 Two sleeps live in ``sequence/report.py``, and both were blocking calls

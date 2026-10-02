@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // router.ts - the hash router for the new front end (ARCHITECTURE.md section 3).
 //
 // Grammar:  #/<hub>[/<sub>][/<sheet>[/<sheet2>]][?k=v&k2=v2]

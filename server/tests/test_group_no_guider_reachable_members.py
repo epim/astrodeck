@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The no-guider rule counts the members THIS PASS CAN VISIT, not every live
 member (the #315 follow-up, S3 orchestrator ruling 6; spec 5.6 step 7).
 

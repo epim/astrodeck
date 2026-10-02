@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // framingSections.test.tsx - the Target modal's sections, MOUNTED in the sheet
 // on the real store (#189 S4 item 1; spec 2026-09-23 flows mosaic, 2.4, 1.4,
 // 1.6, 6.9; Revision 2 rulings 1 and 2; S4 orchestrator rulings 4 and 8).

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Resolving the rig's standards against one night's plan (#239 stage A).
 
 Twelve settings that used to live only on ``SequencePlan`` now live in config as

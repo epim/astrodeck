@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Concrete backend adapters (Stage A).
 
 Each module here WRAPS an existing device factory behind the ``Backend`` /

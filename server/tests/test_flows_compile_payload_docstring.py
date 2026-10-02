@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``_compile_payload``'s docstring says what its answer carries (#189 S4 item
 14).
 

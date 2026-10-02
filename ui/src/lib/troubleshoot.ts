@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // troubleshoot.ts - the pure failure→{cause,fix,topic} map (NOV-9) and the
 // browsable symptom→guide content behind the in-app Help view. Both are pure,
 // data-only, tsx-testable: no React, no store, no I/O. diagnoseFailure() turns a

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // inspectDom.test.tsx - the INSPECT sheet, MOUNTED, with the rebuilt toolbar,
 // histogram and readouts (wave R7, T-R7-19; plan G.4, T-CAP-2 row).
 //

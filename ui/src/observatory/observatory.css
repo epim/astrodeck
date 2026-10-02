@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 .observatory {
   --o-bg:#090f18; --o-panel:#101923; --o-raised:#17232e; --o-text:#e7edea;
   --o-muted:#9aabb6; --o-line:#283743; --o-accent:#96dcc5; --o-warn:#d5ac78;

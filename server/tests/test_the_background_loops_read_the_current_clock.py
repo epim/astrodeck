@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The safety loops bound `time.time` at import, so a patched clock never reached them.
 
 Every one of these declares `clock=time.time` as a DEFAULT ARGUMENT, evaluated

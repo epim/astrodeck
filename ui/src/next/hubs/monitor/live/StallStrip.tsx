@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // StallStrip.tsx - "is anything still landing on disk?", and what to do when
 // the answer is no.
 //

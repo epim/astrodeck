@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // HubBoundary.tsx - the error boundary the new root did not have (review #2).
 //
 // THE REGRESSION THIS CLOSES. The legacy root wraps every view in

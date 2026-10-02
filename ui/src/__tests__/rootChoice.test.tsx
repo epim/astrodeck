@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rootChoice.test.tsx - WHICH root a hash opens, and that the choice is really
 // a switch.
 //

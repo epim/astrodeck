@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """How wide a sweep should be is a measurement, and here is the arithmetic.
 
 THE CONSTANT THIS REPLACES. `run_autofocus` swept `steps_each_side=4` points of

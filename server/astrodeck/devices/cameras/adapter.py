@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The camera adapter waist: the narrow, stable interface a brand implements,
 plus the additive capability descriptor that keeps brand features from being
 flattened to a lowest-common-denominator. No SDK, no asyncio, no CameraFrame —

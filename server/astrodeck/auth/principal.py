@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The resolved caller identity (the ``Principal``).
 
 A ``Principal`` is what every auth provider yields and what ``require()``

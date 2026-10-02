@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An unframed target locks its angle on its first shot (#189, spec Revision
 2 ruling 9, 5.6 step 4, 5.7; task T15; advances #160).
 

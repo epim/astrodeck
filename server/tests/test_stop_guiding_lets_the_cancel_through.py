@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#235: ``NativeGuider.stop_guiding`` lets a cancel aimed at its caller through.
 
 The stop cancels its guide loop and waits for it to die. It used to wait under

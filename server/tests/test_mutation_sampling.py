@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Break the guard, and prove its test notices.
 
 THE PROMISE: the suite protects the expensive behaviours.

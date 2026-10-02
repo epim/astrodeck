@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/connection.ts — PURE decision logic for the ConnectionBanner (H1 §2e).
 // Extracted from ConnectionBanner.tsx so the "which strip to show" rule is
 // unit-testable in isolation (idiom: npx tsx src/lib/__tests__/connection.test.ts)

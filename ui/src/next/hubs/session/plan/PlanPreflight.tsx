@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanPreflight.tsx - the readiness check and the button it gates.
 //
 // The rebuild of `components/PreflightStrip.tsx` and `components/

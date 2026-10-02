@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#14: the engine's "RA and Dec rates vary" advisory cannot pass on a mount
 whose two axes pulse at different rates, and it blames backlash.
 

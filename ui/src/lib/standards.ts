@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // standards.ts — the rig's imaging standards, as data (#239 stage A).
 //
 // Split out of StandardsPanel for the same reason lib/wcsStamp.ts is split out

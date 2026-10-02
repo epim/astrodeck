@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The frame VIEWER renders to the screen, not to the grid's 256px tile.
 
 Asked for 2026-08-19: clicking the centre of a gallery tile opens the frame at a

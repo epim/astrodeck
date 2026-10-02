@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import {registerHooks} from "node:module";
 registerHooks({load(url:string,context:any,next:any){if(url.endsWith("/guided/GuidedFocusSky.tsx"))return {format:"module",shortCircuit:true,source:"export function GuidedFocusSky(){return null}"};return next(url,context);}} as any);
 import {JSDOM} from "jsdom";

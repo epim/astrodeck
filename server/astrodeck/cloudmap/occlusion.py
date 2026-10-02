@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Is there cloud in the beam (stage 4) -- the ray, the surface, and the mask.
 
 No network, no file, no clock, no config, no h5py. Two stage-3

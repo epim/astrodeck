@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wheel.tsx - the FILTER WHEEL device sheet (plan hub-rig.md B.6, deviations
 // E19-E21). Route `#/rig/devices/wheel`.
 //

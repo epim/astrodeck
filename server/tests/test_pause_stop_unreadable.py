@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A safety pause whose stop of tracking cannot be READ BACK keeps asking for
 it (#345's read-back, spec 6.17 and 5.8): unknown is not stopped.
 

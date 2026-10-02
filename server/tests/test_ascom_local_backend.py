@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T6: the ascom-local backend resolves roles through the EXISTING Alpaca
 client pointed at the comhost loopback port (no new client), and self-registers
 only on Windows. Driven against an in-process comhost with a fake COM factory."""

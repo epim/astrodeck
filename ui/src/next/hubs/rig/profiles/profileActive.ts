@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // profileActive.ts - "did the activate actually land", owned by `next`
 // (wave R7 section 2.1's finding, ruling 6).
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-37 (e) / #623: ``config.fov_deg`` must use the exact trig formula the
 two UI mirrors use, not ``image_scale_arcsec_px``'s rounded ``ARCSEC_PER_RAD``
 (206.265, not the true 206264.806.../1000).

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Home-side fan-out drops are announced (S7-BUS, #444).
 
 Every bus subscriber has its own bounded queue (``SUBSCRIBER_MAX``, 500), and

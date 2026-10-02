@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // targetsDefaultSite.test.tsx - the suggested-targets sheet counts nothing at a
 // DEFAULT site's placeholder (#503's class, in the sheet), MOUNTED.
 //

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sign one or more release artifacts, writing ``.sha256`` + ``.sig`` sidecars.
 
     RELEASE_SIGNING_KEY=<base64-seed> python scripts/sign_release.py dist/astrodeck-0.2.0.tar.gz

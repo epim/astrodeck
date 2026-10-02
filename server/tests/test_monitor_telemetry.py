@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Monitor + live-preview backend telemetry (Batch 2, lane 2C).
 
 Covers the deterministic ETA / paused-aware elapsed (engine.py), the preview

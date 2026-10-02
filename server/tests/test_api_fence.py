@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """SPA catch-all API fence (H1).
 
 The static-UI catch-all (`@app.get("/{path:path}")`) used to serve `index.html`

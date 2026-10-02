@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useRef, type JSX, type PointerEvent as RPointerEvent, type KeyboardEvent as RKeyboardEvent } from "react";
 import { lockedAttrs, lockedClass } from "./honest";
 

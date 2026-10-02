@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowInspectorAngle.test.tsx — the classic inspector shows the camera angle a
 // TARGET's rotation MEANS when the node stores no `angle` of its own.
 //

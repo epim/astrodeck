@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // help/index.ts - what the rebuilt Help area exports.
 //
 // The mount file (`settings/sheets/HelpSheet.tsx`) composes exactly one of

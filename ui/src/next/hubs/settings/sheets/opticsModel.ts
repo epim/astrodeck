@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // opticsModel.ts - the arithmetic behind the Optics sheet. Pure: no React, no
 // store, no fetch.
 //

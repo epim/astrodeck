@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* inspect.css - the INSPECT sheet's own classes (wave R7, T-R7-19).
  *
  * `next.css` is a single shared file that twenty concurrent tasks cannot own, so

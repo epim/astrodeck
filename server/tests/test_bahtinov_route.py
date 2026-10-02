@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NOV-12 API: POST /api/focuser/bahtinov/{start,stop} arm/disarm the aid and
 flip status.bahtinov_active; start 409s when a sequence is running. Mirrors the
 in-process app + sim-rig harness from test_autofocus_route.py."""

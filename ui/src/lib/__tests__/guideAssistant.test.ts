@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guideAssistant.test.ts — pure tests for lib/guideAssistant.ts (design §5 #6/#7):
 // summarize copy bands, buildApplyBody maps a report onto a valid CLAMPED PUT
 // body (reusing validateGuideSettings), selective-apply honors selectedKeys, and

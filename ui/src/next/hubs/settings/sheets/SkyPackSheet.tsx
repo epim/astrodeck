@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyPackSheet.tsx - Settings > MORE > Sky atlas offline pack (plan section
 // C.6, row SKY ATLAS OFFLINE PACK; GAP-ANALYSIS section 6; wave R7, T-R7-14
 // cutover).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the PRO-13 tilt/aberration inspector's pure client helpers
 // (ui/src/lib/tilt.ts). Same tiny inline-assert harness as eta.test.ts — no
 // jsdom, no vitest/jest. Run directly with a TS-aware runner:

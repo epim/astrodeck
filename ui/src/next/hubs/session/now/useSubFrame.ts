@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useSubFrame.ts - where the exposure in flight actually is, on ONE clock.
 //
 // TRANSCRIBED from `views/SequenceView.tsx:93-166` (`useShutterRemainingS`) and

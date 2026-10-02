@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#21: the idle guide-cam preview served ONE frame and then froze.
 
 ``NativeGuider.guide_frame``'s on-demand branch was gated on ``_last_frame is

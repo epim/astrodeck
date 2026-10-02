@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowCyclePlan.tsx — the FILTER CYCLE slot table, one row per filter in the rig.
 //
 // The 2026-08-14 export replaced a text box with this: "one row per filter in

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // test-css-stub-hooks.mjs - the actual ".css" -> empty-module hook.
 //
 // Shared between BOTH registration mechanisms test-css-stub.mjs can pick:

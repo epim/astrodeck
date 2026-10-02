@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // mosaicNightHeading.test.tsx - both night cards write a grid's size columns x
 // rows (#339 residue; S4 orchestrator ruling 1, owner list item 31; spec
 // 2026-09-23 flows mosaic, 2.4 PANELS).

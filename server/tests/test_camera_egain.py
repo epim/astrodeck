@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """EGAIN threading: e-/ADU onto CameraFrame per backend (PRO-2 F-B / ruling 5)."""
 import numpy as np
 

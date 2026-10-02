@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SafetyPanel.tsx — the Settings → Safety surface (W1.10). Today this hosts the
 // SUN-AVOIDANCE control: the server-side sun-exclusion cone (hub._check_solar)
 // that blocks any slew toward the Sun. It is ON BY DEFAULT to protect normal

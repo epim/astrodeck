@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // horizonDom.test.tsx - the HORIZON EDITOR sheet, mounted and driven
 // (T-SKY-4 plan G). jsdom's `getBoundingClientRect` stub returns an all-zero
 // rect, which `horizonStrip.toViewBox`'s width/height fallback (`rect.width

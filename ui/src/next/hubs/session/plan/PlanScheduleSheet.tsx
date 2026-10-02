@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanScheduleSheet.tsx - one target's autorun schedule, as its own layer.
 //
 // The rebuild of `components/sequence/SchedulePanel.tsx`. The legacy panel was

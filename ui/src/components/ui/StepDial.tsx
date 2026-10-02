@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // StepDial.tsx — the press-and-hold magnitude dial (design doc §The step-size
 // dial). Collapsed it is ONE control showing the current step; press and hold
 // and it blooms upward into an arc; slide to a value; release to commit.

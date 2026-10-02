@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """**No absolute filesystem path leaves this process. For anybody.**
 
 Owner ruling, 2026-08-11: an external client should never know or hold an

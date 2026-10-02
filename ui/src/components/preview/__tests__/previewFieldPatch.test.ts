@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // previewFieldPatch.test.ts — the late-solve patch, in the store (#182).
 //
 //   Run directly:  npx tsx src/components/preview/__tests__/previewFieldPatch.test.ts

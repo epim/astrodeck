@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // gateHook.ts - the THIN React wrapper over gate.ts's pure `lockReason`
 // (ARCHITECTURE.md #8's `useLock`). Split into its own file, deliberately
 // NOT in gate.ts, so `gate.ts` stays store-free/React-free like the rest of

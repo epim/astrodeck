@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // BottomNav.tsx — 5-item + More mobile bottom nav (touch spec §5, R14/R15/R21/R27).
 //
 // Replaces the old 9-item, 8px-label, unreadable bottom strip. Structure:

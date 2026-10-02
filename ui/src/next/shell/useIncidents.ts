@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useIncidents.ts - the ONE place the shell folds store slices into
 // `next/lib/incidents.ts`'s pure `IncidentInputs`.
 //

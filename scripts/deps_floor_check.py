@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Compare the running venv's installed packages with a release's declared
 dependency floors (#609).
 

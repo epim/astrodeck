@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.31 to the astrotown rig. Run ON the rig (elevated ssh session).
 #
 # What 0.3.31 carries, on top of 0.3.30: the flows compiler's ten node-settings

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The credits screen must not be able to go stale.
 
 A hand-maintained acknowledgements page is wrong the day after it ships, and

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // polarReticleDom.test.tsx — which side of the polar reticle is EAST.
 //
 //   Run directly:  npx tsx src/components/__tests__/polarReticleDom.test.tsx

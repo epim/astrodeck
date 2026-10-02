@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CalibrationTolerancesEditor.tsx - how far a master may be from the light it
 // corrects, and how the stacker combines them (wave R7, T-R7-14; plan section
 // 3.F16, cutover table section 7).

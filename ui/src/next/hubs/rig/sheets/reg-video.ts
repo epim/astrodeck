@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reg-video.ts - T-U7b-4's one line into the Rig hub's sheet registry.
 //
 // The registry itself (`rig/sheets/index.ts`) is composed by the Rig devices

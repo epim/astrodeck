@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tooltipMachine.test.ts — Run with: npx tsx src/lib/__tests__/tooltipMachine.test.ts
 import { tooltipNext, TOOLTIP_IDLE, type TooltipState } from "../tooltipMachine";
 

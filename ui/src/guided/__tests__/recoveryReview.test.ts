@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import {JSDOM} from "jsdom";
 const dom=new JSDOM("<div/>",{url:"http://local/#/classic/focus?experience=guided"});
 for(const key of ["window","document","navigator","localStorage"])Object.defineProperty(globalThis,key,{value:key==="window"?dom.window:(dom.window as any)[key],configurable:true});

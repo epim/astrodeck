@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.79 - round-robin acquisition, the FILTER CYCLE node, and three honesty fixes.
 # Modelled line for line on deploy_0274.ps1, including the traps it names.
 $ErrorActionPreference = "Stop"

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // help.ts - plain-language definitions for cryptic capture/sequence fields
 // (onboarding spec §1a). Copy is corrected per critique2 #10 / D14 / D15:
 //   - the offset claim is fixed ("does not add real signal"),

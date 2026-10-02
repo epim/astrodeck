@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Operator-tunable imaging settings for the native TPPA's solve frames.
 
 Until 2026-08-07 every solve frame was hardcoded at the capture call:

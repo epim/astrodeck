@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Simulator backend adapter (Stage A).
 
 WRAPS ``devices.sim.build_sim_rig`` behind the ``Backend`` / ``BackendSession``

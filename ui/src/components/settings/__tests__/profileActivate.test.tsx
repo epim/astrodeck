@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // profileActivate.test.tsx — Settings → Profiles, MOUNTED, across an activate.
 //
 //   Run directly:  npx tsx src/components/settings/__tests__/profileActivate.test.tsx

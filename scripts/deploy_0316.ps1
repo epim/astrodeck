@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.16 - a site the satellites can never see used to say "ValueError",
 # plus 0.3.15's satellite auto-pick, which never reached the rig.
 $ErrorActionPreference = "Stop"

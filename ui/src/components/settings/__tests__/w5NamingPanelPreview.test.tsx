@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5NamingPanelPreview.test.tsx - WP-42 (#278), MOUNTED: the classic Settings
 // naming preview must show a GAIN/EXPOSURE/BINNING/SENSORTEMP template's real
 // values, not collapse them like the mirror's former unknown-token handling

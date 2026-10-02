@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // frameModel.test.ts - FRAME mode's restored arithmetic and copy, without a DOM.
 //
 //   Run directly:  npx tsx src/next/hubs/sky/frame/__tests__/frameModel.test.ts

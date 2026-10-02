@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // confirmHostBody.test.tsx - the classic ConfirmHost renders a confirm's BODY
 // validly whatever it holds (#213).
 //

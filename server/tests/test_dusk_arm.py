@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Dusk preparation against fake devices and a controlled night, never a rig."""
 import asyncio
 from types import SimpleNamespace as NS

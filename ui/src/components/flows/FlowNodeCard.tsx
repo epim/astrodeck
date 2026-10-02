@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowNodeCard.tsx — one node on the graph.
 //
 // THIS IS THE COMPONENT THE RE-RENDER DISCIPLINE EXISTS FOR. The README's rule

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#622: server/pyproject.toml must actually carry the tmp_path retention
 settings, not just have carried them once.
 

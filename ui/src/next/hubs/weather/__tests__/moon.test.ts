@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // moon.test.ts - which target the hub is allowed to be about, and what the
 // MOON tile is allowed to say.
 //

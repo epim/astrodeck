@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useCampaign.ts - the campaign ledger's data, in one place (plan section A.2).
 //
 // THE LOAD-BEARING FACT: `GET /api/flows/{id}/tonight` already returns a

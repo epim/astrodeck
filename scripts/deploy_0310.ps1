@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.10 - the GOES cloud model had no switch and had never run.
 $ErrorActionPreference = "Stop"
 $Root = "C:\Users\James\AstroDeck"

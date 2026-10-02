@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // monitorDom.test.tsx - the MONITOR hub, mounted, pressed and refused.
 //
 //   Run directly:  npx tsx src/next/hubs/monitor/__tests__/monitorDom.test.tsx

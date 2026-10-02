@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sensor-tilt / corner-vs-center optical-aberration inspector (PRO-13).
 
 Pure aggregation over the SAME ``marks`` ``frame_eccentricity`` reads — no new

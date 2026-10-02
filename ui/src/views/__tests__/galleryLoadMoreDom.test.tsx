@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // galleryLoadMoreDom.test.tsx — "Load more" versus a filter change.
 //
 //   Run directly:  npx tsx src/views/__tests__/galleryLoadMoreDom.test.tsx

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One question about the site, asked one way (#24).
 
 The site defaults to 0,0 with `is_default` True, and every astronomical

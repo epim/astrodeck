@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What a row-length disagreement does to a real photograph of the sky.
 
 #110 was reported as "distorted and stretched and shown at an angle. And tiled"

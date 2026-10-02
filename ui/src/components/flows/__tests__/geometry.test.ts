@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for components/flows/geometry.ts — the canvas maths.
 //
 // The fixture is the real `example-m16` graph (server/astrodeck/flows/

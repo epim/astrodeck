@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ASCOM registry enumeration (COM-T1) — the native "scan".
 
 Import-light (stdlib only) so the bundled COM host (astrodeck.comhost) can

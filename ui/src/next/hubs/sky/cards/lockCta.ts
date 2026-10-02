@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lockCta.ts - what the lock card's 56 px button says, what colour it is and
 // what pressing it does (hub-sky plan A.7, lifted from proto/logic.js:359-360).
 //

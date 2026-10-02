@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A park read-back that saw the park on its way, and then cannot read the
 park state, does not call the mount parked: the wind-down stops its tracking
 instead (#447, S4 review item 7; spec 6.17, owner list items 19 and 24). And

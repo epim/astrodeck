@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Measuring DEFOCUS, when there are no stars to measure.
 
 Far from focus a star is not a point — it is an annulus. On this rig at

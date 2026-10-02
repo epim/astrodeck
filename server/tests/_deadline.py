@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A wall-clock deadline for polling loops in tests (#610).
 
 ``for _ in range(N): ...; await asyncio.sleep(dt)`` gives Linux and Windows

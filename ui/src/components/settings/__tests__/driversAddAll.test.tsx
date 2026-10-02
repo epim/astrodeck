@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // driversAddAll.test.tsx — Settings → Backend Drivers, MOUNTED, across an
 // "Add all" that fails part way.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """SER video capture (D-RIG-1): the recorder, its lane, and the route refusals.
 
 Everything here runs against a FAKE adapter behind the real NativeCamera, so the

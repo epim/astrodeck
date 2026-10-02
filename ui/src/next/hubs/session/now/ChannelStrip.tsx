@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ChannelStrip.tsx - which channels the stack holds, and which one is on screen.
 //
 // TAPPING A CHIP FETCHES THAT CHANNEL (D-SES-1). `GET /api/sequence/stack/

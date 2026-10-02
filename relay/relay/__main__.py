@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``python -m relay`` -> run the relay server under uvicorn."""
 from __future__ import annotations
 

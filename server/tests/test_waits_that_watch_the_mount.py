@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The two waits #236 left unwatched now watch the mount.
 
 The idle watch (#165: the idle clock, the floor, the zenith keep-out, the

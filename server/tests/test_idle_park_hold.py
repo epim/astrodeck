@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The idle mount is park-held on the HAZARD's clock (#165).
 
 A mount left tracking with no frame loop watching it has nothing checking its

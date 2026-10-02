@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``rotate_to_pa`` must stop turning a camera it is not helping.
 
 Measured on the rig 2026-08-08, slewing to M52: the loop ran all five attempts

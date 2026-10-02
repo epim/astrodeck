@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nowRecoveryAndDeferralDom.test.tsx - SESSION / NOW, MOUNTED, in the two
 // states it used to show as nothing happening (#246, #244).
 //

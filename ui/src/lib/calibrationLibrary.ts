@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // calibrationLibrary.ts — pure formatting + a client-side coverage MIRROR for
 // PRO-1's master library (calibration-library spec §1.3 / §6). No React, no DOM:
 // npx-tsx testable (eta.ts / calibration.ts precedent).

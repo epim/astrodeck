@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#229 — auto-resume kept trying in broad daylight, forever.
 
 Measured on the rig 2026-08-11. The night ended, the dawn daemon parked the

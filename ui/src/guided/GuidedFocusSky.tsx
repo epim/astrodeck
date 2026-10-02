@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useStore } from "../store";
 import { SkyDomePanel, type DomeOverlayArgs } from "../components/cloudmap/SkyDomePanel";
 import { DomeOverlay } from "../next/hubs/weather/dome/domeOverlay";

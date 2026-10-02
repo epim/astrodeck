@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // doorsConverge.test.tsx - both doors are SEND TO FLOW WIZARD, MOUNTED and
 // pressed, and each writes one TARGET block and nothing into the Plan (#196,
 // #154's door half; spec 2026-09-23 flows mosaic, section 8 S6, Revision 2

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // captureStandInStaleness.test.tsx — the stand-in must stop being shown the
 // moment it stops being true, and must never be fetched over a dead link.
 //

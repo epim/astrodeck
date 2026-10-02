@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // renderLevels.test.ts — pins the WYSIWYG contract for the full-res export.
 // The whole "Download full-res PNG" feature rests on this mapping being right,
 // and on Auto mode collapsing EXACTLY onto preview.auto_levels.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One move-completion contract, bound to every focuser AstroDeck drives.
 
 THE PROMISE, stated once in ``devices/base.py`` and inherited by five drivers:

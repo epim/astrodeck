@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* CameraDial — one control for every camera setting, everywhere (2026-08-08).
 
    Asked for directly: "click the icon and have the exposure setting categories

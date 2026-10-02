@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The crash that takes the process with it is the one that was never counted.
 
 `Session.crash_resumes` and the give-up-and-stow ladder were built for a run

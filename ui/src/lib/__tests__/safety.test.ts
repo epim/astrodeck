@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // safety.test.ts — normalizeSafety: the flat server SafetyReading dict (hello /
 // status / event) and the null-monitor case collapse to a trustworthy
 // SafetyState.connected (the no-safety-monitor confirm reads this).

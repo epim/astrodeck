@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Deterministic ids for a compiled flow (#189 S1 item 7, spec 3.3, D4, D5).
 
 THE FAILURE THESE TESTS EXIST FOR. The session ledger counts frames by step id

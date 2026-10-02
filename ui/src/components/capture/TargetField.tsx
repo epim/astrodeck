@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TargetField.tsx — the Capture screen's target name (#182).
 //
 // WHAT THIS REPLACED: a bare `<input placeholder="M42">` backed by a

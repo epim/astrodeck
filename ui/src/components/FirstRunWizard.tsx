@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FirstRunWizard.tsx — the docked first-run BAR (NOV-2-3/4; first-run wizard
 // design spec §3, Tasks 4 + 5). Builds a plain snapshot from narrow store
 // selectors, hands it to the tested `computeWizard`, and renders ONE step at a

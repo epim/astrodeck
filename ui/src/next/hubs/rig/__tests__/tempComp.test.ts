@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tempComp.test.ts - the sentences and the arithmetic behind TEMPERATURE
 // COMPENSATION (D-RIG-2, task T-U7b-5).
 //

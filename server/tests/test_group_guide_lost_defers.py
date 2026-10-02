@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A guiding loss the #72 recovery gives up on, mid-visit, defers a mosaic
 panel as ``guide_lost`` (#303, S3 orchestrator ruling 6; spec 5.6 step 7).
 

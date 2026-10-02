@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Interrupted.tsx - a run that stopped short of its plan, with frames on disk,
 // as a state with its own actions (GAP-ANALYSIS section 11).
 //

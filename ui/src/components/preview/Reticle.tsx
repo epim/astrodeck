@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Reticle.tsx — center mark + optional full reticle, drawn INSIDE the shared
 // transform SVG so it stays pixel-aligned with the image (kills the old
 // misaligned-crosshair bug by construction — spec §1, §7, §10).

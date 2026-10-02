@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """DriverEntry config CRUD (equipment-drivers spec 2026-07-08 §3.1).
 
 Configured backend drivers are GLOBAL config (not per-profile): declared once,

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-37 (f) / #628: ``WeatherService.stop`` carried the #252 shape --
 
     self._task.cancel()

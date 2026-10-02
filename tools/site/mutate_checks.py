@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Prove selected site gates fail closed, restoring exact file bytes after each mutant."""
 from pathlib import Path
 import os

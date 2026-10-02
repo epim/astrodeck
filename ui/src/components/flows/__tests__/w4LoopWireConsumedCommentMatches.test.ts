@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w4LoopWireConsumedCommentMatches.test.ts - flowsApplyFraming's comment on
 // a pass wire left into a 1x1 block matches the compile's actual
 // consumed-wire behaviour (#397 item 4; backlog plan WP-36 (b),

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowZoomCluster.tsx — the canvas's bottom-left `− / % / + / FIT` cluster.
 // Contract §C.4 (placement), §D.2 (the button maths), refs 02 and 08.
 //

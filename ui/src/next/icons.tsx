@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // next/icons.tsx - the design's glyph set for the new front end.
 //
 // Every path here that exists in the prototype is LIFTED VERBATIM from

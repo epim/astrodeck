@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """S3 -- ``GET /api/remote/status``: the READ half of the W3 relay seam.
 
 ``POST /api/remote/config`` could always write the relay knobs, and nothing

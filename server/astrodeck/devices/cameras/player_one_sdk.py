@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ctypes bindings for the Player One Camera SDK (Poseidon-M Pro imaging camera).
 
 VERIFIED against the official Player One binding (python/pyPOACamera.py) and

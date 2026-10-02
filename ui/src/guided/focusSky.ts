@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { altAzOf } from "../lib/altaz";
 import type { SkyPosition } from "./setup";
 

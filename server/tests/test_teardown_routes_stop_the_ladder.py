@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every route that tears the rig down stops auto-resume's recovery ladder
 first, and waits until it has returned (#238; mosaic slice H3 task T1; spec
 6.15 "Operator STOP", 5.9 "One starter per session").

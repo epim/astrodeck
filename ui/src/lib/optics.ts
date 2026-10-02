@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Optics math — the ONLY client-side optics arithmetic (one multiply).
 // Mirrors the backend constant in server/astrodeck/config.py EXACTLY (A.7).
 // Persisted truth always comes from the server echo (optics_computed); this is

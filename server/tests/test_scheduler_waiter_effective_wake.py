@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The scheduler sleeps on the soonest EFFECTIVE wake (#380; spec 5.1
 selection and pass boundary item 2, 1.6).
 

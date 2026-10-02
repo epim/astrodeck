@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Sub-project C weather integration tests (weather spec 2026-07-16).
 
 Task 1: WeatherConfig model + secret scrub + POST /api/config/weather.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-14: ResumeArm messages, hold, rotation, dead branch (backlog plan
 2026-09-30, D-nn: none needed -- this WP's fix shapes were owner-approved
 directly, not through a numbered ruling).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nowDom.test.tsx - SESSION / NOW, MOUNTED, pressed, and refused.
 //
 //   Run directly:  npx tsx src/next/hubs/session/__tests__/nowDom.test.tsx

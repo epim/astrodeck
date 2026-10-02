@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Named bright stars in the Atlas search.
 
 The night this came from: the rig would not focus, the fix is to point at a

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ADOPT carries a pre-S1 step's frames only onto the SAME FIELD (#189 A4, spec
 5.9, D5; #190).
 

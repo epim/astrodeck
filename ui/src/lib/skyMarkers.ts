@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyMarkers.ts — turning "what is in this patch of sky" into "what is drawn
 // where on this canvas", and turning a tap back into an object.
 //

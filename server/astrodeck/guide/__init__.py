@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 from .base import Guider, GuideStats
 from .native import NativeGuider
 from .phd2 import PHD2Guider

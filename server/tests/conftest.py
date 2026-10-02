@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Shared pytest fixtures/path setup for the server test suite.
 
 Puts the sibling ``relay/`` repo dir on ``sys.path`` so the W3 END-TO-END test

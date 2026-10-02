@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Mosaic slice S3, task V: the TARGET vocabulary, `create_params`, legacy
 SLEW, the flow-level settings table and the rig-facts value (#189 U-09 part,
 advances #190).

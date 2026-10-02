@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Things AstroDeck is not licensed to redistribute, and what it does instead.
 //
 // Three of them, two shapes (server/astrodeck/licensing.py has the full

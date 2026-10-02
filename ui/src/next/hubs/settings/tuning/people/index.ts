@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // index.ts - the PEOPLE area's public surface (wave R7, T-R7-11).
 //
 // The three sheets import from here, never from a file inside the area, so the

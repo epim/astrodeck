@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PHD2 guider backend adapter (Stage A) -- GUIDER ONLY.
 
 These tests pin the WRAPPER contract: the backend connects a ``PHD2Guider`` and

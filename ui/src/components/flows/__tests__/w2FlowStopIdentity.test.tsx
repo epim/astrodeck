@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2FlowStopIdentity.test.tsx - the classic STOP never aborts a run this flow
 // did not start (#162).
 //

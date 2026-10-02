@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w5StaleStopConfirm.test.tsx - the stale STOP (#647, W5 integration).
 //
 //   Run directly:  npx tsx src/next/hubs/session/flows/canvas/__tests__/w5StaleStopConfirm.test.tsx

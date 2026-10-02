@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for lib/atlasFov.ts — the live "where is the scope actually
 // pointing" footprint.
 //

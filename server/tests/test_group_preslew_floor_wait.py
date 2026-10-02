@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A floor or keep-out refusal at a panel's own hop is a WAIT, as the same
 verdict at selection is (#313, S3 orchestrator ruling 1; spec 5.1 selection
 item 1, 6.2).

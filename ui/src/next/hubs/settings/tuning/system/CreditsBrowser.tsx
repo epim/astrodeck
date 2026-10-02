@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CreditsBrowser.tsx - Settings > CREDITS AND LICENCES, rebuilt in the design
 // vocabulary (wave R7, T-R7-12; parity table 3.F9).
 //
@@ -169,6 +171,7 @@ export function CreditsBrowser({ data }: { data?: CreditsDoc }): JSX.Element {
             <Label size={11}>{`${doc.project.name} ${doc.project.version}`}</Label>
             <Mono size={10.5}>{doc.project.spdx}</Mono>
           </div>
+          <p className="nx-sys-note">{doc.project.copyright}</p>
           <p className="nx-sys-note">
             {`Built on ${total} components, with each licence reproduced in full rather than `
               + "linked, so this page works with no internet."}

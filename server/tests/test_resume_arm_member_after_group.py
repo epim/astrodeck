@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-resume leaves out a group its member's gate holds (#330; spec 1.6,
 5.9).
 

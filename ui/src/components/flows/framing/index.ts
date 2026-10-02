@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // index.ts - the Target modal's door (#189 S4; spec 2026-09-23 flows mosaic,
 // 2.1).
 //
