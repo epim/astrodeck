@@ -6232,6 +6232,29 @@ def create_app(*, bind_host: str | None = None,
             guide_dither_px=policy.dither_pixels,
             guide_dither_every=bare.dither_every)
 
+    def _settle_field_override(override: float | None, default: float) -> float:
+        """One settle field for the brief: the persisted override (#560 WP-58,
+        backlog wave 12 second half) when it is SET and a reading the brief
+        can print, else the provider's own default.
+
+        A 0 override is a real choice at the engine
+        (``SequenceEngine._dither_settle_override``'s own docstring: "the
+        engine's fast-recenter pulses alone, no extra settle dwell"), but
+        ``RigFacts.guide_settle`` refuses a non-positive or non-finite pixel
+        or second as not a reading at all
+        (``test_h4_brief_guides_from_rig.py::TestTheFacts::
+        test_a_reading_that_is_no_reading_is_refused``). Printing it verbatim
+        would crash ``_rig_facts`` instead of merely misstating it, so a 0 or
+        invalid override falls back to the provider default here exactly as
+        "not set" does."""
+        if override is None:
+            return default
+        try:
+            v = float(override)
+        except (TypeError, ValueError):
+            return default
+        return v if math.isfinite(v) and v > 0 else default
+
     def _guider_and_settle() -> tuple[str | None, tuple | None]:
         """The guider a flow's run will guide with and the settle its dithers
         wait on (#506), from Rig > Guider, the source
@@ -6242,12 +6265,29 @@ def create_app(*, bind_host: str | None = None,
         * The guider is the label ``providers.resolve("guide")`` gives, the
           resolver the run's guide start honours and the sheet's provider row
           shows; None when it cannot say.
-        * The settle is the resolved guider's OWN, ``(pixels, seconds)``. The
-          engine dithers with a distance and no settle, so each guider waits
-          on its own rule: the native engine's (``NATIVE_GUIDE_SETTLE``; a
-          ``NativeGuider`` over real hardware or over the simulator alike)
-          and the PHD2 bridge's (``guide.phd2.SETTLE``, which it sends with
-          every dither). NINA settles by a rule it does not publish: None.
+        * The settle is the resolved guider's OWN, ``(pixels, seconds)``,
+          UNLESS the operator has persisted a settle override that the guider
+          this run picks actually honours (#560 WP-58, second half). The
+          engine dithers with a distance and the ``GuideConfig.dither_settle_
+          pixels``/``_time_s`` override
+          (``SequenceEngine._dither_settle_override``), so each guider waits
+          on its own rule only where that override is unset: the native
+          engine's (``NATIVE_GUIDE_SETTLE``; a ``NativeGuider`` over real
+          hardware or over the simulator alike) and the PHD2 bridge's
+          (``guide.phd2.SETTLE``, which it sends with every dither). NINA
+          settles by a rule it does not publish: None.
+
+          THE NATIVE ENGINE NEVER SEES THE OVERRIDE'S PIXELS/TIME. Unlike
+          PHD2, the Rust engine self-manages its own settle pixel/time
+          criteria and does not export them to this wheel
+          (``guide/native.py::dither``'s own docstring; restated at
+          ``GuideConfig.dither_settle_pixels``): a caller-supplied settle
+          only ever widens its WAIT TIMEOUT there, never the criteria. So a
+          persisted override that would change a PHD2 night's settle changes
+          nothing about what a NATIVE night's dither waits on, and applying
+          it here anyway would print a number the night will never use --
+          the exact defect this item exists to fix, aimed at the wrong
+          guider. ``NATIVE_GUIDE_SETTLE`` is therefore unconditional.
 
         NOT DECIDED YET IS NONE, NOT PHD2. With no guider wired (the rig not
         connected, as when tonight is planned in the afternoon) and no pin to
@@ -6275,7 +6315,13 @@ def create_app(*, bind_host: str | None = None,
             return choice.label or None, NATIVE_GUIDE_SETTLE
         if choice.kind == "backend" and choice.label == "PHD2":
             from ..guide.phd2 import SETTLE as phd2_settle
-            return choice.label, (phd2_settle["pixels"], phd2_settle["time"])
+            gcfg = config_store.cfg().guide
+            settle = (
+                _settle_field_override(gcfg.dither_settle_pixels,
+                                       phd2_settle["pixels"]),
+                _settle_field_override(gcfg.dither_settle_time_s,
+                                       phd2_settle["time"]))
+            return choice.label, settle
         return choice.label or None, None
 
     async def _compile_payload(graph: FlowGraph, name: str, *,

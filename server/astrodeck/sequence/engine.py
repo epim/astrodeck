@@ -2204,7 +2204,16 @@ class SequenceEngine:
 
         d_every = self.plan.dither_every or 0
         af_every = self.plan.autofocus_every or 0
-        dithers_remaining = (frames_remaining // d_every) if d_every else 0
+        # #560 WP-58 follow-on (found by the verifier): a dither distance of 0
+        # is skipped outright at both call sites (no guider call, no settle
+        # wait), so budgeting its cost here overstates the ETA by one
+        # DITHER_COST_S (or a measured mean) per cadence tick that will never
+        # fire. Zero the count rather than the cost alone so it also drops out
+        # of `events_measured_ok` below -- a dither that never happens must
+        # never gate confidence on being "measured".
+        dithers_remaining = ((frames_remaining // d_every)
+                             if d_every and self._policy.dither_pixels > 0
+                             else 0)
         refocus_remaining = (frames_remaining // af_every) if af_every else 0
         # EVERY MOVE BETWEEN TARGETS IS TIME THE NIGHT SPENDS (#189 U-07). The
         # finish clock priced the frames and the events inside a target and
