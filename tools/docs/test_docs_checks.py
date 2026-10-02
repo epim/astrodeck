@@ -82,6 +82,14 @@ class DocsChecks(unittest.TestCase):
     def test_filler(self):
         self.assertIn("house-style filler word", self.run_gate('**START** is robust.'))
 
+    def test_money_metaphor(self):
+        self.assertIn("money metaphor is not permitted", self.run_gate('**START**\n\nThe operator has earned a reward.'))
+
+    def test_money_metaphor_inside_ledgered_label_passes(self):
+        self.ui.write_text('export const label = "START";\nexport const b = "BUDGET";\n', encoding="utf-8")
+        self.labels.append({"page": "docs/guide/demo.md", "label": "BUDGET", "source": "ui/src/Button.tsx", "line": 2})
+        self.assertEqual("", self.run_gate('**START**\n\n**BUDGET**'))
+
     def test_utf8_bom(self):
         self.page.write_bytes(b'\xef\xbb\xbf**START**')
         self.assertIn("UTF-8 BOM is not permitted", self.run_gate())
@@ -119,6 +127,26 @@ class DocsChecks(unittest.TestCase):
     def test_label_source_drift(self):
         self.ui.write_text('export const label = "GO";\n', encoding="utf-8")
         self.assertIn("quoted UI label is absent at its source", self.run_gate())
+
+    def test_label_survives_insertion_above(self):
+        # #660: an unrelated edit above the label shifts it to a later line
+        # than the ledger records. The citation must still pass, because
+        # the label's own text is untouched.
+        padding = "\n".join(f"// padding {i}" for i in range(9))
+        self.ui.write_text(padding + '\nexport const label = "START";\n', encoding="utf-8")
+        self.assertEqual("", self.run_gate())
+
+    def test_label_wording_change_fails_even_after_insertion(self):
+        padding = "\n".join(f"// padding {i}" for i in range(9))
+        self.ui.write_text(padding + '\nexport const label = "GO";\n', encoding="utf-8")
+        self.assertIn("quoted UI label is absent at its source", self.run_gate())
+
+    def test_label_ambiguous_without_resolving_hint(self):
+        # Two occurrences, both before a stale hint that cannot say which
+        # one the ledger meant: the line cannot resolve this by itself.
+        self.ui.write_text('export const a = "START";\nx\nexport const b = "START";\n' + "pad\n" * 7, encoding="utf-8")
+        self.labels[0]["line"] = 10
+        self.assertIn("quoted UI label is ambiguous at its source", self.run_gate())
 
     def test_label_coverage(self):
         self.assertIn("bold UI label has no provenance record", self.run_gate(labels=[]))

@@ -16,6 +16,7 @@ FRESH-CONFIG: ValueError not raised.
 FAILED-LAUNCH-CLEANUP: Lists differ: ['start', 'stop'] != ['start'].
 PARENT-PID-REUSE: False != True.
 JS-EXIT: 0 == 0.
+MONEY-SITE: 'money metaphor is not permitted' not found in ''.
 Full exact assertions are recorded in mutation-evidence.md.
 """
 import json
@@ -73,6 +74,14 @@ class SiteChecks(unittest.TestCase):
     def test_dash_in_alt_text(self):
         self.page('<img src="assets/site.css" alt="First &mdash; second">')
         self.assertIn("em/en dash", self.findings())
+
+    def test_money_metaphor(self):
+        self.page("<p>Keep track of what the night has earned.</p>")
+        self.assertIn("money metaphor is not permitted", "\n".join(check_site.check(self.site, label_texts=set())))
+
+    def test_money_metaphor_inside_ledgered_label_passes(self):
+        self.page("<p>Review the BUDGET row before you run it.</p>")
+        self.assertEqual([], check_site.check(self.site, label_texts={"BUDGET"}))
 
     def test_cross_page_fragment(self):
         self.page('<a href="guide.html#main">Guide</a>')
