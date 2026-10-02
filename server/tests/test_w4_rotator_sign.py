@@ -75,9 +75,17 @@ def test_mechanical_to_sky_is_the_inverse_for_either_sign():
 
 
 def test_map_sky_target_default_sign_is_unchanged_for_pre_r4_callers():
-    """api/app.py's manual-move route, and this module's own pre-R-4 tests
-    (test_rotation.py), call ``map_sky_target`` with no ``sky_sign`` at all.
-    The default must keep reading exactly as before R-4."""
+    """This module's own pre-R-4 tests (test_rotation.py) call
+    ``map_sky_target`` with no ``sky_sign`` at all, so the default must keep
+    reading exactly as before R-4.
+
+    (#671 part 2: api/app.py's manual-move route used to be the other caller
+    that left ``sky_sign`` at its default -- WP-53 (#589, #626) changed that,
+    and it now passes ``sky_sign=hub._effective_rotator_sign()``, anchored on
+    ``Hub._rotator_sync_anchor``, so a measured sign reaches it too. The
+    default this test pins is kept for the case ``_effective_rotator_sign``
+    itself falls back to: an UNMEASURED rotator, where +1 is still what
+    every rotator before R-4 assumed.)"""
     assert map_sky_target(120.0, 78.5, 30.0, "full", 0.0) == pytest.approx(120.0)
     assert map_sky_target(100.0, 0.0, 40.0, "half", 245.0) == pytest.approx(280.0)
 
