@@ -82,8 +82,10 @@ const PILL_PX = 26; //         .nx-pill              height: 26px
 const BUTTON_PX = 44; //       .nx-btn               height: 44px (EDIT STAGE)
 
 /** The footer the budget allows for: the whole line wrapped once, as the
- *  eighth Example's TARGET wraps. A longer name wraps again and is past it. */
-const FOOTER_LINES = 2;
+ *  eighth Example's TARGET wraps. A longer name wraps again and is past it -
+ *  which is why the footer itself is now held to this many lines (#554
+ *  state 3, below), rather than left to wrap however far a name runs. */
+export const FOOTER_LINES = 2;
 
 /** The rows' height is the formula's own (`PORT_ROW_H` each, on both), so it
  *  cancels; this is the card with no rows. */
@@ -98,11 +100,32 @@ const NO_ROWS = { id: "", type: "" as FlowNodeRec["type"], x: 0, y: 0, params: {
  *
  *  Past this budget, the run's own 28 px absorbs a third footer line (15)
  *  and the rig line GUIDE and SLEW add (6 + 15 = 21, level with the chip's
- *  top, 7 px above the run). It does not absorb a marks row that wraps to a
+ *  top, 7 px above the run). It does NOT absorb a marks row that wraps to a
  *  second row (6 + 26: two 90 px pills and their gap are 186 px of a 166 px
  *  row, the progress chip beside a mark on a TARGET), a fourth footer line,
  *  or a selected TARGET that offers LOOP PANELS as well as EDIT STAGE
- *  (6 + 44); those still put a card over the run (#554).
+ *  (6 + 44) - three real states that still put a card over the run (#554).
+ *  Rather than widen the budget to their worst case (183 px, accepting a
+ *  lower run on every graph the issue never needed one for), the card is
+ *  kept to what this constant already pays for:
+ *
+ *    state 1 (chip beside a mark)   one Pill carries both facts, never two
+ *    state 2 (LOOP PANELS + EDIT)   one button row, not two stacked rows
+ *    state 3 (a name past 2 lines)  a CSS line-clamp bounds what the footer
+ *                                   PAINTS to `FOOTER_LINES`; the DOM still
+ *                                   carries the whole line, because
+ *                                   cardFooterDom.test.tsx pins that this
+ *                                   card, unlike the classic one-liner (S7
+ *                                   orchestrator ruling 9), never cuts a
+ *                                   word out of it
+ *
+ *  loopArcNext.test.tsx's reader still refuses a marks row with more than one
+ *  `.nx-pill` - which is the point of states 1 and 2: they keep the card the
+ *  reader already knows how to size true, rather than needing it taught a
+ *  second row. State 3 changes nothing the reader looks at (the Mono's
+ *  textContent is unchanged, wrapped to two lines already in every case that
+ *  reader exercises); it only stops the PAINTED footer reaching further than
+ *  that on a name long enough to.
  *
  *  Tailwind builds only a class it finds written out, and the look lives in
  *  the stylesheets, so the numbers cannot be read from them here;
@@ -461,12 +484,40 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
         {/* Computed from the CURRENT params, so an edit shows on the card
             without opening anything. A TARGET's line is `targetFooter` -
             "M31 · rotate · 3x2 · PA 30.0 · 25%" - WHOLE, because this footer
-            wraps; the classic card's one line draws the same line fitted
-            (`fittedFooter`, S7 orchestrator ruling 9). It takes the name from
-            the same `def.sum`, once. */}
-        <Mono size={10} tone="dim" data-testid="flow-node-summary">
+            wraps (cardFooterDom.test.tsx "the #/next card keeps the whole
+            line and wraps" pins it: unlike the classic card's one line,
+            S7 orchestrator ruling 9, #/next never cuts a word out of this
+            line). It takes the name from the same `def.sum`, once.
+
+            #554 state 3 is a NAME long enough to wrap this past two lines,
+            which `CARD_OVERHANG_PX` does not pay for. The clamp below bounds
+            what is PAINTED to `FOOTER_LINES`, the same CSS line-clamp
+            `FlowLibraryCard.tsx`'s tagline uses ("the whole string is still
+            there for anyone who opens it") - the DOM keeps the whole line (so
+            the pin above still holds and a screen reader still reads the
+            whole name), and only the card's drawn height is capped.
+
+            NOT `<Mono>`: it does not forward `style`, and the clamp has to
+            land on THIS element rather than a wrapper, because
+            loopArcNext.test.tsx's reader walks the foot's direct children by
+            class and sizes a `.nx-mono` as a line of text - a wrapper div
+            around it is an element that reader does not know how to size.
+            Reproduced by hand (next.css `.nx-mono`, `size=10`): className,
+            `data-tone` and the font size are exactly what `Mono` renders. */}
+        <span
+          className="nx-mono"
+          data-tone="dim"
+          data-testid="flow-node-summary"
+          style={{
+            fontSize: "10px",
+            display: "-webkit-box",
+            WebkitBoxOrient: "vertical",
+            WebkitLineClamp: FOOTER_LINES,
+            overflow: "hidden",
+          }}
+        >
           {node.type === "target" ? targetFooter(node, loops) : def.sum(node.params)}
-        </Mono>
+        </span>
         {/* And what the rig will really use, for the stages whose stored params
             name a provider it overrides: GUIDE ships "PHD2" and SLEW ships
             "ASTAP" in the vocabulary's own defaults, so a rig that guides
@@ -482,52 +533,119 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
           {status !== "idle" && (
             <StatusPill text={word} tone={NODE_STATUS_TONE[status]} pulse={status === "busy"} />
           )}
-          {chip && (
-            // A pill in the marks row, which wraps, rather than a third footer
-            // line: the 188 px card already clips the rig line to fit.
-            <Pill tone="info" data-testid="flow-node-progress">{chip}</Pill>
-          )}
-          {mark && (
-            // A word, not a ring. The night palette collapses warn and bad
-            // toward coral, so a coloured mark alone is indistinguishable from
-            // a red one - and from nothing at all under a colourblind eye. At
-            // note level the word is FROM THE RIG and the tone is dim: it is
-            // secondary information, not a finding.
-            <Pill tone={markTone(mark)} ariaLabel={markWhy} data-testid="flow-node-mark">
-              {markWord(mark)}
+          {chip && mark ? (
+            // #554 STATE 1. The chip and the mark are each their own pill
+            // below, but together they are two ~90 px pills in a 166 px row -
+            // a TARGET's progress chip beside a mark ("212/315 subs" and
+            // "FROM THE RIG") wraps the marks row to a second line, which
+            // `CARD_OVERHANG_PX` does not pay for. One pill carries both
+            // facts instead, so the row never grows a second line; neither
+            // fact is dropped, only drawn together. The mark's tone wins (a
+            // finding about the graph outranks a live count), and the
+            // accessible name still says both, in full.
+            <Pill
+              tone={markTone(mark)}
+              ariaLabel={`${chip} - ${markWhy}`}
+              data-testid="flow-node-progress"
+              data-node-mark={mark}
+            >
+              {chip} · {markWord(mark)}
             </Pill>
+          ) : (
+            <>
+              {chip && (
+                // A pill in the marks row, which wraps, rather than a third
+                // footer line: the 188 px card already clips the rig line to
+                // fit.
+                <Pill tone="info" data-testid="flow-node-progress">{chip}</Pill>
+              )}
+              {mark && (
+                // A word, not a ring. The night palette collapses warn and bad
+                // toward coral, so a coloured mark alone is indistinguishable
+                // from a red one - and from nothing at all under a
+                // colourblind eye. At note level the word is FROM THE RIG and
+                // the tone is dim: it is secondary information, not a
+                // finding.
+                <Pill tone={markTone(mark)} ariaLabel={markWhy} data-testid="flow-node-mark">
+                  {markWord(mark)}
+                </Pill>
+              )}
+            </>
           )}
         </div>
-        {offersLoop && (
-          // THE ONE-TAP LOOP (spec 1.4). Amber because the block it sits on is
-          // doctor M3's warning, panels shot one after another, and this is
-          // the action that answers it. The press is the modal DONE's own
-          // write with an empty patch, so it is one graph write and one
-          // compile, and the wire leaves the lane's TAIL by `withLoop`, never
-          // an earlier stage (M12). In the footer, under the ports, so no wire
-          // anchor moves.
-          <ActionButton
-            kind="warn"
-            data-testid="flow-node-loop"
-            ariaLabel={`${LOOP_PANELS_LABEL}: ${LOOP_PANELS_WHY}`}
-            onPress={() => { void applyFraming(node.id, {}, true); }}
-            full
-          >
-            {LOOP_PANELS_LABEL}
-          </ActionButton>
-        )}
-        {selected && (
-          // The 44 px door to the same sheet the 28 px pencil opens. Revealed on
-          // selection so every stage does not carry a button, and selection is a
-          // tap anywhere on the card.
-          <ActionButton
-            kind="secondary"
-            data-testid="flow-node-edit-cta"
-            onPress={openEditor}
-            full
-          >
-            EDIT STAGE
-          </ActionButton>
+        {offersLoop && selected ? (
+          // #554 STATE 2. Stacked, LOOP PANELS and EDIT STAGE are two 44 px
+          // rows with a gap between (94 px), which `CARD_OVERHANG_PX` pays
+          // for only one of. Side by side they cost the one row the budget
+          // already carries - the fold the issue itself suggested, since a
+          // card offering LOOP PANELS always offers EDIT STAGE too (selection
+          // is what reveals both).
+          //
+          // NO `nx-*` CLASS: the row is 100% inline-style, like the two
+          // buttons it wraps, so a class here would be a promise with no rule
+          // behind it (r7Css.test.ts "every class an area emits has a rule in
+          // its own sheet or a shared one" - canvas.css is not this WP's to
+          // extend). `data-testid` is the same identity hook every other part
+          // of this footer already carries, the established shape for an
+          // unstyled marker (r7Css.test.ts's own UNSTYLED_OK audit: a
+          // `data-testid` is "the same identity purpose" a class would serve).
+          <div data-testid="flow-node-actions-row" style={{ display: "flex", gap: `${FOOT_GAP_PX}px` }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <ActionButton
+                kind="warn"
+                data-testid="flow-node-loop"
+                ariaLabel={`${LOOP_PANELS_LABEL}: ${LOOP_PANELS_WHY}`}
+                onPress={() => { void applyFraming(node.id, {}, true); }}
+                full
+              >
+                {LOOP_PANELS_LABEL}
+              </ActionButton>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <ActionButton
+                kind="secondary"
+                data-testid="flow-node-edit-cta"
+                onPress={openEditor}
+                full
+              >
+                EDIT STAGE
+              </ActionButton>
+            </div>
+          </div>
+        ) : (
+          <>
+            {offersLoop && (
+              // THE ONE-TAP LOOP (spec 1.4). Amber because the block it sits
+              // on is doctor M3's warning, panels shot one after another, and
+              // this is the action that answers it. The press is the modal
+              // DONE's own write with an empty patch, so it is one graph
+              // write and one compile, and the wire leaves the lane's TAIL by
+              // `withLoop`, never an earlier stage (M12). In the footer,
+              // under the ports, so no wire anchor moves.
+              <ActionButton
+                kind="warn"
+                data-testid="flow-node-loop"
+                ariaLabel={`${LOOP_PANELS_LABEL}: ${LOOP_PANELS_WHY}`}
+                onPress={() => { void applyFraming(node.id, {}, true); }}
+                full
+              >
+                {LOOP_PANELS_LABEL}
+              </ActionButton>
+            )}
+            {selected && (
+              // The 44 px door to the same sheet the 28 px pencil opens.
+              // Revealed on selection so every stage does not carry a button,
+              // and selection is a tap anywhere on the card.
+              <ActionButton
+                kind="secondary"
+                data-testid="flow-node-edit-cta"
+                onPress={openEditor}
+                full
+              >
+                EDIT STAGE
+              </ActionButton>
+            )}
+          </>
         )}
       </div>
     </div>
