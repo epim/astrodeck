@@ -27,15 +27,15 @@ off); and the hub reports ``status: "not tracking"`` with ``hours_to_flip``
 null whenever the mount says it is not tracking, D-11 (backlog ruling,
 owner-approved 2026-09-30). The premise check below reads ``hub.
 last_meridian`` directly -- the hub's own, freshly computed at the harness's
-hold -- rather than the engine's ``live`` chip: `_live_block` only runs on a
-published transition, and this wait is one long sleep with none in the
-middle, so ``live.meridian_eta_s`` in a state read mid-wait is simply
-whatever the last transition (entering the wait) cached, unrefreshed until
-the hop that ends it. That staleness is a separate, pre-existing property of
-how the chip is served, not graded here; the checks below read the chip
-against where the mount points, as tests/test_s7_meridian_chip_cleared.py
-does, so they hold either way, and the countdown's values during the wait
-are not graded.
+hold. Since #665 (backlog WP-84) the route computes the ``live`` chip at the
+read, so a state read mid-wait shows the stopped mount's chip as it is now:
+no countdown. The redaction of that countdown (#166 item 1) is therefore
+graded at an earlier read, the first frame shot inside the warn window on the
+pre-flip side, while the mount still tracks and the operator has a countdown
+to redact; before #665 this test read it mid-wait and leaned on the chip's
+staleness for its premise. The checks below read the
+chip against where the mount points, as tests/test_s7_meridian_chip_cleared.py
+does, and the countdown's values are not graded.
 
 MUTANTS, each run in a private copy of ``server/`` (scratchpad
 ``S7-E2E-mut``), from a byte backup, never in the shared tree; each failure
@@ -53,6 +53,10 @@ FLOW = mosaic_flow(ra_hours=ra_at(-0.4), plan="L 10, R 10", cycles=20)
 #: last panel runs out of room (720 s as built) to the first crossing plus
 #: the side margin (1384 s): a fixed instant well inside both ends.
 IN_THE_WAIT_S = 1000.0
+#: The chip counts down only inside ``meridian_flip_warn_min`` (15 min by
+#: default) of the crossing; a frame started this close to its panel's
+#: crossing, on the pre-flip side, is inside it with a minute to spare.
+COUNT_WINDOW_S = 14 * 60.0
 
 
 def _hour_angle(ra: float, t: float) -> float:
@@ -117,10 +121,11 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
 
     RED under mutant "live rejoins the derived table dropped" (``_DERIVED_
     NODES`` in api/redact.py put back to its two original entries, ``mount``
-    and ``meridian``, #166 item 1): RED (observed):
+    and ``meridian``, #166 item 1): RED (observed again 2026-10-02 at the
+    re-pinned read, the first frame inside the warn window, after #665):
 
-        AssertionError: at +1000.0 s of night 1: a viewer read the meridian
-        countdown: {'meridian_eta_s': 795}
+        AssertionError: at +560.0 s of night 1: a viewer read the meridian
+        countdown: {'meridian_eta_s': 815}
     """
     rig: FlowRig = flow_rig
     night = await rig.night()
@@ -134,19 +139,46 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
     tel = night.hub.devices["telescope"]
 
     after_the_flip: list[dict] = []
+    counting: list[dict] = []
 
     def on_capture(rec: dict) -> None:
         # The side every frame is shot on, off the simulator's own latch.
         rec["side"] = tel._latched_side.value
+        # The first frame on the pre-flip side inside the warn window: the
+        # operator's chip counts down while it is in flight.
+        ttf_s = _hours_to_flip(ra[panel_label(rec["target"])], rec["t"]) * 3600.0
+        if (rec["side"] == "west" and not counting
+                and 0.0 < ttf_s <= COUNT_WINDOW_S):
+            counting.append(rec)
+            night.hold(rec["t"])
         if (rec["side"] == "east" and not after_the_flip):
             after_the_flip.append(rec)
             night.hold(rec["t"])
 
     night.on_capture = on_capture
-    night.hold(night.t0 + IN_THE_WAIT_S)
     r = await rig.run(fid)
     assert r.status_code == 200, f"at +0.0 s of night 1: {r.text}"
 
+    # ``live.meridian_eta_s`` IS #166 ITEM 1's: the same countdown the status
+    # redaction strips as ``meridian.hours_to_flip`` (api/redact.py),
+    # republished unredacted a level up because the sequence node was never in
+    # ``_DERIVED_NODES``. Graded here, while the mount tracks: the operator
+    # reads it (the premise); a viewer must not, though it may still carry
+    # other, non-site chip fields (``sensor_temp_c``), so the check is on the
+    # one key, not on absence of the whole block.
+    assert await night.settle() and counting, (
+        f"premise, {rig.at(night)}: a frame was shot inside the warn window")
+    assert counting[0]["t"] < night.t0 + IN_THE_WAIT_S, (
+        f"premise, {rig.at(night)}: the counting frame comes before the wait")
+    early = await rig.read(night, fid)
+    assert (early.state.get("live") or {}).get("meridian_eta_s"), (
+        f"{early.at}: premise, a countdown to grade the redaction against: "
+        f"{early.state.get('live')}")
+    assert "meridian_eta_s" not in (early.viewer.get("live") or {}), (
+        f"{early.at}: a viewer read the meridian countdown: "
+        f"{early.viewer.get('live')}")
+
+    night.hold(night.t0 + IN_THE_WAIT_S)
     assert await night.settle(), (
         f"premise, {rig.at(night)}: the night reached the wait")
     wait = await rig.read(night, fid)
@@ -174,16 +206,12 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
     assert (mer.get("status"), mer.get("hours_to_flip")) == (
         "not tracking", None), (
         f"{at}: the hub's own meridian block while park-held: {mer} (#519)")
-    # ``live.meridian_eta_s`` IS #166 ITEM 1's: the same countdown the status
-    # redaction strips as ``meridian.hours_to_flip`` (api/redact.py), republished
-    # unredacted a level up because the sequence node was never in
-    # ``_DERIVED_NODES``. The operator reads it (the premise below); a viewer
-    # must not, though it may still carry other, non-site chip fields
-    # (``sensor_temp_c``), so the check is on the one key, not on absence of
-    # the whole block.
-    assert (wait.state.get("live") or {}).get("meridian_eta_s"), (
-        f"{at}: premise, a countdown to grade the redaction against: "
-        f"{wait.state.get('live')}")
+    # #665: the chip is computed at the read, so the park-held mount's chip
+    # carries no countdown now, for the operator as for a viewer. (Before
+    # #665 the operator read the countdown cached when the wait began.)
+    assert not (wait.state.get("live") or {}).get("meridian_eta_s"), (
+        f"{at}: a park-held mount's chip still counts down: "
+        f"{wait.state.get('live')} (#665)")
     assert "meridian_eta_s" not in (wait.viewer.get("live") or {}), (
         f"{at}: a viewer read the meridian countdown: {wait.viewer.get('live')}")
     assert {k: v for k, v in wait.state.items() if k not in ("group", "live")

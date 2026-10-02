@@ -838,12 +838,15 @@ class FlipPoint(NamedTuple):
     #: When the target crosses its own meridian: transit, whatever the zero.
     transit_at: float
     #: What the countdown is measured from: ``"meridian"``, or ``"mount
-    #: limit"`` when the mount reported a limit nearer than the meridian.
+    #: limit"`` when the mount reported a limit nearer than the meridian, or
+    #: the operator configured one (`SafetyConfig.mount_tracking_limit_min`,
+    #: #566) that is nearer-or-equal to it.
     zero: str
     #: The lead taken off the zero, in seconds (never negative).
     lead_s: float
     #: The band added past the zero, in seconds: `_flip_retry_past_s` at the
-    #: meridian, and 0 past a limit the mount reported.
+    #: meridian, and 0 past a limit the mount reported or the operator
+    #: configured.
     past_s: float
 
 
@@ -8223,6 +8226,20 @@ class SequenceEngine:
         # only a completed hop is a sample.
         self._record_event_cost("hop", time.monotonic() - hop_t0 - sweep_s)
 
+        # THE HOP IS PRICED ABOVE; IT MUST NOT ALSO FEED THE OVERHEAD EMA
+        # (#297). `_record_frame` folds the gap since the last frame into
+        # `_overhead_ema` unless this flag says the gap carried an event
+        # (dither/AF/flip), and until now nothing set it for a hop or for a
+        # scheduler wait that ends in one -- so the FIRST frame after every
+        # setup fed the whole hop (or wait) into "per-frame overhead",
+        # counting it a second time and pulling the flip gate's frame
+        # window and the mosaic meridian rule's pre-flip room in early. Set
+        # here, at the end of every setup, so it covers a hop, a wait that
+        # released into a setup, and the run's own opening acquisition
+        # alike -- exactly like a dither or an autofocus sweep, see
+        # `_begin_frame`'s NB.
+        self._frame_had_event = True
+
         # setup complete — capture is about to begin. Arm the no-progress watchdog
         # and anchor its clock to NOW so a slow slew/solve/AF that just finished
         # doesn't instantly read as a stall against the last target's frame stamp.
@@ -13695,15 +13712,21 @@ class SequenceEngine:
            nearer than that (``device_h``, its ``time_to_meridian_flip`` in
            hours: positive, and less than the countdown to the meridian),
            which it enforces whatever our geometry says. Today only NINA
-           reports one; the AM5 and Alpaca paths answer None.
+           reports one; the AM5 and Alpaca paths answer None. Failing that,
+           the operator's own figure for this mount
+           (`SafetyConfig.mount_tracking_limit_min`, #566) when one is
+           configured and nearer than the meridian too -- see
+           `_configured_tracking_limit_min`.
         2. THE LEAD, ``lead_s`` before the zero (`_flip_lead_s`, the
            caller's), never negative.
         3. THE BAND, `_flip_retry_past_s` past the zero for a zero-lead
-           attempt, ONLY WHEN THE ZERO IS THE MERIDIAN ITSELF. The band is
-           there because at the crossing a goto's side is the mount's own
-           reckoning of the hour angle (#366, #455); a limit the mount
-           states before the meridian is not the crossing, and 15 s past it
-           is 15 s past a limit the mount has said it stops at.
+           attempt, ONLY WHEN THE ZERO IS THE MERIDIAN ITSELF -- NEITHER THE
+           DEVICE NOR THE OPERATOR NAMED A NEARER ONE. The band is there
+           because at the bare crossing a goto's side is still the mount's
+           own reckoning of the hour angle (#366, #455); a limit the device
+           reports, or the operator states, before the meridian is not that
+           uncertainty, and 15 s past it would be 15 s past a limit already
+           known.
 
         The gate built its window from the mount's limit and the band,
         while its hold measured from the true meridian, so a mount that
@@ -13713,13 +13736,20 @@ class SequenceEngine:
         to the hold (`_flip_point_handed`), and the goto reads its
         ``transit_at`` for #127's learning (#489).
 
-        LEFT OPEN, a GEM whose tracking limit sits AT the meridian and does
-        not report it (#505's E item, filed as #566): with nothing reported
-        the zero is the meridian and the band applies, so a zero-lead
-        attempt comes 15 s after such a mount has stopped, and the flip's
-        goto meets a mount that is not tracking (the refusal recovery, which
-        re-acquires past the meridian). No mount measured so far behaves so:
-        the AM5 stops 4.7 to 7.6 min before transit, well before the band.
+        A GEM WHOSE TRACKING LIMIT SITS AT THE MERIDIAN AND DOES NOT REPORT
+        IT (#505's E item, filed as #566): with nothing live and nothing
+        configured the zero is the bare meridian and the band applies, so a
+        zero-lead attempt comes 15 s after such a mount has stopped, and the
+        flip's goto meets a mount that is not tracking (the refusal
+        recovery, which re-acquires past the meridian). `mount_
+        tracking_limit_min` is the way out: set to 0 for exactly this mount,
+        it is nearer-or-equal to the meridian, so it is taken as the zero
+        with no band, and a zero-lead attempt lands AT the meridian instead
+        of past it. Set negative, it lands that much BEFORE the meridian,
+        the way a reported device limit already could. Left at None (every
+        rig today), nothing here changes: no mount measured so far behaves
+        this way anyway -- the AM5 stops 4.7 to 7.6 min before transit, well
+        before the band.
 
         ``now`` is the engine clock's reading to measure from (the caller's
         own, when it has one); the times answered are on that clock. The
@@ -13746,10 +13776,58 @@ class SequenceEngine:
         if dev is not None and 0.0 < dev < transit_h:
             zero_h, zero = dev, "mount limit"
         else:
-            past_s = self._flip_retry_past_s(target)
+            # #566: NOTHING LIVE SAID WHERE THIS MOUNT STOPS, so ask the
+            # operator's own figure, when one is configured. UNLIKE ``dev``
+            # ABOVE, a configured limit AT the meridian (0 minutes) counts:
+            # it is not a possibly-stale live reading that a 0 or a NaN
+            # could mean nothing from, it is literally the #566 scenario,
+            # stated on purpose -- so the comparison is ``<=``, not ``<``,
+            # and the band below is never added past it either way.
+            #
+            # ``getattr`` WITH A FALLBACK, not a plain attribute access: a
+            # handful of spec-claims tests call this method on a bare
+            # stand-in that carries only the surface H4 documented
+            # (``hub`` and a stubbed `_flip_retry_past_s`), unbound, and
+            # must keep working unchanged -- the method's own contract is
+            # "never raises", so an older or minimal caller gets exactly
+            # today's bare-meridian-plus-band answer, not an AttributeError.
+            configured_fn = getattr(self, "_configured_tracking_limit_min",
+                                    None)
+            configured_min = configured_fn() if configured_fn else None
+            configured_h = (None if configured_min is None
+                            else transit_h + configured_min / 60.0)
+            if configured_h is not None and configured_h <= transit_h:
+                zero_h, zero = configured_h, "mount limit"
+            else:
+                past_s = self._flip_retry_past_s(target)
         return FlipPoint(at=now + zero_h * 3600.0 - lead + past_s,
                          transit_at=now + transit_h * 3600.0, zero=zero,
                          lead_s=lead, past_s=past_s)
+
+    def _configured_tracking_limit_min(self) -> float | None:
+        """The operator's stated mount tracking limit, minutes of hour angle
+        from the meridian and negative before it
+        (`SafetyConfig.mount_tracking_limit_min`, #566), or None when
+        nothing is configured -- the state of every rig today.
+
+        Never raises: an older config snapshot with no such field, or a
+        nonsense value from a hand-edited store, must fall back to
+        `_flip_point`'s existing bare-meridian-plus-band behaviour rather
+        than take down the flip gate."""
+        cfg = self._cfg or config_store.cfg()
+        try:
+            value = cfg.safety.mount_tracking_limit_min
+        except AttributeError:
+            return None
+        if value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        if value != value:                       # NaN
+            return None
+        return value
 
     def _plan_flip_lead_s(self) -> float:
         """The PLAN's flip lead in seconds, clamped the way `_flip_lead_s`
@@ -16176,25 +16254,55 @@ class SequenceEngine:
                                               ) -> None:
         """Under ``af_failure_action`` "warn", after a sweep and its retry at
         twice the exposure both failed on a sparse field (#507, H4
-        orchestrator ruling 4): say where the run carries on, in words, and
-        owe a sweep at the first light frame whose star count reaches
+        orchestrator ruling 4): MOVE the focuser to the last sweep that found
+        focus THIS run, when there has been one, and say so, in the night log
+        and the session report. With none (the initial autofocus), stay
+        where the sweeps started, as before, and say that instead. Either
+        way owe a sweep at the first light frame whose star count reaches
         ``SPARSE_FIELD_WARN`` (`_note_sparse_resweep`).
 
-        WHERE IT CARRIES ON is where the sweeps started, which is where each
-        put the focuser back on failing (the native sweep never leaves it at
-        a sweep point), so the failed result's ``best_position`` names it with
-        no device read. The last sweep that found focus is named beside it
-        when this run has one, since offsets and temperature compensation may
-        have moved the focuser since; the night's log then says both numbers
-        the morning needs.
+        D-09 (owner-approved 2026-09-30, #590) SUPERSEDES THE OLDER READING:
+        ruling 4 as first worded ("the run continues at the last good
+        position") was built as "stays where the sweeps started", because
+        the native sweep leaves the focuser there on a failure and nothing
+        commanded a move. The owner's ruling resolves that literally: move
+        there, when there is one to move to. Filter offsets and temperature
+        compensation stay OUT OF SCOPE, as #507's own follow-up comment and
+        D-09's wording both leave them — the position moved to is the raw
+        one a successful sweep measured, never corrected for either.
+
+        WHERE THE SWEEPS STARTED is where each put the focuser back on
+        failing (the native sweep never leaves it at a sweep point), so the
+        failed result's ``best_position`` names it with no device read —
+        this is also where the run lands when there is no good sweep to move
+        to, or the move to one fails.
 
         SAVE AFTER A SWEEP THROUGH LUMINANCE (``restored``, the filter
         `_sweep_through_luminance` put back): the move to luminance applied
         its offset before the sweeps started, and putting ``restored`` back
-        undid it, so where the sweeps started is not where the run carries on
-        (120 steps apart for Ha on the simulator's wheel). The position is
-        then read, bounded, after the filter is back; a read that fails names
-        no number rather than the wrong one.
+        undid it, so where the sweeps started is not where the run would
+        otherwise carry on (120 steps apart for Ha on the simulator's
+        wheel). That position is read, bounded, after the filter is back; a
+        read that fails names no number rather than the wrong one.
+
+        THE MOVE ITSELF IS BEST-EFFORT, exactly like the read above: "warn"
+        promises the run carries on whatever happens, so a stuck or missing
+        focuser logs a warning and falls back to staying where the sweeps
+        started rather than ending the night over a corrective move —
+        ``_bounded`` (which turns a timeout into a ``SafetyAbort``) is
+        deliberately not used here, for the same reason the read above does
+        not use it. The move goes through `focus.approach`, the one path
+        every other focuser move outside a sweep uses, so it arrives from
+        above like any other and never asks the focuser for more than its
+        own ``move_to`` and ``max_position`` already allow (the EAF limits
+        the focus module enforces everywhere else).
+
+        THE CARRY-ON IS RECORDED IN THE SESSION REPORT AS WELL AS THE NIGHT
+        LOG (#507 (b), WP-57): the same sentence that goes to `bus.log` also
+        goes through `_record_safety`, the bridge every other safety-style
+        event (a roof close, the no-progress watchdog) already uses to
+        reach it, so the morning report shows the carry-on beside its
+        other safety events and not only in the log file.
 
         The owed sweep's own failure owes nothing more: it says so instead."""
         pos = getattr(result, "best_position", None)
@@ -16220,29 +16328,58 @@ class SequenceEngine:
             started = (f"the focus it had before the sweeps, since putting "
                        f"{restored!r} back after they ran through luminance "
                        f"undid the filter offset")
-        where = (f"focuser position {int(pos)}"
-                 if isinstance(pos, (int, float)) else "the focuser position")
         good = self._last_good_focus
+        moved = False
+        if good is not None:
+            # D-09: move there instead of merely naming it. Best-effort, as
+            # the docstring above explains — a timeout or a device error
+            # here falls back to `where`/`started` below, computed exactly
+            # as they were before this move existed.
+            try:
+                foc = self.hub.devices.get("focuser")
+                cur = int(pos) if isinstance(pos, (int, float)) else None
+                await asyncio.wait_for(
+                    approach(foc, int(good[0]), overshoot=configured_overshoot(),
+                            current=cur),
+                    FOCUSER_MOVE_TIMEOUT_S)
+                moved = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:   # noqa: BLE001 - "warn" never ends a run
+                                     # over a corrective move, a timeout
+                                     # included (see the docstring above)
+                bus.log("warning",
+                        f"{label}: could not move to the last good sweep's "
+                        f"position {good[0]} ({e}); carrying on at "
+                        f"{started} instead", "sequence")
+        if moved:
+            where = f"focuser position {int(good[0])}"
+            started = "moved to the last good sweep's position (D-09)"
+        else:
+            where = (f"focuser position {int(pos)}"
+                     if isinstance(pos, (int, float)) else "the focuser position")
         if good is None:
             since = "no sweep has found focus yet this run"
         else:
             since = (f"the last sweep that found focus left it at {good[0]}, "
                      f"{(time.monotonic() - good[1]) / 60:.0f} min ago")
         if resweep:
-            bus.log("warning",
-                    f"{label} failed on a sparse field again, at both "
-                    f"exposures: the run carries on at {where}, {started} "
-                    f"({since}). No further "
-                    f"sweep is owed for the sparse field; the next is the "
-                    f"plan's own (autofocus_every, the temperature trigger or "
-                    f"the next target)", "sequence")
+            msg = (f"{label} failed on a sparse field again, at both "
+                   f"exposures: the run carries on at {where}, {started} "
+                   f"({since}). No further "
+                   f"sweep is owed for the sparse field; the next is the "
+                   f"plan's own (autofocus_every, the temperature trigger or "
+                   f"the next target)")
+            bus.log("warning", msg, "sequence")
+            self._record_safety(msg, "focus_carry_on")
             return
         self._sparse_resweep_owed = True
-        bus.log("warning",
-                f"{label} failed on a sparse field at both exposures: the "
-                f"run carries on at {where}, {started} ({since}), and "
-                f"sweeps again at the first frame "
-                f"that finds at least {SPARSE_FIELD_WARN} stars", "sequence")
+        msg = (f"{label} failed on a sparse field at both exposures: the "
+               f"run carries on at {where}, {started} ({since}), and "
+               f"sweeps again at the first frame "
+               f"that finds at least {SPARSE_FIELD_WARN} stars")
+        bus.log("warning", msg, "sequence")
+        self._record_safety(msg, "focus_carry_on")
 
     def _note_sparse_resweep(self, info, step, target: Target) -> None:
         """A light frame's star count against a sweep owed since two
