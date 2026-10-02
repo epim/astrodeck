@@ -44,6 +44,24 @@
       "intended_assertion_failed": true
     },
     {
+      "name": "post-analysis-metadata-filter",
+      "file": "packaging/astrodeck.spec",
+      "test": "test_release_packaging.ReleasePolicy.test_spec_removes_metadata_reintroduced_by_analysis",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "post-analysis-url-excluded",
+      "file": "packaging/metadata_payloads.py",
+      "test": "test_release_packaging.MetadataSelection.test_post_analysis_filter_is_exact_and_never_reads_metadata",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "post-analysis-url-scope",
+      "file": "packaging/metadata_payloads.py",
+      "test": "test_release_packaging.MetadataSelection.test_post_analysis_filter_is_exact_and_never_reads_metadata",
+      "intended_assertion_failed": true
+    },
+    {
       "name": "spec-native-import",
       "file": "packaging/astrodeck.spec",
       "test": "test_release_packaging.ReleasePolicy.test_spec_collects_native_module_and_metadata",
@@ -277,8 +295,8 @@
   "exact_restored_sha256": {
     "packaging/distribution_policy.py": "e7e856ae5e77dda4c8c52f9d87c6b35792d9648fd3918072f6ead86357f09549",
     "scripts/build_release.py": "e95396284e8d504431d997ba4320b0631dce9af63f42ef10c19e54c2588fae3f",
-    "packaging/metadata_payloads.py": "a0a6f73789cd810904b1d0440888dd69b4aace463c94a945221368f23e5cbd60",
-    "packaging/astrodeck.spec": "c7933260f5c2723dec20998b49bd2e3f072b78cef573be41c82035d0a4e3c0ed",
+    "packaging/metadata_payloads.py": "491556e9af902e8c1eb347252027d71e092d17def7d1f33f59a8856fa680db2f",
+    "packaging/astrodeck.spec": "17f5fa127111ac73169aaf85fbe391e69aac23a879f035ff07fb60771082220e",
     "packaging/build_binary.py": "a49e583e9349db296183e9035b2db4cb9442d4640a1257354c7cb92cc2f181c5",
     "packaging/build_native.py": "7f060b7ceef563cb6c31a7e6a6be74d71f852a6dcf14a827cd6ac8230eec9bf1",
     "packaging/native_probe.py": "f1fc366f5e450ecbfe9afd62cc11fac100d4ee6309f7159772039333e104f85b",

@@ -25,6 +25,8 @@ The existing `server/tests/test_build_binary_smoke.py` was explicitly authorized
 
 This is Windows-local build and regression evidence, not a claim that Linux x86_64, Linux arm64, macOS arm64, elevated Windows account creation, or real hardware operation has been executed here. The parent owns actual final artifact builds, inventories and release gate results. Earlier native and frozen artifacts produced before the PEP 639 correction are intermediate evidence only and must not be released.
 
-Final local packaging validation at handoff: 72 new tests passed; 45 named mutants failed their intended assertion and all source hashes restored exactly; the 23 repinned existing binary smoke tests passed. Full release clearance remains with the parent artifact gates.
+Final local packaging validation at handoff: 74 new tests passed; 48 named mutants failed their intended assertion and all source hashes restored exactly; the 23 repinned existing binary smoke tests passed. Full release clearance remains with the parent artifact gates.
 
 The frozen metadata collector omits only each server/native distribution root's installer-created direct_url.json, which can contain a private PEP 610 file URL. All other metadata bytes, including RECORD, notices, source archive and SBOM, remain selected.
+
+PyInstaller automatic metadata hooks can re-add installer metadata after explicit collection. The spec therefore repeats the exact-root installer URL omission on Analysis.datas before passing it to EXE. Tests simulate that hook insertion and check the final EXE data argument, preserving other distributions and nested same-name files without reading their bodies.
