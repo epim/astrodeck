@@ -327,6 +327,22 @@ def banked_hours_from_reports(reports: Iterable[Any],
     return out
 
 
+def _entry_target_names(entry: dict) -> list[str]:
+    """The ledger names ONE compiled target entry's own rows stand for: a
+    single target or a pool member its own name, a mosaic its live panels
+    (never the bare block name) - the same split ``flow_target_names`` makes
+    over a whole plan, factored out so a BUDGET row can ask it of its own
+    entry alone (#562: a row must read its own block's bank, not the whole
+    flow's)."""
+    label = str(entry.get("name") or "").strip()
+    grid = _mosaic_grid(entry)
+    if grid is None:
+        return [label] if label else []
+    rows, cols, skip = grid
+    return [f"{label} {_panel_label(r, c)}" if label else _panel_label(r, c)
+            for r in range(rows) for c in range(cols) if (r, c) not in skip]
+
+
 def flow_target_names(plan: dict | FlowGraph, name: str = "") -> list[str]:
     """The names this flow's run records its frames under, in plan order: the
     ledger's meaning of "this flow's own targets" (#536, H4 orchestrator
@@ -350,17 +366,7 @@ def flow_target_names(plan: dict | FlowGraph, name: str = "") -> list[str]:
                  else dict(plan or {}))
     out: list[str] = []
     for entry in plan_dict.get("targets") or []:
-        label = str(entry.get("name") or "").strip()
-        grid = _mosaic_grid(entry)
-        if grid is None:
-            names = [label]
-        else:
-            rows, cols, skip = grid
-            names = [f"{label} {_panel_label(r, c)}" if label
-                     else _panel_label(r, c)
-                     for r in range(rows) for c in range(cols)
-                     if (r, c) not in skip]
-        for n in names:
+        for n in _entry_target_names(entry):
             if n and n not in out:
                 out.append(n)
     return out
@@ -599,6 +605,8 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
                     now: float | None = None,
                     twilight_deg: float | None = None,
                     banked: Callable[[], Mapping[str, float]] | None = None,
+                    banked_by_target: Callable[
+                        [], Mapping[str, Mapping[str, float]]] | None = None,
                     frames_by_target: Callable[
                         [], Mapping[str, Mapping[str, int]]] | None = None,
                     resolve_name: Callable[[str], tuple[float, float] | None] | None = None,
@@ -620,6 +628,15 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     lazily and this function can stay pure; the default is NO LEDGER, and a
     budget row then says the goal and tonight's contribution and explicitly
     does not claim a banked figure.
+
+    ``banked_by_target`` is the same ledger, kept by target name rather than
+    folded into one flow-wide mapping (#562): ``{target: {filter: hours}}``,
+    which lets each BUDGET row read only the hours of the entries it stands
+    for (``_budget``'s ``_entry_target_names``), so a block that shares a
+    filter with another block in the same flow is not given the other's
+    hours. When given, it is preferred over ``banked`` for the figure every
+    row actually prints; ``banked`` alone still answers ``has_ledger`` and is
+    what a caller with only the coarse, flow-wide figure can supply.
 
     ``hop_cost_s`` is the MEASURED mean cost of one hop between targets, in
     seconds (``SequenceEngine.measured_cost("hop")``'s mean, #189 S3), or
@@ -785,7 +802,7 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
                  "window": df.get("window"), "adu_target": df.get("adu_target"),
                  "count": df.get("count"), "method": df.get("method")}
 
-    budget = _budget(plan_dict, banked, hop_cost_s)
+    budget = _budget(plan_dict, banked, hop_cost_s, banked_by_target)
 
     out = {
         "ok": True,
@@ -1229,7 +1246,10 @@ def _shares(total_h: float, weights: list[float]) -> list[float]:
 
 
 def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None,
-            hop_cost_s: float | None = None) -> list[dict]:
+            hop_cost_s: float | None = None,
+            banked_by_target:
+                Callable[[], Mapping[str, Mapping[str, float]]] | None = None,
+            ) -> list[dict]:
     """Banked-vs-goal integration per filter, plus what tonight adds.
 
     ONE ROW PER DISTINCT STEP, not per target. ``compile_plan`` copies every
@@ -1275,21 +1295,54 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None,
       Ha" is a claim about integration.
 
     Single targets and pool members keep exactly the capture rows they had.
+
+    WHOSE HOURS A ROW BANKS (#562). ``banked`` answers ONE ``{filter: hours}``
+    mapping for the WHOLE flow, so every row that shares a filter with
+    another block in the same flow read the flow's total in it, not its own
+    block's: an M16 Ha row and an M31 Ha row in the same flow both filled
+    with M16's-plus-M31's Ha, so a block that had banked nothing still read
+    as progressing on the other block's frames. ``banked_by_target`` is the
+    fix: ``{target: {filter: hours}}``, which lets this function look up only
+    the names ITS OWN entry stands for (``_entry_target_names``) - a single
+    target or pool member its own name, a mosaic its live panels - rather
+    than fold the whole flow into one number first. A pool's copies of one
+    step are deduped by signature as before, and the deduped row's names are
+    the UNION of every pool member that carries that signature, since "best
+    available" means any one of them could be the one shot tonight. When
+    only ``banked`` is given (a caller with just the flow-wide figure, or a
+    flow of a single block where the distinction is moot), the same flat
+    number is read for every row, exactly as before.
     """
     hop_s = _measured(hop_cost_s)
-    have_ledger = banked is not None
-    bank: Mapping[str, float] = {}
+    have_flat = banked is not None
+    have_by_target = banked_by_target is not None
+    flat_bank: Mapping[str, float] = {}
+    by_target_bank: Mapping[str, Mapping[str, float]] = {}
     if banked is not None:
         try:
-            bank = banked() or {}
+            flat_bank = banked() or {}
         except (OSError, ValueError):
             # A ledger on disk that cannot be read is a missing ledger, not a
             # blank timeline. Say "no ledger" rather than "0 h banked" — those
             # are different claims and only one of them is true.
-            bank, have_ledger = {}, False
+            flat_bank, have_flat = {}, False
+    if banked_by_target is not None:
+        try:
+            by_target_bank = banked_by_target() or {}
+        except (OSError, ValueError):
+            by_target_bank, have_by_target = {}, False
+    have_ledger = have_flat or have_by_target
 
-    seen: set[tuple] = set()
+    def banked_hours(names: list[str], filters: list[str]) -> float:
+        if have_by_target:
+            return round(sum(_num(by_target_bank.get(n, {}).get(f))
+                             for n in names for f in filters), 2)
+        return round(sum(_num(flat_bank.get(f)) for f in filters), 2)
+
+    seen: dict[tuple, int] = {}
     rows: list[dict] = []
+    row_names: list[list[str]] = []
+    row_filters: list[list[str]] = []
     for target in plan.get("targets") or []:
         live = _live_panels(target)
         if live == 0:
@@ -1297,6 +1350,7 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None,
             # so it adds nothing tonight, and a "0 h goal" row would read as
             # an unmeetable goal rather than an absent one.
             continue
+        names = _entry_target_names(target)
         drawn = [s for s in target.get("steps") or [] if _drawn(s)]
         hops: list[float | None] = [None] * len(drawn)
         if live is not None and hop_s is not None and drawn:
@@ -1320,15 +1374,21 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None,
                        step.get("count"), goal)
             if live is None:
                 if sig in seen:
+                    # Another pool candidate's copy of this exact step: the
+                    # row already exists, so only its NAMES grow - the union
+                    # of every member "best available" could still pick.
+                    idx = seen[sig]
+                    for n in names:
+                        if n not in row_names[idx]:
+                            row_names[idx].append(n)
                     continue
-                seen.add(sig)
+                seen[sig] = len(rows)
             tonight_h = _per_panel_s(step) / 3600.0
             per = 1 if live is None else live
             row = {
                 "filter": ", ".join(filters) or "—",
                 "goal_h": None if goal is None else round(goal * per, 2),
-                "banked_h": (round(sum(_num(bank.get(f)) for f in filters), 2)
-                             if have_ledger else None),
+                "banked_h": None,  # filled below, once a row's names are final
                 "tonight_h": round(tonight_h * per, 2),
                 "has_ledger": have_ledger,
             }
@@ -1339,6 +1399,11 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None,
                 row["panels"] = live
                 row["hop_h"] = hop_h
             rows.append(row)
+            row_names.append(list(names))
+            row_filters.append(filters)
+    if have_ledger:
+        for row, names, filters in zip(rows, row_names, row_filters):
+            row["banked_h"] = banked_hours(names, filters)
     return rows
 
 
@@ -1822,7 +1887,12 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     n = lambda t: _first(g, t)                                   # noqa: E731
     dusk, pool, rep = n("dusk"), n("pool"), n("report")
     cw, hold, cq, pc = n("cloudwatch"), n("holdresume"), n("calib"), n("parkclose")
-    saf, dome, df = n("safety"), n("dome"), n("duskflats")
+    # No `dome = n("dome")` here (#192): the arm sentence used to add a dome
+    # clause ("opens the dome and binds it to the mount") that nothing in the
+    # engine does, and the node has no OTHER true thing to say at arm time -
+    # its real effect (the unsafe-close path) belongs to the STORY row, not
+    # this brief.
+    saf, df = n("safety"), n("duskflats")
     guide, af = n("guide"), n("autofocus")
     seg: list[str] = []
 
@@ -1848,8 +1918,13 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
             off = int(_finite(raw))
             if off:
                 t += f" ({_signed(off, '+.0f')} min)"
-        if dome is not None:
-            t += ", opens the dome and binds it to the mount"
+        # NOT ", opens the dome and binds it to the mount" (#192): nothing in
+        # the engine drives either at arm time - the only open_shutter call is
+        # the reopen after an unsafe close (opt-in, off by default), and
+        # DomePolicy.apply_binding has no caller - so this clause said
+        # something the run would not do. A DOME node's safety effect (the
+        # unsafe-close path) is covered by the "2. the dome" STORY row rather
+        # than repeated here.
         if df is not None:
             t += (f", and shoots {df.params.get('count')} flats per filter "
                   f"({str(df.params.get('method')).lower()}) in the twilight window")
@@ -2030,6 +2105,40 @@ def frames_by_target_from_reports(reports: Iterable[Any]
                     continue
                 bucket[str(filt)] = bucket.get(str(filt), 0) + int(
                     _num(_field(fb, "frames", 0)))
+    return out
+
+
+def banked_hours_by_target_from_reports(reports: Iterable[Any]
+                                        ) -> dict[str, dict[str, float]]:
+    """``{target: {filter: hours}}``, summed over the ledger.
+
+    The per-BLOCK half of ``banked_hours_from_reports`` (#562). That fold
+    answers one ``{filter: hours}`` mapping for the WHOLE flow, so in a flow
+    of several blocks sharing a filter, every BUDGET row read the flow's
+    total rather than its own block's: an M16 Ha row and an M31 Ha row in the
+    same flow both read the SUM of M16's and M31's Ha, so a block that had
+    banked nothing still read as progressing on the other block's frames.
+
+    This fold keeps the per-target breakdown instead of collapsing it, in the
+    same shape ``frames_by_target_from_reports`` already keeps for accepted
+    frames and for the same reason: the route supplies the impure half (the
+    reports' ledger summaries), this module stays callable without a disk,
+    and ``_budget`` reads only the names its own row stands for
+    (``_entry_target_names``), so M16's hours never reach M31's row.
+    """
+    out: dict[str, dict[str, float]] = {}
+    for rep in reports or ():
+        for tb in _field(rep, "targets") or ():
+            name = str(_field(tb, "name", "") or "")
+            if not name:
+                continue
+            bucket = out.setdefault(name, {})
+            for fb in _field(tb, "by_filter") or ():
+                filt = _field(fb, "filter")
+                if not filt:
+                    continue
+                bucket[str(filt)] = bucket.get(str(filt), 0.0) + _num(
+                    _field(fb, "integration_s", 0.0)) / 3600.0
     return out
 
 
@@ -2313,15 +2422,20 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
                          "Autorun window opens at the set clock time"))
     else:
         timed.append(row(out["now_unix"],
-                         "No dusk window in this flow — the run starts when you "
+                         "No dusk window in this flow - the run starts when you "
                          "press RUN, and stops when you stop it", TONE_DIM))
 
-    # 2. the dome, which is not the flow's to countermand
+    # 2. the dome, which is not the flow's to countermand. NOT "opens,
+    #    azimuth bound to the mount" (#192): nothing drives either - the only
+    #    open_shutter call is the reopen after an unsafe close, opt-in and off
+    #    by default, and DomePolicy.apply_binding has no caller. The close
+    #    half is what the compile actually enforces: to_plan refuses a DOME
+    #    node with a connected dome unless close_dome_on_unsafe is set, so for
+    #    any flow that runs with one, this sentence's remainder holds.
     if automation.get("dome"):
         timed.append(row(night["window_start_unix"],
-                         "Dome shutter opens, azimuth bound to the mount - any "
-                         "unsafe or stale safety reading closes it, whatever the "
-                         "flow is doing", TONE_DIM))
+                         "Dome: any unsafe or stale safety reading closes it, "
+                         "whatever the flow is doing", TONE_DIM))
 
     # 3. dusk flats, if the sky is bright enough for long enough
     flats = out["flats"]
@@ -2337,7 +2451,7 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
                 f"{adu_txt} ADU per filter", TONE_DIM))
         else:
             timed.append(row(
-                dusk, f"Dusk flats are configured for \"{flats['window']}\" — "
+                dusk, f"Dusk flats are configured for \"{flats['window']}\" - "
                 f"that window does not name two sun altitudes, so its clock "
                 f"times are not resolved here", TONE_WARN))
 
@@ -2361,19 +2475,19 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
         near = f", {min(seps):.0f}° from the nearest target" if seps else ""
         if moon.get("rise_unix"):
             timed.append(row(moon["rise_unix"],
-                             f"Moon rises, {pct}% illuminated{near} — narrowband "
+                             f"Moon rises, {pct}% illuminated{near} - narrowband "
                              f"shrugs it off; broadband loses contrast",
                              TONE_FAINT))
         if moon.get("set_unix"):
             timed.append(row(moon["set_unix"],
-                             "Moon sets — the rest of the night is dark sky",
+                             "Moon sets - the rest of the night is dark sky",
                              TONE_FAINT))
         if not moon.get("rise_unix") and not moon.get("set_unix"):
             up = _num(moon.get("alt")) > 0.0
             timed.append(row(
                 night["dark_start_unix"] or dusk,
                 (f"Moon is up all night, {pct}% illuminated{near}" if up
-                 else f"Moon stays down all night ({pct}% illuminated) — "
+                 else f"Moon stays down all night ({pct}% illuminated) - "
                       f"no moonglow in any of it"), TONE_FAINT))
 
     # 7. the meridian — only for targets that actually get a window. A pool
@@ -2382,7 +2496,7 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     for t in out["targets"]:
         if t.get("meridian_flip_unix") and t.get("window"):
             timed.append(row(t["meridian_flip_unix"],
-                             f"{t['label']} crosses the meridian — engine flips, "
+                             f"{t['label']} crosses the meridian - engine flips, "
                              f"re-centers via plate solve, restarts guiding; "
                              f"worst case one frame lost", TONE_WARN))
 
@@ -2402,7 +2516,7 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
                          TONE_WARN, "ANY"))
     if "on_unsafe" in whens:
         rules.append(row(None, "IF unsafe (or a stale reading) → abort, park, "
-                               "warm, close — fail closed", TONE_BAD, "ANY"))
+                               "warm, close - fail closed", TONE_BAD, "ANY"))
 
     # 9. the budget. A mosaic's row (it has `panels`) says the figures are
     #    every panel's, and what moving between them costs once measured. A
@@ -2432,9 +2546,9 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
             rules.append(row(
                 None,
                 (f"{head}, {b['banked_h']:g} h banked in its filters "
-                 f"{_FOR_THESE} — {owes}; the session ledger resumes the "
+                 f"{_FOR_THESE} - {owes}; the session ledger resumes the "
                  f"remainder next clear night") if b["has_ledger"] else
-                (f"{head} — {owes}. No session ledger was read, so nothing "
+                (f"{head} - {owes}. No session ledger was read, so nothing "
                  f"here is counted as already banked"),
                 TONE_GOOD, "BUDGET"))
             continue
@@ -2442,14 +2556,14 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
             rules.append(row(
                 None,
                 f"{b['filter']}: {b['banked_h']:g} h banked {_FOR_THESE} / "
-                f"{b['goal_h']:g} h goal{panels} — tonight adds "
+                f"{b['goal_h']:g} h goal{panels} - tonight adds "
                 f"≈{b['tonight_h']:g} h{hops}; the session ledger resumes the "
                 f"remainder next clear night",
                 TONE_GOOD, "BUDGET"))
         else:
             rules.append(row(
                 None,
-                f"{b['filter']}: {b['goal_h']:g} h goal{panels} — tonight adds "
+                f"{b['filter']}: {b['goal_h']:g} h goal{panels} - tonight adds "
                 f"≈{b['tonight_h']:g} h{hops}. No session ledger was read, so "
                 f"nothing here is counted as already banked", TONE_GOOD,
                 "BUDGET"))
@@ -2458,8 +2572,9 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     # a session-report sink compiles to nothing, so a plan alone cannot know
     # whether the night leaves a ledger, and omitting it beats asserting it.
     closers = ""
-    if automation.get("dome"):
-        closers += ", dome closes"
+    # NOT ", dome closes" (#192): whether the dome closes at dawn is a safety
+    # SETTING (close_dome_when_done), not a fact of the compiled plan this
+    # function reads, so this row cannot honestly claim it either way.
     if graph is not None and any(n.type == "report" for n in graph.nodes):
         closers += ", session report appended"
     # THIS ROW USED TO CLAIM A DAWN PARK UNCONDITIONALLY WHENEVER A DUSK
@@ -2519,6 +2634,13 @@ def _target_rows(out: dict) -> list[dict]:
     floor, or it could not be placed at all. The third is NOT the second —
     saying "never clears 30°" about a target whose position we do not know
     states a fact about the sky that nobody measured.
+
+    W7 FOLLOW-ON (WP-50, #561 class): the "above {floor}°", "never clears
+    {floor}° in the dark tonight" and "No coordinates for" rows write a
+    plain hyphen, not U+2014, the same copy rule #561 fixed for `_story`.
+    The "Pool re-scores" row keeps its em-dash for now: it is not one of
+    #561's six catalogued shapes and is left for its own fix
+    (`test_w7_story_no_emdash.py`'s `_rows` docstring).
     """
     targets = out["targets"]
     if not targets:
@@ -2538,7 +2660,7 @@ def _target_rows(out: dict) -> list[dict]:
         if not rises:
             rows.append({
                 "t_unix": anchor, "label": "",
-                "msg": (f"{names} never clears {floor:g}° in the dark tonight — "
+                "msg": (f"{names} never clears {floor:g}° in the dark tonight - "
                         f"nothing placed in this flow has a window from here"),
                 "tone": TONE_WARN})
         elif pooled:
@@ -2551,12 +2673,12 @@ def _target_rows(out: dict) -> list[dict]:
         else:
             rows.append({
                 "t_unix": anchor, "label": "",
-                "msg": (f"{names} above {floor:g}° — slew, center, focus, "
+                "msg": (f"{names} above {floor:g}° - slew, center, focus, "
                         f"guide, loop"), "tone": TONE_TEXT})
     if unplaced:
         rows.append({
             "t_unix": anchor, "label": "",
-            "msg": (f"No coordinates for {', '.join(unplaced)} — not in the "
+            "msg": (f"No coordinates for {', '.join(unplaced)} - not in the "
                     f"catalogue and none typed, so there is no curve for it "
                     f"and the scheduler cannot score it"),
             "tone": TONE_WARN})

@@ -28,6 +28,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { installAutoRaf } from "../../testing/rafPolyfill";
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
@@ -57,8 +59,7 @@ g.IntersectionObserver = class {
 };
 // The dial's bloom is a two-frame affair and its cleanup CANCELS the frame it
 // asked for, so both halves have to exist or unmounting an open dial throws.
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
-g.cancelAnimationFrame = (id: unknown) => clearTimeout(id as never);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------------- imports

@@ -3974,7 +3974,18 @@ class SequenceEngine:
         through the hop that ends the wait until its first exposure
         (`_note_meridian_waits`, `_capture`): the flag the site-derived
         withholding of ``panel`` and ``pass`` keys on (`api.redact`, 5.10).
-        Every reason is words: the site never appears in one (6.9)."""
+        Every reason is words: the site never appears in one (6.9).
+
+        EACH ``set_aside`` RECORD ALSO CARRIES ``kind`` AND ``for_now`` (#573,
+        #534 follow-up; backlog ruling D-07, owner-approved 2026-09-30).
+        ``kind`` is ``run.set_aside_kind``'s word for what set the panel
+        aside ("centring", "floor", "rejects", "group", ...); ``for_now`` is
+        `_awaiting_expiry`'s answer: true for a centring set-aside that may
+        still expire tonight (the panel stays a waiter, tried once more),
+        false for one set aside for the rest of the night (every other kind
+        never expires, and a centring one that already struck out again does
+        not either). BOTH KEYS ARE ALWAYS SENT, so a client reading no key
+        never misreads a for-now panel as one that is done for the night."""
         if gid is None:
             return None
         g, run = self._groups.get(gid), self._group_runs.get(gid)
@@ -3994,8 +4005,10 @@ class SequenceEngine:
             "visit_elapsed_s": elapsed,
             "panels_done": len(run.completed),
             "panels_total": len(run.members),
-            "set_aside": [{"panel": run.members.get(p, p), "reason": r}
-                          for p, r in run.set_aside.items()],
+            "set_aside": [{"panel": run.members.get(p, p), "reason": r,
+                          "kind": run.set_aside_kind.get(p, "panel"),
+                          "for_now": self._awaiting_expiry(run, p)}
+                         for p, r in run.set_aside.items()],
             "meridian_wait": gid in self._meridian_wait,
         }
 

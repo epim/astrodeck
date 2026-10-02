@@ -110,7 +110,8 @@ import {
 import type { SheetProps } from "../../../sheets";
 import { PLAN_EDITOR_PHONE_REASON } from "../../sheets/planEditor";
 import {
-  FLOW_OPEN_FAILED, flowOpenFailure, leaveFlowEditor, libraryErrorNow, openFlowById,
+  FLOW_OPEN_FAILED, flowOpenFailure, leaveFlowEditor, libraryErrorNow, libraryHasLoaded,
+  openFlowById, waitForLibrary,
 } from "../openFlow";
 import { FlowPortRow, LOOP_PANELS_LABEL, offersLoopPanels } from "./FlowNode";
 import { RunCopyWords, runArm } from "./FlowCanvasToolbar";
@@ -522,16 +523,42 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   // false the sheet shows a waiting card instead (`waiting`), never a stage
   // of whatever the store happens to hold. A late answer to an earlier
   // attempt (another id, or the record changed under it) is dropped.
+  // ONE RETRY FOR THE COLD-LOAD RACE (W7 follow-on, #658 class). A fresh tab
+  // landing straight on the phone sheet's own `?open=<id>` route mounts this
+  // effect the SAME render `FlowsScreen`'s own `flowsLoadLibrary()` starts the
+  // flows-list GET - the same race `FlowsCanvasHost.tsx` was fixed against,
+  // this sheet just had the pre-fix shape still: firing straight to
+  // `setFailure` below on a server whose single-flow read loses that race,
+  // turning a timing loss into a permanent "That flow did not open". A
+  // failure that happened before the list had loaded is held back - the
+  // waiting card below already covers it, since nothing has visibly changed -
+  // and retried once the list lands (or this sheet gives up waiting for it,
+  // `waitForLibrary`, shared with the host through `openFlow.ts` rather than
+  // copied). Only a SECOND failure is reported.
   useEffect(() => {
     // Idempotent: re-opening the flow already loaded would discard an unsaved
     // edit and re-run the compile for nothing.
     if (!want || openId === want) return;
     let current = true;
+    // Set only while a wait is actually in flight, so the cleanup below has
+    // nothing to release the rest of the time.
+    let cancelWait: (() => void) | null = null;
     const before = libraryErrorNow();
-    void openFlowById(want).then((landed) => {
-      if (current && !landed) setFailure({ id: want, from: openId, reason: flowOpenFailure(before) });
-    });
-    return () => { current = false; };
+    void (async () => {
+      const landed = await openFlowById(want);
+      if (!current || landed) return;
+      if (!libraryHasLoaded()) {
+        const wait = waitForLibrary();
+        cancelWait = wait.cancel;
+        await wait.promise;
+        cancelWait = null;
+        if (!current) return;
+        const retried = await openFlowById(want);
+        if (!current || retried) return;
+      }
+      setFailure({ id: want, from: openId, reason: flowOpenFailure(before) });
+    })();
+    return () => { current = false; cancelWait?.(); };
   }, [want, openId]);
 
   // THE ONE TEST every read of the open record below is gated on. A route

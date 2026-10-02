@@ -34,10 +34,11 @@ for (const k of [
   const v = k === "window" ? win : win[k];
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
 }
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------------- imports
+import { installAutoRaf } from "../../testing/rafPolyfill";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react";

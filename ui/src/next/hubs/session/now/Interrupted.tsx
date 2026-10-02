@@ -54,6 +54,7 @@ import { useBreakpoint } from "../../../breakpoint";
 import { ActionButton, Label, Mono } from "../../../ui";
 import { explainLock } from "../../../shell/explain";
 import { nav } from "../../../router";
+import { resumeTitle } from "./resumeTitle";
 
 export const RERUN_PHONE_REASON = "Starting over opens on a tablet or desktop.";
 /** Said on this card's second verb. It NAMES THE DOOR, not the outcome: the
@@ -157,7 +158,12 @@ export function Interrupted(): JSX.Element | null {
       data-testid="now-interrupted"
       style={{ display: "flex", flexDirection: "column", gap: 10 }}
     >
-      <Label size={11}>RESUME INTERRUPTED RUN</Label>
+      {/* The title is D-13's decision, not this card's: STOPPED only for an
+          operator's own STOP, INTERRUPTED for everything else (a restart, a
+          crash, a safety stop, or a WP-44 shutdown) - shared with PlanResume
+          and RecoveryCards through resumeTitle.ts so the three cards cannot
+          drift apart on the one word that tells a STOP from an accident. */}
+      <Label size={11}>{resumeTitle(rec.end_reason)}</Label>
       <Mono size={10.5} tone="dim">
         {rec.name ?? "The last run"} stopped at frame {done} of {total}
         {when ? ` on ${when}` : ""}.{" "}

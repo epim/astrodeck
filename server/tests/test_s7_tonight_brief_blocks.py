@@ -332,10 +332,17 @@ class TestEveryBlockWhereItsLaneRuns:
 #: Every Example's brief as it read before #470's walk, recorded from the
 #: tree before the change (the plain call, and the eighth Example with a
 #: measured hop of 160 s, which is the one Example whose brief reads it).
+#:
+#: W7 INTEGRATION RE-PIN (WP-50, #192 item 4, owner-approved 2026-09-30):
+#: the dusk sentence no longer claims ", opens the dome and binds it to the
+#: mount" (nothing in the engine drives either at arm time; the dome's real
+#: effect, the unsafe-close path, is the "2. the dome" STORY row, not this
+#: brief). "example-campaign" and "example-m16" lose that clause below;
+#: every other Example's text is unchanged. Deliberate, not a regression.
 EXAMPLE_BRIEFS = {
     "example-campaign": (
-        "This flow arms at astronomical dusk (−30 min), opens the dome and "
-        "binds it to the mount. It then selects the best of M33, NGC 7331, IC "
+        "This flow arms at astronomical dusk (−30 min). It then selects the "
+        "best of M33, NGC 7331, IC "
         "1396, M45 - above 30°, at least 40° from the moon (if up), within 4 "
         "h of the meridian. For each target it autofocuses (v-curve sweep), "
         "guides with PHD2 (settle below 1.5″, dither every 3 frames). Capture "
@@ -365,8 +372,8 @@ EXAMPLE_BRIEFS = {
         "run ends. Rain, wind, or power failure aborts and parks "
         "unconditionally - a stale reading counts as unsafe."),
     "example-m16": (
-        "This flow arms at astronomical dusk (−30 min), opens the dome and "
-        "binds it to the mount, and shoots 15 flats per filter (translucent "
+        "This flow arms at astronomical dusk (−30 min), and shoots 15 flats "
+        "per filter (translucent "
         "lens cap) in the twilight window. It then arms M16 - Eagle. For each "
         "target it autofocuses (v-curve sweep), guides with PHD2 (settle "
         "below 1.5″, dither every 3 frames). It captures Ha 180 s × 20 (gain "
@@ -563,9 +570,12 @@ def _with_offset(value) -> FlowGraph:
 
 
 def _unread(shown: str) -> str:
+    # W7 INTEGRATION RE-PIN (WP-50, #192 item 4, owner-approved
+    # 2026-09-30): no ", opens the dome and binds it to the mount" clause
+    # (the dusk sentence no longer claims it; see EXAMPLE_BRIEFS' note
+    # above). Deliberate, not a regression.
     return (f"This flow arms at astronomical dusk (its offset, {shown}, "
-            f"cannot be read as a number of minutes, so none is applied), "
-            f"opens the dome and binds it to the mount.")
+            f"cannot be read as a number of minutes, so none is applied).")
 
 
 class TestADuskOffsetThatIsNoNumber:
@@ -690,18 +700,26 @@ class TestAFiniteOffsetReadsAsBefore:
             dome and binds it to the mount.
 
         (and the same with ``''`` for the blank).
+
+        W7 INTEGRATION RE-PIN (WP-50, #192 item 4, owner-approved
+        2026-09-30): ``want`` drops the ", opens the dome and binds it to
+        the mount" clause the dusk sentence no longer claims. Deliberate,
+        not a regression.
         """
         text = brief(_with_offset(value))
-        want = (f"This flow arms at astronomical dusk{self.FINITE[value]}, "
-                f"opens the dome and binds it to the mount.")
+        want = f"This flow arms at astronomical dusk{self.FINITE[value]}."
         assert _sentences(text)[0] == want, text
 
     def test_the_window_opens_at_the_offset(self, synthetic_hub):
         """CONTROL. Tonight's window for an offset of -30 opens 30 min
-        before dusk, and its brief says "(−30 min)", as it did."""
+        before dusk, and its brief says "(−30 min)", as it did.
+
+        W7 INTEGRATION RE-PIN (WP-50, #192 item 4, owner-approved
+        2026-09-30): the prefix ends the sentence at the offset (no dome
+        clause follows it); deliberate, not a regression."""
         out = resolve_tonight(_with_offset(-30), SITE, now=JUNE,
                               twilight_deg=-12.0)
         night = out["night"]
         assert night["window_start_unix"] == night["dusk_unix"] - 1800.0
         assert out["brief"].startswith(
-            "This flow arms at astronomical dusk (−30 min),"), out["brief"]
+            "This flow arms at astronomical dusk (−30 min)."), out["brief"]

@@ -45,6 +45,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { installAutoRaf } from "../../../testing/rafPolyfill";
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(`<!doctype html><html><body><div id="root"></div></body></html>`,
@@ -60,8 +62,7 @@ for (const k of ["window", "document", "navigator", "HTMLElement", "HTMLSelectEl
   "getComputedStyle", "matchMedia", "fetch", "WebSocket", "location", "history"]) {
   Object.defineProperty(g, k, { value: k === "window" ? win : win[k], writable: true, configurable: true });
 }
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
-g.cancelAnimationFrame = (id: number) => clearTimeout(id);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 const { readFileSync } = await import("node:fs");

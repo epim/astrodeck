@@ -1934,7 +1934,29 @@ class NativeGuider(Guider):
         widened by an UNMEASURED dither magnitude (#219's ``_lock_moved_px``
         fallback, kept below for a wheel that predates this field). Absent the
         key entirely, every line below behaves exactly as released in
-        0.3.35."""
+        0.3.35.
+
+        RUST HALF LANDED (WP-81, #649, WP-41's own residual 1): ``lock`` is
+        the engine's FIXED offset reference for the whole guiding session
+        (dither aside) -- by design, so a stale loss's full re-acquire never
+        moves it, even when the star it reacquires is a different one than
+        whatever was originally locked. That left a hole: if the TRUE lock
+        star also happens to have returned near its old spot while the
+        engine's full re-acquire picked a different, nearby star instead,
+        this function's own frame-rescan below finds the TRUE star (nearest
+        ``lock``) and reads a healthy, near-zero re-lock, while the engine
+        is actually driving every correction against the OTHER one.
+        ``GuideStatsSnapshot`` now also carries ``tracking`` -- the engine's
+        live search origin, which DOES move with such a re-acquire -- and
+        ``engine_tracking`` below reads it. When present (any frame on which
+        the engine actually accepted a star into the guiding loop since the
+        loss) it REPLACES this function's own re-scanned ``near`` with the
+        star the engine is really guiding against, so a different-star
+        re-acquire is measured as the real displacement between that star
+        and the old lock, not as the zero distance the true star's own
+        return would otherwise produce. Absent (an older wheel, or a test
+        double that scripts ``stats()`` with no ``"tracking"`` key), this
+        falls back to the pre-#649 frame-rescan behaviour unchanged."""
         kind = action.get("action")
         if kind in ("lock_lost", "cal_step"):
             return
@@ -1990,6 +2012,25 @@ class NativeGuider(Guider):
                 self._lock_xy = near
                 self._lock_moved_px = 0.0
             return
+        # #649/WP-81 (WP-41 residual 1): once a loss has armed the watch,
+        # trust the ENGINE's own report of which star it just accepted
+        # (``stats()["tracking"]``, the live search origin) over this host's
+        # independent re-scan above. ``near`` picks whichever candidate in
+        # OUR OWN frame-wide find sits nearest the fixed ``origin`` -- which
+        # finds the TRUE lock star whenever it also happens to have returned
+        # near its old spot, even when the engine's full re-acquire actually
+        # selected a different, nearby star and is driving every correction
+        # against THAT one (the exact gap WP-41 left open: "a different star
+        # next to the true one reads as a re-acquire on a different star,
+        # not a healthy re-lock"). ``tracking`` is only ever set by the
+        # engine on a frame it actually accepted a star into the guiding
+        # loop, so its presence is proof positive -- never "lost" -- and it
+        # IS the star the engine is really guiding against, not a guess.
+        # Absent on an older wheel or a test double that never sets it, this
+        # falls back to the pre-#649 frame-rescan ``near`` above unchanged.
+        engine_tracking = s.get("tracking")
+        if engine_tracking is not None:
+            near = (float(engine_tracking[0]), float(engine_tracking[1]))
         # Same unit contract as ``stats()``'s ``recent``: multiply by the image
         # scale (1.0 when there is none), and let ``is_arcsec`` say what the
         # number means. Only the LOG needs to name the unit out loud.

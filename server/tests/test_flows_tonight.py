@@ -534,12 +534,20 @@ class TestTheStory:
 
     def test_a_dome_closes_at_dawn_and_says_it_ignores_the_flow(self):
         """Rule 9's other half: the shutter closes on unsafe whatever the flow
-        is doing, and the brief has to say so where the operator reads it."""
+        is doing, and the brief has to say so where the operator reads it.
+
+        W7 INTEGRATION RE-PIN (WP-50, #192 item 4, owner-approved
+        2026-09-30): whether the dome closes at dawn is a safety SETTING
+        (`close_dome_when_done`), not a fact of the compiled plan this
+        function reads, so the dawn row no longer claims it either way
+        (``tonight.py``, "NOT ', dome closes' (#192)"). This test existed
+        only to assert the false claim; it now asserts the claim is
+        ABSENT from the closing row, which is what #192 fixed."""
         g = _flow(extra=[_n("m", "dome", x=50)],
                   edges=[_e("d", "window", "m", "run")])
         story = _tonight(g)["story"]
         assert any("whatever the flow is doing" in s["msg"] for s in story)
-        assert "dome closes" in story[-1]["msg"]
+        assert "dome closes" not in story[-1]["msg"], story[-1]["msg"]
 
 
 class TestTheGraphAndThePlanAgree:

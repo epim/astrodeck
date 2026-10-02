@@ -40,10 +40,11 @@ for (const k of [
   // works for every key (same pattern as slewPadDom.test.tsx).
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
 }
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;   // React 18: makes act() flush updates
 
 // ------------------------------------------------------------------- imports
+import { installAutoRaf } from "../../testing/rafPolyfill";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react";

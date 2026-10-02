@@ -43,6 +43,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { installAutoRaf } from "../../../testing/rafPolyfill";
+
 // ---------------------------------------------------------------- jsdom first
 // Before any import that reaches lib/base.ts, which reads
 // `window.location.pathname` at module scope.
@@ -68,8 +70,7 @@ for (const k of [
   const v = k === "window" ? win : win[k];
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
 }
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
-g.cancelAnimationFrame = (h: any) => clearTimeout(h);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------------- imports

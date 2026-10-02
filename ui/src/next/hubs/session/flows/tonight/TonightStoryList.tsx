@@ -18,7 +18,7 @@ import type { JSX } from "react";
 
 import type { TonightStoryRow } from "../../../../../components/flows/TonightStory";
 import { Card, Label } from "../../../../ui";
-import { storyStamp, storyToneVar } from "./tonightModel";
+import { plainDashes, storyStamp, storyToneVar } from "./tonightModel";
 
 /** The mechanical brief: the graph read back as one paragraph of prose,
  *  generated on the SERVER (`tonight.py::brief`). It leads the tab because it
@@ -58,8 +58,17 @@ export function TonightStoryList({ story, brief = "" }: {
               data-testid={`tonight-story-row-${i}`}
             >
               <span className="nx-tn-story-stamp">{storyStamp(row)}</span>
+              {/* plainDashes, not raw row.msg (#561): `tonight.py`'s `_story`
+                  no longer writes an em-dash into the BUDGET, moon, meridian,
+                  dusk-flats, no-dusk or ANY-unsafe rows, but `_target_rows`'s
+                  "what gets imaged" sentences still carry one, and the R7
+                  copy rule is hyphens, never em-dashes, for the #/next sheet
+                  regardless of which server sentence it came from. The
+                  classic panel keeps the server's own punctuation; this
+                  substitution is only at this render seam, same as
+                  `storyStamp` already does for `row.label`. */}
               <span className="nx-tn-story-msg" style={{ color: storyToneVar(row.tone) }}>
-                {row.msg}
+                {plainDashes(row.msg)}
               </span>
             </div>
           ))}

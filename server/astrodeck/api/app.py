@@ -167,7 +167,8 @@ from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
 from ..flows import wizard as flow_wizard
 from ..flows.to_plan import (GRID_MAX, OVERLAP_MAX_PCT, GraphNotRunnable,
                              blocking_reasons, losses, to_sequence_plan)
-from ..flows.tonight import (banked_hours_from_reports,
+from ..flows.tonight import (banked_hours_by_target_from_reports,
+                             banked_hours_from_reports,
                              flow_target_names,
                              frames_by_target_from_reports,
                              resolve_tonight)
@@ -6801,9 +6802,23 @@ def create_app(*, bind_host: str | None = None,
             resolve_tonight, rec.graph, hub.site, name=rec.name,
             # BUDGET: this flow's own targets' hours (#536), the names its run
             # records frames under, a mosaic's by panel. M16's Ha is not
-            # M31's progress, and the row says "for these targets".
+            # M31's progress, and the row says "for these targets". Kept
+            # alongside banked_by_target below for a caller that only reads
+            # ``banked`` (and for has_ledger when neither read succeeds).
             banked=lambda: banked_hours_from_reports(
                 summaries(), targets=flow_target_names(rec.graph, rec.name)),
+            # BUDGET, PER BLOCK (#562). The fold above answers one mapping for
+            # the WHOLE flow, so a flow of several blocks sharing a filter had
+            # every row read the flow's total rather than its own block's: an
+            # M16 Ha row and an M31 Ha row in the same flow both filled with
+            # M16's-plus-M31's Ha. This keeps the ledger's per-target
+            # breakdown, so `_budget` can give each row only the hours of the
+            # entries it stands for. Same cached `summaries()`, so this costs
+            # no extra read: `SessionReporter.summaries` is read once either
+            # way (`functools.cache` above), and this is a second, cheap fold
+            # over the same in-memory tuple, not a second disk read.
+            banked_by_target=lambda: banked_hours_by_target_from_reports(
+                summaries()),
             # The CAMPAIGN tab's per-member progress. Same ledger, different
             # fold: BUDGET wants hours per filter over the flow's targets, a
             # campaign wants accepted frames per filter PER TARGET, because a

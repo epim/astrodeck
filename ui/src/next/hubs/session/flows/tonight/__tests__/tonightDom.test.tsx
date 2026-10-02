@@ -110,7 +110,12 @@ const TONIGHT_OK = {
   story: [
     { t_unix: DUSK, label: "", msg: "Dusk. The dome opens and the flats window starts.", tone: "text" },
     { t_unix: null, label: "BUDGET", msg: "3.1 h of the 12 h L goal is already banked.", tone: "dim" },
-    { t_unix: null, label: "\u2014", msg: "No horizon polyline is set for this site.", tone: "warn" },
+    // The em-dash is SERVER-SHAPED, not invented for this test (#561):
+    // `tonight.py`'s `_target_rows` still writes one into its "above X deg"
+    // sentence (`_story`'s own BUDGET/moon/meridian/dusk-flats/no-dusk/ANY
+    // rows no longer do, but this row's own hand-written fixture must not be
+    // the reason the no-em-dash check below can never fail).
+    { t_unix: null, label: "\u2014", msg: "No horizon polyline is set for this site \u2014 slew, center, focus, then capture begins.", tone: "warn" },
   ],
   campaign: {
     is_campaign: true, has_pool: true, has_ledger: true, quota: 45,
@@ -329,8 +334,12 @@ test("STORY renders the server's rows, labels and all, with no em-dash", () => {
   assert(/Waits for dusk/.test(story.textContent), "the server's brief is missing");
   assert(/BUDGET/.test(story.textContent), "an untimed BUDGET row must keep its label");
   assert(/No horizon polyline/.test(story.textContent), "the warn row never rendered");
+  // #561: this used to pass only because no hand-written `msg` above carried
+  // a dash - the warn row's `msg` now does, server-shaped, so this actually
+  // exercises `TonightStoryList`'s `plainDashes(row.msg)` rather than only
+  // `storyStamp`'s conversion of `row.label`.
   assert(!story.textContent.includes("\u2014"),
-    "an em-dash reached the screen; the placeholder label must be a hyphen");
+    "an em-dash reached the screen; row.msg must go through plainDashes too");
 });
 
 test("storyStamp keeps a label, formats a time, and never invents one", () => {
