@@ -949,6 +949,89 @@ async def test_polar_alignment_says_no_light(sim_hub, monkeypatch, tmp_path):
         f"polar plate solve failed: {light.NO_LIGHT_WORDS}"), e
 
 
+class _MainFailsGuideSolves:
+    """ASTAP, scripted so only the IMAGING frame's solve fails: the guide
+    camera's path (#264's control) must keep today's bare wording, never the
+    light check, which has no reference for it."""
+    name = "half-failing"
+
+    async def solve(self, path, **kw):
+        if "guide_offset_guide" in str(path):
+            return SolveResult(True, ra_hours=5.5, dec_deg=-5.0,
+                               rotation_deg=10.0, pixel_scale_arcsec=1.5,
+                               message="guide ok")
+        return SolveResult(False, message="Not enough stars.")
+
+
+async def test_measure_guide_offset_says_no_light_for_a_capped_main_frame(
+        sim_hub, monkeypatch, tmp_path):
+    """#264. ``measure_guide_offset`` solves its own imaging frame and used to
+    report a failed MAIN-frame solve as ``result.message`` with no light
+    check -- the #251 class, on a path #251's own fix never reached because
+    #251 only routed paths that RAISE and this one returns its result. It now
+    asks the classifier, like every other solve path that exposes its own
+    frame, and the words come back in "reason".
+
+    RED under mutant "the site keeps result.message" (the main-frame branch
+    reverted to the old unconditional ``out["reason"] = (f"the {which} frame
+    did not solve, so there is no pair to difference: {out[which]['message']}")``),
+    observed verbatim:
+
+        E   AssertionError: {'camera': 'Sim Camera 533MM', ... 'main': {...
+            'message': 'Not enough stars.', 'ok': False, ...}, ...}
+        E   assert False
+        E    +  where False = <built-in method startswith of str object at ...>('guide-scope offset: plate solve failed: no light: the optic is capped, covered or obstructed')
+        E    +    where <built-in method startswith of str object at ...> = 'the main frame did not solve, so there is no pair to difference: Not enough stars.'.startswith
+    """
+    import astrodeck.providers as providers
+
+    async def capped_expose(seconds, gain, offset, binning=1, **kw):
+        return _frame(_no_light_frame(), seconds=seconds, gain=gain,
+                     offset=offset, binning=binning, temp=18.5)
+    cam = sim_hub.require("camera")
+    monkeypatch.setattr(cam, "expose", capped_expose)
+    monkeypatch.setattr(providers, "pick_solver",
+                        lambda h: _MainFailsGuideSolves())
+    _dark_library(sim_hub, tmp_path, 0.05)
+
+    out = await sim_hub.measure_guide_offset(exposure_s=0.05,
+                                             guide_exposure_s=0.05)
+
+    assert out["offset"] is None, out
+    assert out["reason"].startswith(
+        f"guide-scope offset: plate solve failed: {light.NO_LIGHT_WORDS}"), out
+    assert "Not enough stars." in out["reason"], out
+    assert _no_digits(out["reason"]), f"the failure carries a number: {out}"
+
+
+async def test_measure_guide_offset_keeps_todays_wording_for_the_guide_camera(
+        sim_hub, monkeypatch, tmp_path):
+    """Control for the test above: when the MAIN frame solves and the GUIDE
+    frame fails, "reason" keeps the bare wording #264 left alone -- there is
+    no no-light reference for the guide camera (the dark library keys masters
+    on readout, not camera), so this path is not on trial here."""
+    class _GuideFailsMainSolves:
+        name = "half-failing"
+
+        async def solve(self, path, **kw):
+            if "guide_offset_guide" in str(path):
+                return SolveResult(False, message="Not enough stars.")
+            return SolveResult(True, ra_hours=5.5, dec_deg=-5.0,
+                               rotation_deg=10.0, pixel_scale_arcsec=1.5,
+                               message="main ok")
+
+    import astrodeck.providers as providers
+    monkeypatch.setattr(providers, "pick_solver",
+                        lambda h: _GuideFailsMainSolves())
+
+    out = await sim_hub.measure_guide_offset(exposure_s=0.05,
+                                             guide_exposure_s=0.05)
+
+    assert out["offset"] is None, out
+    assert out["reason"] == ("the guide frame did not solve, so there is no "
+                             "pair to difference: Not enough stars."), out
+
+
 # ============================================================ the scan
 
 ROOT = Path(__file__).resolve().parents[1] / "astrodeck"
@@ -963,30 +1046,34 @@ CLASSIFIER = "failed_solve_error"
 #: cannot hide a path that grows one. (A precondition raise, such as
 #: ``measure_guide_offset``'s "no guide camera is connected", is not a failed
 #: solve and is not this gate's business.)
+#:
+#: ``hub.py:Hub.measure_guide_offset`` USED TO BE HERE (#264): it reported a
+#: failed imaging-frame solve as a bare ``result.message`` with no light
+#: check, the #251 class on a path #251's own fix never reached. It is off
+#: this list now that its main-frame failure asks ``failed_solve_error`` for
+#: the words it puts in "reason" -- a RESULT-RETURNING use of the classifier,
+#: never raised, which is why ``_scan_tree`` below counts a classifier call on
+#: its own, not only one that is raised.
 NEVER_RAISES: dict[str, str] = {
     "hub.py:Hub._solve_and_stamp":
         "the per-frame WCS job: a failed solve stamps nothing, and the job "
         "never raises; a light saved without WCS is the whole of its failure.",
-    "hub.py:Hub.measure_guide_offset":
-        "the guide-scope offset measurement returns a failed solve's words in "
-        "its result ('reason') and never raises, so this raise-only gate has "
-        "nothing to hold it to. Its imaging frame is NOT judged for light and "
-        "is not published as a preview either, so a capped optic reads here "
-        "as 'Not enough stars.' exactly as on #251: an open gap, not a "
-        "reason.",
     "hub.py:Hub.measure_guide_offset._solve_guide_frame":
         "the GUIDE camera's frame: the dark library holds the imaging "
         "camera's masters and does not key them on the camera, so there is no "
         "reference for it; and it returns the result, never raises.",
 }
 
-#: The call sites that raise on a failed solve and were routed when this test
-#: was written. The KNOWN POSITIVE: if the scan stops seeing any of them it
-#: has gone blind, and the gate passes on nothing.
+#: The call sites that ask the classifier on a failed solve and were routed
+#: when this test was written -- by raising its answer, except
+#: ``measure_guide_offset`` (#264), which returns it. The KNOWN POSITIVE: if
+#: the scan stops seeing any of them it has gone blind, and the gate passes on
+#: nothing.
 KNOWN_CLASSIFIED = {
     "hub.py:Hub.solve_and_sync",
     "hub.py:Hub.sync_rotator_to_sky",
     "hub.py:Hub._rotate_to_pa_attempts",
+    "hub.py:Hub.measure_guide_offset",
     "polar/native.py:_capture_and_solve",
 }
 
@@ -1043,23 +1130,46 @@ def _functions(tree: ast.AST, prefix: str = ""):
 
 def _scan_tree(tree: ast.AST, rel: str) -> dict[str, dict]:
     """``{"rel:qualname": {...}}`` for every function whose own body calls
-    ``.solve(``: its solve lines, and the raises under a failed-solve test,
-    split by whether they raise the classifier's exception."""
+    ``.solve(``: its solve lines, and what happens under a failed-solve test,
+    split into "classified" (the classifier was asked) and "bare" (something
+    else was raised instead).
+
+    "CLASSIFIED" IS A CALL, NOT ONLY A RAISE (#264). Most solve paths raise
+    the classifier's answer straight away (``raise await
+    _light.failed_solve_error(...)``); ``measure_guide_offset`` instead
+    returns it (``err = await _light.failed_solve_error(...)``, ``out["reason"]
+    = str(err)``), because this path's whole contract is a result from a lane,
+    never an exception. Both ask the one question this gate exists to check
+    for -- whether light reached the sensor -- so both count. "Bare" stays a
+    RAISE that is not that call, which is the actual defect this gate was
+    built to catch: a failed solve reported some other way, asking nothing.
+
+    RED under mutant "classified only counts a raised classifier call" (the
+    ``asked`` set narrowed back to ``{r.lineno for r in raises if r.exc is
+    not None and _is_classifier_call(r.exc)}``, the pre-#264 definition),
+    observed verbatim, from ``test_every_solve_that_raises_a_failure_asks_
+    the_classifier``:
+
+        E   AssertionError: these solve paths report a failed solve without asking astrodeck.solve.light whether light reached the sensor:
+        E       hub.py:Hub.measure_guide_offset (solve on lines [6628]): neither raises a failed solve through the classifier nor is listed in NEVER_RAISES
+    """
     out: dict[str, dict] = {}
     for qual, fn in _functions(tree):
         own = list(_walk_own(ast.iter_child_nodes(fn)))
         solves = sorted(n.lineno for n in own if _is_solve_call(n))
         if not solves:
             continue
-        failure = [r for n in own
-                   if isinstance(n, ast.If) and _is_failed_solve_test(n.test)
-                   for r in _walk_own(n.body) if isinstance(r, ast.Raise)]
+        failure_bodies = [n.body for n in own
+                          if isinstance(n, ast.If)
+                          and _is_failed_solve_test(n.test)]
+        raises = [r for body in failure_bodies for r in _walk_own(body)
+                 if isinstance(r, ast.Raise)]
+        asked = {n.lineno for body in failure_bodies for n in _walk_own(body)
+                if _is_classifier_call(n)}
         out[f"{rel}:{qual}"] = {
             "solves": solves,
-            "classified": sorted(r.lineno for r in failure
-                                 if r.exc is not None
-                                 and _is_classifier_call(r.exc)),
-            "bare": sorted(r.lineno for r in failure
+            "classified": sorted(asked),
+            "bare": sorted(r.lineno for r in raises
                            if r.exc is None or not _is_classifier_call(r.exc)),
         }
     return out

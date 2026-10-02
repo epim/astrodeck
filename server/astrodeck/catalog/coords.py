@@ -312,7 +312,23 @@ def sun_altaz(lat_deg: float, lon_deg: float,
 
 def angular_sep_deg(ra1_h: float, dec1: float, ra2_h: float, dec2: float) -> float:
     """Angular separation (deg) between two (RA hours, Dec deg) points — the
-    shared spherical-law-of-cosines helper (promoted from hub._ang_sep_deg)."""
+    shared spherical-law-of-cosines helper (promoted from hub._ang_sep_deg).
+
+    REFUSES a non-finite input (#324). The old code let a NaN coordinate
+    through to the cosine clamp below: ``max(-1.0, min(1.0, cos_sep))`` with
+    a NaN ``cos_sep`` is 1.0, because NaN compares false against both bounds,
+    so a garbled position measured as a separation of 0.0 -- a plausible
+    wrong answer (framing.reframe_carry read that as "nothing moved" and
+    carried a mosaic's counts across a geometry nobody could lay out). Raising
+    here instead forces every caller to decide what "cannot be measured"
+    means for it, rather than silently inheriting whichever direction 0.0
+    happens to fall on. See the callers in hub.py, region.py and
+    solar_system.py for what each decided."""
+    if not (math.isfinite(ra1_h) and math.isfinite(dec1)
+            and math.isfinite(ra2_h) and math.isfinite(dec2)):
+        raise ValueError(
+            "angular_sep_deg received a non-finite coordinate: "
+            f"ra1_h={ra1_h!r}, dec1={dec1!r}, ra2_h={ra2_h!r}, dec2={dec2!r}")
     ra1, ra2 = math.radians(ra1_h * 15.0), math.radians(ra2_h * 15.0)
     d1, d2 = math.radians(dec1), math.radians(dec2)
     cos_sep = (math.sin(d1) * math.sin(d2)
