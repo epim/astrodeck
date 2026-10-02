@@ -38,12 +38,15 @@ server/, never in the shared tree (#254).
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 
 import astrodeck.sequence.engine as engine_mod
 from _group_harness import (GROUP_NAME, LON, T0, Night, grid_plan, group_hub,
                             group_store, ra_at)
 from astrodeck.sequence import schedule
+from astrodeck.sequence.group_rules import GroupRun
 from astrodeck.sequence.session import session_store
 
 #: Hour angle runs this much faster than the clock.
@@ -843,3 +846,53 @@ def test_a_panel_counts_as_past_the_meridian_only_past_the_band(flipped):
     plain = meridian_eligibility(panels, lead_h=600 * s, hop_h=150 * s,
                                  flipped=flipped, meridian_flip=True)
     assert plain["in_band"].eligible is True, plain["in_band"]
+
+
+# ------------------------------------------------------------- the wake pad
+
+async def test_a_wake_computed_to_the_edge_is_padded_past_it(group_hub,
+                                                              monkeypatch):
+    """``MERIDIAN_WAKE_PAD_S`` (T18 item 4, #301): a wake the rule computes
+    right at the edge of ``MERIDIAN_SIDE_MARGIN_S`` must still land strictly
+    after it, never at or before it. Without the pad, a countdown read as
+    the smallest float above the edge converts to a wake indistinguishable
+    from ``now`` (the increment is far below a Unix timestamp's own
+    precision, so the addition rounds away to nothing), and the panel is
+    held again for a sliver: the do-while wait (`_wait_until`) would then
+    take a run of near-zero sleeps instead of the one real wait the rule
+    meant.
+
+    No real RA lands `_meridian_now`'s hour-angle math on that exact edge on
+    demand -- it is the reason #301 stayed open as long as it did -- so this
+    calls `_meridian_now` directly with `schedule.hours_to_meridian_flip`
+    stubbed to the smallest representable float above
+    ``-MERIDIAN_SIDE_MARGIN_S`` hours: "a wake computed to the edge itself",
+    in the constant's own comment.
+
+    MUTANT "no pad" (``MERIDIAN_WAKE_PAD_S`` set to ``0.0``): RED (observed):
+        AssertionError: the wake landed AT the edge, not after it: 0.0
+        assert 0.0 >= 0.5
+    """
+    plan = meridian_plan(cols=1, ha_h=-20.0 / 60.0, ha_step_h=0.0, count=2)
+    night = Night(group_hub, monkeypatch, coords_clock=True)
+    try:
+        night.engine.plan = plan
+        group = plan.groups[0]
+        target = plan.targets[0]
+        run = GroupRun(members={target.id: "1-1"}, max_failed_visits=3)
+        # The smallest double greater than the band's own edge: the
+        # countdown reading the edge "a float's width before it" the
+        # constant's comment describes, constructed exactly rather than
+        # chased through the real trig pipeline.
+        crossed_h = engine_mod.MERIDIAN_SIDE_MARGIN_S / 3600.0
+        edge = math.nextafter(-crossed_h, 0.0)
+        monkeypatch.setattr(schedule, "hours_to_meridian_flip",
+                            lambda ra, lon, now=None: edge)
+        elig = await night.engine._meridian_now(group, run, [target], T0)
+    finally:
+        await night.close()
+    e = elig[target.id]
+    assert e.eligible is False, e
+    assert e.held == "meridian", e
+    assert e.wake_ts - T0 >= 0.5, (
+        f"the wake landed AT the edge, not after it: {e.wake_ts - T0}")
