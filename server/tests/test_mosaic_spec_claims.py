@@ -25529,9 +25529,11 @@ def test_the_owner_list_records_the_h4_orchestrator_rulings():
                   "numbers", "the data #145 needs",
                   "`rotation.one_sided_moves`", "`ROTATE_FOLLOW_FRACTION`",
                   "`SessionReporter.record_sky_angle`")),
-            (56, ("retries once at twice the exposure", "continues at the "
-                  "last good position and re-sweeps at the first frame whose "
-                  "star count clears the sparse threshold",
+            (56, ("retries once at twice the exposure", "the run moves to "
+                  "the last good position this run found, or stays where "
+                  "the sweeps started when it has none, and re-sweeps at "
+                  "the first frame whose star count clears the sparse "
+                  "threshold",
                   "`SPARSE_FIELD_WARN`", "`_carry_on_after_sparse_failures`",
                   "(#558)")),
             (57, ("refuses (422) an unguided narrowband sub at or past "
