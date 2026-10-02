@@ -1519,7 +1519,8 @@ impl GuideEngine {
 
     /// Current guide-error statistics in the host's `GuideStats` bus shape
     /// (spec §3.2/§3.5): `{guiding, rms_ra, rms_dec, rms_total, snr,
-    /// recent:[[t,ra,dec],...], secondaries:[[x,y],...], lock:[x,y]|None}`.
+    /// recent:[[t,ra,dec],...], secondaries:[[x,y],...], lock:[x,y]|None,
+    /// tracking:[x,y]|None}`.
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = self.inner.stats();
         let d = PyDict::new(py);
@@ -1558,6 +1559,21 @@ impl GuideEngine {
         match s.lock {
             Some((x, y)) => d.set_item("lock", PyList::new(py, [x, y])?)?,
             None => d.set_item("lock", py.None())?,
+        }
+        // #649 (WP-81, WP-41 residual 1): the star the engine is CURRENTLY
+        // using to compute a correction, verbatim -- unlike `lock`, this
+        // moves when a stale loss's full re-acquire (`ingest_guiding`'s
+        // bounded auto-reselect) picks a different star than the one `lock`
+        // still points at. The host's different-star guard
+        // (`guide/native.py`'s `_note_lock`) used to have no way to tell
+        // that apart from the true star simply returning near the old,
+        // unchanged `lock` -- it re-scanned the frame itself and trusted
+        // whichever candidate sat nearest `lock`, which finds the TRUE star
+        // even while the engine is actually driving corrections against a
+        // different one nearby. Publishing this removes that guess.
+        match s.tracking {
+            Some((x, y)) => d.set_item("tracking", PyList::new(py, [x, y])?)?,
+            None => d.set_item("tracking", py.None())?,
         }
         Ok(d)
     }
