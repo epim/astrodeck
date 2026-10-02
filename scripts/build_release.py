@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Assemble a platform-independent source release with a prebuilt UI.
 
     python scripts/build_release.py --version 0.3.39 --out dist \

@@ -6,12 +6,16 @@ the root NOTICE file names the copyright holder.
 Scope mirrors the policy a repo-wide header pass was run against: the first
 -party roots (server/astrodeck, server/tests, ui/src, the ui-root .mjs/.ts
 entry files, native/crates/*/src+tests, relay/relay, relay/tests, tools/,
-scripts/, orangepi5/, site/assets/*.js+*.css) over the header file types
+scripts/, orangepi5/, packaging/, deploy/, site/assets/*.js+*.css) over the
+header file types
 (.py .ts .tsx .js .mjs .cjs .rs .ps1 .sh .css), plus an HTML comment in
-site/*.html and ui/index.html. Vendored code, build output, generated files,
-third-party licence text and a short named list of files owned by a
-concurrent job are excluded -- see EXCLUDE_* below, which must match the
-header pass exactly or this guard reports false positives.
+site/*.html and ui/index.html. Vendored code, build output, generated files
+and third-party licence text are excluded -- see EXCLUDE_* below, which must
+match the header pass exactly or this guard reports false positives. The
+release-engineering files codex's job 4 owned during the 155c5898 sweep
+(packaging/, tools/licence/, deploy/reverse-proxy/, scripts/build_release.py
+and four server tests) were stamped when that job merged, and their
+temporary exclusions removed.
 
 native/crates has a genuine two-license split, documented in
 docs/native-parity/rust-header-policy.md and in each crate's Cargo.toml:
@@ -63,17 +67,9 @@ EXCLUDE_DIR_PREFIXES = (
     "build/",
     "target/",
     "tools/licence_texts/",
-    "tools/licence/",
-    "packaging/",
-    "deploy/reverse-proxy/",
     "server/tests/fixtures/",
 )
-EXCLUDE_EXACT_FILES = {
-    "scripts/build_release.py",
-    ".github/workflows/release.yml",
-    "server/tests/test_build_binary_smoke.py",
-    "server/tests/test_licence_artifact.py",
-}
+EXCLUDE_EXACT_FILES: set[str] = set()
 
 FIRST_PARTY_ROOTS = (
     "server/astrodeck/",
@@ -86,6 +82,8 @@ FIRST_PARTY_ROOTS = (
     "scripts/",
     "orangepi5/",
     "site/assets/",
+    "packaging/",
+    "deploy/",
 )
 
 # native/crates/astro-focus, astro-star, astro-tppa, astrodeck-native: MPL-2.0

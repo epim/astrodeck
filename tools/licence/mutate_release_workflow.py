@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Mutation proof that release publication cannot bypass artifact gates."""
 from datetime import datetime, timezone
 import hashlib

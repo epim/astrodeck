@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Named release-gate mutants with exact-byte restoration and fresh imports."""
 from __future__ import annotations
 import hashlib

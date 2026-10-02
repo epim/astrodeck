@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Audit bytes inside a release tarball against reviewed assets and build inputs.
 
 This is an inventory gate, not a legal opinion or proof about other platforms.

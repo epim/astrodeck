@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Build the single-file AstroDeck binary for the machine you run this on.
 
     python packaging/build_binary.py

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Artifact regressions use real archive bytes and the real release packager.
 
 Named mutants and exact failing assertions are recorded by

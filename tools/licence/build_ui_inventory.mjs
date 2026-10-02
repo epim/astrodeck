@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Build the UI against exact per-environment credits without editing ui/src.
 // All optional outputs stay in this checkout's private .probe directory.
 import { createHash } from "node:crypto";

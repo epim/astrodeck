@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Keep distributable wheel metadata, excluding installer-local PEP 610 URLs."""
 from pathlib import Path, PurePosixPath
 

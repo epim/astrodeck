@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Release pipeline regressions inspect executed steps and publication ordering."""
 from pathlib import Path
 import shlex

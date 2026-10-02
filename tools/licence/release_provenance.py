@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Fresh build-input evidence for release archives; never execute application code.
 
 Run in the same private Python environment as PyInstaller. TOCs are parsed with

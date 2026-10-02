@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Named context-guard mutants; fixture assertions, exact-byte restore, green rerun."""
 from datetime import datetime, timezone
 import hashlib
