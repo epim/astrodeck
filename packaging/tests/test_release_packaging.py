@@ -273,7 +273,11 @@ class MetadataSelection(unittest.TestCase):
             self.assertEqual(keep,metadata_payloads.filter_installer_urls(private+keep,roots))
 
     def test_only_installer_local_url_is_omitted(self):
-        with tempfile.TemporaryDirectory(prefix="metadata-test-",dir=ROOT / ".probe/release") as name:
+        # The scratch root is gitignored, so a fresh checkout has none, and this
+        # class sorts before the ones whose setUp makes it (#666).
+        scratch=ROOT / ".probe/release"
+        scratch.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="metadata-test-",dir=scratch) as name:
             root=Path(name)
             names=["METADATA","RECORD","direct_url.json","licenses/LICENSE.txt","source/native-source.tar.gz","sboms/native.json","nested/direct_url.json"]
             for relative in names:
