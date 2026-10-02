@@ -207,10 +207,13 @@ async def test_unforced_the_three_refuse_while_the_ladder_runs(
         teardown, bus_lines, route):
     """Without ``force``, apply, activate and connect answer 409 with the
     code a run gets (``running``, so the clients that offer "force" on it
-    need nothing new), and a detail that names auto-resume's re-centring.
-    They touch nothing: no teardown, the ladder is not stopped, the session
-    stays armed, and once released the ladder re-centres and ResumeArm
-    starts the session as it would have.
+    need nothing new), and a detail that names auto-resume's re-centring
+    and points the operator at the Monitor, as ``_RESUME_RECOVERING`` does
+    (WP-67, #272), now that WP-39 (#256) makes both UIs draw a 409's own
+    detail instead of their fixed sentence. They touch nothing: no
+    teardown, the ladder is not stopped, the session stays armed, and once
+    released the ladder re-centres and ResumeArm starts the session as it
+    would have.
 
     RED under mutant "apply's guard ignores recovering" (``apply_profile``'s
     guard reverts to ``engine.running or hub.looping or hub.polar.running``),
@@ -222,6 +225,15 @@ async def test_unforced_the_three_refuse_while_the_ladder_runs(
     and the same line for ``[activate]`` and ``[connect]`` under the same
     mutation of their own guard (``connect`` answering
     ``{"recorded":"connect_rigspec"}``).
+
+    RED under mutant "the teardown refusal names the route again"
+    (``_TEARDOWN_WHILE_RECOVERING``'s "(the Monitor shows the step it is
+    on)" put back to "(GET /api/sequence/resume-arm reports the step it is
+    on)"), every case, observed verbatim:
+
+        [apply]
+        E   AssertionError: {'detail': "auto-resume is re-centring the mount after a restart (GET /api/sequence/resume-arm reports the step it is on); force stops the re-centring before its next step and turns that session's auto-resume off, as Abort does, then goes ahead", 'code': 'running'}
+        [activate] [connect] the same line, naming the route
     """
     t = teardown
     lad = t.lad
@@ -243,6 +255,10 @@ async def test_unforced_the_three_refuse_while_the_ladder_runs(
     assert detail["code"] == "running", detail
     assert "auto-resume" in detail["detail"] and "re-centring" in \
         detail["detail"], detail
+    assert "Monitor" in detail["detail"] and \
+        "/api/sequence/resume-arm" not in detail["detail"], (
+        f"{route}'s refusal still names the route, not the Monitor: "
+        f"{detail}")
     assert t.torn == [], f"{route} tore down while refusing: {t.torn}"
     assert still_parked and stop_asked is None, (
         f"an unforced {route} stopped the ladder")
@@ -259,9 +275,10 @@ async def test_when_the_ladder_will_not_return_in_time_nothing_is_torn_down(
     (shrunk to 10 ms here; the solve is not released until the route has
     answered, so the bound expiring is certain, not a race). The route
     answers 409 ``running`` with a detail that says the re-centring has not
-    stopped, and tears nothing down. The stop and the disarm stand: the
-    operator asked for them, and once released the ladder stands down with
-    no goto and no start.
+    stopped and points the operator at the Monitor, as ``_RESUME_RECOVERING``
+    does (WP-67, #272), and tears nothing down. The stop and the disarm
+    stand: the operator asked for them, and once released the ladder stands
+    down with no goto and no start.
 
     RED under mutant "teardown when the bound expires" (the wait's False
     ignored: ``_wait_for_the_ladder`` returns instead of raising), every
@@ -274,6 +291,15 @@ async def test_when_the_ladder_will_not_return_in_time_nothing_is_torn_down(
 
     The same lines under "teardown before the ladder has returned" (every
     case) and "disconnect ignores the ladder" (``[disconnect]``).
+
+    RED under mutant "the bound's refusal names the route again"
+    (``_wait_for_the_ladder``'s "The Monitor reports it until it has
+    stopped" put back to "GET /api/sequence/resume-arm reports it until it
+    has stopped"), every case, observed verbatim:
+
+        [disconnect]
+        E   AssertionError: disconnect's refusal still names the route, not the Monitor: {'code': 'running', 'detail': "auto-resume's re-centring was asked to stop and has not stopped within 0.01 s, so nothing was torn down; its session's auto-resume is off. GET /api/sequence/resume-arm reports it until it has stopped; try again then."}
+        [apply] [activate] [connect] the same line, with each route's body
     """
     monkeypatch.setattr(resume_arm_module, "LADDER_STOP_WAIT_S", 0.01)
     t = teardown
@@ -296,6 +322,9 @@ async def test_when_the_ladder_will_not_return_in_time_nothing_is_torn_down(
     detail = r.json()["detail"]
     assert detail["code"] == "running", detail
     assert "has not stopped" in detail["detail"], detail
+    assert "Monitor" in detail["detail"] and \
+        "/api/sequence/resume-arm" not in detail["detail"], (
+        f"{route}'s refusal still names the route, not the Monitor: {detail}")
     assert torn_before_release == [] and t.torn == [], (
         f"{route} tore down although the ladder had not returned: {t.torn}")
     assert lad.hub.calls == ["solve"], lad.hub.calls
