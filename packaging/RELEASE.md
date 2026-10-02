@@ -1,0 +1,32 @@
+# Release packaging notes
+
+This change builds a source-matching `astrodeck-native` ABI3 wheel before freezing AstroDeck and always runs the packaged `--packaging-probe`, including when `--no-smoke` is selected. The probe imports the actual extension and runs the Rust star detector on a synthetic blank 32 by 32 uint16 frame. It runs before default state selection or application imports. It does not contact a camera, mount, relay or configured server.
+
+Use a private build environment with the server's base dependencies, PyInstaller, maturin, psutil and Rust. The binary builder installs the base server, not the optional COM host extra. It force-reinstalls the exact validated server wheel with --no-deps, replacing stale same-version metadata while preserving the prepared dependency versions. It stages a fresh server source copy before building and validating its wheel, so an old setuptools build directory cannot retain package data excluded by policy. The native helper uses `.probe/release/cargo-home` and `.probe/release/cargo-target`.
+
+```text
+python packaging/distribution_policy.py --check-package-data
+python packaging/build_native.py --out .probe/release/native-wheels
+python packaging/build_native.py --check PATH_TO_WHEEL
+python packaging/build_binary.py --skip-ui --native-wheel PATH_TO_WHEEL --no-smoke
+```
+
+`--skip-ui` requires the reviewed UI already staged at `server/astrodeck/webui`. The build environment must install the final wheel before generating its credits and UI. Release clearance is a separate mandatory artifact gate; a successful build, native probe or inventory does not approve pending redistribution decisions.
+
+`distribution-policy.json` is the owner decision source. Pending Player One status preserves the preexisting distinction: the source tar excludes its libraries, while frozen and server-wheel payloads include them. Pending is visible in decision records and does not grant redistribution rights. An explicit owner choice of `fetch-only` or `redistribute` changes the common selector. After an authorized policy edit, run `python packaging/distribution_policy.py --sync-package-data`, review the resulting package-data-only change, then run `--check-package-data`. The test gate rejects disagreement. Direct pip builds read the static table; there is no setup hook or inferred permission. DSS2 tiles remain excluded. Other pending owner decisions remain visible to the release gate.
+
+The wheel contains four actual UTF-8 license/notice texts declared through PEP 639 `License-File` metadata. NUL bytes and undecodable text fail validation. The exact compressed native workspace is ordinary data at `<dist-info>/source/native-source.tar.gz`, separately hashed in `astrodeck-build.json`. The source record includes the base Git revision, exact native tree hash, application/native versions, extension hash, notice hashes and SBOM hashes. CycloneDX private absolute build paths become content-based source identifiers consistently across graph references. Registry provenance and license expressions stay intact. RECORD covers every wheel member. The native source notice explains how to restore both the text directory and the accompanying archive before rebuilding with Maturin. These choices follow [PEP 639](https://peps.python.org/pep-0639/#core-metadata) and [Maturin's file inclusion rules](https://www.maturin.rs/config.html).
+
+The source tar includes the native source and build helper. Installing it through the self-updater does not install the native engine wheel. That runtime path remains a separate tracked limitation. Container-native packaging is also outside this change and is tracked in #655. No new Rust or application code is included here.
+
+The #654 smoke repair gives every run a new private state directory and an allocated loopback port. Before HTTP reads, it checks a process created by this launch, its executable, arguments, creation time and observed ancestry, then reads that process's own sockets. The HTTP checks use only `/healthz`, `/` and `/api/backends`. No full status payload or server log is read. Cleanup stops only proven identities. If ownership cannot be established or cleanup cannot be confirmed, the helper fails explicitly and preserves private state. It does not fall back to image-name or port-based killing. Per-process socket enumeration avoids the macOS restriction on ordinary users enumerating all sockets documented by [psutil](https://psutil.io/api/#psutil.net_connections).
+
+The existing `server/tests/test_build_binary_smoke.py` was explicitly authorized for re-pinning because its old assertions required the unsafe cleanup behavior. All lifecycle tests mock process and network calls. The new packaging suite builds small synthetic direct-pip wheels without dependencies or installs. The serial mutation runner changes one owned source at a time, requires the selected assertion to fail without a test error, restores exact bytes in `finally`, checks restored SHA-256 values, and reruns the whole suite. See `mutation-evidence.md` and `mutation-evidence.json`.
+
+This is Windows-local build and regression evidence, not a claim that Linux x86_64, Linux arm64, macOS arm64, elevated Windows account creation, or real hardware operation has been executed here. The parent owns actual final artifact builds, inventories and release gate results. Earlier native and frozen artifacts produced before the PEP 639 correction are intermediate evidence only and must not be released.
+
+Final local packaging validation at handoff: 74 new tests passed; 48 named mutants failed their intended assertion and all source hashes restored exactly; the 23 repinned existing binary smoke tests passed. Full release clearance remains with the parent artifact gates.
+
+The frozen metadata collector omits only each server/native distribution root's installer-created direct_url.json, which can contain a private PEP 610 file URL. All other metadata bytes, including RECORD, notices, source archive and SBOM, remain selected.
+
+PyInstaller automatic metadata hooks can re-add installer metadata after explicit collection. The spec therefore repeats the exact-root installer URL omission on Analysis.datas before passing it to EXE. Tests simulate that hook insertion and check the final EXE data argument, preserving other distributions and nested same-name files without reading their bodies.
