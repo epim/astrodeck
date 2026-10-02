@@ -52,7 +52,7 @@ function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(m
 // words, which is the entire point of #256.
 const RECOVERING_DETAIL =
   "auto-resume is re-centring the mount after a restart "
-  + "(GET /api/sequence/resume-arm reports the step it is on); force stops "
+  + "(the Monitor shows the step it is on); force stops "
   + "the re-centring before its next step and turns that session's "
   + "auto-resume off, as Abort does, then goes ahead";
 

@@ -1672,6 +1672,21 @@ class SequenceEngine:
             raise DeviceError("a sequence is already running")
         if getattr(getattr(self.hub, "dusk_arm", None), "connecting", False):
             raise DeviceError("dusk preparation is connecting equipment; wait before starting a sequence")
+        # D-08 (backlog ruling, owner-approved 2026-09-30; #559, #582). FAIL
+        # CLOSED: a dusk/dawn-scheduled target with no site saved used to
+        # start anyway -- `resolve_window` answers an unresolvable boundary
+        # as None (#527), the gating reads a None start as not waiting on
+        # the clock, and the run went on with no dawn stop either, until
+        # something else happened to end it (#559: nothing reliably did).
+        # Checked before anything else below moves a shutter or a mount, on
+        # both the fresh and the resumed path -- a resume re-freezes its
+        # windows exactly as a fresh start does, so a site cleared between
+        # nights must refuse a resume too, not just a first start.
+        from ..site_gate import site_lat_lon
+        if site_lat_lon(self.hub.site) is None:
+            refusal = schedule.sun_window_needs_a_site(plan.targets)
+            if refusal is not None:
+                raise DeviceError(refusal)
         self.plan = plan
         resume = session is not None
         if session is None:
@@ -3313,7 +3328,6 @@ class SequenceEngine:
         self._start_groups(plan, remaining)
         self._drop_complete(remaining, index_of)
         self._skip_what_tonight_set_aside(remaining)
-        self._say_sun_windows_unresolved(plan, frozen, site)
         try:
             await self._schedule_loop(plan, remaining, frozen, index_of, site,
                                       twilight)
@@ -5178,50 +5192,6 @@ class SequenceEngine:
                     acc[f.step_id] = acc.get(f.step_id, 0) + 1
         self._accepted_seen = (s, len(frames), acc)
         return acc
-
-    def _say_sun_windows_unresolved(self, plan: SequencePlan, frozen: dict,
-                                    site) -> None:
-        """Say once, at the run's start, which targets' DUSK windows were
-        not applied because no site is saved (#527), in words and with no
-        number: there is no site to take one from.
-
-        ``schedule.resolve_window`` answers None for a dusk or dawn
-        boundary with no saved site (H4-SCHED), where it used to answer the
-        Sun's crossing at the 0,0 placeholder: a DUSK flow on an unconfigured
-        rig waited almost twelve hours for dusk in the Gulf of Guinea, and
-        nothing said why. The gating reads a None start as not waiting on
-        the clock, so such a target starts now and, with a dawn stop that is
-        None too, has no dawn stop from its window (#559, open: nothing
-        else ends such a run at daylight); this line is the only place the
-        run says either. Frozen windows are read, not resolved
-        again, so it describes the windows the run is using."""
-        from ..site_gate import site_lat_lon
-        if site_lat_lon(site) is not None:
-            return
-        sun = ("dusk", "dawn")
-        hit = [t for t in plan.targets
-               if not t.calibration and t.schedule is not None
-               and (t.schedule.start_mode in sun
-                    or t.schedule.stop_mode in sun)
-               and id(t) in frozen]
-        if not hit:
-            return
-        names = [t.name for t in hit]
-        shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more"
-                                        if len(names) > 3 else "")
-        # Only what the run really does differently: a window that never
-        # had a dawn stop loses none, and one that starts now anyway has no
-        # dusk to miss.
-        does = []
-        if any(t.schedule.start_mode in sun for t in hit):
-            does.append("starts now rather than at dusk")
-        if any(t.schedule.stop_mode in sun for t in hit):
-            does.append("has no dawn stop from the window")
-        bus.log("warning",
-                f"no site is saved, so the DUSK window of {shown} was not "
-                f"applied: with no site there is no dusk or dawn to time it "
-                f"by, so the run {' and '.join(does)}. Save the site to have "
-                f"the window kept", "sequence")
 
     def _group_cols(self, group: TargetGroup) -> int:
         """The layout's column count (`panel_order`: the layout's, never one

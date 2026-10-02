@@ -40,9 +40,20 @@ import asyncio
 import json
 import time
 
+import astrodeck.api.app as app_module
+from astrodeck.config import Site
 from astrodeck.persist import write_json_atomic
 from astrodeck.sequence.session import Session, session_store
 from test_flows_continue import LR, _compiled, rig  # noqa: F401 (fixture)
+
+#: A made-up SAVED site (backlog WP-55 fallout, D-08, owner-approved
+#: 2026-09-30), local to this one test below rather than to
+#: ``test_flows_continue.rig``'s shared ``_isolate`` -- that harness is also
+#: used by test_group_start_guard.py and test_resume_recover_preflight.py,
+#: which set their OWN real site and need ``hub._check_horizon`` to run for
+#: real against it; a module-wide site here would fight that. Not round,
+#: nowhere near 0,0.
+EXAMPLE_SITE = (47.5566778, -122.3344556)
 
 
 async def _session(rig, fid: str) -> dict:
@@ -257,7 +268,7 @@ class TestPlanSavedTs:
         assert s.id == (await _session(rig, fid))["id"]
         assert (await _session(rig, fid))["plan_saved_ts"] is None
 
-    async def test_a_shipped_example_freezes_no_time(self, rig):
+    async def test_a_shipped_example_freezes_no_time(self, rig, monkeypatch):
         """An Example is never saved: its ``updated_ts`` is the moment the
         record was built for that read, so every read of the flow is
         "newer" than any time frozen from it, and the editor would claim
@@ -272,7 +283,22 @@ class TestPlanSavedTs:
 
         Mutants "a guessed time" and "plan_saved_ts rewritten on every save"
         fail here the same way (``assert 1790646810.3897555 is None``).
+
+        BACKLOG WP-55 FALLOUT (D-08, owner-approved 2026-09-30): the shipped
+        ``example-m31-mosaic`` opens with a DUSK node, and ``engine.start``
+        now refuses a dusk/dawn-scheduled run with no site saved. Local to
+        this test (see ``EXAMPLE_SITE`` above for why not on the shared
+        harness): a made-up saved site, and ``hub._check_horizon`` stubbed
+        the same way ``rig``'s ``_check_solar`` already is -- it is inert
+        only on the real default site, and reads ``altaz`` off real
+        wall-clock sidereal time with no mocked-clock parameter reaching it,
+        so M31's real position at whatever moment this suite happens to run
+        would otherwise decide this test instead of the code under test.
         """
+        rig.store.set_site(Site(name="example site", latitude=EXAMPLE_SITE[0],
+                                longitude=EXAMPLE_SITE[1], elevation_m=50.0))
+        monkeypatch.setattr(app_module.hub, "_check_horizon",
+                            lambda *a, **kw: None)
         r = await rig.run("example-m31-mosaic")
         assert r.status_code == 200, r.text
         assert r.json()["session"]["continued"] is False

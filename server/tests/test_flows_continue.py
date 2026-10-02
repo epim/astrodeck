@@ -231,6 +231,20 @@ def _isolate(tmp_path, monkeypatch) -> ConfigStore:
         is <astrodeck.config.ConfigStore object at 0x000001FA992B57F0>
          +  where <astrodeck.config.ConfigStore object at
          0x000001FAE3A44620> = engine_module.config_store
+
+    LEFT ON THE DEFAULT SITE, DELIBERATELY (backlog WP-55 fallout, D-08
+    owner-approved 2026-09-30, checked when D-08 landed): this harness is
+    shared with test_group_start_guard.py and test_resume_recover_
+    preflight.py, both of which set their OWN real site
+    (``rig.store.set_site(FIXTURE_SITE, ...)``) and then rely on
+    ``hub._check_horizon`` actually running real altitude math against it --
+    a module-wide saved site here would leave that stubbed or fighting a
+    site the test overwrites one line later. Nothing in THIS file's own
+    tests needs a saved site either: ``LR``/``L_ONLY`` carry no schedule
+    node, so D-08's refusal never reaches them. The one test that does need
+    one -- test_s7_progress_armed_replay.py's shipped ``example-m31-mosaic``,
+    a DUSK-opened flow -- saves its own site locally instead of here; see
+    that file's ``TestPlanSavedTs``.
     """
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     _sweep_config_store(monkeypatch, store)
