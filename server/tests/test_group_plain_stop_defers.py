@@ -36,10 +36,12 @@ the shared tree (#254).
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 import astrodeck.sequence.engine as engine_mod
-from _group_harness import (GROUP_NAME, Night, grid_plan, group_hub,
+from _group_harness import (GROUP_NAME, T0, Night, grid_plan, group_hub,
                             group_store, single)
 from astrodeck.config import EscalationConfig
 from astrodeck.devices.base import DeviceError
@@ -48,6 +50,15 @@ from astrodeck.sequence.models import SequencePlan
 from astrodeck.sequence.session import session_store
 
 FAILING = "2-2"
+
+
+def _hhmm(t: float) -> str:
+    """``"HH:MM"`` for ``schedule.resolve_window``'s ``stop_mode="time"``
+    (used by the dawn-stop control below, re-pinned off ``max_run_min`` by
+    backlog ruling for #164). Timezone-safe the way ``test_idle_park_hold``'s
+    copy of this helper is: every zone's UTC offset is a whole number of
+    minutes, so the local seconds-of-minute equal the epoch's."""
+    return time.strftime("%H:%M", time.localtime(t))
 OTHERS = ("1-1", "1-2", "2-1")
 AF_ERROR = "autofocus failed: no stars"
 TRACKING_ERROR = ("the mount is not tracking and will not resume — every "
@@ -325,14 +336,26 @@ async def test_a_plain_stop_defers_the_panel_and_three_set_it_aside(
 
 async def test_control_the_dawn_stop_still_ends_every_panel_at_once(
         group_hub, monkeypatch):
-    """Every panel's frozen window closes two minutes into the night
-    (``max_run_min`` 2), in the middle of 1-2's visit: 45 s frames, so 1-1
-    shoots 0 to 90 s and 1-2's L 90 to 135 s, and the frame boundary at 135 s
-    finds the window closed. That stop (`WindowClosed`) is NOT deferred: it
-    goes on up, the scheduler skips 1-2 with the window's own words, and the
-    all-closed path ends every other panel at that same boundary, as a dawn
-    cutoff. Nothing is promised a retry, and nothing is set aside for the
-    night: the window is tonight's, not the panel's.
+    """Every panel's frozen window closes at the SAME clock time, in the
+    middle of 1-2's visit: 60 s frames, so 1-1 shoots 0 to 120 s and 1-2's L
+    120 to 180 s, and the frame boundary at 180 s finds the window closed.
+    That stop (`WindowClosed`) is NOT deferred: it goes on up, the scheduler
+    skips 1-2 with the window's own words, and the all-closed path ends
+    every other panel at that same boundary, as a dawn cutoff. Nothing is
+    promised a retry, and nothing is set aside for the night: the window is
+    tonight's, not the panel's.
+
+    RE-PINNED OFF ``max_run_min`` FOR #164 (orchestrator ruling,
+    2026-10-02, owner-approved plan 2026-09-30, backlog ruling D-nn): a
+    ``max_run_min`` window is no longer shared by every panel -- each
+    panel's own cap now counts from ITS OWN first attempt, not from a
+    common anchor -- so it can no longer stand in for a genuinely SHARED
+    "every panel closes at once" boundary, which is what this control is
+    about. A ``stop_mode="time"`` boundary is untouched by that ruling (it
+    was never anchored to any per-target attempt) and is what a real dawn
+    stop actually is, so it replaces ``max_run_min`` here one-for-one: same
+    shot pattern, same words, same all-closed sweep over panels 2-2 and 2-1
+    that were never even visited.
 
     MUTANT "the window's close deferred like any stop" (`_visit_panel`'s
     ``except WindowClosed: raise`` arm deleted, so ``except StopTarget``
@@ -344,8 +367,10 @@ async def test_control_the_dawn_stop_still_ends_every_panel_at_once(
         (stop time / max run / dawn); retried on the next pass (1 of 3
         consecutive)']
     """
-    plan = grid_plan(panel_kw={"exposure_s": 45.0,
-                               "schedule_kw": {"max_run_min": 2}})
+    stop_time = _hhmm(T0 + 180.0)
+    plan = grid_plan(panel_kw={"exposure_s": 60.0,
+                               "schedule_kw": {"stop_mode": "time",
+                                               "stop_time": stop_time}})
     night = await _night(group_hub, monkeypatch, plan)
     assert night.done, night.lines[-4:]
     assert night.shots() == [(_name("1-1"), "L"), (_name("1-1"), "R"),
