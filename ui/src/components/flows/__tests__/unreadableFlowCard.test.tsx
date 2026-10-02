@@ -42,6 +42,13 @@
 //      label, so the name said it twice. The names the #206 records below
 //      quote end in the word twice for that reason; they were observed before
 //      #217 and are left verbatim.
+//   7. A NEVER-RUN CARD DOES NOT SAY SO TWICE (#232, D-14, same class as 2 and
+//      6: a line repeating what the card already says). `cardMeta`'s own
+//      meta line used to carry "never run" even while the status row below it
+//      read NEVER RUN; backlog ruling D-14 (owner-approved 2026-09-30) keeps
+//      the status word and drops the meta line's slot instead. An unreadable
+//      row has also never run but reads CANNOT OPEN, not NEVER RUN, so its
+//      meta line is untouched and still says so - the one place it does.
 //
 // Every case names the mutant it kills and quotes the failure that mutant
 // produced when it was run from a byte-for-byte backup of FlowLibraryCard.tsx
@@ -681,12 +688,64 @@ await test("control: apart from its status word, each card's name is what it was
   setUp();
   await mount();
   const rest = (id: string, word: string) => squash(accName(cardEl(id)!).split(word).join(" "));
-  eq(rest("good", "NEVER RUN"), "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run",
-    "good: the readable card's name lost or gained something besides its status word");
+  // "good" has never run and reads NEVER RUN, so D-14 (#232) drops its meta
+  // line's own last-run slot: no more "· never run" here, the one change this
+  // control is pinned to accept (it reads "M31 LRGB ... never run" in the
+  // record above the #232 fix, which is why this line names the issue).
+  eq(rest("good", "NEVER RUN"), "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires",
+    "good: the readable card's name lost or gained something besides its status word (#232, D-14)");
+  // "future" and "broken" are CANNOT OPEN, never NEVER RUN, so D-14 does not
+  // touch their meta line: it still says never run, same as before #232.
   eq(rest("future", "CANNOT OPEN"), `Mosaic NGC 7000 ${NEWER} 9 stages · 8 wires · never run`,
     "future: the unreadable card's name lost or gained something besides its status word");
   eq(rest("broken", "CANNOT OPEN"), `broken ${BROKEN} 0 stages · 0 wires · never run`,
     "broken: the unreadable card's name lost or gained something besides its status word");
+});
+
+// ====================================================== D-14, the repeat (#232)
+//
+// A never-run card used to say so twice: this line's own last-run slot
+// (`formatLastRun(null)` → "never run") and the status row (`cardStatus("")`
+// → "NEVER RUN") beside it. Backlog ruling D-14 (owner-approved 2026-09-30):
+// "The status word keeps it. The meta line drops its last-run slot when the
+// status reads NEVER RUN." `cardMeta`'s own tests (none existed before #232)
+// live here beside the fixture that first showed the repeat.
+//
+// The status checked is the DRAWN one, not `card.last_result` re-read: an
+// unreadable row's `last_result` is also "" (FlowStore never ran it either),
+// but its drawn status is CANNOT OPEN, so D-14 does not apply to it - its
+// meta line must keep saying never run, which is the only place that card
+// says so at all.
+//
+// MUTANT "status ignored at the call site" (FlowLibraryCard's
+// `cardMeta(card, status.text === "NEVER RUN")` made `cardMeta(card)`, the
+// one-argument call from before #232 - `neverRun` then defaults to `false`
+// for every card). Observed, run from a byte backup of FlowLibraryCard.tsx:
+//   x D-14 (#232): the meta line drops "never run" exactly when the status word
+//     already says it: the "good" card still says "never run" in its meta
+//     line, repeating NEVER RUN below it
+//     expected 0
+//     got      1
+await test('D-14 (#232): the meta line drops "never run" exactly when the status word already says it', async () => {
+  setUp();
+  await mount();
+  eq(occurrences(cardEl("good")!.textContent ?? "", "never run"), 0,
+    'the "good" card still says "never run" in its meta line, repeating NEVER RUN below it');
+  assert(/NEVER RUN/.test(cardEl("good")!.textContent ?? ""),
+    'the "good" card\'s status word is gone too, not only the meta line\'s copy');
+  for (const [id, reason] of [["future", NEWER], ["broken", BROKEN]] as const) {
+    assert((cardEl(id)!.textContent ?? "").includes(reason), `${id}: lost its own reason`);
+    eq(occurrences(cardEl(id)!.textContent ?? "", "never run"), 1,
+      `${id}: its status is CANNOT OPEN, not NEVER RUN, so D-14 must not touch its meta line`);
+  }
+  // CONTROL: a card that has actually run keeps its last-run slot, whatever
+  // its result - D-14 names only the NEVER RUN status, never a result that
+  // did run.
+  for (const lastResult of ["ok", "warn", "bad"] as const) {
+    const el = await mountCard({ ...CARDS[0], id: `ran-${lastResult}`, last_run: 1_700_000_000, last_result: lastResult });
+    assert(/last run \d{4}-\d{2}-\d{2}/.test(el.textContent ?? ""),
+      `last_result ${JSON.stringify(lastResult)}: a card that has run lost its last-run slot`);
+  }
 });
 
 // Two ways to lose the card, two assertions. `focus()` catches the native
