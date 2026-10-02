@@ -71,10 +71,12 @@ import time as _time
 from _group_harness import (GROUP_ID, GROUP_NAME, T0, Night, group_hub,
                             group_store, panel, ra_at, single)
 from astrodeck.config import SafetyConfig
+from astrodeck.events import night_key
+from astrodeck.sequence.group_rules import CENTRING
 from astrodeck.sequence.models import (ExposureStep, Schedule, SequencePlan,
                                        Target, TargetGroup,
                                        plan_identity_errors)
-from astrodeck.sequence.session import session_store
+from astrodeck.sequence.session import Session, session_store
 
 UP_ID, UP_NAME = GROUP_ID, GROUP_NAME
 DOWN_ID, DOWN_NAME = "m33-mosaic", "M33"
@@ -657,3 +659,98 @@ async def test_a_follower_after_a_held_mosaic_fills_the_upstream_wait(
     assert not _down_before_up_done(night), night.shots()
     assert night.said("M33: waits: after the M31 mosaic")
     assert night.stored.status == "complete", night.stored.status
+
+
+async def test_w6_group_skip_does_not_act_on_a_stale_expiry_waiter(
+        group_hub, monkeypatch):
+    """#572: WP-46a's own investigation (the coder's) concluded ``if
+    group_left: continue`` in ``_schedule_loop`` is an EQUIVALENT MUTANT,
+    reasoning that `_eligibility_now` writes a reach/meridian/defer elig
+    entry for a group's member only when that group's OWN `_group_gate`
+    already reads "ready" this same pass, so no member of a group that goes
+    ``group_left`` this pass can be the stale waiter the ``continue``
+    discards (every such member was routed through `_follower_gate`
+    instead, #374).
+
+    That holds for the reach, meridian and defer holds, but not for the
+    FOURTH kind `_Eligibility.held` names: `_expire_or_wait`'s "expiry"
+    hold (a CENTRING set-aside, #534). It is written for every live group
+    with a run, UNCONDITIONALLY, in the loop BEFORE `_eligibility_now` ever
+    asks the group's own gate (the gate check at engine.py's
+    ``if self._group_gate(group, remaining, gs_now).kind != "ready":
+    continue`` guards only the reach/meridian/defer loop that follows it,
+    never `_expire_or_wait`). And `_start_groups` can seed that hold at RUN
+    START, straight from a session record (a restart within
+    ``SET_ASIDE_EXPIRY_S`` of a centring failure): the member need not visit
+    THIS run to carry it, so "a gated member never gets to visit before its
+    group's gate reads skip" (true, and why the reach/meridian/defer holds
+    cannot reach this branch) does not apply to a hold inherited at start.
+
+    M33 1-1 (q00) restarts already set aside by a centring failure 100 s
+    ago, read back exactly as `_start_groups` reads one (a `Session`
+    record); M33 1-2 stays plainly live. M31 never turns its rotator
+    (`_up_never_turns`, `test_a_downstream_mosaic_is_skipped_once_the_
+    upstream_is_set_aside`'s own mechanism) and is set aside for the night
+    at 600 s, so M33's gate reads "skip" then: 1-2's `_follower_gate` call
+    drops it into ``leave_tonight`` and the whole group leaves
+    (`_skip_group_tonight`), while 1-1's "expiry" elig entry -- written
+    independently of that gate -- is still the pass's own ``earliest``: the
+    #330 stale-waiter shape, held by an expiry instead of a schedule.
+    "Later" (`_skip_night`'s own target) survives the skip so the pass does
+    not end on the plain ``if not remaining: break`` before ever reaching
+    ``if group_left:``.
+
+    MUTANT "the selection goes on after a group skip" (the ``continue``
+    under ``if group_left:`` replaced by ``pass``): RED (observed):
+        the night ended 2000 s after M33 was skipped, having published
+        ('running', 'M33') (detail "M33: 1-1 is set aside for now; waiting
+        to try it once more") after M33's own "skipped for tonight" line,
+        before "stopped at dawn (windows closed)" at 2600 s instead of
+        600 s (``end_rel - skip_rel == 2000.0``; the real run's gap is
+        ``0.0``).
+    """
+    later = Target(id="later", name=LATER, ra_hours=ra_at(-2.5),
+                  dec_deg=35.0, center=True, autofocus_first=False,
+                  after_group=UP_ID,
+                  schedule=Schedule(stop_mode="time",
+                                    stop_time=_hhmm(OPENS - 120.0)),
+                  steps=[ExposureStep(id="later-L", filter="L",
+                                      exposure_s=30.0, count=1)])
+    plan = _plan(opens=False, after=[later], rotating=True)
+    q00 = next(t for t in plan.targets if t.id == "q00")
+    tonight = night_key(T0)
+    # A RESTART'S OWN RECORD (#534), not something this run's own gating
+    # produces: `_start_groups` reads this back before any selection runs,
+    # which is how the hold reaches a group whose own gate will read "skip"
+    # the first time it is asked (see the docstring above).
+    session = Session(id="s-w6-572", name="w6-572", status="dormant",
+                      plan=plan)
+    session.note_set_aside(q00.id, "centring failed on 1-1",
+                           night=tonight, kind=CENTRING, ts=T0 - 100.0)
+
+    night = Night(group_hub, monkeypatch, goto=_up_never_turns)
+    try:
+        night.done = await night.run(plan, session=session, wall_s=60.0)
+    finally:
+        await night.close()
+
+    assert night.done, night.lines[-4:]
+    skip = [t for t, _lv, m in night.lines
+            if m.startswith("M33: skipped for tonight")]
+    assert len(skip) == 1, night.said("skipped")
+    skip_rel = night.rel(skip[0])
+    end_rel = max(e[0] for e in night.trace if e[1] == "state")
+    assert end_rel == skip_rel, (
+        f"the night ended {end_rel - skip_rel:.0f} s after M33 was skipped")
+    published = []
+    for e in night.trace:
+        if e[1] != "state":
+            continue
+        g = e[2].get("group")
+        published.append((e[0], g.get("name") if isinstance(g, dict)
+                          else None))
+    shown_after = [p for p in published
+                  if p[1] == DOWN_NAME and p[0] > skip_rel]
+    assert shown_after == [], (
+        f"M33 was published as the active group after its own skip: "
+        f"{shown_after[:3]}")

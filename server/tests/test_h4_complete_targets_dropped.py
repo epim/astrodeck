@@ -38,6 +38,8 @@ import pytest
 
 from _group_harness import (GROUP_ID, GROUP_NAME, Night, T0,  # noqa: F401
                             grid_plan, group_hub, group_store, single)
+from astrodeck.sequence import SequenceEngine
+from astrodeck.sequence.group_rules import GroupRun
 from astrodeck.sequence.models import Schedule, SequencePlan, Target
 from astrodeck.sequence.session import Session, SessionFrame
 from test_s7_consumed_jump_last_frame import CASES, _night_plan
@@ -248,3 +250,43 @@ async def test_control_a_complete_target_owed_its_rules_is_taken_up(
     first_dest = next(c["t"] for c in night.captures if c["target"] == dest)
     assert done_at <= first_dest, (
         f"{who}'s rule ran after {dest}, the jump's destination, was shot")
+
+
+async def test_drop_complete_tells_a_live_members_group_it_is_complete(
+        group_hub):
+    """#585 (mutant E3, a #537 residual): `_drop_complete`'s own group hook
+    for a member the ledger holds complete while it is still LIVE in its
+    group (``if run is not None and run.is_live(t.id): run.note_complete
+    (t.id)``). The docstring's guarantee -- that the pass rules never count
+    a panel that is not there -- is kept on every path a real run takes:
+    `_start_groups` already counts a member the ledger holds complete
+    before this ever looks at it, `visit_outcome` tells the group as a
+    visit's own outcome, and a jumped visit's `note_complete` runs before
+    the jump acts. No traced path leaves a member live when this call looks
+    at it, so this builds the state directly rather than trying to run one
+    into it: a GroupRun whose one member is live, with the ledger already
+    holding its frames banked outside any of those three paths, same as a
+    future regrade or a new jump shape might leave it.
+
+    MUTANT E3 (the hook's ``run.note_complete(t.id)`` replaced by ``pass``):
+    RED (observed):
+        AssertionError: the live complete member never reached its group:
+        set()
+        assert 'p00' in set()
+    """
+    plan = grid_plan(rows=1, cols=1, panel_kw={"filters": ("L",), "count": 1})
+    target = plan.targets[0]
+    group = plan.groups[0]
+    engine = SequenceEngine(group_hub)
+    engine._groups = {group.id: group}
+    run = GroupRun(members={target.id: "1-1"}, max_failed_visits=3)
+    engine._group_runs = {group.id: run}
+    for s in target.steps:
+        engine._done[f"{target.id}:{s.id}"] = s.count
+    assert run.is_live(target.id), "premise: the member starts live"
+    remaining = [target]
+    index_of = {id(target): 0}
+    engine._drop_complete(remaining, index_of)
+    assert remaining == [], remaining
+    assert target.id in run.completed, (
+        f"the live complete member never reached its group: {run.completed}")
