@@ -3395,7 +3395,23 @@ class Hub:
         try:
             rot = self.devices.get("rotator")
             if rot and getattr(rot, "connected", False):
-                meta.rotator_angle_deg = float(await rot.get_position())
+                # R-4 (#145, #626): this value becomes the FITS ROTATANG
+                # header, and `rot.get_position()`'s plain formula bakes in
+                # sign +1 -- right only at the exact mechanical angle the
+                # rotator was last calibrated at (`_rotation_already_set`'s
+                # docstring: "unsafe for every point the rotator reaches by
+                # moving away from that calibration"), which is most frames,
+                # most of the time. Anchored on the newest trusted
+                # calibration instead (`_rotator_sync_anchor`), with the
+                # learned sign (`_effective_rotator_sign`, +1 when
+                # unmeasured -- what every rotator before R-4 assumed).
+                mech_now = _rotation.mod360(
+                    float(await rot.get_mechanical_position()))
+                anchor_mech, anchor_offset = self._rotator_sync_anchor(
+                    rot, mech_now)
+                meta.rotator_angle_deg = _rotation.mechanical_to_sky(
+                    mech_now, anchor_mech, anchor_offset,
+                    self._effective_rotator_sign())
         except Exception:
             pass
         # EGAIN (populated on the frame by the backend in Task 5; getattr keeps
@@ -6476,6 +6492,95 @@ class Hub:
             return None
         return None
 
+    def _rotator_sync_anchor(self, rot, mech_now: float) -> tuple[float, float]:
+        """The ``(mechanical, offset)`` pair a SIGNED sky<->mechanical
+        conversion should anchor on for ``rot`` right now (R-4, #145, #626).
+
+        THE NEWEST SKY-ANGLE RECORD, when it still describes THIS rotator's
+        CURRENT sync: calibrated, the rotator ``synced``, and its
+        ``offset_deg`` still the one ``rot.sync_offset_deg`` holds (a
+        reconnect, which resets the offset, breaks that agreement at once --
+        the same evidence ``_rotation_already_set`` already requires before
+        it will trust a bare reading). That record's ``mechanical_deg`` is
+        the mechanical angle the calibration measured the offset AT
+        (``sky_angle._calibration_refusal`` refuses to calibrate unless the
+        rotator read within ``MOVED_TOL_DEG`` of it at sync time), which is
+        the one anchor a signed conversion needs: see ``rotation.sky_to_
+        mechanical``'s docstring -- for sign -1 the invariant is a SUM, not a
+        difference, and recovering it needs that real anchor point, not the
+        offset alone, and not an arbitrary later reading
+        (``_rotation_already_set``'s own docstring: "unsafe for every point
+        the rotator reaches by moving away from that calibration").
+
+        FALLS BACK to ``(mech_now, rot.sync_offset_deg)`` -- today's one-
+        point formula -- when there is no such record: never calibrated
+        against a real sky measurement this process, or the record no
+        longer agrees with the device. Anchor-independent for sign +1 by
+        construction (the pre-R-4 invariant: a constant difference is a
+        difference wherever it is read), so this changes nothing there; for
+        sign -1 with no record to anchor on it is no worse than before
+        R-4, which never had a sign to get wrong in the first place."""
+        rec = self.last_sky_angle
+        offset = float(rot.sync_offset_deg)
+        if (isinstance(rec, dict) and rec.get("calibrated") is True
+                and getattr(rot, "synced", False)):
+            try:
+                rec_offset = float(rec.get("offset_deg"))
+                mech_anchor = float(rec.get("mechanical_deg"))
+            except (TypeError, ValueError):
+                return mech_now, offset
+            if _angle_apart_deg(offset, rec_offset) <= 1e-6:
+                return mech_anchor, offset
+        return mech_now, offset
+
+    def _effective_rotator_sign(self) -> int:
+        """R-4's learned sky/mechanical sign (#145), defaulting to +1 when it
+        has not been measured -- the assumption every rotator made
+        unconditionally before R-4. Used by the two callers that must still
+        produce an answer with no measurement to trust (#626): a manual move
+        and a frame's metadata, neither of which may refuse the way the
+        automated ``rotate_to_pa`` loop does -- a frame is written whatever
+        the rotator did, and a manual move is a supervised, single, bounded
+        command, not the unattended iterative convergence R-4 refuses to
+        guess the sign of."""
+        sign = self._rotator_sky_sign
+        return sign if sign is not None else 1
+
+    async def _approach_rotator_mechanical(self, rot, target_mech: float,
+                                           mech_now: float, rcfg,
+                                           epoch: int) -> bool:
+        """The one-sided move itself (#526, H4 orchestrator ruling 3), given
+        an ALREADY-RESOLVED mechanical target: plan it from ``mech_now`` with
+        ``rotation.one_sided_moves`` and send each leg, re-checking the
+        motion fence before every one. Returns True iff every planned leg
+        was sent; False iff an abort landed mid-plan (#574) and a leg was
+        abandoned. See ``_approach_rotator``'s docstring for why the fence is
+        checked before EVERY leg, including the first.
+
+        SPLIT OUT FROM ``_approach_rotator`` (#589, #626) so a caller that
+        has ALREADY converted a sky target to a mechanical one -- anchored
+        on whatever point its own conversion used, which need not be
+        ``mech_now`` (a manual move has no fresh solve of its own to anchor
+        on; see ``_rotator_sync_anchor``) -- does not have that conversion
+        repeated here on a DIFFERENT anchor, silently answering a different
+        question than the one it already resolved."""
+        plan = _rotation.one_sided_moves(mech_now, target_mech,
+                                         rcfg.range_type, rcfg.range_start_deg)
+        if plan.skipped:
+            bus.log("info", f"rotator: {plan.skipped}", "rotator")
+        elif len(plan.moves) > 1:
+            bus.log("info",
+                    f"rotator: the move to mechanical {target_mech:.2f}° "
+                    f"runs against the approach direction, so it goes "
+                    f"{_rotation.ROTATOR_BACKLASH_DEG:g}° past, to "
+                    f"{plan.moves[0]:.2f}°, and comes back", "rotator")
+        for mech in plan.moves:
+            if not self._motion_committed_clean(epoch):
+                bus.log("warning", "rotate abandoned: aborted", "rotator")
+                return False
+            await rot.move_mechanical(mech)
+        return True
+
     async def _approach_rotator(self, rot, sky_deg: float, mech_now: float,
                                 rcfg, epoch: int, sign: int) -> bool:
         """Move ``rot`` to the sky angle ``sky_deg``, arriving from the one
@@ -6507,22 +6612,8 @@ class Hub:
         which is itself an await the next abort can land inside."""
         target = _rotation.sky_to_mechanical(sky_deg, mech_now,
                                              float(rot.sync_offset_deg), sign)
-        plan = _rotation.one_sided_moves(mech_now, target, rcfg.range_type,
-                                         rcfg.range_start_deg)
-        if plan.skipped:
-            bus.log("info", f"rotator: {plan.skipped}", "rotator")
-        elif len(plan.moves) > 1:
-            bus.log("info",
-                    f"rotator: the move to mechanical {target:.2f}° runs "
-                    f"against the approach direction, so it goes "
-                    f"{_rotation.ROTATOR_BACKLASH_DEG:g}° past, to "
-                    f"{plan.moves[0]:.2f}°, and comes back", "rotator")
-        for mech in plan.moves:
-            if not self._motion_committed_clean(epoch):
-                bus.log("warning", "rotate abandoned: aborted", "rotator")
-                return False
-            await rot.move_mechanical(mech)
-        return True
+        return await self._approach_rotator_mechanical(rot, target, mech_now,
+                                                        rcfg, epoch)
 
     async def measure_guide_offset(self, *, exposure_s: float = 4.0,
                                    guide_exposure_s: float = 4.0) -> dict:

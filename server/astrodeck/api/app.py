@@ -172,7 +172,7 @@ from ..flows.tonight import (banked_hours_by_target_from_reports,
                              flow_target_names,
                              frames_by_target_from_reports,
                              resolve_tonight)
-from ..rotation import angle_equals, map_sky_target, mod360
+from ..rotation import angle_equals, map_sky_target, mod360, sky_to_mechanical
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
 from ..sequence.models import (FrameType, TargetGroup,
@@ -8811,11 +8811,34 @@ def create_app(*, bind_host: str | None = None,
                 409, f"camera is busy ({hub._capture_busy or 'exposing'}); "
                      f"rotator move refused")
         rcfg = config_store.cfg().rotator
+        # THE MOTION FENCE (#574, #589): read before the first await below,
+        # the same discipline `Hub._approach_rotator`'s docstring asks of
+        # every caller — a STOP landing in that read must still be caught by
+        # the per-leg check inside `_approach_rotator_mechanical`.
+        epoch = hub._motion_epoch
         mech = await rot.get_mechanical_position()
-        target = map_sky_target(body.position_deg, mech, rot.sync_offset_deg,
-                                rcfg.range_type, rcfg.range_start_deg)
+        # R-4 (#145, #626): the LEARNED sky/mechanical sign, anchored on the
+        # rotator's last TRUSTED calibration rather than this instant's bare
+        # reading (`_rotator_sync_anchor`) — a manual move has no solve of
+        # its own to anchor on, unlike the rotate loop's calls into the same
+        # pure math. Unmeasured defaults to +1, what every rotator before
+        # R-4 assumed unconditionally; this route never refuses a manual
+        # move over it the way the unattended `rotate_to_pa` loop does.
+        sign = hub._effective_rotator_sign()
+        anchor_mech, anchor_offset = hub._rotator_sync_anchor(rot, mech)
+        target = map_sky_target(body.position_deg, anchor_mech, anchor_offset,
+                                rcfg.range_type, rcfg.range_start_deg,
+                                sky_sign=sign)
         adjusted = not angle_equals(target, mod360(body.position_deg), 0.1)
-        return _spawn("rotator", rot.move_to(target)) | {
+        mech_target = sky_to_mechanical(target, anchor_mech, anchor_offset,
+                                        sign)
+        # ONE-SIDED APPROACH (#526, H4 orchestrator ruling 3; #589 is this
+        # route's own gap): every caller that moves the rotator now arrives
+        # from the one side, exactly as the rotate loop does. Go and the ±1
+        # degree nudges both post here (RotatorCard.tsx, RotatorPanel.tsx),
+        # so both inherit it.
+        return _spawn("rotator", hub._approach_rotator_mechanical(
+            rot, mech_target, mech, rcfg, epoch)) | {
             "target_deg": round(target, 2), "adjusted": adjusted}
 
     @app.post("/api/rotator/halt",
