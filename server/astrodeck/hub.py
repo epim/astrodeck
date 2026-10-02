@@ -5018,6 +5018,22 @@ class Hub:
         frames (``SequenceEngine._wind_down_warm``). Two copies of "is this rig
         about to image again" would drift, and the way they would drift is
         silent.
+
+        THE REFUSAL NAMES WHAT WAS ACTUALLY TESTED (#627). ``resume_expected_
+        tonight`` answers None for two different facts: nothing is armed at
+        all, OR something is armed but its window has not opened yet (here,
+        because it is still daylight) — and the old sentence below answered
+        both with "no run is armed or due", which is simply false in the
+        second case. Observed on astrotown after the 0.3.39 deploy
+        (captures/logs/2026-09-30.jsonl, 06:56:41-06:56:44 PDT): the
+        auto-resume line said a session was standing by for tonight, and
+        three seconds later this line denied that anything was armed at
+        all. The decision was already right (#557) — the camera correctly
+        stayed warm — only the WORDING claimed something nobody checked.
+        ``session_store.armed()`` is the same armed-or-not fact
+        ``resume_expected_tonight`` itself starts from, asked again only to
+        tell the two Nones apart for the sentence; it decides nothing here
+        that was not already decided above.
         """
         t = time.time() if now is None else now
         site = self.site
@@ -5038,6 +5054,15 @@ class Hub:
             session = None
         if session is not None:
             return True, ""
+        try:
+            from .sequence.session import session_store
+            armed = session_store.armed()
+        except Exception:          # noqa: BLE001 - the sentence falls back, never blocks
+            armed = None
+        if armed is not None:
+            label = repr(armed.name) if armed.name else "a session"
+            return False, (f"it is daylight and {label} is armed for "
+                           f"tonight, not due yet")
         return False, "it is daylight and no run is armed or due"
 
     async def _cooler_readback_confirms(self, cam: Any,

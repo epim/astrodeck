@@ -189,6 +189,25 @@ class SafetyConfig(BaseModel):
     #: a property of any one night. NOT part of SAFETY_PRESETS, so the preset
     #: detector below ignores it and a rig stays on its named preset.
     meridian_flip_warn_min: float = Field(15.0, ge=0, le=240)
+    #: THE MOUNT'S OWN TRACKING LIMIT, minutes of hour angle from the
+    #: meridian and negative before it (#566). None (default) means
+    #: unknown, so every existing rig keeps today's behaviour exactly: a
+    #: zero-lead flip attempt is aimed `MERIDIAN_SIDE_MARGIN_S` seconds PAST
+    #: the meridian itself, because at the bare crossing a goto's side is
+    #: the mount's own reckoning of the hour angle and the band exists to
+    #: clear that uncertainty (#366, #455).
+    #:
+    #: Today only NINA's `time_to_meridian_flip` ever reports a live limit
+    #: (the AM5 and Alpaca paths always answer None); this is the figure for
+    #: a mount that cannot. `SequenceEngine._flip_point` uses it as the flip
+    #: point's zero ONLY when nothing live is reported, and adds NO band
+    #: past it -- a configured limit, unlike the bare meridian, is something
+    #: the operator has stated, not a crossing whose side is still up to the
+    #: mount's own pointing model. Set it ONLY after measuring where this
+    #: mount's tracking actually stops: a wrong value aims a flip's goto at
+    #: a mount that may or may not still be tracking, depending on which
+    #: side of the error the attempt lands.
+    mount_tracking_limit_min: float | None = Field(None, ge=-240, le=240)
     # floor is OFF until a SafetyMonitor or a custom horizon is configured (C1-4);
     # 0 = disabled. The UI sets 10 when the user enables the floor.
     min_alt_deg: float = 0.0
