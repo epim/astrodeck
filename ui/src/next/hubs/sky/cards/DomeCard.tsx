@@ -27,14 +27,16 @@
 // 3f10681c closed for the radar map - so a role without the capability gets the
 // dashed card and NO MOUNT, not a mounted panel that fails quietly.
 
-import type { JSX } from "react";
+import { useState, type JSX } from "react";
 import { SkyDomePanel, type DomeOverlayArgs } from "../../../../components/cloudmap/SkyDomePanel";
 import { accessPhrase } from "../../../../lib/caps";
 import { nav } from "../../../router";
 import { ActionButton, Card, Label, Mono } from "../../../ui";
 import type { HorizonPoint } from "../../../lib/horizonModel";
 import type { DomeTrack } from "../finder";
-import { DomeOverlay, type WindSummary } from "../../weather/dome/domeOverlay";
+import {
+  DomeLegend, DomeOverlay, type DrawnMarks, type WindSummary,
+} from "../../weather/dome/domeOverlay";
 
 /** The card's anchor, its testid and its probe name, written once. `SkyHub`'s
  *  SKYDOME pill scrolls to exactly this id. */
@@ -92,6 +94,14 @@ export function DomeCard({
   height, lockId, onExplain,
 }: DomeCardProps): JSX.Element {
   const arcs = tracks;
+
+  /** What the overlay actually drew, reported back by it - `DomeScreen`'s own
+   *  wiring (`domeOverlay.tsx`'s `onDrawn` doc explains why this cannot be
+   *  re-derived from the props above: a horizon or a track can be ASKED for
+   *  and still draw nothing, e.g. an arc entirely round the back of the dome).
+   *  Undefined until the first paint, which is exactly `DomeLegend`'s own
+   *  "nothing drawn yet" default. */
+  const [drawn, setDrawn] = useState<DrawnMarks | undefined>(undefined);
 
   /** The arc for a point with no catalogue object under it, if the reticle is
    *  on one. It is what makes WEATHER carry coordinates rather than a name. */
@@ -152,6 +162,7 @@ export function DomeCard({
                   labelledOnCanvas={
                     target && target.alt >= 0 ? (target.name ?? null) : null
                   }
+                  onDrawn={setDrawn}
                 />
               )}
             />
@@ -159,6 +170,16 @@ export function DomeCard({
             <Mono size={11} tone="dim" data-testid="sky-dome-locked">
               {DOME_NEEDS_WEATHER}
             </Mono>
+          )}
+
+          {/* THE SAME LEGEND THE WEATHER HUB'S DOME SCREEN DRAWS BELOW ITS OWN
+              CANVAS (`DomeScreen.tsx`), so a reader who already learned the
+              swatches there is not shown a second vocabulary for one picture.
+              It is also where the wind reading - and the Open-Meteo link the
+              licence requires beside it (#634) - lives; this card had no
+              other place on it where that reading was ever written out. */}
+          {canViewWeather && (
+            <DomeLegend hasTarget={target !== null} wind={wind} drawn={drawn} />
           )}
 
           {/* WHICH ARC IS WHICH. Only the bright one is labelled on the

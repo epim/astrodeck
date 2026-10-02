@@ -645,6 +645,31 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
             }
             onHours={(h) => chooseHours(snapHours(h, dawnH))}
           />
+          {/* #634's third surface. The amber hold bands above are drawn from
+              weather.forecast.cloud and threshold_pct - Open-Meteo's own
+              forecast, the same source DomeCard/domeOverlay.tsx's
+              DomeLegend and the Weather hub's ConditionsScreen already
+              credit next to their own Open-Meteo-sourced readings (CC BY
+              4.0: a LINK next to any location the data are displayed, not
+              just the name). Present whenever the forecast is in play for
+              tonight's arc, same as the `holds` memo's own guard above, not
+              only when a band is actually drawn: "clear tonight" is also a
+              reading of this forecast, the same way DomeLegend's link
+              stays up when `wind` is null. */}
+          {weather && weather.forecast && !weather.ignore_tonight && (
+            <Mono size={10} tone="dim">
+              {"Cloud forecast: "}
+              <a
+                href="https://open-meteo.com/"
+                target="_blank"
+                rel="noreferrer"
+                data-testid="quick-arc-weather-source"
+                style={{ textDecoration: "underline dotted", textUnderlineOffset: 2, color: "inherit" }}
+              >
+                Open-Meteo
+              </a>
+            </Mono>
+          )}
           <button
             type="button"
             data-testid="quick-arc-floor"

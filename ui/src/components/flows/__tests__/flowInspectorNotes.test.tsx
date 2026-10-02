@@ -52,14 +52,15 @@ for (const k of [
 // below (by a future row this file comes to cover, or by React itself under
 // some build) would otherwise go on firing into whatever this file's
 // `process.exit()`-less import() does next, which is exactly the shape of "7/7
-// passed, then the export never resolves" seen on a loaded CI runner. Once
-// `root.unmount()` runs, new frames are dropped rather than scheduled.
-let framesSuppressed = false;
-g.requestAnimationFrame = (cb: (t: number) => void) =>
-  framesSuppressed ? 0 : setTimeout(() => cb(0), 0);
+// passed, then the export never resolves" seen on a loaded CI runner. #652
+// moved the guard (and the other 26 copies of this same shim) into one shared
+// module; `rafHandle.suppress()` below is what used to be this file's own
+// `framesSuppressed` flag.
+const rafHandle = installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------------- imports
+import { installAutoRaf } from "../../../testing/rafPolyfill";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
@@ -225,7 +226,7 @@ test("no unmapped rows at all prints neither heading", () => {
 });
 
 act(() => { root.unmount(); });
-framesSuppressed = true;
+rafHandle.suppress();
 
 // --------------------------------------------------------- #614 regression
 // This has to be a real timer round trip, not a synchronous check: the whole
@@ -237,10 +238,11 @@ let lateFrameFired = false;
 g.requestAnimationFrame(() => { lateFrameFired = true; });
 await new Promise<void>((resolve) => setTimeout(resolve, 20));
 test("the rAF polyfill drops a frame requested after this file's own root unmounted", () => {
-  // MUTATION (named "polyfill keeps scheduling after unmount"): drop the
-  // `framesSuppressed ? 0 :` guard above, back to a bare
-  // `setTimeout(() => cb(0), 0)`. Observed: lateFrameFired is true here and
-  // this assertion throws "a frame scheduled after unmount still fired".
+  // MUTATION (named "polyfill keeps scheduling after unmount"): in
+  // testing/rafPolyfill.ts's installAutoRaf, drop the `suppressed ? 0 :`
+  // guard, back to a bare `setTimeout(() => cb(now()), 0)`. Observed:
+  // lateFrameFired is true here and this assertion throws "a frame scheduled
+  // after unmount still fired".
   assert.ok(!lateFrameFired,
     "a frame scheduled after root.unmount() still fired -- a leftover rAF "
     + "loop kept going exactly like this would keep this file's own "

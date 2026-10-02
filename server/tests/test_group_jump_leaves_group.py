@@ -124,6 +124,12 @@ async def test_a_member_a_jump_consumes_leaves_its_group(
         pass']
           Left contains one more item: 'M31: pass 3 took no exposures and
         deferred 1 visits; waiting 300 s before the next pass'
+
+    W7 INTEGRATION RE-PIN (WP-49 / D-07, owner-approved 2026-09-30):
+    ``_group_state`` now always publishes ``kind`` and ``for_now`` on a
+    ``set_aside`` record. A jumped panel carries no ``set_aside_kind``
+    entry, so ``kind`` reads its default, ``"panel"``, and ``for_now`` is
+    ``False``. WP-49 changed this deliberately; it is not a regression.
     """
     action, arg, words = JUMPS[kind]
     rule = Instruction(id="jump", trigger="on_hfr_above", threshold=1.0,
@@ -151,7 +157,7 @@ async def test_a_member_a_jump_consumes_leaves_its_group(
     after = [v["group"]["set_aside"] for t, v in published
              if t >= jumped and v.get("group")]
     assert after, "premise: the group was published after the jump"
-    named = {"panel": "1-2", "reason": words}
+    named = {"panel": "1-2", "reason": words, "kind": "panel", "for_now": False}
     assert any(named in sa for sa in after), (
         f"no published group named 1-2 set aside after the jump: {after}")
 

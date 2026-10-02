@@ -1545,6 +1545,13 @@ function recordedStates(): Record<string, SequenceState> {
   return (JSON.parse(text) as { states: Record<string, SequenceState> }).states;
 }
 
+// W7 INTEGRATION RE-PIN (WP-49 / D-07, owner-approved 2026-09-30): the
+// recorded fixture's 2-2 set-aside record now carries `for_now: true`
+// (`_group_state`), and `panelStateOf` carries that into `forNow` on the
+// `set_aside` `PanelRunState`. The five hand-built `{ kind: "set_aside",
+// reason }` expectations below gain `forNow: true` to match; this was not a
+// bug, WP-49 added the field deliberately.
+//
 // MUTANT "grid unchecked" (runPanelsOf loses its `grid.rows !== rows ||
 // grid.cols !== cols` test, so the live group's labels are drawn on any
 // grid). Observed (scratch copy S5-RUNMODE-mut, 2026-09-28; the reason's em
@@ -1562,7 +1569,7 @@ test("runPanelsOf reads the live group's panels on the grid it runs, and nothing
   // does (#451): the recorded shooting state is "running".
   const run = st.shooting;
   eq(runPanelsOf(shooting, 2, 2, g2, run),
-    { "1-1": { kind: "shooting" }, "2-2": { kind: "set_aside", reason } }, "the recorded run");
+    { "1-1": { kind: "shooting" }, "2-2": { kind: "set_aside", reason, forNow: true } }, "the recorded run");
   // The recorded panels, 1-1 and 2-2, sit on the diagonal, where a label read
   // column first names the same panel. The same group moved on to 1-3 of a
   // 2x3 (two rows, three columns) does not: there is no row 3. MUTANT "row and
@@ -1575,11 +1582,11 @@ test("runPanelsOf reads the live group's panels on the grid it runs, and nothing
   //     GoTo"}}, got {"2-2":{"kind":"set_aside","reason":"centring failed on 2-2 on 3 consecutive
   //     visits: plate solve failed <U+2014> used raw GoTo"}}
   eq(runPanelsOf({ ...shooting, panel: "1-3" }, 2, 3, { rows: 2, cols: 3 }, run),
-    { "1-3": { kind: "shooting" }, "2-2": { kind: "set_aside", reason } }, "a 2x3 run on 1-3, off the diagonal");
+    { "1-3": { kind: "shooting" }, "2-2": { kind: "set_aside", reason, forNow: true } }, "a 2x3 run on 1-3, off the diagonal");
   // A meridian wait shoots nothing, for the operator (served the panel) and
   // the viewer (not served it); the set-aside panel stays for both.
   for (const who of ["meridian_wait_operator", "meridian_wait_viewer"]) {
-    eq(runPanelsOf(st[who].group, 2, 2, g2, st[who]), { "2-2": { kind: "set_aside", reason } }, who);
+    eq(runPanelsOf(st[who].group, 2, 2, g2, st[who]), { "2-2": { kind: "set_aside", reason, forNow: true } }, who);
   }
   // No group, or a progress block for another grid than the draft's: the
   // labels name another piece of sky, and nothing is drawn.
@@ -1619,10 +1626,10 @@ test("runPanelsOf: the panel a paused, held or stopping run is on is current, ne
   ];
   for (const [who, current] of want) {
     eq(runPanelsOf(st[who].group, 2, 2, g2, st[who]),
-      { "1-1": current, "2-2": { kind: "set_aside", reason } }, `the recorded ${who} state`);
+      { "1-1": current, "2-2": { kind: "set_aside", reason, forNow: true } }, `the recorded ${who} state`);
   }
   // A run nobody knows shoots nothing; the set-aside panel still holds.
-  eq(runPanelsOf(st.holding.group, 2, 2, g2, null), { "2-2": { kind: "set_aside", reason } },
+  eq(runPanelsOf(st.holding.group, 2, 2, g2, null), { "2-2": { kind: "set_aside", reason, forNow: true } },
     "the held group with no run state");
 });
 

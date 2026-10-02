@@ -24,6 +24,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { installAutoRaf } from "../../../testing/rafPolyfill";
+
 // ---------------------------------------------------------------- jsdom first
 // FlowCanvas imports the store, and store.ts -> lib/base.ts reads
 // `window.location.pathname` at module scope, so every import below is dynamic
@@ -55,8 +57,7 @@ for (const k of [
   const v = k === "window" ? win : win[k];
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
 }
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
-g.cancelAnimationFrame = (id: number) => clearTimeout(id);
+installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 // Nothing on this surface should reach the network; answer anything that does
 // with an empty success rather than letting it throw into a render.

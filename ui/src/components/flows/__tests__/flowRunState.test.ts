@@ -351,9 +351,35 @@ test("panelStateOf: the panel being shot, and the one set aside with the engine'
   const reason = g.set_aside[0].reason;
   assert(reason.startsWith("centring failed on 2-2"), `premise: the engine's reason: ${reason}`);
   eq(panelStateOf("1-1", g, SHOOTING), { kind: "shooting" }, "1-1 is being shot");
-  eq(panelStateOf("2-2", g, SHOOTING), { kind: "set_aside", reason }, "2-2 while 1-1 is shot");
+  eq(panelStateOf("2-2", g, SHOOTING), { kind: "set_aside", reason, forNow: true },
+    "2-2 while 1-1 is shot");
   eq(panelStateOf("1-2", g, SHOOTING), null, "1-2 waits its turn");
   eq(panelStateOf("2-1", g, SHOOTING), null, "2-1 waits its turn");
+});
+
+// #573 (#534 follow-up; backlog ruling D-07, owner-approved 2026-09-30):
+// the record's `for_now` rides into `PanelRunState`'s `forNow`, both ways,
+// so PanelsSection can word a for-now set-aside differently from one that
+// lasts the night.
+//
+// MUTANT "forNow dropped" (panelStateOf's set-aside branch answering a
+// literal `forNow: false`, never reading `aside.for_now`). Observed, run
+// against this file in a private copy of ui/ (scratchpad w7-WP49-mut, from
+// a byte backup of flowRunState.ts, restored and sha256-compared after):
+//   x panelStateOf: a set-aside record's for_now rides into forNow, both ways: for_now true from the recorded state
+//     expected {"kind":"set_aside","reason":"centring failed on 2-2 on 3 consecutive visits: plate solve failed ... used raw GoTo","forNow":true}
+//     got      {"kind":"set_aside","reason":"centring failed on 2-2 on 3 consecutive visits: plate solve failed ... used raw GoTo","forNow":false}
+test("panelStateOf: a set-aside record's for_now rides into forNow, both ways", () => {
+  const g = SHOOTING.group!;
+  const reason = g.set_aside[0].reason;
+  eq(panelStateOf("2-2", g, SHOOTING), { kind: "set_aside", reason, forNow: true },
+    "for_now true from the recorded state");
+  const tonight = { ...g, set_aside: [{ ...g.set_aside[0], for_now: false }] };
+  eq(panelStateOf("2-2", tonight, SHOOTING), { kind: "set_aside", reason, forNow: false },
+    "for_now false reads as forNow false");
+  const missing = { ...g, set_aside: [{ panel: "2-2", reason } as any] };
+  eq(panelStateOf("2-2", missing, SHOOTING), { kind: "set_aside", reason, forNow: false },
+    "a record with no for_now at all reads as not for now, never as a crash");
 });
 
 // MUTANT "shooting through a meridian wait" (the meridian_wait test dropped:
@@ -369,7 +395,8 @@ test("panelStateOf: across a meridian wait no panel is being shot, for an operat
     const reason = g.set_aside[0].reason;
     eq(panelStateOf("2-1", g, s), null,
       who === "operator" ? "2-1, the operator's stale panel" : "2-1, for a viewer");
-    eq(panelStateOf("2-2", g, s), { kind: "set_aside", reason }, `2-2 stays set aside for the ${who}`);
+    eq(panelStateOf("2-2", g, s), { kind: "set_aside", reason, forNow: true },
+      `2-2 stays set aside for the ${who}`);
     for (const label of ["1-1", "1-2"]) eq(panelStateOf(label, g, s), null, `${label} for the ${who}`);
   }
 });
@@ -468,7 +495,8 @@ test("panelStateOf: a run that is not live shoots nothing; a run nobody knows sh
 test("panelStateOf: the held states keep the set-aside panel and its reason, and the join is the flow's", () => {
   for (const s of [PAUSED, HOLDING, ABORTING]) {
     const reason = s.group!.set_aside[0].reason;
-    eq(panelStateOf("2-2", s.group!, s), { kind: "set_aside", reason }, `2-2 while ${s.state}`);
+    eq(panelStateOf("2-2", s.group!, s), { kind: "set_aside", reason, forNow: true },
+      `2-2 while ${s.state}`);
     eq(flowRunLive(KNOWN, s), true, `the ${s.state} run is this flow's live run`);
   }
   // The join the sheet makes: the block's group from the hold, and its panel.
