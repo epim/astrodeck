@@ -411,7 +411,7 @@
     {
       "id": "OP-025",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "5. For a brief simulator check once the required providers work, select **CAPTURE LOOP** and set **Exposure** to 1 second, **Count** to 1 and **Integration goal** to 0. The goal is a planning budget, not a run quota. Review the dusk window, target visibility and any other capture stages too; a small frame count does not skip waiting, autofocus or centring.",
+      "claim": "5. For a brief simulator check once the required providers work, select **CAPTURE LOOP** and set **Exposure** to 1 second, **Count** to 1 and **Integration goal** to 0. The goal is a planning estimate, not a run quota. Review the dusk window, target visibility and any other capture stages too; a small frame count does not skip waiting, autofocus or centring.",
       "sources": [
         {
           "path": "ui/src/components/flows/nodeDefs.ts",
@@ -667,7 +667,7 @@
     {
       "id": "OP-034",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "7. Select **DONE**, wait for the compile, and review its checks. If a changed framing would restart recorded counts, read the confirmation before choosing **RE-FRAME**. The old banked subs stay on disk, but the affected layout starts counting from zero. Running flows and read-only examples open framing for inspection rather than editing.",
+      "claim": "7. Select **DONE**, wait for the compile, and review its checks. If a changed framing would restart recorded counts, read the confirmation before choosing **RE-FRAME**. The old saved subs stay on disk, but the affected layout starts counting from zero. Running flows and read-only examples open framing for inspection rather than editing.",
       "sources": [
         {
           "path": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
@@ -695,7 +695,7 @@
     {
       "id": "OP-035",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "New target blocks count accepted subs. Review banked progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.",
+      "claim": "New target blocks count accepted subs. Review saved progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.",
       "sources": [
         {
           "path": "ui/src/components/flows/nodeDefs.ts",
@@ -951,7 +951,7 @@
     {
       "id": "OP-046",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "| **CAPTURE LOOP** | Captures the selected filter, exposure, gain, binning and frame count. Integration hours are a planning budget, not a run quota; absolute reject-HFR on the card is not the rig's grading rule. |",
+      "claim": "| **CAPTURE LOOP** | Captures the selected filter, exposure, gain, binning and frame count. Integration hours are a planning estimate, not a run quota; absolute reject-HFR on the card is not the rig's grading rule. |",
       "sources": [
         {
           "path": "ui/src/components/flows/nodeDefs.ts",
@@ -1023,7 +1023,7 @@
     {
       "id": "OP-049",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "| **CALIBRATION QUEUE** | Can fund dark frames during a cloud hold. A shutdown-complete wire can fund day darks after a normal night. Queue ordering, bias and flat legs are not implemented. |",
+      "claim": "| **CALIBRATION QUEUE** | Can take dark frames during a cloud hold. A shutdown-complete wire can take day darks after a normal night. Queue ordering, bias and flat legs are not implemented. |",
       "sources": [
         {
           "path": "ui/src/components/flows/nodeDefs.ts",
@@ -1047,7 +1047,7 @@
     {
       "id": "OP-050",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "| **TARGET POOL** | Supplies candidate targets to the scheduler. Completed quotas are skipped across nights; targets set aside still owe frames. Frame counts end the campaign, not its estimated integration hours. |",
+      "claim": "| **TARGET POOL** | Supplies candidate targets to the scheduler. Completed quotas are skipped across nights; targets set aside still need frames. Frame counts end the campaign, not its estimated integration hours. |",
       "sources": [
         {
           "path": "ui/src/components/flows/nodeDefs.ts",
@@ -1251,7 +1251,7 @@
     {
       "id": "OP-058",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "The current shutdown warning can incorrectly say that no darks are taken after shutdown ([#646](https://github.com/epim/astrodeck/issues/646)). A funded shutdown-complete calibration lane can take day darks after a normal night, between park and warm-up. See [Unattended nights](unattended-nights.md) for the abort and unsafe-trip limits.",
+      "claim": "The current shutdown warning can incorrectly say that no darks are taken after shutdown ([#646](https://github.com/epim/astrodeck/issues/646)). A wired shutdown-complete calibration lane can take day darks after a normal night, between park and warm-up. See [Unattended nights](unattended-nights.md) for the abort and unsafe-trip limits.",
       "sources": [
         {
           "path": "server/astrodeck/flows/to_plan.py",
@@ -3147,7 +3147,7 @@
     {
       "id": "OP-155",
       "page": "docs/guide/unattended-nights.md",
-      "claim": "A flow-derived plan requests park and camera warm-up when its observing window ends, including dawn. The wind-down closes the dust cover; roof or dome closure depends on the configured policy. If a funded shutdown calibration lane requests day darks, a normal night can take them between park and warm-up. An abort or unsafe trip does not run that day-darks lane.",
+      "claim": "A flow-derived plan requests park and camera warm-up when its observing window ends, including dawn. The wind-down closes the dust cover; roof or dome closure depends on the configured policy. If a wired shutdown calibration lane requests day darks, a normal night can take them between park and warm-up. An abort or unsafe trip does not run that day-darks lane.",
       "sources": [
         {
           "path": "server/astrodeck/flows/to_plan.py",
