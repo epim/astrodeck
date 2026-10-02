@@ -777,25 +777,25 @@
    {
     "t_unix": 1781584500.0,
     "label": "",
-    "msg": "Moon stays down all night (2% illuminated) \u2014 no moonglow in any of it",
+    "msg": "Moon stays down all night (2% illuminated) - no moonglow in any of it",
     "tone": "faint"
    },
    {
     "t_unix": 1781589914.2750547,
     "label": "",
-    "msg": "M13 crosses the meridian \u2014 engine flips, re-centers via plate solve, restarts guiding; worst case one frame lost",
+    "msg": "M13 crosses the meridian - engine flips, re-centers via plate solve, restarts guiding; worst case one frame lost",
     "tone": "warn"
    },
    {
     "t_unix": 1781592040.0750546,
     "label": "",
-    "msg": "M92 crosses the meridian \u2014 engine flips, re-centers via plate solve, restarts guiding; worst case one frame lost",
+    "msg": "M92 crosses the meridian - engine flips, re-centers via plate solve, restarts guiding; worst case one frame lost",
     "tone": "warn"
    },
    {
     "t_unix": 1781595740.6350548,
     "label": "",
-    "msg": "M16 crosses the meridian \u2014 engine flips, re-centers via plate solve, restarts guiding; worst case one frame lost",
+    "msg": "M16 crosses the meridian - engine flips, re-centers via plate solve, restarts guiding; worst case one frame lost",
     "tone": "warn"
    },
    {

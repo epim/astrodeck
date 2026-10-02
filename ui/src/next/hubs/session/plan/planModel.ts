@@ -172,6 +172,15 @@ export interface Recoverable {
   frames_total: number;
   /** When the run stopped, epoch seconds, or null on an older server. */
   ts: number | null;
+  /** Why the session went dormant (#487, server `_why_dormant`): the last
+   *  report's own word ("aborted" for an operator STOP, "shutdown" for a
+   *  polite server stop since WP-44, or another ending), `RESTART_END_REASON`
+   *  for the traces only a process that stopped under the run leaves, or
+   *  null - no report, an unreadable one, or an older server that sends no
+   *  `end_reason` at all. D-13's title (`resumeTitle.ts`) reads this field;
+   *  mirrors `RecoveryCards.tsx`'s local `Recoverable` (W7 follow-on,
+   *  WP-52, D-13, owner-approved 2026-09-30). */
+  end_reason: string | null;
 }
 
 /** `GET /api/sequence/recoverable`, re-asked on the running EDGE and nowhere
@@ -191,6 +200,7 @@ export function useRecoverable(running: boolean): {
     api.get<{
       recoverable: boolean; session_id?: string; name?: string;
       frames_done?: number; frames_total?: number; ts?: number;
+      end_reason?: string | null;
     }>("/api/sequence/recoverable").then(
       (r) => {
         if (!alive) return;
@@ -201,6 +211,7 @@ export function useRecoverable(running: boolean): {
             frames_done: r.frames_done ?? 0,
             frames_total: r.frames_total ?? 0,
             ts: r.ts ?? null,
+            end_reason: r.end_reason ?? null,
           }
           : null);
       },

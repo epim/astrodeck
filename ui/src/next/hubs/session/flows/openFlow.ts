@@ -92,6 +92,78 @@ export function libraryErrorNow(): string | null {
   return useStore.getState().flows.libraryError;
 }
 
+// ----------------------------------------------- the cold-load race (#658)
+
+/** True once `FlowsScreen`'s own `flowsLoadLibrary()` - started the SAME
+ *  render a cold `?open=<id>` mounts on - has answered. */
+export function libraryHasLoaded(): boolean {
+  return useStore.getState().flows.libraryLoaded;
+}
+
+/** How long {@link waitForLibrary} waits for the flows list to land before
+ *  giving up on it and retrying the open anyway (#658). Not tied to
+ *  `flows.libraryError`: `flowsOpen` writes that same field for BOTH the
+ *  list's own load failure and a single-flow read's failure (see
+ *  `flowOpenFailure`'s own comment), so there is no clean signal in the store
+ *  for "the list failed" that could be told apart from "this read just
+ *  failed". A bound this generous is invisible on a live rig and still
+ *  finite on a dead one. */
+export const LIBRARY_RETRY_WAIT_MS = 5000;
+
+/** A {@link waitForLibrary} in progress: `promise` resolves once the flows
+ *  list has loaded or the bound has passed, and `cancel` releases the store
+ *  subscription and the timer early, for a caller whose own effect unmounts
+ *  or re-fires before either happens. */
+export interface LibraryWait {
+  promise: Promise<void>;
+  cancel: () => void;
+}
+
+/** Resolves once the flows list has loaded, or after {@link
+ *  LIBRARY_RETRY_WAIT_MS}, whichever comes first - the one wait the cold-load
+ *  retry (#658) gives the list before a caller's open effect tries again.
+ *  Lives here, in the component-free door module both `FlowsCanvasHost.tsx`
+ *  and `FlowStagesPhoneSheet.tsx` already import, rather than in either one
+ *  of them: `FlowsCanvasHost.tsx` pulls the canvas barrel in
+ *  (`./canvas/index.ts`), which re-exports `FlowStagesPhoneSheet` - so an
+ *  import the other way, from the phone sheet back to the host, would be a
+ *  cycle (W7 follow-on, #658 class: one race, one fix, read from one place).
+ *
+ *  THE SUBSCRIPTION AND THE TIMER OUTLIVE `finish()` ALONE, UNLESS CANCELLED.
+ *  Before `cancel` existed (on the host's own first version of this helper),
+ *  a caller whose component unmounted mid-wait had no way to let go of
+ *  either early, so a subscription to the WHOLE store and a pending timer
+ *  sat there for up to {@link LIBRARY_RETRY_WAIT_MS} after the component
+ *  that asked for them was gone. Every caller's own effect cleanup calls
+ *  `cancel()`, so neither outlives the effect that started it. `cancel`
+ *  never resolves `promise`: the caller that cancels is already tearing down
+ *  (or about to re-fire with new deps), so nothing is left to act on a late
+ *  resolution anyway. */
+export function waitForLibrary(): LibraryWait {
+  if (libraryHasLoaded()) return { promise: Promise.resolve(), cancel: () => {} };
+  let settled = false;
+  let unsubscribe: () => void = () => {};
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const promise = new Promise<void>((resolve) => {
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    unsubscribe = useStore.subscribe((s) => { if (s.flows.libraryLoaded) finish(); });
+    timer = setTimeout(finish, LIBRARY_RETRY_WAIT_MS);
+  });
+  const cancel = (): void => {
+    if (settled) return;
+    settled = true;
+    if (timer !== null) clearTimeout(timer);
+    unsubscribe();
+  };
+  return { promise, cancel };
+}
+
 /** One close at a time.
  *
  *  Two doors can fire at once for real: the phone sheet's BACK calls this and

@@ -7,17 +7,17 @@
 //   Run:  node --import tsx src/next/hubs/session/plan/__tests__/w7PlanResumeTitle.test.tsx
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
 //
-// KNOWN GAP, NOT FIXED HERE: `planModel.ts`'s `useRecoverable()` does not read
-// `end_reason` off `GET /api/sequence/recoverable` yet, so in production this
-// card's `rec.end_reason` is always `undefined` and it always falls back to
-// RESUME INTERRUPTED RUN today, same as the literal title it replaces - never
-// wrong, just not yet able to say STOPPED. Filed as a new defect for that file
-// (out of WP-52's edit scope: `PlanResume.tsx`, `Interrupted.tsx` and
-// `RecoveryCards.tsx` only). The cases below construct `rec` objects that
-// carry `end_reason` directly (the shape this card will receive once that gap
-// closes) to prove THIS component's own logic is correct right now, plus a
-// control pinning today's real fallback behaviour so the gap does not silently
-// start passing wrong.
+// GAP CLOSED (W7 follow-on, WP-52, D-13, owner-approved 2026-09-30):
+// `planModel.ts`'s `useRecoverable()` now reads `end_reason` off
+// `GET /api/sequence/recoverable` and puts it on `Recoverable` itself, so
+// this card's `rec.end_reason` is the server's real value in production,
+// not always `undefined` as it was before (`w7PlanResumeMapping.test.ts`
+// tests that mapping, through `useRecoverable()`, not a hand-built `rec`).
+// The cases below still construct `rec` objects directly, to prove THIS
+// component's own title logic is correct in isolation from the hook, plus
+// a control pinning the no-`end_reason` fallback (an older server, or a
+// caller that cannot answer the field) so that fallback does not silently
+// start reading wrong.
 //
 // NAMED MUTANT, run from a byte backup of PlanResume.tsx and restored
 // byte-identical afterwards (sha256 checked). The observed failure is quoted
@@ -127,12 +127,10 @@ test("given end_reason, a restart titles the card RESUME INTERRUPTED RUN", () =>
   assert(title === "RESUME INTERRUPTED RUN", `a restart's title changed: "${title}"`);
 });
 
-// CONTROL pinning the known, documented gap: planModel.ts's useRecoverable()
-// does not send end_reason yet, so this is what the card actually shows in
-// production today. If this ever starts asserting "RESUME STOPPED RUN" here,
-// someone wired end_reason through without updating this control - go update
-// it and remove this comment, the gap is closed.
-test("control: today's real shape (no end_reason at all) still titles the card RESUME INTERRUPTED RUN", () => {
+// CONTROL: a `rec` with no `end_reason` at all (an older server, or a caller
+// that still cannot answer the field) falls back to INTERRUPTED, never
+// STOPPED - resumeTitle.ts's own rule, pinned here against this component.
+test("control: no end_reason at all still titles the card RESUME INTERRUPTED RUN", () => {
   const title = titleFor(rec());
   assert(title === "RESUME INTERRUPTED RUN",
     `the fallback for today's real (end_reason-less) data changed: "${title}"`);
