@@ -41,9 +41,27 @@ export function formatLastRun(lastRun: number | null): string {
        + ` · ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** `14 stages · 14 wires · last run 2026-08-09 · 02:37` */
-export function cardMeta(card: FlowCard): string {
-  return `${card.stages} stages · ${card.wires} wires · ${formatLastRun(card.last_run)}`;
+/** `14 stages · 14 wires · last run 2026-08-09 · 02:37`, or, when the status
+ *  row already reads NEVER RUN, `14 stages · 14 wires` with the last-run slot
+ *  left out entirely (#232; backlog ruling D-14, owner-approved 2026-09-30:
+ *  "The status word keeps it. The meta line drops its last-run slot when the
+ *  status reads NEVER RUN."). Before this, a never-run card said so twice -
+ *  this line's own slot, then the status row below it - and a <button> with
+ *  no aria-label takes its name from both, so a screen reader heard it twice
+ *  as well (#232's own evidence).
+ *
+ *  `neverRun` is the status as DRAWN, never `card.last_result` re-read: an
+ *  unreadable row's status is CANNOT OPEN even though its `last_result` is
+ *  also `""` (FlowStore never ran it either), and that status does not repeat
+ *  the slot, so its meta line keeps saying "never run". #/next's FlowsScreen
+ *  calls this with no second argument - it carries no separate status row
+ *  beside the meta line (it appends the status word to the SAME line only for
+ *  `"ok"`/`"warn"`/`"bad"`, never for never-run), so dropping the slot there
+ *  would delete the only place that screen says a flow has never run; the
+ *  default keeps the slot, unchanged from before #232. */
+export function cardMeta(card: FlowCard, neverRun = false): string {
+  const base = `${card.stages} stages · ${card.wires} wires`;
+  return neverRun ? base : `${base} · ${formatLastRun(card.last_run)}`;
 }
 
 export interface CardStatus {
@@ -184,7 +202,13 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
           {unreadable}
         </span>
       )}
-      <span className="font-mono text-[10px] text-faint">{cardMeta(card)}</span>
+      {/* D-14 (#232): the slot this line gives `last_run` is withheld exactly
+          when the status row below already reads NEVER RUN, never from
+          `card.last_result` read a second time, so an unreadable row (status
+          CANNOT OPEN, `last_result` also "") still says never run here. */}
+      <span className="font-mono text-[10px] text-faint">
+        {cardMeta(card, status.text === "NEVER RUN")}
+      </span>
       {/* The word is printed, so the LED beside it carries NO label, which
           `Led` draws aria-hidden. A labelled LED is role="img" with that
           label, and in a button named from its content the label stands in
