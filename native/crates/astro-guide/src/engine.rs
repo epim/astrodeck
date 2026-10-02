@@ -2439,7 +2439,10 @@ mod tests {
         // t=0: the lock establishes at (100, 100); tracking mirrors it (both
         // are `self.search_origin`'s value on the lock-establishing frame).
         e.ingest(
-            &FrameMeta { timestamp_s: 0.0, exposure_s: 1.0 },
+            &FrameMeta {
+                timestamp_s: 0.0,
+                exposure_s: 1.0,
+            },
             &[found_star()],
         );
         assert_eq!(e.stats().lock, Some((100.0, 100.0)));
@@ -2464,7 +2467,10 @@ mod tests {
         let mut last = Action::Idle;
         for i in 1..=11 {
             last = e.ingest(
-                &FrameMeta { timestamp_s: i as f64 * 2.0, exposure_s: 1.0 },
+                &FrameMeta {
+                    timestamp_s: i as f64 * 2.0,
+                    exposure_s: 1.0,
+                },
                 &[lost],
             );
         }
@@ -2494,7 +2500,13 @@ mod tests {
             hfd: 3.0,
             found: true,
         };
-        e.ingest(&FrameMeta { timestamp_s: 24.0, exposure_s: 1.0 }, &[decoy]);
+        e.ingest(
+            &FrameMeta {
+                timestamp_s: 24.0,
+                exposure_s: 1.0,
+            },
+            &[decoy],
+        );
 
         // THE FIX: tracking follows the reacquired star even though the
         // fixed offset reference does not -- this is what lets the host

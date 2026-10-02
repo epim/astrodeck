@@ -1106,6 +1106,12 @@ async def test_control_a_target_that_a_slew_would_find_in_the_keep_out_stays_sto
     `SlewRefused` and holds (#240, T7), so the gate refuses the slew the
     pre-ask would have, and the mount stays where it is. That SafetyAbort's
     sentence is words since #233.
+
+    The no-move check allows the stopped simulator's sidereal RA drift
+    (WP-51, D-11) and nothing more. MUTANT "the mount moved 0.01 h during the
+    hold" (``tel.rig.ra_hours += 0.01`` injected after the watch, a move far
+    smaller than any slew): RED (observed) -
+        assert 0.009999999999999787 <= 1e-09
     """
     import time
     e, a = _parked_for_the_keep_out(sim_hub, ha_h=0.0)
@@ -1123,10 +1129,20 @@ async def test_control_a_target_that_a_slew_would_find_in_the_keep_out_stays_sto
     tel = sim_hub.devices["telescope"]
     await tel.set_tracking(False)
     before = (tel.rig.ra_hours, tel.rig.dec_deg)
+    t0 = time.time()
     try:
         await e._hold_watch(a, ahead_s=WATCH)
         assert e._hold_parked == "ceiling"
-        assert (tel.rig.ra_hours, tel.rig.dec_deg) == before
+        # "Nothing moves" means no slew. Since WP-51 (#519, backlog ruling
+        # D-11) a stopped simulator's RA drifts with the sidereal clock, as a
+        # real GEM's does, so RA may move by exactly that drift over the time
+        # this took and no more; a slew would move it by degrees, and Dec
+        # does not drift at all. (It read exact equality, which Windows'
+        # coarse clock happened to keep and the Linux runner did not.)
+        drift_h = (time.time() - t0) / 3600.0 * 1.0027379 + 1e-9
+        assert abs(tel.rig.ra_hours - before[0]) <= drift_h, (
+            tel.rig.ra_hours, before[0], drift_h)
+        assert tel.rig.dec_deg == before[1]
         assert tel.rig.tracking is False
     finally:
         e._holding_for_clear = False
