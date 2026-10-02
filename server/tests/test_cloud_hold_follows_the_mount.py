@@ -625,8 +625,17 @@ async def test_a_hold_that_repointed_and_then_ended_leaves_the_target_watched(
         AssertionError: the hold ended with the mount tracking Bravo and the
         wait that followed never stopped it: tracking calls after the hold
         ended [] s
+
+    HORIZON WIDENED FOR #164 (orchestrator ruling, 2026-10-02, owner-approved
+    plan 2026-09-30, backlog ruling D-nn): Bravo's own ``max_run_min`` now
+    counts from Bravo's own FIRST ATTEMPT (the hour-angle constraint's
+    release at ``t0 + 300``, read off ``t_h`` below), not from the run's
+    start, so its window closes at ``t_h + 600`` = ``t0 + 900``, not at the
+    old ``t0 + 600``. 900 s was exactly the horizon before; it is widened so
+    the close, and the wait that follows it, both still land inside the
+    window this test watches.
     """
-    w = _Watched(sim_hub, temp_store, monkeypatch, horizon_s=900.0)
+    w = _Watched(sim_hub, temp_store, monkeypatch, horizon_s=1000.0)
     a = _target("Alpha", _ra_at(-3.0, w.t0), 40.0, count=1)
     b = _constraint_waiter("Bravo", w.t0, ready_after_s=300.0)
     b.schedule.max_run_min = 10

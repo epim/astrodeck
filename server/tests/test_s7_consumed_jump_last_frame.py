@@ -348,13 +348,13 @@ async def test_a_complete_target_owed_its_rules_is_not_held_by_its_gating(
 @pytest.mark.parametrize("dest", ["A", "B"])
 async def test_every_window_closing_leaves_the_complete_target_complete(
         group_hub, monkeypatch, dest):
-    """#490: A's one 150 s frame, inside a 2-minute window (``max_run_min``)
-    that A and B share, ends past it and fires a jump, a no-op ("run to A")
-    or a consumed one ("run to B"). Every window is closed at the next
-    selection. A is complete and owed its ``on_target_complete`` rules, so
-    that selection takes A up (the pick above) before the all-closed sweep:
-    its rule runs once and it is not written as skipped. B, which owes its
-    frame, is skipped as the window closed, and the night is a dawn cutoff.
+    """#490: A's one 150 s frame, inside ITS OWN 2-minute window
+    (``max_run_min``), ends past it and fires a jump, a no-op ("run to A") or
+    a consumed one ("run to B"). A's window is closed at the next selection,
+    but A is complete and owed its ``on_target_complete`` rules, so that
+    selection takes A up (the pick above) before any all-closed sweep could
+    mark it skipped: its rule runs once, and it is never written as skipped,
+    whichever way the jump went.
 
     MUTANT "complete owed target gated" (above), in the same private
     scratch copy: RED on both (observed), the sweep marking A skipped with
@@ -365,6 +365,20 @@ async def test_every_window_closing_leaves_the_complete_target_complete(
     RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): the report line now
     carries the reason `mark_skipped` was called with, "window closed",
     after a colon.
+
+    RE-PINNED AGAIN FOR #164 (orchestrator ruling, 2026-10-02, owner-approved
+    plan 2026-09-30, backlog ruling D-nn): A and B used to SHARE one frozen
+    window, both anchored to the run's start, so B's budget was already
+    spent by the time A's 150 s frame put that shared window in the past --
+    B was skipped with it ("skipped B: window closed", a dawn cutoff)
+    however the jump went, despite never having been touched. B's own
+    ``max_run_min`` now counts from B's own first attempt, which has not
+    happened by the time A completes at 150 s: an unattempted target has no
+    ``max_run_min`` limit of its own yet (only its own dawn/clock stop,
+    which B has none of), so B is picked up fresh next, shoots its one frame
+    well inside its own new budget, and the night completes instead of
+    ending on a dawn cutoff that was really just A's own overrun bleeding
+    onto a target that never got a turn -- #164's own two-target example.
     """
     from astrodeck.sequence.models import Schedule
     a = single("A", schedule=Schedule(max_run_min=2))
@@ -375,6 +389,15 @@ async def test_every_window_closing_leaves_the_complete_target_complete(
     night, _ = await _run(group_hub, monkeypatch, plan)
     assert night.done, night.lines[-4:]
     assert night.said("A is done") == ["A is done"], night.said("done")
-    assert _skips(night) == ["skipped B: window closed"], _skips(night)
-    assert night.shots() == [("A", "L")], night.shots()
-    assert night.engine.reporter.build().end_reason == "dawn_cutoff"
+    jumped = ["instruction: jumping to target 'B' (A is complete)"]
+    no_op = ["instruction run_target: 'A' is already running — no-op"]
+    if dest == "B":
+        assert night.said(jumped[0]) == jumped, night.lines
+        assert night.said(no_op[0]) == [], night.lines
+    else:
+        assert night.said(no_op[0]) == no_op, night.lines
+        assert night.said(jumped[0]) == [], night.lines
+    assert _skips(night) == [], _skips(night)
+    assert night.shots() == [("A", "L"), ("B", "L")], night.shots()
+    assert night.stored.status == "complete", night.stored.status
+    assert night.engine.reporter.build().end_reason == "complete"

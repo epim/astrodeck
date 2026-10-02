@@ -440,15 +440,56 @@ def _clock_time_near_now(time_str: str | None, now: float) -> float | None:
     return candidate
 
 
+#: Sentinel default for `resolve_window`'s `max_run_from`. Every caller from
+#: before backlog ruling D-nn / #164 (orchestrator ruling, 2026-10-02,
+#: owner-approved plan 2026-09-30) anchored the `max_run_min` cap to the
+#: window's own resolved clock `start`, and every caller that does not track
+#: a target's own first-attempt time -- a compile-time "never rises" preview
+#: (api/app.py), `resume_arm.window_open`'s reachability check, the
+#: `schedule_order` sort (which only reads `start`), a one-shot
+#: `gating_status` asked with no frozen `window` -- keeps that exact answer
+#: by leaving `max_run_from` unset. Only the live engine's per-target FROZEN
+#: window (`sequence.engine._run_scheduled` / `_schedule_loop`) passes a
+#: concrete `max_run_from`.
+_ANCHOR_AT_CLOCK_START = object()
+
+
+def apply_max_run_cap(stop_ts: float | None, max_run_min: int | None,
+                      anchor_ts: float | None) -> float | None:
+    """Cap ``stop_ts`` at ``anchor_ts + max_run_min`` minutes, whichever is
+    sooner. ``None`` on either side of the cap leaves ``stop_ts`` untouched:
+    ``max_run_min`` falsy (0, "no cap") answers the same as always, and
+    ``anchor_ts`` ``None`` means no budget has started counting yet.
+
+    Backlog ruling for #164 (orchestrator, 2026-10-02, owner-approved plan
+    2026-09-30): a target's ``max_run_min`` counts from its own FIRST
+    ATTEMPT, not from the run's start or its own clock-resolved start. A
+    target never yet attempted has ``anchor_ts is None`` and so NO
+    ``max_run_min`` limit yet -- only its dawn/clock stop (if any) applies --
+    which is what lets a later target in a multi-target plan keep its own
+    full budget instead of inheriting however much an earlier target spent.
+    """
+    if not max_run_min or anchor_ts is None:
+        return stop_ts
+    cap = anchor_ts + max_run_min * 60.0
+    return cap if stop_ts is None else min(stop_ts, cap)
+
+
 def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
-                   now: float) -> tuple[float | None, float | None]:
+                   now: float,
+                   max_run_from: float | None = _ANCHOR_AT_CLOCK_START
+                   ) -> tuple[float | None, float | None]:
     """``(start_ts, stop_ts)`` for tonight.
 
     ``start_mode``: ``now`` => ``now``; ``dusk``/``dawn`` => the twilight crossing
     + ``start_offset_min``; ``time`` => the next ``start_time``. ``stop_mode``:
     ``none`` => no stop (``None``); ``dawn``/``time`` similarly. ``max_run_min``,
-    when set, also caps the stop to ``start + max_run_min`` (whichever is sooner).
-    A boundary that cannot be resolved (e.g. polar dusk) yields ``None`` there.
+    when set, also caps the stop, via :func:`apply_max_run_cap`, anchored at
+    ``max_run_from`` -- which defaults to the resolved ``start`` (every prior
+    caller's exact old answer) and is THE TARGET'S OWN FIRST-ATTEMPT time when
+    the live engine passes one (see ``apply_max_run_cap`` and
+    ``_ANCHOR_AT_CLOCK_START`` above; backlog ruling for #164). A boundary
+    that cannot be resolved (e.g. polar dusk) yields ``None`` there.
 
     ``twilight_deg`` is the RIG's angle, the caller's fallback; ``sched.
     twilight_deg`` (backlog WP-09, #191), when not None, is THIS TARGET's own
@@ -460,7 +501,9 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
     clock occurrence). The engine resolves this ONCE at run start and freezes the
     ``(start, stop)`` pair, then compares live ``now`` against the frozen window —
     so a dawn that passes mid-run closes the window instead of re-resolving into
-    tomorrow (§1.6 / gating_status ``window=`` param).
+    tomorrow (§1.6 / gating_status ``window=`` param). It then UPDATES a
+    target's own frozen ``stop_ts`` the first time that target is attempted,
+    folding in the ``max_run_min`` cap only from that moment on (#164).
 
     NO SITE, NO SUN BOUNDARY (#527). With no site saved a dusk or dawn
     boundary is ``None``: unresolvable, as a polar dusk is. It used to be the
@@ -489,10 +532,8 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
                               sched.start_time, latlon, angle, now)
     stop = _resolve_event_ts(sched.stop_mode, sched.stop_offset_min,
                              sched.stop_time, latlon, angle, now)
-    # max_run_min caps the window relative to the resolved start.
-    if sched.max_run_min and start is not None:
-        cap = start + sched.max_run_min * 60.0
-        stop = cap if stop is None else min(stop, cap)
+    anchor = start if max_run_from is _ANCHOR_AT_CLOCK_START else max_run_from
+    stop = apply_max_run_cap(stop, sched.max_run_min, anchor)
     return start, stop
 
 
