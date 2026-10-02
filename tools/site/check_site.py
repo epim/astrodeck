@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check static pages, local references, text style, and optional privacy.
 
-HTML5 parsing is supplied by html5lib; this script adds project conventions.
-It never fetches external URLs and never prints private values or page text.
+HTML5 parsing is supplied by html5lib; this script adds project conventions,
+including a ban on money metaphors in prose (a UI label quoted verbatim from
+the docs ledger is exempt). It never fetches external URLs and never prints
+private values or page text.
 """
 from __future__ import annotations
 
 import argparse
 import html
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import re
@@ -22,7 +25,39 @@ import tinycss2
 REPO = Path(__file__).resolve().parents[2]
 EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]")
 PUFFERY = re.compile(r"\b(seamless|robust|leverage|unlock|delve)\b", re.I)
+# Money metaphors for things that do not involve money (a night that
+# "earned" something, hours "banked", work still "owed"). A UI label quoted
+# verbatim from the app is exempt: see `ui_label_texts`. "pay"/"paid" alone
+# are common words for an actual purchase and are not flagged; only the
+# "pay off" idiom is a metaphor.
+MONEY = re.compile(
+    r"\b(earn(?:ed|s|ing)?|bank(?:ed|s|ing)?|worth|budget(?:s|ed|ing)?|"
+    r"spend(?:s|ing)?|spent|cost(?:s|ing|ly)?|invest(?:s|ed|ing|ment)?|"
+    r"fund(?:s|ed|ing)?|owe[sd]?|pay(?:s|ing)?\s+off|paid\s+off)\b",
+    re.I,
+)
 TEXT = {".html", ".css", ".js", ".svg", ".json", ".txt", ".md", ".xml", ".py", ".yml"}
+
+
+def ui_label_texts(repo: Path) -> set[str]:
+    """Collect every quoted UI label the docs gate's ledgers register.
+
+    The site is marketing copy, not operator instructions, so it has no
+    ledger of its own; it reuses the same source of truth the docs gate
+    pins labels to (tools/docs/*-ui-labels.json), so a UI string quoted
+    verbatim on a site page is exempt wherever it is quoted.
+    """
+    labels: set[str] = set()
+    for path in sorted((repo / "tools/docs").glob("*-ui-labels.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows = data if isinstance(data, list) else data.get("labels", [])
+        for row in rows:
+            if isinstance(row, dict) and row.get("label"):
+                labels.add(row["label"])
+    return labels
 
 
 def local_target(site: Path, source: Path, ref: str):
@@ -99,8 +134,9 @@ def document_references(doc):
     return refs, css
 
 
-def check(site: Path) -> list[str]:
+def check(site: Path, label_texts: set[str] | None = None) -> list[str]:
     errors = []
+    label_texts = ui_label_texts(REPO) if label_texts is None else label_texts
     pages = sorted(site.rglob("*.html"))
     documents = {}
     ids_by_page = {}
@@ -145,6 +181,11 @@ def check(site: Path) -> list[str]:
             errors.append(f"{rel}: emoji in site text")
         if PUFFERY.search(visible):
             errors.append(f"{rel}: prohibited promotional vocabulary")
+        masked = visible
+        for label in label_texts:
+            masked = masked.replace(label, " " * len(label))
+        if MONEY.search(masked):
+            errors.append(f"{rel}: money metaphor is not permitted")
         for el in doc.iter():
             if el.tag == "img" and "alt" not in el.attrib:
                 errors.append(f"{rel}: image needs alt text")
