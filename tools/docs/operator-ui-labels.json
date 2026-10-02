@@ -941,13 +941,13 @@
       "page": "docs/guide/monitor.md",
       "label": "LAST FRAME",
       "source": "ui/src/next/hubs/monitor/live/LiveScreen.tsx",
-      "line": 522
+      "line": 530
     },
     {
       "page": "docs/guide/monitor.md",
       "label": "THERMAL",
       "source": "ui/src/next/hubs/monitor/live/LiveScreen.tsx",
-      "line": 507
+      "line": 515
     },
     {
       "page": "docs/guide/monitor.md",

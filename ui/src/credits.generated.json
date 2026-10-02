@@ -9,8 +9,8 @@
   "native/crates/astro-star/Cargo.toml": "069abe1dfcf31871dda7a239ef27b2e810ef27bf36a81db82c96754fb6ad3ba5",
   "native/crates/astro-tppa/Cargo.toml": "fc26efa6fa15d95107742b35d260ea10771600ea4e008021324281be0a294e13",
   "native/crates/astrodeck-native/Cargo.toml": "7927b7d8952eb94b2b3aa177b1d83c5002ccaad9db32b2b4ea3893b9bb40768f",
-  "server/pyproject.toml": "d5a779d0a1980e4152f86703b74616d1d1e5e9c2de8571e032a1cdd15b662953",
-  "tools/credits_registry.py": "552eaadd8724acd80ba300cd09b340700a2606ad324f25b0f2a67549b969ffc9",
+  "server/pyproject.toml": "ec7234d238c03d8c0defb3cae07815d8256d9076d24880fd9bf855c6ff039961",
+  "tools/credits_registry.py": "b894d56db46396a8259f5ae792bc1f294d225d729956ab2541e76a8de46fd8a7",
   "tools/gen_credits.py": "be5057e770bb5ed9787c3622e0deeab6ab5521efe845852f0d162765bfbdb29e",
   "tools/licence/bundled-components.json": "be612f4188608fbdd75b29ddc433db422fee72275fb7a497ce1478b31355e965",
   "tools/licence_policy.py": "79e3d17611027c974b91131462e05e0ea57603b53ad370d5abe3df91aadbc4fb",
@@ -194,20 +194,6 @@
      "url": "https://www.astrospheric.com/privacypolicy",
      "notes": "Optional seeing and transparency forecasts use the operator's own Astrospheric key and an in-memory forecast cache. Current v1 and v2 API documentation describe access for Professional members' personal projects; broader uses are directed to the vendor.\n\nOur reading: the public client and its independent deployments need clarification from Astrospheric. The checked terms do not by themselves prove that publishing independently written client source is infringement, nor do a user's key and acknowledgement prove this public integration is authorized. The existing acknowledgement records the operator's assertion only.\n\nUpstream acknowledgement: \"Contains information licenced under the Data Server End-use Licence of Environment and Climate Change Canada.\" Licence: https://eccc-msc.github.io/open-data/licence/readme_en/. ECCC's underlying data permission does not replace Astrospheric's service terms.",
      "flag": "Public OSS integration and many independent installs remain an owner permission question under the API's personal-project scope. Per-user keys and an instance acknowledgement do not establish vendor permission. Obtain written clarification covering this use."
-    },
-    {
-     "name": "CelesTrak",
-     "version": "",
-     "spdx": "LicenseRef-CelesTrak-Service-Terms",
-     "tier": "service",
-     "requires": [],
-     "summaries": [
-      "Observe the current access policy, including stopping automated requests after a non-200 response and involving a human."
-     ],
-     "texts": [],
-     "url": "https://celestrak.org/usage-policy.php",
-     "notes": "CelesTrak supplies the visual GP group and selected catalogue IDs as JSON. AstroDeck keeps an operator-local cache; no active orbital-element cache occurs in the inspected local source tarball. The normal scheduled refresh is 12 hours and requests identify the AstroDeck client.\n\nCurrent CelesTrak policy says to stop automated queries after a non-200 response and report the problem for human investigation. It now describes GP updates every two hours. The nominal AstroDeck interval is conservative, but the failure and manual-refresh paths do not prove this policy is honored. Service conditions are distinct from the origins of the underlying observations; a public-domain label does not dispose of those conditions.",
-     "flag": "Current error paths can keep retrying a due cache every minute and continue individual queries after group failure. This conflicts with CelesTrak's stop-on-error instructions and needs a separate behavior fix."
     },
     {
      "name": "DSS2 imagery (optional remote survey)",
@@ -502,6 +488,19 @@
      "texts": [],
      "url": "https://cds.unistra.fr/",
      "notes": "CDS operates the HiPS tiles and hips2fits cutout services used for optional Atlas imagery. AstroDeck acknowledges the Aladin sky atlas and HiPS services developed at CDS, Universite de Strasbourg/CNRS.\n\nSurvey-specific records govern the database and original-image rights. The checked DSS2 color and 2MASS color records declare ODbL-1.0 for their HiPS databases; original-image terms remain separate. Preserve CDS and originating-survey credits and applicable database notices with public use. No survey pack occurs in the inspected local source tarball. Offline Atlas can draw a schematic sky."
+    },
+    {
+     "name": "CelesTrak",
+     "version": "",
+     "spdx": "LicenseRef-CelesTrak-Service-Terms",
+     "tier": "service",
+     "requires": [],
+     "summaries": [
+      "Observe the current access policy, including stopping automated requests after a non-200 response and involving a human."
+     ],
+     "texts": [],
+     "url": "https://celestrak.org/usage-policy.php",
+     "notes": "CelesTrak supplies the visual GP group and selected catalogue IDs as JSON. AstroDeck keeps an operator-local cache; no active orbital-element cache occurs in the inspected local source tarball. The normal scheduled refresh is 12 hours and requests identify the AstroDeck client.\n\nCelesTrak policy says to stop automated queries after a non-200 response and report the problem for human investigation. It now describes GP updates every two hours. After a non-200 response (or a network failure), AstroDeck's automatic CelesTrak fetch stops for at least six hours, doubling on each further consecutive failure to a twenty-four-hour ceiling, and resumes its normal schedule only once a fetch succeeds, while an operator-initiated refresh from Sky settings is not held to that backoff (#635). Service conditions are distinct from the origins of the underlying observations; a public-domain label does not dispose of those conditions."
     },
     {
      "name": "ESA / ESAC Science Data Centre",

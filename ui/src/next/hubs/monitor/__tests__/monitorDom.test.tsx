@@ -1188,6 +1188,48 @@ await testAsync("weather ON: the map mounts, and the off-card is gone", async ()
 await act(async () => { wxRoot.unmount(); });
 bpMatch = PHONE;
 
+// ------------------------------------------------- below-horizon banner (#633)
+// WP-75 follow-on: `mount.alt` is measured against the PLACEHOLDER (0,0) site
+// when none is saved (the #24 is_default class VitalsBand.tsx's TO DAWN tile
+// was already guarded against). With no site saved, a mount reading "alt -5"
+// is a fact about the Gulf of Guinea, not this rig, so the banner must not
+// judge the horizon from it; with a real site saved, the same reading is the
+// rig's own and the banner must show.
+{
+  const horizonRoot = createRoot(container);
+  const baseStatus = (useStore.getState() as any).status;
+
+  seed({
+    config: { ...CONFIG, site: { is_default: true } },
+    status: { ...baseStatus, mount: { alt: -5, az: 120 } },
+  });
+  await act(async () => { horizonRoot.render(createElement(MonitorHub)); });
+  await settle();
+
+  test("no site saved: mount below the horizon draws no banner", () => {
+    assert(q('[data-testid="monitor-live"]') != null,
+      "the LIVE screen is not on the page - every assertion below is vacuous");
+    assert(q('[data-testid="monitor-below-horizon"]') == null,
+      "the below-horizon banner rendered with no site saved - it judged the "
+      + "placeholder (0,0) site's horizon, not this rig's");
+  });
+
+  seed({
+    config: { ...CONFIG, site: { is_default: false } },
+    status: { ...baseStatus, mount: { alt: -5, az: 120 } },
+  });
+  await act(async () => { horizonRoot.render(createElement(MonitorHub)); });
+  await settle();
+
+  test("a site is saved: mount below the horizon draws the banner", () => {
+    assert(q('[data-testid="monitor-below-horizon"]') != null,
+      "the below-horizon banner did not render with a real site saved and "
+      + "the mount below the horizon");
+  });
+
+  await act(async () => { horizonRoot.unmount(); });
+}
+
 const total = passed + failed;
 console.log(`monitorDom.test: ${passed}/${total} passed`);
 for (const f of failures) console.log("  " + f);

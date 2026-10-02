@@ -314,12 +314,17 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
     (rid,) = end.session.nights
     report = end.reports[rid]
     assert report["end_reason"] == "incomplete", f"{at}: {report['end_reason']}"
-    # The report names the panel and not its reason, which spec 6.7 asks
-    # for (#524): this pins the entry `mark_skipped` writes today, and the
-    # fix for #524 changes it to carry ASIDE. Since H4 it is written once
-    # the panel is set aside for the night, not while it may still expire.
+    # RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): the report now
+    # names the panel AND its reason (spec 6.7), appended after a colon by
+    # `mark_skipped`. Since H4 it is written once the panel is set aside for
+    # the night, not while it may still expire; here that is the D-03
+    # held-pass escalation's own line, so the reason is that line's text
+    # (`second_rec["reason"]` below pins the same text).
     assert report["safety_events"] == [
-        {"ts": T0 + FOR_THE_NIGHT, "reason": f"skipped {MISSES}",
+        {"ts": T0 + FOR_THE_NIGHT,
+         "reason": f"skipped {MISSES}: 2-2 (the mosaic's last live panel) "
+                   f"has been held for 6 passes in a row with no panel "
+                   f"struck and no progress made; set aside for tonight",
          "action": "skip"}], (
         f"{at}: the report records {report['safety_events']}")
     first_rec, second_rec = end.session.set_aside

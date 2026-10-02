@@ -16297,8 +16297,15 @@ def test_1_4_says_the_rail_and_loop_panels_as_s4_built_them():
            [m.group(1) if m else None for m in offers], presses, phone)
     want_offer = ("return withLoop(graph, blockId, true, NO_ID) !== "
                   "graph.edges;")
+    # RE-PINNED FOR WP-48a (#554, 2026-10-01, deliberate): a fourth press
+    # site. State 2's fix folds LOOP PANELS and EDIT STAGE into one row
+    # when BOTH show (`offersLoop && selected`), with its own LOOP PANELS
+    # button beside the stacked layout's -- the stacked layout is kept for
+    # when only LOOP PANELS shows (offered, not yet selected), so
+    # `FlowNode.tsx` now carries the press twice, each reachable on its own
+    # branch, not a duplicate of one path.
     assert got == ("LOOP_CHIP_WORDS.toUpperCase()", True, True,
-                   [want_offer, want_offer], 3, True), (
+                   [want_offer, want_offer], 4, True), (
         f"(the rail's label, stageBlocks asking the lane rules, the dashed "
         f"line, the two offers, the presses, the classic card asking off the "
         f"phone only) = {got}; 1.4 says the rail and LOOP PANELS are built so")
@@ -18177,13 +18184,29 @@ def test_s4_says_the_third_and_fourth_waves_and_what_s4_did_not_build():
           Right contains one more item: 's4-frame-phone-fresh-missing-flow'
           Use -v to get more diff
 
-    RED under the coords.py mutant "#324's helper fixed" (``max(-1.0,
-    min(1.0, cos_sep))`` made ``cos_sep``, so a NaN is no longer clamped):
+    RE-PINNED FOR WP-45 (#324, 2026-09-30, deliberate). The claim that #324's
+    shared helper was "not built" used to be checked by a SOURCE-SUBSTRING
+    proxy ("max(-1.0, min(1.0, cos_sep))" in coords.angular_sep_deg's own
+    source, beside framing._finite refusing a NaN), which could not tell a
+    fixed helper from an unfixed one: WP-45 built the fix by adding a
+    finiteness check ABOVE that clamp line, which is still there afterward
+    (it still clamps a VALID cosine's float round-off near +-1) and so the
+    substring is still present and this check would have stayed green
+    straight through the fix, never turning red to say the claim had gone
+    stale. Replaced with a behavioural probe: coords.angular_sep_deg itself
+    refuses a non-finite coordinate. The S4 doc's "not built" line is edited
+    to say what WP-45 built instead.
 
-        AssertionError: (no client reframe_carry, #324's clamp kept beside the
-        mosaic's refusal, no autoResume at FLOW_SCHEMA 4, no campaign view
-        reading panels) = (True, False, True, True); section 8's S4 says each
-        is not built
+    RED under the coords.py mutant "the finiteness check removed from
+    angular_sep_deg" (the ``if not (math.isfinite(...) ...): raise
+    ValueError(...)`` guard deleted, restoring the old clamp-through
+    behaviour the doc now describes as fixed), observed:
+
+        AssertionError: (no client reframe_carry, coords.angular_sep_deg and
+        framing._finite both refuse a non-finite input, no autoResume at
+        FLOW_SCHEMA 4, no campaign view reading panels) = (True, False, True,
+        True); section 8's S4 says each is not built, and WP-45 built #324's
+        shared helper on top of that without changing the other three
         assert (True, False, True, True) == (True, True, True, True)
           At index 1 diff: False != True
           Use -v to get more diff
@@ -18322,10 +18345,18 @@ def test_s4_says_the_third_and_fourth_waves_and_what_s4_did_not_build():
                "`reframe_carry`'s corner geometry would be a second truth",
                "\"" + _ts_const(model, "SERVER_DECIDES") + "\" "
                "(`SERVER_DECIDES`)",
-               "#324's shared helper, because `coords.angular_sep_deg`, which "
-               "still clamps a non-finite cosine to a separation of 0",
-               "every mosaic path refuses a non-finite frame before it "
-               "measures (`framing._finite`)",
+               "#324's shared helper was deferred here: "
+               "`coords.angular_sep_deg` served callers outside the mosaic "
+               "that each needed an audit of which way a NaN comparison "
+               "falls, while every mosaic path already refused a "
+               "non-finite frame before it measured (`framing._finite`)",
+               "backlog WP-45 (2026-09-30) later built it, hardening "
+               "`coords.angular_sep_deg` itself to refuse a non-finite "
+               "coordinate (it raises `ValueError` rather than clamping a "
+               "NaN cosine to a separation of 0) and routing hub.py's "
+               "Sun-exclusion guard and its centring-error check through "
+               "that same helper in place of a private copy that still "
+               "clamped",
                "RUN's campaign line for a flow whose automatic resume is off "
                "(2.4), because DUSK has no `autoResume` until #195 brings it "
                f"with FLOW_SCHEMA {store.FLOW_SCHEMA + 1}",
@@ -18341,24 +18372,38 @@ def test_s4_says_the_third_and_fourth_waves_and_what_s4_did_not_build():
                        if "__tests__" not in p.parts)
     try:
         framing._finite({"ra_hours": float("nan")})
-        refused = False
+        finite_refused = False
     except ValueError:
-        refused = True
+        finite_refused = True
+    # WP-45 (#324, 2026-09-30, deliberate): the claim here used to be a
+    # SOURCE-SUBSTRING proxy ("max(-1.0, min(1.0, cos_sep))" in
+    # coords.angular_sep_deg's own source), which could not tell a fixed
+    # helper from an unfixed one -- the clamp line is still there after the
+    # fix (it still clamps a VALID cosine's float round-off near +-1), only
+    # now guarded by a finiteness check above it that raises first. A
+    # behavioural probe instead: the helper itself refuses a non-finite
+    # coordinate.
+    try:
+        coords.angular_sep_deg(float("nan"), 0.0, 0.0, 0.0)
+        ang_sep_refused = False
+    except ValueError:
+        ang_sep_refused = True
     campaign = [p for p in UI_SRC.rglob("TonightCampaign*.tsx")
                 if "__tests__" not in p.parts]
     absent = (re.search(r"\b(?:function|const) reframeCarry\b",
                         ui_all) is None,
-              "max(-1.0, min(1.0, cos_sep))" in inspect.getsource(
-                  coords.angular_sep_deg) and refused,
+              ang_sep_refused and finite_refused,
               "autoResume" not in NODE_DEFS["dusk"].params
               and store.FLOW_SCHEMA == 4,
               len(campaign) == 2 and not any(
                   re.search(r"\bpanels\b", p.read_text(encoding="utf-8"))
                   for p in campaign))
     assert absent == (True, True, True, True), (
-        f"(no client reframe_carry, #324's clamp kept beside the mosaic's "
-        f"refusal, no autoResume at FLOW_SCHEMA 4, no campaign view reading "
-        f"panels) = {absent}; section 8's S4 says each is not built")
+        f"(no client reframe_carry, coords.angular_sep_deg and "
+        f"framing._finite both refuse a non-finite input, no autoResume at "
+        f"FLOW_SCHEMA 4, no campaign view reading panels) = {absent}; "
+        f"section 8's S4 says each is not built, and WP-45 built #324's "
+        f"shared helper on top of that without changing the other three")
 
 
 # ===================== S4's second wave, its second verification (S4-DOC3)
@@ -23100,14 +23145,17 @@ def test_1_2_says_the_footer_as_s7_fits_it():
     orchestrator ruling 9): `fittedFooter`, the `targetFooter` line fitted
     to `CLASSIC_FOOTER_CHARS`, the budget the card computes (`monoChars`)
     and ``cardFooterDom.test.tsx`` holds to the mounted card; the overlap
-    dropped first, then the name shortened with `FOOTER_ELLIPSIS`, never
-    the loop word or the angle words; the #357 probe's rotating 2x2 reading
-    `M31 \u00b7 rotate \u00b7 2x2 \u00b7 PA 55.0`; one step past the ruling,
-    computed, the grid giving way before the name's last character,
+    dropped first, then the name shortened with `FOOTER_ELLIPSIS` keeping
+    at least one character beside the grid, the grid itself giving way
+    next (keeping at least one character beside the loop word and the
+    angle words), and the name left out only when neither keeps one --
+    never the loop word, the angle words, the mode or the PA (WP-48b,
+    D-15); the #357 probe's rotating 2x2 reading
+    `M31 \u00b7 rotate \u00b7 2x2 \u00b7 PA 55.0`; the panel-first line's
+    one character of room giving
     `M31 \u00b7 one panel at a time` and
-    `NGC 73\u2026 \u00b7 one panel at a time`, since the panel-first
-    line leaves the name one character; the whole line the tooltip;
-    #/next keeping the whole line.
+    `NGC 73\u2026 \u00b7 one panel at a time` once the grid gives way; the
+    whole line the tooltip; #/next keeping the whole line.
 
     The code, from the source text of ``ui/src``: `fittedFooter`'s three
     fallbacks in order, `nameFitted`'s room rule, the card drawing
@@ -23186,11 +23234,26 @@ def test_1_2_says_the_footer_as_s7_fits_it():
                 "it draws `fittedFooter`, the `targetFooter` line fitted to "
                 "`CLASSIC_FOOTER_CHARS`",
                 f"the {budget} characters `FlowNodeCard.tsx` computes",
-                "(`monoChars`)", "drops the overlap first, then shortens the "
-                "name with an ellipsis (`FOOTER_ELLIPSIS`), and never cuts "
-                "the loop word or the angle words",
+                "(`monoChars`)",
+                # RE-PINNED FOR WP-48b (#357, D-15, owner-approved
+                # 2026-09-30, deliberate): the ruling's words now describe
+                # the TWO-STEP give-way (the grid first, then the name) the
+                # code always did, rather than only naming the floor
+                # ("never cuts ... the mode and the PA") and leaving the
+                # mechanism to a separate "one step past the ruling"
+                # aside, which is folded into this same sentence below.
+                "drops the overlap first, then shortens the name with an "
+                "ellipsis (`FOOTER_ELLIPSIS`), keeping at least one of its "
+                "characters beside the grid",
+                "when not even one fits there, the grid goes next and the "
+                "name is fitted again, keeping at least one of its "
+                "characters beside the loop word and the angle words",
+                "the name is left out only when none of its characters "
+                "fits even then",
+                "The loop word and the angle words, the mode and the PA, "
+                "are never cut",
                 f"`{probe}`", f"({budget} less the {len(first)} of `{first}`)",
-                "the grid gives way before it and the name is fitted again",
+                "once the grid gives way before the name's last character",
                 f"`{m31}` and `{ngc}`", "(noted on #357, for the owner)",
                 "#/next keeps the whole line and wraps it"), "1.2")
 
@@ -23889,11 +23952,19 @@ def test_5_1_says_a_consumed_jump_completes_as_s7_built_it(monkeypatch):
     from astrodeck.sequence import schedule
 
     class _Reporter:
+        """RE-PINNED FOR WP-44 (#524, 2026-09-30, deliberate): every real
+        call site now passes a reason, and the real ``mark_skipped`` takes
+        one (default None). Before this change the stand-in's
+        ``mark_skipped(self, t)`` took none, so `_apply_jump`'s own
+        ``mark_skipped(ready, "abandoned by an instruction")`` crashed with
+        TypeError here; the stand-in now takes ``reason=None`` like the real
+        method and records it, and the assertion below checks it on the one
+        call the claim is about (the skip a non-complete jump causes)."""
         def __init__(self):
             self.calls: list[tuple[str, str]] = []
 
-        def mark_skipped(self, t):
-            self.calls.append(("skipped", t.name))
+        def mark_skipped(self, t, reason=None):
+            self.calls.append(("skipped", t.name, reason))
 
         def record_safety(self, text, kind):
             self.calls.append((kind, text))
@@ -23914,7 +23985,7 @@ def test_5_1_says_a_consumed_jump_completes_as_s7_built_it(monkeypatch):
     assert got_jumps == (
         (True, [("jump", "instruction run_target 'M33' (M31 is complete)")]),
         (True, [("jump", "instruction run_target 'M33' (abandoning M31)"),
-                ("skipped", "M31")]),
+                ("skipped", "M31", "abandoned by an instruction")]),
         (True, [])), (
         f"(a run jump over a complete target, over one that is not, a skip "
         f"of a complete target itself) = {got_jumps}; 5.1 says a complete "
@@ -25095,10 +25166,16 @@ def _ts_code(text: str) -> str:
 def _py_consts(text: str, names) -> dict:
     """The values ``const NAME = <arithmetic>;`` gives each name in a
     TypeScript module, for numbers written as a sum or a product of
-    literals (``5 + 2``, ``10 * 1.5``)."""
+    literals (``5 + 2``, ``10 * 1.5``).
+
+    ``export `` is optional before ``const``, same as `_ts_const` above
+    (WP-48a, #554, 2026-10-01: ``FOOTER_LINES`` gained an ``export`` so
+    ``w6CardOverhangStates.test.tsx`` could import it, which this regex
+    did not yet tolerate)."""
     out = {}
     for name in names:
-        m = re.search(rf"^const {name} = ([0-9 .+*]+);", text, re.MULTILINE)
+        m = re.search(rf"^(?:export )?const {name} = ([0-9 .+*]+);", text,
+                      re.MULTILINE)
         assert m, f"no const {name} of literal arithmetic"
         out[name] = eval(m.group(1), {"__builtins__": {}})  # noqa: S307
     return out

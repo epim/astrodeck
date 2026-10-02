@@ -850,7 +850,7 @@ export interface SequenceState {
   // "incomplete" = the run did everything it was told to and the plan is still
   // short (a target set aside by its altitude floor, a missed start, a skip
   // instruction). Its session stays dormant and armed. Renders as UNFINISHED.
-  end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff" | "cooling_skip" | "quality" | "incomplete";
+  end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff" | "cooling_skip" | "quality" | "incomplete" | "shutdown";
   /** The engine's own sky verdict, published beside `state` on every
    *  publish (sequence/engine.py `_sky_state`). `cloudy` is TRI-STATE:
    *  null means UNKNOWN, never "clear". */

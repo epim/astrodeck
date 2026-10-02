@@ -102,8 +102,9 @@ export function pickSeries(
 export interface EndReasonMeta { word: string; tone: "good" | "warn" | "bad"; }
 
 /** Maps the engine's real end reasons (complete, dawn_cutoff, incomplete,
- *  aborted, error, quality, cooling_skip, unsafe) to a labelled tone. Unknown/
- *  null reasons fall back to an honest "IN PROGRESS" / uppercased-word warn.
+ *  aborted, error, quality, cooling_skip, unsafe, shutdown) to a labelled
+ *  tone. Unknown/null reasons fall back to an honest "IN PROGRESS" /
+ *  uppercased-word warn.
  *
  *  `incomplete` reads UNFINISHED rather than INCOMPLETE deliberately. It sits
  *  next to COMPLETE in a list of reports and the two mean opposite things, so a
@@ -119,6 +120,10 @@ export function endReasonMeta(reason: string | null): EndReasonMeta {
     // operator may want to know why.
     case "incomplete":   return { word: "UNFINISHED", tone: "warn" };
     case "aborted":      return { word: "ABORTED", tone: "warn" };
+    // #565: the run was cancelled by a polite server shutdown, never an
+    // operator STOP — ABORTED would say somebody meant to stop it, which
+    // nobody did here, so this gets its own word.
+    case "shutdown":     return { word: "SERVER SHUTDOWN", tone: "warn" };
     case "quality":      return { word: "QUALITY STOP", tone: "warn" };
     case "cooling_skip": return { word: "COOLING SKIP", tone: "warn" };
     case "unsafe":       return { word: "UNSAFE — STOPPED", tone: "bad" };
