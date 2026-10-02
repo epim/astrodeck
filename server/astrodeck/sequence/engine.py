@@ -3051,9 +3051,26 @@ class SequenceEngine:
                 plan.park_when_done, plan.warm_cooler_when_done,
                 close_dome=bool(self._cfg and self._cfg.safety.close_dome_when_done))
         except asyncio.CancelledError:
-            bus.log("warning", "sequence aborted", "sequence")
+            # #565: THIS ARM IS REACHED TWO WAYS, and until now both finalized
+            # "aborted". ``abort()`` (an operator's STOP, `/api/disconnect`, a
+            # profile apply or activate — see `_finalize_report`'s "KEYED ON
+            # `_aborting`" comment) sets ``_aborting`` before it cancels this
+            # task, awaits it, and only THEN publishes end_reason="aborted".
+            # A POLITE SERVER SHUTDOWN NEVER GOES THROUGH ``abort()`` AT ALL:
+            # the lifespan's own teardown stops every other background
+            # service but never this one, so the run task is cancelled by the
+            # event loop's own shutdown (Ctrl+C, a service stop), lands here
+            # with ``_aborting`` still False, and used to finalize the same
+            # word a STOP leaves. ``GET /api/sequence/recoverable`` then read
+            # "aborted" from the report (`_why_dormant`, app.py) and the
+            # recoverable card told the operator "You stopped it" for a
+            # restart they may never have asked for.
+            reason = "aborted" if self._aborting else "shutdown"
+            bus.log("warning",
+                    "sequence aborted" if self._aborting
+                    else "sequence cancelled by a server shutdown", "sequence")
             await self._safe_stop()
-            self._finalize_report("aborted")
+            self._finalize_report(reason)
             raise
         except Exception as e:
             bus.log("error", f"sequence failed: {e}", "sequence")
@@ -3210,6 +3227,7 @@ class SequenceEngine:
         "quality": "warn",
         "cooling_skip": "warn",
         "aborted": "warn",          # somebody stopped it on purpose
+        "shutdown": "warn",         # #565: nobody did - the process went away
         "unsafe": "bad",
         "error": "bad",
     }
@@ -3336,7 +3354,7 @@ class SequenceEngine:
                 for _t in [t for t in remaining if t.name in self._pending_skips]:
                     bus.log("info", f"{_t.name}: skipped by instruction", "sequence")
                     if self.reporter:
-                        self.reporter.mark_skipped(_t)
+                        self.reporter.mark_skipped(_t, "skipped by instruction")
                     self._group_member_gone(_t, self._group_of(_t),
                                             "skipped by instruction")
                     remaining.remove(_t)
@@ -3502,7 +3520,7 @@ class SequenceEngine:
                                 f"not done, so the next night takes it up",
                         "sequence")
                 if self.reporter:
-                    self.reporter.mark_skipped(target)
+                    self.reporter.mark_skipped(target, why)
                 self._drop_from(remaining, target)
             if not remaining:
                 # Nothing left: the night ran its course. Not a dawn cutoff,
@@ -3551,7 +3569,8 @@ class SequenceEngine:
                                     f"{late_min:.0f} min ago — skipping (if missed: "
                                     f"skip)", "sequence")
                     if self.reporter:
-                        self.reporter.mark_skipped(ready)
+                        self.reporter.mark_skipped(
+                            ready, "its start window was missed")
                     self._group_member_gone(ready, group,
                                             "its start window was missed")
                     remaining.remove(ready)
@@ -3606,7 +3625,7 @@ class SequenceEngine:
                     # scheduling-only stop: skip this target, keep the night going.
                     bus.log("info", f"{ready.name}: skipped — {e}", "sequence")
                     if self.reporter:
-                        self.reporter.mark_skipped(ready)
+                        self.reporter.mark_skipped(ready, str(e))
                     if isinstance(e, FloorStop):
                         # Its own floor sets it aside for TONIGHT, recorded
                         # so a restart tonight does not take it up (#208).
@@ -3692,7 +3711,7 @@ class SequenceEngine:
                 # finalize the night as a dawn cutoff (§1.9-C).
                 for target in remaining:
                     if self.reporter:
-                        self.reporter.mark_skipped(target)
+                        self.reporter.mark_skipped(target, "window closed")
                     bus.log("info", f"{target.name}: window closed — skipping", "sequence")
                 self._dawn_cutoff = True
                 return
@@ -3830,7 +3849,7 @@ class SequenceEngine:
                 return True
             bus.log("info", f"instruction: skipping target {name!r}", "sequence")
             if self.reporter:
-                self.reporter.mark_skipped(dest)
+                self.reporter.mark_skipped(dest, "skipped by instruction")
             if dest is not ready:
                 _drop(dest)
                 return False
@@ -3855,7 +3874,7 @@ class SequenceEngine:
             self.reporter.record_safety(
                 f"instruction run_target {name!r} ({left})", "jump")
             if not complete:
-                self.reporter.mark_skipped(ready)
+                self.reporter.mark_skipped(ready, "abandoned by an instruction")
         return True
 
     # ------------------------------------------------ the mosaic group driver
@@ -4559,7 +4578,7 @@ class SequenceEngine:
                 "sequence")
         for t in members:
             if self.reporter:
-                self.reporter.mark_skipped(t)
+                self.reporter.mark_skipped(t, why)
             self._group_member_gone(t, group, why)
             self._drop_from(remaining, t)
 
@@ -5056,7 +5075,7 @@ class SequenceEngine:
                             f"a restart tonight does not retry it, the next "
                             f"night does", "sequence")
             if self.reporter:
-                self.reporter.mark_skipped(t)
+                self.reporter.mark_skipped(t, reason)
             self._drop_from(remaining, t)
 
     def _every_owed_step_set_aside(self, target: Target) -> bool:
@@ -5399,7 +5418,7 @@ class SequenceEngine:
         # its window closing while it waited (`_expire_or_wait`,
         # `_end_pending_expiries`), and once however it goes.
         if self.reporter and not expires:
-            self.reporter.mark_skipped(target)
+            self.reporter.mark_skipped(target, reason)
         return expires
 
     def _may_expire(self, target_id: str) -> bool:
@@ -5441,7 +5460,7 @@ class SequenceEngine:
                 continue
             self._persist_set_aside(t.id, reason, kind=kind)
             if self.reporter:
-                self.reporter.mark_skipped(t)
+                self.reporter.mark_skipped(t, reason)
             self._drop_from(remaining, t)
 
     def _expire_or_wait(self, group: TargetGroup, run: GroupRun,
@@ -5477,6 +5496,11 @@ class SequenceEngine:
         coming, and the panel is then set aside for the rest of the night
         rather than asked again at once."""
         gone: list[Target] = []
+        # Keyed by id(t), not ``gone``'s own order: the caller
+        # (`_eligibility_now`) extends ``gone`` straight into its own result,
+        # so its element type cannot grow a second field without touching
+        # that caller's file.
+        gone_reasons: dict[int, str] = {}
         mosaic = group.name or group.id
         for t in list(remaining):
             if self._group_of(t) is not group \
@@ -5492,6 +5516,7 @@ class SequenceEngine:
                                 f"rest of the night: its window closed before "
                                 f"its set-aside expired", "sequence")
                 gone.append(t)
+                gone_reasons[id(t)] = "its window closed before its set-aside expired"
                 continue
             cause = set_aside_expiry(now=now, set_at=ts)
             if cause is not None:
@@ -5505,6 +5530,7 @@ class SequenceEngine:
                 bus.log("info", f"{mosaic}: {label} stays set aside for the "
                                 f"rest of the night", "sequence")
                 gone.append(t)
+                gone_reasons[id(t)] = "its set-aside expiry window has already passed"
                 continue
             elig[t.id] = _Eligibility(
                 False, wake, None, "expiry",
@@ -5514,7 +5540,7 @@ class SequenceEngine:
             _kind, ts = self._set_aside_meta.get(t.id) or (None, None)
             self._set_aside_meta[t.id] = ("final", ts)
             if self.reporter:
-                self.reporter.mark_skipped(t)
+                self.reporter.mark_skipped(t, gone_reasons.get(id(t)))
         return gone
 
     def _expire_set_aside(self, group: TargetGroup, run: GroupRun,
@@ -15179,9 +15205,17 @@ class SequenceEngine:
         # a recovery line — so recording it there was a measurement with no
         # consumer, which reads as coverage that is not there. Here it is
         # visible to the person reading the night log, which is who wants it.
+        # #200: this used to say "the target is re-centred" from the tracking
+        # readback alone, never from `found["centered"]` — the re-centre's own
+        # measurement, taken two lines above. A re-centre that missed then
+        # logged a claim of success immediately followed by
+        # `_do_tracking_recovery`'s own report of the miss, contradicting
+        # itself on consecutive lines.
+        centred_clause = ("and the target is re-centred" if found.get("centered")
+                           else "but the re-centre did not converge")
         bus.log("info",
                 f"{target.name}: recovered in {time.time() - _t0:.0f}s — the "
-                f"mount is tracking again and the target is re-centred",
+                f"mount is tracking again {centred_clause}",
                 "sequence")
         return True
 
