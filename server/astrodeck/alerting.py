@@ -615,6 +615,19 @@ class AlertDispatcher:
                 # for a dawn cutoff and for a night that ended owing frames, so
                 # the old "Run {state}: {reason}" read "Run complete: incomplete"
                 # — a push notification contradicting itself in five words.
+                #
+                # #565 AUDIT: a polite server shutdown now finalizes the report
+                # with end_reason="shutdown" (engine.py's `except
+                # CancelledError` arm), distinct from an operator's STOP
+                # ("aborted"). This branch is gated on `state`, not on
+                # end_reason, and `state` is set to "aborted" only by the
+                # engine's own `abort()` — the operator-driven path — never by
+                # the bare-cancellation teardown a polite shutdown takes: that
+                # arm publishes no terminal `state` at all before the process
+                # exits, so there is no live client left to alert. Nothing
+                # here conflates the two; if that ever changes, this reads
+                # `end_reason` verbatim, so the text would say "shutdown"
+                # and not lie either way.
                 alert = AlertEvent("run_end", "info" if state == "complete" else "error",
                                    f"Run ended: {reason}",
                                    plan=data.get("plan_name", ""),

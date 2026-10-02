@@ -326,7 +326,7 @@ class SessionReport(BaseModel):
     plan_name: str = ""
     started_at: float = 0.0
     ended_at: float | None = None
-    end_reason: str | None = None        # complete|incomplete|aborted|error|unsafe|dawn_cutoff
+    end_reason: str | None = None        # complete|incomplete|aborted|shutdown|error|unsafe|dawn_cutoff
     frames_captured: int = 0             # accepted light/calibration frames
     frames_rejected: int = 0
     integration_s: float = 0.0           # accepted light integration only
@@ -755,11 +755,24 @@ class SessionReporter:
         })
         self._schedule_write()
 
-    def mark_skipped(self, target: Any) -> None:
-        """Record a schedule skip (window closed / never rises) as a safety-style
-        event so it shows in the report timeline (C1-23)."""
+    def mark_skipped(self, target: Any, reason: str | None = None) -> None:
+        """Record a schedule skip (window closed / never rises / set aside /
+        skipped by instruction / ...) as a safety-style event so it shows in
+        the report timeline (C1-23).
+
+        ``reason`` NAMES WHY (#524, spec 6.7: "The report names every
+        set-aside panel and its reason"). Before this the report named only
+        the panel: ``_set_panel_aside`` already held the reason — it logs it
+        in a warning and publishes it in ``group.set_aside`` — and this
+        method threw it away, so the morning-after record said a panel was
+        skipped but not why a centring failure, a guider fault, a floor stop,
+        a closed window or a pier change told it apart from any other skip.
+        Optional, and appended rather than replacing the existing text, so a
+        caller with nothing to add (there was none before #524; every call
+        site now has a reason to pass) still writes today's bare line."""
         name = getattr(target, "name", str(target))
-        self._safety.append({"ts": time.time(), "reason": f"skipped {name}",
+        line = f"skipped {name}" if reason is None else f"skipped {name}: {reason}"
+        self._safety.append({"ts": time.time(), "reason": line,
                              "action": "skip"})
         self._schedule_write()
 
