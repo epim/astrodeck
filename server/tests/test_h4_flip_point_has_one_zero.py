@@ -44,11 +44,29 @@ backup), never in the shared tree (#254):
   ``past_s = self._flip_retry_past_s(target)`` taken out of its ``else``,
   so the band is added whichever zero it chose.
 * "no band at all": that ``past_s`` made 0.0 at the meridian too.
+
+RE-PINNED FOR #566 (backlog WP-56 (b)): a GEM whose tracking limit sits AT
+the meridian and does not report it is the one case the fix above left
+open -- with nothing reported the zero was always the bare meridian, so a
+zero-lead attempt always came `MERIDIAN_SIDE_MARGIN_S` AFTER such a mount
+had stopped tracking. `SafetyConfig.mount_tracking_limit_min` (minutes of
+hour angle from the meridian, negative before it) names the stopping point
+for a mount that cannot, and `_flip_point` treats it exactly like a
+nearer-than-meridian device reading: no band past it, whatever its sign.
+``test_control_with_no_reported_limit_the_band_still_applies`` above is
+UNCHANGED by this -- the control is specifically the config left at its
+default, None, and every existing rig's behaviour is required to stay
+byte-identical in that case. The two new cases below configure it:
+
+* "configured limit ignored": `_flip_point` never reads
+  `mount_tracking_limit_min` (the whole ``else`` branch below the device
+  check left as it was before #566).
 """
 from __future__ import annotations
 
 from _group_harness import (LON, T0, Night, group_hub, group_store,  # noqa: F401
                             single)
+from astrodeck.config import SafetyConfig
 from astrodeck.sequence import SequencePlan, schedule
 from astrodeck.sequence.engine import MERIDIAN_SIDE_MARGIN_S
 
@@ -192,3 +210,63 @@ async def test_control_with_no_reported_limit_the_band_still_applies(
     assert len(attempts) == 1, f"more than one attempt: {attempts} s"
     assert night.said("A: meridian flip complete (pier side west -> east)"), (
         night.said("A: "))
+
+
+async def test_a_configured_limit_at_the_meridian_gets_no_band(
+        group_hub, monkeypatch, group_store):
+    """#566's named scenario. The mount reports no limit (as the AM5 and
+    Alpaca do), and the operator has set `mount_tracking_limit_min` to 0 --
+    "this mount's tracking limit sits AT the meridian". The configured
+    limit is nearer-or-equal to the meridian, so it is taken as the zero
+    with NO band past it: A's zero-lead attempt lands AT the meridian
+    itself, not `MERIDIAN_SIDE_MARGIN_S` past it like the unconfigured
+    control above -- the goto is made while a mount that stops exactly
+    there is still tracking.
+
+    RED ON THE TREE BEFORE THE FIX (observed) -- identical to the
+    unconfigured control, because nothing read the setting yet:
+        AssertionError: A's first attempt, configured at the meridian, came
+        15.0 s past it; want AT it (0 s) (attempts at [15.0] s)
+
+    MUTANT "configured limit ignored" (`_configured_tracking_limit_min`
+    made to always return None): RED, same failure as above -- the
+    configured 0 is never read, so `_flip_point` falls through to the bare
+    meridian and its band, exactly as the control case does.
+    """
+    group_store.set_safety(SafetyConfig(enabled=False,
+                                        mount_tracking_limit_min=0.0))
+    plan, night, told = await _night(group_hub, monkeypatch, None)
+    assert told == [], "premise: the double reported nothing"
+    attempts = [round(_past_s(plan, "A", t), 1) for t in _attempts(night, "A")]
+    assert attempts, f"premise: A made a flip attempt: {night.gotos}"
+    assert abs(attempts[0]) <= SLACK_S, (
+        f"A's first attempt, configured at the meridian, came {attempts[0]} "
+        f"s past it; want AT it (0 s) (attempts at {attempts} s)")
+    assert night.said("A: meridian flip complete (pier side west -> east)"), (
+        f"premise: A flipped in the end: {night.said('A: ')}")
+
+
+async def test_a_configured_limit_before_the_meridian_moves_the_point_early(
+        group_hub, monkeypatch, group_store):
+    """#566, the negative-minutes case: `mount_tracking_limit_min` set to
+    -2.0 (2 min = 120 s before the meridian) moves the zero-lead attempt
+    120 s EARLY, the same way a device-reported limit already could
+    (`test_a_zero_lead_attempt_goes_at_the_limit_the_mount_reports` above),
+    with no band past it either -- "aim flip attempts before the meridian
+    instead of after it" (backlog WP-56 (b)'s own words for the fix).
+
+    Mutant "configured limit ignored": RED, the attempt lands at
+    `MERIDIAN_SIDE_MARGIN_S` (15 s) past the meridian instead of 120 s
+    before it:
+        AssertionError: A's first attempt came 15.0 s past the meridian;
+        configured 120 s before it (attempts at [15.0] s)
+    """
+    group_store.set_safety(SafetyConfig(enabled=False,
+                                        mount_tracking_limit_min=-2.0))
+    plan, night, told = await _night(group_hub, monkeypatch, None)
+    assert told == [], "premise: the double reported nothing"
+    attempts = [round(_past_s(plan, "A", t), 1) for t in _attempts(night, "A")]
+    assert attempts, f"premise: A made a flip attempt: {night.gotos}"
+    assert abs(attempts[0] + 120.0) <= SLACK_S, (
+        f"A's first attempt came {attempts[0]} s past the meridian; "
+        f"configured 120 s before it (attempts at {attempts} s)")
