@@ -393,7 +393,13 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "onUnsafe", label: "On unsafe", control: "select", options: ["Close (fail closed)"] },
       { key: "timeout", label: "Shutter timeout", control: "text", unit: "s" },
     ],
-    desc: "Opens the shutter and binds the dome to the mount. Closing is fail-closed: an unsafe or stale safety reading closes the shutter regardless of pipe state.",
+    // #192: this used to say "Opens the shutter and binds the dome to the
+    // mount", which nothing in the engine does - the only open_shutter call
+    // is the reopen after an unsafe close (opt-in, off by default), and
+    // DomePolicy.apply_binding has no caller. Closing is fail-closed for any
+    // flow that actually runs: to_plan refuses a DOME node with a connected
+    // dome unless close_dome_on_unsafe is set.
+    desc: "Closing is fail-closed: an unsafe or stale safety reading closes the shutter regardless of pipe state, and a flow with a connected dome will not run until this is on. Opening the shutter and binding azimuth to the mount are not driven yet - confirm both by hand before the first slew.",
     sum: (p) => low(p.bind) + " · fail closed",
   },
   flatpanel: {
