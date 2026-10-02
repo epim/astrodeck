@@ -11,7 +11,7 @@
   "native/crates/astrodeck-native/Cargo.toml": "7927b7d8952eb94b2b3aa177b1d83c5002ccaad9db32b2b4ea3893b9bb40768f",
   "server/pyproject.toml": "d5a779d0a1980e4152f86703b74616d1d1e5e9c2de8571e032a1cdd15b662953",
   "tools/credits_registry.py": "552eaadd8724acd80ba300cd09b340700a2606ad324f25b0f2a67549b969ffc9",
-  "tools/gen_credits.py": "5c8edb872caa11116598a72c1ab44ac6d0a23163132ccceca2d75b0630414dcf",
+  "tools/gen_credits.py": "be5057e770bb5ed9787c3622e0deeab6ab5521efe845852f0d162765bfbdb29e",
   "tools/licence/bundled-components.json": "be612f4188608fbdd75b29ddc433db422fee72275fb7a497ce1478b31355e965",
   "tools/licence_policy.py": "79e3d17611027c974b91131462e05e0ea57603b53ad370d5abe3df91aadbc4fb",
   "tools/licence_texts/apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
