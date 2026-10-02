@@ -1111,7 +1111,7 @@ async def test_control_a_target_that_a_slew_would_find_in_the_keep_out_stays_sto
     (WP-51, D-11) and nothing more. MUTANT "the mount moved 0.01 h during the
     hold" (``tel.rig.ra_hours += 0.01`` injected after the watch, a move far
     smaller than any slew): RED (observed) -
-        assert 0.009999999999999787 <= 1e-09
+        assert 0.009999999999999787 <= 1e-06
     """
     import time
     e, a = _parked_for_the_keep_out(sim_hub, ha_h=0.0)
@@ -1139,9 +1139,13 @@ async def test_control_a_target_that_a_slew_would_find_in_the_keep_out_stays_sto
         # this took and no more; a slew would move it by degrees, and Dec
         # does not drift at all. (It read exact equality, which Windows'
         # coarse clock happened to keep and the Linux runner did not.)
-        drift_h = (time.time() - t0) / 3600.0 * 1.0027379 + 1e-9
-        assert abs(tel.rig.ra_hours - before[0]) <= drift_h, (
-            tel.rig.ra_hours, before[0], drift_h)
+        # The simulator applies the drift when RA is READ, so read it first
+        # and time the bound after the read; the 1e-6 h slack (0.0036 s of
+        # RA) only absorbs clock jitter, 10,000 times under the mutant's move.
+        ra_after = tel.rig.ra_hours
+        drift_h = (time.time() - t0) / 3600.0 * 1.0027379 + 1e-6
+        assert abs(ra_after - before[0]) <= drift_h, (
+            ra_after, before[0], drift_h)
         assert tel.rig.dec_deg == before[1]
         assert tel.rig.tracking is False
     finally:
