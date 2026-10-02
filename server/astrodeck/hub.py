@@ -5315,6 +5315,14 @@ class Hub:
             if not ramp or not cooling.warm_ramp_enabled(cfg):
                 why = ("at the caller's request" if not ramp
                        else "cooling.warm_ramp is turned off in config")
+                # WP-66 FOLLOW-ON (#281 class): `await self._cancel_warm_locked`
+                # just above can land a teardown in the gap, and this is the
+                # one-shot `cam.set_cooler(False)` inside `_warm_now` -- rechecked
+                # immediately before it is sent, not left to the check this
+                # branch's own caller already passed.
+                if not self._teardown_committed_clean(fence):
+                    return self._warm_abandoned_by_teardown(
+                        source, "about to switch the cooler off with no ramp")
                 return await self._warm_now(cam, source, why, level="warning")
 
             start_c = await self._warm_read_temp(cam)
@@ -5339,6 +5347,11 @@ class Hub:
                                                              measured_ambient)
             rate = cooling.warm_rate_c_per_min(cfg)
             if cooling.warm_is_pointless(start_c, ambient_c):
+                # WP-66 FOLLOW-ON (#281 class): the one-shot `cam.set_cooler(False)`
+                # inside `_warm_now`, rechecked immediately before it is sent.
+                if not self._teardown_committed_clean(fence):
+                    return self._warm_abandoned_by_teardown(
+                        source, "about to switch the cooler off with no ramp")
                 return await self._warm_now(
                     cam, source,
                     f"the sensor is already at {start_c:.1f} °C, at or above "
@@ -5369,6 +5382,15 @@ class Hub:
                 # two rampers stepping one setpoint would fight.
                 minutes = cooling.warm_minutes(start_c, ambient_c, rate)
                 warm_fn = getattr(cam, "warm", None)
+                # WP-66 FOLLOW-ON (#281 class): the delegated backend's own
+                # one-shot command (`warm_fn(minutes)` or `cam.set_cooler(False)`),
+                # rechecked immediately before either is sent -- `_warm_finished_
+                # state` (inside `_warm_abandoned_by_teardown`) overwrites the
+                # "active" `_warm_state` set just above, so no stale ramp is left
+                # claiming to be running.
+                if not self._teardown_committed_clean(fence):
+                    return self._warm_abandoned_by_teardown(
+                        source, "about to hand the backend its timed warm")
                 try:
                     if callable(warm_fn):
                         await asyncio.wait_for(warm_fn(minutes),
@@ -5392,6 +5414,14 @@ class Hub:
                                 f"at {rate:g} °C/min, about "
                                 f"{duration_s / 60.0:.0f} min, in the background",
                         "camera")
+            # WP-66 FOLLOW-ON (#281 class): rechecked once more immediately
+            # before starting the background ramp task -- the delegated
+            # branch just above awaited a command, so a teardown could have
+            # landed in that gap and must not also get a ramp task racing
+            # its cleanup.
+            if not self._teardown_committed_clean(fence):
+                return self._warm_abandoned_by_teardown(
+                    source, "about to start the background ramp")
             self._warm_task = asyncio.create_task(
                 self._warm_ramp(cam, delegated=delegated))
             return self.warm_state() or {}
