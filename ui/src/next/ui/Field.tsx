@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useId, type JSX, type ReactNode } from "react";
 
 /** A labelled input row. The label is a real `<label>` bound by id, so the

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SessionCard.tsx - one night on the Gallery shelf.
 //
 // Four facts and six verbs. The facts are the thumbnail, the sub count, what

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // legacyBridge.test.ts - the door from `setView` / `openHelp` into the router.
 //
 //   Run directly:  npx tsx src/next/__tests__/legacyBridge.test.ts

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w3TargetsDawnKnown.test.tsx - the Suggested-targets sheet's row window with
 // no dawn known yet (#551 remainder, WP-24a new defect, backlog wave 3
 // integration).

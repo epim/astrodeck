@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The rotator approaches from one side, and says when the camera did not
 follow (#526 parts 1 and 2, H4 orchestrator ruling 3).
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planLibraryDom.test.tsx — the Plan panel's Save and export, mounted.
 //
 //   Run directly:  npx tsx src/components/__tests__/planLibraryDom.test.tsx

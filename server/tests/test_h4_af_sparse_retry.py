@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A sparse-field autofocus failure is retried once at twice the exposure,
 and a run that carries on after the retry fails too sweeps again at the
 first frame rich enough to focus on (#507, H4 orchestrator ruling 4).

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every relay drop is followed by a check of the rig's own link (#521).
 
 The rig's tunnel to the Fly relay drops in clusters: seven drops on

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A cloud hold that ends any way but its release takes its hold with it
 (#513; spec 5.8, and the class of #285 and #422: a merge carries a field
 past its fact).

@@ -10,10 +10,10 @@
   "native/crates/astro-tppa/Cargo.toml": "fc26efa6fa15d95107742b35d260ea10771600ea4e008021324281be0a294e13",
   "native/crates/astrodeck-native/Cargo.toml": "7927b7d8952eb94b2b3aa177b1d83c5002ccaad9db32b2b4ea3893b9bb40768f",
   "server/pyproject.toml": "d5a779d0a1980e4152f86703b74616d1d1e5e9c2de8571e032a1cdd15b662953",
-  "tools/credits_registry.py": "7a8f5a37ff7cfc93d291693ff1a34e8613996f7b17be6ccb8fa8f184a2d2a6f3",
-  "tools/gen_credits.py": "fe36eb045d83905cab6de2f62afa9b45a4bd456fa6771dbb0b1430ca195f9e99",
+  "tools/credits_registry.py": "552eaadd8724acd80ba300cd09b340700a2606ad324f25b0f2a67549b969ffc9",
+  "tools/gen_credits.py": "5c8edb872caa11116598a72c1ab44ac6d0a23163132ccceca2d75b0630414dcf",
   "tools/licence/bundled-components.json": "be612f4188608fbdd75b29ddc433db422fee72275fb7a497ce1478b31355e965",
-  "tools/licence_policy.py": "c03f4d8d9af2e2c74a951724b91814e1d4ff5b3d041df9307f3067875e586a26",
+  "tools/licence_policy.py": "79e3d17611027c974b91131462e05e0ea57603b53ad370d5abe3df91aadbc4fb",
   "tools/licence_texts/apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
   "tools/licence_texts/bundled-cpython-3.12.10.txt": "a4771d2216653fca4e3472566a762ba8ce5358f6f6599455fe7cfaceb60d14b3",
   "tools/licence_texts/bundled-gpl-3.0.txt": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
@@ -49,7 +49,8 @@
  "project": {
   "name": "AstroDeck",
   "version": "0.3.39",
-  "spdx": "Apache-2.0"
+  "spdx": "Apache-2.0",
+  "copyright": "Copyright (c) 2026 James Penick"
  },
  "scope": "Declared dependencies, observed artifact subcomponents, external programs and network services used by AstroDeck. Compiler runtime helpers and CSS rules that enter the output are included, even if their npm package is a development dependency. Other development tooling is inventoried separately. Artifact coverage and unresolved packaging obligations are recorded in tools/licence/.",
  "licenses": {

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cropRoi.ts — pure ROI math for the pixel-peep zoom (GET /api/preview/{id}/crop).
 // (crop+render UI design §2.1, §4.1)
 //

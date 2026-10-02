@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-resume-at-dusk service (sessions spec §5).
 
 One asyncio task started with the app (pattern: the AlertDispatcher lifespan

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Tonight route folds the real reports, not their summaries (#419).
 
 ``GET /api/flows/{id}/tonight`` hands ``resolve_tonight`` two ledgers: the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ASTAP CLI plate solver (the standard fast local solver).
 
 Runs `astap -f image.fits -ra H -spd D+90 -r radius` and reads the .ini

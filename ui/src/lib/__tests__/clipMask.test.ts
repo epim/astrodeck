@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // clipMask.test.ts — the per-pixel saturation test (Tier 2 of the clip mask).
 // The threshold decision (== 255 on the auto-stretched 8-bit crop) is the whole
 // honesty claim, so it gets pinned here.

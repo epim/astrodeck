@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // planPolicyDefaults.test.ts — the UI's default plan must INHERIT, not decide.
 //
 // #239 stage A moved twelve settings to the rig's standards, with `null` on a

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Aperture, reducer, and the f-ratio the rig is allowed to derive from them
 (D-SET-1) -- plus the config blocks that landed in the same change.
 

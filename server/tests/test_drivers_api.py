@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Driver API routes (equipment-drivers spec §3.1/§3.2): CRUD + probe + the
 merged describe surface. In-process via TestClient against a temp ConfigStore
 (repo convention — see test_connect_api.py)."""

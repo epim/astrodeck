@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A paused run must say WHY it is paused — and not wear the last reason.
 
 Reported from the rig 2026-08-11: "the plan status says paused because I stopped

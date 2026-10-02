@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Self-tests for the S7 probe (#189 S7 item 1b, routes_s7.json). Run with the
 probe's Playwright Python, like test_probe_s5_s6.py:
 

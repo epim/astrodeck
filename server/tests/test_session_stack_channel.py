@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Session stack: rendering ONE channel, not the composite with a tint on it.
 
 The stacker has always kept one accumulator per channel -- ``self._stacks`` is

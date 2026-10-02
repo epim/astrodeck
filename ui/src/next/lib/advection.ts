@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // advection.ts - wind advection of a sky point's cloud shadow, for the sky-view
 // wind arrows and the +30 min "ghost tile" overlay.
 //

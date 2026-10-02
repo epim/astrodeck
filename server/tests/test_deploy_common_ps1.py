@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """deploy_common.ps1: the native-wheel step and the launcher's log (#403).
 
 Every deploy_<ver>.ps1 is copied from the one before it, so a trap in one is

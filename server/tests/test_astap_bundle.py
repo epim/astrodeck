@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Release-eng (UX-04): bundled-ASTAP wiring — the `-d` star-DB flag assembly and
 the vendored binary/DB discovery. Also covers the additive `-z` downsample knob
 (per-frame-wcs spec §2.3), whose 0 default keeps the argv byte-identical."""

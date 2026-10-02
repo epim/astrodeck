@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* safety.css - the Safety tuning area's own classes (wave R7, T-R7-9).
  *
  * `next.css` is a single shared file that twenty concurrent tasks cannot own,

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowLibraryDom.test.tsx -- the library screen as a phone renders it.
 //
 //   Run directly:  npx tsx src/components/flows/__tests__/flowLibraryDom.test.tsx

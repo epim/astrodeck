@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Wanderer Snowflake filter wheel — native stream-first serial driver.
 
 Wire truth (hardware-verified 2026-07-20, docs/hardware/

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lastSessionFrameHook.test.tsx — the ORDERING contract of useLastSessionFrame,
 // probed directly.
 //

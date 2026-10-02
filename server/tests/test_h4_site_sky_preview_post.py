@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The site picker's read-back is a POST; the GET is the stored site only (#520).
 
 `/api/site/sky` answers the sun's altitude, tonight's dark window, a coarse

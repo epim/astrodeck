@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // providerWrite.test.ts — WHERE a provider save lands, and what the guide
 // dropdown is allowed to offer (#132 + the guide-eligibility fix).
 //

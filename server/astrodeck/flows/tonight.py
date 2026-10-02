@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight, resolved — the ephemeris the Tonight panel's three tabs render.
 
 The prototype's ``tonight()`` (design handoff, README §7) invents its numbers:

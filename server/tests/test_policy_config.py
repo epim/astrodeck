@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Stage A (#239): the rig's imaging standards live in config.
 
 Every default here is copied from the plan model's current value, so a rig that

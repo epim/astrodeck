@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NOV-1 Live View readout: "◉ 12 frames · 24 min integrated · 3 skipped".
 // Renders nothing unless the shown preview carries a livestack block.
 //

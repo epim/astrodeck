@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Focus follows temperature, and the run corrects for it between frames.
 
 WHAT IS PINNED HERE, and why each half needs its own guard.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // relayFenceDom.test.tsx - MONITOR > ALERTS, mounted OVER THE RELAY and pressed
 // (wave-2 review R8's FIX-U-settings P1, the monitor half).
 //

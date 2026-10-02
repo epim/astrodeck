@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """OPEN-007: bundled SDK binaries are hash-pinned and verified before load.
 
 The ZWO / Player One shared libraries run in-process. A tampered or swapped

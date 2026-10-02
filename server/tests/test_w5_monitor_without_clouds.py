@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-37 (a) / #193: the frame-verdict cloud fallback must engage whenever
 the assigned safety monitor does not read clouds, not only when no monitor
 is assigned at all.

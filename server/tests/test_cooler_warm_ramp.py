@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Cooler warm-down ramp (2026-08-04).
 
 THE BUG THESE TESTS PIN. "Warm" was one ``set_cooler(False)`` in three places —

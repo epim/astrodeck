@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Release-eng (UX-07): first-boot seeding of the bundled baseline survey pack."""
 import json
 from pathlib import Path

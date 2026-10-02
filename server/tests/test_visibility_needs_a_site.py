@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Tonight's visibility is not computed for a site nobody saved (#24).
 
 Every number `catalog/visibility.py` produces - dark window, altitude curve,

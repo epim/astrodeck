@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A setting the compile drops must SAY so — `reject` did not (2026-08-17).
 
 `to_plan.losses()` exists so an operator "finds out that their cloud rule is not

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Regression tests for the Group-A2 sequence-engine major/minor fixes.
 
 Each test targets ONE confirmed defect and would fail against the pre-fix code:

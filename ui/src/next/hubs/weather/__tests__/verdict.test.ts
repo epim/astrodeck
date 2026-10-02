@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // verdict.test.ts - the Conditions headline, against seeded forecast series.
 //
 //   Run directly:  npx tsx src/next/hubs/weather/__tests__/verdict.test.ts

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionsPanelUnreadableDom.test.tsx - the classic Sessions panel with a
 // session file the store cannot read in its list (#242). MOUNTED.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The three ephemeris routes.
 
 An ``APIRouter`` rather than three more functions in ``api/app.py``, for the

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guideOptics.test.ts — the guide-scope plate scale hint reuses lib/optics.ts
 // scale(fl, px, bin) = 206.265 * px * bin / fl (A4; the SAME arcsec-per-px
 // formula the native backend uses). Run with:

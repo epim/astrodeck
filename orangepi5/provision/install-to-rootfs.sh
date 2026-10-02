@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Install the AstroDeck provisioning service into a mounted appliance rootfs.
 # Usage: install-to-rootfs.sh /path/to/mounted/rootfs
 # Idempotent. Works from WSL against a mounted SD card today, and from image

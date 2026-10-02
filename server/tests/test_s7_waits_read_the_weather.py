@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The run-start cooling wait, the camera-lane wait and a cloud hold's
 release cooler gate read the safety monitor on its own clock and act on an
 unsafe verdict (#452; spec 5.8 and 6.17, "safety rides value paths").

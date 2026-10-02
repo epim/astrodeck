@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Check static pages, local references, text style, and optional privacy.
 
 HTML5 parsing is supplied by html5lib; this script adds project conventions.

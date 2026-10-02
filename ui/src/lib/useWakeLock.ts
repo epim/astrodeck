@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useWakeLock.ts — screen wake-lock hook (touch spec §8.3, R13).
 //
 // CRITICAL decoupling (R13): the wake lock is requested ONLY while a sequence is

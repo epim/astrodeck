@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Unit tests for the pure dome/roof formatters (PRO-4). Same inline-assert
 // harness as eta.test.ts (no vitest/jest wired into this UI):
 //   npx tsx src/lib/__tests__/dome.test.ts

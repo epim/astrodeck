@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lut.ts — display-domain transfer functions shared by useImageRemap (canvas
 // pixel remap) and StretchHistogram (transfer-curve overlay). Pure math, no DOM.
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // views/GalleryView.tsx — browse, search, night-filter, bulk-download and
 // delete every frame the rig has written (gallery design 2026-08-03).
 //

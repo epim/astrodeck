@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """How wide a sweep has to be, measured rather than assumed.
 
 THE CONSTANT THIS REPLACES. ``run_autofocus`` has always swept

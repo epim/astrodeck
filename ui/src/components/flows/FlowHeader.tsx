@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowHeader.tsx — the 54px view-local toolbar (MILESTONE2-CONTRACT §C.3).
 //   References: 02-editor-m16-full-service.png (idle), 07-run-cloud-dodge-hold.png (running).
 //

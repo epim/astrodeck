@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Auto-learn loops: EGAIN (mean-variance) and per-filter AF offsets.
 
 Both close a loop whose editor/consumer already ships, so the tests focus on the

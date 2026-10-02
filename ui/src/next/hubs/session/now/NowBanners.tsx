@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NowBanners.tsx - the two notices this screen owns (plan section A.14).
 //
 // GAP-ANALYSIS section 8 named both as missing, and both are about a rig that

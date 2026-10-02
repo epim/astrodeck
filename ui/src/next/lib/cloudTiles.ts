@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cloudTiles.ts - IR cloud tiles: bin raw samples into 6-degree alt/az tiles
 // (README "1. Sky (home)": "IR cloud tiles (6 deg alt/az bins)"; "Formulas to
 // lift" -> IR tiles: "the cloud layer is the binned IR satellite image (6 deg

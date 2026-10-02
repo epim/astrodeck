@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A rig with a guide camera and a mount must end up with a guider.
 
 Found 2026-08-06 on the real rig while preparing a first-light guide

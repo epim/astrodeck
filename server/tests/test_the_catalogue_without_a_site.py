@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#24: with no site saved, the catalogue withholds rather than invents.
 
 `hub.site` defaults to latitude 0, longitude 0 with `is_default` True. Every

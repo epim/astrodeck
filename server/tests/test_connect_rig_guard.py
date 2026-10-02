@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A whole-rig connect must not take the rig down mid-night (#20).
 
 `/api/connect/rig` disconnects every device by design - that is what connecting

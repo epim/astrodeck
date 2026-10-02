@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tonightVerdict.test.ts - the four answers Session / Now's list is allowed to
 // give about tonight, and the two ways a fold like this normally invents one.
 //

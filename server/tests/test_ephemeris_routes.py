@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The three ephemeris routes as ROUTES: what they cost the box, and what they
 answer when they refuse.
 

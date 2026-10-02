@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """D-SES-4: an unsaved frame can be promoted to disk, and its header describes
 the rig that TOOK it.
 

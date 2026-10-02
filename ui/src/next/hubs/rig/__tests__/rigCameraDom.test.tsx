@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigCameraDom.test.tsx - the CAMERA device sheet, MOUNTED (plan hub-rig.md
 // B.1, task T-RIG-2).
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Where to move next when you cannot see stars.
 
 Pure decision logic, exercised against a simulated focuser whose blob size

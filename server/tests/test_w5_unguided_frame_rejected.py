@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-37 (b) / #142, D-06 (backlog ruling, owner-approved 2026-09-30, "Yes to
 both"): a frame with no RMS because guiding had stopped is rejected when a
 ceiling (``max_guide_rms``) is set.

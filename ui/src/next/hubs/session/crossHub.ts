@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // crossHub.ts - the SESSION hub's answer to the three pieces of chrome that
 // live on every OTHER hub (plan sections E.1-E.3).
 //

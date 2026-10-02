@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Reachability at selection: a panel the mount cannot reach now WAITS, and one
 it can never reach tonight is REFUSED (#189 S2, task T18; spec 5.1
 selection item 1, 6.2, D9; #132).

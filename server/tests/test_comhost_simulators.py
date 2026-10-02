@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T3 gate: the EXISTING Alpaca client drives Telescope+Camera through the
 running comhost against the ASCOM SIMULATOR drivers — no NINA, no ASCOM Remote,
 no hardware (spec §5). Windows + simulator only; skips cleanly elsewhere."""

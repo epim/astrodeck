@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // framingReadoutsFixture.test.ts - the compile route's recorded readouts,
 // through the modal's reader, to the RUN lines it prints (#189 S4 item 1;
 // spec 2026-09-23 flows mosaic, 2.4 RUN, 3.2).

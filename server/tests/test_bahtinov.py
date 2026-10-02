@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """NOV-12 Bahtinov core: the synthetic three-spike pattern IS the spec.
 
 A pure-numpy Radon + spike-fit + signed-offset routine over a generated Bahtinov

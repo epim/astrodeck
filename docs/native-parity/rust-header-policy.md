@@ -4,6 +4,12 @@ This workspace hosts crates under two different licenses, split by crate, not
 by file. `native/README.md` has the crate map; this doc has the exact header
 text each crate's files must carry.
 
+> **Amendment 2026-10-01**: at the owner's request every first-party source
+> file now opens with `// Copyright (c) 2026 James Penick`, above the licence
+> lines below, in every crate. The licence split is unchanged: the copyright
+> line names the holder, and the lines under it still say which licence the
+> crate is under. `server/tests/test_copyright_headers.py` checks both.
+
 ## `astro-guide` (Apache-2.0)
 
 > **Amendment 2026-07-17**: `astro-guide` was originally planned as MPL-2.0
@@ -20,6 +26,7 @@ Every `astro-guide` source file that ports logic expressed in PHD2's C++
 source carries this exact header:
 
 ```
+// Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
 //
 // Provenance: clean-room Rust reimplementation from the audited algorithm
@@ -46,6 +53,7 @@ drop the `Derived from PHD2 ...` line — i.e. the `astro-focus` header form
 (see below), adapted to Apache-2.0:
 
 ```
+// Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
 //
 // Provenance: <what this file implements, in the reimplemented-from-dossier
@@ -61,6 +69,7 @@ the existing NINA/Hocus-Focus/TPPA-derived workspace default declared in
 `native/crates/astro-focus/src/backlash.rs`) is:
 
 ```
+// Copyright (c) 2026 James Penick
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // driversMeta.ts — pure helpers for the Backend Drivers settings panel
 // (equipment-drivers spec §4.2). Kept out of the component so the inline-assert
 // test harness (npx tsx, no DOM) can exercise them directly.

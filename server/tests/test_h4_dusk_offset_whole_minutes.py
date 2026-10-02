@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A DUSK WINDOW offset is a whole number of minutes, refused at the save in
 the DUSK WINDOW's words, and a refused ``schedule`` field names the DUSK
 WINDOW, not a TARGET (#483; #189 spec 3.2; H4).

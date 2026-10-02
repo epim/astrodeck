@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-1 calibration API: build/list/delete masters + the preflight coverage
 fold-in (a ``no_calibration`` warning appended to the EXISTING plan pre-flight
 surface — NOT a new route). Isolated app: config + CAPTURE_DIR to tmp."""

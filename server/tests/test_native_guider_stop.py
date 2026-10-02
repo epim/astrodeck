@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Stop, pressed while a native-guider START is still working.
 
 ``POST /api/guide/stop`` calls ``NativeGuider.stop_guiding``, which sets

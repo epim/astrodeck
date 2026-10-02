@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useId, useState, type JSX, type ReactNode } from "react";
 import { Label } from "./Label";
 import { Mono } from "./Mono";

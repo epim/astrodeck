@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The two Tonight surfaces disagreed with each other about the same night.
 
 `tonight.brief` - the NIGHT story - said of a PARK + CLOSE node:

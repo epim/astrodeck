@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guider.tsx - the GUIDER device sheet (plan hub-rig.md B.7; design fragment
 // `<s>/seams/proto/device-guider.html`; GAP-ANALYSIS section 5).
 //

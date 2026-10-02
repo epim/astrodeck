@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Google OIDC provider + router tests (W2.4 Stage C).
 
 Repo convention: in-process fakes via monkeypatch + TestClient, NO unittest.mock.

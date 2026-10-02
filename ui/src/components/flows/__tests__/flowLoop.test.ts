@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowLoop.test.ts - the flow-loop rule, as the pure function both editors and
 // the store share (#149; spec 2026-09-23 section 1.4 item 5, S0 item 2).
 //   Run:  node --import tsx src/components/flows/__tests__/flowLoop.test.ts   (from ui/)

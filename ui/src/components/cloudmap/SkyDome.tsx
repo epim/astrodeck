@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SkyDome.tsx — the sky hemisphere with the cloud model painted on it and the
 // scope's pointing marked, drawn on a 2D canvas.
 //

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The hop between targets is measured and priced into the ETA (#189 U-07,
 spec 5.6 step 10 and 5.10).
 

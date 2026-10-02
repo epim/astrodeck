@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RunHeader.tsx - what is being shot, and what the rig is doing about it.
 //
 // Two lines and a pill (plan section A.1; screenshot 10). Everything in it is

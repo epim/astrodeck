@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A session records where it came from, and a flow records that it ran.
 
 Two findings from using the product over the relay on 2026-08-16:

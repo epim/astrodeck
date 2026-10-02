@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A held member's wait line is flagged ``site_derived`` and never reaches a
 viewer (#383; spec 1.6 S4 as-built paragraph, 6.9, #330, #166).
 

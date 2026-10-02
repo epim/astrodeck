@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // stackView.ts - the live stack's SERVER state (polled once) and the two
 // DISPLAY choices that ride on top of it (which channel, and the stretch).
 //

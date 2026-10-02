@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """"Wait for the mosaic" skips a WAITING target once the mosaic it waits for
 is set aside (#374; spec 1.6 "Wait for the mosaic", 6.4 termination, 5.1).
 

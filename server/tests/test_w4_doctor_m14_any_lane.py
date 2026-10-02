@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """M14 fires for ANY REPORT 'target done' wire in a graph that has a
 multi-panel block, not only the REPORT that ends that block's own lane
 (#184, owner comment 2026-09-25, "Doctor M14 is narrower than the engine").

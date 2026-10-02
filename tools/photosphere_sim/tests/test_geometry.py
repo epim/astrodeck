@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 import math, unittest
 import numpy as np
 from sim.geometry import (sky_vector, sky_angles, look_basis, Camera, device_orientation,

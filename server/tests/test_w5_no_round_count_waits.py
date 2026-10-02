@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Guard: no NEW `for _ in range(N)` loop around a sub-0.1 s asyncio.sleep
 in server/tests (#610).
 

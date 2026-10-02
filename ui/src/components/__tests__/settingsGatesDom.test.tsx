@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // settingsGatesDom.test.tsx — three Settings controls that must track the RIG
 // rather than the page load, MOUNTED and driven over time.
 //

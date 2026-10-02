@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One definition of done: `_target_complete` asks `_step_complete` (#158).
 
 The scheduler skips a target as "already complete" on `_target_complete`; the

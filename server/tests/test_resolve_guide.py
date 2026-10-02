@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Guide-provider resolution matrix (native guider wiring, spec §3.3/§3.5).
 
 Pins ``providers.resolve("guide", hub)`` — the badge/routing answer for "who

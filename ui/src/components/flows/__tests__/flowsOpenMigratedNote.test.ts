@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsOpenMigratedNote.test.ts - the one-time migration note reaches the flow
 // log when a flow is opened (#150; spec 2026-09-23 section 3.6).
 //

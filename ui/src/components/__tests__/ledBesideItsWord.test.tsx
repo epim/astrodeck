@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ledBesideItsWord.test.tsx - an LED printed beside a word that already says
 // its state is heard as nothing, so the state is heard once (#231; the class
 // of #206 and #217).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // breakpoint.test.ts - which layout the shell picks, and whether it notices a
 // rotate (ARCHITECTURE.md #4).
 //

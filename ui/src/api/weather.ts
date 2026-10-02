@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/weather.ts — typed client for the weather surfaces (weather spec §7/§9).
 // Thin over the shared `api` fetch wrapper (api.ts): same ApiError throwing.
 // GET /api/weather + the tile proxy are view.weather-gated server-side

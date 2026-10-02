@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wizardModel.ts - Send to Flow Wizard: what the door hands over, what each
 // step still has to ask, the one body GENERATE posts, and how the review reads
 // the server's answer (#196; spec 2026-09-23 flows mosaic, Revision 2 ruling 4,

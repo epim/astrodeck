@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // guideSettings.ts — guide-algorithm pick lists + dossier §15 defaults for
 // the native guider's per-axis algorithm selection (RA/Dec).
 //

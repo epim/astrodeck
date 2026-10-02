@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic panel order: which panel a group visits next (mosaic spec 5.2,
 5.9, 2.3; U-01, #189).
 

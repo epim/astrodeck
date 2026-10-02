@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The mosaic spec says what S1 and its hardening round built (#189 A10, A11).
 
 ``docs/superpowers/specs/2026-09-23-flows-mosaic-target-block-design.md`` is

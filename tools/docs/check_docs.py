@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Validate the operator documentation without fetching URLs or running examples.
 
 Checks the scoped Markdown, local links/anchors, UI-label provenance, source

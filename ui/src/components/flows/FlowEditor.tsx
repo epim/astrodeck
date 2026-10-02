@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowEditor.tsx — the editor host (contract §A.1, §C.4, §C.13, §F.1).
 //
 // It owns three markers, one layout decision and the Target modal's host (see

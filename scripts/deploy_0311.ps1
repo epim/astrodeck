@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.11 - STALE was true for most of every exposure, and never said
 # how stale. UI change, so the served asset hash IS the verification again.
 $ErrorActionPreference = "Stop"

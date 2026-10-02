@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // briefDom.test.tsx - the object brief's TONIGHT block, on a night that has no
 // dark window and a moon that is too close.
 //

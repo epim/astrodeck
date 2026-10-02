@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // dome.ts — pure formatters for the observatory roof/dome (PRO-4). Mirrors the
 // server's DomeShutterState string vocabulary (devices/base.py). Pure + tiny so
 // the SafetyPanel roof section and its tsx logic test share one source of truth.

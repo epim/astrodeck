@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PHD2 guider client.
 
 Talks to PHD2's JSON event socket (default localhost:4400): newline-delimited

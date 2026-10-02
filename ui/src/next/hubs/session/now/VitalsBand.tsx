@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // VitalsBand.tsx - the four numbers the README puts under the picture, plus the
 // three GAP-ANALYSIS asked for.
 //

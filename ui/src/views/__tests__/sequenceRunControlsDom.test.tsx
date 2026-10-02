@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sequenceRunControlsDom.test.tsx — the run panel while the rig disagrees with it.
 //
 //   Run directly:  npx tsx src/views/__tests__/sequenceRunControlsDom.test.tsx

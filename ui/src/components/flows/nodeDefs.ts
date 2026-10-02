@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // nodeDefs.ts — the Flows node vocabulary. Twenty-one node types, one of them
 // legacy (SLEW + CENTER loads but is no longer offered), and every other file
 // on this surface reads them from here.

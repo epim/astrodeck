@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // hubBoundary.test.tsx - the error boundary the new root did not have.
 //
 //   Run directly:  npx tsx src/next/__tests__/hubBoundary.test.tsx

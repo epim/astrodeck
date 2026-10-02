@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-18 (#342): park cannot lose its command or interleave with a pulse.
 
 Fix shape (plan 2026-09-30, backlog ruling: "Send `:Td#` every time before

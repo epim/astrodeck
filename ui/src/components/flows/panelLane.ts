@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // panelLane.ts - which TARGET a stage belongs to, and which stage is the last
 // one of that block's panel lane (#151, #189; spec 2026-09-23 flows mosaic,
 // 1.4 and 1.5). Pure: no store, no React, no DOM.

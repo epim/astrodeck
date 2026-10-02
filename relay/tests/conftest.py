@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Shared test fakes: an in-memory tunnel-frame channel (NO WSS on the wire).
 
 The relay's transport-free core (registry/proxy/connection) is driven over a

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PlanEditor.tsx - the plan editor, rebuilt in the design's vocabulary.
 //
 // This is the root of the area and the only file that imports `plan.css`

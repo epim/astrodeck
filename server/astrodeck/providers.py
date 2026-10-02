@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Per-capability provider resolution — "who performs capability X for this rig?"
 
 AstroDeck drives three classes of rig (NINA bridge, native Alpaca/sim, future

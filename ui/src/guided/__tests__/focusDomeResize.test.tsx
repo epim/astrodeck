@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { JSDOM } from "jsdom";
 import { strict as assert } from "node:assert";
 const dom=new JSDOM('<div id="root"></div>',{url:"http://localhost/"});

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ADOPT maps a moving body's step only if the old session pointed at the body
 when its frames were taken (H3 orchestrator ruling 7 (spec, Still waiting on
 the owner, item 16), #234; spec 5.9).

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A coordinate is read with the digits 0-9 and no others (#359).
 
 ``catalog/coords.py`` said a digit that merely looks like one (fullwidth,

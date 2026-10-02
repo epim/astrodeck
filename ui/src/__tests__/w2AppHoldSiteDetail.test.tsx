@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2AppHoldSiteDetail.test.tsx - WP-17 (b) on the classic root's RUN ARMED
 // banner (#258).
 //

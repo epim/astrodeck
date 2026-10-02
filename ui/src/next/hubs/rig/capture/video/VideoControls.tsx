@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // VideoControls.tsx - the four numbers a recording is made of, RECORD, and STOP.
 //
 // RECORD IS ARMED AND STOP IS NOT, and the asymmetry is the point. A recording

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Factory-reset client half. Two things here are real logic with a real cost of
 // being wrong, and both are cheap to pin:
 //

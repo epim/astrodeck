@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Round-robin acquisition: L R G B S Ha O3, forty-five times over.
 
 WHAT IT IS FOR. Block acquisition shoots 45 L, then 45 R, then 45 G. Every

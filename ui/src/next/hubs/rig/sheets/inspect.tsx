@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // inspect.tsx - the full-screen INSPECT sheet (plan hub-session-capture.md F.9,
 // GAP-ANALYSIS section 3 "Missing - preview tooling").
 //

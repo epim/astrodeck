@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The flip gate and its hold measure the flip point from one zero (#505,
 H4-ENG-C; spec 5.7, the S5 and S7 paragraphs on the band, S5 orchestrator
 ruling 2).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SessionReviewDrawer.tsx — frame-grid review for one session (sessions spec
 // §7). LogDrawer pattern: lg+ docked right column, bottom sheet below lg;
 // role="dialog" aria-modal="false", Escape, focus trap, focus return — all of

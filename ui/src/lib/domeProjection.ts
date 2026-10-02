@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // domeProjection.ts — the sky hemisphere as a dome you look at from outside and
 // slightly above, plus the occlusion colour ramp. Pure: no React, no canvas, no
 // `window`, so the geometry is unit-tested without a browser.

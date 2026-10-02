@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Read a GPS fix without writing to, reconfiguring, or claiming generic ports."""
 from __future__ import annotations
 

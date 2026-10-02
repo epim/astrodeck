@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lastFrame.ts - the result card's promote state (D-SES-4).
 //
 // Its own module rather than a block inside `captureGate.ts` because that file

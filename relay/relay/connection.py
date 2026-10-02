@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The scope-tunnel connection handler (transport-free core of the read loop).
 
 ``ScopeConnection`` owns ONE home-side WSS once it has registered: it processes

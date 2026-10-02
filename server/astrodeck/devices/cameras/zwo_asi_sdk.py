@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ctypes bindings for the ZWO ASICamera2 SDK (native guide/imaging camera).
 
 Same MIT-licensed ``libasi`` family already vendored for CAA/EAF

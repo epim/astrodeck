@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyAtlasMeta.test.ts — pure-logic tests for the Settings "Sky Atlas" card
 // (offline-pack spec §6). Inline-assert harness (no vitest in this repo); runs
 // via `npx tsx`.

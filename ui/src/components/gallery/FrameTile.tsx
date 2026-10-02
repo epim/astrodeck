@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // components/gallery/FrameTile.tsx — one thumbnail in the gallery grid, plus the
 // lazy-loading machinery that makes a large library survivable.
 //

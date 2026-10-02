@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A gate that stops a mosaic panel says what happens to the panel: the visit
 stops and the panel is retried on the next pass (#326; spec 5.1's deferral
 row, 5.8). And a hop the gate refused before any slew is no visit to the

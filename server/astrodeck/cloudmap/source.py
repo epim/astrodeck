@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Finding, fetching and evicting GOES granules (stage 3) -- the half with a socket.
 
 Split from :mod:`astrodeck.cloudmap.granule` on exactly that boundary, so the

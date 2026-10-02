@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Home-verifiable principal tokens minted by the relay (W3.3.2 / W3.3.5).
 
 The relay proves a remote caller's identity (Google OIDC, or a viewer link it

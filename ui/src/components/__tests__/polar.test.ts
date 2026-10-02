@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Polar (HERO 2) pure-logic regression — the verdict tier, the knob-direction
 // decode, and the ZOOM LADDER that the TPPA wizard's reticle binds to. Same
 // inline-assert / `tsx` style as the other suites (no jsdom, no runtime timers):

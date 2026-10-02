@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A solve that could not run is never a strike against its panel (#532, the
 engine half; H4 orchestrator contract 1; spec 5.1's table, 5.6 step 4).
 

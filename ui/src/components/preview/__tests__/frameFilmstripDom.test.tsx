@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // frameFilmstripDom.test.tsx — which tile the frame strip says is on screen.
 //
 //   Run directly:  npx tsx src/components/preview/__tests__/frameFilmstripDom.test.tsx

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // calibrationSheetsDom.test.tsx - Settings > MORE > CALIBRATION and > SKY ATLAS
 // OFFLINE PACK after the rebuild (wave R7, T-R7-14; plan sections 3.F15, 3.F16,
 // 3.F17), MOUNTED.

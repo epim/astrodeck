@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // VideoMode.tsx - VIDEO · PLANETS on the manual bench (D-RIG-1).
 //
 // WHAT THIS MODE IS. Not a stream: a burst of short exposures written straight

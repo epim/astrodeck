@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """§T7 principal-token minting: home-verifiable, viewer-link can't carry admin.
 
 Asserts the relay produces a home-verifiable principal token (NOT a shared HS256

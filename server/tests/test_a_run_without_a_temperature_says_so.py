@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A RUN WITH NO TEMPERATURE MUST NOT BE A SILENT ONE.
 
 MEASURED ON THE RIG. A flow-driven run put 19 light frames on disk at +23 °C

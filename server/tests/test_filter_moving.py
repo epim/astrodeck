@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """FilterWheel.is_moving() — the wheel's REAL in-motion state.
 
 Why this exists: on 2026-07-31 picking L on the Capture screen looked like

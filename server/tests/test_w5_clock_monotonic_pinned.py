@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-40 (#299): `_Clock` is test_idle_park_hold.py's, shared by the thirteen
 `_Clocked` test files (test_waits_that_watch_the_mount.py,
 test_h4_pause_closes_the_idle_latch.py, test_s7_waits_read_the_weather.py,

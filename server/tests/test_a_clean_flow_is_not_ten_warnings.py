@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A flow with nothing wrong with it printed ten amber warnings (2026-09-11).
 
 THE INCIDENT. On the rig, ``POST /api/flows/{id}/compile`` for "NGC 7129 -

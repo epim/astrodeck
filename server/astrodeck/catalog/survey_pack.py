@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Offline survey pack — fetch-once HiPS tile store (offline-pack spec §1–2, §5).
 
 Owns pack paths/slugs, the manifest, the ENOSPC pre-flight, the resumable tile

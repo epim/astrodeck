@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A star spreads; a hot pixel does not.
 
 `detect_stars` fed the preview HFR readout, the Bahtinov aid and the CLOUD

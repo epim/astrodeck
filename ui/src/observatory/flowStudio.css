@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 .fs { --f-green:var(--o-accent); --f-blue:#98bde5; --f-gold:#e0bd85; border:1px solid var(--o-line); border-radius:15px; overflow:hidden; background:var(--o-panel); }
 .obs-night .fs { --f-blue:var(--o-accent); --f-gold:var(--o-warn); }
 .fs button,.fs select,.fs input { font:inherit; }

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // logSources.test.ts - the ring/night switch, the level filter and the export
 // pre-check, with no DOM and no server.
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { JSX, ReactNode } from "react";
 
 /** The dashed empty state: NOTHING IN THE RETICLE, NO SESSION RUNNING, NO SUBS

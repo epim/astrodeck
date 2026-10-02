@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#596 (backlog shape b): a flow run spent its one-time setup (initial
 autofocus, guider calibration) on a field with no light -- NGC 7331 slewed,
 centred (281 ADU, "Not enough stars") and ran both at 20:03, twenty minutes

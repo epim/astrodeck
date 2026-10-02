@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // loopArc.test.ts - the panel loop's back-arc, as a FORMULA (#189 S4 item 6;
 // spec 2026-09-23 flows mosaic, 1.4 "How it is drawn", and S4's test "the
 // back-arc stays below the body cards (a formula test)").

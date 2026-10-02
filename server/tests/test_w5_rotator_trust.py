@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """D-05 (backlog ruling, owner-approved 2026-09-30; #594): the rotator's
 coupling is physically loose, and "a loose coupling reads as a healthy
 rotator to everything except a plate solve" (the owner, on #594, after

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cardFooterDom.test.tsx - the TARGET card's footer line on BOTH canvases,
 // MOUNTED (#189 S4 item 6; spec 2026-09-23 flows mosaic, 1.2 "Card footer";
 // S4 orchestrator ruling 1: a grid is written columns by rows).

@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 James Penick */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* wizard.css - Send to Flow Wizard's stepped sheet (#196; spec 2026-09-23
    flows mosaic, Revision 2 ruling 4, D13). Imported by SendToWizardSheet.tsx,
    so it arrives with the sheet's lazy chunk and never in front of first paint.

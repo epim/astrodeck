@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // runTestsCss.test.ts - guards the runner's own ".css" stub wiring (#50),
 // on BOTH registration mechanisms test-css-stub.mjs can take (issue #61).
 //

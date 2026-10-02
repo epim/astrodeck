@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-10 (backlog ruling, owner-approved 2026-09-30): restore_cooling tells
 the truth and leaves daylight alone.
 

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Naming the field a camera frame is pointed at (#182), server side.
 
 Three layers, and each one is here because a wrong answer at that layer looks

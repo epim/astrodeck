@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.22 - a config schema marker (and the downgrade it makes safe),
 # plus the poller no longer paying 634 MB a day for an answer that cannot change.
 $ErrorActionPreference = "Stop"

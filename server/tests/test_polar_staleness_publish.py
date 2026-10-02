@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The adjust phase must say, WHILE IT IS HAPPENING, that it has stopped updating.
 
 The loop already counted consecutive failed live updates — and kept the count in

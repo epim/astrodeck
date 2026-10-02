@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Tests that components/atlas/mosaicNightSummary.ts reads a panel's reason from
 // the TYPE the route answer is declared with (#174), not from a copy of it.
 //

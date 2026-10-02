@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // LayersPopover.tsx - the three overlay toggles under the layers button
 // (hub-sky plan A.6).
 //

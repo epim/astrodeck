@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The guided wizard's generator — three answers in, a night's graph out.
 
 TRANSCRIBED from ``genWizard()`` in the prototype (``design_handoff_astrodeck_

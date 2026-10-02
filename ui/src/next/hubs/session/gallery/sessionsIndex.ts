@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionsIndex.ts - ONE read of what the rig still holds, shared by the
 // GALLERY chip and the GALLERY grid.
 //

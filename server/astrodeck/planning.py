@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Rig-level planning preferences: the quick-plan defaults and the target pool
 (#D-FU-1).
 

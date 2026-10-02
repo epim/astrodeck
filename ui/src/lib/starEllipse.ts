@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // starEllipse.ts — pure geometry for elongation-oriented star markers.
 //
 // The overlay encodes HFR as color + stroke-style; elongation (ecc) is encoded

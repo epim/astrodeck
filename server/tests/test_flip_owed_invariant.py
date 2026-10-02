@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Do not open the shutter while a meridian flip is owed and has not happened.
 
 2026-09-10/11. At 00:13 the mount refused to track and the flip was abandoned.

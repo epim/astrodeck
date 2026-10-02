@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """R-4 (#145): the learned sky/mechanical sign.
 
 Every rotator move before R-4 assumed ``sky = mech - offset`` (sign +1: sky

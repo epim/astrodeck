@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Equipment profiles: uuid identity, rename-in-place, mode derivation,
 capture-from-device-identity, the per-device apply outcome, and path-traversal
 hardening of the client-controllable id."""

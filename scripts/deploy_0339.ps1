@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Stage 0.3.39 on the astrotown rig. Run ON the rig, detached (see
 # deploy_common.ps1 for the launch line), beside deploy_common.ps1 and
 # deps_floor_check.py, with wheelhouse-0.3.39\ unpacked beside them.

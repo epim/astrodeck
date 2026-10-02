@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // RotateHandle — the Atlas camera/FOV box's grabbable rotation stalk, rendered
 // in its OWN top-level <svg> layer (design spec §6, wave-2 G3 fix).
 //

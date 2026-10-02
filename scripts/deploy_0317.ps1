@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.17 - the dome turns, and tonight's targets are on it.
 $ErrorActionPreference = "Stop"
 $Root = "C:\Users\James\AstroDeck"

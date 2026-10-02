@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The multiplexer: browser HTTP/WS <-> tunnel frames (W3.3.5).
 
 ``TunnelMultiplexer`` owns ONE ``HomeRegistration`` and turns:

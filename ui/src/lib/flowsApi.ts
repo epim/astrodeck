@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsApi.ts — the one place the Flows surface talks to the server.
 //
 // Every path lives here rather than being spelled out at each call site, for the

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // coordsDom.test.tsx - the COORDINATES sheet, mounted and driven
 // (T-SKY-4 plan G). Nothing here re-implements the server's coordinate
 // parser (`catalog/objects.py:parse_coordinates`) - both the sexagesimal and

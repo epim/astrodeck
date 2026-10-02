@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The CAMPAIGN tab and the STORY tab's generated brief.
 
 Both are new in the 2026-08-14 export and both are specified in PROSE only - the

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Config blocks that were API/config-file-only get a route the UI can call.
 
 The gap this closes: an audit of AppConfig against ui/src found 41 leaf fields

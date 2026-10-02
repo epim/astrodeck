@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No new consumer may read the site's coordinates without asking (#24).
 
 The site defaults to latitude 0, longitude 0 with ``is_default`` True, and every

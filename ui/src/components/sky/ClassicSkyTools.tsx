@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Overlay } from "../Overlay";
 import { useStore } from "../../store";

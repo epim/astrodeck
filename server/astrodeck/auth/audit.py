@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Redacted security audit log for authentication events (OPEN-008).
 
 Auth endpoints (local password login, break-glass token login, first-run admin

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Generate the credits data the UI ships, FROM THE REAL MANIFESTS.
 
     python tools/gen_credits.py            # write ui/src/credits.generated.json
@@ -652,6 +654,7 @@ def build() -> dict:
             "name": "AstroDeck",
             "version": pyproject["project"]["version"],
             "spdx": "Apache-2.0",
+            "copyright": "Copyright (c) 2026 James Penick",
         },
         "scope": (
             "Declared dependencies, observed artifact subcomponents, external "

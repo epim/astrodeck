@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Equipment hub: owns connected devices and rig-level operations.
 
 The hub is the single place that knows which physical device fills each role

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.15 - the cloud model gets the switch it never had, an honest
 # answer when no satellite sees the site, and a bird picked from the longitude.
 $ErrorActionPreference = "Stop"

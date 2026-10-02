@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#620's proof: the spin test's bound reads the WATCHDOG's own timeline,
 not this test's wall clock, so a slow TEARDOWN (which a loaded box can
 cause, for reasons that have nothing to do with the watchdog) does not

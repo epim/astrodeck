@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w1WizardOpensOnlyItsOwnFlow.test.tsx - GENERATE FLOW and START BLANK
 // navigate only once the flow they just made has actually opened (#553).
 //

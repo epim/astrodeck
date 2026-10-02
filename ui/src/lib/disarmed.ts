@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // disarmed.ts - the one wording for "starting or resuming a run turned
 // another session's auto-resume off" (#595, backlog ruling D-04).
 //

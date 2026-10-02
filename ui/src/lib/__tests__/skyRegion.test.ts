@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyRegion.test.ts — the rule that decides whether the Atlas hits the network.
 //
 //   Run directly:  npx tsx src/lib/__tests__/skyRegion.test.ts

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // polarControlsDom.test.tsx — the align screen against a session that lies by omission.
 //
 //   Run directly:  npx tsx src/views/__tests__/polarControlsDom.test.tsx

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The parts of the stack that no manifest describes.
 
 Everything a package manager knows about is read out of the package manager by

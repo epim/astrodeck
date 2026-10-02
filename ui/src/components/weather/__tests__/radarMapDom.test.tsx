@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // radarMapDom.test.tsx — the radar panel, MOUNTED, refreshed, and starved.
 //
 //   Run directly:  npx tsx src/components/weather/__tests__/radarMapDom.test.tsx

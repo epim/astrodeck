@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The orbital-element cache: two JSON files on disk, and the one poller that
 keeps them fresh.
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Per-filter capture settings: what to fill in when the filter changes (#215).
 //
 // The wheel stores an exposure and a gain per slot (see types.ts

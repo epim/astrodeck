@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // site.test.ts — pure geo helpers (spec §6). Inline assert harness like
 // caps.test.ts. Run: npx tsx src/lib/__tests__/site.test.ts
 import {

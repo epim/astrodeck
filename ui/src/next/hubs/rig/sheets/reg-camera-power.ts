@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // reg-camera-power.ts - the two sheets T-RIG-2 owns, offered to the Rig hub's
 // registry as one object.
 //

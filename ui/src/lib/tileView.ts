@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // tileView.ts — tile order pick, visible set, screen mesh, and parent-crop UVs
 // for the Atlas tile engine (tile-engine spec §3). Pure, npx-tsx testable.
 // Screen mapping is North-up / East-left, matching FovOverlay:

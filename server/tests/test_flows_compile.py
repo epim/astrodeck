@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Graph → plan. The function that decides what a flow actually runs.
 
 The README makes the compile load-bearing twice over: the PLAN tab shows this

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.2.91 - the flow log strip rendered 54px below the fold, because
 # min-h-full never resolves inside a flex <main>. Opt-in pane cap.
 $ErrorActionPreference = "Stop"

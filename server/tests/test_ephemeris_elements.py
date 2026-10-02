@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The element cache: the file on disk, and what a failure must not do to it.
 
 Every test in here is about the same property, from a different side: A CACHE

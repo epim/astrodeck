@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ConfirmCard.tsx - the design's bottom confirm card (ARCHITECTURE.md section 5).
 //
 // It reads the SAME `store.confirm` slice that `confirmDialog()` writes, so

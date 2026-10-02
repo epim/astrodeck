@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // logFormat.test.ts — pure Event Log formatting helpers (R2-LOG-01 partial).
 // Inline assert harness like site.test.ts. Run: npx tsx src/lib/__tests__/logFormat.test.ts
 import { fmtLogTime, severityWord } from "../logFormat";

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // wsSnapshotStamp.test.ts - a snapshot re-read never overwrites a newer live
 // event (#476, S7 orchestrator ruling 3).
 //

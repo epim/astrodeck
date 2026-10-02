@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Self-contained unit tests for lane-1A pure helpers (no test runner required).
 //
 // There is no vitest/jest wired into this UI yet (build is `tsc -b && vite

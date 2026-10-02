@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/power.ts: the power box, and the two policies attached to each of its
 // ports (D-RIG-3 / D-RIG-5). Server: server/astrodeck/power_guard.py, routed in
 // api/app.py's switch block.

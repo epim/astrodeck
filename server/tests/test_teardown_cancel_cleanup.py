@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#267: a cancelled rig teardown still turns the cooler off and disconnects.
 
 ``Hub._teardown`` stops a warm ramp with ``cancel_warm(finalize=True)``, whose

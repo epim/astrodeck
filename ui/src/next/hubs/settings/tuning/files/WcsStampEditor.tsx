@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // WcsStampEditor.tsx - "Record where each photo points", rebuilt in the
 // design's own vocabulary (wave R7, T-R7-13; replaces the mounted
 // `components/settings/WcsStampPanel.tsx`, which is NOT edited and keeps

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Every pass is re-ordered at its boundary, so a panel that fell behind goes
 first (#189 S2, #318; spec 5.1 item 3, 5.2).
 

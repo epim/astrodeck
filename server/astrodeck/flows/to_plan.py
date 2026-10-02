@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A compiled flow, as something ``SequenceEngine`` can actually run.
 
 ``compile_plan`` produces the README's documented five-key dict - the shape the

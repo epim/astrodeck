@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // cyclePlanRows.ts — the FILTER CYCLE slot table's rows, as pure data.
 //
 // WHY THIS IS NOT A TEXT BOX. The 2026-08-14 export is explicit: "Plan editor is

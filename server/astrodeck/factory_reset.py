@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Factory reset — return the controller to the state a FRESH INSTALL has.
 
 Why this exists: the build gets handed to a QA tester, they set up the rig from

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // camera.tsx - the CAMERA device sheet (plan hub-rig.md B.1, task T-RIG-2).
 //
 // WHAT THIS SHEET IS FOR. It holds the DEFAULTS every flow and quick session

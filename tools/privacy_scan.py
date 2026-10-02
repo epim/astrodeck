@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Refuse to let the real observing site into the repository.
 
 The standing rule: the developer's observing-site latitude, longitude and site

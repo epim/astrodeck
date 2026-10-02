@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // ClipMaskLayer.tsx — saturation/clip mask (stream O).
 // (spec §5 "Clip mask", §12 honesty rule #4, decisions #3/#7;
 //  crop+render UI design §2.3, Decision C)

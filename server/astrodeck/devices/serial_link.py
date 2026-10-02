@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Asyncio-safe serial transport for native serial drivers (AM5N first).
 
 One ``SerialLink`` owns one pyserial handle. All blocking pyserial calls run in

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A dark shot through the "opaque" slot must be checked, not believed.
 
 The rig case (2026-08-01): the slot the operator ticked as blackout was empty,

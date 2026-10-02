@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Batch 4b backend contracts: the automation config (safety/escalation/alerts/
 deadman) round-trips through ConfigStore, old configs without the new keys still
 load, tokens are redacted for WS/REST, and the sequence-model additions

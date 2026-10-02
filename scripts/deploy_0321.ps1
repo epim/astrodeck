@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # Deploy 0.3.21 - measure where the guide scope actually points.
 $ErrorActionPreference = "Stop"
 $Root = "C:\Users\James\AstroDeck"

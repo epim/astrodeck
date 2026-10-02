@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The frame type is one of four, checked where it comes in (#334).
 
 ``save_fits`` wrote ``IMAGETYP`` from the caller's ``frame_type`` as given,

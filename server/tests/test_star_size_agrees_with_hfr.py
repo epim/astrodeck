@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The autofocus size metric and the frame grader must agree at focus (GN-05).
 
 THE DEFECT, measured on last night's real frames (NGC 604, 2026-09-05/06).

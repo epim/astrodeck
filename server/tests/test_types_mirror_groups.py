@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """``ui/src/types.ts`` mirrors the S2 group data model (#189 S2 T1; spec 3.4,
 3.7, 5.10, Revision 2 ruling 9).
 

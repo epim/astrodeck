@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """UpdateConfig defaults + typed setter + back-compat load + redaction passthrough."""
 import json
 

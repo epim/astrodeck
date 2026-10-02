@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // StatusRow.tsx - the three-item line above the finder (hub-sky plan A.3).
 //
 // Every item is a NUMBER plus a way in. "Show 11 suggested targets" is the

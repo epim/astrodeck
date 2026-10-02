@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/cloudmap.ts — typed wrappers for the GOES cloud-occlusion routes.
 //
 // The model shipped complete in stage 6a and had no UI at all until now; it

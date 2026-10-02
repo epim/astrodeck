@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """WP-29 (a) / #168: one FOV function serves both UIs and the server, and a
 recorded-but-never-applied focal reducer must not make any of them disagree.
 

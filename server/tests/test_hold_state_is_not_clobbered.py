@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A cloud hold stays visible as a hold, even while it is shooting darks.
 
 OBSERVED LIVE, 2026-08-12 23:15, under solid overcast — a frame from that

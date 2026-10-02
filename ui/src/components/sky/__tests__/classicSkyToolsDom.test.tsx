@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* Integration checks for the classic host, with browser sensors and rig APIs
  * replaced by fixtures. No camera or equipment is accessed by this test. */
 const { JSDOM } = await import('jsdom');

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Pause has to actually pause — the one brake the operator has mid-alignment.
 
 Polar alignment is the one workflow where the user is crouched at the mount with

@@ -62,3 +62,5 @@ Some configuration and connection operations are blocked over the relay even for
 ## Site privacy for remote and low-role users
 
 Viewer access is limited to status and previews. Operators have weather and site-derived information, which can reveal the observing region, while precise site fields remain admin-only. Do not describe operator access as location-free. See [site and locations](site-and-locations.md).
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

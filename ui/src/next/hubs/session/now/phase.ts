@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // phase.ts - the run's phase pill, as one pure function (plan section A.1).
 //
 // PURE ON PURPOSE. The pill is the single most-read thing on the screen and it

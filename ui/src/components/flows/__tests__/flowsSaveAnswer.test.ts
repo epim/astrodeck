@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowsSaveAnswer.test.ts - what a SAVE did to the counts reaches the flow log
 // (#189; spec 3.3 and Revision 2, rulings 2 and 3).
 //

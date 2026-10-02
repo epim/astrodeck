@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AuthMethodsEditor.tsx - SIGN-IN METHODS, rebuilt in the design's vocabulary
 // (wave R7, T-R7-11; plan section 3.F5). Replaces
 // `components/settings/AuthMethodPanel.tsx` at its one mount inside the new UI,

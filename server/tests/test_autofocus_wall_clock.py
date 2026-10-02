@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """What a native autofocus sweep costs today, so a change to it can be graded.
 
 Two halves, and the first is not optional. `_focus_clock` measures a nine-point

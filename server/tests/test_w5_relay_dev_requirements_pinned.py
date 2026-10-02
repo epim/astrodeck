@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The relay's DEV requirements are mirrored between requirements-dev.txt and
 pyproject.toml's ``[project.optional-dependencies] dev`` list (#629, backlog
 WP-71 remainder, W5 integration -- blocking).

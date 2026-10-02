@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // filesModel.ts - the pure half of the four FILES-AND-STANDARDS editors (wave
 // R7, T-R7-13): file sync, file naming, the plate-solve stamp and the rig's
 // imaging standards.

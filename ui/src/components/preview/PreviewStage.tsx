@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // PreviewStage.tsx — the shared, embeddable stage (stream S).
 // (spec §2 render strategies, §5 stage states, §7 transform, §8 night, §10 reuse)
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // skyLockParam.test.tsx - `#/sky?lock=<id>`, the hash the rest of the app aims
 // the finder with, MOUNTED.
 //

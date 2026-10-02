@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Named source mutations with exact backup/restore and assertion-only kills."""
 from datetime import datetime, timezone
 import hashlib

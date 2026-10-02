@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // AuthMethodPanel.tsx — admin auth-method configuration (W2.6), inside Settings.
 // Gated to `admin.users` by SettingsView. Toggles the enabled login methods
 // (local / google), sets the shared session lifetime, the first-run flag, and the

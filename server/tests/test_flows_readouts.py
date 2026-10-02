@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The Target modal's RUN readouts, answered by the compile (#189 spec 2.4
 RUN, S4 item 1; 5.3 visit bound, 5.5, 5.7 cost 1, A.3, A.4, 5.6 step 6, 6.9).
 

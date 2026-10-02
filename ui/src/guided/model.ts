@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 import type { FocusEvent, PolarState, RigStatus, SequenceState, SiteInfo, ViewName } from "../types";
 
 export type Journey = "first" | "returning";

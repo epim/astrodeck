@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """ASIAIR backend — drive a ZWO ASIAIR box over its own network protocol.
 
 AstroDeck FITS AROUND an ASIAIR rig: point this backend at the box's IP and the

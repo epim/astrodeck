@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Rail.tsx - the tablet/desktop copy of the tab bar (README "Platform": "the
 // tab bar becomes a left icon rail").
 //

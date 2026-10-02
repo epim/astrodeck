@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useReportData.ts - the three fetches behind the night report, and the six
 // states they can be in.
 //

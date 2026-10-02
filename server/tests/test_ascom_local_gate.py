@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T7 ACCEPTANCE GATE (spec §5): a fresh install drives its OWN bundled COM
 host end-to-end against the ASCOM SIMULATOR drivers — no ASCOM Remote, no NINA,
 no hardware. The ascom-local backend opens (spawning the managed comhost),

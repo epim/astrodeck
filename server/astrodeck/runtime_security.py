@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Fail-closed operating-system privilege checks for server startup.
 
 The web process is intentionally not a privileged helper.  Running it as root,

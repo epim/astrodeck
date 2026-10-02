@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // useLastSessionFrame.ts — fetch, once per visit, the last frame the running
 // sequence actually saved, so the Capture stage has something true to show
 // while this browser session waits for its first live preview.

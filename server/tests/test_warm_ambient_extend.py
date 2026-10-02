@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """An ASSUMED warm-ramp ambient must not cut the TEC below the real one.
 
 Measured on the rig 2026-08-06: the fallback ambient is 20 °C and the air was

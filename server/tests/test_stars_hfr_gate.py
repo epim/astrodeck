@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """There is no upper HFR gate in ``detect_stars``, and this says why (#192).
 
 The removed line was ``if hfr <= 0.05 or hfr > half: continue`` — reject any

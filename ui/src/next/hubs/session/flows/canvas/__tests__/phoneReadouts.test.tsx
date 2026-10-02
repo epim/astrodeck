@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // phoneReadouts.test.tsx - the run readouts and the RUN copy on every RUN
 // surface, MOUNTED, graded on what the server really answers (#189 S5; spec
 // 5.9 button copy, 5.10 published state and ETA, U-07).

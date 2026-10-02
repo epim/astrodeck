@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // api/sessions.ts — typed wrappers for the multi-night session routes
 // (sessions spec §6). Cookie auth is automatic; ApiError on non-2xx.
 import { api } from "../api";

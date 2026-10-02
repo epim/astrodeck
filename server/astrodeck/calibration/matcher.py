@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """PRO-1 calibration matcher — pure predicates + coverage (no I/O).
 
 The AUTHORITATIVE match rule (mirrored, tested, in the TS pre-flight). A light is

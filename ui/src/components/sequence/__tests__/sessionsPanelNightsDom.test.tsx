@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // sessionsPanelNightsDom.test.tsx - the classic Sessions panel's night count
 // is the observing nights the server's row answers (#430, H4 task
 // H4-SESSIONS; S7 orchestrator ruling 7). MOUNTED.

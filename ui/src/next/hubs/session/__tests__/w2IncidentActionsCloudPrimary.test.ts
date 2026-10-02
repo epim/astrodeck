@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // w2IncidentActionsCloudPrimary.test.ts - WP-17 (c), the hub half (#260).
 //
 //   Run directly:  node --import tsx src/next/hubs/session/__tests__/w2IncidentActionsCloudPrimary.test.ts

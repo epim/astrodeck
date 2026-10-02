@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // firstRunWizard.ts — pure step machine for NOV-2 (first-run wizard design
 // spec §3, Task 2). Consumes a plain snapshot of live signals (no store, no
 // DOM) and returns the view-model: which step is active, what's done, and

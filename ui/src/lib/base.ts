@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/base.ts — base-path awareness so the SPA works BOTH at the server root (`/`,
 // local LAN) and tunnelled under the relay at `/h/<home_id>/`. The app has no URL
 // router (views are internal Zustand state), so runtime API/WS/auth URLs are

@@ -81,3 +81,5 @@ Activating a profile also selects it for automatic connection at server startup.
 See the [hardware page](https://epim.github.io/astrodeck/hardware.html) for the recorded checks. Supported means an implemented path; it does not certify every model, feature or full unattended night. No hardware was exercised to write this guide.
 
 For ASIAIR owners, Atlas planning and weather are usable alongside the box. The optional `asiair` extra adds an experimental libasi backend. It has not been validated on real hardware; filter-wheel and rotator control are not established. Do not replace a working ASIAIR session on the assumption of feature parity.
+
+Copyright (c) 2026 James Penick. Licensed under Apache-2.0.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Persisted config: optics math, atomic write, corrupt-file recovery,
 optimistic concurrency, and the load-bearing longitude sign round-trip."""
 import json

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // EscalationPanel.tsx — what the sequencer does when something goes wrong that
 // is not a weather trip: autofocus failed, guiding dropped, the camera never
 // reached its setpoint, a frame came back bloated, nothing progressed at all.

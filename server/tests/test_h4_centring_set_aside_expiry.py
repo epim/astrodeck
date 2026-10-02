@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A centring set-aside expires once per panel per night (#534, H4 orchestrator
 ruling 2; spec 5.1, 3.4 ``Session.set_aside``, 5.9 same-night restart, 6.9).
 

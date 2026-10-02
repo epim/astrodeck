@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // calibrationModel.ts - the copy and the field table for the Calibration and
 // Sky-pack tuning area (wave R7, T-R7-14; plan sections 3.F15, 3.F16, 3.F17).
 //

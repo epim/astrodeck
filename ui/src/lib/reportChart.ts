@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/reportChart.ts — pure, DOM-free report→chart shaping + the live-strip ring
 // (report viewer spec §3 Task 1). No React, no DOM — unit-tested directly with
 // `npx tsx` (same harness convention as lib/eta.ts / lib/health.ts).

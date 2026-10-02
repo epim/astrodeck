@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 /* RingPicker — the overlay a crowded category opens instead of the arc
    (2026-08-08).
 

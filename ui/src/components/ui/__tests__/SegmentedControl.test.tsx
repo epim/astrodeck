@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // SegmentedControl.test.tsx — a11y + behaviour regression for the tri-state
 // segmented pill (mount tracking-rate spec, Task 5). Same dependency-free
 // inline-assert harness as the other UI suites (no vitest/jsdom wired in — these

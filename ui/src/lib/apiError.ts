@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/apiError.ts — parses a failed fetch response's JSON body into an
 // { message, code, id } triple for api.ts's req(). Kept dependency-free (no
 // lib/base.ts import, which reads `window.location` at module-load time) so

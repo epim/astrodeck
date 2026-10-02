@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowNodeEditor.tsx - the selected stage: what it is, what it does, its
 // parameters, and DELETE STAGE (parity row A11's node half).
 //

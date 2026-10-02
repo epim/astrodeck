@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // GalleryScreen.tsx - SESSION / GALLERY: everything the rig still holds,
 // newest first (plan section C; proto `28-gallery.html`, screenshot 28).
 //

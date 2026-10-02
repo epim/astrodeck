@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """#125: at startup the night log says how the PC's previous session ended.
 
 The 2026-09-08 thermal resets were diagnosed by a dig through the Windows event

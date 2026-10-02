@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """AlpacaDome + AlpacaCoverCalibrator verb/enum mapping against a recording fake
 connection (PRO-4 / PRO-5 real-hardware clients).
 

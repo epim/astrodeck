@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """No target is unreachable (2026-08-07).
 
 An operator with a freshly-working polar alignment could not start a session on

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """COM-T1: ASCOM registry enumeration is deterministic, dual-view, and
 mockable (inject a fake per-type reader — no real registry, runs on any OS)."""
 import astrodeck.devices.ascom_registry as reg

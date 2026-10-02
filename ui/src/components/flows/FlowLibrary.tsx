@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FlowLibrary.tsx — the library screen: heading, sub-paragraph, toolbar
 // (search + the two creation buttons, then the three folder chips), and one
 // section per folder.

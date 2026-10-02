@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // fieldIdentity.ts — "what is this target called", as a pure function (#182).
 //
 // The Capture screen used to answer that question with a text box and nothing

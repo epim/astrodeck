@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Things we are not licensed to redistribute (#198, #199, #200).
 
 THE PROMISE: AstroDeck does not hand anyone a file it has no right to hand

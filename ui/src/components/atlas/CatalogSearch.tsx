@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // CatalogSearch — the Atlas's inline target search (wave-2 §2). Same idiom as
 // Plan's search (SequenceView): 250 ms debounce, GET /api/catalog?q=, top 6.
 // Self-contained: owns its query/results state and clears itself after a pick;

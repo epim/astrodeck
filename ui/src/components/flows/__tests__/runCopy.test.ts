@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // runCopy.test.ts - the RUN button's copy and the run readouts, graded on what
 // the server really answers (#189 S5; spec 5.9 button copy, 5.10 published
 // state and ETA, U-07).

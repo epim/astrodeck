@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/stopResumeRecovery.ts - the stop that sits beside every screen's
 // "Auto-resume is re-centring the mount" line (#246).
 //

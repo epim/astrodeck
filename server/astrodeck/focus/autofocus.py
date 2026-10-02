@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """V-curve autofocus.
 
 Sweep the focuser through a window around the current position, measure

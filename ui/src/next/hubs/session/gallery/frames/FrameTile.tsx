@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // FrameTile.tsx - one thumbnail in the frame library, rebuilt in the new UI's
 // own vocabulary (wave R7, area H: `components/gallery/FrameTile.tsx`).
 //

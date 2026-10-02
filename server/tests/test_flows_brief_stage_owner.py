@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The STORY brief names whose each capture stage is when a flow has several
 lanes (#470, the half of #395 S5-TONIGHT's verifier found open).
 

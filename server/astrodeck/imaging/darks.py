@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Is this "dark" actually dark?
 
 The filter wheel's blackout slot is a USER ASSERTION. No wheel reports which

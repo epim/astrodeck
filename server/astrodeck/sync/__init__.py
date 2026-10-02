@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Frame sync: get a night's data off the rig and onto something that can
 process it, incrementally, while the run is still going.
 

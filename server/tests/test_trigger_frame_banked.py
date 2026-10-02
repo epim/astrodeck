@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The frame that fires a ``run_target`` or ``skip_target`` is banked before
 the instruction acts (#373, S5 orchestrator ruling 3; spec 5.1's
 ``JumpTarget`` row, 1.2 instructions).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // Checklist.tsx — pure presentational readiness list (onboarding spec §1b).
 // Takes already-computed CheckItem[] (from lib/preflight.buildPreflight); reused
 // by the inline strip, the modal, and (later) the safety monitor.

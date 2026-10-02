@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // lib/bahtinov.ts — pure verdict mapping for the NOV-12 Bahtinov focus aid.
 // No React/DOM: npx-tsx testable (eta.test.ts precedent). Mirrors the
 // plainFocusVerdict {tone,headline,detail} shape in autofocus.ts.

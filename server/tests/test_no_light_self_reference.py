@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The no-light check references itself when the library has nothing (#262).
 
 ``astrodeck.solve.light`` judges a failed solve's frame against the median

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A session file the store cannot read is listed, and DELETE removes it (#242).
 
 Three kinds of file count, and the store names each in its own words:

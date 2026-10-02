@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """W3 END-TO-END tunnel test: the REAL relay service + the REAL home scope client
 wired through ONE in-memory bidi channel, plus the adversarial security battery.
 

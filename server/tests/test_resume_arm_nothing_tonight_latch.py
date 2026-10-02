@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """A night with nothing left to shoot is said once, and dawn says why at info
 level (#284, #159 follow-up).
 

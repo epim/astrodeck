@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // TiltOverlay.tsx — sensor-tilt / corner-vs-center aberration heatmap, inside
 // the shared transform (PRO-13). Passive readout: NO reject gate, no
 // interaction — pointer-events off.

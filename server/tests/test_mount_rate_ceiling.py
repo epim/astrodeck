@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """D-RIG-4: the touch pad's ceiling is the DRIVER's number.
 
 Before this, ``POST /api/mount/move`` clamped every mount to

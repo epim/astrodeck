@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // flowInspectorNotes.test.tsx — the inspector's two compile lists, MOUNTED.
 //
 //   Run directly:  npx tsx src/components/flows/__tests__/flowInspectorNotes.test.tsx

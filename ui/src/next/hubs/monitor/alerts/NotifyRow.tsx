@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NotifyRow.tsx - THIS PHONE. The browser notification permission, which
 // nothing in the shipped UI exposes today except a store flag nobody can reach.
 //

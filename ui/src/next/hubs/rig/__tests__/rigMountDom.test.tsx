@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // rigMountDom.test.tsx - the MOUNT device sheet, MOUNTED (plan hub-rig.md D.2,
 // T-RIG-3 row).
 //

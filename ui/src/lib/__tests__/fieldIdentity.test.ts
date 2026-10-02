@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // fieldIdentity.test.ts — the three states of the Capture target name (#182).
 //
 //   Run directly:  npx tsx src/lib/__tests__/fieldIdentity.test.ts

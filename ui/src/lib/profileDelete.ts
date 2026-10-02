@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // profileDelete.ts — the decision layer behind Profiles → Delete.
 //
 // Deleting a profile is the only irreversible action on that row, so the two

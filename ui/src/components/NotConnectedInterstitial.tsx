@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // NotConnectedInterstitial.tsx — the "connect equipment first" interstitial for
 // gated views (onboarding spec §7a). Rendered by equipment-dependent views when
 // !equipConnected (the gating signal is the sticky equipConnected flag, NOT

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // autoLayout.ts — the phone FLOW tab's auto-laid zigzag graph.
 //
 // The phone FLOW tab (§C.5 / README §5: "the happy medium") does not pan, zoom

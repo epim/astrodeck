@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """Weather forecast service (sub-project C, weather spec §3-§5, §7).
 
 One service class owning fetch, cache, alert latch, and veto logic; a

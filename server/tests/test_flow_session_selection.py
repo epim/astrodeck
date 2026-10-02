@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """One rule picks a flow's session, and the card chip and Run both use it
 (#189 hardening A2; spec 5.9 "Across nights", 1.2 card chip).
 

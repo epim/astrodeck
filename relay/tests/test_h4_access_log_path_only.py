@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """The relay's logs carry the path of a request, never its query string (#520).
 
 On 2026-09-28 the Fly relay's access log held the mount's live pointing,

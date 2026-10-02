@@ -1,3 +1,5 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
 // monitor/sheets.ts - the MONITOR hub's sheet registry (ARCHITECTURE.md section 5).
 //
 // Empty until the MONITOR task fills it in. The export must exist now because

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 """bcrypt password hashing helpers (local-auth core).
 
 A thin, import-light wrapper over the ``bcrypt`` library so the rest of the

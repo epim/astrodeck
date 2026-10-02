@@ -1,3 +1,5 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
 # deploy_relay.ps1 - ship the relay to Fly and prove what shipped (#462).
 #
 # On 2026-09-28 the relay had no working deploy path: the flyctl login on the
