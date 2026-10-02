@@ -31,6 +31,7 @@ import { ActionButton, IncidentCard, Mono, type Incident } from "../../../ui";
 import { nav } from "../../../router";
 import { sendControl } from "../../session/now/sendControl";
 import { MANUAL_STOP_NOTE } from "../../session/now/RunControls";
+import { resumeTitle } from "../../session/now/resumeTitle";
 
 /** Verbatim, `inventory-session-monitor.md` §4.4, em-dash rewritten as the
  *  house hyphen (ARCHITECTURE.md §0.5). */
@@ -50,7 +51,18 @@ export const VIEW_ONLY_NOTE =
  *  It also returned `void`, so no caller here could latch on the outcome. */
 export { sendControl };
 
-interface Recoverable { name: string; frames_done: number; frames_total: number }
+interface Recoverable {
+  name: string;
+  frames_done: number;
+  frames_total: number;
+  /** Why the session went dormant (#487, server `_why_dormant`): the last
+   *  report's own word ("aborted" for an operator STOP, "shutdown" for a
+   *  polite server stop since WP-44, or another ending), `RESTART_END_REASON`
+   *  for the traces only a process that stopped under the run leaves, or
+   *  null - no report, an unreadable one, or an older server that sends no
+   *  `end_reason` at all. D-13's title (`resumeTitle.ts`) reads this field. */
+  end_reason: string | null;
+}
 
 /** Only asked while nothing is running: a run in flight is not recoverable, and
  *  the answer cannot change under a live run. Re-read on the running edge.
@@ -60,13 +72,21 @@ export function useRecoverable(running: boolean): [Recoverable | null, () => voi
   useEffect(() => {
     if (running) { setRec(null); return; }
     let live = true;
-    void api.get<{ recoverable: boolean; name?: string; frames_done?: number; frames_total?: number }>(
+    void api.get<{
+      recoverable: boolean; name?: string; frames_done?: number; frames_total?: number;
+      end_reason?: string | null;
+    }>(
       "/api/sequence/recoverable",
     )
       .then((r) => {
         if (!live) return;
         setRec(r.recoverable
-          ? { name: r.name ?? "the last run", frames_done: r.frames_done ?? 0, frames_total: r.frames_total ?? 0 }
+          ? {
+            name: r.name ?? "the last run",
+            frames_done: r.frames_done ?? 0,
+            frames_total: r.frames_total ?? 0,
+            end_reason: r.end_reason ?? null,
+          }
           : null);
       })
       .catch(() => { /* older server, or offline - the card simply stays away */ });
@@ -181,7 +201,10 @@ export function InterruptedRunCard(): JSX.Element | null {
     kind: "interrupted",
     pill: "RECOVERING",
     color: "#ffb454",
-    title: "RESUME INTERRUPTED RUN",
+    // D-13's title, shared with Interrupted.tsx and PlanResume.tsx through
+    // resumeTitle.ts: STOPPED only for an operator's own STOP, INTERRUPTED
+    // for a restart, a crash, a safety stop, or a WP-44 shutdown.
+    title: resumeTitle(rec.end_reason),
     sinceMs: null,
     resolvesItself: false,
     engine: `"${rec.name}" stopped at frame ${at} and its frames are still on disk`,
