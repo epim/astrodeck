@@ -70,14 +70,18 @@ def _resolve(*, banked=None, now=JUNE):
 
 
 def _rows(out: dict) -> list[str]:
-    """Every STORY row's ``msg``, except the "what gets imaged" row
-    (``_target_rows``'s "above X deg - slew, center, focus..." sentence).
-    That row is NOT one of #561's six catalogued shapes (BUDGET, moon,
-    meridian, dusk-flats, no-dusk, ANY unsafe) and still carries its own
-    em-dash today - a separate, uncatalogued instance of the same defect
-    class, left for its own fix rather than folded into this one silently."""
-    return [s["msg"] for s in out["story"]
-            if "slew, center, focus" not in s["msg"]]
+    """Every STORY row's ``msg``.
+
+    W7 FOLLOW-ON (WP-50, #561 class): the "what gets imaged" row
+    (``_target_rows``'s "above X deg - slew, center, focus..." sentence)
+    used to be excluded here, because that row was NOT one of #561's six
+    catalogued shapes (BUDGET, moon, meridian, dusk-flats, no-dusk, ANY
+    unsafe) and still carried its own em-dash. ``_target_rows`` now writes
+    a plain hyphen there (and in its "never clears" and "No coordinates
+    for" rows), so this helper covers every row, with no exclusion left.
+    ``_target_rows``'s "Pool re-scores" row still carries an em-dash, but
+    this fixture's flow is not pooled, so it never reaches that branch."""
+    return [s["msg"] for s in out["story"]]
 
 
 class TestNoRowCarriesAnEmDash:

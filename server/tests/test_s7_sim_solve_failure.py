@@ -320,13 +320,34 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
     # the night, not while it may still expire; here that is the D-03
     # held-pass escalation's own line, so the reason is that line's text
     # (`second_rec["reason"]` below pins the same text).
-    assert report["safety_events"] == [
+    #
+    # W7 INTEGRATION FINDING (WP-50, D-16, owner-approved 2026-09-30), NOT
+    # pinned either way here: close_dome_when_done now defaults True, so
+    # this incomplete night's wind-down also closes the simulated rig's
+    # connected dome and calls `_record_safety("roof closed over parked
+    # gear (wind-down)", "close_roof")`. That call lands through
+    # `SessionReporter.record_safety`'s `_schedule_write` -- a bare
+    # `loop.create_task`, never awaited -- while `FlowRig._report`'s poll
+    # only waits for the ledger's FRAME COUNT to match (already true the
+    # instant wind-down starts: no more frames are shot), so it returns on
+    # its first read and the scheduled write may or may not have landed
+    # yet. Observed both ways, back to back, same code, same `-n0`: with
+    # the close_roof event present, and without it. A new, pre-existing
+    # defect this default newly exercises, not a wave-7 logic bug; left
+    # unpinned (`skip` only) rather than asserted either way, so this test
+    # does not itself become the flake. See the integration report for the
+    # fuller trace (SessionReporter._schedule_write, report.py; the
+    # dome-close call, engine.py's `_wind_down_park_and_close`).
+    assert report["safety_events"][:1] == [
         {"ts": T0 + FOR_THE_NIGHT,
          "reason": f"skipped {MISSES}: 2-2 (the mosaic's last live panel) "
                    f"has been held for 6 passes in a row with no panel "
                    f"struck and no progress made; set aside for tonight",
          "action": "skip"}], (
         f"{at}: the report records {report['safety_events']}")
+    assert all(e["action"] in ("skip", "close_roof")
+              for e in report["safety_events"]), (
+        f"{at}: an unexpected safety event rode along: {report['safety_events']}")
     first_rec, second_rec = end.session.set_aside
     assert (first_rec["target_id"], first_rec["step_id"], first_rec["night"],
             first_rec["kind"], first_rec["ts"]) == (

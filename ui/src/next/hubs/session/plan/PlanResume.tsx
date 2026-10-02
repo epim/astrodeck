@@ -33,15 +33,13 @@ export const RESUME_REASON =
   `Resuming or discarding an interrupted run needs ${accessPhrase("control.mount")}.`;
 
 export function PlanResume({ rec, onDone }: {
-  // `& { end_reason?: ... }` rather than widening `planModel.ts`'s
-  // `Recoverable` itself: that hook does not read `end_reason` off
-  // `GET /api/sequence/recoverable` yet (filed separately - D-13 names three
-  // cards, and this one's data does not reach it until that gap closes), so
-  // `rec.end_reason` is `undefined` in production today and `resumeTitle`
-  // below falls back to RESUME INTERRUPTED RUN, same as the literal title
-  // this replaces. The optional field lets this card honour the real value
-  // the moment the caller starts sending one, with no further change here.
-  rec: Recoverable & { end_reason?: string | null };
+  // `planModel.ts`'s `Recoverable` now carries `end_reason` itself (W7
+  // follow-on, WP-52, D-13, owner-approved 2026-09-30: `useRecoverable()`
+  // reads it off `GET /api/sequence/recoverable`, mirroring
+  // `RecoveryCards.tsx`'s local hook), so this card's `rec.end_reason` is
+  // the server's real value, not always `undefined` as it was before that
+  // gap closed.
+  rec: Recoverable;
   /** Called once the offer has been taken or given up, so the card retires
    *  without waiting for the next `running` edge. */
   onDone: () => void;

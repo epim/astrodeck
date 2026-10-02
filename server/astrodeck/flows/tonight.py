@@ -2634,6 +2634,13 @@ def _target_rows(out: dict) -> list[dict]:
     floor, or it could not be placed at all. The third is NOT the second —
     saying "never clears 30°" about a target whose position we do not know
     states a fact about the sky that nobody measured.
+
+    W7 FOLLOW-ON (WP-50, #561 class): the "above {floor}°", "never clears
+    {floor}° in the dark tonight" and "No coordinates for" rows write a
+    plain hyphen, not U+2014, the same copy rule #561 fixed for `_story`.
+    The "Pool re-scores" row keeps its em-dash for now: it is not one of
+    #561's six catalogued shapes and is left for its own fix
+    (`test_w7_story_no_emdash.py`'s `_rows` docstring).
     """
     targets = out["targets"]
     if not targets:
@@ -2653,7 +2660,7 @@ def _target_rows(out: dict) -> list[dict]:
         if not rises:
             rows.append({
                 "t_unix": anchor, "label": "",
-                "msg": (f"{names} never clears {floor:g}° in the dark tonight — "
+                "msg": (f"{names} never clears {floor:g}° in the dark tonight - "
                         f"nothing placed in this flow has a window from here"),
                 "tone": TONE_WARN})
         elif pooled:
@@ -2666,12 +2673,12 @@ def _target_rows(out: dict) -> list[dict]:
         else:
             rows.append({
                 "t_unix": anchor, "label": "",
-                "msg": (f"{names} above {floor:g}° — slew, center, focus, "
+                "msg": (f"{names} above {floor:g}° - slew, center, focus, "
                         f"guide, loop"), "tone": TONE_TEXT})
     if unplaced:
         rows.append({
             "t_unix": anchor, "label": "",
-            "msg": (f"No coordinates for {', '.join(unplaced)} — not in the "
+            "msg": (f"No coordinates for {', '.join(unplaced)} - not in the "
                     f"catalogue and none typed, so there is no curve for it "
                     f"and the scheduler cannot score it"),
             "tone": TONE_WARN})
