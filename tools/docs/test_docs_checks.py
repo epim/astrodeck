@@ -25,10 +25,10 @@ class DocsChecks(unittest.TestCase):
         self.ui = self.root / "ui/src/Button.tsx"
         self.ui.parent.mkdir(parents=True)
         self.ui.write_text('export const label = "START";\n', encoding="utf-8")
-        self.page.write_text('# Demo\n\n**START**\n\n[Next](next.md#target)\n', encoding="utf-8")
+        self.page.write_text('# Demo\n\n**START**\n\nStart the fixture.\n\n[Next](next.md#target)\n', encoding="utf-8")
         (self.page.parent / "next.md").write_text('# Target\n', encoding="utf-8")
         self.labels = [{"page":"docs/guide/demo.md", "label":"START", "source":"ui/src/Button.tsx", "line":1}]
-        self.claims = [{"page":"docs/guide/demo.md", "claim":"Start the fixture", "source":"ui/src/Button.tsx", "line":1, "verified_by":"source-trace"}]
+        self.claims = [{"page":"docs/guide/demo.md", "claim":"Start the fixture", "source":"ui/src/Button.tsx", "line":1, "verified_by":"source-trace", "id":"DEMO-001"}]
 
     def run_gate(self, text=None, labels=None, claims=None, private=None):
         if text is not None:
@@ -59,10 +59,10 @@ class DocsChecks(unittest.TestCase):
         self.assertIn("local link escapes repository", self.run_gate('**START**\n\n[x](%2e%2e/%2e%2e/%2e%2e/outside.md)'))
 
     def test_external_links_are_not_fetched(self):
-        self.assertEqual("", self.run_gate('**START**\n\n[x](https://example.invalid/unreachable)'))
+        self.assertEqual("", self.run_gate('**START**\n\nStart the fixture.\n\n[x](https://example.invalid/unreachable)'))
 
     def test_fenced_links_are_examples(self):
-        self.assertEqual("", self.run_gate('**START**\n\n```md\n[x](missing.md)\n```'))
+        self.assertEqual("", self.run_gate('**START**\n\nStart the fixture.\n\n```md\n[x](missing.md)\n```'))
 
     def test_explicit_and_duplicate_anchors(self):
         self.assertEqual({"same", "same-1", "old"}, gate.anchors('# Same\n# Same\n<a id="old"></a>'))
@@ -88,7 +88,7 @@ class DocsChecks(unittest.TestCase):
     def test_money_metaphor_inside_ledgered_label_passes(self):
         self.ui.write_text('export const label = "START";\nexport const b = "BUDGET";\n', encoding="utf-8")
         self.labels.append({"page": "docs/guide/demo.md", "label": "BUDGET", "source": "ui/src/Button.tsx", "line": 2})
-        self.assertEqual("", self.run_gate('**START**\n\n**BUDGET**'))
+        self.assertEqual("", self.run_gate('**START**\n\nStart the fixture.\n\n**BUDGET**'))
 
     def test_utf8_bom(self):
         self.page.write_bytes(b'\xef\xbb\xbf**START**')
@@ -174,6 +174,75 @@ class DocsChecks(unittest.TestCase):
         self.claims[0]["sources"] = [{"path":"ui/src/Button.tsx", "line":1}]
         self.claims[0].pop("source")
         self.assertEqual("", self.run_gate())
+
+    def test_claim_text_must_be_on_page(self):
+        # #673: the Orange Pi guide was rewritten and the ledger kept quoting
+        # the old wording; nothing checked that the quote still appeared on
+        # the page it claims to source. A reworded page must fail the gate
+        # and the message must name both the claim and its page, never the
+        # stale quote itself (the module never echoes document text).
+        errors = self.run_gate('**START**\n\nThe fixture was rewritten.\n')
+        self.assertIn("docs/guide/demo.md: claim DEMO-001 text is not on the page", errors)
+        self.assertNotIn("Start the fixture", errors)
+
+    def test_claim_text_survives_insertion_above(self):
+        # The same content matching as #660's label check: an edit elsewhere
+        # on the page must not move a claim's citation off a recorded line,
+        # because claims are not resolved by line at all.
+        self.assertEqual(
+            "",
+            self.run_gate('# Demo\n\n**START**\n\n'
+                           + "\n\n".join(f"Padding paragraph {i}." for i in range(5))
+                           + '\n\nStart the fixture.\n'),
+        )
+
+    def test_claim_text_matches_across_an_ordinary_wrap(self):
+        # Markdown hand-wraps prose at the column width, so a quoted
+        # sentence routinely spans a line break with no indentation of its
+        # own; locate_label already joins lines with a single space for
+        # this case (#660), and a claim relies on exactly that.
+        self.claims[0]["claim"] = "the fixture wraps across a line break"
+        wrapped = '# Demo\n\n**START**\n\nHere the fixture wraps across a\nline break in the page.\n'
+        self.assertEqual("", self.run_gate(wrapped))
+
+    def test_claim_text_matches_a_hanging_list_indent(self):
+        # A numbered item's continuation lines carry a few spaces of
+        # hanging indent so they line up under the marker. The ledger
+        # quotes the sentence in ordinary single-spaced prose; the indent
+        # is page formatting, not part of what the claim says, so it must
+        # not count as a mismatch.
+        self.claims[0]["claim"] = "the fixture has wrapped under a list marker"
+        wrapped = ('# Demo\n\n**START**\n\n'
+                   '1. Confirm the fixture has wrapped\n'
+                   '   under a list marker.\n')
+        self.assertEqual("", self.run_gate(wrapped))
+
+    def test_claim_text_matches_the_pages_own_line_breaks(self):
+        # Some ledger rows quote a multi-line claim with the page's own
+        # line breaks spelled out as literal newlines (mirroring exactly
+        # how the paragraph wraps), rather than as normal single-spaced
+        # prose. Both spellings must resolve to the same normalized claim
+        # text, because the Markdown has only one actual wrapping and a
+        # ledger author should not have to guess which the gate wants.
+        self.claims[0]["claim"] = "the fixture wraps across\na line break exactly as the page does"
+        wrapped = '# Demo\n\n**START**\n\nHere the fixture wraps across\na line break exactly as the page does.\n'
+        self.assertEqual("", self.run_gate(wrapped))
+
+    def test_claim_text_with_aligned_spacing_still_matches(self):
+        # A fenced code block or table can use several literal spaces for
+        # column alignment. A claim that quotes it verbatim, spaces and
+        # all, must still match a page reflowed to different alignment,
+        # because the alignment is formatting, not the sentence's content.
+        self.claims[0]["claim"] = "left   right"
+        wrapped = '# Demo\n\n**START**\n\n```\nleft right\n```\n'
+        self.assertEqual("", self.run_gate(wrapped))
+
+    def test_claim_text_missing_id_still_reports(self):
+        self.claims[0].pop("id")
+        self.assertIn(
+            "docs/guide/demo.md: claim ? text is not on the page",
+            self.run_gate('**START**\n\nNo match here.\n'),
+        )
 
     def test_stable_anchor(self):
         self.assertIn("stable guide anchor is missing", "\n".join(gate.check_stable_anchors(self.root, {"docs/guide/demo.md":["old"]})))
