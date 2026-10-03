@@ -43,6 +43,18 @@ mounts (NEVER baked into the image): see ``load_device_tokens`` and the README.
   RELAY_DEVICE_TOKENS_FILE  path to a JSON object ``{device_token: home_id}``.
   RELAY_OIDC_SEED_FILE      32-byte Ed25519 seed for the OIDC principal key.
   RELAY_VIEWER_SEED_FILE    32-byte Ed25519 seed for the SEPARATE viewer key.
+
+  RELAY_HOME_LABELS_FILE    path to a JSON object ``{home_id: label}``: the
+                           OWNER-SET display label ``GET /`` shows for a
+                           connected home (#686). Optional; a home with no
+                           entry displays its own id. Loaded the same way as
+                           ``RELAY_DEVICE_TOKENS_FILE`` (see
+                           ``load_home_labels``) -- file first, then the
+                           inline ``RELAY_HOME_LABELS`` env var, else none.
+                           A label is config-only: it is NEVER read from a
+                           home's HELLO or any other tunnel frame, because a
+                           rig's own name can carry the observing site's
+                           label, which must never leave the rig.
 """
 from __future__ import annotations
 
@@ -315,6 +327,35 @@ def reload_device_tokens(registry, path: str = "") -> dict:
         "tokens": len(tokens),
         "evicted": evicted,
     }
+
+
+def load_home_labels(path: str = "") -> dict:
+    """Load the optional ``{home_id: label}`` display-name map for the ``GET /``
+    landing page (#686).
+
+    Source precedence mirrors ``load_device_tokens`` exactly: the mounted JSON
+    file named by ``RELAY_HOME_LABELS_FILE``, else the inline
+    ``RELAY_HOME_LABELS`` env var (Fly/most-PaaS secrets-as-env -- though a
+    label is display text, not a secret), else an empty map (every connected
+    home then falls back to displaying its own id).
+
+    A label is OWNER-SET DISPLAY TEXT ONLY. It must never be sourced from a
+    home's HELLO or any other tunnel frame: a rig's own name could carry the
+    observing site's label, and that label must never leave the rig (site
+    privacy rule). This function only ever reads relay-side config, never
+    anything that arrived over a tunnel."""
+    path = path or _env("RELAY_HOME_LABELS_FILE", "")
+    if path and os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    else:
+        inline = _env("RELAY_HOME_LABELS", "").strip()
+        if not inline:
+            return {}
+        data = json.loads(inline)
+    if not isinstance(data, dict):
+        raise ValueError("home labels must be a JSON object {home_id: label}")
+    return {str(k): str(v) for k, v in data.items()}
 
 
 def _decode_seed(raw: bytes, name: str) -> bytes:

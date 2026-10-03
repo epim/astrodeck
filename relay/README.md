@@ -76,10 +76,18 @@ with the home-side `server/astrodeck/remote/protocol.py` (the scope client).
 
 | route                              | who         | purpose |
 |------------------------------------|-------------|---------|
+| `GET /`                            | anyone      | one connected home -> `302` to `/h/{home_id}/`; zero or several -> a small phone-first list page, never a 404 (#686) |
 | `GET /healthz`                     | anyone      | liveness and build identity (`version`, `commit`; `unknown` when built without `scripts/deploy_relay.ps1`) |
 | `WS  /scope`                       | the **home**| outbound tunnel (device-token auth via `HELLO`) |
 | `WS  /h/{home_id}/ws`              | a browser   | tunnelled `/ws` event stream |
 | `ANY /h/{home_id}/{path:path}`     | a browser   | tunnelled HTTP (SPA, `/assets`, `/api`, `/auth`) |
+
+`GET /` only ever lists a home that is actually, currently connected (``HomeRegistry.homes()``); a home that merely holds a provisioned token but has
+never dialed in is never named there. The display label next to each home
+comes **only** from the relay's own `RELAY_HOME_LABELS` config below -- never
+from the home, its `HELLO`, or anything else carried over the tunnel -- because
+a rig's own name can carry the observing site's label, which must never leave
+the rig.
 
 `home_id` in the path is the stable routing key. Because path tenants share one
 browser origin and cookie namespace, this build deliberately accepts tokens for
@@ -243,5 +251,7 @@ no scale-to-zero) so a home's persistent WSS stays on the same instance, exposes
 | `RELAY_WS_MAX_PER_HOME` / `RELAY_WS_MAX_TOTAL` | `16` / `64` | concurrent browser WebSockets |
 | `RELAY_DEVICE_TOKENS_FILE` | `""` | JSON `{device_token: home_id}` (mounted) |
 | `RELAY_DEVICE_TOKENS` | `""` | same JSON inline, when a file mount isn't available (e.g. Fly/most-PaaS secrets-as-env) |
+| `RELAY_HOME_LABELS_FILE` | `""` | JSON `{home_id: label}` (mounted): owner-set display label for `GET /` (#686). A home with no entry shows its own id |
+| `RELAY_HOME_LABELS` | `""` | same JSON inline, same precedence rule as `RELAY_DEVICE_TOKENS` above. Display text, not a secret -- but still never sourced from the home itself |
 | `RELAY_OIDC_SEED_FILE` | `""` | 32-byte Ed25519 seed for the OIDC key |
 | `RELAY_VIEWER_SEED_FILE` | `""` | 32-byte Ed25519 seed for the **separate** viewer key |
