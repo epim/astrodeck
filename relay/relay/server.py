@@ -4,10 +4,12 @@
 
 This is the ONLY module that touches real sockets; everything it depends on
 (``protocol``/``registry``/``proxy``/``connection``/``oidc``/``viewer_links``/
-``ratelimit``) is transport-free and unit-tested off-wire. The single on-wire
-WSS integration test exercises this shell end to end.
+``ratelimit``/``landing``) is transport-free and unit-tested off-wire. The
+single on-wire WSS integration test exercises this shell end to end.
 
 Endpoints:
+  * ``GET  /``                         redirect to the one connected home, or a
+                                       small list page for zero/several (#686).
   * ``GET  /healthz``                  liveness (no auth), with the build
                                        identity baked into the image.
   * ``WS   /scope``                    the HOME dials here (device-token auth via
@@ -43,11 +45,13 @@ from urllib.parse import urlsplit
 from .config import (
     RelayConfig,
     load_device_tokens,
+    load_home_labels,
     load_seed,
     reload_device_tokens,
 )
 from .connection import ScopeConnection
 from .headers import transform_request_headers, transform_response_headers
+from .landing import render_landing_page, single_home_redirect_path
 from .principal import PrincipalSigner
 from .protocol import (
     MAX_PAYLOAD,
@@ -66,7 +70,9 @@ try:  # Starlette/uvicorn/websockets are optional at import time so the pure
     # core + tests run in a bare venv; the server shell needs them.
     from starlette.applications import Starlette
     from starlette.requests import ClientDisconnect
-    from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
+    from starlette.responses import (HTMLResponse, JSONResponse,
+                                     PlainTextResponse, RedirectResponse,
+                                     Response, StreamingResponse)
     from starlette.routing import Route, WebSocketRoute
     from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -105,6 +111,10 @@ class RelayState:
             ping_interval_s=cfg.ping_interval_s,
             max_ping_misses=cfg.ping_max_misses,
         )
+        # Owner-set {home_id: label} for the "/" landing page (#686). Read
+        # once at startup, same as the token map above -- config-only, NEVER
+        # from a home's HELLO (see relay.landing's module docstring).
+        self.home_labels = load_home_labels()
         self.oidc_signer = _make_signer(load_seed("RELAY_OIDC_SEED_FILE"),
                                         kid="oidc")
         self.viewer_signer = _make_signer(load_seed("RELAY_VIEWER_SEED_FILE"),
@@ -529,6 +539,56 @@ async def _ping_loop(state: RelayState, conn: ScopeConnection,
         return
 
 
+async def _root_landing(state: RelayState, request) -> "Response":
+    """``GET /`` (#686): one short URL for the common single-home case, a
+    small phone-first list for zero or several, never a 404.
+
+    The connected-home set comes ONLY from ``HomeRegistry.homes()`` -- a home
+    that merely holds a provisioned token but never dialed in must never
+    appear here (``relay.landing``'s docstring explains why). Rendering itself
+    (escaping, sorting assumptions) lives in ``relay.landing``, kept
+    transport-free like the rest of this package's core; this wiring only
+    applies the SAME per-IP HTTP rate limit ``browser_http_ep`` uses and sets
+    the response headers.
+
+    Headers: ``Cache-Control: no-store`` so the list is never served stale,
+    plus ``_ROOT_HEADERS``. The relay's other own responses carry no security
+    headers (``/healthz`` is JSON, the errors are plain text, and a tunnelled
+    response carries the HOME's headers), but this is the relay's only HTML
+    and it is served from the SAME origin as every tunnelled home app, whose
+    session cookie lives there. Every id and label is escaped already; the
+    strict policy is the second wall, so a future escaping slip on this page
+    cannot become script running beside that cookie."""
+    ip = _client_ip(request.scope)
+    if not state.http_limiter.allow(ip):
+        return PlainTextResponse(
+            "rate limited", status_code=429,
+            headers={"Cache-Control": "no-store", **_ROOT_HEADERS})
+
+    homes = state.registry.homes()
+    if len(homes) == 1:
+        response = RedirectResponse(
+            single_home_redirect_path(homes[0]), status_code=302)
+    else:
+        response = HTMLResponse(render_landing_page(homes, state.home_labels))
+    response.headers["Cache-Control"] = "no-store"
+    response.headers.update(_ROOT_HEADERS)
+    return response
+
+
+#: ``GET /``'s own policy (see ``_root_landing``). The page has no script, no
+#: images, no forms and only inline ``<style>``, so everything else is 'none';
+#: ``frame-ancestors 'none'`` and ``X-Frame-Options`` keep it out of a frame.
+_ROOT_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
+        "form-action 'none'; frame-ancestors 'none'"),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+
+
 async def _browser_http(state: RelayState, request) -> "StreamingResponse":
     """Tunnel ONE browser HTTP request to the home and stream the response."""
     home_id = request.path_params["home_id"]
@@ -860,6 +920,9 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
     async def browser_http_ep(request):  # noqa: ANN001
         return await _browser_http(state, request)
 
+    async def root_ep(request):  # noqa: ANN001
+        return await _root_landing(state, request)
+
     # Read once: the environment is fixed when the image is built, so the
     # identity cannot change for the life of the process.
     build = build_identity()
@@ -868,6 +931,7 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
         return await _healthz(request, build)
 
     routes = [
+        Route("/", root_ep, methods=["GET"]),
         Route(HEALTHZ_PATH, healthz_ep, methods=["GET"]),
         WebSocketRoute("/scope", scope_ep),
         WebSocketRoute("/h/{home_id}/ws", browser_ws_ep),
