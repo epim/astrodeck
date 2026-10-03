@@ -17,8 +17,10 @@ verdict functions rather than a second copy of their maths, so pre-flight
 and the run cannot disagree about where either limit is.
 
 THE CLOCK IS PINNED, NOT RACED. ``_altitude_limit_verdict`` reads
-``time.time()`` when no ``at`` is given, so ``astrodeck.sequence.engine``'s
-``time`` is monkeypatched to a fixed instant (FIXED_TS) and every target's
+``time.time()`` when no ``at`` is given, and so does the floor pass's
+``coords.altaz``, so ``astrodeck.sequence.engine``'s and
+``astrodeck.catalog.coords``' ``time`` are both monkeypatched to a fixed
+instant (FIXED_TS; see ``_FakeClock`` for what pinning one cost) and every target's
 RA is computed FROM that same instant with ``catalog.coords.lst_hours`` --
 a pure function of the timestamp, never the wall clock -- so the geometry
 below is exact and never a race against how long the test takes to run
@@ -30,6 +32,7 @@ from __future__ import annotations
 import pytest
 
 import astrodeck.api.app as app_module
+import astrodeck.catalog.coords as coords_mod
 import astrodeck.sequence.engine as engine_mod
 from astrodeck.catalog import altaz
 from astrodeck.catalog.coords import lst_hours
@@ -46,10 +49,18 @@ SITE = Site(name="w10-ceiling-pier-fixture", latitude=42.0, longitude=-71.0,
 
 
 class _FakeClock:
-    """Replaces ``astrodeck.sequence.engine.time`` for this module only, so
-    ``_altitude_limit_verdict``'s ``time.time()`` reads FIXED_TS exactly --
-    nothing else in the pre-flight path this test exercises (no
-    ``engine.start()`` is ever called) reads any other ``time`` member."""
+    """Replaces the ``time`` module in ``astrodeck.sequence.engine`` AND
+    ``astrodeck.catalog.coords``, so both of the pre-flight's clocks read
+    FIXED_TS exactly: ``_altitude_limit_verdict``'s ``time.time()``, and the
+    horizon/floor pass, which runs FIRST (``_horizon_block`` ->
+    ``hub._check_horizon`` -> ``coords.altaz`` with no timestamp, so
+    ``coords``' own ``time.time()``). Pinning only the engine's let the floor
+    pass judge the same target at the REAL wall clock: at most hours of the
+    day the FIXED_TS-zenith target is somewhere else in the real sky, and
+    three of this file's four tests failed on whether it happened to be up
+    (branch CI on PR #680, 2026-10-03 00:44 UTC: ``below_horizon`` where
+    ``ceiling`` was expected). Neither path reads any other ``time`` member
+    (no ``engine.start()`` is ever called)."""
 
     @staticmethod
     def time() -> float:
@@ -65,6 +76,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_mod, "config_store", temp_store)
     monkeypatch.setattr(app_module, "config_store", temp_store)
     monkeypatch.setattr(engine_mod, "time", _FakeClock())
+    monkeypatch.setattr(coords_mod, "time", _FakeClock())
 
     from astrodeck.plans import PlanLibrary
     from astrodeck.profiles import ProfileLibrary
