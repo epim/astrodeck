@@ -439,14 +439,39 @@ export function GuiderSheet(): JSX.Element {
   const ditherPixels = typeof cfg.raw?.dither_pixels === "number" ? cfg.raw.dither_pixels : 3;
   // UX-24's three optional settle overrides. BLANK means "the guider's own
   // default", which is not the same as 0 - so they are held as text and only
-  // parsed at the press, and a field left alone is omitted from the body
-  // entirely rather than sent as a zero the guider would obey.
+  // parsed at the press (or the commit below), and a field left alone is
+  // omitted from the DITHER NOW body entirely rather than sent as a zero the
+  // guider would obey.
   const [settlePixels, setSettlePixels] = useState("");
   const [settleTime, setSettleTime] = useState("");
   const [settleTimeout, setSettleTimeout] = useState("");
+  // #560 (WP-58): these three used to be LOCAL state only, read by the DITHER
+  // NOW press below and never saved - so a scheduled run's own dithers always
+  // fell through to the guider's built-in settle rule, whatever these boxes
+  // said. Seeded from the saved block exactly like `draft` above, and synced
+  // again on every reload (including the commit this effect's own writes
+  // trigger via `cfg.raw`), so the boxes never show a value the rig is not
+  // actually holding.
+  useEffect(() => {
+    if (!cfg.raw) return;
+    const text = (v: unknown): string => typeof v === "number" ? String(v) : "";
+    setSettlePixels(text(cfg.raw.dither_settle_pixels));
+    setSettleTime(text(cfg.raw.dither_settle_time_s));
+    setSettleTimeout(text(cfg.raw.dither_settle_timeout_s));
+  }, [cfg.raw]);
   const optNum = (v: string): number | undefined => {
     const n = Number(v);
     return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
+  };
+  // Commits ONE settle box to the persisted block on blur/Enter (the house
+  // draft-commit idiom; see CaptureReadouts.tsx's DraftBox). A blank box
+  // commits `null` - EXPLICITLY, not by omitting the key - because `cfg.put`
+  // merges onto the last saved block (section 0.4's whole-block-PUT rule), so
+  // leaving the key out would never be able to CLEAR a previously saved
+  // override back to "the guider's own default".
+  const commitSettle = (key: string, text: string) => {
+    const n = optNum(text);
+    void act(() => cfg.put({ [key]: n === undefined ? null : n }));
   };
   const dither = () => act(() => api.post("/api/guide/dither", {
     pixels: ditherPixels,
@@ -640,14 +665,26 @@ export function GuiderSheet(): JSX.Element {
           </Row>
           <Note>0 turns dithering off.</Note>
           <Row>
+            {/* Locked like the pixels stepper above (`ditherPx`, the saved-block
+                readiness gate) and NOT like DITHER NOW (`ditherNow`, which also
+                needs guiding to be live): these three now SAVE to the rig's
+                config, same as the stepper, so an operator can set them before
+                guiding has even started for the night. */}
             <SettleField label="SETTLE PX" placeholder="1.5" value={settlePixels}
-              onChange={setSettlePixels} lockedReason={ditherNow.lockedReason} testId="guider-settle-px" />
+              onChange={setSettlePixels}
+              onCommit={() => commitSettle("dither_settle_pixels", settlePixels)}
+              lockedReason={ditherPx.lockedReason} testId="guider-settle-px" />
             <SettleField label="SETTLE S" placeholder="8" value={settleTime}
-              onChange={setSettleTime} lockedReason={ditherNow.lockedReason} testId="guider-settle-s" />
+              onChange={setSettleTime}
+              onCommit={() => commitSettle("dither_settle_time_s", settleTime)}
+              lockedReason={ditherPx.lockedReason} testId="guider-settle-s" />
             <SettleField label="TIMEOUT S" placeholder="60" value={settleTimeout}
-              onChange={setSettleTimeout} lockedReason={ditherNow.lockedReason} testId="guider-settle-timeout" />
+              onChange={setSettleTimeout}
+              onCommit={() => commitSettle("dither_settle_timeout_s", settleTimeout)}
+              lockedReason={ditherPx.lockedReason} testId="guider-settle-timeout" />
           </Row>
-          <Note>Leave the three settle fields empty to use the guider&rsquo;s own defaults.</Note>
+          <Note>Saved for every run - DITHER NOW uses these three too. Leave a
+            field empty to use the guider&rsquo;s own default.</Note>
           {/* The CADENCE is per-night (SequencePlan.dither_every) while the
               DISTANCE above is rig-level (config.guide.dither_pixels), so this
               row reads and does not write (plan E14). */}
@@ -769,12 +806,17 @@ export function GuiderSheet(): JSX.Element {
 
 /** One optional settle override. `readOnly`, never the native `disabled`: a
  *  locked field stays focusable and announced, so the reason beside it is
- *  reachable (ARCHITECTURE.md non-negotiable 6). */
-function SettleField({ label, placeholder, value, onChange, lockedReason, testId }: {
+ *  reachable (ARCHITECTURE.md non-negotiable 6).
+ *
+ *  `onCommit` fires on blur and on Enter (#560 WP-58; the same draft-commit
+ *  idiom as CaptureReadouts.tsx's `DraftBox`) - NOT on every keystroke, so a
+ *  value half-typed ("1" of "12") never reaches the rig as a one-off save. */
+function SettleField({ label, placeholder, value, onChange, onCommit, lockedReason, testId }: {
   label: string;
   placeholder: string;
   value: string;
   onChange: (v: string) => void;
+  onCommit: () => void;
   lockedReason: string | null;
   testId: string;
 }): JSX.Element {
@@ -792,6 +834,8 @@ function SettleField({ label, placeholder, value, onChange, lockedReason, testId
         title={lockedReason ?? undefined}
         aria-label={label}
         onChange={(e) => { if (!lockedReason) onChange(e.target.value); }}
+        onBlur={() => { if (!lockedReason) onCommit(); }}
+        onKeyDown={(e) => { if (!lockedReason && e.key === "Enter") onCommit(); }}
         data-testid={testId}
       />
     </label>

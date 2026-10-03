@@ -85,9 +85,12 @@ class RigFacts:
     #: (``to_plan.NODE_SETTINGS["guide"]``), so the brief names this instead.
     guide_provider: Optional[str] = None
     #: The settle every dither waits on, ``(pixels, seconds)``: the guide
-    #: star within this many guide-camera pixels for this long. The run hands
-    #: the guider no settle of its own, so this is the guider's own rule; None
-    #: where the guider does not publish it (NINA settles by its own).
+    #: star within this many guide-camera pixels for this long. For PHD2 it is
+    #: Rig > Guider's saved settle where one is set (#560: the run hands PHD2
+    #: that override) and PHD2's default where not; the native guider settles
+    #: on its own criteria and ignores a caller's pixels/time (#679), so for it
+    #: this is always the native rule. None where the guider does not publish
+    #: it (NINA settles by its own).
     guide_settle: Optional[tuple[float, float]] = None
     #: The dither distance in guide-camera pixels, Rig > Guider's (the rig's
     #: standard; a flow plan never sets one). 0 is a real reading.
