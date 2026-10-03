@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
                       field_validator)
 
+from ..aio import reap
 from ..alerting import AlertDispatcher
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_VIEW_SITE_DERIVED,
@@ -565,15 +566,9 @@ async def _lifespan(app: "FastAPI"):
         await sync_push_runner.stop()
         await dispatcher.stop()
         task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+        await reap(task)
         boot_cause_task.cancel()
-        try:
-            await boot_cause_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        await reap(boot_cause_task)
         # Stop the relay dial-out (best-effort; never raises out of shutdown).
         if relay_client is not None:
             try:
@@ -590,10 +585,7 @@ async def _lifespan(app: "FastAPI"):
         bt = getattr(hub, "_boot_connect_task", None)
         if bt is not None and not bt.done():
             bt.cancel()
-            try:
-                await bt
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(bt)
         # Clean teardown of an auto-connected rig (best-effort; never raises).
         try:
             await hub.disconnect_all()
@@ -1476,6 +1468,14 @@ def _spawn(name: str, coro, *, replace: bool = False) -> dict:
             await coro
         except asyncio.CancelledError:
             bus.log("warning", f"{name} cancelled", name)
+            # RE-RAISE (#252): this coroutine runs as the task's own top
+            # level, so swallowing its cancellation here would leave the task
+            # reporting a normal, uncancelled completion -- a claim nothing
+            # behind it keeps, the same broken promise #235/#252 names
+            # elsewhere. Nothing today awaits this task directly, but the
+            # guard that scans for the shape cannot know that, and a future
+            # caller that DOES await it deserves an honest `cancelled()`.
+            raise
         except (DeviceError, Exception) as e:
             bus.log("error", f"{name} failed: {e}", name)
 
@@ -1535,6 +1535,7 @@ def _spawn_connect(coro) -> dict:
             await coro
         except asyncio.CancelledError:
             bus.log("warning", "profile cancelled", "profile")
+            raise  # #252: see _spawn.wrapped -- the task must report cancelled.
         except (DeviceError, Exception) as e:
             bus.log("error", f"profile failed: {e}", "profile")
 

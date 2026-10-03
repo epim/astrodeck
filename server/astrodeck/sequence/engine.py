@@ -29,13 +29,13 @@ WITHOUT changing any existing ETA/resume bookkeeping:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import math
 import time
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable, NamedTuple
 
+from ..aio import reap
 from ..config import config_store, frames_payload
 from .. import capture_geometry, naming
 from ..devices.base import DeviceError, DomeShutterState, PierSide
@@ -2347,10 +2347,7 @@ class SequenceEngine:
                                "answering can hold this for a few minutes.",
                         **self._hold_cleared())
                 self._task.cancel()
-                try:
-                    await self._task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await reap(self._task)
             # the main run is now fully stopped, so no NEW thumb can be spawned
             # concurrently -- this always drains exactly the pending set (Task 6
             # review, Important #1: no orphaned renders / "destroyed but pending"
@@ -3160,7 +3157,29 @@ class SequenceEngine:
         finalize on the complete/dawn path, the outer ``except Exception`` would
         otherwise re-finalize with end_reason='error' — overwriting 'complete' and
         publishing a contradictory second ``report`` event. The first finalize
-        wins; later calls are no-ops."""
+        wins; later calls are no-ops.
+
+        KEPT SYNCHRONOUS (#668). An EARLIER version of this fix also awaited
+        ``self.reporter.flush()`` here, which would have been redundant with
+        the ``finalize()`` call two lines up (itself synchronous and already
+        on disk when it returns) for THIS call's own write -- the only gap
+        flush closes is a PRIOR ``record_frame``/``record_safety``/
+        ``mark_skipped``/``record_sky_angle``'s fire-and-forget write still in
+        flight when this runs. But making this method ``async`` broke two
+        callers outside this work package's files (test doubles that stand in
+        for the engine: ``test_flows_continue.py:165`` and
+        ``test_flows_progress_route.py:1104``, both calling
+        ``self.engine._finalize_report(...)`` un-awaited -- a silent
+        "coroutine was never awaited", not even a loud failure) and left two
+        of ``_wind_down``'s own three call sites unflushed anyway (the
+        "aborted"/"shutdown" and "error" arms finalize WITHOUT a following
+        ``_wind_down`` -- see ``_run``'s ``except asyncio.CancelledError`` /
+        ``except Exception`` arms -- so their prior-event races, if real,
+        would need their OWN flush, not this one). ``_wind_down``'s own
+        ``await self.reporter.flush()``, at its very end, closes the one race
+        #668 was filed for (the wind-down's OWN roof-close event, recorded
+        AFTER this call already ran) for every caller of ``_wind_down`` at
+        once, with no signature change and no caller to update."""
         if self._report_finalized:
             return
         self._report_finalized = True
@@ -15692,8 +15711,7 @@ class SequenceEngine:
             # this has to be done by hand, on every exit that is not a return.
             if not task.done():
                 task.cancel()
-                with contextlib.suppress(BaseException):
-                    await task
+                await reap(task)
 
     def _guide_rms(self) -> float | None:
         """Current total guide RMS in ARCSEC, or None when unguided/unreadable
@@ -16617,6 +16635,20 @@ class SequenceEngine:
         if day_darks:
             await self._day_darks()
         await self._wind_down_warm(warm)
+        # #668: THE REPORT IS FINAL BY NOW, BUT ITS LAST EVENT MAY NOT BE ON
+        # DISK YET. `_wind_down_park_and_close` (above, inside
+        # `_wind_down_park_and_close`'s own call) records the roof-close
+        # safety event AFTER every terminal path's own `_finalize_report`
+        # call has already run and published "report" -- the dome is closed
+        # as part of winding down, not before the run is declared ended. That
+        # `record_safety` schedules a fire-and-forget snapshot write
+        # (`SessionReporter._schedule_write`), so a reader fetching the
+        # report the instant this wind-down returns could still race it to
+        # disk. Awaiting it here, once, after every wind-down step including
+        # the warm ramp's own kick-off, closes that window for every caller
+        # of `_wind_down` at once rather than each terminal path separately.
+        if self.reporter is not None:
+            await self.reporter.flush()
 
     async def _stop_guiding_quietly(self) -> None:
         """The wind-down's guider stop, and the auto-reopen roof close's

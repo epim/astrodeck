@@ -112,6 +112,7 @@ import math
 import time
 from typing import NamedTuple
 
+from ..aio import reap
 from ..config import config_store
 from ..devices.base import GotoRefused
 from ..events import bus, night_key
@@ -1215,10 +1216,7 @@ class ResumeArm:
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(self._task)
             self._task = None
 
     async def _run(self) -> None:
