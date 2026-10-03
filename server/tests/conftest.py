@@ -11,6 +11,7 @@ the e2e test ``importorskip``s.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import itertools
 import os
 import shutil
@@ -168,50 +169,71 @@ def _never_touch_the_real_config():
     ``filter_names.json``, the app's startup lists ``plans/``, and the site
     leak scanner read the real ``flows/``, ``plans/``, ``locations.json``
     and ``users.json``. ``_sweep_off_the_real_config`` moves them all, and
-    the guard now watches the directory as well as the two classes."""
-    import tempfile
-    import astrodeck.config as config_mod
+    the guard now watches the directory as well as the two classes.
+
+    THE ``config_store``/``CONFIG_DIR`` REDIRECT AND THE WATCHERS NOW START
+    AT CONFTEST IMPORT, not here (#675 part 2, WP-H2). This fixture's own
+    setup is already too late for a module-level statement in a test file,
+    which reaches the shared store at ITS OWN import -- before collection
+    has even finished, let alone before the first test asks for THIS
+    fixture. ``_arm_real_config_guard_before_collection`` (above) does that
+    first half as soon as this file is read; this fixture reuses what it
+    already set up (the throwaway directory, the real file/dir, the
+    watchers' undo) and FAILS LOUDLY, before doing anything else, if the
+    collection window still saw a reach -- see its own docstring for the
+    traced example and why a write during collection is possible at all on
+    a fresh worktree."""
     import astrodeck.profiles as profiles_mod
     from astrodeck.catalog.ephemeris import elements as elements_mod
-    real = config_mod.config_store._path
-    real_dir = config_mod.CONFIG_DIR
+    # If this fires, something reached the real config during COLLECTION
+    # despite the redirect already being in place -- a `ConfigStore` built
+    # explicitly on `CONFIG_FILE`/the real directory, bypassing the
+    # singleton that redirect moved. Loud and immediate (every test in the
+    # session depends on this autouse fixture, so this fails the whole run
+    # at setup) beats an intermittent xdist race on the same real file
+    # (#675 part 2): the SAME cause now gives every worker the SAME error,
+    # naming it, instead of some workers losing a race others win.
+    if _RealConfig.reads:
+        raise AssertionError(
+            "the developer's real config was reached during test "
+            "COLLECTION, before any test -- or this fixture -- could run: "
+            + ", ".join(_RealConfig.reads) + ". A module-level statement in "
+            "a test file that reaches astrodeck.config.config_store (or "
+            "anything built on it) at ITS OWN import is the usual shape "
+            "(#675): make that computation lazy, inside a fixture or the "
+            "first test that needs it, never a module-level statement.")
+    import astrodeck.config as config_mod
+    real, real_dir = _REAL_CONFIG_FILE, _REAL_CONFIG_DIR
     real_profiles = profiles_mod.profiles._dir
     real_elements = (elements_mod.ELEMENTS_DIR, elements_mod.SATELLITE_FILE,
                      elements_mod.COMET_FILE)
     real_start = elements_mod.EphemerisStore.start
-    _RealConfig.record(files=(real, config_mod.CONFIG_FILE),
-                       profile_dirs=(real_profiles, config_mod.PROFILES_DIR),
-                       dirs=(real_dir, config_mod.CONFIG_FILE.parent))
-    unwatch = _watch_the_real_config()
-    with tempfile.TemporaryDirectory(prefix="astrodeck-test-config-") as d:
-        config_mod.config_store._path = Path(d) / "astrodeck.json"
-        config_mod.config_store._cfg = None      # drop anything already loaded
-        config_mod.CONFIG_DIR = Path(d)
-        profiles_mod.profiles._dir = Path(d) / "profiles"
-        # THE ORBITAL-ELEMENT CACHE, for the third time in this fixture's life
-        # and for the same reason (2026-09-10). ``elements.py`` computes
-        # ``ELEMENTS_DIR = CONFIG_DIR / "ephemeris"`` at IMPORT, so repointing
-        # CONFIG_DIR above does not move it -- and once S7L started the poller
-        # in the app lifespan, any test whose TestClient outlived the 60 s check
-        # interval fetched CelesTrak and the MPC and wrote 400 kB into the
-        # developer's real ``server/config/ephemeris/``. That file is not inert:
-        # ``catalog.search`` merges comet rows out of it, so a suite that had
-        # ever run long enough got an extra row in ``search("sun")`` and three
-        # catalog tests failed on a machine-specific artefact of an earlier run.
-        elements_mod.ELEMENTS_DIR = Path(d) / "ephemeris"
-        elements_mod.SATELLITE_FILE = elements_mod.ELEMENTS_DIR / "satellites.json"
-        elements_mod.COMET_FILE = elements_mod.ELEMENTS_DIR / "comets.json"
-        # ...and no poller at all. The redirect above makes the write harmless;
-        # this makes the FETCH not happen, because a test suite that reaches the
-        # internet fails on a train and passes at a desk. A test that wants the
-        # loop calls ``_run``/``refresh`` directly, which is what the ephemeris
-        # tests already do.
-        elements_mod.EphemerisStore.start = lambda self: None
-        # Last, so the moves above are already off the real directory and
-        # the sweep's known positives are the seams nothing above moves.
-        put_back = _sweep_off_the_real_config(real_dir, Path(d))
-        assert config_mod.config_store._path != real
-        yield
+    d = _CONFIG_COLLECTION_DIR
+    assert config_mod.config_store._path != real
+    profiles_mod.profiles._dir = Path(d) / "profiles"
+    # THE ORBITAL-ELEMENT CACHE, for the third time in this fixture's life
+    # and for the same reason (2026-09-10). ``elements.py`` computes
+    # ``ELEMENTS_DIR = CONFIG_DIR / "ephemeris"`` at IMPORT, so repointing
+    # CONFIG_DIR above does not move it -- and once S7L started the poller
+    # in the app lifespan, any test whose TestClient outlived the 60 s check
+    # interval fetched CelesTrak and the MPC and wrote 400 kB into the
+    # developer's real ``server/config/ephemeris/``. That file is not inert:
+    # ``catalog.search`` merges comet rows out of it, so a suite that had
+    # ever run long enough got an extra row in ``search("sun")`` and three
+    # catalog tests failed on a machine-specific artefact of an earlier run.
+    elements_mod.ELEMENTS_DIR = Path(d) / "ephemeris"
+    elements_mod.SATELLITE_FILE = elements_mod.ELEMENTS_DIR / "satellites.json"
+    elements_mod.COMET_FILE = elements_mod.ELEMENTS_DIR / "comets.json"
+    # ...and no poller at all. The redirect above makes the write harmless;
+    # this makes the FETCH not happen, because a test suite that reaches the
+    # internet fails on a train and passes at a desk. A test that wants the
+    # loop calls ``_run``/``refresh`` directly, which is what the ephemeris
+    # tests already do.
+    elements_mod.EphemerisStore.start = lambda self: None
+    # Last, so the moves above are already off the real directory and
+    # the sweep's known positives are the seams nothing above moves.
+    put_back = _sweep_off_the_real_config(real_dir, Path(d))
+    yield
     put_back()
     config_mod.config_store._path = real
     config_mod.config_store._cfg = None
@@ -220,7 +242,8 @@ def _never_touch_the_real_config():
     (elements_mod.ELEMENTS_DIR, elements_mod.SATELLITE_FILE,
      elements_mod.COMET_FILE) = real_elements
     elements_mod.EphemerisStore.start = real_start
-    unwatch()
+    shutil.rmtree(d, ignore_errors=True)
+    _unwatch_real_config_guard()
 
 
 class _RealConfig:
@@ -675,6 +698,117 @@ def _watch_the_real_config():
     return unwatch
 
 
+def _arm_real_config_guard_before_collection():
+    """Do the FIRST half of what ``_never_touch_the_real_config`` below does,
+    at conftest IMPORT rather than at that fixture's first setup (#675 part
+    2, backlog WP-H2, from the plan the owner approved 2026-09-30): point
+    the shared ``config_store`` at a throwaway file
+    before any test MODULE is collected, so a module-level statement in a
+    test file -- which reaches the singleton at ITS OWN import, before any
+    fixture exists to redirect it -- lands on a private file instead of the
+    developer's real ``server/config/astrodeck.json``.
+
+    WHY A FIXTURE CANNOT CLOSE THIS WINDOW, no matter how early it is
+    declared: ``_never_touch_the_real_config`` is ``scope="session"``, but a
+    fixture -- even a session-scoped, autouse one -- is still lazy. pytest
+    only materialises it when the FIRST TEST asks for it, which is after
+    collection has already imported every test module in the run. Anything
+    a test file's import touches at its OWN module level reaches the
+    singleton with no fixture in effect yet.
+
+    TRACED TO GROUND (#675, three occurrences across three worktrees,
+    reported as an intermittent xdist race -- "ConfigStore._load() falling
+    through to _save() in several xdist workers at once"): test_w1_cooling_
+    restore_daylight.py's `NIGHT_TS = _night_midpoint()` is a module-level
+    statement. It calls astrodeck.sequence.schedule.observing_night, which
+    calls `config_store.cfg()`. On a FRESH worktree -- `server/config/` is
+    gitignored, so every WP worktree in this backlog plan starts without a
+    file -- that reaches `ConfigStore._load`'s ``FileNotFoundError`` branch,
+    which falls through to `_save()`, writing the default config to the REAL
+    path. One worker doing that alone is harmless (a default file nobody
+    asked for, but not wrong). Several xdist workers importing the same test
+    file at once race to create the same file at the same path and
+    intermittently collide: observed, verbatim, ``FileNotFoundError`` then
+    ``PermissionError`` on ``astrodeck.json`` or its ``.tmp`` rename, and
+    pytest-xdist reporting "Different tests were collected" once a worker's
+    collection raised where another worker's import got there first and
+    succeeded.
+
+    test_w1_cooling_restore_daylight.py is not a file this WP may edit (it
+    is outside its owned-files list), so the fix here is structural: close
+    the window every such statement writes through, rather than that one
+    statement. test_w1_cooling_restore_daylight.py's own fix -- making
+    ``NIGHT_TS`` lazy -- is filed as its own issue (see this WP's return).
+
+    THE WATCHERS ARE ARMED HERE TOO (``_watch_the_real_config``), not only
+    the redirect: a ``ConfigStore`` built explicitly on ``CONFIG_FILE``,
+    bypassing the singleton this function moves, still reaches the real
+    path, and now gets recorded from collection onward rather than only from
+    the first test. ``_never_touch_the_real_config`` fails loudly, at its
+    own setup, if anything was recorded before it got a chance to run --
+    exactly the collection window this closes (empty in the healthy case:
+    the redirect above means the traced statement no longer reaches the real
+    path AT ALL, so there is nothing left for the watcher to catch there;
+    what it still catches is anything that reaches the real path SOME OTHER
+    way).
+
+    Returns ``(directory, real_file, real_dir, unwatch)`` for
+    ``_never_touch_the_real_config`` to finish the job with: the throwaway
+    directory this function already pointed ``config_store``/``CONFIG_DIR``
+    at (REUSED, not recreated there, so profiles/ephemeris land beside it
+    under one root, as before); the genuine real file and directory (read
+    HERE, before anything moves them -- ``config_store._path``/``CONFIG_DIR``
+    by the time that fixture runs already answer this throwaway directory,
+    not the developer's real location, so it cannot re-read them itself);
+    and the watchers' undo, called at that fixture's own teardown, same as
+    today."""
+    import tempfile
+
+    import astrodeck.config as config_mod
+    import astrodeck.profiles as profiles_mod
+    # CONFIG_FILE/PROFILES_DIR are plain module constants, computed once at
+    # config.py's own import and never reassigned anywhere in the codebase
+    # (grepped) -- unlike config_store._path/CONFIG_DIR, which this function
+    # is about to move, they stay correct to read at ANY later point. Using
+    # them (rather than config_store._path/CONFIG_DIR, read before moving)
+    # is what lets `_never_touch_the_real_config` below read "what is real"
+    # from this function's return instead of needing its own early capture.
+    real_file = config_mod.CONFIG_FILE
+    real_dir = real_file.parent
+    _RealConfig.record(files=(real_file,),
+                       profile_dirs=(profiles_mod.profiles._dir,
+                                     config_mod.PROFILES_DIR),
+                       dirs=(real_dir,))
+    unwatch = _watch_the_real_config()
+    directory = tempfile.mkdtemp(prefix="astrodeck-test-config-")
+    config_mod.config_store._path = Path(directory) / "astrodeck.json"
+    config_mod.config_store._cfg = None      # drop anything already loaded
+    config_mod.CONFIG_DIR = Path(directory)
+    # Backstop for a leak this move introduced (found verifying WP-H2,
+    # filed as its own issue): the ONLY other cleanup is
+    # `_never_touch_the_real_config`'s session-fixture teardown
+    # (`shutil.rmtree(d, ...)` below), and pytest never sets up or tears
+    # down fixtures for a `--collect-only` run -- exactly the command this
+    # WP's own fix shape says to run repeatedly to validate it. Measured
+    # directly: one `--collect-only -n 0` run left one orphaned
+    # `astrodeck-test-config-*` directory in the OS temp dir with no
+    # in-session code path left to remove it; under `-n auto` that is one
+    # per worker, every run, forever. `atexit` fires at ordinary
+    # interpreter shutdown (collect-only still exits normally), so this
+    # removes the directory even when the fixture that would otherwise
+    # clean it up never runs.
+    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+    return directory, real_file, real_dir, unwatch
+
+
+#: Armed at conftest IMPORT, before any test module is collected -- see
+#: ``_arm_real_config_guard_before_collection``'s own docstring for why this
+#: cannot wait for a fixture. ``_never_touch_the_real_config`` below reuses
+#: all four rather than redoing this work at its own (later) setup.
+(_CONFIG_COLLECTION_DIR, _REAL_CONFIG_FILE, _REAL_CONFIG_DIR,
+ _unwatch_real_config_guard) = _arm_real_config_guard_before_collection()
+
+
 def _config_reads_stay_off_the_real_one(nodeid: str):
     """The body of ``_no_test_reads_the_real_config``, as a plain generator
     so test_real_config_guard.py can drive it."""
@@ -715,10 +849,18 @@ def _no_test_reads_the_real_config(_never_touch_the_real_config, request):
     after it, which is every non-autouse one (``client``, ``env``, a
     lifespan), including a read from the cache of a store that loaded the
     real file earlier. What it does not see: a read made while a module-
-    or session-scoped fixture sets up, before it; and a read at import,
-    before any fixture, which a probe of the whole suite found none of (the
-    process store had not loaded when the session began, in all 13
-    processes).
+    or session-scoped fixture sets up, before it.
+
+    A READ AT IMPORT, BEFORE ANY FIXTURE, is a case this fixture itself
+    cannot see either (it has not even been asked for yet) -- a probe of the
+    whole suite once found none of those, in all 13 processes, but that
+    probe was wrong: #675 traced one to test_w1_cooling_restore_daylight.py's
+    module-level ``NIGHT_TS = _night_midpoint()``. ``_never_touch_the_real_
+    config``'s own setup now fails loudly on exactly this case (see
+    ``_arm_real_config_guard_before_collection``), by redirecting the store
+    before collection starts (so the traced statement, and anything shaped
+    like it, lands on a throwaway file) and asserting nothing was recorded
+    against the real one regardless.
 
     Its cases, a throwaway run of this conftest with a deliberately leaky
     fixture, are in test_real_config_guard.py."""
