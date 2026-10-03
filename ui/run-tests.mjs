@@ -136,7 +136,13 @@ export function timeoutPhase(output) {
     : "during its test cases -- no tally was ever printed";
 }
 
-export function runOne(file) {
+// `timeoutMs` defaults to the real suite's TIMEOUT_MS but can be overridden
+// per call — issue #664's own regression test (w13CleanTallyTimeoutRetry)
+// needs a real timeout-and-kill to prove runFileWithRetry's wiring, and
+// waiting out the full 60s for that would make the guard itself the next
+// "cost a minute of CI time by design" problem runTests.test.ts's own header
+// warns against.
+export function runOne(file, timeoutMs = TIMEOUT_MS) {
   // The child imports the file, which runs its assertions, then reports the
   // file's own exported `result` when it has one.
   const url = pathToFileURL(file).href;
@@ -153,7 +159,7 @@ export function runOne(file) {
     execFile(
       process.execPath,
       ["--import", CSS_STUB_URL, "--import", "tsx", "--input-type=module", "--eval", code],
-      { cwd: ROOT, timeout: TIMEOUT_MS, maxBuffer: 8 << 20 },
+      { cwd: ROOT, timeout: timeoutMs, maxBuffer: 8 << 20 },
       (err, stdout, stderr) => {
         const output = [stdout, (stderr || "").replace(/__COUNTS__.*\n?/, "")]
           .join("").trim();
@@ -177,6 +183,54 @@ export function runOne(file) {
       },
     );
   });
+}
+
+/** Issue #664. A full-suite run (548 files, CONCURRENCY 8) on this shared box
+ *  twice produced the #614 shape — a file printed its own clean tally and
+ *  then the child was killed at TIMEOUT_MS anyway — on two DIFFERENT files
+ *  (hubBoundary.test.tsx, appHeaderDom.test.tsx) neither of which schedules
+ *  requestAnimationFrame anywhere in its own render path. Instrumented from a
+ *  byte backup (process._getActiveHandles()/_getActiveRequests(), polled
+ *  every 2s into a file, so a SIGTERM-killed child's last reading survives
+ *  the kill the way a console.log through a pipe is not guaranteed to): BOTH
+ *  hangs carried ZERO live handles or requests for the whole 60s window. A
+ *  dangling jsdom rAF timer — or any other lingering async handle — would
+ *  show up in that list and would not stop an unrelated interval on the same
+ *  event loop from firing; zero dumps for 60s straight rules that out and
+ *  points at this box's own CPU scheduling under a full concurrent run
+ *  (three other coders' processes plus this run's own 8-way concurrency),
+ *  not at anything the file's code is responsible for. 160 isolated runs of
+ *  the originally-reported file (capturePreviewMobileOverflow.test.tsx, 40 at
+ *  CONCURRENCY 8 and then 120 more) produced zero hangs on its own, which
+ *  fits: the trigger is the shared box's load at the moment, not this file.
+ *
+ *  shouldRetry names the ONE shape worth a second try: the file's own
+ *  assertions already finished (it printed a clean tally or a throw-on-
+ *  failure completion phrase) and only the process's own exit missed the
+ *  deadline. A timeout with NO tally at all is a different, more serious
+ *  shape — something inside the file's own cases never returned — and must
+ *  never be retried into a false green. */
+export function shouldRetry(result) {
+  return result.timedOut
+    && timeoutPhase(result.output) === "after its own tally -- the default export never resolved";
+}
+
+/** Runs `file` once, and if it times out in the shape `shouldRetry` names,
+ *  tries it exactly once more in a fresh child before reporting it broken.
+ *  Exactly one retry, never a loop: a genuine hang (an app bug that cancels
+ *  its own animation loop incorrectly, say) is deterministic and will time
+ *  out the same way again, so a second timeout is reported as the real
+ *  failure it is rather than retried forever waiting for the box to go
+ *  quiet. `timeoutMs` threads through to both attempts — see `runOne`. */
+export async function runFileWithRetry(file, timeoutMs = TIMEOUT_MS) {
+  const first = await runOne(file, timeoutMs);
+  if (!shouldRetry(first)) return first;
+  const retry = await runOne(file, timeoutMs);
+  if (retry.ok) {
+    console.log(`  (${relative(ROOT, file)} timed out once after its own tally, `
+      + "then passed on retry -- #664, not a hang)");
+  }
+  return retry;
 }
 
 /** Typecheck the whole project before running anything, and fail the run if
@@ -232,7 +286,7 @@ async function main() {
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(CONCURRENCY, files.length) }, async () => {
-      while (next < files.length) results.push(await runOne(files[next++]));
+      while (next < files.length) results.push(await runFileWithRetry(files[next++]));
     }),
   );
 
