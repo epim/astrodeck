@@ -6196,7 +6196,7 @@
   },
   {
     "page": "README.md",
-    "claim": "![version](https://img.shields.io/badge/version-0.3.39-4DD9E8)\n![python](https://img.shields.io/badge/python-3.11%2B-4DD9E8)\n![platforms](https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20Pi-4DD9E8)\n![licence](https://img.shields.io/badge/licence-Apache--2.0-8A97AE)",
+    "claim": "![version](https://img.shields.io/badge/version-0.3.40-4DD9E8)\n![python](https://img.shields.io/badge/python-3.11%2B-4DD9E8)\n![platforms](https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20Pi-4DD9E8)\n![licence](https://img.shields.io/badge/licence-Apache--2.0-8A97AE)",
     "source": "server/astrodeck/devices/base.py",
     "line": 1,
     "verified_by": "source-trace",
