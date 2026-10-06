@@ -133,7 +133,7 @@ AstroDeck at it and keep everything where it is.
 | Route | What drives the hardware | What AstroDeck adds |
 |---|---|---|
 | **Standalone** | AstroDeck, via native drivers or ASCOM Alpaca | Imaging, planning and automation with available devices and task providers |
-| **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session ledger, Sky Atlas, weather model, remote access, phone dashboard |
+| **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session logs, Sky Atlas, weather model, remote access, phone dashboard |
 | **Alongside ASIAIR** | The ASIAIR app retains capture and guiding | Atlas planning and weather; optional experimental backend described below |
 
 Use AstroDeck for the parts where it helps and keep whatever already works.

@@ -77,7 +77,7 @@ export const PRESET_BLURB: Record<PresetName, string> = {
  *  numbers; there is nothing to send that would produce it. */
 export const CUSTOM_NOT_PICKABLE =
   "the rig reports CUSTOM whenever the response settings match neither preset - change one on the "
-  + "safety sheet and it lands here by itself";
+  + "safety sheet and it appears here automatically";
 
 const ON_UNSAFE_WORD: Record<SafetyConfig["on_unsafe"], string> = {
   warn: "warn only",

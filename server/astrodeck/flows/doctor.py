@@ -945,7 +945,7 @@ def check(graph: FlowGraph, *, standards=None, mount=None,
     # 10. no ledger
     if not any(x.type == "report" for x in graph.nodes):
         out.append(Issue(
-            "▸ no session report sink - the night leaves no ledger", "note"))
+            "▸ no session report stage - the night will not have a saved report", "note"))
 
     # 14. the rig's frame grading, not the graph's. The only rule here that
     # reads state outside the canvas, and it earns that: on 2026-09-06 a flow

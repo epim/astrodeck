@@ -194,7 +194,7 @@ test("rowSubtitle says which of the four things is true", () => {
   assert(/all passed the quality gates/.test(rowSubtitle({ ...base, accepted: 3, rejected: 0 })),
     "a clean sweep says so");
   assert(/1 rejected/.test(rowSubtitle({ ...base, accepted: 2, rejected: 1 })), "rejects are counted");
-  assert(/nothing banked yet/.test(rowSubtitle({ ...base, subs: 0 })), "an empty channel says so");
+  assert(/no frames captured yet/.test(rowSubtitle({ ...base, subs: 0 })), "an empty channel says so");
   assert(/60 s/.test(rowSubtitle(base)), "the exposure is on the line");
 });
 
@@ -328,7 +328,7 @@ test("transferNote names the transport when it knows it", () => {
   const direct = transferNote({ bytes: 100 * 1024 * 1024, via: "direct", mbps: 10, target: "M31", date: "2026-09-08" });
   assert(/direct from the rig/.test(direct.line), "direct is named");
   assert(/about/.test(direct.line), "and carries an ETA");
-  assert(/lands in Files > AstroDeck > M31 2026-09-08/.test(direct.line), "and where it lands");
+  assert(/is saved in Files > AstroDeck > M31 2026-09-08/.test(direct.line), "and where it lands");
   const relay = transferNote({ bytes: 100 * 1024 * 1024, via: "relay", mbps: 1, target: "M31", date: "" });
   assert(/over the relay/.test(relay.line), "relay is named");
   assert(relay.extra === "On the rig's own Wi-Fi this is faster.", "and the faster path is offered");

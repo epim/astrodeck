@@ -359,7 +359,7 @@ async def test_two_sparse_failures_owe_a_sweep_at_the_first_rich_frame(
         f"after two sparse-field failures the frame with "
         f"{SPARSE_FIELD_WARN} stars owed one sweep before the next frame: "
         f"sweeps {sweeps}")
-    assert len(night.said("sweeps at the next frame boundary")) == 1
+    assert len(night.said("will run at the next frame boundary")) == 1
     assert len(night.captures) == 6, "premise: the run shot its frames"
 
 
@@ -416,7 +416,7 @@ async def test_the_owed_sweep_failing_again_owes_nothing_more(group_hub,
     assert [s["frames"] for s in sweeps] == [0, 0, 1, 1], sweeps
     assert [s["exposure_s"] / sweeps[0]["exposure_s"] for s in sweeps] == [
         1, 2, 1, 2], "premise: each sweep was retried at twice its exposure"
-    assert night.said("No further sweep is owed"), night.lines[-8:]
+    assert night.said("No further sweep is scheduled"), night.lines[-8:]
     assert len(night.captures) == 6, "premise: the run shot its frames"
 
 

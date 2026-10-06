@@ -1057,7 +1057,7 @@ def _asks_adopt(session: Session, report) -> bool:
 
 
 #: How a step is listed when its frames outran ADOPT's catalogue lookup (#249).
-_ADOPT_AGAIN = ("frames were banked on this step after ADOPT looked it up in "
+_ADOPT_AGAIN = ("frames were captured on this step after ADOPT looked it up in "
                 "the catalogue, so it was not matched; press ADOPT again to "
                 "include them")
 
@@ -1340,8 +1340,8 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
         bus.log("info",
                 f"'{s.name}' continues counting "
                 f"{_MODE_WORDS.get(now, now)} where its session counted "
-                f"{_MODE_WORDS.get(was, was)}: nothing banked recounts "
-                f"differently ({banked} sub{'' if banked == 1 else 's'} "
+                f"{_MODE_WORDS.get(was, was)}: the captured frame count is unchanged "
+                f"({banked} sub{'' if banked == 1 else 's'} "
                 f"either way), so nothing was asked.", "sequence")
     out = {"id": s.id, "night": night, "continued": True,
            "kept": len(report.kept), "new": len(report.new),
@@ -7723,7 +7723,7 @@ def create_app(*, bind_host: str | None = None,
                     f"Removed {kept.stem}, which could not be read. Its "
                     f"backup {kept.name} remains in the sessions folder, "
                     f"and so do the session's thumbnails: renaming the "
-                    f"backup to {kept.stem} brings the ledger back as it "
+                    f"backup to {kept.stem} brings the session log back as it "
                     f"was when the backup was taken, if the backup itself "
                     f"is intact.")}
 

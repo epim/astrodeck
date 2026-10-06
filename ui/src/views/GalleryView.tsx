@@ -427,7 +427,7 @@ export default function GalleryView(): JSX.Element {
               From night
               <InfoDot
                 label="About observing nights"
-                content="A night runs noon to noon, so everything from one session lands under one key even across midnight. Filenames carry the calendar date instead, which is why a 00:10 frame's name and its night disagree."
+                content="A night runs noon to noon, so all frames from one session are grouped together even across midnight. Filenames carry the calendar date instead, which is why a 00:10 frame's name and its night disagree."
               />
             </span>
             <select

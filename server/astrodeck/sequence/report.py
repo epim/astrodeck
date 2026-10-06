@@ -1219,10 +1219,11 @@ class SessionReporter:
         if unsummarised:
             # Once per report, not per request: its summary is written above,
             # so the next call finds it. Not a warning; nothing is wrong.
-            bus.log("info", f"{unsummarised} session report"
-                            f"{'' if unsummarised == 1 else 's'} had no ledger "
-                            f"summary, so each was read in full once and "
-                            f"summarised for the next Tonight read", "report")
+            bus.log("info",
+                    f"{unsummarised} session report"
+                    f"{('' if unsummarised == 1 else 's')} had no session "
+                    f"summary, so each was read in full once and summarised "
+                    f"for the next Tonight read", "report")
         return out
 
     @staticmethod

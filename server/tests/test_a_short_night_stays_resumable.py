@@ -131,7 +131,7 @@ async def test_the_terminal_line_says_how_short_the_night_was(sim_hub, bus_lines
     print("\nTERMINAL LINE: " + line)
     assert "stopped at dawn" in line
     assert f"{shot} of 8 frames" in line, "how much of the plan is in the bag"
-    assert f"{8 - shot} still owed" in line, "how much is not"
+    assert f"{8 - shot} remaining" in line, "how much is not"
     assert "resumes when the window opens" in line, (
         "and that nobody has to do anything about it tonight")
 

@@ -324,7 +324,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         authenticated = _security_banner(args.host, args.port)
     except (RuntimeError, ValueError) as exc:
         logging.getLogger("astrodeck").error(
-            "authentication posture is unsafe: %s; refusing to start", exc
+            "authentication settings are unsafe: %s; refusing to start", exc
         )
         return 2
     exposed = args.host not in ("127.0.0.1", "localhost", "::1")

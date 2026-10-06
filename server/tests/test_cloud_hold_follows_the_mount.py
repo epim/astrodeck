@@ -1136,7 +1136,7 @@ async def test_the_flip_point_of_a_target_the_mount_is_not_on_is_left_alone(
         assert tries and max(tries) > t_flip + LEAD_S, (
             "premise: every look asked for Bravo, past its transit")
         msgs = [m for _l, m, _s in bus_lines]
-        owed = [m for m in msgs if "a meridian flip is owed" in m]
+        owed = [m for m in msgs if "a meridian flip is required" in m]
         assert not flips and not owed, (
             f"the hold acted on Bravo's flip point with the mount on Alpha: "
             f"flips at {w.rel(flips, t_h)} s, owed {owed[:1]}")

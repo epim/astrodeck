@@ -330,10 +330,10 @@ async def test_a_mount_that_keeps_its_side_past_the_meridian_is_deferred(
         stayed = night.said("the mount stayed on its side past the meridian "
                             "on 1-1")
         instead = [m for _t, _l, m in night.lines
-                   if "changed pier side" in m or "flip is owed" in m]
+                   if "changed pier side" in m or 'flip is required' in m]
         assert len(stayed) == 3, (
             f"deferred {len(stayed)} times; instead: {instead[:2]}")
-        assert not night.said("a meridian flip is owed"), (
+        assert not night.said("a meridian flip is required"), (
             "the frame loop's flip-owed hold engaged: the hop was not deferred")
         assert not night.said("changed pier side")
         assert run.flipped is False

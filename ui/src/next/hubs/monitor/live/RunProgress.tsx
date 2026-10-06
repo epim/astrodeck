@@ -133,7 +133,7 @@ export function RunProgress(): JSX.Element | null {
 
         {pausing && (
           <Pill tone="warn" data-testid="monitor-pausing">
-            {`pausing - ${fmtCountdown(sub.remainingS as number)} of shutter left, and the run does not stop until it lands`}
+            {`pausing - ${fmtCountdown(sub.remainingS as number)} of exposure left, and the run will pause when it finishes`}
           </Pill>
         )}
 

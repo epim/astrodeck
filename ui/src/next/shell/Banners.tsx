@@ -196,7 +196,7 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
   //    started is an instruction to go and watch nothing happen.
   const armed = resumeArm?.armed;
   if (armed && !runBanner?.active && !onSession && armedDismissed !== armed.id) {
-    const owed = armed.owed > 0 ? ` - ${armed.owed} frame${armed.owed === 1 ? "" : "s"} owed` : "";
+    const owed = armed.owed > 0 ? ` - ${armed.owed} frame${armed.owed === 1 ? "" : "s"} remaining` : "";
     // site_detail carries the numbers behind a words-only reason (#258, #233);
     // absent for a principal without view.site_derived, the normal case.
     const hold = resumeArm?.hold

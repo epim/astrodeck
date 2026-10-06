@@ -512,7 +512,7 @@ function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: ()
                 ? "Motion stopped. The sequence is still stopping — ending the "
                   + "exposure and the guider."
                 : "Motion stopped, sequence aborted."
-              : `STOP DID NOT LAND — ${stop.detail}`}
+              : `STOP NOT CONFIRMED — ${stop.detail}`}
           </p>
         )}
       </div>

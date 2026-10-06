@@ -79,7 +79,7 @@ const REFUSED = {
 /** The same pool with a quota of 45, one member counted and one not. */
 const COUNTED = {
   is_campaign: true, has_pool: true, has_ledger: true, quota: 45,
-  note: "Shortfall first: the engine re-reads the ledger at each dusk.",
+  note: "Shortfall first: the engine re-reads the session log at each dusk.",
   members: [
     { name: "NGC 7331", banked: 23, quota: 45, done: false, pct: 51 },
     { name: "NGC 604", banked: null, quota: 45, done: false, pct: null },
@@ -128,7 +128,7 @@ await test("a refused quota heads the ledger with the member count alone", () =>
   eq(campaignHead(readCampaign(REFUSED)!), "2 pool members", "campaignHead");
   const r = render(REFUSED);
   try {
-    eq(headText(r.el), "CAMPAIGN LEDGER2 pool members", "the ledger's head");
+    eq(headText(r.el), "CAMPAIGN PROGRESS2 pool members", "the ledger's head");
     assert(!/\bcycles each\b/.test(headText(r.el)), "a refused quota still claims a number of cycles each");
     // The reason is the note's to give, and it is on the card.
     assert(String(r.el.textContent).includes(REFUSED.note), "the note's refusal sentence is not on the card");
@@ -213,7 +213,7 @@ await test("control: a quota of 45 heads the ledger and every bar with 45", () =
   eq(campaignHead(c), "2 pool members · 45 cycles each", "campaignHead");
   const r = render(COUNTED);
   try {
-    eq(headText(r.el), "CAMPAIGN LEDGER2 pool members · 45 cycles each", "the ledger's head");
+    eq(headText(r.el), "CAMPAIGN PROGRESS2 pool members · 45 cycles each", "the ledger's head");
     eq(bars(r.el).map((b) => b.getAttribute("aria-valuemax")), ["45", "45"], "each bar's aria-valuemax");
     eq(bars(r.el).map((b) => b.getAttribute("aria-valuetext")), ["23/45 cycles", "not counted"],
       "each bar's aria-valuetext");

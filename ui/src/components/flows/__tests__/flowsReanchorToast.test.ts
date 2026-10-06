@@ -151,7 +151,7 @@ await test("a save that re-anchored blocks enqueues ONE warn toast naming each, 
   eq(h.toasts[0].level, "warning", "the banked subs stop counting: a warning, not news");
   eq(h.toasts[0].title, 'TARGET "M31" and a TARGET with no name start counting from zero',
     "the toast must name every block the save re-anchored");
-  eq(h.toasts[0].detail, "The subs they banked stay on disk. The flow log says what changed.",
+  eq(h.toasts[0].detail, "The subs they captured stay on disk. The flow log says what changed.",
     "the toast's second line");
   eq(h.flows.logs.filter((l) => l.tone === "warn").length, 2,
     "the toast is AS WELL AS the log line per block, not instead of it");
@@ -172,7 +172,7 @@ await test("each block is named once, however many rows name it, and three read 
   await h.a.flowsSave();
   eq(h.toasts.map((t) => t.title).join(" | "), 'TARGET "M31" starts counting from zero',
     "one block, two rows: one toast naming it once, in the singular");
-  eq(h.toasts[0]?.detail, "The subs it banked stay on disk. The flow log says what changed.",
+  eq(h.toasts[0]?.detail, "The subs it captured stay on disk. The flow log says what changed.",
     "the singular's second line");
   answer = { reanchored: [...TWO_BLOCKS, { node_id: "m33", max_move_deg: null, threshold_deg: null, reason: "identity" }] };
   const h3 = harness();

@@ -30,11 +30,11 @@ import type { SequencePlan } from "../../../../types";
 import type { SessionCardData } from "./useSessionCards";
 
 export const CONFIRM_ABANDON =
-  "Removes it from the panel but keeps its ledger and thumbnails on disk. " +
+  "Removes it from the panel but keeps its session log and thumbnails on disk. " +
   "Delete, by contrast, permanently removes them.";
 
 export const CONFIRM_DELETE =
-  "Removes the session ledger and thumbnails. Saved FITS frames are NOT " +
+  "Removes the session log and thumbnails. Saved FITS frames are NOT " +
   "deleted. This cannot be undone.";
 
 export const CONFIRM_AUTO_RESUME_NO_MONITOR =
@@ -47,7 +47,7 @@ export const ARMED_WITHOUT_MONITOR_CHIP =
 /** What "Update from plan" is about to do to recorded progress, verbatim. */
 export function mergeConfirmBody(m: MergePreview): string {
   return `${m.kept} step(s) keep recorded progress · ${m.added} new start at zero · `
-    + `${m.dropped} with recorded frames dropped (their frames stay in the ledger `
+    + `${m.dropped} with recorded frames dropped (their frames stay in the session log `
     + "but stop counting toward any quota).";
 }
 
@@ -78,7 +78,7 @@ export function controlReason(canControl: boolean): string | null {
  */
 export function verbsFor(card: SessionCardData, canControl: boolean): Verb[] {
   const capReason = controlReason(canControl);
-  const noSession = card.id ? null : "This night has a report but no session ledger, so there is nothing to act on.";
+  const noSession = card.id ? null : "This night has a report but no session log, so there is nothing to act on.";
   const dormantOnly = card.status === "dormant" ? null : "Only a dormant session can be resumed or edited.";
   const notActive = card.status === "active" ? "The session is running - stop the run first." : null;
 
@@ -131,7 +131,7 @@ export async function runResume(id: string, after: () => void): Promise<void> {
   try {
     const r = await resumeSession(id);
     toast("success", r.resumed ? "Session resumed" : "Nothing left to shoot",
-      `${r.remaining} frame${r.remaining === 1 ? "" : "s"} still owed`);
+      `${r.remaining} frame${r.remaining === 1 ? "" : "s"} remaining`);
     after();
   } catch (e) {
     toast("error", "Could not resume this session", say(e));
@@ -149,7 +149,7 @@ export async function runAbandon(id: string, name: string, after: () => void): P
   if (!go) return;
   try {
     await patchSession(id, { status: "abandoned" });
-    toast("success", "Session abandoned", "Its ledger and thumbnails stay on disk.");
+    toast("success", "Session abandoned", "Its session log and thumbnails stay on disk.");
     after();
   } catch (e) {
     toast("error", "Could not abandon this session", say(e));

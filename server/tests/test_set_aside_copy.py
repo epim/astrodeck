@@ -189,7 +189,7 @@ async def test_the_step_lines_say_tonight_and_the_nights_bear_them_out(
     said = [m for _lvl, m, src in bus_lines
             if src == "sequence" and "set aside" in m]
     step = [m for m in said if "consecutive rejects" in m]
-    loop_end = [m for m in said if "every step still owed" in m]
+    loop_end = [m for m in said if "every step with remaining frames" in m]
     earlier = [m for m in said if "set aside earlier tonight" in m]
     assert len(step) == 2 and len(loop_end) == 2 and len(earlier) == 1, (
         f"premise: runs 1 and 3 logged the step line and the loop line, run "
@@ -199,7 +199,7 @@ async def test_the_step_lines_say_tonight_and_the_nights_bear_them_out(
         f"the set-aside copy says what the engine does not do: {wrong}")
     assert "set aside for tonight" in step[0], step[0]
     assert "Ha" in step[0] and "3 consecutive rejects" in step[0], step[0]
-    assert "owed" in step[0] and "ledger" in step[0], step[0]
+    assert "remain pending" in step[0] and "session log" in step[0], step[0]
 
 
 async def test_the_altitude_floor_line_says_what_the_code_does(

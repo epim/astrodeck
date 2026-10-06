@@ -90,7 +90,7 @@ class TestAgreementIsUnchanged:
         assert CloudState().describe(1000.0) == "no cloud reading yet"
         c = _settled_cloudy()
         stale = 1060.0 + c.max_age_s + 1
-        assert "too stale to act on" in c.describe(stale)
+        assert "too old to use" in c.describe(stale)
 
 
 class TestTheVoteIsRealNotDecorative:

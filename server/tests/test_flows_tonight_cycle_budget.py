@@ -117,7 +117,7 @@ def _mosaic(lane, *, rows=2, cols=2, passes=1, min_visit=0, loop=True):
 
 
 def _budget_lines(out):
-    return [s["msg"] for s in out["story"] if s["label"] == "BUDGET"]
+    return [s["msg"] for s in out["story"] if s["label"] == 'TIME']
 
 
 class TestTheEighthExampleShowsItsHoursAndHops:
@@ -170,12 +170,12 @@ class TestTheEighthExampleShowsItsHoursAndHops:
         """
         (line,) = _budget_lines(_tonight(_eighth().graph, hop_cost_s=160.0))
         assert "no integration goal" in line, line
-        assert "its 20 cycles owe ≈16 h of shutter across 6 panels" in line, \
+        assert "its 20 cycles take ≈16 h of exposure across 6 panels" in line, \
             line
         assert "plus ≈5.33 h moving between panels" in line, line
         assert "0 h goal" not in line and "tonight adds" not in line, line
         (unmeasured,) = _budget_lines(_tonight(_eighth().graph))
-        assert "which no hop measured on this rig can price yet" in \
+        assert "whose duration has not been measured on this rig yet" in \
             unmeasured, unmeasured
 
     def test_a_ledger_reads_the_hours_banked_in_its_filters(self):
@@ -194,7 +194,7 @@ class TestTheEighthExampleShowsItsHoursAndHops:
         (row,) = out["budget"]
         assert (row["banked_h"], row["has_ledger"]) == (2.0, True)
         (line,) = _budget_lines(out)
-        assert "2 h banked in its filters" in line, line
+        assert "2 h captured in its filters" in line, line
 
 
 class TestNoHopShareIsLost:
@@ -470,5 +470,5 @@ class TestTheStorySaysOneCycleInTheSingular:
         graph = _mosaic([("y", "cycle", dict(plan="Ha 300", cycles=1,
                                              perCycle=1, gain=100, bin="1"))])
         (line,) = _budget_lines(_tonight(graph, hop_cost_s=160.0))
-        assert "its 1 cycle owes ≈0.33 h of shutter across 4 panels" in \
+        assert "its 1 cycle takes ≈0.33 h of exposure across 4 panels" in \
             line, line

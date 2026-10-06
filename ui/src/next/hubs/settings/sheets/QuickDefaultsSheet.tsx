@@ -200,8 +200,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
               data-testid="quick-hours"
             />
             <p style={NOTE}>
-              How much of the night a generated flow claims. To dawn ends the run
-              at the end of astronomical night, whatever length that is tonight.
+              The run ends at dawn when you select 'To dawn'.
             </p>
           </Card>
 

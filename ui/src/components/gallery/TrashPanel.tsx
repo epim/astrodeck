@@ -210,7 +210,7 @@ export default function TrashPanel({ onChanged }: {
         <EmptyState
           icon="trash"
           title="The trash is empty"
-          hint={`Frames you delete from the gallery land here and stay recoverable for ${ttl} days.`}
+          hint={`Frames you delete from the gallery move here and stay recoverable for ${ttl} days.`}
         />
       ) : (
         <>

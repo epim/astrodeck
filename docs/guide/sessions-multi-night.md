@@ -30,7 +30,7 @@ A session records the plan and captured-frame progress across nights. A dormant 
 
 ## Apply a changed plan
 
-Load and edit the intended plan first. On its dormant session, choose **UPDATE FROM PLAN** and read the merge preview: matched steps keep progress, new steps start at zero, and dropped steps stop counting toward quotas while their frames remain in the ledger.
+Load and edit the intended plan first. On its dormant session, choose **UPDATE FROM PLAN** and read the merge preview: matched steps keep progress, new steps start at zero, and dropped steps stop counting toward quotas while their frames remain in the session log.
 
 <a id="auto-resume-at-dusk"></a>
 
@@ -58,9 +58,9 @@ Use **AUTO-RESUME OFF** to arm a dormant session; the enabled action reads **AUT
 
 ## After a reboot or cleanup
 
-Session ledgers and saved files survive a server restart on persistent storage. Check the recovered session and equipment before resuming; an interrupted run is not proof that the hardware returned to a safe position.
+Session logs and saved files survive a server restart on persistent storage. Check the recovered session and equipment before resuming; an interrupted run is not proof that the hardware returned to a safe position.
 
-**ABANDON** removes a session from the active panel but keeps its ledger and thumbnails. **DELETE** removes the session ledger and thumbnails; saved FITS frames are not deleted by that action. Read the confirmation before using either.
+**ABANDON** removes a session from the active panel but keeps its log and thumbnails. **DELETE** removes the session log and thumbnails; saved FITS frames are not deleted by that action. Read the confirmation before using either.
 
 ## Related
 

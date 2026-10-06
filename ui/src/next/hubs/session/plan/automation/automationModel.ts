@@ -130,7 +130,7 @@ export const AUTOMATION_HINT: Partial<Record<AutomationKey, string>> = {
   // the tests that prove it (#208).
   max_consecutive_rejects: "Accepted-count mode only: after this many rejects in "
     + "a row on one step, that step is set aside for tonight and the run moves "
-    + "on. Its shortfall stays owed in the session ledger: a restart tonight "
+    + "on. Its remaining frames stay pending in the session log: a restart tonight "
     + "does not retry it, the next night does.",
   max_consecutive_rejects_night: "Accepted-count mode only: after this many "
     + "rejects in a row across targets - the counter resets on any accepted "

@@ -791,8 +791,8 @@ export function reframeDecision(a: {
   const now = gridOf(a.draft);
   const live = livePanels(a.draft);
   const tail = `${live === 1 ? "the panel starts" : `all ${live} panels start`} from zero: ` +
-    (banked === 1 ? "1 banked sub belongs to the old layout and stays on disk."
-      : `${banked} banked subs belong to the old layout and stay on disk.`);
+    (banked === 1 ? "1 captured frame belongs to the old layout and stays on disk."
+      : `${banked} captured frames belong to the old layout and stay on disk.`);
   if (was.rows !== now.rows || was.cols !== now.cols) {
     // A grid SIZE is columns x rows (S4 orchestrator ruling 1, #339).
     return { ask: true, question: `Changing the grid from ${was.cols}x${was.rows} to ${now.cols}x${now.rows} means ${tail}` };

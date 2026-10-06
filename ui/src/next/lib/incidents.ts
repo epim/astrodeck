@@ -323,7 +323,7 @@ function cloudIncident(inp: IncidentInputs): Incident | null {
       ? detail
       : "Capture paused at the frame boundary. Guiding parked, mount tracking, "
         + "cooler holding at setpoint - nothing to redo when it clears.",
-    next: `Watching the star count and the cloud score${skyText}; the ledger `
+    next: `Watching the star count and the cloud score${skyText}; the session log `
       + "keeps the sub count, so the plan picks up mid-pass.",
     // #260: IGNORE WEATHER TONIGHT lifts the forecast rain veto for auto-resume
     // and nothing else (weather.py `veto_reason`: "RAIN VETOES. CLOUD DOES

@@ -106,7 +106,7 @@ class TestDescribeIsHonest:
         s = CloudState(max_age_s=100.0)
         s.observe(True, 0.0)
         s.observe(True, 10.0)
-        assert "too stale to act on" in s.describe(500.0)
+        assert "too old to use" in s.describe(500.0)
 
     def test_it_reports_the_reason_the_detector_gave(self):
         s = CloudState()

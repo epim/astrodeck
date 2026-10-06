@@ -61,7 +61,7 @@ from test_group_rotation import _golden_as_recorded
 
 GOLDEN = "NGC 7331"
 FIRST_NO_OP = "nothing flipped. Holding the flip armed"
-HOLD_WORDS = "the flip-owed hold's re-slew"
+HOLD_WORDS = "the meridian flip hold's re-slew"
 
 
 def _past_s(t: float) -> float:
@@ -127,10 +127,10 @@ async def test_the_holds_re_slews_say_so_in_the_holds_words(group_store,
     # hold's first share one instant, so the clock cannot tell them apart.
     logs = [i for i, e in enumerate(night.trace) if e[1] == "log"]
     opened = [i for i in logs
-              if "a meridian flip is owed and the mount is still on the west "
+              if "a meridian flip is required and the mount is still on the west "
                  "side -- refusing to expose" in night.trace[i][3]]
     ended = [i for i in logs
-             if "a meridian flip has been owed for 20 min" in night.trace[i][3]]
+             if "a meridian flip has been pending for 20 min" in night.trace[i][3]]
     assert len(opened) == 1 and len(ended) == 1, (opened, ended)
     hold_gotos = [e[0] for e in night.trace[opened[0]:ended[0]]
                   if e[1] == "goto" and e[2] == GOLDEN]
@@ -141,11 +141,11 @@ async def test_the_holds_re_slews_say_so_in_the_holds_words(group_store,
         f"re-slews: {words[:2]}")
     assert {lvl for lvl, _m in words} == {"info"}, words[:2]
     assert words[0][1] == (
-        f"{GOLDEN}: the flip-owed hold's re-slew 1 changed nothing — the "
+        f"{GOLDEN}: the meridian flip hold's re-slew 1 changed nothing — the "
         f"mount still reports pier side west; still holding, and nothing is "
         f"exposed while it stays on that side"), words[0][1]
     assert words[-1][1].startswith(
-        f"{GOLDEN}: the flip-owed hold's re-slew 40 changed nothing"), (
+        f"{GOLDEN}: the meridian flip hold's re-slew 40 changed nothing"), (
         words[-1][1])
     assert not [m for _l, m in words if "retry" in m], words[:2]
     assert not night.said("meridian flip complete"), (
@@ -205,7 +205,7 @@ async def test_the_holds_mark_is_gone_when_the_next_target_crosses(
         await night.close()
     assert night.done, f"premise: the run ended: {night.trace[-3:]}"
     for name in ("A", "B"):
-        ended = f"{name}: a meridian flip has been owed for 20 min"
+        ended = f"{name}: a meridian flip has been pending for 20 min"
         assert night.said(ended), (
             f"premise: {name}'s hold ran to its end: "
             f"{night.said(name + ': ')[-3:]}")

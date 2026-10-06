@@ -102,7 +102,7 @@ export { isRunPhaseLive } from "./flowRunState";
 
 /** What the question is deciding. Not a restatement of the sentence under it. */
 export const CONTINUE_TITLE: Record<FlowContinueCode, string> = {
-  adopt: "Adopt the subs this flow banked before?",
+  adopt: "Use the frames this flow captured before?",
   dropped_steps: "Continue without those steps?",
   recount: "Continue and recount the session?",
 };
@@ -391,7 +391,7 @@ export function useFlowRunControls(): FlowRunControls {
       }
       const detail = e instanceof Error ? e.message : String(e);
       appendLog(`could not stop: ${detail}`, "bad");
-      enqueueToast({ level: "error", title: "STOP did not land", detail });
+      enqueueToast({ level: "error", title: "Stop not confirmed", detail });
     }
   }, [appendLog, enqueueToast]);
 

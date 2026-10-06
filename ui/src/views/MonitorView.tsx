@@ -901,7 +901,7 @@ export default function MonitorView() {
                   <div className="mono text-2xl text-ink">
                     {resumeArm.armed.owed}
                     <span className="text-sm text-dim">
-                      {" "}frame{resumeArm.armed.owed === 1 ? "" : "s"} still owed
+                      {" "}frame{resumeArm.armed.owed === 1 ? "" : "s"} remaining
                     </span>
                     <span className="text-sm text-dim">
                       {" "}· {resumeArm.armed.accepted} of {resumeArm.armed.total} done
@@ -1458,7 +1458,7 @@ function MeridianCountdown({
         <div className="leading-tight min-w-0">
           <div className="label !text-[10px]">meridian flip</div>
           <div className={`text-xs ${inFlight ? "text-warn font-semibold" : "text-dim"}`}>
-            {inFlight ? "CROSSING NOW — flip if armed" : "no flip owed — meridian passed"}
+            {inFlight ? "CROSSING NOW — flip if armed" : "no flip needed — meridian passed"}
           </div>
           {!inFlight && agoS != null && (
             <div className="label !text-[9px] text-dim truncate">

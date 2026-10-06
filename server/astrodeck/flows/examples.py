@@ -206,7 +206,7 @@ def _campaign() -> FlowRecord:
         tagline="The pool hands out targets until every quota is met; 'target "
                 "done' loops back to advance it. Dawn parks + closes with the "
                 "cooler held cold for day darks, and each dusk resumes "
-                "mid-cycle from the ledger.",
+                "mid-cycle from the session log.",
         graph=_graph(
             [("n1", "dusk", 30, 60), ("n16", "dome", 270, 60),
              ("n20", "pool", 510, 40),

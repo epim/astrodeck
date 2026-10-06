@@ -342,8 +342,8 @@ class SnowflakeWheel(FilterWheel):
         if age > POSITION_MAX_AGE_S:
             raise DeviceError(
                 f"{self.name}: the newest status banner is {age:.0f}s old "
-                f"(budget {POSITION_MAX_AGE_S:.0f}s) - the wheel has stopped "
-                f"reporting, so slot {b.slot} is a memory, not a measurement")
+                f"(maximum age {POSITION_MAX_AGE_S:.0f}s). The wheel has stopped "
+                f"reporting; slot {b.slot} is its last known position")
         return b.slot - 1
 
     async def is_moving(self) -> bool:

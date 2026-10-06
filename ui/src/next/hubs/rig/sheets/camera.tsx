@@ -1005,7 +1005,7 @@ function Tuning({
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
           <Field label="E-/ADU"
             hint={usingCameraEgain ? "Reported by the camera - not editable here."
-              : "From the read-noise harness or the datasheet, at the gain above."}>
+              : "From a read-noise measurement or the datasheet, at the gain above."}>
             <TextInput
               value={usingCameraEgain ? camEgain!.toFixed(3) : String(photometry.egain || "")}
               onChange={(v) => { if (!usingCameraEgain) setPhotometry({ egain: Number(v) || 0 }); }}
@@ -1015,7 +1015,7 @@ function Tuning({
               data-testid="phot-egain"
             />
           </Field>
-          <Field label="READ NOISE (e-)" hint="At this gain, from the harness or the datasheet.">
+          <Field label="READ NOISE (e-)" hint="At this gain, from a read-noise measurement or the datasheet.">
             <TextInput value={String(photometry.readNoiseE || "")}
               onChange={(v) => setPhotometry({ readNoiseE: Number(v) || 0 })} mono
               ariaLabel="Read noise in electrons" lockedReason={lockedReason}

@@ -405,7 +405,7 @@ await testAsync("a meridian passed 6 h ago reads calm, not FLIP DUE", async () =
   assert(tile != null, "the flip tile disappeared - the assertion below would be vacuous");
   assert(!/FLIP DUE/.test(tile.textContent),
     `raw hour-angle geometry rendered as an alarm: "${tile.textContent}"`);
-  assert(/no flip owed/.test(tile.textContent),
+  assert(/no flip needed/.test(tile.textContent),
     `the calm branch did not render: "${tile.textContent}"`);
 });
 
@@ -464,7 +464,7 @@ await testAsync("RUN ARMED is its own state, with the sentence that says why to 
   assert(card != null, "an armed session rendered no card - 'No run active' would be the lie");
   assert(/It starts by itself when its window opens\./.test(card.textContent),
     `the armed copy was lost: "${card.textContent}"`);
-  assert(/58 frames owed/.test(card.textContent), "the card does not say what is still owed");
+  assert(/58 frames remaining/.test(card.textContent), "the card does not say what is still owed");
 });
 
 // ------------------------------------------------ the run-progress readout

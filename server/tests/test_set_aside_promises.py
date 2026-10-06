@@ -273,15 +273,12 @@ RESTARTS_AT = {"same night": "LATER_TONIGHT", "next night": "NEXT_NIGHT"}
 PROMISES: tuple[Promise, ...] = (
     # The per-step reject guard's tooltip, classic UI.
     Promise(SEQUENCE_VIEW,
-            "that step is set aside for tonight and the run moves on to the "
-            "next step or target. Its shortfall stays owed in the session "
-            "ledger: a restart tonight does not retry it, the next night "
-            "does.",
+            'that step is set aside for tonight and the run moves on to the next step or target. Its remaining frames stay pending in the session log: a restart tonight does not retry it, the next night does.',
             1, STEP_SAME_NIGHT, STEP_NEXT_NIGHT, (STEP_LINES,)),
     # The same guard's hint in the new UI's Plan automation section.
     Promise(AUTOMATION,
             "that step is set aside for tonight and the run moves on. Its "
-            "shortfall stays owed in the session ledger: a restart tonight "
+            "remaining frames stay pending in the session log: a restart tonight "
             "does not retry it, the next night does.",
             1, STEP_SAME_NIGHT, STEP_NEXT_NIGHT, (STEP_LINES,)),
     # The same guard's hint on the rig Standards panel (#290): it used to say
@@ -289,7 +286,7 @@ PROMISES: tuple[Promise, ...] = (
     # is how this surface went unnoticed when #208 reworded the other two.
     Promise(STANDARDS,
             "the step is set aside for tonight and the run moves on. Its "
-            "frames stay owed in the session ledger: a restart tonight does "
+            "remaining frames stay pending in the session log: a restart tonight does "
             "not retry it, the next night does.",
             1, STEP_SAME_NIGHT, STEP_NEXT_NIGHT, (STEP_LINES,)),
     # The Tonight brief, for a POOL whose dial says Advance.
@@ -326,7 +323,7 @@ NOT_A_SET_ASIDE: tuple[NotASetAside, ...] = (
                  "preparing tomorrow night's automation while tonight runs",
                  1, _RUN_COPY),
     NotASetAside(TONIGHT, "the session ledger seeds the next night", 1,
-                 "the Dawn line's truth table: a session still owed at dawn "
+                 "the Dawn line's truth table: a session remaining at dawn "
                  "resumes from its ledger the following dusk. That is the "
                  "multi-night resume, whatever was or was not set aside."),
 )

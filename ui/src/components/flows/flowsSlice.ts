@@ -683,7 +683,7 @@ export function saveAnswerLines(
       if (!r || typeof r !== "object") continue;
       // WARN: the operator's banked subs stop counting toward this block.
       lines.push({
-        msg: `${blockName(nodes, r.node_id)} starts counting from zero: ${reanchorWhy(r)}. The subs it banked stay on disk.`,
+        msg: `${blockName(nodes, r.node_id)} starts counting from zero: ${reanchorWhy(r)}. The subs it captured stay on disk.`,
         tone: "warn",
       });
     }
@@ -729,7 +729,7 @@ export function reanchorToast(saved: FlowRecordRec, graph: FlowGraphRec): FlowTo
     title: `${who} ${one ? "starts" : "start"} counting from zero`,
     // Not "moved too far": a changed grid, angle or object restarts counts
     // too, and the log line has each block's own reason.
-    detail: `The subs ${one ? "it" : "they"} banked stay on disk. The flow log says what changed.`,
+    detail: `The subs ${one ? "it" : "they"} captured stay on disk. The flow log says what changed.`,
     source: "flows",
   };
 }

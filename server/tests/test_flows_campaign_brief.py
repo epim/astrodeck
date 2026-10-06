@@ -452,7 +452,7 @@ class TestWhatTheCampaignTabWillSay:
         c = _campaign(_ex("example-campaign"), None)
         assert c["has_ledger"] is False
         assert all(m["banked"] is None and m["pct"] is None for m in c["members"])
-        assert "nothing here claims a banked figure" in c["note"]
+        assert "captured totals cannot be shown" in c["note"]
 
     def test_a_ledger_that_raises_is_no_ledger_rather_than_a_crash(self):
         def boom():
@@ -554,7 +554,7 @@ class TestTheCampaignBlockIsNotDroppedInSilence:
         assert hits, [u["key"] for u in un]
         detail = hits[0]["detail"]
         assert "comes back the next night" in detail, detail
-        assert "frame ledger" in detail, detail
+        assert "session log" in detail, detail
         assert "skipped rather than reshot" in detail, detail
         assert hits[0]["level"] == "warn", hits[0]
 

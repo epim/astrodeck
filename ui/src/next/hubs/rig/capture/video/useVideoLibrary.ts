@@ -100,7 +100,7 @@ export function useVideoLibrary(enabled: boolean): VideoLibrary {
       () => {
         enqueueToast({
           level: "info",
-          title: `Stacking ${id} - the picture appears on the row when it lands.`,
+          title: `Stacking ${id} - the picture appears on the row when it is ready.`,
         });
       },
       (e: unknown) => {

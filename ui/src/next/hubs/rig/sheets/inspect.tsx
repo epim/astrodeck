@@ -232,7 +232,7 @@ function PreviewInspect({ params }: { params: Record<string, string> }): JSX.Ele
       {!shown ? (
         <EmptyCard
           title="NO FRAME TO INSPECT"
-          hint="The next exposure lands here with its histogram, stars and statistics."
+          hint="The next exposure appears here with its histogram, stars and statistics."
           data-testid="inspect-empty"
         />
       ) : (

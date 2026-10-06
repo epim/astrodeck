@@ -3018,7 +3018,7 @@ class SequenceEngine:
                 # in a smaller font — the session is dormant either way, and the
                 # two would disagree.
                 self._set_state(state="complete",
-                                detail="targets set aside — frames still owed",
+                                detail="targets set aside — frames remaining",
                                 end_reason="incomplete", schedule=None, session=None)
                 bus.log("info", f"sequence '{plan.name}' ended with targets set "
                                 f"aside: {self._shortfall_phrase(owed)}", "sequence")
@@ -3299,7 +3299,7 @@ class SequenceEngine:
         "150 of 175" rather than starting over at zero.
         """
         total = self.plan.total_frames() if self.plan else 0
-        return (f"{self._frames_done} of {total} frames, {owed} still owed — "
+        return (f"{self._frames_done} of {total} frames, {owed} remaining — "
                 f"the session stays armed and resumes when the window opens")
 
     async def _run_scheduled(self, plan: SequencePlan) -> None:
@@ -5140,7 +5140,7 @@ class SequenceEngine:
             reason = self._set_aside_targets.get(t.id)
             if reason is None and not t.calibration and \
                     self._every_owed_step_set_aside(t):
-                reason = "every filter it still owes is set aside tonight"
+                reason = "every filter with remaining frames is set aside tonight"
             if reason is None:
                 continue
             g = self._group_of(t)
@@ -5940,7 +5940,7 @@ class SequenceEngine:
             # "A panel whose remaining steps are all set aside is set aside"
             # (spec 5.3): its visits would shoot nothing tonight.
             self._set_panel_aside(group, target,
-                                  f"every filter {label} still owes is set "
+                                  f"every filter {label} still needs is set "
                                   f"aside", decided=True, kind="steps")
             return False
         if deferred is not None or (exposures and not accepted):
@@ -6864,7 +6864,7 @@ class SequenceEngine:
         bus.log("warn",
                 f"{target.name}: sank below its own altitude floor — setting "
                 f"it aside for the rest of this run and the rest of tonight "
-                f"(its frames stay owed in the ledger; a restart tonight does "
+                f"(its remaining frames stay pending in the session log; a restart tonight does "
                 f"not retry it; the next night does, once it is back above its "
                 f"floor)", "sequence")
         if self.plan and self.plan.instructions:
@@ -8307,7 +8307,7 @@ class SequenceEngine:
                 self._flip_armed = False
                 bus.log("warning",
                         f"{target.name}: could not work out whether a meridian "
-                        f"flip is owed ({e}) — the flip is DISARMED for this "
+                        f"flip is required ({e}); the flip is DISARMED for this "
                         f"target, so nothing will move it off its limit",
                         "sequence")
 
@@ -8688,8 +8688,8 @@ class SequenceEngine:
         tonight did take them up again."""
         names = ", ".join(s.filter or "no filter" for _, s in owed)
         bus.log("warning",
-                f"{target.name}: every step still owed is set aside for tonight "
-                f"({names}) — moving on; the ledger keeps them owed; a restart "
+                f"{target.name}: every step with remaining frames is set aside for tonight "
+                f"({names}) — moving on; their frames remain pending; a restart "
                 f"tonight does not retry them; the next night does", "sequence")
 
     async def _run_visit(self, ti: int, target: Target, visit: VisitBound) -> None:
@@ -9163,7 +9163,7 @@ class SequenceEngine:
             owed = max(0, step.count - self._session.accepted(step.id))
         line = (f"{target.name}: {step.filter or 'no filter'} set aside for "
                 f"tonight after {rejects} consecutive rejects — its {owed} "
-                f"frame(s) stay owed in the ledger; a restart tonight does not "
+                f"frame(s) remain pending in the session log; a restart tonight does not "
                 f"retry it; the next night does")
         self._set_aside[key] = line
         self._persist_set_aside(target.id, line, step_id=step.id,
@@ -11150,7 +11150,7 @@ class SequenceEngine:
             else:
                 bus.log("info", f"cloud hold: building {want} darks at "
                                 f"{step.exposure_s:g}s g{step.gain} one at a "
-                                f"time ({have} of {quota} already banked)",
+                                f"time ({have} of {quota} already captured)",
                         "sequence")
 
         if self._hold_darks_taken >= (self._hold_darks_want or 0):
@@ -11254,7 +11254,7 @@ class SequenceEngine:
                 continue
             bus.log("info",
                     f"day darks: {want} at {step.exposure_s:g}s g{step.gain} "
-                    f"({have} already banked)", "sequence")
+                    f"({have} already captured)", "sequence")
             for _ in range(want):
                 if taken >= quota:
                     break
@@ -11298,7 +11298,7 @@ class SequenceEngine:
                             "sequence")
                     return
         if taken:
-            bus.log("info", f"day darks: {taken} frame(s) banked before the "
+            bus.log("info", f"day darks: {taken} frame(s) captured before the "
                             f"warm ramp", "sequence")
 
     async def _stand_down_guider(self) -> None:
@@ -12404,7 +12404,7 @@ class SequenceEngine:
             # start() and the operator may have changed it since.
             session_store.save_run_state(self._session)
         except Exception as e:
-            bus.log("warning", f"session ledger write failed: {e}", "sequence")
+            bus.log("warning", f"session log write failed: {e}", "sequence")
         self._spawn_thumb(sf)
         return sf
 
@@ -13523,7 +13523,7 @@ class SequenceEngine:
             self._flip_no_op.add(key)
             self._flip_armed = True
             bus.log("info",
-                    f"{target.name}: the flip-owed hold's re-slew "
+                    f"{target.name}: the meridian flip hold's re-slew "
                     f"{owed_attempt} changed nothing — the mount still reports "
                     f"pier side {side_after}; still holding, and nothing is "
                     f"exposed while it stays on that side", "sequence")
@@ -14713,7 +14713,7 @@ class SequenceEngine:
                 # degrade to a warning and normal scheduling (never a hang).
                 if self._jumps_spent >= MAX_JUMPS:
                     bus.log("warning",
-                            f"target-jump budget exhausted ({MAX_JUMPS}) — "
+                            f"target-jump limit reached ({MAX_JUMPS}) — "
                             f"ignoring '{fa.action}' to {fa.target_arg!r}; "
                             "continuing with normal scheduling", "sequence")
                     continue
@@ -15019,21 +15019,21 @@ class SequenceEngine:
         hold_min = self._flip_owed_hold_min()
         pre = self._pre_flip_side.get(key)
         if hold_min <= 0:
-            return ("The flip-owed hold is off (safety.flip_owed_hold_min is "
+            return ("The meridian flip hold is off (safety.flip_owed_hold_min is "
                     "0), so nothing stops the next frame being exposed on "
                     "this side past the meridian")
         if side not in ("east", "west"):
-            return ("The mount's side cannot be read, so the flip-owed "
-                    "invariant cannot hold the frame")
+            return ("The mount's side cannot be read, so the meridian flip "
+                    "safety check cannot hold the frame")
         if pre is None:
             return ("No pier side was seen for this target before the "
-                    "meridian, so the flip-owed invariant has nothing to "
+                    "meridian, so the meridian flip safety check has nothing to "
                     "compare against and will not hold the frame")
         if side != pre:
             return (f"The mount is not on the {pre} side it was seen on "
-                    f"before the meridian, so the flip-owed invariant lets "
+                    f"before the meridian, so the meridian flip safety check lets "
                     f"the frame through")
-        return (f"The flip-owed invariant now holds the frame: nothing is "
+        return (f"The meridian flip safety check now holds the frame: nothing is "
                 f"exposed past the meridian while the mount stays on the "
                 f"{side} side, for up to {hold_min:.0f} min")
 
@@ -15056,11 +15056,11 @@ class SequenceEngine:
         """
         deadline = time.time() + hold_min * 60.0
         bus.log("error",
-                f"{target.name}: a meridian flip is owed and the mount is "
+                f"{target.name}: a meridian flip is required and the mount is "
                 f"still on the {side} side -- refusing to expose. Holding up "
                 f"to {hold_min:.0f} min for the flip.", "sequence")
         self._flip_owed = True
-        self._set_state(detail="holding: a meridian flip is owed and the "
+        self._set_state(detail="holding: a meridian flip is required and the "
                                "mount has not flipped")
         attempt = 0
         try:
@@ -15111,7 +15111,7 @@ class SequenceEngine:
         finally:
             self._flip_owed = False
         raise StopTarget(
-            f"{target.name}: a meridian flip has been owed for "
+            f"{target.name}: a meridian flip has been pending for "
             f"{hold_min:.0f} min and the mount is still on the {side} side; "
             f"moving on rather than exposing across the pier")
 
@@ -16446,7 +16446,7 @@ class SequenceEngine:
             msg = (f"{label} failed on a sparse field again, at both "
                    f"exposures: the run carries on at {where}, {started} "
                    f"({since}). No further "
-                   f"sweep is owed for the sparse field; the next is the "
+                   f"sweep is scheduled for the sparse field; the next is the "
                    f"plan's own (autofocus_every, the temperature trigger or "
                    f"the next target)")
             bus.log("warning", msg, "sequence")
@@ -16485,8 +16485,8 @@ class SequenceEngine:
         bus.log("info",
                 f"{target.name}: this frame found {int(stars)} stars, at or "
                 f"over the sparse-field line of {SPARSE_FIELD_WARN}: the "
-                f"autofocus owed since the sparse-field failures sweeps at "
-                f"the next frame boundary", "sequence")
+                f"autofocus scheduled after the sparse-field failures will "
+                f"run at the next frame boundary", "sequence")
 
     async def _panel_off_safe(self) -> None:
         """Best-effort flat-panel-off (PRO-5): an aborted/failed run must NEVER

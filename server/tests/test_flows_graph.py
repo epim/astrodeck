@@ -280,7 +280,7 @@ class TestTheDoctor:
 
     def test_10_no_session_report_is_only_a_NOTE(self):
         out = check(FlowGraph(nodes=[_n("d", "dusk")]))
-        hit = [i for i in out if "leaves no ledger" in i.text]
+        hit = [i for i in out if "will not have a saved report" in i.text]
         assert hit and hit[0].level == "note", out
 
     def test_11_the_pool_advance_rule_is_GONE(self):

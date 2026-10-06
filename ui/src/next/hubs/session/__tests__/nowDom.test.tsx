@@ -440,7 +440,7 @@ await testAsync("with no run at all the empty state takes over, and RUN ARMED is
   assert(byId("now-run-controls") == null, "PAUSE/STOP are still on screen with no run");
   const text = byId("now-empty").textContent as string;
   assert(/RUN ARMED/.test(text), `an armed session reads as "no run": "${text.slice(0, 120)}"`);
-  assert(/58 frames owed/.test(text), "the owed frames are not on screen");
+  assert(/58 frames remaining/.test(text), "the owed frames are not on screen");
   assert(byId("now-find-target") != null, "no FIND A TARGET");
   assert(byId("now-armed-no-safety") != null,
     "armed with no safety monitor and nothing warns about it");

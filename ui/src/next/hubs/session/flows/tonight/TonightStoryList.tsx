@@ -31,7 +31,7 @@ function Brief({ text }: { text: string }): JSX.Element | null {
   if (!text) return null;
   return (
     <Card className="nx-tn-brief" data-testid="tonight-brief">
-      <Label size={10}>BRIEF - GENERATED FROM THE GRAPH</Label>
+      <Label size={10}>PLAN SUMMARY</Label>
       <p className="nx-tn-brief-text">{text}</p>
     </Card>
   );
@@ -47,7 +47,7 @@ export function TonightStoryList({ story, brief = "" }: {
       <Brief text={brief} />
       {story.length === 0 ? (
         <p className="nx-tn-note">
-          The server resolved this night and had nothing to say about it.
+          No night summary is available.
         </p>
       ) : (
         <div className="nx-tn-story">

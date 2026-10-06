@@ -326,7 +326,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "centerTries", label: "Centring tries", control: "text" },
       { key: "ifNotCentred", label: "If a panel will not centre or reach its angle", control: "select", options: ["Auto", "Skip it this pass", "Shoot anyway"] },
     ],
-    desc: "One target, or a mosaic of panels at one camera angle: coordinates, grid, centring, and identity for the multi-night session ledger. The stages wired to 'each panel' run on every panel; wire the last stage's 'pass done' to 'next panel' to rotate panels every pass.",
+    desc: "One target, or a mosaic of panels at one camera angle: coordinates, grid, centring, and identity for the multi-night session log. The stages wired to 'each panel' run on every panel; wire the last stage's 'pass done' to 'next panel' to rotate panels every pass.",
     sum: (p) => txt(p.name),
   },
   safety: {
@@ -794,7 +794,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "format", label: "Format", control: "select", options: ["JSON + FITS index", "JSON only"] },
       { key: "dest", label: "Destination", control: "text" },
     ],
-    desc: "Append-only session ledger: per-filter integration, accepted/rejected counts, median HFR, safety events, end reason. 'Target done' fires when the active target's quota is met - wire it back to a pool's 'advance' to run a campaign.",
+    desc: "Append-only session log: per-filter integration, accepted/rejected counts, median HFR, safety events, end reason. 'Target done' fires when the active target's quota is met - wire it back to a pool's 'advance' to run a campaign.",
     sum: (p) => txt(p.dest),
   },
 };

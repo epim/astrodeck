@@ -272,7 +272,7 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
           <span role="columnheader" className="tfs-c-order">#</span>
           <span role="columnheader" className="tfs-c-label">PANEL</span>
           <span role="columnheader" className="tfs-c-on">SHOOT</span>
-          <span role="columnheader" className="tfs-c-bar">BANKED</span>
+          <span role="columnheader" className="tfs-c-bar">CAPTURED</span>
           {p.showAltitude && <span role="columnheader" className="tfs-c-alt" data-testid="framing-alt-head">PEAK</span>}
         </div>
         {p.rows.map((r) => [
@@ -291,7 +291,7 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
               {r.total > 0 ? (
                 <span className="tfs-bar" role="progressbar" aria-valuemin={0}
                   aria-valuemax={r.total} aria-valuenow={Math.min(r.banked, r.total)}
-                  aria-label={`${r.label}: ${r.banked} of ${r.total} subs banked`}>
+                  aria-label={`${r.label}: ${r.banked} of ${r.total} frames captured`}>
                   <span className="tfs-bar-fill" style={{ width: `${Math.round(100 * Math.min(1, r.banked / r.total))}%` }} />
                   <span className="tfs-bar-text tfs-mono">{`${r.banked}/${r.total}`}</span>
                 </span>

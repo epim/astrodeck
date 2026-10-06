@@ -423,7 +423,7 @@ def test_the_new_fields_are_typed_as_their_records():
     assert session["locked_angles"] == "Record<string, LockedAngle>"
 
 
-# ------------------------------------------------ the session records
+# ------------------------------------------------ the session logs
 
 def test_the_record_types_are_the_keys_the_helpers_write():
     """Compared with what the engine's own ``_persist_set_aside`` and

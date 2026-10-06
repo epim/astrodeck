@@ -43,7 +43,7 @@ export default function GotoStrip(): JSX.Element | null {
               The mount is not executing slews
             </p>
             <p className="text-dim text-xs mt-0.5">
-              Two centering attempts landed
+              Two centering attempts completed
               {mountOp?.error_arcmin != null
                 ? ` ${mountOp.error_arcmin.toFixed(1)}′ off target` : " off target"},
               unchanged — the correction slew changed nothing. Check the mount is

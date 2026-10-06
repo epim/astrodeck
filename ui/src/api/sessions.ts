@@ -78,7 +78,7 @@ export function unreadableDeleteBody(row: Pick<UnreadableListRow, "id" | "backup
   const file = `${row.id}.json`;
   if (row.backup) {
     return `Removes only the file ${file}, which cannot be read. Its backup ${file}.bak stays, `
-      + "and so do the thumbnails, because the backup may be the last good copy of this ledger. "
+      + "and so do the thumbnails, because the backup may be the last good copy of this session log. "
       + "Saved FITS frames are NOT deleted. Removing the damaged file cannot be undone.";
   }
   return `Removes the file ${file}, which cannot be read, and its thumbnails. `

@@ -497,7 +497,7 @@ const TONIGHT_2X3: Record<string, unknown> = {
       {"name": "M92", "banked": null, "quota": 45, "done": false, "pct": null}
     ],
     "note": "Single-night flow - set DUSK WINDOW \u2192 Repeat to make this a campaign. 4 of 6 " +
-      "mosaic panels done, 9 of 12 subs banked.",
+      "mosaic panels done, 9 of 12 frames captured.",
     "panels": [
       {
         "block": "t",

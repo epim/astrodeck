@@ -545,9 +545,9 @@ class TestTheBudgetCountsEveryPanel:
         not, so the multiplied figure is not read as one panel's."""
         def line(**kw):
             return next(s["msg"] for s in _tonight(_mosaic_flow(), **kw)[
-                "story"] if s["label"] == "BUDGET")
+                "story"] if s["label"] == 'TIME')
         assert "20 h goal across 4 panels" in line()
-        assert "no hop measured on this rig" in line()
+        assert "duration has not been measured on this rig" in line()
         assert "plus ≈1.78 h moving between panels" in line(hop_cost_s=160)
 
     def test_every_panel_skipped_is_no_row(self):
@@ -628,7 +628,7 @@ class TestCampaignRowsPerPanel:
              "banked": 3, "owed": 0, "total": 0, "done": False, "pct": None,
              "skipped": True}]
         assert c["note"].startswith(
-            "1 of 3 mosaic panels done, 14 of 30 subs banked; 1 skipped "
+            "1 of 3 mosaic panels done, 14 of 30 subs captured; 1 skipped "
             "panel holds 3 more, which come back when re-enabled."), c["note"]
         assert "not forecast" in c["note"] and "~" not in c["note"]
 
@@ -668,7 +668,7 @@ class TestCampaignRowsPerPanel:
             ("M16 1-1", 10, True), ("M16 1-2", 0, False),
             ("M16 2-2", 2, False), ("M16 2-1", 0, False)]
         assert c["note"].endswith(
-            " 1 of 4 mosaic panels done, 12 of 40 subs banked."), c["note"]
+            " 1 of 4 mosaic panels done, 12 of 40 subs captured."), c["note"]
 
     def test_a_repeating_mosaic_is_a_campaign(self):
         """A mosaic whose DUSK WINDOW repeats is a campaign with no pool; one

@@ -108,7 +108,7 @@ def push_once(source_root: Path, dest: Destination, *,
     answers a pull agent with. It defaults to a directory walk so this function is
     usable against any tree (and so the unit tests can drive a bare temp dir),
     but a walk of the capture root would sweep in the trash bin, the thumbnail
-    cache, the session records and the logs, none of which are frames and none
+    cache, the session logs and the logs, none of which are frames and none
     of which a pull agent is ever offered.
 
     ``cache`` is the shared (path, size, mtime_ns) hash cache. Passing

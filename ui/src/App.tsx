@@ -740,7 +740,7 @@ export default function App() {
               <span className="text-dim"> · {resumeArm.armed.name}</span>
               {resumeArm.armed.owed > 0 && (
                 <span className="mono text-dim">
-                  {" "}· {resumeArm.armed.owed} frame{resumeArm.armed.owed === 1 ? "" : "s"} owed
+                  {" "}· {resumeArm.armed.owed} frame{resumeArm.armed.owed === 1 ? "" : "s"} remaining
                 </span>
               )}
               {resumeArm.hold && (
