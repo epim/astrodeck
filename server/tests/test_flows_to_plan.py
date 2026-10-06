@@ -325,7 +325,7 @@ class TestInstructions:
         for lie in ("cursor is not persisted", "will not re-arm",
                     "images ONE night", "no target is marked done"):
             assert lie not in detail, f"the note still claims {lie!r}"
-        assert "picking up from the frame ledger" in detail
+        assert "picking up from the session log" in detail
 
     def test_a_calib_fired_by_a_trigger_WITH_NO_LANE_is_still_a_loss(self):
         """The reason HOLD_HONOURED is keyed on the TRIGGER as well as the port:

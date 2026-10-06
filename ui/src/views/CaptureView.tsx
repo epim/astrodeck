@@ -1114,7 +1114,7 @@ export default function CaptureView() {
             {photAdvanced && (
             <div className="grid grid-cols-3 gap-3">
               <Field label="Gain (e-/ADU)"
-                hint="Your camera's sensor gain in electrons/ADU at the gain setting above — from the read-noise harness or the camera datasheet.">
+                hint="Your camera's sensor gain in electrons/ADU at the gain setting above — from a read-noise measurement or the camera datasheet.">
                 {usingCameraEgain ? (
                   <div className="flex items-center gap-1.5">
                     {/* Was `disabled title="From camera"` — the reason lived only in
@@ -1137,7 +1137,7 @@ export default function CaptureView() {
                 )}
               </Field>
               <Field label="Read noise (e-)"
-                hint="Your camera's read noise in electrons at this gain — from the read-noise harness or datasheet.">
+                hint="Your camera's read noise in electrons at this gain — from a read-noise measurement or the datasheet.">
                 <input className="field" inputMode="decimal"
                   value={photometryProfile.readNoiseE || ""}
                   readOnly={!canCapture}

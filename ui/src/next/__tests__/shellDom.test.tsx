@@ -539,7 +539,7 @@ await testAsync("the campaign strip prints the night and the bank, and not on th
   // to print "41 frames banked" because that is all `sequence.session` carries.
   assert(/night 2 of ~\d+/.test(strip.textContent),
     `the strip must name which night this is, got "${strip.textContent}"`);
-  assert(/of 12 h banked/.test(strip.textContent),
+  assert(/of 12 h captured/.test(strip.textContent),
     `and how much is in the bank, got "${strip.textContent}"`);
 
   act(() => { win.location.hash = "#/session/now"; });

@@ -80,10 +80,10 @@ function honestyLine(campaign: TonightCampaignRead): string {
     return "Progress is per pool member, so a flow with a single TARGET has nothing to track here.";
   }
   if (!campaign.has_ledger) {
-    return "Counts come from the session ledger on the rig. None was readable, so no figure above is claimed.";
+    return "The session log on the rig could not be read, so progress counts are unavailable.";
   }
-  return "Counts are accepted subs from the session ledger, folded into complete cycles: "
-    + "a cycle counts only once every filter in the table has its sub.";
+  return "Counts show accepted frames from the session log as complete cycles: "
+    + "a cycle is complete when every filter in the table has its frame.";
 }
 
 export function TonightCampaignCard({ campaign }: {
@@ -100,7 +100,7 @@ export function TonightCampaignCard({ campaign }: {
   return (
     <Card tone="purple" className="nx-tn-camp" data-testid="tonight-campaign">
       <div className="nx-tn-camp-head">
-        <Label size={10}>CAMPAIGN LEDGER</Label>
+        <Label size={10}>CAMPAIGN PROGRESS</Label>
         <Mono size={10} tone="dim">{campaignHead(campaign)}</Mono>
       </div>
 

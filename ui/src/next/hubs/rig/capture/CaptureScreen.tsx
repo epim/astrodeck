@@ -67,7 +67,7 @@ export const CAPTURE_NOTE =
   + "the Camera sheet holds the defaults every flow starts from. Straight to the "
   + "camera - one command, one file, no flow. Tap a readout, drag the dial. The "
   + "cooler gate still applies: a new setpoint settles before the shutter fires. "
-  + "Frames land in Gallery > Manual.";
+  + "Frames are saved in Gallery > Manual.";
 
 export const SAVE_OFF_NOTE =
   "This frame is a preview only - nothing is written to the library.";

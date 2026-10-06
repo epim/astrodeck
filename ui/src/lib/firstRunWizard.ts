@@ -96,8 +96,8 @@ export const WIZARD_STEPS: readonly WizardStepDef[] = [
     need: "the cooler is running",
     cta: "Capture", view: "capture" },
   { id: "frame", title: "Take your first frame",
-    body: "Back to the TOP of Capture: the Exposure panel. Set the seconds, press Single, and watch it land in the preview.",
-    need: "one frame has landed",
+    body: "Back to the TOP of Capture: the Exposure panel. Set the seconds, press Single, and watch for it in the preview.",
+    need: "one frame has been captured",
     cta: "Capture", view: "capture" },
 ] as const;
 

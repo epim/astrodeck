@@ -286,10 +286,10 @@ def resume_expected_tonight(hub, now: float | None = None) -> Session | None:
 #: from the site. A sentence that listed each target's own reason would say
 #: that fact beside a target and a time; this one says only what the refusal
 #: itself already says, that something ruled the night out.
-NOTHING_TONIGHT = ("nothing this session still owes can be shot tonight: "
-                   "what it owes is set aside for tonight, past its observing "
-                   "window or never above its start floor; not slewing until "
-                   "the next night")
+NOTHING_TONIGHT = ("none of this session's remaining frames can be captured "
+                   "tonight: the remaining targets are set aside for tonight, "
+                   "past their observing windows, or never above their minimum "
+                   "start altitude; waiting until the next night before slewing")
 
 #: The gating states the run drops a target for without shooting it
 #: (``_run_scheduled``), and so the re-centre leaves out (#283).
@@ -1384,8 +1384,8 @@ class ResumeArm:
             owed = armed.owed()
             self._set_hold(armed,
                            "it is not dark enough yet"
-                           + (f", and this session still owes {owed} frame"
-                              f"{'' if owed == 1 else 's'}" if owed else ""))
+                           + (f", and this session has {owed} frame"
+                              f"{'' if owed == 1 else 's'} remaining" if owed else ""))
             if self._retry_at and self._gave_up_for != armed.id and set_aside:
                 # NOT A GIVE-UP (#284). The session held because nothing it
                 # owes could be shot tonight, which is the run's decision
@@ -1395,8 +1395,8 @@ class ResumeArm:
                 # this says what happened, once, at info level.
                 self._gave_up_for = armed.id
                 self._retry_at = 0.0
-                bus.log("info", f"auto-resume: nothing '{armed.name}' still "
-                                f"owes could be shot tonight, so its "
+                bus.log("info", f"auto-resume: none of '{armed.name}'s remaining "
+                                f"frames could be captured tonight, so its "
                                 f"remaining work was set aside for the "
                                 f"night. It stays armed and tries again when "
                                 f"the next night's window opens.", "sequence")
@@ -1426,8 +1426,8 @@ class ResumeArm:
                 if owed:
                     bus.log("warning",
                             f"auto-resume is standing by: it is not dark, and "
-                            f"'{armed.name}' still owes {owed} frame"
-                            f"{'' if owed == 1 else 's'}. It stays armed and "
+                            f"'{armed.name}' has {owed} frame"
+                            f"{'' if owed == 1 else 's'} remaining. It stays armed and "
                             f"starts when the window opens.", "sequence")
                 else:
                     bus.log("info",

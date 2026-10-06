@@ -308,7 +308,7 @@ async def test_a_frozen_banner_stops_answering_where_the_wheel_is(monkeypatch):
     await asyncio.sleep(0.08)
     with pytest.raises(DeviceError) as e:
         await w.get_position()
-    assert "memory, not a measurement" in str(e.value)
+    assert "is its last known position" in str(e.value)
 
 
 async def test_a_fresh_banner_still_answers(monkeypatch):

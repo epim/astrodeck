@@ -133,8 +133,8 @@ export function TonightCampaign({ campaign }: {
         {!campaign.has_pool
           ? "Progress is per pool member, so a flow with a single TARGET has nothing to track here."
           : !campaign.has_ledger
-            ? "Counts come from the session ledger on the rig. None was readable, so no figure above is claimed."
-            : "Counts are accepted subs from the session ledger, folded into complete cycles: a cycle counts only once every filter in the table has its sub."}
+            ? "The session log on the rig could not be read, so progress counts are unavailable."
+            : "Counts show accepted frames from the session log as complete cycles: a cycle is complete when every filter in the table has its frame."}
       </p>
     </div>
   );

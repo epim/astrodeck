@@ -2059,7 +2059,7 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         t += ", then the camera warms"
         if str(dusk.params.get("repeat") or "Single night") != "Single night":
             t += ("; the flow re-arms at the next dusk and resumes mid-cycle "
-                  "from the ledger")
+                  "from the session log")
         seg.append(t + ".")
 
     if saf is not None:
@@ -2163,7 +2163,7 @@ def banked_hours_by_target_from_reports(reports: Iterable[Any]
 #: claims. Recorded on the campaign item; the copy tells the truth meanwhile.
 _DAWN = ("Dawn parks the mount and warms the camera - the dome is not driven "
          "and the cooler does not stay cold for day darks. Each dusk resumes "
-         "where the ledger left off.")
+         "where the session log left off.")
 
 
 #: The CAMPAIGN note's words for the forecast nobody makes, said once so the
@@ -2246,7 +2246,7 @@ def _panels_clause(rows: list[dict] | None) -> str:
     done = sum(1 for r in shot if r["done"])
     t = (f"{done} of {len(shot)} mosaic panels done, "
          f"{sum(r['banked'] for r in shot)} of {sum(r['total'] for r in shot)}"
-         f" subs banked")
+         f" subs captured")
     if skipped:
         held = sum(r["banked"] for r in skipped)
         one = len(skipped) == 1
@@ -2358,8 +2358,8 @@ def _campaign(graph: FlowGraph | None,
         note = ("Single-night flow - set DUSK WINDOW → Repeat to make this a "
                 "campaign.")
     elif not has_ledger:
-        note = ("No session ledger available, so nothing here claims a banked "
-                f"figure. {_DAWN}")
+        note = ("The session log is unavailable, so captured totals cannot be shown. "
+                f"{_DAWN}")
     elif not slots:
         note = ("This campaign's capture stage is not a FILTER CYCLE, so "
                 f"progress is not counted in cycles. {_DAWN}")
@@ -2530,8 +2530,8 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
             panels = f" across {n} panel{'' if n == 1 else 's'}"
             hops = (f", plus ≈{b['hop_h']:g} h moving between panels"
                     if b["hop_h"] is not None else
-                    ", before the moves between panels, which no hop "
-                    "measured on this rig can price yet")
+                    ", before the moves between panels, whose "
+                    "duration has not been measured on this rig yet")
         if b.get("strategy") == "cycle":
             # S4 orchestrator ruling 5 (#338): a FILTER CYCLE's row. It has
             # no goal, and says so in words, where "0 h goal" would read as
@@ -2541,32 +2541,32 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
             n = b["cycles"]
             head = (f"{b['filter']} cycle: no integration goal (a FILTER "
                     f"CYCLE sets none)")
-            owes = (f"its {n} cycle{' owes' if n == 1 else 's owe'} "
-                    f"≈{b['tonight_h']:g} h of shutter{panels}{hops}")
+            owes = (f"its {n} cycle{' takes' if n == 1 else 's take'} "
+                    f"≈{b['tonight_h']:g} h of exposure{panels}{hops}")
             rules.append(row(
                 None,
-                (f"{head}, {b['banked_h']:g} h banked in its filters "
-                 f"{_FOR_THESE} - {owes}; the session ledger resumes the "
+                (f"{head}, {b['banked_h']:g} h captured in its filters "
+                 f"{_FOR_THESE} - {owes}; the run resumes the "
                  f"remainder next clear night") if b["has_ledger"] else
-                (f"{head} - {owes}. No session ledger was read, so nothing "
-                 f"here is counted as already banked"),
-                TONE_GOOD, "BUDGET"))
+                (f"{head} - {owes}. The session log was not read, so "
+                 f"captured totals are unavailable"),
+                TONE_GOOD, "TIME"))
             continue
         if b["has_ledger"]:
             rules.append(row(
                 None,
-                f"{b['filter']}: {b['banked_h']:g} h banked {_FOR_THESE} / "
+                f"{b['filter']}: {b['banked_h']:g} h captured {_FOR_THESE} / "
                 f"{b['goal_h']:g} h goal{panels} - tonight adds "
-                f"≈{b['tonight_h']:g} h{hops}; the session ledger resumes the "
+                f"≈{b['tonight_h']:g} h{hops}; the run resumes the "
                 f"remainder next clear night",
-                TONE_GOOD, "BUDGET"))
+                TONE_GOOD, "TIME"))
         else:
             rules.append(row(
                 None,
                 f"{b['filter']}: {b['goal_h']:g} h goal{panels} - tonight adds "
-                f"≈{b['tonight_h']:g} h{hops}. No session ledger was read, so "
-                f"nothing here is counted as already banked", TONE_GOOD,
-                "BUDGET"))
+                f"≈{b['tonight_h']:g} h{hops}. The session log was not read, "
+                f"so captured totals are unavailable", TONE_GOOD,
+                "TIME"))
 
     # 10. dawn. The report clause is only claimed when the GRAPH was supplied —
     # a session-report sink compiles to nothing, so a plan alone cannot know

@@ -758,7 +758,7 @@ export default function SequenceView() {
                 <p className="text-xs text-ink/90 leading-snug min-w-0">
                   Pausing — this frame still has{" "}
                   <span className="mono tabular-nums">{fmtCountdown(shutterRemainingS!)}</span>{" "}
-                  of shutter left, and the run does not stop until it lands.{" "}
+                  of exposure left, and the run will pause when it finishes.{" "}
                   <strong className="font-medium">Keep lights off and hands off the
                   scope</strong> until this reads PAUSED.
                   {/* Only offered to someone who has the button. */}
@@ -1689,7 +1689,7 @@ export default function SequenceView() {
                   skip step after N rejects
                   <InfoDot
                     label="About the per-step reject guard"
-                    content="Accepted-count mode only: after N consecutive rejected frames on one step, that step is set aside for tonight and the run moves on to the next step or target. Its shortfall stays owed in the session ledger: a restart tonight does not retry it, the next night does."
+                    content="Accepted-count mode only: after N consecutive rejected frames on one step, that step is set aside for tonight and the run moves on to the next step or target. Its remaining frames stay pending in the session log: a restart tonight does not retry it, the next night does."
                   />
                 </span>
                 <span className="inline-flex items-center gap-2">

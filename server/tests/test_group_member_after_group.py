@@ -680,7 +680,7 @@ async def test_w6_group_skip_does_not_act_on_a_stale_expiry_waiter(
     ``if self._group_gate(group, remaining, gs_now).kind != "ready":
     continue`` guards only the reach/meridian/defer loop that follows it,
     never `_expire_or_wait`). And `_start_groups` can seed that hold at RUN
-    START, straight from a session record (a restart within
+    START, straight from a session log (a restart within
     ``SET_ASIDE_EXPIRY_S`` of a centring failure): the member need not visit
     THIS run to carry it, so "a gated member never gets to visit before its
     group's gate reads skip" (true, and why the reach/meridian/defer holds

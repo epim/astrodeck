@@ -181,8 +181,8 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
           }}
         >
           <Mono size={11}>
-            Pausing - this frame still has {fmtCountdown(sub.remainingS!)} of shutter
-            left, and the run does not stop until it lands. Keep lights off and hands
+            Pausing - this frame still has {fmtCountdown(sub.remainingS!)} of exposure
+            left. The run will pause when it finishes. Keep lights off and hands
             off the scope until this reads PAUSED.{canControl ? " Stop ends it now." : ""}
           </Mono>
         </div>
@@ -219,7 +219,7 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
                 : "There is no stacked picture yet.");
               return;
             }
-            setDownloadNote(`SAVE STACK started - it lands in your downloads`);
+            setDownloadNote(`Stack download started. Check your downloads.`);
           }}
           className="nx-btn"
           data-kind="secondary"

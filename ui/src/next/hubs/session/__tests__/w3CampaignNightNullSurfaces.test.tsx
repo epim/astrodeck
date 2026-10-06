@@ -216,7 +216,7 @@ await testAsync("crossHub: no list row, no night number on the chrome or the str
     assert(seen.strip != null, "precondition: the strip must render for a campaign");
     assert(!/night\s+\d+\s+of/.test(seen.strip!.line),
       `the strip guessed a night number with no row to back it: "${seen.strip!.line}"`);
-    assert(/1\.2 of 6 h banked/.test(seen.strip!.line), `the banked figures dropped too: "${seen.strip!.line}"`);
+    assert(/1\.2 of 6 h captured/.test(seen.strip!.line), `the banked figures dropped too: "${seen.strip!.line}"`);
   } finally {
     await act(async () => { root.unmount(); });
   }

@@ -355,8 +355,8 @@ class TestTheIntegrationLedger:
         row = out["budget"][0]
         assert row["has_ledger"] is False and row["banked_h"] is None
         assert row["goal_h"] == 12 and row["tonight_h"] == pytest.approx(1.0)
-        msg = next(s["msg"] for s in out["story"] if s["label"] == "BUDGET")
-        assert "No session ledger" in msg
+        msg = next(s["msg"] for s in out["story"] if s["label"] == 'TIME')
+        assert "The session log was not read" in msg
 
     def test_an_injected_ledger_reaches_the_row_and_the_sentence(self):
         """DELIBERATE PIN CHANGE (#536, H4 orchestrator ruling 6). The banked
@@ -381,8 +381,8 @@ class TestTheIntegrationLedger:
         out = _tonight(banked=lambda: {"Ha": 4.2})
         row = out["budget"][0]
         assert row["has_ledger"] is True and row["banked_h"] == 4.2
-        msg = next(s["msg"] for s in out["story"] if s["label"] == "BUDGET")
-        assert "4.2 h banked for these targets / 12 h goal" in msg
+        msg = next(s["msg"] for s in out["story"] if s["label"] == 'TIME')
+        assert "4.2 h captured for these targets / 12 h goal" in msg
 
     def test_a_ledger_that_cannot_be_read_degrades_to_no_ledger(self):
         """``captures/reports`` living on the same SD card as everything else,
@@ -492,7 +492,7 @@ class TestTheStory:
         server that formats has already replaced their timezone with its own."""
         for row in _tonight()["story"]:
             assert not re.search(r"\d{1,2}:\d{2}", row["msg"]), row["msg"]
-            assert row["t_unix"] is not None or row["label"] in {"ANY", "BUDGET"}
+            assert row["t_unix"] is not None or row["label"] in {"ANY", 'TIME'}
 
     def test_dawn_closes_the_night_last(self):
         story = _tonight()["story"]

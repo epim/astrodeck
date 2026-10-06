@@ -61,7 +61,7 @@ RA, DEC = 5.588, -5.391
 T1, T2, T3 = 1_789_012_800.0, 1_789_013_400.0, 1_789_099_200.0
 
 #: The sentence a step outran by the lookup is listed with (api/app.py).
-ADOPT_AGAIN = ("frames were banked on this step after ADOPT looked it up in "
+ADOPT_AGAIN = ("frames were captured on this step after ADOPT looked it up in "
                "the catalogue, so it was not matched; press ADOPT again to "
                "include them")
 

@@ -441,7 +441,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
       await reload();
       toast("error",
         `Added ${added} of ${list.length} driver${list.length === 1 ? "" : "s"}, then `
-        + `${e instanceof Error ? e.message : "the next one failed"} - the ones that landed `
+        + `${e instanceof Error ? e.message : "the next one failed"} - the ones that were found `
         + "are listed below; re-run the scan to add the rest.", { verbatim: true });
     } finally {
       setBusyWhat(null);

@@ -296,7 +296,7 @@ export function StretchPanel({
         onChange={(v) => onStretch({ auto: v })}
         label="Auto stretch"
         note={stretch.auto
-          ? "levels re-derived from every frame as it lands"
+          ? "levels recalculated for each new frame"
           : "levels held where you put them until you turn this back on"}
         data-testid="preview-stretch-auto"
       />

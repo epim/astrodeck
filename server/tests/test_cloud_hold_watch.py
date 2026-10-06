@@ -480,7 +480,7 @@ async def test_a_flip_the_mount_never_takes_is_not_tracked_past_in_the_hold(
             f"the hold judged the sky past the meridian with the mount still "
             f"on its pre-flip side: checks at {w.rel(past, t_h)} s, the "
             f"meridian at {t_transit - t_h:.1f} s")
-        assert any("a meridian flip is owed and the mount is still on the" in m
+        assert any("a meridian flip is required and the mount is still on the" in m
                    and "Alpha" in m for m in msgs), msgs[-8:]
         assert any("skip" in m.lower() and "Alpha" in m for m in msgs), (
             f"Alpha was never set aside: {msgs[-6:]}")

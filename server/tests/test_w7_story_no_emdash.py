@@ -102,7 +102,7 @@ class TestNoRowCarriesAnEmDash:
         rows = _rows(out)
         offenders = [m for m in rows if EM_DASH in m]
         assert offenders == [], f"an em-dash in a STORY row: {offenders}"
-        budget_lines = [s["msg"] for s in out["story"] if s["label"] == "BUDGET"]
+        budget_lines = [s["msg"] for s in out["story"] if s["label"] == 'TIME']
         assert len(budget_lines) == 2, (
             f"premise: a capture row and a cycle row: {budget_lines}")
 

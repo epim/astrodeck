@@ -54,7 +54,7 @@ function Row({ row, tonightVisible }: { row: BudgetRow; tonightVisible: boolean 
       <div
         role="img"
         aria-label={row.has_ledger
-          ? `${row.filter}: ${banked.toFixed(1)} of ${row.goal_h} hours banked`
+          ? `${row.filter}: ${banked.toFixed(1)} of ${row.goal_h} hours captured`
           : `${row.filter}: not counted, goal ${row.goal_h} hours`}
         style={{
           height: 6, borderRadius: 999, position: "relative", overflow: "hidden",
@@ -94,7 +94,7 @@ export function CampaignLedger(): JSX.Element | null {
     // chrome. "This flow has no dusk window" is information, not a fault.
     return (
       <div className="nx-card" data-tone="purple" data-testid="now-campaign-ledger">
-        <Label>CAMPAIGN LEDGER</Label>
+        <Label>CAMPAIGN PROGRESS</Label>
         <Mono size={10.5} tone="dim">{refused ?? `Could not read tonight's plan: ${error}`}</Mono>
       </div>
     );
@@ -111,7 +111,7 @@ export function CampaignLedger(): JSX.Element | null {
       style={{ display: "flex", flexDirection: "column", gap: 10 }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-        <Label>CAMPAIGN LEDGER</Label>
+        <Label>CAMPAIGN PROGRESS</Label>
         <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           <Mono size={10} tone="dim">{campaign.summary}</Mono>
         </span>

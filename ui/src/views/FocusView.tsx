@@ -765,7 +765,7 @@ export default function FocusView() {
   // the hero can never blame a missing frame on a tap the user cannot make.
   const frameBlocker =
     captureReason
-    ?? (looping ? "a capture loop is running — its first frame has not landed yet" : null);
+    ?? (looping ? "a capture loop is running — its first frame has not arrived yet" : null);
 
   // ------------------------------------------- what the sweep would actually do
   // Derived at RENDER, not inside the tap handler, because the whole point is to

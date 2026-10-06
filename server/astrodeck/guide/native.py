@@ -167,7 +167,7 @@ _CAL_STARLESS_S = 30.0
 # inactive (so the sequence engine's _maybe_recover_guiding sees is_active go
 # false on a real loss). P2-T2: the engine itself now broadens its search to
 # a full-frame auto-reselect once a star is stale (engine.rs's
-# ingest_guiding), so every one of these budgeted frames is a genuine
+# ingest_guiding), so every one of these allocated frames is a genuine
 # reacquire attempt, not just a narrow local re-check.
 _REACQUIRE_BUDGET = 8
 

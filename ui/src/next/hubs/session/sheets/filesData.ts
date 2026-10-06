@@ -291,7 +291,7 @@ export function rowSubtitle(r: FilesRow): string {
   const parts: string[] = [`${r.subs} sub${r.subs === 1 ? "" : "s"}`];
   if (r.exposureS != null) parts.push(`${trimNumber(r.exposureS)} s`);
   if (r.subs === 0) {
-    parts.push("nothing banked yet");
+    parts.push("no frames captured yet");
   } else if (r.accepted == null) {
     // No verdict is a fact, not a blank: say so rather than implying they all
     // passed (the proto's fixture said "all passed HFR" unconditionally).
@@ -538,7 +538,7 @@ export function transferNote(opts: {
   date: string;
 }): { line: string; extra: string | null } {
   const eta = etaWords(opts.bytes, opts.mbps);
-  const lands = `lands in Files > AstroDeck > ${opts.target}${opts.date ? ` ${opts.date}` : ""}`;
+  const lands = `is saved in Files > AstroDeck > ${opts.target}${opts.date ? ` ${opts.date}` : ""}`;
   if (opts.via === "direct" && eta) {
     return { line: `direct from the rig · about ${eta} · ${lands}`, extra: null };
   }

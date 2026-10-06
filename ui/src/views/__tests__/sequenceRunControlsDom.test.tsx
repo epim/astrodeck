@@ -227,7 +227,7 @@ test("a pause over an open shutter says PAUSING, not PAUSED", () => {
 test("…and says how long the shutter has left", () => {
   // The engine reported a 300s frame 20s in, so ~4:40 remain. Assert the shape,
   // not the second, so a slow test box cannot make this flap.
-  assert(/\d?\d:\d\d of shutter left/.test(text()),
+  assert(/\d?\d:\d\d of exposure left/.test(text()),
     `no countdown for the frame in flight — the note read: ${text().slice(0, 400)}`);
   assert(/hands off the scope/i.test(text()),
     "the pausing note never says what not to do, which is the only reason it exists");
@@ -245,7 +245,7 @@ await frame("paused", { frameStartedAtMs: null, framesDone: 4 });
 test("PAUSED lands the moment the engine clears its in-flight marker", () => {
   assert(badge() === "PAUSED",
     `the badge reads "${badge()}" after the frame landed and the engine dropped its marker`);
-  assert(!/of shutter left/.test(text()),
+  assert(!/of exposure left/.test(text()),
     "the pausing note outlived the exposure it was counting down");
   assert(byText(/^Resume$/) != null, "Resume never came back on a genuinely paused run");
 });

@@ -138,7 +138,7 @@ export function IntegrationBar({ legend = true }: { legend?: boolean }): JSX.Ele
         data-testid="integration-bar"
       />
       {!hasLedger && (
-        <Mono size={10} tone="dim">per-filter breakdown needs the session ledger</Mono>
+        <Mono size={10} tone="dim">per-filter breakdown needs the session log</Mono>
       )}
       {progress != null && progress.rejected > 0 && (
         <span data-testid="now-rejected-line">

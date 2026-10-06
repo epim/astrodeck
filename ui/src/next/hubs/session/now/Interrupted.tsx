@@ -138,7 +138,7 @@ export function Interrupted(): JSX.Element | null {
       (e: Error) => {
         inFlight.current = false;
         setResuming(false);
-        useStore.getState().enqueueToast({ level: "error", title: "Resume did not land", detail: e.message });
+        useStore.getState().enqueueToast({ level: "error", title: "Resume not confirmed", detail: e.message });
       },
     );
   }, []);

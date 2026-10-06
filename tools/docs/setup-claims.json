@@ -6825,7 +6825,7 @@
   },
   {
     "page": "README.md",
-    "claim": "| **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session ledger, Sky Atlas, weather model, remote access, phone dashboard |",
+    "claim": "| **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session logs, Sky Atlas, weather model, remote access, phone dashboard |",
     "source": "server/astrodeck/devices/base.py",
     "line": 1,
     "verified_by": "source-trace",

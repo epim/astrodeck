@@ -238,7 +238,7 @@ def _a_flip_owed_past_its_hold(night, monkeypatch, plan, group_store):
     night.flip_sides = sides
 
     def premise():
-        held = night.said(f"{_name(FAILING)}: a meridian flip is owed and the "
+        held = night.said(f"{_name(FAILING)}: a meridian flip is required and the "
                           f"mount is still on the")
         assert len(held) == 3, held
 
@@ -291,7 +291,7 @@ async def test_a_plain_stop_defers_the_panel_and_three_set_it_aside(
         sides = getattr(night, "flip_sides", [])
         assert sides and all(s in ("east", "west") for s in sides), (
             f"premise: the mount reported a side at each hold: {sides}")
-        expected = (f"{_name(FAILING)}: a meridian flip has been owed for 2 "
+        expected = (f"{_name(FAILING)}: a meridian flip has been pending for 2 "
                     f"min and the mount is still on the {sides[0]} side; "
                     f"moving on rather than exposing across the pier")
 

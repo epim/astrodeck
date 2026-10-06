@@ -290,12 +290,12 @@ export function FlowsScreen(): JSX.Element {
     try {
       const r = await resumeSession(sessionId);
       enqueueToast(r.resumed
-        ? { level: "success", title: "Campaign resumed", detail: `${r.remaining} frames still owed` }
-        : { level: "warning", title: "Nothing to resume", detail: "The session owes no frames." });
+        ? { level: "success", title: "Campaign resumed", detail: `${r.remaining} frames remaining` }
+        : { level: "warning", title: "Nothing to resume", detail: "The session has no remaining frames." });
     } catch (e) {
       enqueueToast({
         level: "error",
-        title: "Resume did not land",
+        title: "Resume not confirmed",
         detail: e instanceof Error ? e.message : String(e),
       });
     } finally {
@@ -339,7 +339,7 @@ export function FlowsScreen(): JSX.Element {
       else if (camp.parked) {
         meta = `${head} · parked · resumes at dusk${
           camp.duskMs != null ? ` ${fmtClock(camp.duskMs)}` : ""}`;
-      } else meta = `${head} · ${camp.bankedH.toFixed(1)} of ${camp.goalH} h banked`;
+      } else meta = `${head} · ${camp.bankedH.toFixed(1)} of ${camp.goalH} h captured`;
     } else {
       // `cardStatus` has designed copy for exactly two of the server's four
       // values; `warn` and `bad` print the server's OWN word rather than
@@ -433,7 +433,7 @@ export function FlowsScreen(): JSX.Element {
             {count == null
               ? "reading the library"
               : filtered ? `${visible.length} of ${count} shown` : `${count} saved`}
-            {" · quick sessions land here"}
+            {" · quick sessions appear here"}
           </Mono>
         </span>
       </div>
@@ -528,7 +528,7 @@ export function FlowsScreen(): JSX.Element {
           title="NOTHING IN THIS FOLDER"
           hint={folderChip === "examples"
             ? "The rig ships example flows; this one has none installed."
-            : "Flows you make land here. The examples are under EXAMPLES."}
+            : "Flows you create appear here. The examples are under EXAMPLES."}
         />
       ) : (
         <div
@@ -598,7 +598,7 @@ export function FlowsScreen(): JSX.Element {
           data-testid="flows-create-phone"
           icon={<NxIcon name="sky" size={16} />}
           title={CREATE_PHONE_HINT}
-          sub="SKY starts from a target and its altitude window; the flow lands in this list."
+          sub="SKY starts from a target and its altitude window; the flow appears in this list."
           chevron
           onPress={() => nav.hub("sky")}
         />

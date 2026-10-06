@@ -6231,8 +6231,8 @@ def test_5_9_says_resume_arm_recentres_on_what_the_run_would_shoot(
     assert none == [] and resume_arm_mod.nothing_to_shoot_tonight(shut, none)
     words = resume_arm_mod.NOTHING_TONIGHT
     three = all(w in words for w in ("set aside for tonight",
-                                     "past its observing window",
-                                     "never above its start floor"))
+                                     "past their observing windows",
+                                     "never above their minimum start altitude"))
     assert three and not re.search(r"\d", words), (
         f"NOTHING_TONIGHT is {words!r}; 5.9 says it names the three ways "
         f"and no number")
@@ -24151,7 +24151,7 @@ def test_5_7_says_every_zero_lead_waits_past_as_s7_built_it():
     hold = ast.unparse(_tree(SequenceEngine._hold_for_owed_flip))
     numbered = ("self._flip_owed_attempt = attempt" in hold
                 and "self._flip_owed_attempt = 0" in hold)
-    words = ("the flip-owed hold's re-slew " in inspect.getsource(
+    words = ("the meridian flip hold's re-slew " in inspect.getsource(
         SequenceEngine._maybe_meridian_flip))
     dropped = [ast.unparse(n.orelse[0]) for n in ast.walk(
         _tree(SequenceEngine._set_state)) if isinstance(n, ast.If)

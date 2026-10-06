@@ -283,7 +283,7 @@ export const SETUP_STEP2_LOCK_REASON =
 export const SETUP_STEP2_ON_REASON = "Local sign-in is already armed; press SAVE METHODS to persist it.";
 export const SETUP_STEP3 = "Saving signs you out too";
 export const SETUP_STEP3_BLURB =
-  "Saving signs every client out, including this one. You land on the sign-in page and sign in with the account from step 1.";
+  "Saving signs every client out, including this one. You return to the sign-in page and sign in with the account from step 1.";
 
 // ------------------------------------------------------------ AddUserForm copy
 

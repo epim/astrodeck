@@ -317,7 +317,7 @@ test("CAMPAIGN draws a row per pool member, with its own status word", () => {
   const text = body.textContent;
   assert.ok(text.includes("45/45 cycles · DONE"), `a finished member says DONE: ${text}`);
   assert.ok(text.includes("23/45 cycles"), "a partial member shows its count");
-  assert.ok(text.includes("0/45 cycles"), "and a member with nothing banked shows a real zero");
+  assert.ok(text.includes("0/45 cycles"), "and a member with nothing captured shows a real zero");
 });
 
 test("a null banked figure is NOT drawn as zero", () => {
@@ -330,7 +330,7 @@ test("a null banked figure is NOT drawn as zero", () => {
       campaign: {
         is_campaign: true, has_pool: true, has_ledger: false, quota: 45,
         members: [{ name: "M33", banked: null, quota: 45, done: false, pct: null }],
-        note: "No session ledger available, so nothing here claims a banked figure.",
+        note: "The session log is unavailable, so captured totals cannot be shown.",
       },
     },
     ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "campaign" },
@@ -434,14 +434,14 @@ test("STORY leads with the generated brief", () => {
   clickTab("STORY");
   const brief = q("[data-tonight-brief]");
   assert.ok(brief, "the brief block is rendered");
-  assert.ok(brief.textContent.includes("BRIEF - GENERATED FROM THE GRAPH"),
+  assert.ok(brief.textContent.includes("PLAN SUMMARY"),
     "with the export's heading, verbatim");
   assert.ok(brief.textContent.includes("Ha 180 s × 20"),
     "and the server's prose, not a second generator's");
 
   // It leads: the brief must come BEFORE the first timed row in document order.
   const body = q("[data-flows-tonight='story']");
-  const pos = body.textContent.indexOf("BRIEF");
+  const pos = body.textContent.indexOf("PLAN SUMMARY");
   assert.ok(pos >= 0 && pos < body.textContent.indexOf("Autorun window opens"),
     "the brief opens the tab");
 });
@@ -481,7 +481,7 @@ test("no brief means no empty bordered box", () => {
 //       remainder next clear night"
 // The control before it stays green under that mutant. It can fail: MUTANT
 // "BUDGET rows not drawn" (TonightStory.tsx mapping
-// `story.filter((r) => r.label !== "BUDGET")`), same copy. Observed:
+// `story.filter((r) => r.label !== "TIME")`), same copy. Observed:
 //   tonightPanelDom.test: 18/20 passed
 //     x control: STORY draws the server's two BUDGET rows, stamped BUDGET,
 //       numbers and all: STORY drew 0 BUDGET rows, not the server's 2
@@ -505,7 +505,7 @@ function readBudgetAnswer(): Record<string, unknown> {
 }
 const BUDGET_ANSWER = readBudgetAnswer();
 const BUDGET_ROWS = (BUDGET_ANSWER.story as { label: string; msg: string }[])
-  .filter((r) => r.label === "BUDGET");
+  .filter((r) => r.label === "TIME");
 
 /** STORY's drawn rows as `[stamp, sentence]`, each row's two spans. */
 function storyRows(): [string, string][] {
@@ -523,10 +523,10 @@ test("control: STORY draws the server's two BUDGET rows, stamped BUDGET, numbers
     ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "story" },
   });
   assert.equal(BUDGET_ROWS.length, 2, "precondition: the answer holds two BUDGET rows");
-  const budget = storyRows().filter(([stamp]) => stamp === "BUDGET");
+  const budget = storyRows().filter(([stamp]) => stamp === "TIME");
   assert.equal(budget.length, 2, `STORY drew ${budget.length} BUDGET rows, not the server's 2`);
-  assert.ok(budget[0][1].startsWith("Ha: 1 h banked"), `the capture row's figure: "${budget[0][1]}"`);
-  assert.ok(budget[1][1].includes("0.2 h banked in its filters"), `the cycle row's figure: "${budget[1][1]}"`);
+  assert.ok(budget[0][1].startsWith("Ha: 1 h captured"), `the capture row's figure: "${budget[0][1]}"`);
+  assert.ok(budget[1][1].includes("0.2 h captured in its filters"), `the cycle row's figure: "${budget[1][1]}"`);
 });
 
 test("every BUDGET row on STORY says its banked hours are for these targets", () => {
@@ -534,9 +534,9 @@ test("every BUDGET row on STORY says its banked hours are for these targets", ()
     tonight: { ...OK_PAYLOAD, ...BUDGET_ANSWER },
     ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "story" },
   });
-  const budget = storyRows().filter(([stamp]) => stamp === "BUDGET");
+  const budget = storyRows().filter(([stamp]) => stamp === "TIME");
   for (const [, sentence] of budget) {
-    assert.ok(/ h banked (in its filters )?for these targets/.test(sentence),
+    assert.ok(/ h captured (in its filters )?for these targets/.test(sentence),
       `a BUDGET row on the classic panel does not say whose hours it banks: "${sentence}"`);
   }
   for (const row of BUDGET_ROWS) {

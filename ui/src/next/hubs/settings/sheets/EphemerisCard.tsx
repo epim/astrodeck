@@ -45,7 +45,7 @@ export const EPHEMERIS_TITLE = "SATELLITE AND COMET ELEMENTS";
 
 /** The 202. It says what happens next and where the answer appears, because
  *  the press itself produces no visible change on this card for a few seconds. */
-export const REFRESH_STARTED = "Fetching elements - the list updates when it lands.";
+export const REFRESH_STARTED = "Fetching orbital elements. The list updates when they arrive.";
 
 /** The 409. Not an error: a fetch is already running and a second press would
  *  be a second request to an upstream that asks to be polled four times a day. */

@@ -46,7 +46,7 @@ export const INFO: Record<string, InfoTopic> = {
   osc: {
     t: "ONE CHANNEL",
     b: "With one channel there is nothing to cycle: the flow shoots the same exposure over "
-      + "and over until the window ends, so every minute of the night lands in one stack. A "
+      + "and over until the window ends, so all captured frames contribute to one stack. A "
       + "one-shot-colour sensor carries its colour filters on the chip, which is why it needs "
       + "no wheel to make a colour image. Tap the time to change the sub length.",
   },
@@ -79,7 +79,7 @@ export const INFO: Record<string, InfoTopic> = {
   },
   stack: {
     t: "LIVE STACK",
-    b: "The rig aligns and stacks subs as they land so you can watch the image build here. "
+    b: "The rig aligns and stacks frames as they arrive so you can watch the image build here. "
       + "A preview only; your FITS are untouched.",
   },
   flats: {

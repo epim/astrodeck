@@ -59,7 +59,7 @@ export const ACTION_CONSEQUENCE: Partial<Record<ActionKind, string>> = {
     + "captured and the scheduler does not come back to it.",
   skip_target:
     "That target is dropped for the rest of tonight, including any subs it "
-    + "still owed.",
+    + "remaining.",
 };
 
 /** Short verb used in the one-line rule summary (the picker labels are full
