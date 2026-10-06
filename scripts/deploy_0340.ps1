@@ -241,5 +241,5 @@ Invoke-LoggedDeploy -Log (Join-Path $Root "deploy_$Ver.log") -Body {
     $r = Invoke-DeployNative -FilePath "curl.exe" -ArgumentList @("-s", "--max-time", "15", "http://127.0.0.1:8800/")
     $idx = ($r.Lines -join [char]10)
     if ($idx -match 'assets/(index-[A-Za-z0-9_-]+\.js)') { Write-Output ("   served asset: " + $Matches[1]) } else { throw "could not read the served asset" }
-    Write-Output ("DEPLOY_0339_DONE " + (Get-Date -Format o) + " (auto-resume is watched separately)")
+    Write-Output ("DEPLOY_" + ($Ver -replace '\.', '') + "_DONE " + (Get-Date -Format o) + " (auto-resume is watched separately)")
 }
