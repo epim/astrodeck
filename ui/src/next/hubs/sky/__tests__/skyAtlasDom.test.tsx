@@ -56,6 +56,27 @@
 //   * delete `if (frameOnRef.current) return;` from `SkyHub`'s `?mode=atlas`
 //     effect -> "a `?mode=atlas` that is the FRAME button's own echo is
 //     ignored" goes red: pressing FRAME lands the user in ATLAS instead.
+//
+// SABOTAGE CHECKS for the SURVEY-off case (#701, backlog wave 15 WP-115; each
+// applied from a byte backup, restored byte-identically, sha256-verified, and
+// checked gone). The case asserts on WHICH requests were made after the switch,
+// so a failure names them. Observed, verbatim ("skyAtlasDom.test: 21/22
+// passed"):
+//   * SkyCanvas.tsx's scheduler effect, `mode === "schematic"` branch, also
+//     schedules `loadSurvey` after 300 ms (SURVEY off still fetches imagery):
+//     x SURVEY off fetches no imagery and still draws the markers and the
+//     reticle: the survey is off and the canvas still asked for imagery: GET
+//     /api/survey/cutout.jpg?ra=1.500000&dec=20.000000&fov=10.000000&width=768
+//     &survey=CDS%2FP%2FDSS2%2Fcolor&stretch=linear | (the same URL twice more)
+//   * AtlasHost.tsx's `const surveyDegraded = surveyLayer && p.surveyDegraded;`
+//     loses its `surveyLayer &&` (the pack poll ignores the layer):
+//     x SURVEY off fetches no imagery and still draws the markers and the
+//     reticle: the pack poll outlived the layer that needed it - nothing is
+//     degraded when nothing was asked for: GET /api/survey/pack | GET
+//     /api/survey/pack
+// The window the case watches is also stretched by 8 s with the backoff timers
+// held (see "the survey backoff, held" below): green, where the same stretch
+// with the hold removed is red on the retry's own URL.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -180,6 +201,58 @@ g.fetch = async (url: any, init?: any) => {
   return ok({});
 };
 
+// ------------------------------------------------- the survey backoff, held
+//
+// The double above answers every survey request with a body the canvas cannot
+// read, so each cutout request FAILS - which is what puts the atlas in its
+// degraded state and starts the pack poll, and which the SURVEY-off case needs.
+// A failed cutout arms SkyCanvas's backoff retry, `window.setTimeout(...,
+// 5_000 * 2 ** (attempt - 1))` capped at 60 s, and that is real wall-clock time:
+// whether it fires inside a case's window depends on how long the box took to
+// get there. That is all of #701. The SURVEY-off case counted requests over a
+// window that ended about 0.8 s BEFORE the 5 s retry armed by the last
+// pre-switch fetch, so on a box that stretched the window by a few seconds the
+// retry landed inside it and the count read 6 for 5. It was not a harness race:
+// the sixth request was a real cutout request made while the layer was off, so
+// asserting on the URLs instead of a count would have flaked the same way, and
+// naming the URL (which the case now does) is what made the cause readable.
+//
+// So timers in the backoff's own range are HELD for section 1 and never fire:
+// the case's window can no longer straddle a retry whatever the box is doing.
+// What is held is recorded, and `clearTimeout` of a held timer drops it, which
+// is how a component that cancels its retry would show.
+//
+// KNOWN DEFECT THIS DOES NOT COVER, which is why the hold is not a fix: SkyCanvas's
+// scheduler effect returns early for `mode === "schematic"` (what AtlasHost
+// hands it when the layer is off) WITHOUT clearing `retryRef.current.timer`,
+// and the retry callback is guarded only by `gen === genRef.current`, which a
+// layer toggle does not bump. A retry armed before SURVEY went off therefore
+// fetches one cutout when it fires, and its own failure arms the next (10 s,
+// 20 s, ... 60 s): with the layer off, a failed survey keeps being asked for
+// until the canvas unmounts. Measured on this fixture: a cutout request 5.0 s
+// after the last pre-switch one, with data-survey="off". The fix is in
+// SkyCanvas.tsx (clear the retry timer and abort the in-flight load in that
+// branch); once it lands, add to the SURVEY-off case after its window
+// `assert(heldBackoff.size === 0, ...)`: no backoff timer may be armed while
+// the layer is off. It is red today, which is the only reason it is not here.
+const SURVEY_BACKOFF_MIN_MS = 5_000;
+const SURVEY_BACKOFF_MAX_MS = 60_000;
+const heldBackoff = new Map<number, () => void>();
+let holdingBackoff = true;
+let nextHeldId = -1;   // negative: can never collide with a real jsdom timer id
+const realSetTimeout = win.setTimeout.bind(win);
+const realClearTimeout = win.clearTimeout.bind(win);
+win.setTimeout = (fn: any, ms?: number, ...rest: any[]) => {
+  if (holdingBackoff && typeof ms === "number"
+      && ms >= SURVEY_BACKOFF_MIN_MS && ms <= SURVEY_BACKOFF_MAX_MS) {
+    const id = nextHeldId--;
+    heldBackoff.set(id, fn);
+    return id;
+  }
+  return realSetTimeout(fn, ms, ...rest);
+};
+win.clearTimeout = (id: any) => { if (!heldBackoff.delete(id)) realClearTimeout(id); };
+
 for (const k of [
   "window", "document", "navigator", "HTMLElement", "HTMLInputElement",
   "HTMLVideoElement", "HTMLCanvasElement", "HTMLImageElement", "Image",
@@ -246,8 +319,12 @@ const click = (el: any) => {
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
 };
 const packCalls = (): number => asked.filter((a) => a.includes("/api/survey/pack")).length;
-const tileCalls = (): number =>
-  asked.filter((a) => a.includes("/api/survey/cutout") || a.includes("/api/survey/tile")).length;
+/** The survey imagery requests (`asked[from..]`), as the URLs themselves: a
+ *  case that has to say "none" can then say WHICH one when there is one. */
+const imageryAsked = (from = 0): string[] =>
+  asked.slice(from).filter((a) => a.includes("/api/survey/cutout") || a.includes("/api/survey/tile"));
+const packAsked = (from = 0): string[] =>
+  asked.slice(from).filter((a) => a.includes("/api/survey/pack"));
 const all = (sel: string): any[] => [...container.querySelectorAll(sel)];
 
 /**
@@ -457,13 +534,20 @@ await testAsync("SURVEY off fetches no imagery and still draws the markers and t
   assert(sw != null, "no Survey imagery switch in the layers popover");
   eq(sw.getAttribute("aria-checked"), "true", "precondition: the survey layer starts on");
 
-  // The state that proves "no tiles" is a COUNT, so it is read after the
-  // screen has had a full settle to ask for whatever it was going to ask for.
-  const tilesBefore = tileCalls();
-  assert(tilesBefore > 0,
+  // VACUITY GUARD: with the layer ON the canvas has asked for imagery, so
+  // "it asked for none once the layer was off" is a claim about a change.
+  assert(imageryAsked().length > 0,
     "precondition: with the layer ON the canvas must have fetched imagery at least once, "
     + "or the assertion below cannot fail");
 
+  // The claim is about WHICH requests were made after the switch, not about how
+  // many there were at some instant: `fetch` records a request when it is
+  // CALLED, so everything in `asked` from this index on is a request made after
+  // the layer was pressed off, and the claim is that none of them is imagery.
+  // A count read at a chosen moment answered a different question (did one
+  // land between my two reads?) and gave "expected 5, got 6" on a starved box
+  // without saying what the sixth was (#701).
+  const askedAtOff = asked.length;
   click(sw);
   await settle();
   eq(JSON.parse(win.localStorage.getItem(SKY_PREF_KEYS.layers) ?? "{}").survey, false,
@@ -488,13 +572,15 @@ await testAsync("SURVEY off fetches no imagery and still draws the markers and t
   eq(stored.survey, false,
     "the model's own layer write resurrected the survey layer the hub had just switched off:");
 
-  const tilesAfter = tileCalls();
-  const packAfter = packCalls();
   await settle();
   await wait(PACK_POLL_MS + 300);
-  eq(tileCalls(), tilesAfter, "the survey is off and the canvas is still fetching imagery:");
-  eq(packCalls(), packAfter,
-    "the pack poll outlived the layer that needed it - nothing is degraded when nothing was asked for:");
+  const imagery = imageryAsked(askedAtOff);
+  assert(imagery.length === 0,
+    `the survey is off and the canvas still asked for imagery: ${imagery.join(" | ")}`);
+  const packs = packAsked(askedAtOff);
+  assert(packs.length === 0,
+    "the pack poll outlived the layer that needed it - nothing is degraded when nothing was asked for: "
+    + packs.join(" | "));
 
   assert(container.querySelector("[data-atlas-marker]") != null,
     "SURVEY off took the target markers with it - only the tiles were meant to go");
@@ -509,6 +595,13 @@ await testAsync("SURVEY off fetches no imagery and still draws the markers and t
 });
 
 await act(async () => { atlasRoot.unmount(); });
+
+// Section 1 is over: real timers again for everything below, and whatever was
+// still held is dropped (the unmount cleared the ones SkyCanvas itself owned).
+holdingBackoff = false;
+win.setTimeout = realSetTimeout;
+win.clearTimeout = realClearTimeout;
+heldBackoff.clear();
 
 // ====================================== 2. a phone that HAS chosen, on the finder
 //
