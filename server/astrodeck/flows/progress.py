@@ -57,8 +57,9 @@ here is a number an operator acts on:
   absent when there is no lock, so every answer without one is the answer
   S1 gave.
 * NOTHING DERIVED FROM THE SITE (spec 6.9). The route is ``CAP_VIEW_STATUS``
-  and a viewer can read it. This function takes no site, no clock and no
-  config, so it cannot compute an altitude or a transit time; the keys it
+  and a viewer can read it. This function takes no site and no config, and
+  the one clock it can be handed (``now``, below) only keys a night, so it
+  cannot compute an altitude or a transit time; the keys it
   emits are pinned to an allow-list by ``tests/test_flows_progress.py`` (a
   mosaic's by ``tests/test_flows_progress_mosaic.py``, which also moves the
   site and checks that no number in the answer moves with it, the #19 way).
@@ -75,6 +76,21 @@ here is a number an operator acts on:
   takes none. It is a small count keyed by ``events.night_key``, local noon
   to local noon in the SERVER'S zone: the site is never asked, so moving it
   moves nothing (the route's #19 test moves the site with the key valued).
+* A DORMANT SESSION'S STANDING SET-ASIDE PANELS ARE LISTED ON ITS MOSAIC
+  BLOCK (#727, backlog wave 16). RETRY SET-ASIDE PANELS (#600) could only be
+  drawn while a run was live, because the rows read set-aside state off the
+  live ``state.group``; once the run ended owing a panel nothing on screen
+  said so, and the dormant half of the route (POST with ``session_id``) was
+  script-only. The block now carries ``set_aside`` (``_set_aside_tonight``),
+  the same panels that route would clear, so the button can be drawn for
+  them with the session's id. It is the one clock this module reads: the
+  night the route's own dormant retry keys by (``events.night_key`` of the
+  request's clock), handed in by the ROUTE as ``now`` the way
+  ``continue_night`` is, so a record of an earlier night is never offered
+  and ``flow_progress`` still reads no clock of its own. WORDS AND FLAGS
+  ONLY, as ``skipped`` is: the panel's id, name, cell and whether it may
+  still expire tonight; never the record's reason (free text, which nothing
+  here can vet), its kind, its night or its time.
 
 Pure otherwise: no devices, no store, and no clock or config of its own.
 """
@@ -83,6 +99,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+from ..events import night_key
+from ..sequence.group_rules import CENTRING
 from . import identity, tonight
 # ONE READING OF WHICH PANELS A PLAN SKIPS, CONTINUE's own (#335), so the
 # card and the dropped-steps question name one set of frames as lost.
@@ -109,7 +127,8 @@ LOCK_SOURCE = "measured by the first shot's plate solve"
 
 
 def flow_progress(compiled: dict, plan: "SequencePlan",
-                  session: "Session | None", *, flow_id: str) -> dict:
+                  session: "Session | None", *, flow_id: str,
+                  now: float | None = None) -> dict:
     """Banked and owed subs of one flow, JSON-ready.
 
     ``compiled`` is ``compile_plan``'s output and ``plan`` the
@@ -169,6 +188,23 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     ``locked_angle`` is present only where there is a lock (``_locked``,
     ``_block_lock``): ``pa_deg`` in the CROTA2 convention the session stored,
     and ``source``, ``LOCK_SOURCE``. Never the lock's times.
+
+    ``now`` (#727) is the clock the ROUTE hands in, as it does for
+    ``continue_night``, and with it a DORMANT session's mosaic block adds one
+    key no other block carries::
+
+        set_aside: [{target_id, name, row, col, for_now}]
+
+    the block's panels the session holds a standing whole-panel set-aside
+    record for TONIGHT (the night ``now`` falls in, ``events.night_key``) and
+    that still owe frames: the panels ``POST /api/sequence/retry-set-aside``
+    would clear for this session, in the plan's order, so the sheet can draw
+    RETRY SET-ASIDE PANELS for them with the session's id (``_set_aside_tonight``).
+    ``for_now`` is the engine's own word for a centring set-aside that may
+    still expire tonight, here too. Absent where there is none, as
+    ``locked_angle`` is absent where there is no lock, so every answer
+    without one, and every answer asked with no ``now``, is the answer
+    before #727.
 
     ``orphaned`` counts every one of the session's frames whose step id is in
     no step of ``plan``, whatever the count mode, and how many distinct step
@@ -236,6 +272,8 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
             if lock is not None:
                 block["locked_angle"] = lock
     _refuse_a_foreign_plan(compiled, plan, blocks, flow_id)
+    if now is not None:
+        _set_aside_tonight(blocks, by_id, session, now)
     return {"flow_id": flow_id,
             "session": _summary(session),
             "blocks": blocks,
@@ -349,6 +387,74 @@ def continue_night(session: "Session", now: float) -> int | None:
     if session.status != "dormant":
         return None
     return session.night_at(now)
+
+
+def _set_aside_tonight(blocks: list[dict], by_id: dict[str, "Target"],
+                       session: "Session | None", now: float) -> None:
+    """Add ``set_aside`` to each mosaic block of a DORMANT ``session``: the
+    panels it holds a standing set-aside record for tonight and that still
+    owe frames (#727). Nothing is added for any other session or block.
+
+    EVERY PANEL LISTED IS ONE ``POST /api/sequence/retry-set-aside`` CLEARS,
+    so a button drawn for them never answers 409 "nothing is set aside"
+    (test_w16_dormant_set_aside_route.py holds the two together). That
+    route's dormant path runs on a DORMANT session only, keys its records by
+    ``events.night_key`` of its own clock (here ``now``, which the progress
+    route reads once per request), takes the panels of the plan's mosaic
+    groups, and leaves a panel that owes nothing alone (a complete one, which
+    is ``total > 0`` and ``owed == 0`` here) and any calibration target. A
+    record of another night is history, and an expired one and a cleared one
+    are not standing (``Session.set_aside_on``).
+
+    WHOLE-PANEL RECORDS ONLY (``step_id`` null). A step the reject guard set
+    aside leaves the panel's other steps to be shot, so a line that said the
+    panel was set aside would be false, and the live ``state.group`` lists
+    whole panels only; the retry clears both kinds together, which is not a
+    reason to word a half-set-aside panel as a whole one.
+
+    ``for_now`` is ``SequenceEngine._may_expire``'s answer for the record: a
+    centring set-aside with a time (it expires 45 minutes after it, time
+    only, #534) and no expiry of that panel yet tonight. A restart tonight
+    takes such a panel up again when its time comes, so the sheet words it as
+    the live run does (``set aside for now``), not as set aside for the
+    night. The record that stands is the LAST one a panel has, as the engine
+    reads them back.
+
+    Words and flags only: the panel's id, name and cell, and that flag. Never
+    the record's reason (free text, which nothing here can vet, as for
+    ``LOCK_SOURCE``), kind, night or time."""
+    if session is None or session.status != "dormant":
+        return
+    night = night_key(now)
+    standing: dict[str, dict] = {}
+    for rec in session.set_aside_on(night):
+        if rec.get("step_id") is None and rec.get("target_id"):
+            standing[rec["target_id"]] = rec
+    if not standing:
+        return
+    expired = session.set_aside_expiries_on(night)
+    for block in blocks:
+        if "grid" not in block:
+            continue
+        listed: list[dict] = []
+        for panel in block["panels"]:
+            tid = panel["target_id"]
+            rec = standing.get(tid)
+            target = by_id.get(tid)
+            if rec is None or target is None or target.calibration:
+                continue
+            if panel["total"] > 0 and panel["owed"] == 0:
+                continue
+            ts = rec.get("ts")
+            timed = (not isinstance(ts, bool) and isinstance(ts, (int, float))
+                     and math.isfinite(ts))
+            listed.append({
+                "target_id": tid, "name": panel["name"],
+                "row": panel["row"], "col": panel["col"],
+                "for_now": (rec.get("kind") == CENTRING and timed
+                            and expired.get(tid, 0) == 0)})
+        if listed:
+            block["set_aside"] = listed
 
 
 def _locked(session: "Session | None",

@@ -902,12 +902,25 @@ class GroupRun:
         self.visited.discard(panel)
         self.expired.add(panel)
         if alone:
-            # Anything still held belongs to panels that are not live, the
-            # only kind there is here, and a count for them would set aside
-            # nothing: the boundary drops those too (``is_live``).
-            self._held = []
-            self._held_centring = []
-            self.start_pass()
+            self._begin_pass_alone()
+
+    def _begin_pass_alone(self) -> None:
+        """The pass a set-aside panel comes back into when it is the group's
+        ONLY live member (an expiry's or a retry's): :meth:`start_pass`, with
+        every held deferral dropped first.
+
+        Anything still held belongs to panels that are not live, the only
+        kind there is here, and a count for them would set aside nothing: the
+        boundary drops those too (``is_live``). ALL THREE lists, because
+        ``start_pass`` refuses while any one is held. The expiry cleared two
+        and the retry three, each a copy of the other's rule, and a transient
+        deferral held by a member that then completed made the expiry raise
+        ``RuntimeError: close_pass() first`` (#729, the held-pass counter's
+        class, #563). One place now, so a fourth list is added once."""
+        self._held = []
+        self._held_centring = []
+        self._held_transient = []
+        self.start_pass()
 
     def retry_set_aside(self, panel: str) -> None:
         """THE OPERATOR BRINGS A SET-ASIDE PANEL BACK (#600, backlog ruling
@@ -952,14 +965,7 @@ class GroupRun:
         self.held_streak = 0
         self._held_pass_reason = None
         if alone:
-            # Anything still held belongs to panels that are not live, and a
-            # count for them would set aside nothing. The transient list too,
-            # which ``expire_set_aside`` leaves: ``start_pass`` refuses while
-            # any of the three is held.
-            self._held = []
-            self._held_centring = []
-            self._held_transient = []
-            self.start_pass()
+            self._begin_pass_alone()
 
     def _check_live(self, panel: str) -> None:
         if panel not in self.members:
