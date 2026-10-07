@@ -76,7 +76,12 @@ def main_repo(tmp_path: Path) -> Path:
     _git(r, "config", "core.autocrlf", "false")
     (r / "ui" / "src").mkdir(parents=True)
     (r / "ui" / "src" / "a.txt").write_text("from HEAD\n", encoding="utf-8")
-    (r / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    # `node_modules`, not `node_modules/`: on POSIX the link is a SYMLINK, which
+    # git sees as a file, and a trailing-slash rule matches directories only
+    # (CI run 37665144132: four of these tests red on Linux, green on
+    # Windows where the link is a junction git treats as a directory). The
+    # repository's own .gitignore carries the same rule for the same reason.
+    (r / ".gitignore").write_text("node_modules\n", encoding="utf-8")
     _git(r, "add", "--", "ui/src/a.txt", ".gitignore")
     _git(r, "commit", "-q", "-m", "one")
     (r / "ui" / "node_modules" / "pkg").mkdir(parents=True)

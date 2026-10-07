@@ -307,9 +307,16 @@ try {
   const pipesHeldNoGrace = heldFixture("pipesHeldNoGrace");
   // More output than the runner buffers (its maxBuffer is 8 MiB): execFile
   // kills the child itself and sets err.killed, which is NOT a timeout.
+  // Each write is AWAITED until it has flushed. On Linux a pipe write is
+  // asynchronous, so a bare loop of process.stdout.write let the child reach
+  // the runner's process.exit with most of the 10 MiB still queued; exit
+  // dropped it, the parent never crossed 8 MiB, and the buffer kill this case
+  // grades never happened (CI run 37665144132: exitCode=0, err null).
+  // Awaiting each flush makes the parent see more than 8 MiB on every
+  // platform, so its own maxBuffer kill always fires.
   const flood = write("flood.test.mjs", [
     'const chunk = "x".repeat(1 << 20);',
-    "for (let i = 0; i < 10; i++) process.stdout.write(chunk);",
+    "for (let i = 0; i < 10; i++) await new Promise((r) => process.stdout.write(chunk, r));",
   ]);
   // A clean file whose exit simply takes a little while (an 'exit' listener
   // that does some work). It must NOT be mistaken for a hung exit.

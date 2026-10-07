@@ -17,6 +17,7 @@ the reading is the day the claim becomes unfalsifiable again.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -371,6 +372,10 @@ def test_the_loader_loads_what_the_probe_found(installer_path, monkeypatch):
     assert tried == [installer_path]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason=(
+    "the vendor installer's alternatives (_DLL_SPECS) and the .dll name exist "
+    "only on Windows; on Linux the library is libPlayerOneCamera.so, so the "
+    "operator directory's .dll is not a candidate (CI run 37665144132)"))
 def test_the_probe_and_the_loader_try_the_same_files_in_the_same_order(
         isolated_player_one, tmp_path, monkeypatch):
     """Two alternatives and an operator directory, all present: the loader
