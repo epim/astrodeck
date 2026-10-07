@@ -401,6 +401,97 @@ async def test_hands_off_while_the_rig_is_busy(cfg, pinned_sun, lane):
     assert tel.park_calls == 1
 
 
+@pytest.mark.parametrize("path", ["live", "blind"])
+@pytest.mark.parametrize("starts", ["goto", "polar", "dome", "run"])
+async def test_a_lane_that_starts_inside_the_is_parked_await_still_holds_the_park(
+        cfg, pinned_sun, bus_lines, path, starts):
+    """#695. ``_is_parked`` is awaited (up to 30 s) AFTER the hands-off check
+    and BEFORE the park, on the live path and on the blind fallback alike, so
+    a goto, polar or dome lane, or a run, that begins inside that await was
+    never looked for: the net bumped the motion fence over a job that had just
+    taken the mount, which abandons it. A comment in ``tick`` said "nothing
+    awaits between the hands-off check above and the fence below", and that
+    was false. ``_park`` now asks again immediately before the bump.
+
+    The ``is_parked`` double starts the other job WHILE it is being awaited
+    (and answers False, so the verdict that would have parked is the one the
+    re-check has to overrule). The park must be held, with the same warning
+    hold line the earlier check writes for that path, the fence untouched and
+    no "Parking now" error (which pages); and it is not a latch: once the job
+    is over the next tick parks. The blind path reaches ``_is_parked`` only
+    when ``get_position`` fails and ``is_parked`` still answers (a connected
+    mount that will not report its position), so that case reads the tube
+    once under a run, as ``test_w14_sun_watch_blind_fallback`` does, and the
+    run is over before the blind tick.
+
+    MUTANTS RUN, from a byte backup restored byte-identically (sha256
+    compared) and grepped gone, first assertion verbatim:
+      m16 "the re-check removed" (``held = None`` in place of ``held =
+          self._hands_off_reason(cfg)`` inside ``_park``): RED, all eight
+          cases -
+              AssertionError: a goto job started inside the is_parked await,
+              and the net parked over it / assert 1 == 0
+      m17 "the re-check after the 'Parking now' line" (the same block moved
+          below the loud log): RED, all eight cases -
+              AssertionError: a held park must not page as though it were
+              parking / assert not True
+      m18 "a stand-aside counted as a blind park attempt" (``if parked is
+          None:`` becomes ``if False:`` in ``_blind_projection``): RED, the
+          four blind cases -
+              AssertionError: and the park that follows announces itself:
+              standing aside is not a park attempt, so it must not use up the
+              blind path's first loud line / assert False
+    """
+    engine = FakeEngine(running=(path == "blind"))
+    hub, tel = _rig(ra_hours=SUN_RA_H, dec_deg=SUN_DEC, tracking=True)
+    sep, _ = closest_approach(SUN_RA_H, SUN_DEC, tracking=True, now=JUNE_TS)
+    assert sep < cfg.safety.solar_exclusion_deg, (
+        "precondition: the tube is pointing at the Sun, so the net acts")
+    w = _watch(hub, engine)
+    if path == "blind":
+        await w.tick()                  # read under a run: held, remembered
+        assert tel.park_calls == 0, "precondition: the run owned the mount"
+        engine.running = False
+        tel.position_error = RuntimeError("mount not answering")
+
+    said = {"n": 0}
+
+    async def _is_parked_while_the_other_job_starts() -> bool:
+        said["n"] += 1
+        if said["n"] == 1:              # only the first ask: the job is brief
+            if starts == "run":
+                engine.running = True
+            else:
+                hub.lanes = [starts]
+        return False
+
+    tel.is_parked = _is_parked_while_the_other_job_starts
+    await w.tick()
+
+    assert said["n"] == 1, "precondition: the net did ask is_parked"
+    assert tel.park_calls == 0, (
+        f"a {starts} job started inside the is_parked await, and the net "
+        f"parked over it")
+    assert hub.epoch_bumps == 0, (
+        "the motion fence was bumped over a job that had just taken the mount")
+    assert not _said(bus_lines, "Parking now"), (
+        "a held park must not page as though it were parking")
+    needle = ("sequence run is in progress" if starts == "run"
+              else f"the rig is busy ({starts})")
+    assert _level_of(bus_lines, needle) == "warning", bus_lines
+    assert _said(bus_lines, "at closest" if path == "live"
+                 else "last-known pointing is projected"), (
+        "the hold carries the same geometry as the earlier check's hold")
+
+    engine.running = False
+    hub.lanes = []
+    await w.tick()
+    assert tel.park_calls == 1, "the hold is not a latch: the next tick parks"
+    assert _said(bus_lines, "Parking now"), (
+        "and the park that follows announces itself: standing aside is not a "
+        "park attempt, so it must not use up the blind path's first loud line")
+
+
 # ------------------------------------------------------------ nothing to do
 
 async def test_a_parked_mount_is_never_commanded(cfg, pinned_sun, bus_lines):
