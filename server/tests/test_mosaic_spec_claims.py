@@ -9383,13 +9383,22 @@ def test_3_6_says_flow_schema_4_as_s3_built_it():
           {'a pass wire': 3} != {'a pass wire': 4}
           Use -v to get more diff
 
-    RED under the nodes.py mutant "#195 has landed" (DUSK's params gaining
-    ``"autoResume": "On"``):
+    RE-PINNED IN WP-85 (#195, 2026-10-07, deliberate). This test grades what
+    S3 BUILT, and 3.6 still says it: S3 stamped 4 without the mapping and #195
+    took the next number. #195 has since landed (backlog WP-85), so the three
+    code checks that said it had not are turned round: ``FLOW_SCHEMA`` is 5
+    and ``V4_SCHEMA`` (new) is 4, DUSK's params now hold ``autoResume`` "On"
+    beside the ``repeat`` they still keep, and the mapping's note is no longer
+    absent from a v4 read of a DUSK that owes it. The sentence "#195 takes the
+    next schema number, 5, for that key" is S3's own and is now a literal
+    (it was ``FLOW_SCHEMA + 1``, which moved with the thing it described).
+    What WP-85 built is graded by
+    ``test_3_6_says_flow_schema_5_as_wp85_built_it`` below.
 
-        AssertionError: DUSK has autoResume now: #195 has landed; record its
-        schema number and its mapping in 3.6
-        assert ('repeat' in {'autoResume': 'On', 'minAlt': 30, 'offset': -30,
-        'repeat': 'Single night', ...} and not True)
+    The mutant this docstring used to carry ("#195 has landed", DUSK's params
+    gaining ``"autoResume": "On"``) is the change itself now, and its check is
+    inverted: DUSK WITHOUT ``autoResume`` turns the assertion on the params
+    red.
     """
     import copy
 
@@ -9401,8 +9410,8 @@ def test_3_6_says_flow_schema_4_as_s3_built_it():
                 "**As built** (S3, #189). S3 stamps 4 without the "
                 "`autoResume` mapping", "`FLOW_SCHEMA` is 4 in `store.py`",
                 "the v3 to v4 read rewrites nothing", "DUSK keeps its "
-                "`repeat`", f"#195 takes the next schema number, "
-                f"{store_mod.FLOW_SCHEMA + 1}, for that key",
+                "`repeat`", "#195 takes the next schema number, 5, for that "
+                "key",
                 "`schema_for`, over `_v4_meanings`",
                 "it stamps `V3_SCHEMA` when no meaning is found",
                 "any wire out of a `pass` output or into a `next` input",
@@ -9413,12 +9422,13 @@ def test_3_6_says_flow_schema_4_as_s3_built_it():
                   "one with neither stamps 3."):
         kept = stale in s36
         assert not kept, f"3.6 still says {stale!r}"
-    assert (store_mod.FLOW_SCHEMA, store_mod.V3_SCHEMA) == (4, 3)
+    assert (store_mod.FLOW_SCHEMA, store_mod.V4_SCHEMA,
+            store_mod.V3_SCHEMA) == (5, 4, 3), (
+        "3.6 says FLOW_SCHEMA 5 (#195, WP-85) over the v4 and v3 stamps")
     dusk = NODE_DEFS["dusk"].params
-    landed = "autoResume" in dusk
-    assert "repeat" in dusk and not landed, (
-        "DUSK has autoResume now: #195 has landed; record its schema number "
-        "and its mapping in 3.6")
+    assert "repeat" in dusk and dusk.get("autoResume") == "On", (
+        "3.6 says DUSK keeps its `repeat` and, since #195, gains "
+        "`autoResume`, On by default")
     single = {**_M31, "rows": 1, "cols": 1, "counts": "Every sub taken"}
     wait = {"whenWaiting": "Wait for the mosaic"}
     run = ["t.target -> c.run"]
@@ -9479,6 +9489,116 @@ def test_3_6_says_flow_schema_4_as_s3_built_it():
     v4 = read(4, "Every sub taken")
     assert [n["key"] for n in v4["migrated"]] == ["counts"], (
         "a v4 file counting every sub read with no counts note")
+
+
+def test_3_6_says_flow_schema_5_as_wp85_built_it():
+    """3.6 says the v4 to v5 read, the three-tier stamp and what is not
+    repaired (backlog WP-85, #195, 2026-10-07): the owner's note verbatim for
+    a DUSK whose stored `repeat` is "Single night" and which has no
+    `autoResume`, never mapping it to Off, said on every read until a save;
+    the writer 5 for Off or a DUSK that still owes the note, 4 for any other
+    meaning, 3 for none; a DUSK stating both `autoResume` On and "Single
+    night" a matrix row and not a version; sessions frozen since 0.3.40
+    repaired by the operator, not the read.
+
+    The code: the constants; the note's words; a v4 file's read (the note, the
+    graph untouched, a compile that resumes); the stamps of eight graphs; and
+    the save that retires the note. The matrix rows are in the table.
+
+    RED under the spec mutant "3.6 without the FLOW_SCHEMA 5 paragraph":
+
+        AssertionError: 3.6 must say: '**FLOW_SCHEMA 5** (backlog WP-85, #195,
+        2026-10-07).'
+        assert False
+
+    RED under the store.py mutant "migration note maps Single night to Off"
+    (`_migrate` writing ``autoResume: "Off"`` into each DUSK that owes the
+    note), which ``test_w14_autoresume_store.py`` also catches:
+
+        AssertionError: the read rewrote the DUSK: it must only say what the
+        missing key means
+    """
+    import copy
+    import json as _json
+
+    from astrodeck.flows import store as store_mod
+    from astrodeck.flows.compile import compile_plan
+    s36 = _section("3.6")
+    _says(s36, ("**FLOW_SCHEMA 5** (backlog WP-85, #195, 2026-10-07).",
+                "0.3.40 had read `repeat`'s own default, \"Single night\", as "
+                "\"do not resume\"",
+                "the v4 to v5 read does not try to repair a flow",
+                "the owner's note verbatim: \"'Single night' never stopped "
+                "the next night's automatic resume; this flow now shows that "
+                "as ON. Turn it off if you meant one night only.\"",
+                "for a DUSK whose stored `repeat` is \"Single night\" and "
+                "which carries no `autoResume`",
+                "never maps \"Single night\" to Off, which would silently "
+                "disarm every saved flow",
+                "5 for a graph whose DUSK says Off or still owes the note, 4 "
+                "for any other meaning above, and 3 for none",
+                "`autoResume = Off` is the sixth meaning of FLOW_SCHEMA 4",
+                "The first tier is what retires the note on a save",
+                "is not stamped 5 for that; it is a row of the matrix below, "
+                "not a version",
+                "**As built** (WP-85, #195). `FLOW_SCHEMA` is 5 and "
+                "`V4_SCHEMA` is 4 in `store.py`",
+                "`schema_for` is the three tiers over "
+                "`_owes_the_auto_resume_note` and `_v4_meanings`",
+                "is not repaired, because the fix cannot tell the default "
+                "from a choice: the operator presses UPDATE FROM PLAN, or "
+                "CONTINUE",
+                "| a flow saved on a WP-85 build whose DUSK says "
+                "`autoResume` Off, or still owes the note (v5) | 0.3.40 | "
+                "refused loudly as a future schema |",
+                "The one row the stamp does not guard"), "3.6")
+    assert store_mod.AUTO_RESUME_NOTE == (
+        "'Single night' never stopped the next night's automatic resume; this "
+        "flow now shows that as ON. Turn it off if you meant one night only.")
+
+    def graph(**dusk) -> dict:
+        return {"nodes": [
+            {"id": "d", "type": "dusk", "x": 0, "y": 0, "params": dict(dusk)},
+            {"id": "c", "type": "capture", "x": 200, "y": 0, "params": {
+                "filter": "L", "exposure": 60, "count": 4, "goal": 0}}],
+            "edges": []}
+
+    def read(version: int, **dusk) -> dict:
+        return store_mod._migrate({"schema_version": version, "id": "f",
+                                   "flow": {"id": "f", "name": "v",
+                                            "graph": graph(**dusk)}})
+
+    single = read(4, repeat="Single night")
+    assert [n["key"] for n in single["migrated"]] == ["autoResume"], (
+        f"a v4 read of 'Single night' says {single['migrated']}")
+    assert single["graph"]["nodes"][0]["params"] == {"repeat": "Single night"}, (
+        "the read rewrote the DUSK: it must only say what the missing key "
+        "means")
+    compiled = compile_plan(FlowGraph.model_validate(
+        copy.deepcopy(single["graph"])), "wp85")
+    assert "resume_across_nights" not in compiled, (
+        "a saved 'Single night' must read as On, never Off")
+    for version, dusk in ((5, {"repeat": "Single night"}),
+                          (4, {"repeat": "Single night", "autoResume": "On"}),
+                          (4, {"repeat": "Nightly x30"}), (4, {})):
+        assert read(version, **dusk)["migrated"] == [], (
+            f"v{version} {dusk} says a note it does not owe")
+
+    def stamp(**dusk) -> int:
+        return store_mod.schema_for(FlowGraph.model_validate(graph(**dusk)))
+
+    stamps = {"off": stamp(autoResume="Off"),
+              "owes the note": stamp(repeat="Single night"),
+              "on, and single night": stamp(repeat="Single night",
+                                            autoResume="On"),
+              "nothing": stamp()}
+    assert stamps == {"off": 5, "owes the note": 5,
+                      "on, and single night": 3, "nothing": 3}, (
+        f"schema_for stamps {stamps}; 3.6 says 5 for Off or a DUSK that owes "
+        f"the note, and the rest as before")
+    assert "auto-resume off" in store_mod._v4_meanings(
+        FlowGraph.model_validate(graph(autoResume="Off")))
+    assert _json.dumps(store_mod.V4_SCHEMA) == "4"
 
 
 def test_5_1_says_the_pier_reads_are_bounded_as_s3_built_them(monkeypatch):
@@ -12902,6 +13022,8 @@ def test_s3_says_items_1_to_3_the_tests_and_what_was_not():
                "`test_mosaic_spec_claims.py` holds this spec to the code",
                "Not built in S3: DUSK's `autoResume` and its tooltip, with "
                "`FieldDef.help` (#195, which takes FLOW_SCHEMA 5; 3.6)",
+               ", built later in backlog WP-85 (2026-10-07; 3.6, Revision 2, "
+               "ruling 7);",
                "(owner list item 30)", "the stage-list rail and LOOP "
                "PANELS, and #173 and #174",
                "The integration of S3 fixed one more that S3 had filed, "
@@ -13613,7 +13735,7 @@ def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
     BOUNDED THE SAME WAY, AGAIN, FOR BACKLOG WP-34's top-level
     ``resume_across_nights`` (#195, 2026-09-30): the TARGET graph's DUSK
     WINDOW has no explicit ``repeat``, which defaults to "Single night", so
-    the compile now also writes ``resume_across_nights: false`` (#195:
+    the compile then also wrote ``resume_across_nights: false`` (#195:
     "Single night" means auto-resume does not arm across nights) -- a key
     1.5's sentence is not about and the pre-S3 bytes predate. Popped off
     and checked here, not folded into ``_PRE_S3_NO_MOSAIC_TARGET``, for the
@@ -13628,6 +13750,20 @@ def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
         'count_mode', 'frame_anchor'] removed, to 928 bytes (sha256
         690f6f7c03c56381); before S3 it compiled to 897 bytes (sha256
         518141cdc2b4e9a0), so 1.5's sentence does not say what it compiles to
+
+    RE-PINNED IN WP-85 (#195, 2026-10-07, deliberate): that key was the P0.
+    "Single night" is not "do not resume" (owner ruling 7 on #189), so a DUSK
+    WINDOW that says nothing compiles NO ``resume_across_nights`` again, and
+    the premise below flips from "False" to "absent" for the TARGET graph, as
+    it always was for the POOL graph. The pop stays, so that a compile which
+    writes the key again for a DUSK that never chose Off fails on the premise
+    (with the key and its value named) rather than on a byte count.
+
+    RED under the compile.py mutant "repeat default read as Off"
+    (``resume_across_nights = repeat != "Single night"`` put back), observed:
+
+        AssertionError: premise: this graph's DUSK WINDOW chose no Off, so
+        it compiles no resume_across_nights; got False
     """
     s15 = _section("1.5")
     lead = ("The key is absent when the list is empty, so a graph with at "
@@ -13668,10 +13804,9 @@ def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
                 f"own angle; got {angle!r}")
         resume = compiled.pop("resume_across_nights", "<absent>")
         if kind == "TARGET":
-            assert resume is False, (
-                f"premise: this graph's DUSK WINDOW has no explicit repeat, "
-                f"so it compiles Single night's own resume_across_nights; "
-                f"got {resume!r}")
+            assert resume == "<absent>", (
+                f"premise: this graph's DUSK WINDOW chose no Off, so it "
+                f"compiles no resume_across_nights; got {resume!r}")
         else:
             assert resume == "<absent>", (
                 f"premise: this graph has no DUSK WINDOW, so it compiles no "
@@ -18359,7 +18494,9 @@ def test_s4_says_the_third_and_fourth_waves_and_what_s4_did_not_build():
                "clamped",
                "RUN's campaign line for a flow whose automatic resume is off "
                "(2.4), because DUSK has no `autoResume` until #195 brings it "
-               f"with FLOW_SCHEMA {store.FLOW_SCHEMA + 1}",
+               "with FLOW_SCHEMA 5; backlog WP-85 (2026-10-07) later brought "
+               "the option and the schema, and RUN's line for a flow whose "
+               "automatic resume is off is still not built",
                "#342's other two suggestions, an unconditional `:Td#` before "
                "`:hP#` and a park that takes the pulse lock, because S4 "
                "orchestrator ruling 9 asked only for the silent no-op's "
@@ -18390,20 +18527,34 @@ def test_s4_says_the_third_and_fourth_waves_and_what_s4_did_not_build():
         ang_sep_refused = True
     campaign = [p for p in UI_SRC.rglob("TonightCampaign*.tsx")
                 if "__tests__" not in p.parts]
+    # RE-PINNED IN WP-85 (#195, 2026-10-07, deliberate). The third entry was
+    # "no autoResume at FLOW_SCHEMA 4", the proof that RUN's line for a flow
+    # whose automatic resume is off could not be built yet. The option and the
+    # schema (5) exist now, so that proof is gone, and the claim that is still
+    # true is the one the spec's S4 line now ends on: RUN's line for such a
+    # flow is not built. It is checked as the absence of the line, in the one
+    # file that writes RUN's copy (`runCopy.ts`) and the campaign line the
+    # framing sheet draws (`framingModel.ts`'s `campaignLine`): neither reads
+    # `autoResume`. The first thing to build that line will turn this red,
+    # which is the day this entry and the spec's sentence are replaced.
+    run_line_for_off = any(
+        "autoResume" in _ui(rel) for rel in (
+            "components/flows/runCopy.ts",
+            "components/flows/framing/framingModel.ts"))
     absent = (re.search(r"\b(?:function|const) reframeCarry\b",
                         ui_all) is None,
               ang_sep_refused and finite_refused,
-              "autoResume" not in NODE_DEFS["dusk"].params
-              and store.FLOW_SCHEMA == 4,
+              not run_line_for_off,
               len(campaign) == 2 and not any(
                   re.search(r"\bpanels\b", p.read_text(encoding="utf-8"))
                   for p in campaign))
     assert absent == (True, True, True, True), (
         f"(no client reframe_carry, coords.angular_sep_deg and "
-        f"framing._finite both refuse a non-finite input, no autoResume at "
-        f"FLOW_SCHEMA 4, no campaign view reading panels) = {absent}; "
-        f"section 8's S4 says each is not built, and WP-45 built #324's "
-        f"shared helper on top of that without changing the other three")
+        f"framing._finite both refuse a non-finite input, no RUN line for a "
+        f"flow whose automatic resume is off, no campaign view reading "
+        f"panels) = {absent}; section 8's S4 says each is not built, and "
+        f"WP-45 built #324's shared helper on top of that without changing "
+        f"the other three")
 
 
 # ===================== S4's second wave, its second verification (S4-DOC3)

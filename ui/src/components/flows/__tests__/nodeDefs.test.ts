@@ -21,6 +21,7 @@
 //
 // Run alone:  npx tsx src/components/flows/__tests__/nodeDefs.test.ts
 import {
+  AUTO_RESUME_CHOICES, AUTO_RESUME_HELP, AUTO_RESUME_LABEL,
   COUNT_MODES, LEGACY_TYPES, NODE_DEFS, ROWLESS_PARAMS, TARGET_ANGLES,
   createParams, fieldValue, targetAngle,
 } from "../nodeDefs";
@@ -287,6 +288,7 @@ function pyStringsAfter(name: string): string[] {
 const PY_LEGACY = pyStringsAfter("LEGACY_TYPES");
 const PY_TARGET_ANGLES = pyStringsAfter("TARGET_ANGLES");
 const PY_COUNT_MODES = pyStringsAfter("COUNT_MODES");
+const PY_AUTO_RESUME_CHOICES = pyStringsAfter("AUTO_RESUME_CHOICES");
 
 const TYPES = Object.keys(NODE_DEFS) as FlowNodeType[];
 const defOf = (t: FlowNodeType): NodeDef => NODE_DEFS[t];
@@ -581,7 +583,10 @@ test("fieldValue shows the derived angle for a node with no angle key, and write
   eq(fieldValue(synthetic, {}), "derived", "a missing value shows the derivation");
   const onlyDerived = TYPES.flatMap((t) =>
     defOf(t).fields.filter((f) => f.derive).map((f) => `${t}.${f.key}`));
-  eq(onlyDerived.join(","), "target.angle", "fields with a derivation");
+  // `dusk.autoResume` joined `target.angle` in WP-85 (#195), deliberately: a
+  // flow saved before the key existed means On to the server, and the row must
+  // show On, not an empty option (asserted in the autoResume test below).
+  eq(onlyDerived.join(","), "dusk.autoResume,target.angle", "fields with a derivation");
 });
 
 test("capture.bin is the STRING \"1\", not the number 1", () => {
@@ -670,7 +675,11 @@ test("fields cover the created params exactly, less the declared rowless ones", 
       assert(k in createParams(t), `${t} declares rowless ${k}, which it does not have`);
     }
   }
-  eq(Object.keys(ROWLESS_PARAMS).sort().join(","), "pool,target", "types with a rowless param");
+  // DELIBERATE PIN CHANGE (#195): DUSK's `repeat` has no row since
+  // `autoResume` replaced it, and stays a stored param (the campaign block
+  // keeps its key), so it is the third rowless declaration.
+  eq(Object.keys(ROWLESS_PARAMS).sort().join(","), "dusk,pool,target", "types with a rowless param");
+  eq((ROWLESS_PARAMS.dusk ?? []).join(","), "repeat", "DUSK's rowless params");
 });
 
 test("every control is one of the three, and only selects carry options", () => {
@@ -759,42 +768,93 @@ test("capture's integration-goal unit keeps its zero sentinel", () => {
 
 // -------------------------------------------------------------------- help
 
-test("exactly one field in the whole vocabulary carries help text, DUSK WINDOW's repeat", () => {
+test("exactly one field in the whole vocabulary carries help text, DUSK WINDOW's autoResume", () => {
   // Pinned the same way as the cycleplan control above (#195): `help` exists
-  // for exactly the field whose plain label used to promise something the
-  // compile did not keep ("Single night" sounded like a no-op, and silently
-  // meant "never auto-resume"). A second field growing one unnoticed is not
-  // a defect by itself, but this count moving is the signal that a field's
-  // own help needs the same compiled-behaviour check the next test runs on
-  // this one.
+  // for exactly the field whose plain label cannot say what a flow that is OFF
+  // does on a subsequent night. A second field growing one unnoticed is not a
+  // defect by itself, but this count moving is the signal that a field's own
+  // help needs the same compiled-behaviour check (and the same claims table,
+  // server/tests/test_w14_autoresume_claims.py) the next test runs on this one.
   const found = TYPES.flatMap((t) =>
     defOf(t).fields.filter((f) => "help" in f && (f.help ?? "").length > 0)
       .map((f) => `${t}.${f.key}`));
-  eq(found.join(","), "dusk.repeat", "fields carrying help text");
+  eq(found.join(","), "dusk.autoResume", "fields carrying help text");
 });
 
-test("DUSK WINDOW's repeat help says what the compiled field does: Single "
-  + "night means auto-resume does not arm across nights", () => {
-  // server/astrodeck/flows/compile.py: `resume_across_nights = repeat !=
-  // "Single night"`, and `ResumeArm.tick` reads that field to decide
-  // whether a session dormant at dawn re-arms itself for the next dusk
-  // (#195). The help text is this UI's only account of that compiled
-  // behaviour — a copy that drifted from it would again promise a no-op
-  // where the run instead goes dormant and stays there.
+test("DUSK WINDOW's Automatic resume is the owner's exact label, an On/Off select, default On", () => {
+  // Owner ruling 7 on #189, quoted in #195: the label EXACTLY, a select, On and
+  // Off, "On" for a flow that says nothing. A saved `repeat: "Single night"`
+  // must NOT read as Off (that is the 0.3.40 P0 this undoes), so the missing-key
+  // default is On and `repeat` has no say.
   //
-  // NAMED MUTANT: in nodeDefs.ts, change dusk.repeat's `help` string to
-  // describe only what the other two choices do, dropping the "Single
-  // night: ..." sentence entirely (the shape a copy edit that trims
-  // instead of updates would take). RED, observed:
-  //     help does not name the option it explains first
-  const help = defOf("dusk").fields.find((f) => f.key === "repeat")?.help ?? "";
-  assert(help.length > 0, "dusk.repeat has no help text");
-  assert(help.startsWith("Single night:"),
-    "help does not name the option it explains first");
-  assert(help.includes("does not start itself again"),
-    "dusk.repeat's help never says Single night does not arm auto-resume");
+  // NAMED MUTANT "label reworded": AUTO_RESUME_LABEL's last word changed to
+  // "fulfilled". RED, observed:
+  //     the label is the owner's, exactly
+  const f = defOf("dusk").fields.find((x) => x.key === "autoResume");
+  assert(f !== undefined, "DUSK WINDOW has no autoResume row");
+  eq(f!.label, "Automatic resume on subsequent nights until capture quota is fulfilled",
+    "the label is the owner's, exactly");
+  eq(AUTO_RESUME_LABEL, f!.label, "the exported label is the row's");
+  eq(f!.control, "select", "a select: no new control type");
+  eq((f!.options ?? []).join("|"), "On|Off", "On and Off");
+  eq([...AUTO_RESUME_CHOICES].join("|"), PY_AUTO_RESUME_CHOICES.join("|"), "AUTO_RESUME_CHOICES mirror");
+  eq(defOf("dusk").params.autoResume, "On", "the missing-key default is On");
+  eq(createParams("dusk").autoResume, "On", "and a new DUSK WINDOW is created On");
+  // A flow saved before the key existed has no `autoResume`; the server reads
+  // that as On, and the row must SHOW On (not an empty option). NAMED MUTANT
+  // "no derived On" (the `derive` removed from the field). RED, observed:
+  //     a stored DUSK with no autoResume must show On
+  eq(fieldValue(f!, { repeat: "Single night" }), "On",
+    "a stored DUSK with no autoResume must show On");
+  eq(fieldValue(f!, { repeat: "Single night", autoResume: "" }), "On",
+    "a blank autoResume reads On on the server, so it shows On");
+  eq(fieldValue(f!, { autoResume: "Off" }), "Off", "a stored Off still shows Off");
+  assert(!defOf("dusk").fields.some((x) => x.key === "repeat"),
+    "DUSK WINDOW still offers Repeat: autoResume replaced it");
+  eq(defOf("dusk").params.repeat, "Single night",
+    "repeat stays a stored param, with its old default, so saved files load");
+});
+
+test("DUSK WINDOW's Automatic resume help is the interim text and says what Off does", () => {
+  // The help is this UI's only account of the behaviour. Its sentences are rows
+  // of server/tests/test_w14_autoresume_claims.py (each names a test of the
+  // behaviour it describes); this test holds the three things a UI copy edit
+  // must not lose: it is attached to the field, it says what Off does and what
+  // the operator does about it, and it does not repeat the owner's sentence
+  // about the dome and the flat panel that the code does not keep (#192).
+  //
+  // NAMED MUTANT "owner's dome sentence restored": the last sentence of
+  // AUTO_RESUME_HELP put back to the owner's "Flat panel, dome control, etc
+  // all work and respond to the day/night cycle as well as weather events."
+  // RED, observed:
+  //     the help promises the dome and flat panel work, which #192 says they do not
+  const help = defOf("dusk").fields.find((f) => f.key === "autoResume")?.help ?? "";
+  assert(help.length > 0, "dusk.autoResume has no help text");
+  eq(help, AUTO_RESUME_HELP, "the field carries the exported text");
+  assert(help.startsWith("When on, AstroDeck resumes this flow automatically on subsequent nights"),
+    "help does not open on what On does");
+  assert(help.includes("When off, a crash or restart the same night still resumes, but a subsequent night does not"),
+    "help never says what Off does");
   assert(help.includes("CONTINUE it by hand"),
-    "help drops the operator's own recovery action for Single night");
+    "help drops the operator's own recovery action for Off");
+  assert(!/sunset/i.test(help), "help says sunset: the window opens at the rig's twilight angle, not at sunset");
+  assert(!help.includes("Flat panel, dome control"),
+    "the help promises the dome and flat panel work, which #192 says they do not");
+  assert(help.endsWith("It does not yet open the dome or the flat panel's cover for the night."),
+    "the last sentence must say what #192 leaves undone");
+  // The claims table splits on ". ", so every sentence must end that way.
+  assert(/^[\x20-\x7e]+$/.test(help), "the help carries a non-ASCII character");
+});
+
+test("Automatic resume's tail on the node card: Off says one night, a stored campaign still says nightly", () => {
+  eq(defOf("dusk").sum({ ...defOf("dusk").params, autoResume: "Off" }),
+    "Astro dusk -30m → dawn · one night", "a flow that does not resume says so on its card");
+  eq(defOf("dusk").sum({ ...defOf("dusk").params, autoResume: "Off", repeat: "Nightly ×30" }),
+    "Astro dusk -30m → dawn · one night", "Off wins over a stored repeat: it is what the run does");
+  eq(defOf("dusk").sum({ ...defOf("dusk").params, autoResume: "On" }),
+    "Astro dusk -30m → dawn", "On is the usual case and adds nothing");
+  eq(defOf("dusk").sum({ ...defOf("dusk").params, repeat: "Single night" }),
+    "Astro dusk -30m → dawn", "a stored Single night adds nothing either: it is not Off");
 });
 
 // -------------------------------------------------------------------- desc

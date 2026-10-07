@@ -24,8 +24,25 @@
 // `!text-[9.5px] font-display` and would undo that decision. §G-16 covers the
 // same class of choice, so this file takes the convention and the milestone
 // report records the divergence.
+//
+// A FIELD WITH `help` GETS AN INFO ICON (#195, owner ruling 7 on #189): the
+// `InfoDot` beside the caption, which opens on hover for a fine pointer, on tap
+// for a coarse one, with a 44 px target, and carries the field's `help` text.
+// A field with no `help` renders exactly as it always did.
+//
+// WHY THE HELPED ROW IS NOT ONE <label>. A `<label>` that wrapped the icon
+// would (1) put the icon's own name ("Explain: ...") into the control's
+// accessible name, and (2) forward a press on the icon to the control, which a
+// browser does for any click inside a label that is not on native interactive
+// content: pressing "i" would open the select. So a helped row is a caption
+// ROW (a `<label htmlFor>` and the icon, side by side) over the control, and
+// the control names itself from the label and DESCRIBES itself from a
+// screen-reader-only copy of the help (`aria-describedby`). That copy is always
+// in the document: the tooltip's own bubble is mounted only while it is open
+// and its id is private to `Tooltip`, so a control could not point at it.
 import { useState } from "react";
 import { useStore } from "../../store";
+import { InfoDot } from "../ui";
 import type { FieldDef } from "./nodeDefs";
 import FlowCyclePlan from "./FlowCyclePlan";
 
@@ -94,43 +111,82 @@ export default function FlowFieldRow({ nodeId, field, value, variant = "column" 
 
   const stored = String(value ?? "");
   const shown = draft ?? stored;
+  const help = field.help && field.help.trim() ? field.help : null;
+  // IDS FROM THE NODE AND THE FIELD, NOT `useId`: the same inspector mounted
+  // twice must read the same markup (flowInspectorFrame.test.tsx compares two
+  // renders of an untouched node's column byte for byte), and a `useId` value
+  // is a counter that moves with every mount. A node's field is one row at a
+  // time, so the pair is unique where it is used.
+  const controlId = `flow-field-${variant}-${nodeId}-${field.key}`;
+  const helpId = `${controlId}-help`;
 
   const commit = (raw: string) => {
     setDraft(raw);
     setParam(nodeId, field.key, raw);
   };
 
+  /** The control, for a plain row (`described` undefined) and a helped one. */
+  const control = (described?: { id: string; describedBy: string }) =>
+    field.control === "cycleplan" ? (
+      <FlowCyclePlan nodeId={nodeId} fieldKey={field.key} value={value} />
+    ) : field.control === "select" ? (
+      <select
+        id={described?.id}
+        aria-describedby={described?.describedBy}
+        className={`field ${CONTROL[variant]}`}
+        value={stored}
+        onChange={(e) => setParam(nodeId, field.key, e.target.value)}
+      >
+        {selectOptions(field.options, stored).map((opt) => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    ) : (
+      <span className="flex items-center gap-1.5 min-w-0">
+        <input
+          id={described?.id}
+          aria-describedby={described?.describedBy}
+          type="text"
+          className={`field min-w-0 ${CONTROL[variant]}`}
+          value={shown}
+          onChange={(e) => commit(e.target.value)}
+          onBlur={() => setDraft(null)}
+        />
+        {field.unit && (
+          <span className={`font-mono ${UNIT[variant]} text-faint flex-none`}>
+            {field.unit}
+          </span>
+        )}
+      </span>
+    );
+
+  if (help === null) {
+    return (
+      <label className="flex flex-col gap-1 min-w-0">
+        <span className="label">{field.label}</span>
+        {control()}
+      </label>
+    );
+  }
+
   return (
-    <label className="flex flex-col gap-1 min-w-0">
-      <span className="label">{field.label}</span>
-      {field.control === "cycleplan" ? (
-        <FlowCyclePlan nodeId={nodeId} fieldKey={field.key} value={value} />
-      ) : field.control === "select" ? (
-        <select
-          className={`field ${CONTROL[variant]}`}
-          value={stored}
-          onChange={(e) => setParam(nodeId, field.key, e.target.value)}
-        >
-          {selectOptions(field.options, stored).map((opt) => (
-            <option key={opt} value={opt}>{opt}</option>
-          ))}
-        </select>
-      ) : (
-        <span className="flex items-center gap-1.5 min-w-0">
-          <input
-            type="text"
-            className={`field min-w-0 ${CONTROL[variant]}`}
-            value={shown}
-            onChange={(e) => commit(e.target.value)}
-            onBlur={() => setDraft(null)}
-          />
-          {field.unit && (
-            <span className={`font-mono ${UNIT[variant]} text-faint flex-none`}>
-              {field.unit}
-            </span>
-          )}
+    <div className="flex flex-col gap-1 min-w-0" data-testid={`flow-field-${field.key}`}>
+      {/* The caption wraps (a long label such as DUSK WINDOW's Automatic resume
+          is four lines in the 284 px column) and the icon stays at the top
+          right of it. `min-w-0` lets the label shrink to the column; without
+          it a flex child is as wide as its longest line and pushes the icon
+          out of the column. */}
+      <span className="flex items-start gap-1.5 min-w-0">
+        <label htmlFor={controlId} className="label min-w-0 flex-1">{field.label}</label>
+        {/* The capture-phase preventDefault is belt and braces: the icon is
+            outside the <label> already, so there is nothing to forward a press
+            to, and this keeps it that way if the row is ever wrapped again. */}
+        <span className="flex-none" onClickCapture={(e) => e.preventDefault()}>
+          <InfoDot label={`Explain: ${field.label}`} content={help} />
         </span>
-      )}
-    </label>
+      </span>
+      {control({ id: controlId, describedBy: helpId })}
+      <span id={helpId} className="sr-only">{help}</span>
+    </div>
   );
 }

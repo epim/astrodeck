@@ -3284,6 +3284,36 @@ class SequenceEngine:
                         f"'{self._session.name}': stopped by hand, so "
                         f"auto-resume is disarmed for it. Arm it from the "
                         f"session list to pick it up again.", "sequence")
+            # A FLOW THAT ASKED FOR NO AUTOMATIC RESUME ON LATER NIGHTS IS
+            # DISARMED WHERE ITS NIGHT ENDS (#195, owner ruling 7 on #189).
+            # `start()` arms every run, and keeps arming an Off plan's, so a
+            # crash or a reboot the same night still resumes: that is a
+            # separate promise, and the label says "subsequent nights". What
+            # an Off plan must not do is come back for the NEXT one, so the
+            # arming ends at the boundary the sky set: `dawn_cutoff` (the
+            # window closed, or a stop hit with frames owed) and `incomplete`
+            # (the run did everything it could and the plan is still short).
+            # The session stays dormant, so CONTINUE can shoot the rest.
+            #
+            # THE REASON FILTER IS THE CONTINUITY PROMISE. An `error`, a
+            # `shutdown` (the process went away: nobody chose that), an
+            # `unsafe` stop, a `quality` stop and a `cooling_skip` end a night
+            # something OTHER than the sky ended, and a restart that same
+            # night must still find the session armed. `ResumeArm.tick`'s
+            # night check stays as the net for the one that slips through: a
+            # crash before dawn followed by a restart after it.
+            #
+            # The line is said only when frames are owed. A session that owes
+            # nothing has no rest to continue by hand, and a log line telling
+            # the operator to do so would be one more thing that is not true.
+            if (reason in ("dawn_cutoff", "incomplete")
+                    and not self._session.plan.resume_across_nights):
+                self._session.auto_resume = False
+                if unmet:
+                    bus.log("info",
+                            f"'{self._session.name}': automatic resume on "
+                            f"later nights is off for this flow; CONTINUE it "
+                            f"by hand to shoot the rest.", "sequence")
             # COUNT THE CRASHES, AND ONLY THE CRASHES. `dormant` is the right
             # status for a crash - it is what lets auto-resume pick the night
             # back up, which is the behaviour we want - but a run that keeps
