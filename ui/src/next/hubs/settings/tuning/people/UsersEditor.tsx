@@ -38,21 +38,34 @@
 // (`step_up_required`) it opens a SIGN IN AGAIN form - Google by its full-page
 // redirect, a local account in place.
 //
-// WHAT STAYS ON THE LAN IS LOCKED, NOT DISCOVERED (#734, #731). The rig refuses
-// a password reset and any role but viewer and operator over the relay (403
-// `local_only`), so `UserRow` and `AddUserForm` take a second reason beside the
-// group lock, `lanOnlyReason`, fed from here with the LAN sentence on the relay
-// and null on the LAN. It locks RESET and the admin and syncer role options and
-// nothing else; every other control stays armed.
+// WHAT STAYS ON THE LAN IS LOCKED, NOT DISCOVERED (#734, #731, #761). The rig
+// refuses a password reset, any role but viewer and operator, ANY change to or
+// deletion of an administrator, and a create that carries a password, over the
+// relay (403 `local_only`), so `UserRow` and `AddUserForm` take a second reason
+// beside the group lock, `lanOnlyReason`, fed from here with the LAN sentence on
+// the relay and null on the LAN. It locks RESET, the admin and syncer role
+// options, an administrator's whole row (role, enabled, DELETE) and the add
+// form's PASSWORD method, and nothing else; every other control stays armed.
 //
 // AND THE CHANGE IS NOT LOST TO THE REFUSAL. A row or the add form that is
 // refused for want of a recent sign-in hands this editor a way to send the same
 // change again (`onStepUp`). It is held (one at a time, the latest) and sent
 // when a PASSWORD sign-in lands (`phase` becomes `fresh`). Google leaves the
 // page, so nothing is held across it, and the card says to repeat the change.
+//
+// GOOGLE ASKS TO COME BACK HERE (#733). The rig's callback used to land on the
+// home screen, so the person reopened Settings and People before they could
+// repeat anything. SIGN IN WITH GOOGLE now goes to `/auth/login?return=` with
+// the People route (`PEOPLE_RETURN`, a bare `#/...` fragment: no scheme, host
+// or path, so the rig can only append it to a base it chose itself). The rig
+// half, reading `return` from the signed pre-auth cookie and refusing anything
+// that is not such a fragment, is in `auth/routes.py`; until the rig reads it
+// the callback still lands on the home screen, which is what
+// `STEP_UP_GOOGLE_NOTE` says, and that sentence goes when the rig half does.
 
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { listUsers } from "../../../../../api/backends";
+import { u } from "../../../../../lib/base";
 import { useCanAdminUsers } from "../../../../../lib/caps";
 import { usePrincipal } from "../../../../../store";
 import type { User } from "../../../../../types";
@@ -71,6 +84,28 @@ import {
   USERS_ADD_CANCEL, USERS_EMPTY_HINT, USERS_EMPTY_TITLE, USERS_EYEBROW, USERS_INTRO,
   USERS_LOADING, USERS_LOAD_FAILED, errText, isStepUpMessage, SIGN_IN_GOOGLE,
 } from "./peopleModel";
+
+/** Where a Google sign-in started from PEOPLE asks to come back to: Settings,
+ *  the USERS sub-nav, the `users` sheet that holds this editor. A bare hash
+ *  fragment on purpose, and the whole of what the rig accepts as a return
+ *  (`[A-Za-z0-9/_-]` after `#/`): nothing here can name another origin.
+ *  `w16PeopleGoogleReturn.test.tsx` parses it with the router, so a renamed hub
+ *  or sheet fails there. */
+export const PEOPLE_RETURN = "#/settings/users/users";
+
+/** The address SIGN IN WITH GOOGLE sends the browser to: the rig's login route,
+ *  under the relay's mount prefix when there is one (`u`), with the People
+ *  route as `return`. Percent-encoded, because a `#` in a query string is not
+ *  part of the query. */
+export function googleStepUpHref(): string {
+  return `${u("/auth/login")}?return=${encodeURIComponent(PEOPLE_RETURN)}`;
+}
+
+/** Full-page redirect to the Google sign-in, as `useStepUp().signInGoogle` does,
+ *  but asking to be brought back to PEOPLE. */
+function signInGoogleToPeople(): void {
+  window.location.href = googleStepUpHref();
+}
 
 export function UsersEditor(): JSX.Element {
   const me = usePrincipal();
@@ -221,8 +256,9 @@ export function UsersEditor(): JSX.Element {
  *  - `fresh`: a local sign-in just worked; the note retires itself a little
  *    before the rig's own window closes (`useStepUp`).
  *
- *  A Google sign-in leaves the page and returns to the home screen, so the card
- *  says that instead of promising to come back to this form. */
+ *  A Google sign-in leaves the page, so the card does not promise to come back
+ *  to this form; it asks the rig to return to PEOPLE (`googleStepUpHref`) and, for
+ *  as long as the rig lands on the home screen instead, says so. */
 function StepUpCard({ stepUp, holding }: { stepUp: UseStepUpResult; holding: boolean }): JSX.Element {
   const [typed, setTyped] = useState<string | null>(null);
   const [password, setPassword] = useState("");
@@ -267,7 +303,7 @@ function StepUpCard({ stepUp, holding }: { stepUp: UseStepUpResult; holding: boo
                 <div className="nx-people-actions">
                   <ActionButton
                     kind="primary"
-                    onPress={stepUp.signInGoogle}
+                    onPress={signInGoogleToPeople}
                     data-testid="users-stepup-google"
                   >
                     {SIGN_IN_GOOGLE}
