@@ -242,14 +242,21 @@ class Sources:
                                   "spdx": dist.metadata.get("License-Expression"), "notices": notices}
     def identify(self, path):
         path = path.resolve()
-        if path.is_relative_to(self.root):
-            relative = path.relative_to(self.root).as_posix()
+        # Resolve the roots too: resolve() expands a Windows 8.3 short name
+        # (the hosted runner's temp dir is under RUNNER~1, which resolves to
+        # runneradmin), so an unresolved root never contains the resolved
+        # path and every reviewed runtime input read as unreviewed (release
+        # run 37669607167, test_reviewed_runtime_input_requires_exact_hash).
+        root = Path(self.root).resolve()
+        base = Path(self.base).resolve()
+        if path.is_relative_to(root):
+            relative = path.relative_to(root).as_posix()
             if not relative.startswith(".probe/"):
                 return {"source": "repo:" + relative, "component": "AstroDeck", "record_verified": True}
         if row := self.paths.get(str(path).casefold()):
             return dict(row)
-        if path.is_relative_to(self.base):
-            relative = path.relative_to(self.base).as_posix()
+        if path.is_relative_to(base):
+            relative = path.relative_to(base).as_posix()
             rule = self.runtime_inputs.get(relative)
             if rule and sha(path.read_bytes()) == rule.get("sha256"):
                 return {"source": "python:" + relative, "component": "CPython", "version": platform.python_version(), "record_verified": True}
