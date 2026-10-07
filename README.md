@@ -8,7 +8,7 @@ report. It runs on a mini-PC or a Pi at the scope. You open a page.
 
 [**Overview and documentation →**](https://epim.github.io/astrodeck/)
 
-![version](https://img.shields.io/badge/version-0.3.40-4DD9E8)
+![version](https://img.shields.io/badge/version-0.3.41-4DD9E8)
 ![python](https://img.shields.io/badge/python-3.11%2B-4DD9E8)
 ![platforms](https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20Pi-4DD9E8)
 ![licence](https://img.shields.io/badge/licence-Apache--2.0-8A97AE)
