@@ -20,9 +20,10 @@ call site, not at import, so there is no import cycle.
 """
 from __future__ import annotations
 
+import time
 from typing import Awaitable, Callable
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from .capabilities import (CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                            CAP_CONFIG_BACKEND, CAP_CONFIG_SAFETY,
@@ -260,6 +261,71 @@ async def get_principal(request: Request) -> Principal:
     return principal
 
 
+#: How recent a sign-in must be, over the relay, for a MUTATION of the user
+#: list (#685). The relay sees every cookie it carries and can replay one, so a
+#: valid admin cookie is not evidence that an admin is at the keyboard NOW; a
+#: sign-in under five minutes old is. A cookie the relay merely saw go by on an
+#: ordinary request is older than that unless its owner signed in again in the
+#: last five minutes, so replaying it cannot change who may sign in. Long enough
+#: to sign in and make a handful of edits. The case this does NOT cover is a
+#: relay that was present for the sign-in itself (see ``require_recent_signin``).
+STEP_UP_MAX_AGE_S = 300
+
+#: A cookie whose ``iat`` is in the FUTURE by more than this is refused too.
+#: The home signs ``iat`` from its own clock, so a future stamp means that clock
+#: was stepped back after the cookie was minted (or the claim is not what it
+#: claims to be); either way "how old is this sign-in" has no trustworthy
+#: answer, and the gate fails closed on a question it cannot answer.
+_STEP_UP_CLOCK_SKEW_S = 60
+
+_STEP_UP_REQUIRED = {
+    "code": "step_up_required",
+    "detail": "Sign in again to manage people from outside the LAN.",
+}
+
+
+def _step_up_required(request: Request) -> HTTPException:
+    """The refusal, with a line in the security audit log: a relayed mutation
+    that arrives on a stale cookie is the replay this gate exists to catch, and
+    until now nothing would have recorded that it was tried."""
+    from . import audit  # lazy: keeps this module's import cost unchanged
+    audit.record("step_up", ok=False, request=request,
+                 reason="step_up_required")
+    return HTTPException(status_code=403, detail=dict(_STEP_UP_REQUIRED))
+
+
+def require_recent_signin(request: Request,
+                          principal: Principal = Depends(get_principal)) -> None:
+    """Refuse a relayed request whose sign-in is older than ``STEP_UP_MAX_AGE_S``.
+
+    A FastAPI dependency (``Depends(require_recent_signin)``) that runs AFTER
+    ``require(cap)`` on the route, so a caller who lacks the capability is told
+    that, not asked to sign in again. It is a no-op on the LAN: the replay it
+    guards against is a relay property, and a person at the rig has the LAN UI.
+
+    Only a ``local`` or ``google`` session counts. Those two are minted by a
+    login the browser performs (``POST /auth/local``, the Google callback), and
+    both are reachable over the relay, so completing one inside the window is
+    something a replayed cookie cannot do. The break-glass ``admin_token``
+    cookie is minted by ``POST /auth/token``, which the fence keeps LAN-only,
+    and a bearer-token or open-default principal carries no ``authn``/``iat`` at
+    all; none of those can show a sign-in made over this transport, so none
+    passes. A principal with no ``iat`` fails closed for the same reason.
+
+    This does NOT defend against a malicious relay that is present DURING the
+    step-up: a TLS-terminating relay sees the password POST and the Set-Cookie
+    that answers it. See docs/SECURITY.md; the relay stays a trusted
+    intermediary."""
+    if not _scope_is_remote(request):
+        return
+    iat = principal.iat
+    if principal.authn not in ("local", "google") or iat is None:
+        raise _step_up_required(request)
+    age = time.time() - iat
+    if age > STEP_UP_MAX_AGE_S or age < -_STEP_UP_CLOCK_SKEW_S:
+        raise _step_up_required(request)
+
+
 def require(cap: str) -> Callable[[Request], Awaitable[Principal]]:
     """Return a FastAPI dependency enforcing capability ``cap``.
 
@@ -290,6 +356,7 @@ requires = require
 
 __all__ = [
     "require", "requires", "get_principal", "resolve_principal",
+    "require_recent_signin", "STEP_UP_MAX_AGE_S",
     "_scope_is_remote",
     "set_active_provider", "get_active_provider", "reset_active_provider",
     "set_trust_loopback", "get_trust_loopback",

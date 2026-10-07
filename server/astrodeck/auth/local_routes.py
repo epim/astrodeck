@@ -33,6 +33,13 @@ Surface (all paths relative to the app root):
     POST   /api/users/{id}/password  -> reset a password
     DELETE /api/users/{id}     -> delete a user
 
+  Over the relay (#685) a NARROWED subset is open, behind a sign-in under
+  ``deps.STEP_UP_MAX_AGE_S`` old for every mutation (the list read needs none):
+  create a Google-only viewer/operator, change a non-admin's role between
+  viewer and operator, enable/disable a non-admin, delete a non-admin. The
+  password reset is refused by the fence middleware in ``api/app.py``; the
+  content rules below answer 403 ``local_only`` for the rest.
+
 ``to_public()`` is the ONLY user shape returned -- the bcrypt ``password_hash``
 is never present in any response. "Last admin" protection in the store raises
 ``ValueError("last admin")`` which these routes map to 409. A duplicate username
@@ -60,7 +67,7 @@ from pydantic import BaseModel
 from ..config import config_store
 from . import users as users_mod
 from .capabilities import CAP_ADMIN_USERS, ROLES
-from .deps import _scope_is_remote, require
+from .deps import _scope_is_remote, require, require_recent_signin
 from .passwords import PasswordTooLongError, PasswordTooShortError
 from .users import InvalidEmailError
 from . import audit
@@ -76,6 +83,18 @@ router = APIRouter(tags=["auth-local"])
 # caller resolves to admin, so these pass with no creds; once a method is enabled
 # a non-admin principal gets 403.
 _ADMIN_USERS = [Depends(require(CAP_ADMIN_USERS))]
+# The MUTATING routes add the relay step-up AFTER the capability check, so a
+# relayed operator or viewer is told "capability not held" (a sign-in cannot
+# help them) rather than asked to sign in again. ``require_recent_signin`` is a
+# no-op on the LAN. The list read stays on ``_ADMIN_USERS``: an admin cookie
+# already reads every site-derived value, and the fence protects trust roots.
+_ADMIN_USERS_FRESH = [Depends(require(CAP_ADMIN_USERS)),
+                      Depends(require_recent_signin)]
+
+# The only roles a RELAYED admin may hand out or move a non-admin between. An
+# admin grant, and the syncer role (it can pull every raw frame), stay a
+# decision made at the rig.
+_RELAY_ROLES = ("viewer", "operator")
 
 SESSION_COOKIE = "ad_session"          # MUST match SessionCookieProvider.COOKIE_NAME
 
@@ -393,6 +412,18 @@ async def auth_methods():
     }
 
 
+def _relay_refuses(why: str, *, request: Request, action: str) -> HTTPException:
+    """The 403 ``local_only`` a relayed admin gets for a user-management change
+    the relay does not allow. Same code the fence middleware answers, so the UI
+    shows its one LAN-only sentence for every route that is refused this way."""
+    audit.record("user_admin_relay", ok=False, request=request,
+                 reason=f"{action}:local_only")
+    return HTTPException(status_code=403, detail={
+        "code": "local_only",
+        "detail": f"This change needs the LAN: {why}",
+    })
+
+
 # ===================================================== user management (admin)
 # Every route below is gated by require(admin.users): under the open default
 # (no methods, no token) the caller resolves to admin so these pass; once a
@@ -404,12 +435,27 @@ async def list_users():
     return {"users": [u.to_public() for u in _store().list()]}
 
 
-@router.post("/api/users", status_code=201, dependencies=_ADMIN_USERS)
-async def create_user(body: UserCreate):
+@router.post("/api/users", status_code=201, dependencies=_ADMIN_USERS_FRESH)
+async def create_user(body: UserCreate, request: Request):
     """Create a user. 409 on a duplicate username, 422 on a too-long password,
-    400 on an unknown role."""
+    400 on an unknown role.
+
+    Over the relay (after the step-up): only a Google-only account (NO password,
+    which includes a whitespace-only one) with role viewer or operator; anything
+    else is 403 ``local_only``. A password set here would be one the relay saw
+    in the request, and an admin created here would be authority minted from a
+    cookie the relay carries."""
     if body.role not in ROLES:
         raise HTTPException(status_code=400, detail=f"unknown role: {body.role!r}")
+    if _scope_is_remote(request):
+        if body.password:
+            raise _relay_refuses(
+                "over the relay an account can only be created for Google "
+                "sign-in, with no password", request=request, action="create")
+        if body.role not in _RELAY_ROLES:
+            raise _relay_refuses(
+                "over the relay an account can only be a viewer or an operator",
+                request=request, action="create")
     try:
         user = _store().create(username=body.username, password=body.password,
                                role=body.role, email=body.email,
@@ -426,19 +472,43 @@ async def create_user(body: UserCreate):
     except ValueError as exc:
         # duplicate / blank username, unknown role
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if _scope_is_remote(request):
+        audit.record("user_admin_relay", ok=True, request=request,
+                     user=user.username, reason=f"create:{user.role}")
     return user.to_public()
 
 
-@router.patch("/api/users/{user_id}", dependencies=_ADMIN_USERS)
-async def patch_user(user_id: str, body: UserPatch):
+@router.patch("/api/users/{user_id}", dependencies=_ADMIN_USERS_FRESH)
+async def patch_user(user_id: str, body: UserPatch, request: Request):
     """Update a user's role / enabled / username / email.
 
     Applies only the provided fields. "Last admin" protection (demote or disable
     the last enabled admin) -> 409; a duplicate username -> 409; an unknown role
-    -> 400; an unknown user -> 404."""
+    -> 400; an unknown user -> 404.
+
+    Over the relay (after the step-up): the target must not be an admin, the new
+    role (if any) must be viewer or operator, and ``username`` / ``email`` may
+    not be sent at all (an email change retargets a Google identity, which is an
+    account takeover by another name); anything else is 403 ``local_only``. The
+    caller is an admin, so "the target is not the caller" is the same rule as
+    "the target is not an admin" and needs no check of its own."""
     store = _store()
-    if store.get(user_id) is None:
+    target = store.get(user_id)
+    if target is None:
         raise HTTPException(status_code=404, detail="user not found")
+    if _scope_is_remote(request):
+        if target.role == "admin":
+            raise _relay_refuses(
+                "an administrator can only be changed at the rig",
+                request=request, action="patch")
+        if body.username is not None or body.email is not None:
+            raise _relay_refuses(
+                "a username or email change retargets who can sign in, so it "
+                "is made at the rig", request=request, action="patch")
+        if body.role is not None and body.role not in _RELAY_ROLES:
+            raise _relay_refuses(
+                "over the relay a role can only be changed between viewer and "
+                "operator", request=request, action="patch")
     try:
         if body.role is not None:
             if body.role not in ROLES:
@@ -457,12 +527,20 @@ async def patch_user(user_id: str, body: UserPatch):
         msg = str(exc)
         code = 409 if ("last admin" in msg or "exists" in msg) else 400
         raise HTTPException(status_code=code, detail=msg) from exc
+    if _scope_is_remote(request):
+        audit.record("user_admin_relay", ok=True, request=request,
+                     user=target.username, reason="patch")
     return store.get(user_id).to_public()
 
 
 @router.post("/api/users/{user_id}/password", dependencies=_ADMIN_USERS)
 async def reset_password(user_id: str, body: PasswordReset):
-    """Reset a user's password. 404 unknown user, 422 too-long password."""
+    """Reset a user's password. 404 unknown user, 422 too-long password.
+
+    LAN-ONLY, and enforced before this handler: the fence middleware in
+    ``api/app.py`` refuses it over the relay (``_REMOTE_LOCAL_ONLY_PATTERNS``),
+    so no step-up applies here. A new password is a credential, and the relay
+    would see it in the request body."""
     store = _store()
     if store.get(user_id) is None:
         raise HTTPException(status_code=404, detail="user not found")
@@ -474,16 +552,26 @@ async def reset_password(user_id: str, body: PasswordReset):
     return store.get(user_id).to_public()
 
 
-@router.delete("/api/users/{user_id}", dependencies=_ADMIN_USERS)
-async def delete_user(user_id: str):
-    """Delete a user. 404 unknown user, 409 deleting the last enabled admin."""
+@router.delete("/api/users/{user_id}", dependencies=_ADMIN_USERS_FRESH)
+async def delete_user(user_id: str, request: Request):
+    """Delete a user. 404 unknown user, 409 deleting the last enabled admin.
+
+    Over the relay (after the step-up) only a non-admin can be deleted; an
+    admin target is 403 ``local_only``."""
     store = _store()
-    if store.get(user_id) is None:
+    target = store.get(user_id)
+    if target is None:
         raise HTTPException(status_code=404, detail="user not found")
+    if _scope_is_remote(request) and target.role == "admin":
+        raise _relay_refuses("an administrator can only be deleted at the rig",
+                             request=request, action="delete")
     try:
         store.delete(user_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if _scope_is_remote(request):
+        audit.record("user_admin_relay", ok=True, request=request,
+                     user=target.username, reason="delete")
     return {"ok": True}
 
 

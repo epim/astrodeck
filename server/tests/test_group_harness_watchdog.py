@@ -26,7 +26,9 @@ watchdog is (the harness docstring's cases), and in the first case below.
 
 Every mutant was applied to a private copy of ``server/`` under the session
 scratchpad (scratchpad/s3-X-mut), never to the shared tree (#254), from a
-byte backup, and restored and compared by SHA-256 after each run.
+byte backup, and restored and compared by SHA-256 after each run. The #702
+cases' mutants were applied in that wave's own git worktree (WP-116), the
+same way.
 """
 from __future__ import annotations
 
@@ -48,6 +50,22 @@ BOUND_S = 1.0
 #: A spin's own limit: well past the bound, so only a missing or broken
 #: watchdog ever lets a spin reach it.
 SPIN_LIMIT_S = 8.0 * BOUND_S
+#: The bound the NON-spin controls run under (#702). The spin case wants a SHORT
+#: bound, so the file stays quick; a control that must see NO spin wants a bound
+#: past anything a loaded box does to a night that is doing nothing wrong, which
+#: the watchdog cannot tell from a spin. Measured under 40 CPU burners on 24
+#: cores: a night that yields every few milliseconds was away 0.06 to 0.97 s at
+#: worst (one run 0.03 s under the old 1 s bound), and a deliberate 1.5 s stall
+#: inside one, 1.5 to 2.4 s. It is the #620/#683 class (a bound on a clock the
+#: load stretches) and the cure is the same: the bound moves, not the thing it
+#: bounds. The spin case keeps its own short bound, so what counts as a spin has
+#: not moved, and what the controls assert about the loop yielding is untouched.
+NONSPIN_BOUND_S = 4.0 * BOUND_S
+#: How long a control keeps the watchdog's subject going to prove anything
+#: about it: past the bound it runs under, so a watchdog that timed the RUN
+#: rather than the loop, or one that outlived it, would have fired by then,
+#: with half a bound to spare for the watcher's own tick and a late wake.
+NONSPIN_SPAN_S = 1.5 * NONSPIN_BOUND_S
 
 
 def _plan() -> SequencePlan:
@@ -205,73 +223,142 @@ async def test_a_spin_that_never_yields_fails_the_night_and_names_the_spin(
 
 async def test_a_night_that_keeps_yielding_is_not_a_spin(
         group_hub, group_store, monkeypatch):
-    """CONTROL. The scheduler runs for three bounds of real time, but hands
-    the loop back every few milliseconds, so the loop never stays away and
-    the watchdog never fires: the night ends by itself. The watchdog times
-    the LOOP, not the run.
+    """CONTROL. The scheduler runs for one and a half bounds of real time,
+    but hands the loop back every few milliseconds, so the loop never stays
+    away and the watchdog never fires: the night ends by itself. The
+    watchdog times the LOOP, not the run.
+
+    Run under ``NONSPIN_BOUND_S``, not the spin case's short bound (#702): a
+    loop thread starved by a loaded box is away for a second at a time
+    without spinning, and the long bound is what says so.
 
     MUTANT "the watchdog times the run" (`_SpinWatchdog.pet` no longer
     moves ``beat``): the night fails one bound in, with the loop idle in its
     poll, where the raise lands and leaves the loop. RED (observed):
         E   _group_harness.SpinNeverYielded: Night.run: the event loop did
-        not come back for 1.1 s of real time, against a bound of 1 s (...)
+        not come back for 4.2 s of real time, against a bound of 4 s (...)
         E   The loop's thread was spinning in _poll (windows_events.py:774).
         E   Its frames in astrodeck, outermost first: none.
     """
     async def busy_but_yielding(self, plan):
         started = time.monotonic()
-        while time.monotonic() - started < 3.0 * BOUND_S:
+        while time.monotonic() - started < NONSPIN_SPAN_S:
             await asyncio.sleep(0.005)     # the real one: the loop gets a turn
 
     monkeypatch.setattr(SequenceEngine, "_run_scheduled", busy_but_yielding)
-    night = Night(group_hub, monkeypatch, spin_bound_s=BOUND_S)
+    night = Night(group_hub, monkeypatch, spin_bound_s=NONSPIN_BOUND_S)
     done, failed, took = await _run(night)
 
     assert failed is None, failed
     assert done is True, done
-    assert took >= 3.0 * BOUND_S, (
-        f"the night took {took:.2f} s, not the three bounds it was built "
-        f"to take, so it proves nothing about the bound")
+    assert took >= NONSPIN_SPAN_S, (
+        f"the night took {took:.2f} s, not the {NONSPIN_SPAN_S:g} s (one and "
+        f"a half bounds) it was built to take, so it proves nothing about "
+        f"the bound")
     assert night.watchdog is not None
-    assert night.watchdog.max_away < BOUND_S / 2, night.watchdog.max_away
+    assert night.watchdog.max_away < NONSPIN_BOUND_S / 2, night.watchdog.max_away
+
+
+async def test_a_starved_loop_is_not_a_spin_under_the_non_spin_bound(
+        group_hub, group_store, monkeypatch):
+    """CONTROL (#702), and the one that does not need a loaded box to mean
+    something. The scheduler hands the loop back every few milliseconds,
+    except once, where it holds the loop's thread for longer than the spin
+    case's bound: what a starved thread looks like to the watchdog from
+    outside, which cannot tell it from a spin. The stall is longer than
+    ``BOUND_S`` and well inside ``NONSPIN_BOUND_S``, so the night must end by
+    itself, and the watchdog must have SEEN the stall (``max_away``), or the
+    case proved nothing about the bound it runs under.
+
+    The two controls above run under the same bound and fail under load only
+    by chance of the box; this one makes the load deterministic, so that
+    putting their bound back to the spin case's is caught on an idle machine.
+
+    MUTANT "the controls run under the spin bound" (``spin_bound_s=BOUND_S``
+    in this case's ``Night(...)``, which is what the controls had): the
+    watchdog fires on the stall. RED (observed, idle box):
+        E   AssertionError: Night.run: the event loop did not come back for
+        1.1 s of real time, against a bound of 1 s (...)
+        E   The loop's thread was spinning in starved_once
+        (test_group_harness_watchdog.py:293).
+    Setting ``NONSPIN_BOUND_S = BOUND_S`` instead fails the first assertion
+    below, which says the stall must be a spin by one bound and not the other.
+    """
+    stall_s = 1.5 * BOUND_S
+    assert BOUND_S < stall_s < NONSPIN_BOUND_S, (
+        "the stall must be a spin by the spin case's bound and not one by "
+        "the controls'")
+
+    async def starved_once(self, plan):
+        for turn in range(40):
+            if turn == 20:
+                time.sleep(stall_s)        # the thread is not running
+            await asyncio.sleep(0.005)
+
+    monkeypatch.setattr(SequenceEngine, "_run_scheduled", starved_once)
+    night = Night(group_hub, monkeypatch, spin_bound_s=NONSPIN_BOUND_S)
+    done, failed, _took = await _run(night)
+
+    assert failed is None, failed
+    assert done is True, done
+    assert night.watchdog is not None
+    assert night.watchdog.max_away >= stall_s, (
+        f"the watchdog saw the loop away {night.watchdog.max_away:.2f} s, "
+        f"less than the {stall_s:g} s stall it was built around")
+    assert night.watchdog.max_away < NONSPIN_BOUND_S, night.watchdog.max_away
 
 
 async def test_the_watchdog_is_gone_when_the_run_returns(
         group_hub, group_store, monkeypatch):
     """CONTROL. A night that ends normally leaves no watchdog behind: after
-    ``run`` returns, the test holds its thread for two bounds without
-    giving the loop a turn, and nothing is raised into it, and no watchdog
-    thread is alive. A watchdog outliving its run would throw into whatever
-    the test did next, and fail it for a spin that never happened.
+    ``run`` returns, the test holds its thread for one and a half bounds
+    without giving the loop a turn, and nothing is raised into it, and no
+    watchdog thread is alive. A watchdog outliving its run would throw into
+    whatever the test did next, and fail it for a spin that never happened.
+
+    Run under ``NONSPIN_BOUND_S`` (#702), and over a scheduler that ends at
+    once rather than the real one. This is the control that failed 6 of 6
+    runs under 40 CPU burners with "the event loop did not come back for
+    1.1 s" on a plan that had done nothing wrong, and the cause was not a
+    starved loop but the REAL scheduler's first step: CPU-bound work with no
+    await in it (lazy imports, the first sky computations), which holds the
+    loop's thread about 1 s on an idle box and, measured cold under 40
+    burners, 6 to 11 s. That is not a spin and no bound short enough to test
+    anything would pass it. What this case asserts is the watchdog's
+    lifecycle, which does not depend on what the night did, so the night is
+    the shortest one that ends normally, and the hold below is what makes
+    the bound matter: a watchdog left running has to outlast it to be caught.
 
     Also pins the default: a Night built without ``spin_bound_s`` arms the
     named ``SPIN_BOUND_S``.
 
-    MUTANT "the watchdog is never stopped" (the ``dog.stop()`` in
-    `Night.run`'s ``finally`` deleted): the first case's watchdog outlives
-    it and throws its report into the next case, then ends the process in
-    this one. RED (observed, -n0; exit 3, ``.F`` and no summary):
-        .FNight.run: the event loop did not come back for 1.1 s of real
-        time, against a bound of 1 s (...)
-        The loop's thread was spinning in nothing
-        (test_group_harness_watchdog.py:102).
-        ...
-        The raise did not break the spin: the loop has now been away 2.2 s.
-        Ending this process so the run can go on (#319).
-    In another run of the same mutant (the stop deleted from the ``finally``
-    as it then stood) this case reported before the exit (observed):
+    MUTANT "the watchdog is never stopped" (`_SpinWatchdog.stop` returns at
+    once, _group_harness.py): the watchdog outlives its run and, a bound
+    after the last pet, throws its report into the hold below. RED (observed):
         E   AssertionError: a finished run's watchdog raised: Night.run: the
-        event loop did not come back for 1.0 s of real time, ...
+        event loop did not come back for 4.0 s of real time, against a bound
+        of 4 s (...)
+        E   The loop's thread was spinning in
+        test_the_watchdog_is_gone_when_the_run_returns
+        (test_group_harness_watchdog.py:361).
+    (Deleting only the ``dog.stop()`` in `Night.run`'s ``finally`` is NOT a
+    mutant any more: `Night.close`, which `_run` always calls, disarms the
+    watchdog too, so this case passed with it gone, observed 2026-10-07.)
     """
     default = inspect.signature(Night).parameters["spin_bound_s"].default
     assert default == SPIN_BOUND_S, default
-    night = Night(group_hub, monkeypatch, spin_bound_s=BOUND_S)
+
+    async def ends_at_once(self, plan):
+        await asyncio.sleep(0.005)
+
+    monkeypatch.setattr(SequenceEngine, "_run_scheduled", ends_at_once)
+    night = Night(group_hub, monkeypatch, spin_bound_s=NONSPIN_BOUND_S)
     done, failed, _took = await _run(night)
     assert failed is None and done is True, (done, failed)
 
     stray: BaseException | None = None
     try:
-        until = time.monotonic() + 2.0 * BOUND_S
+        until = time.monotonic() + NONSPIN_SPAN_S
         while time.monotonic() < until:     # the loop gets no turn here
             time.sleep(0.01)
     except SpinNeverYielded as exc:

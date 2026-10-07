@@ -31,7 +31,6 @@ import ctypes
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-import os
 
 from ..sdk_paths import PLAYERONE_SDK_ENV
 
@@ -214,31 +213,47 @@ def _loads_with_exports(path: Path, exports: list[str]):
     return None
 
 
+#: The Windows filename the SDK is keyed under in ``_DLL_SPECS``.
+_LIBRARY = "PlayerOneCamera.dll"
+
+
+def _spec_candidates(basename: str) -> list[Path]:
+    """Every path worth trying for ``basename``, in the order they are tried:
+    the operator's directory, the vendored copies, then ``_DLL_SPECS``'s
+    alternatives (the vendor installer's own locations). Read at CALL time, so
+    the table is the one place the alternatives are written down."""
+    from ..sdk_paths import candidates
+    alternatives, _exports = _DLL_SPECS[basename]
+    stem = basename.rsplit(".", 1)[0]
+    return candidates("playerone", stem, env_var=PLAYERONE_SDK_ENV,
+                      extra=alternatives)
+
+
+def sdk_candidates() -> list[Path]:
+    """Every path the loader tries for the Player One SDK, in order.
+
+    EXPOSED because the Credits screen's "is it there?" probe
+    (``licensing._player_one_present``) must answer from the SAME list: it
+    asked ``sdk_paths.candidates`` without the alternatives, so an SDK put
+    there by the vendor's own installer opened a working camera under a
+    screen that said "not satisfied" (#705, the class of #632's env-var
+    disagreement: a probe and a loader answering one question from two
+    lists)."""
+    return _spec_candidates(_LIBRARY)
+
+
+def system_install_paths() -> list[Path]:
+    """The vendor installer's own locations: ``_DLL_SPECS``'s alternatives,
+    as paths. The one list ``sdk_candidates`` ends with, so a caller can tell
+    an installed SDK from a fetched or vendored one."""
+    return [Path(p) for p in _DLL_SPECS[_LIBRARY][0]]
+
+
 def _find_dll(basename: str):
     """Locate + load the SDK for THIS platform. `basename` stays the Windows
     filename because it keys _DLL_SPECS; the resolver derives the real name."""
-    from ..sdk_paths import candidates
-    alternatives, exports = _DLL_SPECS[basename]
-    stem = basename.rsplit(".", 1)[0]
-    for c in candidates("playerone", stem,
-                        env_var=PLAYERONE_SDK_ENV,
-                        extra=alternatives):
-        if c.is_file():
-            dll = _loads_with_exports(c, exports)
-            if dll is not None:
-                return dll
-    return None
-
-
-def _find_dll_legacy(basename: str):
-    alternatives, exports = _DLL_SPECS[basename]
-    candidates: list[Path] = []
-    env = os.environ.get(PLAYERONE_SDK_ENV)
-    if env:
-        candidates.append(Path(env) / basename)
-    candidates.append(_VENDOR_DIR / basename)
-    candidates.extend(Path(p) for p in alternatives)
-    for c in candidates:
+    _alternatives, exports = _DLL_SPECS[basename]
+    for c in _spec_candidates(basename):
         if c.is_file():
             dll = _loads_with_exports(c, exports)
             if dll is not None:

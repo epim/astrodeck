@@ -46,6 +46,7 @@ import contextlib
 import json
 import math
 import random
+import threading
 import time
 
 from ..aio import reap
@@ -63,6 +64,36 @@ try:  # pragma: no cover - covered both ways via NATIVE_AVAILABLE monkeypatch
     import astrodeck_native as _native
 except ImportError:  # pragma: no cover
     _native = None
+
+
+# THE ENGINE CAN ONLY BE DROPPED ON THE THREAD THAT MADE IT (#700).
+# ``astrodeck_native.GuideEngine`` is a pyo3 ``unsendable`` class: let go of on
+# any other thread, it raises "is unsendable, but is being dropped on another
+# thread" (reported as an unraisable exception, so only as a warning) and
+# LEAKS the engine rather than freeing it. A guider that is garbage, and in a
+# reference cycle (its tasks, events and locks make one), is freed by the cyclic
+# collector, which runs on whichever thread happens to allocate when it
+# triggers: under pytest-xdist that is as likely to be execnet's I/O thread as
+# the event loop's, which is how the warning was attributed to a test
+# (``test_w12_dither_zero_settle``) that never builds an engine, and why it
+# never appeared when the file ran alone. ``NativeGuider._release_engine``
+# parks the engine here instead of letting it die on the wrong thread, under
+# the id of the thread that made it, and that thread drops it
+# (``drop_parked_engines``): at once through the loop the engine was made on,
+# while that loop runs, and otherwise at that thread's next ``start_guiding``.
+_PARKED_ENGINES: dict[int, list] = {}
+
+
+def drop_parked_engines() -> int:
+    """Drop, on THIS thread, the engines that were parked for it; how many.
+    A thread only ever drops what it made, which is the whole point: the ones
+    parked for another thread stay parked."""
+    mine = _PARKED_ENGINES.pop(threading.get_ident(), None)
+    if not mine:
+        return 0
+    n = len(mine)
+    mine.clear()
+    return n
 
 
 # Exposure defaults for a guide camera when the caller pins nothing. Guide
@@ -587,6 +618,10 @@ class NativeGuider(Guider):
     #: None when this session has not fed it. ``_persist_gp_window`` stamps
     #: ``dumped_at`` with it; class-level for the same ``__new__`` reason.
     _gp_fed_at: float | None = None
+    #: #700: the thread and event loop ``_engine`` was made on, which are the
+    #: only ones that may drop it. Class-level for the same ``__new__`` reason.
+    _engine_thread: int | None = None
+    _engine_loop: "asyncio.AbstractEventLoop | None" = None
 
     def __init__(self, guide_camera: Camera, telescope: Telescope, *,
                  config: dict, profile_id: str | None = None,
@@ -882,8 +917,47 @@ class NativeGuider(Guider):
 
     async def disconnect(self) -> None:
         await self.stop_guiding()
+        # The guider is done, so its engine is too. NOT in ``stop_guiding``: a
+        # stop is not the end of the guider, and the meridian flip stops it,
+        # re-slews, and then asks THIS engine to mirror its calibration
+        # (`flip_calibration`) before the restart builds the next one.
+        self._release_engine()
         self.connected = False
         bus.log("info", "native guider disconnected", "guide")
+
+    def _release_engine(self) -> None:
+        """Let go of the engine on the thread that made it (#700). On that
+        thread it is simply dropped, here and now. On any other (the cyclic
+        collector's, through `__del__`) it is parked for the thread that made
+        it, which is told through the loop it was made on when that loop is
+        still running; a closed loop leaves it parked until that thread's next
+        ``start_guiding``, which is no worse than the leak a wrong-thread
+        drop is."""
+        engine, self._engine = getattr(self, "_engine", None), None
+        if engine is None:
+            return
+        owner = self._engine_thread
+        if owner is None or owner == threading.get_ident():
+            return                  # `engine` dies here, where it was made
+        _PARKED_ENGINES.setdefault(owner, []).append(engine)
+        # The parked list must hold the ONLY reference before the owning
+        # thread is told: it can drain at once, while this thread is still in
+        # here, and an engine this frame still named would then die here, on
+        # the wrong thread, when it returned (seen in half the runs of the
+        # test for this before the line below).
+        del engine
+        loop = self._engine_loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(drop_parked_engines)
+            except Exception:       # noqa: BLE001 - a closed loop: next start
+                pass
+
+    def __del__(self) -> None:
+        try:
+            self._release_engine()
+        except Exception:           # noqa: BLE001 - never raise out of a finaliser
+            pass
 
     # ----------------------------------------------------------- start / stop
 
@@ -950,7 +1024,12 @@ class NativeGuider(Guider):
                 # ITS model yet. A reuse-path restore re-seeds this.
                 self._gp_fed_at = None
                 rates = await self._read_guide_rates()
+                # Anything another thread's collector parked is ours to drop,
+                # and this is the thread, before one more engine is made.
+                drop_parked_engines()
                 self._engine = _native.GuideEngine(self._build_engine_config(rates))
+                self._engine_thread = threading.get_ident()
+                self._engine_loop = asyncio.get_running_loop()
 
                 # P2-T2 persistence READ side (dossier §8.4/§9): reuse the
                 # profile's persisted calibration when it is still trustworthy

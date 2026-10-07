@@ -60,6 +60,20 @@ except ImportError:  # pragma: no cover
 # The capabilities the resolver answers for.
 Capability = Literal["autofocus", "polar_align", "solve", "guide"]
 
+
+class SolverUnavailable(DeviceError):
+    """No plate solver can run on this rig: ASTAP is not installed and a real
+    mount or focuser forbids the simulator solver, or ASTAP vanished between
+    resolution and use (#618).
+
+    A ``DeviceError``, so every caller that already survives a refused solve
+    survives this, and ``resolve_all`` still turns it into an ``unavailable``
+    status row. A type of its own because the CAUSE of a failed solve is
+    something a caller must be able to ask: ``hub.solve_failure_reason``
+    reads this class, never the message's words, to tell the rig's missing
+    solver (a fault that will not clear on its own) from a sky that gave the
+    solver nothing to measure."""
+
 # Friendly UI labels for a device's backend name. Anything unmapped is upcased
 # so a new backend still renders a sane badge rather than a bare slug.
 _BACKEND_LABELS: dict[str, str] = {
@@ -301,7 +315,7 @@ def _resolve_solve(hub: object, override: str) -> ProviderChoice:
     if sim_ok:
         return ProviderChoice("sim", "Simulator",
                               "no ASTAP — simulator solver (no real motion connected)")
-    raise DeviceError(
+    raise SolverUnavailable(
         "plate solving unavailable: ASTAP not found and a real mount/focuser "
         "is connected — refusing the simulator solver (install ASTAP or set "
         "ASTAP_PATH)")
@@ -642,5 +656,5 @@ def pick_solver(hub: object) -> PlateSolver:
         astap = find_astap()
         if astap:
             return AstapSolver(astap)
-        raise DeviceError("ASTAP disappeared between resolution and use")
+        raise SolverUnavailable("ASTAP disappeared between resolution and use")
     return SimSolver(getattr(hub, "sim_rig", None), mode=None)

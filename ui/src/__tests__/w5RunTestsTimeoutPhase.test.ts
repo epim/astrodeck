@@ -82,6 +82,42 @@
 //   words: expected the timeout and process.exit named, got: timed out after
 //   60s ([object Object])
 //
+// NAMED MUTANTS, backlog wave 15 (WP-115: #706, #664 Part B; same method).
+// Observed failures, verbatim (the dash in run-tests.mjs's own sentence is an
+// em dash and prints as one in a UTF-8 console):
+//
+// "brokenReason drops how the child ended" (`const how = describeEnd(r);` ->
+// `const how = null;`). "w5RunTestsTimeoutPhase.test: 24/30 passed":
+//   x a silently dead child's reason names the exit code it died with:
+//   expected the no-tally reason followed by the exit code, got: no pass/fail
+//   tally in its output - cannot be scored
+//
+// "no hex beside a large exit code" (`const hex = r.exitCode > 255 ?` ->
+// `const hex = false ?`). "29/30 passed":
+//   x a Windows crash code is printed in hex as well, which is how it is
+//   looked up: got: no pass/fail tally in its output - cannot be scored (the
+//   child exited with code 3221225477)
+//
+// "a clean tally then a bad exit reads '0 failed'" (`return r.counts.failed >
+// 0 || how === null` -> `return true`). "29/30 passed":
+//   x a clean tally followed by a bad exit says so instead of '0 failed': a
+//   red file whose reason reads 0 failed is unexplained, got: 0 failed
+//
+// "the pipes-held phase prose is swapped" (`exitedBeforeKill === true` returns
+// PHASES.exitHungNeverExited). "28/30 passed":
+//   x the exit-hung phase says which kind it was once the child's exit event
+//   is known: got: after process.exit() was called -- the process never exited
+//
+// "the watcher does not need __IMPORTED__" (exitingWatcher's `let sawImported
+// = false;` -> `true`). "28/30 passed":
+//   x __EXITING__ with no __IMPORTED__ before it does not start the clock: the
+//   exit marker alone is a file's own text, not the child's
+//
+// "the watcher carries no tail between chunks" (`tail = seen.slice(...)` ->
+// `tail = "";`). "29/30 passed":
+//   x a marker split across two chunks is still found: the exit marker
+//   straddled two chunks and was missed: 0
+//
 //   Run directly:  npx tsx src/__tests__/w5RunTestsTimeoutPhase.test.ts
 
 interface Phase {
@@ -100,16 +136,23 @@ interface BrokenInput {
   output: string;
   imported?: boolean;
   exiting?: boolean;
+  exitCode?: number | string | null;
+  signal?: string | null;
+  exitedBeforeKill?: boolean | null;
+  graceKilled?: boolean;
 }
 interface RunTestsModule {
   splitChildOutput(stdout: string, stderr: string): ChildSplit;
-  timeoutPhase(r: { output: string; imported?: boolean; exiting?: boolean }): Phase;
+  timeoutPhase(r: {
+    output: string; imported?: boolean; exiting?: boolean; exitedBeforeKill?: boolean | null;
+  }): Phase;
   brokenReason(r: BrokenInput): string;
+  exitingWatcher(onExiting: () => void): (chunk: string) => void;
 }
 const nodeImport = (s: string): Promise<unknown> =>
   (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(s);
 const RUN_TESTS_URL = new URL("../../run-tests.mjs", import.meta.url).href;
-const { splitChildOutput, timeoutPhase, brokenReason } =
+const { splitChildOutput, timeoutPhase, brokenReason, exitingWatcher } =
   (await nodeImport(RUN_TESTS_URL)) as RunTestsModule;
 
 // ---------------------------------------------------------------- harness
@@ -289,6 +332,141 @@ test("a result that did not time out keeps its own reasons", () => {
     === "2 failed", "a tally with failures reads as N failed");
   assert(/no pass\/fail tally/.test(brokenReason({ timedOut: false, counts: null, output: "" })),
     "an unscorable file keeps its own reason");
+});
+
+// ----------------------------------- how a child ended (#706, #664 Part B)
+// The real-child half is w15ChildExitReport.test.ts; these read the sentence
+// from hand-built results, so the exact wording is pinned without a process.
+
+test("a silently dead child's reason names the exit code it died with", () => {
+  const why = brokenReason({ timedOut: false, counts: null, output: "", exitCode: 3, signal: null });
+  assert(/^no pass\/fail tally/.test(why) && /\(the child exited with code 3\)$/.test(why),
+    `expected the no-tally reason followed by the exit code, got: ${why}`);
+});
+
+test("a Windows crash code is printed in hex as well, which is how it is looked up", () => {
+  const why = brokenReason({
+    timedOut: false, counts: null, output: "", exitCode: 3221225477, signal: null,
+  });
+  assert(/exited with code 3221225477 \(0xC0000005\)/.test(why), `got: ${why}`);
+  assert(!/\(0x/.test(brokenReason({ timedOut: false, counts: null, output: "", exitCode: 3 })),
+    "a small code needs no hex");
+});
+
+test("a child killed by a signal is named by the signal, not by a missing code", () => {
+  const why = brokenReason({
+    timedOut: false, counts: null, output: "", exitCode: null, signal: "SIGSEGV",
+  });
+  assert(/killed by signal SIGSEGV/.test(why) && !/exited with code/.test(why), `got: ${why}`);
+});
+
+test("a child the runner's own plumbing stopped is named by that error, not by the signal it caused", () => {
+  const why = brokenReason({
+    timedOut: false, counts: null, output: "", exitCode: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    signal: "SIGTERM",
+  });
+  assert(/stopped with ERR_CHILD_PROCESS_STDIO_MAXBUFFER/.test(why) && !/SIGTERM/.test(why),
+    `got: ${why}`);
+});
+
+test("a result that carries no exit information keeps the plain no-tally reason", () => {
+  // A hand-built result, or one from before runOne kept these: nothing to say
+  // must print as nothing, never as the words undefined or null.
+  const why = brokenReason({ timedOut: false, counts: null, output: "" });
+  assert(why === "no pass/fail tally in its output — cannot be scored", `got: ${why}`);
+});
+
+test("a clean tally followed by a bad exit says so instead of '0 failed'", () => {
+  const clean = { passed: 2, failed: 0, total: 2 };
+  const why = brokenReason({ timedOut: false, counts: clean, output: "x: 2/2 passed", exitCode: 1 });
+  assert(/^0 failed, but the child exited with code 1$/.test(why),
+    `a red file whose reason reads 0 failed is unexplained, got: ${why}`);
+  assert(brokenReason({ timedOut: false, counts: clean, output: "" }) === "0 failed",
+    "with nothing known about the exit the reason stays the old one");
+});
+
+test("a grace-killed child says the runner killed it, not that it timed out", () => {
+  const why = brokenReason({
+    timedOut: false, counts: null, output: "", exitCode: null, signal: "SIGKILL",
+    graceKilled: true,
+  });
+  assert(/grace kill/.test(why) && /process\.exit\(\)/.test(why) && !/timed out/.test(why),
+    `got: ${why}`);
+});
+
+test("the exit-hung phase says which kind it was once the child's exit event is known", () => {
+  const tally = "x.test: 3/3 passed";
+  const never = timeoutPhase({ output: tally, imported: true, exiting: true, exitedBeforeKill: false });
+  const held = timeoutPhase({ output: tally, imported: true, exiting: true, exitedBeforeKill: true });
+  const unknown = timeoutPhase({ output: tally, imported: true, exiting: true });
+  assert(never.id === "exit-hung" && held.id === "exit-hung" && unknown.id === "exit-hung",
+    "all three are one phase id, so the retry decision that compares ids cannot change");
+  assert(/process never exited/.test(never.prose), `got: ${never.prose}`);
+  assert(/had exited, but its stdio pipes never closed/.test(held.prose), `got: ${held.prose}`);
+  assert(!/never exited|stdio pipes/.test(unknown.prose),
+    `with no event to read, the prose must not claim either kind, got: ${unknown.prose}`);
+});
+
+test("the timeout reason carries the kind of exit hang in words", () => {
+  const clean = { passed: 1, failed: 0, total: 1 };
+  const base = { timedOut: true, counts: clean, output: "x.test: 1/1 passed", imported: true,
+    exiting: true };
+  assert(/the process never exited/.test(brokenReason({ ...base, exitedBeforeKill: false })),
+    "never-exited must reach the summary");
+  assert(/stdio pipes never closed/.test(brokenReason({ ...base, exitedBeforeKill: true })),
+    "held-pipes must reach the summary");
+});
+
+// ------------------------------------------------- exitingWatcher (#664 B)
+// What starts the grace period: `__EXITING__` going by on the child's stderr
+// AFTER `__IMPORTED__`. The real-child half (a file that only SAYS the word
+// is not killed) is w15ChildExitReport.test.ts.
+
+function watcher(): { feed: (chunk: string) => void; fired: () => number } {
+  let n = 0;
+  return { feed: exitingWatcher(() => { n++; }), fired: () => n };
+}
+
+test("the grace watcher fires once, when __EXITING__ follows __IMPORTED__", () => {
+  const w = watcher();
+  w.feed("__IMPORTED__\n");
+  w.feed('__COUNTS__{"passed":1,"failed":0,"total":1}\n');
+  assert(w.fired() === 0, "the import marker alone must not start the clock");
+  w.feed("__EXITING__\n");
+  assert(w.fired() === 1, `expected one call at the exit marker, got ${w.fired()}`);
+  w.feed("__EXITING__\n");
+  assert(w.fired() === 1, "it must fire once, not once per chunk that mentions it");
+});
+
+test("both markers in one chunk fire the watcher", () => {
+  const w = watcher();
+  w.feed("__IMPORTED__\n__EXITING__\n");
+  assert(w.fired() === 1, `got ${w.fired()}`);
+});
+
+test("a marker split across two chunks is still found", () => {
+  const split = watcher();
+  split.feed("__IMPOR");
+  split.feed("TED__\n__EXIT");
+  assert(split.fired() === 0, "half of the exit marker is not the marker");
+  split.feed("ING__\n");
+  assert(split.fired() === 1,
+    `the exit marker straddled two chunks and was missed: ${split.fired()}`);
+});
+
+test("__EXITING__ with no __IMPORTED__ before it does not start the clock", () => {
+  // A file that prints the word on its own stderr while its cases are still
+  // running must not be killed in the middle of them.
+  const w = watcher();
+  w.feed("__EXITING__\n");
+  w.feed("more of the file's own output\n");
+  assert(w.fired() === 0, "the exit marker alone is a file's own text, not the child's");
+});
+
+test("__EXITING__ BEFORE __IMPORTED__ in the stream does not start the clock either", () => {
+  const w = watcher();
+  w.feed("__EXITING__\n__IMPORTED__\n");
+  assert(w.fired() === 0, "the child writes the pair in order; the other order is not the child");
 });
 
 // ---------------------------------------------------------------- report

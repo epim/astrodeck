@@ -63,20 +63,29 @@ export interface ProfileCardProps {
   /** The one sentence for a principal who cannot write backend config, or a
    *  dead link. Null when the only thing in the way is this row's own state. */
   lockedReason: string | null;
+  /** ACTIVATE's own group lock, when it differs from `lockedReason`. Over the
+   *  relay the rig lets an unforced activate through its LAN fence (#685) while
+   *  it still refuses rename, update, export-side writes and delete, so the
+   *  editor hands ACTIVATE the capability-and-link lock alone. Omitted, ACTIVATE
+   *  follows `lockedReason` as every other control here does. */
+  activateLockedReason?: string | null;
   onExplain: (reason: string) => void;
 }
 
 export function ProfileCard({
   row, busy, connecting, otherConnecting, renaming,
   onActivate, onStartRename, onCancelRename, onCommitRename,
-  onUpdateFromRig, onExport, onDelete, lockedReason, onExplain,
+  onUpdateFromRig, onExport, onDelete, lockedReason, activateLockedReason, onExplain,
 }: ProfileCardProps): JSX.Element {
   // The permission always wins: it is the reason that will still be true after
   // the in-flight request finishes. Row state is the second answer, not the
   // first, so a viewer never reads "an action is still running" for something
   // they could not have started.
   const rowLock = lockedReason ?? (busy ? ROW_BUSY : null);
-  const activateLock = rowLock ?? (otherConnecting ? OTHER_CONNECTING : null);
+  const activateGroupLock = activateLockedReason === undefined ? lockedReason : activateLockedReason;
+  const activateLock = activateGroupLock
+    ?? (busy ? ROW_BUSY : null)
+    ?? (otherConnecting ? OTHER_CONNECTING : null);
   const overrides = profileOverrideSummary(row);
 
   return (

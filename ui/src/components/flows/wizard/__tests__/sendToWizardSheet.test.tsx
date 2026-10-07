@@ -31,6 +31,14 @@
 //      flowsSlice `flowsOpen`'s, for every caller, and this sheet's
 //      `openSaved` is only the check that the flow asked for landed. The
 //      refusal is said once, by the store.
+//   6. NIGHT AND RESUME (backlog WP-100, #196): the two steps between GUIDING
+//      and the review. NIGHT opens on DUSK WINDOW's defaults and asks a clock
+//      only beside its "Clock time"; RESUME asks the owner's question in the
+//      owner's words with the DUSK field's help text, through the one InfoDot.
+//      GENERATE still posts ONE request, carrying exactly the keys the
+//      operator changed. The saved review's first line is the server's brief
+//      (`GET /api/flows/{id}/tonight`), and a brief that cannot be read is
+//      "unavailable" and never a RUN lock.
 //
 // Every mutant below was run in a private scratch copy of ui/
 // (scratchpad/S6-WIZ-UI-mut), never in the shared tree (#254), and the
@@ -198,6 +206,7 @@ const Sheet = sheetModule.default;
 const { DOCTOR_CLEAR, OPEN_FAILED, RUN_DID_NOT_START } = sheetModule;
 const { FLOW_OPEN_OVER_UNSAVED } = await import("../../flowsSlice");
 const M = await import("../wizardModel");
+const { AUTO_RESUME_HELP, NODE_DEFS } = await import("../../nodeDefs");
 type WizardPrefill = import("../wizardModel").WizardPrefill;
 
 // ------------------------------------------------------------------ fixtures
@@ -230,11 +239,24 @@ function fxPrefill(over: Partial<WizardPrefill> = {}): WizardPrefill {
 
 const RUN_OK = { started: true, flow_id: ID, frames: 200, unmapped: [] };
 
+/** The server's brief of the saved flow, as `GET /api/flows/{id}/tonight`
+ *  carries it, made up: a sentence about the graph and no site. The answer
+ *  holds other keys too, which the real one derives from the site; the review
+ *  must keep none of them, so this one carries a marker the DOM is searched
+ *  for (the sheet's test below). */
+const BRIEF = "This flow arms at astro dusk (-30 min), then shoots M31 as a 3x2 mosaic.";
+const DERIVED_MARKER = "DERIVED-FROM-THE-SITE-MARKER";
+const TONIGHT = { brief: BRIEF, windows: [{ note: DERIVED_MARKER }], story: [DERIVED_MARKER] };
+
 /** The routes the walk reaches, each answered from the recording. `compile`
  *  is the saved flow's check; `wizard` may be held open by a test. */
-function routes(o: { compile?: unknown; wizard?: Reply } = {}): (c: Call) => Reply | null {
+function routes(o: { compile?: unknown; wizard?: Reply; tonight?: Reply | "reject" } = {}): (c: Call) => Reply | null {
   return (c) => {
     if (c.method === "POST" && c.url.endsWith("/api/flows/wizard")) return o.wizard ?? { status: 200, body: FX.answer };
+    if (c.method === "GET" && c.url.endsWith(`/api/flows/${ID}/tonight`)) {
+      if (o.tonight === "reject") return Promise.reject(new Error("network down"));
+      return o.tonight ?? { status: 200, body: TONIGHT };
+    }
     if (c.method === "POST" && c.url.endsWith(`/api/flows/${ID}/compile`)) return { status: 200, body: o.compile ?? FX.compile };
     if (c.method === "POST" && c.url.endsWith("/api/flows/compile")) return { status: 200, body: FX.compile };
     if (c.method === "GET" && c.url.endsWith(`/api/flows/${ID}`)) return { status: 200, body: FX.answer };
@@ -318,7 +340,9 @@ function walkToReview(): void {
   next();                    // framing -> filters
   tickLRGB();
   next();                    // filters -> guiding
-  next();                    // guiding -> review
+  next();                    // guiding -> night
+  next();                    // night -> resume
+  next();                    // resume -> review
   eq(stepNow(), "review", "the walk did not reach the review");
 }
 const wizardPosts = () => calls.filter((c) => c.method === "POST" && c.url.endsWith("/api/flows/wizard"));
@@ -371,6 +395,10 @@ await test("the recorded prefill walks to one POST whose body is the recorded re
   next();
   eq(stepNow(), "guiding", "NEXT did not reach GUIDING");
   eq(q("wizard-guiding-on").getAttribute("aria-checked"), "true", "guiding did not start on");
+  next();
+  eq(stepNow(), "night", "NEXT did not reach NIGHT");
+  next();
+  eq(stepNow(), "resume", "NEXT did not reach RESUME");
   next();
   eq(stepNow(), "review", "NEXT did not reach REVIEW");
   eq(wizardPosts().length, 0, "something was generated before GENERATE");
@@ -774,6 +802,8 @@ await test("a mosaic with no angle is asked for one, and the asked angle is post
   tickLRGB();
   next();
   next();
+  next();
+  next();
   click(btn("wizard-generate"));
   await flush();
   const body = wizardPosts()[0]?.body;
@@ -798,6 +828,8 @@ await test("a rig with no camera field is offered one target, and then posts no 
   assert(q("wizard-planned-single"), "taking the offer does not say what it means");
   next();
   tickLRGB();
+  next();
+  next();
   next();
   next();
   click(btn("wizard-generate"));
@@ -930,6 +962,301 @@ await test("a refused answer is shown with the server's words, and nothing reads
   assert((q("wizard-generate-error")?.textContent ?? "").includes("'Lum' is not a filter on this wheel"),
     `the refusal is not shown in the server's words: ${q("wizard-generate-error")?.textContent}`);
   eq(qa("wizard-saved").length + qa("wizard-run").length, 0, "a refused answer reads as a saved flow");
+});
+
+// ============================================ 6b. NIGHT, RESUME and the brief
+//
+// Backlog WP-100 (#196, wave 15). Every mutant below was applied from a byte
+// backup inside the worktree, the file restored byte-identically (sha256
+// compared) and the mutant text grepped gone; the failure each produced is
+// quoted.
+
+/** The walk to the NIGHT step with the recorded answers: TARGET and FRAMING
+ *  have everything, FILTERS ticks L, R, G and B, GUIDING is the default. */
+function walkToNight(): void {
+  next();                    // target -> framing
+  next();                    // framing -> filters
+  tickLRGB();
+  next();                    // filters -> guiding
+  next();                    // guiding -> night
+  eq(stepNow(), "night", "the walk did not reach NIGHT");
+}
+
+/** The owner's label for RESUME, EXACTLY (ruling 7 on #189), spelled out here
+ *  and not read from nodeDefs.ts: the test is that the sheet says these words. */
+const OWNER_LABEL = "Automatic resume on subsequent nights until capture quota is fulfilled";
+
+await test("NIGHT opens on DUSK WINDOW's defaults, asks a clock only beside its Clock time, and locks NEXT with the reason", async () => {
+  setup();
+  mount(fxPrefill());
+  walkToNight();
+  eq([q("wizard-start-0").getAttribute("aria-checked"), q("wizard-stop-0").getAttribute("aria-checked")],
+    ["true", "true"], "NIGHT did not open on Astro dusk and Dawn");
+  eq(q("wizard-ask-min-alt").value, "30", "the altitude did not open on the node's 30");
+  eq(qa("wizard-ask-start-clock").length + qa("wizard-ask-stop-clock").length, 0,
+    "a clock was asked beside a sun-based start and a Dawn stop");
+  assert(!locked(btn("wizard-next")), "NEXT is locked on the defaults");
+  // The stop has the two choices the server takes, and no "None".
+  eq([qa("wizard-stop-0").length, qa("wizard-stop-1").length, qa("wizard-stop-2").length], [1, 1, 0],
+    "the stop choices are not Dawn and Clock time");
+  assert(q("wizard-night-note").textContent.includes(sheetModule.STOP_NONE_NOTE), "the note on why there is no None is missing");
+  assert(!q("wizard-night-note").textContent.includes(sheetModule.CLOCK_NOTE), "the clock note shows with no clock chosen");
+
+  click(q("wizard-start-3"));          // Clock time
+  assert(q("wizard-ask-start-clock"), "a Clock time start did not ask for its clock");
+  assert(locked(btn("wizard-next")), "NEXT is open on a Clock time start with no time");
+  eq(q("wizard-missing").textContent, M.NEED_START_CLOCK, "the missing line is not the start clock's");
+  typeInto(q("wizard-ask-start-clock"), "9pm");
+  assert(locked(btn("wizard-next")), "NEXT opened on a time that is not HH:MM");
+  typeInto(q("wizard-ask-start-clock"), "21:15");
+  assert(!locked(btn("wizard-next")), "NEXT stayed locked on a valid start clock");
+  assert(q("wizard-night-note").textContent.includes(sheetModule.CLOCK_NOTE), "the clock note is missing beside a clock");
+
+  click(q("wizard-stop-1"));           // Clock time
+  assert(q("wizard-ask-stop-clock"), "a Clock time stop did not ask for its clock");
+  eq(q("wizard-missing").textContent, M.NEED_STOP_CLOCK, "the missing line is not the stop clock's");
+  typeInto(q("wizard-ask-stop-clock"), "03:30");
+  assert(!locked(btn("wizard-next")), "NEXT stayed locked on a valid stop clock");
+
+  typeInto(q("wizard-ask-min-alt"), "95");
+  eq(q("wizard-missing").textContent, M.NEED_MIN_ALT, "an altitude of 95 was not refused in words");
+  typeInto(q("wizard-ask-min-alt"), "");
+  assert(locked(btn("wizard-next")), "NEXT is open on a blank altitude");
+  typeInto(q("wizard-ask-min-alt"), "45");
+  assert(!locked(btn("wizard-next")), "NEXT stayed locked on an altitude of 45");
+
+  // Back to a sun-based start: its clock is no longer asked, and the typed
+  // time does not hold the step.
+  click(q("wizard-start-0"));
+  eq(qa("wizard-ask-start-clock").length, 0, "the start clock stayed after the choice that reads it was left");
+  assert(!locked(btn("wizard-next")), "an abandoned clock held NEXT");
+});
+
+await test("RESUME asks the owner's question in the owner's words, with the DUSK field's help text through the one InfoDot", async () => {
+  setup();
+  mount(fxPrefill());
+  walkToNight();
+  next();
+  eq(stepNow(), "resume", "NEXT did not reach RESUME");
+  eq(q("wizard-resume-label").textContent, OWNER_LABEL, "the RESUME label is not the owner's words, exactly");
+  const group = q("wizard-resume-on").closest('[role="radiogroup"]');
+  eq(group.getAttribute("aria-label"), OWNER_LABEL, "the choice is not named by the owner's words");
+  // The help is the editor's own constant: read here from the DUSK field it
+  // is also drawn for, and reached from the control and from the dot.
+  const editorsHelp = (NODE_DEFS.dusk.fields.find((f: any) => f.key === "autoResume") as any)?.help;
+  eq(editorsHelp, AUTO_RESUME_HELP, "premise: the editor's help is no longer AUTO_RESUME_HELP");
+  eq(q("wizard-resume-help").textContent, AUTO_RESUME_HELP, "the help text is not the DUSK field's");
+  eq(group.getAttribute("aria-describedby"), "wizard-resume-help", "the choice is not described by the help");
+  assert(doc.querySelector(`[role="button"][aria-label="Explain: ${OWNER_LABEL}"]`), "no InfoDot beside the label");
+  eq([q("wizard-resume-on").getAttribute("aria-checked"), q("wizard-resume-off").getAttribute("aria-checked")],
+    ["true", "false"], "RESUME did not open on On");
+  assert(!locked(btn("wizard-next")), "NEXT is locked on RESUME");
+  click(q("wizard-resume-off"));
+  eq([q("wizard-resume-on").getAttribute("aria-checked"), q("wizard-resume-off").getAttribute("aria-checked")],
+    ["false", "true"], "Off was not taken");
+  assert(!locked(btn("wizard-next")), "NEXT is locked after Off");
+  // NEVER COPIED: the sheet's source holds neither the owner's words nor a
+  // sentence of the help, only the constants.
+  const SRC = readFileSync(new URL("../SendToWizardSheet.tsx", import.meta.url), "utf8") as string;
+  assert(!SRC.includes("subsequent nights until capture quota"), "the sheet carries a copy of the owner's label");
+  assert(!SRC.includes("When on, AstroDeck resumes"), "the sheet carries a copy of the DUSK field's help text");
+  assert(/AUTO_RESUME_LABEL/.test(SRC) && /AUTO_RESUME_HELP/.test(SRC), "the sheet does not read the editor's constants");
+});
+
+// MUTANT "always send auto_resume" and MUTANT "the default is sent too"
+// (wizardModel.ts; see wizardModel.test.ts section 7): the cases from here on
+// that post a body are red under both, on the request the sheet posts
+// ("31/34 passed" each), and the NIGHT case above is red under MUTANT "night
+// step not required" on the NEXT lock the sheet draws ("33/34 passed":
+// NEXT is open on a Clock time start with no time).
+//
+// MUTANT "RESUME copies the help" (SendToWizardSheet.tsx: the screen-reader
+// copy of the help written as a string literal in place of AUTO_RESUME_HELP).
+// Observed ("sendToWizardSheet.test: 33/34 passed"):
+//   x RESUME asks the owner's question in the owner's words, with the DUSK field's help text through the one InfoDot: the help text is not the DUSK field's
+//     expected "When on, AstroDeck resumes this flow automatically on subsequent nights, when its window opens, until every frame the flow asks for is taken. With a Dawn stop it parks at dawn. ..."
+//     got      "When on, AstroDeck resumes this flow on later nights."
+//
+// MUTANT "a start clock asked beside any start" (SendToWizardSheet.tsx: the
+// `answers.start === CLOCK_TIME &&` guard of the START AT field made `true`).
+// Observed ("sendToWizardSheet.test: 33/34 passed"):
+//   x NIGHT opens on DUSK WINDOW's defaults, asks a clock only beside its Clock time, and locks NEXT with the reason: a clock was asked beside a sun-based start and a Dawn stop
+//     expected 0
+//     got      1
+await test("GENERATE with Off and a clock stop posts one request carrying those keys and no others", async () => {
+  setup();
+  mount(fxPrefill());
+  walkToNight();
+  click(q("wizard-stop-1"));
+  typeInto(q("wizard-ask-stop-clock"), "03:30");
+  next();
+  eq(stepNow(), "resume", "NEXT did not reach RESUME");
+  click(q("wizard-resume-off"));
+  next();
+  eq(stepNow(), "review", "NEXT did not reach REVIEW");
+  eq(q("wizard-summary-night").textContent, "NIGHTfrom astro dusk to 03:30 (clock time), min altitude 30 deg",
+    "the review does not say the night as answered");
+  assert(q("wizard-summary-resume").textContent.includes("off"), "the review does not say the flow resumes no later night");
+  eq(wizardPosts().length, 0, "something was generated before GENERATE");
+  click(btn("wizard-generate"));
+  click(btn("wizard-generate"));
+  await flush();
+  eq(wizardPosts().length, 1, "GENERATE did not make exactly one request");
+  const body = wizardPosts()[0].body;
+  eq(canon(body), canon({ ...FX.request, stop: "Clock time", stop_clock: "03:30", auto_resume: "Off" }),
+    "the posted body is not the recorded request plus the three changed answers, and nothing else:");
+  eq(Object.keys(body).filter((k) => !(k in FX.request)), ["stop", "stop_clock", "auto_resume"],
+    "the keys added to the recorded request, in order:");
+});
+
+await test("a sheet nobody changed NIGHT or RESUME in posts the recorded request, with none of the six keys", async () => {
+  setup();
+  mount(fxPrefill());
+  walkToReview();
+  eq(q("wizard-summary-night").textContent, "NIGHTfrom astro dusk to dawn, min altitude 30 deg", "the default night, as the review says it");
+  assert(/subsequent nights/.test(q("wizard-summary-resume").textContent), "the default resume, as the review says it");
+  click(btn("wizard-generate"));
+  await flush();
+  const body = wizardPosts()[0].body;
+  eq(JSON.stringify(body), JSON.stringify(FX.request), "the default NIGHT and RESUME answers moved the posted request:");
+});
+
+await test("every NIGHT answer reaches the body: a sun-based start, an altitude, and a Clock time start", async () => {
+  setup();
+  mount(fxPrefill());
+  walkToNight();
+  click(q("wizard-start-2"));                  // Civil dusk
+  typeInto(q("wizard-ask-min-alt"), "42.5");
+  next();
+  next();
+  click(btn("wizard-generate"));
+  await flush();
+  eq(canon(wizardPosts()[0].body), canon({ ...FX.request, start: "Civil dusk", min_alt: 42.5 }), "a sun-based start and an altitude:");
+  unmount();
+
+  setup();
+  mount(fxPrefill());
+  walkToNight();
+  click(q("wizard-start-3"));
+  typeInto(q("wizard-ask-start-clock"), "21:15");
+  next();
+  next();
+  click(btn("wizard-generate"));
+  await flush();
+  eq(canon(wizardPosts()[0].body), canon({ ...FX.request, start: "Clock time", start_clock: "21:15" }), "a Clock time start:");
+});
+
+// MUTANT "review blocks on brief failure" (SendToWizardSheet.tsx runReason:
+// `?? (brief.state === "unavailable" ? "the brief is unavailable" : null)`
+// added after `runLock(compiled, compileFailed)`).
+// Observed ("sendToWizardSheet.test: 33/34 passed"):
+//   x a brief that cannot be read says so and never locks RUN: a 500: a brief that cannot be read locked RUN: the brief is unavailable
+//     expected false
+//     got      true
+//
+// MUTANT "the brief prints the whole answer" (wizardModel.ts briefOf returns
+// `JSON.stringify(answer)` for a non-blank brief).
+// Observed ("sendToWizardSheet.test: 31/34 passed"):
+//   x the saved review's first line is the server's brief, read once, and nothing else of the answer is kept: the review does not print the server's brief
+//     expected "This flow arms at astro dusk (-30 min), then shoots M31 as a 3x2 mosaic."
+//     got      "{\"brief\":\"This flow arms at astro dusk (-30 min), then shoots M31 as a 3x2 mosaic.\",\"windows\":[{\"note\":\"DERIVED-FROM-THE-SITE-MARKER\"}],\"story\":[\"DERIVED-FROM-THE-SITE-MARKER\"]}"
+//   (and the in-flight case and the failed-compile case, which also read the brief)
+
+await test("the saved review's first line is the server's brief, read once, and nothing else of the answer is kept", async () => {
+  setup();
+  mount(fxPrefill());
+  walkToReview();
+  click(btn("wizard-generate"));
+  await flush();
+  const reads = calls.filter((c) => c.method === "GET" && c.url.endsWith(`/api/flows/${ID}/tonight`));
+  eq(reads.length, 1, "the saved flow's brief was not read exactly once");
+  eq(q("wizard-brief").textContent, BRIEF, "the review does not print the server's brief");
+  eq(q("wizard-brief").getAttribute("data-state"), "ok", "the brief's state");
+  eq(q("wizard-step").querySelector("p")?.getAttribute("data-testid"), "wizard-brief",
+    "the brief is not the review's first line");
+  // The numbers the review prints are still the compile's, and RUN is open.
+  eq(qa("wizard-review-line").map((l) => l.textContent),
+    ["5 panels: 40 subs per panel, 200 in all", "0.67 h per panel, 3.33 h in all"], "the compile's numbers moved");
+  assert(!locked(btn("wizard-run")), "RUN is locked on a clean compile and a read brief");
+  // Only the brief is kept: the rest of the Tonight answer is derived from the
+  // site, and appears nowhere on the page.
+  assert(!String(doc.body.textContent).includes(DERIVED_MARKER), "the sheet shows more of the Tonight answer than its brief");
+});
+
+await test("a brief that cannot be read says so and never locks RUN", async () => {
+  const failures: Array<[string, Reply | "reject"]> = [
+    ["a 500", { status: 500, body: { detail: "ephemeris failed" } }],
+    ["a 403 (this role may not read the Tonight answer)", { status: 403, body: { detail: "forbidden" } }],
+    ["a 404", { status: 404, body: { detail: "no flow" } }],
+    ["a network error", "reject"],
+    ["an answer with no brief", { status: 200, body: { windows: [] } }],
+    ["a blank brief", { status: 200, body: { brief: "  " } }],
+  ];
+  for (const [what, tonight] of failures) {
+    unmount();
+    setup();
+    answer = routes({ tonight });
+    mount(fxPrefill());
+    walkToReview();
+    click(btn("wizard-generate"));
+    await flush();
+    eq(q("wizard-brief").textContent, M.BRIEF_UNAVAILABLE, `${what}: the review does not say the brief is unavailable`);
+    eq(q("wizard-brief").getAttribute("data-state"), "unavailable", `${what}: the brief's state`);
+    eq(locked(btn("wizard-run")), false, `${what}: a brief that cannot be read locked RUN: ${q("wizard-run-reason")?.textContent}`);
+    eq(qa("wizard-run-reason").length, 0, `${what}: RUN gives a reason although nothing locks it`);
+    assert(!locked(btn("wizard-open-editor")), `${what}: OPEN IN EDITOR is locked`);
+    // And the compile's own findings still print: nothing the brief did
+    // reached them.
+    eq(q("wizard-doctor-clear")?.textContent, DOCTOR_CLEAR, `${what}: the doctor's verdict did not print`);
+    click(btn("wizard-run"));
+    await flush();
+    eq(runPosts().length, 1, `${what}: RUN did not post the run`);
+    eq(started, 1, `${what}: a started run was not handed to the host`);
+  }
+});
+
+await test("a brief still being read holds nothing: RUN is open, and the line fills in when it lands", async () => {
+  setup();
+  let release: (v: { status: number; body: unknown }) => void = () => {};
+  const held = new Promise<{ status: number; body: unknown }>((r) => { release = r; });
+  answer = routes({ tonight: held });
+  mount(fxPrefill());
+  walkToReview();
+  click(btn("wizard-generate"));
+  await flush();
+  eq(q("wizard-brief").textContent, M.BRIEF_WAITING, "no placeholder while the brief is being read");
+  eq(q("wizard-brief").getAttribute("data-state"), "waiting", "the brief's state while it is read");
+  eq(locked(btn("wizard-run")), false, "a brief in flight locked RUN");
+  await act(async () => { release({ status: 200, body: TONIGHT }); await Promise.resolve(); });
+  await flush();
+  eq(q("wizard-brief").textContent, BRIEF, "the brief did not fill in when it landed");
+});
+
+await test("a refused GENERATE reads no brief, and a failed compile still reports itself beside a read one", async () => {
+  setup();
+  answer = (c) => (c.url.endsWith("/api/flows/wizard")
+    ? { status: 422, body: { detail: { detail: "stop: refused", code: "invalid_wizard_answer" } } }
+    : routes()(c));
+  mount(fxPrefill());
+  walkToReview();
+  click(btn("wizard-generate"));
+  await flush();
+  eq(calls.filter((c) => c.url.endsWith("/tonight")).length, 0, "a refused answer read a brief");
+  eq(qa("wizard-brief").length, 0, "a refused answer shows a brief line");
+  unmount();
+
+  // The two reads are independent: a compile that fails locks RUN with its own
+  // reason, and the brief beside it is still the server's.
+  setup();
+  const base = routes();
+  answer = (c) => (c.method === "POST" && c.url.endsWith(`/api/flows/${ID}/compile`)
+    ? { status: 500, body: { detail: "compile failed" } } : base(c));
+  mount(fxPrefill());
+  walkToReview();
+  click(btn("wizard-generate"));
+  await flush();
+  eq(q("wizard-brief").textContent, BRIEF, "a failed compile took the brief with it");
+  eq(locked(btn("wizard-run")), true, "a failed compile did not lock RUN");
 });
 
 // ============================================================ 6. the classic host

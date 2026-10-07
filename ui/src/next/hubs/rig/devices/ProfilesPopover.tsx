@@ -53,11 +53,18 @@ export interface ProfilesPopoverProps {
   liveDevices: number;
   canConfig: boolean;
   /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
-   *  Activate, SAVE and delete all write under `/api/profiles`, a prefix on
-   *  `app.py`'s relay fence, so the rig refuses them 403 `local_only` for every
-   *  role. It goes FIRST in each chain below - the same order `gate.ts` uses,
-   *  and the reason it exists: telling an admin they need admin access is the
-   *  wrong blocker named truthfully. */
+   *  SAVE and delete write under `/api/profiles`, a prefix on `app.py`'s relay
+   *  fence, so the rig refuses them 403 `local_only` for every role. It goes
+   *  FIRST in each of those two chains - the same order `gate.ts` uses, and the
+   *  reason it exists: telling an admin they need admin access is the wrong
+   *  blocker named truthfully.
+   *
+   *  ACTIVATE IS THE EXCEPTION (#685). `POST /api/profiles/<id>/activate` is
+   *  allow-listed through the fence: it takes only a profile that is already
+   *  saved, so a relayed caller picks no destination, and it never sends
+   *  `force` from this surface (`activateProfileRow`), which is the one
+   *  option the rig still refuses over the relay. Its lock is therefore the
+   *  capability and the busy lane only. */
   lanReason?: string | null;
   busy: BusyWhat;
   setBusy: (w: BusyWhat) => void;
@@ -74,10 +81,12 @@ export function ProfilesPopover(p: ProfilesPopoverProps): JSX.Element {
   const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
     useStore.getState().showToast(level, message, opts);
 
-  const activateLock = p.lanReason
-    ?? (!p.canConfig
-      ? `Activating a profile needs ${accessPhrase("config.backend")}.`
-      : p.busy != null ? ACTIVATE_BUSY : null);
+  // No `p.lanReason` here: the rig allows an unforced activate over the relay
+  // (see the prop's note), so naming the LAN would be a true-sounding refusal of
+  // something it will do. SAVE and delete below still lead with it.
+  const activateLock = !p.canConfig
+    ? `Activating a profile needs ${accessPhrase("config.backend")}.`
+    : p.busy != null ? ACTIVATE_BUSY : null;
   const deleteLock = p.lanReason
     ?? profileDeleteLock(p.canConfig) ?? (p.busy != null ? ACTIVATE_BUSY : null);
   const saveLock = repointSaveLock(profileSaveLock({

@@ -57,7 +57,9 @@ A shared `ASTRODECK_TOKEN` is a direct transport credential. It does not replace
 
 The controller opens an outbound connection to an owner-operated relay. Remote browsers use the relay's HTTPS address and authenticate with a real home account. The relay terminates transport encryption and handles session cookies, so it is a trusted part of the deployment.
 
-Some configuration and connection operations are blocked over the relay even for admins. Perform those directly at the controller. The current relay has no public viewer-share-link creation endpoint; use a viewer account instead. Closing a browser or signing out does not stop a server-side sequence.
+Some configuration and connection operations are blocked over the relay even for admins. Perform those directly at the controller. Activating an already saved profile is the exception: it is allowed over the relay for an account that may configure backends, but not with the force option. The current relay has no public viewer-share-link creation endpoint; use a viewer account instead. Closing a browser or signing out does not stop a server-side sequence.
+
+An administrator can manage people over the relay after signing in again. Every change needs a sign-in less than five minutes old, because the relay can see and replay a session cookie but cannot make you sign in. Over the relay you can add a Google-only viewer or operator, move a viewer or operator between those two roles, disable or enable them, and delete them. Passwords, administrator accounts and changes to a username or email stay on the controller. This does not protect against a relay that is hostile while you sign in, so run the relay yourself.
 
 ## Site privacy for remote and low-role users
 

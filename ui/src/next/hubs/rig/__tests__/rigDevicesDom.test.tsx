@@ -881,6 +881,15 @@ function goRelay(on: boolean): void {
   act(() => { noteRemoteStatus(on ? { via: "relay" } : { via: "direct" }); });
 }
 
+/** Run `fn` on the relay and ALWAYS come back to the LAN: the flag is module
+ *  state, and a case that threw while it was on would leave every later case
+ *  asserting against the wrong origin. */
+async function onTheRelay(fn: () => Promise<void>): Promise<void> {
+  goRelay(true);
+  await settle();
+  try { await fn(); } finally { goRelay(false); }
+}
+
 await testAsync("on the relay the FIRST NIGHT verbs name the LAN, not a capability", async () => {
   clearPicks();
   seed({
@@ -900,7 +909,14 @@ await testAsync("on the relay the FIRST NIGHT verbs name the LAN, not a capabili
 
   goRelay(true);
   await settle();
-  for (const id of ["first-night-connect", "first-night-sim"]) {
+  // DELIBERATE PIN CHANGE (backlog WP-105, #685, wave 15 integration). This
+  // loop named first-night-connect too. The rig lets an unforced profile
+  // activate through its relay fence, so CONNECT <profile> is no longer a verb
+  // the relay refuses; it has its own cases below, and so does DETECT MY
+  // HARDWARE (the card's primary when no profile is active). What this loop
+  // still pins is RUN THE SIMULATOR, whose routes ARE fenced (`/api/connect`
+  // and `/api/drivers`).
+  for (const id of ["first-night-sim"]) {
     const btn = q(`[data-testid="${id}"]`);
     assert(btn != null, `${id} vanished on the relay - nothing may be hidden`);
     eq(btn.getAttribute("aria-disabled"), "true",
@@ -914,6 +930,95 @@ await testAsync("on the relay the FIRST NIGHT verbs name the LAN, not a capabili
   eq(asked.length, 0,
     `a relay press reached the rig: ${JSON.stringify(asked.map((a) => a.url))}`);
   goRelay(false);
+});
+
+// MUTANT "CONNECT keeps the LAN lock" (ConnectOnceCard.tsx: the CONNECT
+// button's `lockedReason={capLock}` made `lockedReason={lock}`, the lock the
+// simulator carries). Observed, "rigDevicesDom.test: 29/31 passed", the two
+// cases below:
+//   x on the relay CONNECT <profile> is armed for a role that holds
+//     config.backend, and its press activates the profile: CONNECT <profile>
+//     renders locked over the relay, but the rig allows an unforced activate
+//     (#685) (expected null, got true)
+//   x on the relay a role without config.backend still reads the capability on
+//     CONNECT, not the LAN: CONNECT names the LAN as the blocker for a role
+//     that is simply not allowed: This changes the rig's own settings, so it
+//     needs the LAN - you are connected through the relay.
+await testAsync("on the relay CONNECT <profile> is armed for a role that holds config.backend, and its press activates the profile", async () => {
+  clearPicks();
+  seed({ principal: ADMIN, equipConnected: false, status: NOTHING_CONNECTED, safety: null });
+  mount();
+  await settle();
+  await onTheRelay(async () => {
+    const connect = q('[data-testid="first-night-connect"]');
+    assert(connect != null, "no CONNECT <profile> on the relay - nothing may be hidden");
+    eq(connect.getAttribute("aria-disabled"), null,
+      "CONNECT <profile> renders locked over the relay, but the rig allows an unforced activate (#685)");
+    asked.length = 0;
+    click(connect);
+    await settle();
+    // The profile is a mixed rig, so the press asks what it will tear down and
+    // connect first; the operator's yes is what sends the activate.
+    assert(useStore.getState().confirm != null,
+      "the press asked no confirm before activating a rig that moves real hardware");
+    act(() => { useStore.getState().resolveConfirm(true); });
+    await settle();
+    const post = asked.find((a) => a.method === "POST" && /\/api\/profiles\/p1\/activate/.test(a.url));
+    assert(post != null,
+      `the press on the relay never reached the rig: ${JSON.stringify(asked.map((a) => `${a.method} ${a.url}`))}`);
+    assert(!/force/.test(post!.url), `the relay press forced the activate: ${post!.url}`);
+  });
+});
+
+// MUTANT "CONNECT ignores the capability" (ConnectOnceCard.tsx: the button's
+// `lockedReason={capLock}` made `lockedReason={null}`). Observed,
+// "rigDevicesDom.test: 30/31 passed":
+//   x on the relay a role without config.backend still reads the capability on
+//     CONNECT, not the LAN: an operator without config.backend has an armed
+//     CONNECT on the relay (expected true, got null)
+await testAsync("on the relay a role without config.backend still reads the capability on CONNECT, not the LAN", async () => {
+  clearPicks();
+  seed({ principal: OPERATOR, equipConnected: false, status: NOTHING_CONNECTED, safety: null });
+  mount();
+  await settle();
+  await onTheRelay(async () => {
+    const connect = q('[data-testid="first-night-connect"]');
+    assert(connect != null, "no CONNECT <profile> for an operator - nothing may be hidden");
+    eq(connect.getAttribute("aria-disabled"), "true",
+      "an operator without config.backend has an armed CONNECT on the relay");
+    assert(connect.getAttribute("title") !== LOCAL_ONLY_REASON,
+      "CONNECT names the LAN as the blocker for a role that is simply not allowed: "
+      + `${connect.getAttribute("title")}`);
+    assert(/needs/.test(String(connect.getAttribute("title"))),
+      `CONNECT does not name the capability: ${connect.getAttribute("title")}`);
+  });
+});
+
+// DETECT MY HARDWARE keeps the LAN sentence: it opens the sheet whose scan is a
+// fenced `/api/discover` call. With no active profile it is the card's primary.
+// MUTANT "DETECT loses the LAN lock" (ConnectOnceCard.tsx: the detect button's
+// `lockedReason={lock}` made `lockedReason={capLock}`). Observed,
+// "rigDevicesDom.test: 28/31 passed" (the other two reds are later cases that
+// inherit the relay flag the failed case left on); the first:
+//   x on the relay DETECT MY HARDWARE (no profile yet) still names the LAN:
+//     DETECT MY HARDWARE renders armed over the relay; its scan is a fenced
+//     route (expected true, got null)
+await testAsync("on the relay DETECT MY HARDWARE (no profile yet) still names the LAN", async () => {
+  clearPicks();
+  seed({
+    principal: ADMIN, equipConnected: false, status: NOTHING_CONNECTED, safety: null,
+    config: { active_profile_id: null, cooling: { warm_ramp: true, warm_rate_c_per_min: 2, warm_ambient_c: null } },
+  });
+  mount();
+  await settle();
+  await onTheRelay(async () => {
+    const detect = q('[data-testid="first-night-detect"]');
+    assert(detect != null, "no DETECT MY HARDWARE with no active profile");
+    eq(detect.getAttribute("aria-disabled"), "true",
+      "DETECT MY HARDWARE renders armed over the relay; its scan is a fenced route");
+    eq(detect.getAttribute("title"), LOCAL_ONLY_REASON,
+      `DETECT MY HARDWARE names the wrong blocker: ${detect.getAttribute("title")}`);
+  });
 });
 
 await testAsync("on the relay ADD A DEVICE locks both scans and the connect", async () => {

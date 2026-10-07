@@ -166,6 +166,17 @@ SLEW_PROJECT_S = 180.0          # pre-slew floor projection margin (slew+solve)
 SCHEDULE_WAIT_STEP_S = 5.0      # cancel-responsive sleep while waiting on a window
 WATCHDOG_TICK_S = 10.0          # no-progress watchdog wake cadence
 RECONNECT_BACKOFF_S = 5.0       # between reconnect_resume attempts on one role
+#: How many FAILED reopen attempts the frame-boundary gate makes of the guide
+#: camera in one run, the night's (#703). #16 made a guide camera that will not
+#: reopen a warning and not an abort, held off for a minute and then tried
+#: again: bounded in rate and not in count, so a camera that is gone for good
+#: was reopened, warned about and paged (each attempt publishes a `reconnect`
+#: event alerting never dedupes) once a minute until dawn. Past the cap the
+#: gate says so once and `escalation.guiding_action` decides what guiding does
+#: without it. Five is a chosen number, not a measured one: a few passes at the
+#: usual `reconnect_retries`, spaced by the minute's cool-off, which is more
+#: than a replugged camera needs.
+GUIDE_CAMERA_REOPEN_CAP = 5
 # --- target-jump budget (control-flow expansion) ---------------------------
 # Hard per-run ceiling on EXECUTED run_target/skip_target jumps. This is the
 # real backstop against a mutual-jump cycle (A -> run B, B -> run A, neither
@@ -224,6 +235,25 @@ MAX_REARM_AFTER_FAILURE = 3
 #: flips of one crossing do not each buy a sweep. Raising it without arming the
 #: temperature delta is how a rig ends up focusing once a night.
 FRESH_FOCUS_S = 30 * 60.0
+
+#: How often the sweep owed since two sparse-field failures asks whether the
+#: field can be focused on yet (#558), seconds, monotonic. Ten minutes, the
+#: cadence the group centring hold retries at (`CENTRING_HOLD_RETRY_S`). It is
+#: a COST choice, not a measurement of the sky: a probe is one exposure at the
+#: focus scope's own settings, a luminance borrow through the wheel, and one
+#: native pass of up to about 30 s, so at a probe every ten minutes the
+#: overhead stays under about a tenth of the night while the sky that starved
+#: the sweeps (it passed within the hour on 2026-09-28) is still found within
+#: one cadence of clearing. It was a light-frame star count against the
+#: probe's line, which cleared at about the first light frame whatever the sky
+#: was doing; the probe itself now makes the measurement, once per cadence.
+SPARSE_RESWEEP_EVERY_S = 600.0
+#: How often a PROBE THE FIELD DID NOT CLEAR is said in words, after the first
+#: (#558), seconds. The probe repeats every ``SPARSE_RESWEEP_EVERY_S`` for as
+#: long as the sky stays thin, which can be hours; one line per probe would
+#: bury the night log in the same sentence, and the native sweep already logs
+#: each probe's count.
+SPARSE_RESWEEP_LOG_EVERY_S = 30 * 60.0
 
 #: An autofocus longer than this, run UNGUIDED, earns a re-centre before guiding
 #: starts. Seconds.
@@ -511,6 +541,15 @@ IDLE_STOP_FINISH_S = GUIDE_OP_TIMEOUT_S + 2 * MOUNT_QUERY_TIMEOUT_S
 #: task making the stop (see `_finish_idle_stop`); a quarter second is the
 #: camera-lane wait's own cadence and nothing against a 180 s bound.
 IDLE_STOP_FINISH_POLL_S = 0.25
+#: How often `SequenceEngine._reap_by` looks at a task it is reaping. Not the
+#: poll above: that wait spans up to `IDLE_STOP_FINISH_S` and a quarter second
+#: is nothing against it, but a reap is what a run's end waits behind, and a
+#: guider stop that finished a moment after the reap began held "running"
+#: True for up to a whole poll after the guider had stopped (#289). A look is
+#: a sleep, not an await on the task, for the clocked simulator's sake (see
+#: `_reap_by`); twenty milliseconds is the cost of the wake, and a hung stop
+#: is looked at that often for no longer than `GUIDE_OP_TIMEOUT_S`.
+REAP_LOOK_S = 0.02
 
 # --- "if missed: skip" grace (Schedule.on_missed, C1-25) -------------------
 # How far a target's frozen start may already be in the past before "skip if
@@ -1108,15 +1147,27 @@ class SequenceEngine:
         #: ruling 4). Set when a sweep and its retry at twice the exposure both
         #: failed on a sparse field under ``af_failure_action`` "warn", so the
         #: run carries on at the focus it had. ``_sparse_resweep_due`` is set
-        #: by the first light frame after that whose star count reaches
-        #: ``SPARSE_FIELD_WARN``, and the frame loop sweeps at the next
-        #: boundary. Any sweep clears both: whatever ran has answered the
+        #: by the first light frame that banks once ``_sparse_resweep_next``
+        #: has passed (#558: a CADENCE of ``SPARSE_RESWEEP_EVERY_S``, not a
+        #: light frame's star count, which is not comparable with the probe's
+        #: line), and the frame loop runs the owed sweep at the next boundary
+        #: as a GATED one: the native sweep takes its probe and declines to
+        #: sweep when it counts fewer than ``SPARSE_FIELD_WARN``, whereupon
+        #: the debt is kept and the next probe scheduled one cadence on. Any
+        #: sweep that RUNS clears both flags: whatever ran has answered the
         #: debt. The owed sweep's own failure owes nothing more, or a night
-        #: whose light frames always clear the line (they are longer and
-        #: finer-binned than a sweep's) would alternate one frame with two
-        #: failed sweeps until dawn.
+        #: whose probes always clear the line would alternate a frame with
+        #: two failed sweeps until dawn.
         self._sparse_resweep_owed = False
         self._sparse_resweep_due = False
+        #: ``time.monotonic()`` at which the owed sweep may next fall due,
+        #: None while nothing is owed. Set when the debt is created and again
+        #: after each gated probe.
+        self._sparse_resweep_next: float | None = None
+        #: ``time.monotonic()`` of the last "the probe did not clear" line,
+        #: None until the first, so the first says it and the rest at most
+        #: every ``SPARSE_RESWEEP_LOG_EVERY_S``. Reset when a debt is made.
+        self._sparse_gated_logged_at: float | None = None
         #: ``(session, frames seen, accepted map)`` for `_accepted_now`, or
         #: None until it is first asked.
         self._accepted_seen: tuple | None = None
@@ -1602,6 +1653,14 @@ class SequenceEngine:
         # up, instead of unwinding the frame loop. A set => idempotent, so a rule
         # that re-fires every frame can never queue work or loop.
         self._pending_skips: set[str] = set()
+        # Target ids of set-aside panels the operator asked to bring back
+        # (``retry_set_aside``, #600), in the order asked. The route only
+        # QUEUES them here, on the event loop, and the scheduler drains the
+        # list at the top of its next selection (``_drain_set_aside_retries``):
+        # the engine's own loop is the one writer of its run state and of the
+        # session file while a run is live, so nothing outside it mutates
+        # either mid-visit.
+        self._pending_retries: list[str] = []
         # Target ids COMPLETED BY THE FRAME THAT FIRED A NO-OP JUMP (#373, S5
         # orchestrator ruling 3). That frame is banked before the jump acts,
         # so it can be the target's last owed frame; the no-op leaves the
@@ -1815,6 +1874,8 @@ class SequenceEngine:
         self._last_good_focus = None
         self._sparse_resweep_owed = False
         self._sparse_resweep_due = False
+        self._sparse_resweep_next = None
+        self._sparse_gated_logged_at = None
         self._accepted_seen = None
         self._focus_groups_acquired = set()
         # THE LADDER'S SWEEP IS THIS RUN'S GOOD SWEEP (#402), on a resume
@@ -1992,10 +2053,25 @@ class SequenceEngine:
         self._fire_state = {}
         self._clouds = CloudState()
         self._holding_for_clear = False
+        # The step a probe copies is THIS run's own (#711): it was set per frame
+        # and never cleared, so a run on an engine that had run before probed in
+        # its first frames through the previous run's exposure, gain and binning.
+        # It is not left empty until the first frame sets it either (wave 15
+        # integration ruling): a cloud hold entered before that frame (the sky
+        # is cloudy at dusk, the first target is still being set up) would have
+        # no step to probe with, and a hold that cannot probe cannot see the
+        # sky clear, so it would run blind to its bound. It is SEEDED from the
+        # plan's first light step instead, which is the step the first frame is
+        # about to shoot, and never carried from a previous run. None only when
+        # the plan has no light step at all.
+        self._hold_step = self._first_light_step(plan)
         self._hold_deferred = None
         self._hold_deferred_said = False
         self._jumps_spent = 0
         self._pending_skips = set()
+        # A retry asked of an earlier run is that run's: it names panels of
+        # that run's plan and records of that run's session.
+        self._pending_retries = []
         self._completion_owed = set()
         self._completion_fired = set()
         self._dawn_cutoff = False
@@ -3532,8 +3608,19 @@ class SequenceEngine:
         this pass, no unvisited member is eligible and the pass ends
         (`_close_group_pass`). Every other target runs exactly as it always
         has."""
-        while remaining:
+        # ``or self._pending_retries``: a retry asked during the visit that
+        # emptied the list (every panel set aside or done but the one in
+        # hand) must still be drained, or the operator is told it is queued
+        # and the run ends without it (#600).
+        while remaining or self._pending_retries:
             await self._checkpoint()
+            # THE OPERATOR'S RETRIES (#600), first, so a skip queued for the
+            # same panel still lands on it. A panel brought back rejoins
+            # ``remaining`` here and is judged by this very selection.
+            if self._pending_retries:
+                self._drain_set_aside_retries(remaining, index_of)
+                if not remaining:
+                    break
             # Drain skips queued by a skip_target aimed at a FUTURE target (the
             # current target was left running on purpose). Pure list surgery, no
             # device I/O. Names are matched against what is still remaining, so
@@ -3991,7 +4078,11 @@ class SequenceEngine:
                 if wait_ts - now > WAIT_TEARDOWN_S and not deferral:
                     await self._idle_park_hold(
                         "the next target is a long wait away")
-                await self._wait_until(wait_ts)
+                # THE WAIT ENDS EARLY FOR THE OPERATOR'S RETRY (#600): it
+                # can be 45 minutes long (a set-aside waiting for its
+                # expiry), and a panel brought back meanwhile is to be
+                # taken up now.
+                await self._wait_until_or_retry(wait_ts)
             else:
                 # waiting but no resolvable start_ts (e.g. below-alt with unknown
                 # ETA): a short bounded, cancel-responsive sleep then re-evaluate.
@@ -5770,6 +5861,183 @@ class SequenceEngine:
         if at is not None and first_visited is not None and first_visited < at:
             del remaining[at]
             remaining.insert(first_visited, target)
+
+    def retry_set_aside(self, group: str | None) -> dict:
+        """THE OPERATOR BRINGS TONIGHT'S SET-ASIDE PANELS BACK, the live half
+        (#600; backlog ruling D-07, owner-approved 2026-09-30): QUEUE them,
+        and return what was queued. ``group`` is a group's id
+        (``state.group.id``) or None for every group of the plan.
+
+        A panel set aside for the night stayed out of it until tomorrow even
+        once its cause was fixed: dew, a loose rotator, a solver setting. A
+        restart does not bring it back (``start`` reads the record back) and
+        neither does CONTINUE. This does, for panels of a mosaic, of ANY
+        kind of set-aside, those set aside for now (a centring one waiting on
+        its expiry) included, which come back at once instead of at 45
+        minutes.
+
+        SYNC, ON THE EVENT LOOP, AND IT ONLY QUEUES (backlog ruling for
+        #600). It never mutates a run mid-visit and never writes the session
+        file: the engine's own copy is the writer while a run is live
+        (``save_run_state`` preserves only ``_OPERATOR_OWNED``), so a record
+        cleared by a route would be written back by the next frame. The
+        scheduler drains ``_pending_retries`` at the top of its next
+        selection (`_drain_set_aside_retries`): within
+        ``SCHEDULE_WAIT_STEP_S`` when it is idle, and when the visit in hand
+        ends otherwise. A retried panel is JUDGED, never forced: it is put
+        back in the scheduler's list and the next selection asks its gating,
+        window, horizon and meridian rule as it asks every panel's, so one
+        that is still unfit is set aside again and the retry slews nowhere.
+
+        Returns ``{"live": False, "queued": []}`` when there is no live run
+        to hand it to (none, or one past its scheduler, whose session was
+        already finalized and saved dormant): the caller then takes the
+        dormant path, on the stored session. Otherwise ``{"live": True,
+        "queued": [labels]}``, the labels of the panels this call queued or
+        found queued already (a second press is not a second retry), in each
+        group's order. Complete panels are not touched, and a panel is
+        counted only while its group's run state holds it set aside, which
+        is what the sheet shows (before the scheduler has built the groups,
+        while the engine's records of tonight hold it). Raises ``KeyError``
+        for a group the plan does not carry.
+
+        ONE WINDOW IT DOES NOT CLOSE: a retry asked after the scheduler has
+        returned but before ``_finalize_report`` has cleared the session (the
+        idle-stop's wait, seconds) is queued and never drained, and the next
+        ``start`` discards it. The session is dormant with the record
+        standing, and a second press, now on the dormant path, brings it
+        back."""
+        plan = self.plan
+        if not self.running or self._session is None or plan is None:
+            return {"live": False, "queued": []}
+        if group is not None and group not in self._groups:
+            raise KeyError(group)
+        by_id = {t.id: (i, t) for i, t in enumerate(plan.targets)}
+        labels: list[str] = []
+        for gid in self._groups:
+            if group is not None and gid != group:
+                continue
+            run = self._group_runs.get(gid)
+            if run is not None:
+                aside = {pid: label for pid, label in run.members.items()
+                         if pid in run.set_aside}
+            else:
+                # THE SCHEDULER HAS NOT BUILT ITS GROUPS YET (the cooling
+                # wait, the camera-lane wait of a run just started), which is
+                # exactly where a restart tonight stands: what tonight already
+                # set aside is in the engine's records, which `start` seeded
+                # from the session, and `_start_groups` will make the same
+                # panels set aside in their group, so the drain finds them.
+                aside = {t.id: self._panel_name(t) for t in plan.targets
+                         if t.mosaic_group == gid and not t.calibration
+                         and t.id in self._set_aside_targets}
+            for pid, label in aside.items():
+                if pid not in by_id:
+                    continue
+                i, t = by_id[pid]
+                if self._target_complete(i, t):
+                    continue
+                if pid not in self._pending_retries:
+                    self._pending_retries.append(pid)
+                labels.append(label)
+        return {"live": True, "queued": labels}
+
+    def _drain_set_aside_retries(self, remaining: list[Target],
+                                 index_of: dict) -> None:
+        """The scheduler's half of `retry_set_aside` (#600): bring every
+        queued panel back, at the top of a selection, where nothing is in
+        flight and every list it touches is the scheduler's own.
+
+        For each panel still held set aside in its group's run state (one the
+        clock expired, or an earlier drain brought back, since the request is
+        no longer set aside, and nothing is done for it): its engine records
+        go (the whole-panel record, its meta, tonight's expiry count, every
+        step-level key), the group's run state takes it live with a clean
+        slate and D-03's held-pass counter at 0 (`GroupRun.retry_set_aside`),
+        and the session's records are marked cleared and saved AT ONCE, as
+        every set-aside write is (`_persist_set_aside`), so a crash in the
+        next minute restarts with the panel in play.
+
+        A FINAL set-aside was dropped from ``remaining`` (`_drop_from`), so
+        `_resort_group` alone cannot place it: it goes back by plan index,
+        as `_place_followers` reads it, then the group is re-sorted and its
+        followers placed behind it again. A panel set aside for now never
+        left the list, and is not added a second time. NOTHING IS SLEWED
+        HERE: the next selection judges the panel, by gating, as any other.
+
+        The report names the retry (`mark_retried`) so it does not show the
+        panel only as skipped, and each group says so once in the night log,
+        in words and nothing site-derived (6.9)."""
+        ids, self._pending_retries = self._pending_retries, []
+        plan = self.plan
+        if plan is None:
+            return
+        by_id = {t.id: t for t in plan.targets}
+        brought: dict[str, list[Target]] = {}
+        for tid in ids:
+            t = by_id.get(tid)
+            group = self._group_of(t) if t is not None else None
+            run = self._group_runs.get(group.id) if group is not None else None
+            if run is None or tid not in run.set_aside:
+                continue
+            self._set_aside_targets.pop(tid, None)
+            self._set_aside_meta.pop(tid, None)
+            self._expiries_tonight.pop(tid, None)
+            for s in t.steps:
+                self._set_aside.pop(f"{tid}:{s.id}", None)
+            run.retry_set_aside(tid)
+            brought.setdefault(group.id, []).append(t)
+        if not brought:
+            return
+        if self._session is not None:
+            self._session.note_set_aside_cleared(
+                [t.id for ts in brought.values() for t in ts],
+                night=night_key(time.time()))
+            try:
+                session_store.save_run_state(self._session)
+            except Exception as e:  # noqa: BLE001 - bookkeeping never ends a run
+                bus.log("warning", f"session save failed: {e}", "sequence")
+        for gid, targets in brought.items():
+            group, run = self._groups[gid], self._group_runs[gid]
+            for t in targets:
+                if not any(cur is t for cur in remaining):
+                    at = next((k for k, cur in enumerate(remaining)
+                               if index_of[id(cur)] > index_of[id(t)]),
+                              len(remaining))
+                    remaining.insert(at, t)
+                if self.reporter:
+                    self.reporter.mark_retried(t)
+            self._resort_group(group, remaining)
+            self._place_followers(group, remaining)
+            labels = ", ".join(run.members.get(t.id, t.name) for t in targets)
+            bus.log("info", f"{group.name or group.id}: set-aside panels "
+                            f"retried by the operator: {labels}", "sequence")
+
+    async def _wait_until_or_retry(self, deadline_ts: float) -> None:
+        """`_wait_until`, ended early by a retry the operator queued (#600).
+
+        The scheduler's idle wait is ONE `_wait_until` to its soonest waiter's
+        wake, which for a panel set aside for now is its 45 minute expiry, for
+        a deferral or a centring hold five or ten minutes, and for a window or
+        a meridian crossing longer still; `_wait_until` ticks every
+        ``SCHEDULE_WAIT_STEP_S``, but for its safety gate and the idle clock,
+        and returns only at the deadline. A retry queued meanwhile sat in
+        ``_pending_retries`` until then, and the operator who had just fixed the
+        cause and pressed RETRY watched the run wait out the clock it was meant
+        to cut short.
+
+        So the same wait is taken one step at a time, and ends at the first
+        step after a retry is queued, where the selection drains it
+        (`_drain_set_aside_retries`). Every step is a whole `_wait_until` pass:
+        the checkpoint, the safety gate and the idle clock, as before, and the
+        first step is taken whatever the deadline, so the guaranteed pass that
+        makes a past deadline impossible to spin on is kept. A deadline already
+        past is one such pass, as it always was."""
+        await self._wait_until(min(deadline_ts,
+                                   time.time() + SCHEDULE_WAIT_STEP_S))
+        while time.time() < deadline_ts and not self._pending_retries:
+            await self._wait_until(min(deadline_ts,
+                                       time.time() + SCHEDULE_WAIT_STEP_S))
 
     def _set_group_aside(self, group: TargetGroup, target: Target, reason: str,
                          remaining: list[Target]) -> None:
@@ -8238,8 +8506,17 @@ class SequenceEngine:
                     # formatting None with :.1f would raise TypeError and kill the
                     # whole run at its first target. Only format a real number.
                     err = result.get("error_arcmin")
+                    # A solve failure the hub could NAME (#618: the rig has
+                    # no plate solver, or another program held the solve
+                    # frame's file) carries its fixed sentence here, which
+                    # is what the deferral's ``last_error`` becomes and so
+                    # what D-03's "the same rig-side reason in two held
+                    # passes in a row" matches on. Every other failure has
+                    # no ``solve_reason`` and keeps the generic text, which
+                    # that rule reads as no code at all.
                     detail = (f"converged to {err:.1f}'" if err is not None
-                              else GENERIC_SOLVE_FAILURE)
+                              else (result.get("solve_reason")
+                                    or GENERIC_SOLVE_FAILURE))
                     member = self._group_of(target)
                     if member is not None and member.require_centred:
                         # Not "continuing": a panel that does not centre is
@@ -9280,11 +9557,13 @@ class SequenceEngine:
             await self._apply_temp_comp()
             if self._sparse_resweep_due:
                 # THE SWEEP OWED SINCE TWO SPARSE-FIELD FAILURES (#507, H4
-                # orchestrator ruling 4), due since a frame found the sky
-                # rich enough again (`_note_sparse_resweep`). Here, where
-                # the plan's own refocus runs, so it inherits that one's
-                # place between the flip gates; and in its stead, since one
-                # sweep answers both.
+                # orchestrator ruling 4), due since a cadence has passed
+                # (`_note_sparse_resweep`, #558). Here, where the plan's own
+                # refocus runs, so it inherits that one's place between the
+                # flip gates; and in its stead, since one sweep answers
+                # both. It runs GATED: its own probe decides whether the
+                # field is rich enough, and a probe that is not declines the
+                # sweep and leaves the debt for the next cadence.
                 await self._autofocus("sparse-field re-sweep", step=step,
                                       target=target, resweep=True)
                 self._frame_had_event = True
@@ -9348,10 +9627,11 @@ class SequenceEngine:
             # advances. EVERY frame goes in the report.
             accepted = self._check_quality(info)
             # A sweep owed since two sparse-field failures falls due at the
-            # first light frame that counts enough stars (#507), accepted or
-            # not: the question is whether the sky can be focused on, not
-            # whether this frame is a keeper.
-            self._note_sparse_resweep(info, step, target)
+            # first light frame that banks once a cadence has passed (#507,
+            # #558), accepted or not: the question is whether the sky can be
+            # focused on, which the probe answers, not whether this frame is
+            # a keeper, and not how many stars this frame counted.
+            self._note_sparse_resweep(step, target)
             self._reporter_record(target, step, info, accepted=accepted)
             # SESSION STACK (monitor colour composite): ACCEPTED frames only.
             # A rejected sub is still written to disk, but it is not part of the
@@ -9894,8 +10174,11 @@ class SequenceEngine:
                 if role == "guide_camera":
                     # It is back (reopened here, or by a profile activate),
                     # so an earlier give-up is over: a fresh outage is
-                    # retried at once, not held off by the old cool-off.
+                    # retried at once, not held off by the old cool-off, and
+                    # its failed reopens are forgotten (#703): the cap is
+                    # for a camera that does not come back.
                     self._guide_camera_retry_at = 0.0
+                    self._guide_camera_failed_reopens = (self._started_at, 0)
                 continue
             if role == "guide_camera" and (
                     time.monotonic() < getattr(self, "_guide_camera_retry_at", 0.0)):
@@ -9905,6 +10188,24 @@ class SequenceEngine:
                 # per frame for a camera that is not coming back.
                 continue
             tries = max(1, cfg.escalation.reconnect_retries)
+            failed = 0
+            if role == "guide_camera":
+                # THE CAP (#703): this run's count of failed reopens in a row,
+                # kept as ``(the run's start, count)`` so a new run begins at
+                # none and no run-start block has to know it. A camera that
+                # comes back starts it again (here, and in the healthy branch
+                # above), so the cap bounds a camera that does not come back
+                # and never one that has proved it can. The pass is trimmed to
+                # what the cap leaves: the bound is on attempts, and the pass
+                # that reaches it says so below.
+                counted_for, failed = getattr(
+                    self, "_guide_camera_failed_reopens", (None, 0))
+                if counted_for != self._started_at:
+                    failed = 0
+                if failed >= GUIDE_CAMERA_REOPEN_CAP:
+                    # The stop was said when the cap was reached, once.
+                    continue
+                tries = min(tries, GUIDE_CAMERA_REOPEN_CAP - failed)
             bus.log("warning", f"{role} has dropped out — reconnecting "
                                f"(up to {tries} attempt{'s' if tries > 1 else ''})",
                     "sequence")
@@ -9916,7 +10217,13 @@ class SequenceEngine:
                     bus.log("info", f"{role} is back after {attempt} "
                                     f"attempt{'s' if attempt > 1 else ''} — "
                                     f"the run continues", "sequence")
+                    if role == "guide_camera":
+                        self._guide_camera_failed_reopens = (self._started_at, 0)
                     break
+                if role == "guide_camera":
+                    failed += 1
+                    self._guide_camera_failed_reopens = (self._started_at,
+                                                         failed)
                 if attempt < tries:
                     await asyncio.sleep(RECONNECT_BACKOFF_S)
             else:
@@ -9926,12 +10233,26 @@ class SequenceEngine:
                     # night. What guiding does without it is the owner's
                     # existing policy for a guider that fails,
                     # `escalation.guiding_action`, so say so and carry on.
-                    bus.log("warning",
-                            f"guide_camera dropped out and did not come back "
-                            f"after {tries} reconnect attempt"
-                            f"{'s' if tries > 1 else ''}; imaging continues and "
-                            f"guiding now falls to escalation.guiding_action "
-                            f"({cfg.escalation.guiding_action})", "sequence")
+                    if failed >= GUIDE_CAMERA_REOPEN_CAP:
+                        # THE LAST OF THEM (#703), said once: the gate has
+                        # stopped, and the policy is what is left to decide.
+                        bus.log("warning",
+                                f"guide_camera dropped out and did not come "
+                                f"back after {failed} reopen attempts this "
+                                f"night; it will not be reopened again, "
+                                f"imaging continues and guiding now falls to "
+                                f"escalation.guiding_action "
+                                f"({cfg.escalation.guiding_action})",
+                                "sequence")
+                    else:
+                        bus.log("warning",
+                                f"guide_camera dropped out and did not come "
+                                f"back after {tries} reconnect attempt"
+                                f"{'s' if tries > 1 else ''}; imaging "
+                                f"continues and guiding now falls to "
+                                f"escalation.guiding_action "
+                                f"({cfg.escalation.guiding_action})",
+                                "sequence")
                     self._guide_camera_retry_at = time.monotonic() + 60.0
                     continue
                 # Out of attempts. Fall through to the ordinary teardown rather
@@ -10771,9 +11092,25 @@ class SequenceEngine:
         lock = getattr(self.hub, "_motion_lock", None)
         if lock is not None:
             async with lock:
-                return await self._park_and_read_back(
+                parked = await self._park_and_read_back(
                     tel, during="auto-reopen close")
-        return await self._park_and_read_back(tel, during="auto-reopen close")
+        else:
+            parked = await self._park_and_read_back(
+                tel, during="auto-reopen close")
+        if parked:
+            # THE SUN WATCH IS TOLD, as the wind-down's park tells it (#747,
+            # #696): its blind fallback projects from the last position IT
+            # read, which this park has made stale, and a link that dropped
+            # before its next tick would log a false "Parking now" error and
+            # park a parked mount. Through the hub, as the status node finds
+            # the dew controller; never raises into the roof close.
+            try:
+                watch = getattr(self.hub, "sun_watch", None)
+                if watch is not None:
+                    watch.note_parked()
+            except Exception:      # noqa: BLE001
+                pass
+        return parked
 
     async def _await_safe_and_reopen(self, dome, reason: str, *,
                                      target: Target | None) -> None:
@@ -11723,6 +12060,23 @@ class SequenceEngine:
         self._observe_clouds(info)
         got = verdict_from_info(info if isinstance(info, dict) else {})
         return None if got is None else got[0]
+
+    @staticmethod
+    def _first_light_step(plan):
+        """The first light exposure step of ``plan``, or None: the first step
+        whose ``frame_type`` is Light on the first target that is not a
+        calibration target, in plan order. What ``_hold_step`` is seeded with
+        at a run's start (#711, wave 15 integration), so a cloud hold entered
+        before the first frame probes through the optics that frame will use. A
+        calibration target's steps are darks, bias and flats, and a probe
+        through one of those would score a blackout as cloud."""
+        for target in getattr(plan, "targets", None) or ():
+            if getattr(target, "calibration", False):
+                continue
+            for step in getattr(target, "steps", None) or ():
+                if getattr(step, "frame_type", "Light") == "Light":
+                    return step
+        return None
 
     def _probe_step(self):
         """The step a probe frame is taken with.
@@ -14458,13 +14812,16 @@ class SequenceEngine:
                 f"min unguided — re-centring before guiding starts, because "
                 f"this rig was measured drifting about 15 arcsec/min with "
                 f"nothing holding the field", "sequence")
+        t0 = time.time()
+        commanded = None
         try:
             self._set_state(detail="re-centring after the unguided sweep")
+            commanded = self._commanded_rotation(target)
             # The target's own tolerance and attempts: this is the centring
             # the first frame is shot at (`_centring_kwargs`, #170).
-            await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                           rotation_deg=self._commanded_rotation(target),
-                                           **self._centring_kwargs(target))
+            res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                                 rotation_deg=commanded,
+                                                 **self._centring_kwargs(target))
         except Exception as e:          # noqa: BLE001
             # Non-fatal by design (same as the recovery and re-lock re-centres):
             # a failed re-centre leaves the mount where it already was.
@@ -14472,6 +14829,14 @@ class SequenceEngine:
                     f"{target.name}: re-centring after the autofocus failed "
                     f"({e}); starting guiding at the current pointing",
                     "sequence")
+        else:
+            # THE SKY ANGLE THIS RE-CENTRE'S SOLVE MEASURED (#526 part a),
+            # recorded when it left the rotator untouched. In the `else`, not
+            # the `try`: a recording error is not a failed re-centre and must
+            # not be logged as one, and a re-centre that failed, whose answer
+            # is unknown, records nothing.
+            self._record_sky_angle(target, since=t0, commanded=commanded,
+                                   result=res, rec=self._sky_angle_now())
 
     async def _sky_closed_before_recovery(self, target, *, why: str,
                                           after_failure: bool = False) -> bool:
@@ -14517,7 +14882,9 @@ class SequenceEngine:
 
         THE GAP. At most one reading per ``CLOUD_PROBE_EVERY_S``, so a loss
         and recovery cycle cannot spend a minute of exposure on every frame
-        boundary (an attempts-spent stand-down asks again on each). The two
+        boundary (an attempts-spent stand-down reads ONCE, on arriving at the
+        spent bound, and not again for the same target in the same run while
+        the bound stays spent, #704). The two
         failure tails pass ``after_failure``: a recalibration that has just
         found no star IS new evidence about the sky, and the attempts that
         lead to it bound how often that happens, so those re-asks are not
@@ -14619,9 +14986,31 @@ class SequenceEngine:
         # the NIGHT over weather. A cloudy reading holds for clear sky
         # instead, whose release re-acquires the target and restarts the
         # guider.
-        if await self._sky_closed_before_recovery(
-                target, why="guiding was lost"):
-            return
+        #
+        # ONCE AT THE SPENT BOUND, NOT AT EVERY BOUNDARY AFTER IT (#704).
+        # Under ``guiding_action = warn`` the bound's answer is to stand down
+        # and shoot on unguided, the guider stays inactive, and this point is
+        # reached again at every frame boundary past the probe gap: a minute
+        # of exposure and two wheel moves per frame for the rest of the
+        # night, for a recovery that will not run. So the sky is read on
+        # arriving at the spent bound (it protects the abort, skip and defer
+        # answers below, which is why the read is before them) and not again
+        # for this target, in this run, while the bound stays spent. The mark
+        # is made only after a read that did not hold: a cloudy one is no
+        # stand-down, and the boundary after its hold reads again. It is
+        # forgotten whenever the attempts are not spent, so the next spell,
+        # the next target (the key has the target in it) and the next run
+        # (it has the run's start) each read once.
+        spent = self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES
+        here = (self._started_at, id(target))
+        if not spent:
+            self._sky_read_at_bound = None
+        if not (spent and getattr(self, "_sky_read_at_bound", None) == here):
+            if await self._sky_closed_before_recovery(
+                    target, why="guiding was lost"):
+                return
+            if spent:
+                self._sky_read_at_bound = here
         # BOUNDED (#72). Unbounded, this re-centred and recalibrated once per
         # frame loop for as long as the star stayed lost: on 2026-09-19 that
         # was 2.5 hours, 18 losses and 4 calibration timeouts, and on
@@ -14716,11 +15105,14 @@ class SequenceEngine:
         # a slew would tear down guiding we had just paid to restart.
         if target is not None and getattr(target, "center", False) \
                 and not getattr(target, "calibration", False):
+            t0 = time.time()
+            commanded = None
             try:
                 self._set_state(detail="re-centring after guiding loss")
-                await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=self._commanded_rotation(target),
-                                               **self._centring_kwargs(target))
+                commanded = self._commanded_rotation(target)
+                res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                                     rotation_deg=commanded,
+                                                     **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design: a failed re-centre leaves the mount where
                 # it was, which is exactly where it would have been without this
@@ -14728,6 +15120,12 @@ class SequenceEngine:
                 bus.log("warning",
                         f"re-centring after guiding loss failed ({e}); "
                         f"resuming guiding at the current pointing", "sequence")
+            else:
+                # The sky angle this re-centre's solve measured (#526 part a),
+                # outside the `try` so a recording error is not logged as a
+                # failed re-centre.
+                self._record_sky_angle(target, since=t0, commanded=commanded,
+                                       result=res, rec=self._sky_angle_now())
 
         try:
             await g.start_guiding()
@@ -14908,17 +15306,26 @@ class SequenceEngine:
         # existing statement of intent, honoured here exactly as there.
         if target is not None and getattr(target, "center", False) \
                 and not getattr(target, "calibration", False):
+            t0 = time.time()
+            commanded = None
             try:
                 self._set_state(detail="re-centring: the guided field walked")
-                await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=self._commanded_rotation(target),
-                                               **self._centring_kwargs(target))
+                commanded = self._commanded_rotation(target)
+                res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                                     rotation_deg=commanded,
+                                                     **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design (same as recovery): a failed re-centre
                 # leaves the mount where it already was.
                 bus.log("warning",
                         f"re-centring after the re-lock hold failed ({e}); "
                         f"recalibrating at the current pointing", "sequence")
+            else:
+                # The sky angle this re-centre's solve measured (#526 part a),
+                # outside the `try` so a recording error is not logged as a
+                # failed re-centre.
+                self._record_sky_angle(target, since=t0, commanded=commanded,
+                                       result=res, rec=self._sky_angle_now())
         try:
             await g.start_guiding()
         except Exception as e:
@@ -16038,6 +16445,7 @@ class SequenceEngine:
         # target left the rotator, with nothing checking it, because the lock
         # is checked only on a rig with no rotator (`_settle_locked_angle`).
         rotation = self._commanded_rotation(target)
+        t0 = time.time()
         result = await _bounded(
             self.hub.goto_and_center(target.ra_hours, target.dec_deg,
                                      rotation_deg=rotation,
@@ -16048,6 +16456,21 @@ class SequenceEngine:
         # THE RE-SLEW IS A FRESH POINTING (#248), centred or not: the goto
         # has put the mount on this target and tracking.
         self._mount_stopped_since = None
+        # THE SKY ANGLE THIS RE-CENTRE'S SOLVE MEASURED (#526 part a), read
+        # with no await since the goto returned, and recorded when it left the
+        # rotator untouched. NOT WHEN THE CALLER TAKES THE RESULT: target setup
+        # passes `centring` (``report_centring`` is False) and records the
+        # hop's own row from this very solve, so a row here would be a second
+        # one for it. The flip and the tracking enforcement pass none and
+        # record nothing else, so the flip's recovery, which returns before the
+        # flip's own row, is recorded here. KNOWN: setup's uncentred branch
+        # passes none either and records the hop's row after the recovery, so
+        # a refused track recovered there, on a target with centring off, is
+        # two identical rows for one solve; that call is not this method's
+        # to change.
+        if report_centring:
+            self._record_sky_angle(target, since=t0, commanded=rotation,
+                                   result=result, rec=self._sky_angle_now())
         # KEPT, AS MEASURED, for the caller that has to act on it (#171). A
         # copy, so nothing downstream can edit the hub's own answer, and
         # `centered` made explicit: target setup indexes it.
@@ -16757,11 +17180,22 @@ class SequenceEngine:
 
         When the retry fails too, the escalation applies as it always did.
         Under "warn" the run carries on at the focus it had, says where in
-        words, and owes a sweep at the first light frame whose star count
-        reaches the sparse line (``_sparse_resweep_owed``): the sky that
+        words, and owes a sweep (``_sparse_resweep_owed``): the sky that
         starved the sweep passed within the hour that night, and nothing
         swept again until a trigger fired. ``resweep`` marks that owed sweep
         itself, whose failure owes nothing more (see the field).
+
+        THE OWED SWEEP IS GATED ON ITS OWN PROBE (#558). It falls due on a
+        cadence (`_note_sparse_resweep`), and ``resweep`` gives the sweep
+        ``min_probe_stars=SPARSE_FIELD_WARN``: the native sweep takes its
+        usual probe and, when that counts fewer stars on a frame that is not
+        clipped, DECLINES to sweep (``AutofocusResult.gated``). A declined
+        probe is not a failure: no retry at twice the exposure, no
+        ``af_failure_action``, no change to when focus was last found. The
+        debt stays owed and the next probe is a cadence away. A provider
+        that cannot gate (a backend's own autofocus, the legacy numpy
+        sweep) runs the owed sweep on the cadence ungated, bounded by the
+        failure that owes nothing more.
         """
         self._set_state(detail=label)
         _t0 = time.time()
@@ -16791,17 +17225,45 @@ class SequenceEngine:
             exposure_s, gain = await self._sweep_settings_for_current_filter(label)
             _e, _g, binning = self._focus_scope_frame()
 
-            async def _sweep(seconds: float):
+            async def _sweep(seconds: float, *, gate: bool = False):
                 # `expose_guard` was missing here alone of the three callers:
                 # it is what stops a sweep frame and a sequence frame
                 # interleaving their imageready polls on one camera.
+                #
+                # ``gate`` is the OWED RE-SWEEP's line for its probe (#558),
+                # passed only then, and only on its first attempt: the
+                # initial autofocus and every plan refocus must sweep a
+                # sparse field (that is what the retry below is for), and
+                # a keyword nobody else passes is one the stand-ins for
+                # ``run_autofocus`` need not know.
+                kw = ({"min_probe_stars": SPARSE_FIELD_WARN} if gate else {})
                 return await run_autofocus(
                     cam, foc, hub=self.hub, exposure_s=seconds, gain=gain,
                     binning=binning, expose_guard=self.hub.exposure_guard,
                     tracking_check=self._tracking_now if needs_tracking
-                    else None)
+                    else None, **kw)
 
-            result = await _sweep(exposure_s)
+            result = await _sweep(exposure_s, gate=resweep)
+            if getattr(result, "gated", False):
+                # THE PROBE DID NOT CLEAR THE LINE (#558): the field is still
+                # as thin as the one that starved the sweeps, so NOTHING WAS
+                # SWEPT, and nothing failed. It is not retried at twice the
+                # exposure (the failed pair already was), it does not reach
+                # `af_failure_action` (a night that said "warn" must not be
+                # skipped or aborted for a sky that has not changed), and it
+                # leaves the focus bookkeeping alone: `_last_focus_at`,
+                # `_frames_since_focus` and `failed_reason` describe sweeps
+                # that ran. The debt this entry cleared is owed again, the
+                # next probe one cadence on. The enclosing ``finally`` puts
+                # the beam back as it does after any sweep, and the cost
+                # of the probe stays out of `_record_event_cost`: the ETA's
+                # autofocus cost is the cost of a SWEEP, and a declined
+                # probe would pull it down.
+                self._sparse_resweep_owed = True
+                self._sparse_resweep_next = (time.monotonic()
+                                             + SPARSE_RESWEEP_EVERY_S)
+                self._say_probe_declined(label, result)
+                return False
             # Read with a default: a provider's result that predates the
             # field (or a stand-in for one) is simply not a sparse failure.
             if not result.success and getattr(result, "sparse_field", False):
@@ -16907,8 +17369,9 @@ class SequenceEngine:
         focus THIS run, when there has been one, and say so, in the night log
         and the session report. With none (the initial autofocus), stay
         where the sweeps started, as before, and say that instead. Either
-        way owe a sweep at the first light frame whose star count reaches
-        ``SPARSE_FIELD_WARN`` (`_note_sparse_resweep`).
+        way owe a sweep, which falls due once ``SPARSE_RESWEEP_EVERY_S`` has
+        passed and runs gated on its own probe reaching
+        ``SPARSE_FIELD_WARN`` (`_note_sparse_resweep`, #558).
 
         D-09 (owner-approved 2026-09-30, #590) SUPERSEDES THE OLDER READING:
         ruling 4 as first worded ("the run continues at the last good
@@ -17023,40 +17486,74 @@ class SequenceEngine:
             self._record_safety(msg, "focus_carry_on")
             return
         self._sparse_resweep_owed = True
+        self._sparse_resweep_next = time.monotonic() + SPARSE_RESWEEP_EVERY_S
+        self._sparse_gated_logged_at = None
         msg = (f"{label} failed on a sparse field at both exposures: the "
                f"run carries on at {where}, {started} ({since}), and "
-               f"sweeps again at the first frame "
-               f"that finds at least {SPARSE_FIELD_WARN} stars")
+               f"probes the field again every "
+               f"{SPARSE_RESWEEP_EVERY_S / 60:.0f} minutes (the focus "
+               f"scope's own exposure), sweeping at the first probe that "
+               f"finds at least {SPARSE_FIELD_WARN} stars")
         bus.log("warning", msg, "sequence")
         self._record_safety(msg, "focus_carry_on")
 
-    def _note_sparse_resweep(self, info, step, target: Target) -> None:
-        """A light frame's star count against a sweep owed since two
-        sparse-field failures (#507): the first one to reach
-        ``SPARSE_FIELD_WARN`` makes the sweep due at the next frame
-        boundary, where the frame loop runs it. Said once, in words, with
-        the count that decided it. A dark, a flat or a calibration target
-        measures no sky, and a frame that reported no count decides
-        nothing.
+    def _note_sparse_resweep(self, step, target: Target) -> None:
+        """Called as a light frame banks: a sweep owed since two
+        sparse-field failures (#507) falls due once ``SPARSE_RESWEEP_EVERY_S``
+        has passed since the debt was made or since the last probe (#558),
+        and the frame loop runs it at the next frame boundary. Said once, in
+        words. A dark, a flat or a calibration target measures no sky, so
+        its frame does not start the clock.
 
-        THE LINE IS THE PROBE'S, THE COUNT A LIGHT FRAME'S, as the ruling
-        words it. A light frame is longer and usually finer-binned than the
-        sweep's probe, so it clears the line far more easily and the owed
-        sweep comes due at about the first light frame (#558, open). The
-        owed sweep's own failure owing nothing more is what bounds that."""
+        A CADENCE, NOT A COUNT. The ruling words this as "the first frame
+        whose star count clears the sparse threshold", and as first built
+        the engine compared a LIGHT frame's count with
+        ``SPARSE_FIELD_WARN``, the line the native sweep applies to its
+        short binned PROBE. A light frame is longer and usually finer-binned,
+        so it cleared the line at about the first frame whatever the sky was
+        doing. Whether the field can be focused on is what the probe says,
+        in the units the line was set in: this only decides WHEN to ask, and
+        the owed sweep, run gated (`_autofocus`), asks. It holds the sweep
+        to the cost the cadence budgets (`SPARSE_RESWEEP_EVERY_S`), and a
+        light frame's own count no longer decides anything."""
         if not self._sparse_resweep_owed or self._sparse_resweep_due:
             return
         if not self._is_light(step) or getattr(target, "calibration", False):
             return
-        stars = info.get("stars") if isinstance(info, dict) else None
-        if stars is None or int(stars) < SPARSE_FIELD_WARN:
+        nxt = self._sparse_resweep_next
+        if nxt is not None and time.monotonic() < nxt:
             return
         self._sparse_resweep_due = True
         bus.log("info",
-                f"{target.name}: this frame found {int(stars)} stars, at or "
-                f"over the sparse-field line of {SPARSE_FIELD_WARN}: the "
-                f"autofocus scheduled after the sparse-field failures will "
-                f"run at the next frame boundary", "sequence")
+                f"{target.name}: {SPARSE_RESWEEP_EVERY_S / 60:.0f} minutes "
+                f"since the sparse-field failures or the last probe: the "
+                f"autofocus owed since then will take a probe at the next "
+                f"frame boundary and sweep only if it finds at least "
+                f"{SPARSE_FIELD_WARN} stars", "sequence")
+
+    def _say_probe_declined(self, label: str, result) -> None:
+        """The owed sweep's probe did not clear the line (#558): say so in
+        the night log, the FIRST time and then at most every
+        ``SPARSE_RESWEEP_LOG_EVERY_S``. The native sweep already logs each
+        probe's count, so this line is the verdict and the schedule, not a
+        second count per probe; a thin sky can hold for hours and one
+        sentence every ten minutes would bury it. Informational, not a
+        warning: the run is doing what it said it would."""
+        now = time.monotonic()
+        last = self._sparse_gated_logged_at
+        if last is not None and now - last < SPARSE_RESWEEP_LOG_EVERY_S:
+            return
+        self._sparse_gated_logged_at = now
+        n0 = getattr(result, "start_stars", None)
+        seen = f"{n0} stars" if n0 is not None else "too few stars"
+        bus.log("info",
+                f"{label}: the probe counted {seen} at the start position, "
+                f"under the {SPARSE_FIELD_WARN} the sweep owed since the "
+                f"sparse-field failures waits for, so no sweep this time and "
+                f"the next probe in {SPARSE_RESWEEP_EVERY_S / 60:.0f} "
+                f"minutes (this is said now and at most every "
+                f"{SPARSE_RESWEEP_LOG_EVERY_S / 60:.0f} minutes after)",
+                "sequence")
 
     async def _panel_off_safe(self) -> None:
         """Best-effort flat-panel-off (PRO-5): an aborted/failed run must NEVER
@@ -17222,14 +17719,21 @@ class SequenceEngine:
         is a sleep the clocked simulator can advance, and a task past its
         bound (a guider stop that eats its cancel) is left cancelled rather
         than waited for. Never raises but for a cancel of the caller, which
-        cancels the task too."""
+        cancels the task too.
+
+        Each look is ``REAP_LOOK_S``, not the idle-stop poll, so a task that
+        finishes during the look ends the wait within 20 ms and not within a
+        quarter second (#289). It is still a sleep and never a wait on the
+        task: the clocked night parks only engine tasks and advances the fake
+        clock only when every one is parked, so an engine task waiting on
+        the stop itself would never let a hung stop reach its deadline."""
         if task is None:
             return
         try:
             while not task.done():
                 if time.time() >= deadline:
                     break
-                await asyncio.sleep(IDLE_STOP_FINISH_POLL_S)
+                await asyncio.sleep(min(REAP_LOOK_S, IDLE_STOP_FINISH_POLL_S))
         finally:
             if not task.done():
                 task.cancel()
@@ -17594,6 +18098,18 @@ class SequenceEngine:
                     except asyncio.CancelledError:
                         cancelled = True
                 parked = parking.result()
+                if parked:
+                    # #696: the sun watch's blind fallback projects from the
+                    # last position IT read, which this park has made stale.
+                    # Before the cancel below, which ends the run but not the
+                    # park. Through the hub, as the status node finds the dew
+                    # controller; never raises into the roof close.
+                    try:
+                        watch = getattr(self.hub, "sun_watch", None)
+                        if watch is not None:
+                            watch.note_parked()
+                    except Exception:      # noqa: BLE001
+                        pass
                 if cancelled:
                     if not parked:
                         await self._stop_after_a_failed_park()

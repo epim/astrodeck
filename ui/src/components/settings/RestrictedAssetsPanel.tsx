@@ -39,6 +39,13 @@ export interface RestrictedAsset {
   source: string;
   without: string;
   satisfied: boolean;
+  /** A clause the server says about a row that IS satisfied in a way worth
+   *  saying, or null: the Player One SDK in use because the vendor's own
+   *  installer put it there ("installed by the vendor's installer
+   *  (redistribution ruling pending, #632)"). Present on every row the route
+   *  returns since backlog WP-116 (#705); an older server sends none, which
+   *  reads as null (`undefined` is falsy). */
+  detail: string | null;
   consent: { at: number; by: string; note: string } | null;
 }
 
@@ -105,6 +112,11 @@ export function RestrictedAssetsPanel(): JSX.Element | null {
               <Led state={a.satisfied ? "on" : "off"}
                    label={a.satisfied ? "in use" : "not in use"} />
               <span className="font-medium">{a.title}</span>
+              {a.detail && (
+                <span className="text-xs text-dim" data-restricted-detail={a.id}>
+                  {a.detail}
+                </span>
+              )}
               <span className="text-xs text-dim ml-auto mono">
                 {a.remedy === "fetch" ? "fetched, never shipped" : "needs your word"}
               </span>

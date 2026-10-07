@@ -27,8 +27,18 @@
 // strips from the output and reads only to say where a child that had to be
 // killed had got to (`timeoutPhase`, #664).
 //
+// How a child ENDS is kept too (#706, #664 Part B): `runOne` records the exit
+// code, the signal and the child's own 'exit' event, so a child that dies
+// silently is reported with the code it died with and not as a bare missing
+// tally. The 'exit' event is also the discriminator between "process.exit()
+// was called and the process never exited" and "it exited and something holds
+// its stdio pipes open", which execFile's callback (it waits for the pipes as
+// well as the exit) cannot tell apart. A child that has said `__EXITING__` and
+// is still not finished `EXIT_GRACE_MS` later is killed, and if its tally was
+// clean it counts as passed with a note in the summary (`gracedSummaryLine`).
+//
 // The scoring functions below (`parseCounts`, `assertionStyle`, `computeOk`,
-// `splitChildOutput`, `timeoutPhase`)
+// `splitChildOutput`, `timeoutPhase`, `brokenReason`, `gracedSummaryLine`)
 // are exported so a unit test can exercise them directly, without spawning
 // real child processes or planting a fixture file that a normal `npm test`
 // walk would have to run (and, for the crash/false-tally shapes these guard
@@ -45,6 +55,13 @@ const ROOT = fileURLToPath(new URL(".", import.meta.url));
 //: enough to keep the box busy without oversubscribing a CI runner
 const CONCURRENCY = 8;
 const TIMEOUT_MS = 60_000;
+// How long a child that has written `__EXITING__` (so `process.exit()` has been
+// called) is given to actually finish before the runner kills it (#664 Part B).
+// A healthy exit takes milliseconds, and the freeze this guards against was
+// measured at the full 60 s, so a few seconds is generous for a loaded box
+// without making a frozen exit cost a minute. Killing it is cheap to be wrong
+// about: a child past a clean tally is passed with a note, never failed.
+export const EXIT_GRACE_MS = 5_000;
 // Loaded into every child BEFORE tsx (see runOne's execFile args below), so
 // any test file whose render tree imports a `.css` specifier (wave R7's
 // every-area-owns-its-stylesheet rule) does not crash the whole file with
@@ -116,9 +133,17 @@ export function assertionStyle(text) {
  *  "all green" purely because the printed text looked clean. `byExit` already
  *  requires `!err` to be true (a throw-on-failure file that reached its end
  *  cleanly), so folding `err` in here does not change that path — it only
- *  closes the tally branch, which used to ignore the exit code entirely. */
-export function computeOk({ counts, byExit, err, timedOut }) {
-  if (timedOut || err) return false;
+ *  closes the tally branch, which used to ignore the exit code entirely.
+ *
+ *  `graceKilled` is the one exception to "any `err` fails" (#664 Part B): the
+ *  child had already written `__EXITING__`, so its own report was complete and
+ *  its exit code was decided (a clean tally means 0, the file's failures mean
+ *  1), and the error is the runner's OWN kill of a child that then never
+ *  finished. It is not a crash of the file's, so it must not fail the run; the
+ *  tally still must be clean, and a timeout still always fails. */
+export function computeOk({ counts, byExit, err, timedOut, graceKilled = false }) {
+  if (timedOut) return false;
+  if (err && !graceKilled) return false;
   return (counts !== null && counts.failed === 0) || byExit;
 }
 
@@ -181,6 +206,17 @@ const PHASES = {
     id: "exit-hung",
     prose: "after process.exit() was called -- the child never finished",
   },
+  // The same phase id, told apart by the child's own 'exit' event (#664 Part
+  // B): ids are what `shouldRetry` compares, the prose is what a human reads.
+  exitHungNeverExited: {
+    id: "exit-hung",
+    prose: "after process.exit() was called -- the process never exited",
+  },
+  exitHungPipesHeld: {
+    id: "exit-hung",
+    prose: "after process.exit() was called -- the process had exited, but its "
+      + "stdio pipes never closed",
+  },
 };
 
 /** On a timeout, where the child had got to: `{ id, prose }`.
@@ -202,8 +238,12 @@ const PHASES = {
  *                     the child then stalled in its own few lines before it
  *                     reached `process.exit()`.
  *    exit-hung        __EXITING__: `process.exit()` was called and the child
- *                     did not finish (it never returned, or it exited and its
- *                     stdio pipes never closed: see the note on #664 below).
+ *                     did not finish. `exitedBeforeKill`, the child's own
+ *                     'exit' event as the runner found it when it killed the
+ *                     child, says which of two things that was: false, the
+ *                     process never exited; true, it had exited and its stdio
+ *                     pipes never closed. Absent (a caller that has no event
+ *                     to give), the prose names neither.
  *
  *  `imported` counts as proof the cases finished even when nothing scorable
  *  was printed: calling that "during its test cases" would send the next
@@ -217,10 +257,14 @@ const PHASES = {
  *  result `runOne` returns, or any `{ output, imported, exiting }`, so it is a
  *  pure-function unit test on captured text and not a fixture file that has to
  *  survive TIMEOUT_MS to prove the message is right. */
-export function timeoutPhase({ output, imported = false, exiting = false }) {
+export function timeoutPhase({
+  output, imported = false, exiting = false, exitedBeforeKill = null,
+}) {
   if (!hasTally(output) && !imported) return PHASES.noTally;
   if (!imported) return PHASES.importPending;
   if (!exiting) return PHASES.importResolved;
+  if (exitedBeforeKill === true) return PHASES.exitHungPipesHeld;
+  if (exitedBeforeKill === false) return PHASES.exitHungNeverExited;
   return PHASES.exitHung;
 }
 
@@ -230,7 +274,13 @@ export function timeoutPhase({ output, imported = false, exiting = false }) {
 // waiting out the full 60s for that would make the guard itself the next
 // "cost a minute of CI time by design" problem runTests.test.ts's own header
 // warns against.
-export function runOne(file, timeoutMs = TIMEOUT_MS) {
+//
+// `exitGraceMs` (#664 Part B) is off by default: `runOne` only ENDS a child that
+// has said `__EXITING__` and is still running that long later when it is asked
+// to. `runFileWithRetry`, the one caller `main` uses, asks for EXIT_GRACE_MS;
+// a test that wants to watch the raw freeze (w14ChildPhaseMarkers) leaves it
+// off and gets the timeout, as before.
+export function runOne(file, timeoutMs = TIMEOUT_MS, { exitGraceMs = 0 } = {}) {
   // The child imports the file, which runs its assertions, then reports the
   // file's own exported `result` when it has one.
   //
@@ -258,35 +308,122 @@ export function runOne(file, timeoutMs = TIMEOUT_MS) {
     process.exit(0);   // no export: the parent reads the printed tally
   `;
   return new Promise((resolve) => {
-    execFile(
+    // Why the RUNNER ended the child, when it did: "timeout" or "grace". Kept
+    // here, and not read back from `err.killed`, because that flag is also set
+    // by execFile's own maxBuffer kill and says nothing about WHICH of our two
+    // reasons it was; and because execFile reports no error at all for a child
+    // that exited 0 while something held its pipes (`timedOut` was then false
+    // and the file passed, silently, after the whole timeout).
+    let endedBy = null;
+    // The child's own 'exit' event, which fires when the PROCESS ends. The
+    // callback below waits for 'close' as well, i.e. for every stdio pipe, so
+    // a process that exited while something else holds its pipes is invisible
+    // to it. `exitedBeforeKill` snapshots whether the event had fired at the
+    // moment the runner pulled the trigger: false is "process.exit() was
+    // called and the process never exited", true is "it exited and its pipes
+    // never closed" (#664 Part B).
+    let exitEvent = null;
+    let exitedBeforeKill = null;
+    let timer = null;
+    let graceTimer = null;
+    const child = execFile(
       process.execPath,
       ["--import", CSS_STUB_URL, "--import", "tsx", "--input-type=module", "--eval", code],
-      { cwd: ROOT, timeout: timeoutMs, maxBuffer: 8 << 20 },
+      { cwd: ROOT, maxBuffer: 8 << 20 },
       (err, stdout, stderr) => {
+        clearTimeout(timer);
+        clearTimeout(graceTimer);
         const { output, tagged, imported, exiting } = splitChildOutput(stdout, stderr);
         const counts = tagged ?? parseCounts(output);
-        const timedOut = !!err && err.killed;
+        const timedOut = endedBy === "timeout";
+        const graceKilled = endedBy === "grace";
         // Exit 0 + a completion phrase = a throw-on-failure file that reached
         // its end. Counted as green but contributing no assertion count, since
         // it never told us one — better an undercount than an invented number.
-        const byExit = !err && counts === null && assertionStyle(output);
+        // A grace-killed child's `err` is the runner's own kill: it had said
+        // `__EXITING__` after a clean import, so its own exit would have been 0.
+        const byExit = (!err || graceKilled) && counts === null && assertionStyle(output);
         resolve({
           file,
           counts,
           byExit,
           // A crash (nonzero exit, with or without counts) is a failure even
           // when a passing tally was printed before it died — see `computeOk`.
-          ok: computeOk({ counts, byExit, err, timedOut }),
+          ok: computeOk({ counts, byExit, err, timedOut, graceKilled }),
           timedOut,
           output,
           // Which of the child's own markers reached us. On a timeout these
           // are what `timeoutPhase` reads to say where it stopped.
           imported,
           exiting,
+          // How the child ended (#706): execFile's err.code (a number for an
+          // exit code, a string such as ERR_CHILD_PROCESS_STDIO_MAXBUFFER when
+          // the runner's own plumbing stopped it, null for a signal) and
+          // err.signal, which the summary used to throw away, plus the
+          // child's 'exit' event itself. A clean exit has no `err`.
+          exitCode: err ? (err.code ?? null) : 0,
+          signal: err?.signal ?? exitEvent?.signal ?? null,
+          exitEvent,
+          // The discriminator, and what the runner did (#664 Part B).
+          exitedBeforeKill,
+          graceKilled,
+          exitGraceMs,
         });
       },
     );
+    child.on("exit", (code, signal) => { exitEvent = { code, signal }; });
+    const end = (why) => {
+      if (endedBy !== null) return;
+      endedBy = why;
+      exitedBeforeKill = exitEvent !== null;
+      // The same two steps execFile's own timeout takes: close our ends of the
+      // pipes (a process that has exited but whose pipes are held open would
+      // otherwise never reach 'close'), then kill. SIGKILL for the grace kill
+      // because the child is, by definition, wedged in its own exit path.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      try { child.kill(why === "grace" ? "SIGKILL" : "SIGTERM"); } catch { /* callback still fires */ }
+    };
+    timer = setTimeout(() => end("timeout"), timeoutMs);
+    if (exitGraceMs > 0) {
+      child.stderr.on("data", exitingWatcher(() => {
+        if (endedBy === null) graceTimer = setTimeout(() => end("grace"), exitGraceMs);
+      }));
+    }
   });
+}
+
+/** A reader of the child's stderr, chunk by chunk, that calls `onExiting` once
+ *  when `__EXITING__` goes by AFTER `__IMPORTED__` (#664 Part B): the moment
+ *  `process.exit()` has been called, which is when the grace period starts.
+ *
+ *  Both markers are written by the child after the file's own code finished,
+ *  so requiring the pair, in order, is what keeps a file that merely prints
+ *  one of the words on its own stderr while it is still running from starting
+ *  the clock and being killed in the middle of its cases. A marker can also
+ *  straddle two chunks, hence the carried tail (one character short of the
+ *  longer tag is enough to rejoin either). Stateful but pure of I/O, so a
+ *  unit test can feed it chunks split exactly where it likes. */
+export function exitingWatcher(onExiting) {
+  let tail = "";
+  let sawImported = false;
+  let fired = false;
+  return (chunk) => {
+    if (fired) return;
+    const seen = tail + chunk;
+    tail = seen.slice(-(IMPORTED_TAG.length - 1));
+    let from = 0;
+    if (!sawImported) {
+      const at = seen.indexOf(IMPORTED_TAG);
+      if (at < 0) return;
+      sawImported = true;
+      from = at + IMPORTED_TAG.length;
+    }
+    if (seen.indexOf(EXITING_TAG, from) >= 0) {
+      fired = true;
+      onExiting();
+    }
+  };
 }
 
 // The phases `shouldRetry` gives a second chance: every one that comes AFTER
@@ -336,11 +473,26 @@ const RETRYABLE_PHASES = new Set([
  *  First measurement (2026-10-07, ten full runs at CONCURRENCY 8 on the shared
  *  box): one freeze in ten, capturePreviewMobileOverflow.test.tsx, the file
  *  #664 first named, landed in `exit-hung`: `__EXITING__` reached the parent
- *  and the child still did not finish for 60 s. Read that as "process.exit()
- *  did not return OR the child exited and its stdio pipes never closed":
- *  execFile's callback waits for the pipes as well as the exit, and its
- *  timeout sets `killed` either way, so this evidence cannot tell the two
- *  apart. The retry stays until the cause is known.
+ *  and the child still did not finish for 60 s. That left open whether
+ *  process.exit() did not return or the child exited and its stdio pipes
+ *  never closed (execFile's callback waits for the pipes as well as the exit).
+ *  #664 Part B answers it from the evidence already in hand, and then makes
+ *  the next freeze answer it itself. Measured on this box: execFile reports NO
+ *  error for a child that exited 0 while something held its pipe open; it
+ *  waits out the timeout and then calls back with `err` null, so such a child
+ *  PASSED, silently. A freeze that was reported as a timeout therefore cannot
+ *  have been that: it was a process still running when the kill came, i.e.
+ *  process.exit() was called and the process never exited. `runOne` now
+ *  listens for the child's own 'exit' event and records whether it had fired
+ *  when the runner killed the child (`exitedBeforeKill`), so the summary names
+ *  the kind. And a child that has said `__EXITING__` is no longer left to the
+ *  60 s timeout: `runFileWithRetry` asks `runOne` to kill it EXIT_GRACE_MS
+ *  after the marker, which costs seconds instead of a minute and, past a clean
+ *  tally, is a PASS WITH A NOTE (`gracedSummaryLine`), because the file's own
+ *  result was already in and the exit was the child's, not the file's. The
+ *  retry stays for the two phases before `process.exit` (import-pending and
+ *  import-resolved), where the file's own code may still be what froze, and as
+ *  a backstop for an exit-hung timeout from a caller with no grace period.
  *
  *  160 isolated runs of the originally-reported file
  *  (capturePreviewMobileOverflow.test.tsx, 40 at CONCURRENCY 8 and then 120
@@ -378,12 +530,29 @@ export function shouldRetry(result) {
  *  trace, so without it a loop of full runs could not say where the freezes
  *  land. `main`'s final summary names every file this happened to, with that
  *  phase, instead of relying on the per-attempt log line below, which a
- *  concurrent run can bury between other files' output. */
-export async function runFileWithRetry(file, timeoutMs = TIMEOUT_MS) {
-  const first = await runOne(file, timeoutMs);
+ *  concurrent run can bury between other files' output.
+ *
+ *  `exitGraceMs` threads through to both attempts and is what turns the grace
+ *  kill on (see `runOne`). A grace-killed child is not a timeout, so
+ *  `shouldRetry` never retries it: it is reported as it is, passed with a note
+ *  or not green, on the first attempt. */
+export async function runFileWithRetry(
+  file, timeoutMs = TIMEOUT_MS, exitGraceMs = EXIT_GRACE_MS,
+) {
+  const attempt = async () => {
+    const r = await runOne(file, timeoutMs, { exitGraceMs });
+    if (r.graceKilled && r.ok) {
+      console.log(`  (${relative(ROOT, file)} printed a clean tally and called process.exit(), `
+        + `then ${r.exitedBeforeKill ? "its stdio pipes never closed" : "the process never exited"} `
+        + `for ${exitGraceMs / 1000}s and was killed [${graceKind(r)}] -- `
+        + "counted as passed, cause unknown, see #664)");
+    }
+    return r;
+  };
+  const first = await attempt();
   if (!shouldRetry(first)) return first;
   const phase = timeoutPhase(first);
-  const retry = await runOne(file, timeoutMs);
+  const retry = await attempt();
   if (retry.ok) {
     console.log(`  (${relative(ROOT, file)} froze ${phase.prose} [${phase.id}] -- `
       + "cause unknown, see #664 -- then passed on a retry)");
@@ -411,15 +580,74 @@ export function retriedSummaryLine(results) {
     + `retry (#664): ${names.join(", ")}`;
 }
 
+/** Which of the two kinds of hung exit a grace-killed child was, by the
+ *  discriminator `runOne` recorded: the process had already exited and its
+ *  stdio pipes were what never closed, or it never exited at all. */
+function graceKind(r) {
+  return r.exitedBeforeKill ? "stdio-never-closed" : "process-never-exited";
+}
+
+/** The line the final summary block prints naming every file whose child
+ *  said `__EXITING__`, never finished, and was killed by the grace kill after
+ *  a CLEAN tally (#664 Part B), or `null` when none was. Those files count as
+ *  passed, so this is the only place the freeze is visible: "passed with a
+ *  note", never silently. A grace-killed file that is not green (a failing
+ *  tally, or nothing scorable) is in the broken list instead and is left out
+ *  here. Each file carries the kind the discriminator found. */
+export function gracedSummaryLine(results) {
+  const killed = results.filter((r) => r.graceKilled && r.ok);
+  if (killed.length === 0) return null;
+  const names = killed.map((r) => `${relative(ROOT, r.file)} [${graceKind(r)}]`);
+  return `${killed.length} file(s) printed a clean tally, called process.exit() and `
+    + `were killed ${killed[0].exitGraceMs / 1000}s later because the child never `
+    + `finished -- counted as passed (#664): ${names.join(", ")}`;
+}
+
+/** How a child ended, as a clause that follows "the child", for the summary
+ *  of a file that is not green (#706); `null` when the result carries nothing
+ *  to say (one built by hand, or from before `runOne` kept these). The exit
+ *  code is in hex as well past 255, because that is how Windows crash codes
+ *  are written down (3221225477 is 0xC0000005, an access violation). */
+function describeEnd(r) {
+  if (r.graceKilled) {
+    return "was killed by the runner's grace kill: it called process.exit() "
+      + "and never finished";
+  }
+  // A string `err.code` is the runner's own plumbing stopping the child
+  // (ERR_CHILD_PROCESS_STDIO_MAXBUFFER, which then kills it, so the signal is
+  // the consequence and not the news) or never starting it (ENOENT).
+  if (typeof r.exitCode === "string") return `was stopped with ${r.exitCode}`;
+  if (typeof r.signal === "string") return `was killed by signal ${r.signal}`;
+  if (typeof r.exitCode === "number") {
+    const hex = r.exitCode > 255 ? ` (0x${(r.exitCode >>> 0).toString(16).toUpperCase()})` : "";
+    return `exited with code ${r.exitCode}${hex}`;
+  }
+  if (r.exitCode === null) return "ended with no exit code or signal reported";
+  return null;
+}
+
 /** The one-line reason the final summary gives for a file that is not green.
  *  Pulled out of `main` so the timeout wording (which now carries the phase
  *  the child stopped in, #664) is a pure function a unit test can read, not
- *  text only a run that actually broke would ever print. */
+ *  text only a run that actually broke would ever print.
+ *
+ *  A child with no tally used to be reported as exactly that and nothing
+ *  more, so a child that died silently (empty output, no timeout) could not
+ *  be told from one that printed something unreadable (#706). It now says how
+ *  it ended. The same goes for a child that printed a clean tally and then
+ *  ended badly: "0 failed" was the whole reason for a red file. */
 export function brokenReason(r) {
-  return r.timedOut
-    ? `timed out after ${TIMEOUT_MS / 1000}s (${timeoutPhase(r).prose})`
-    : r.counts ? `${r.counts.failed} failed`
-      : "no pass/fail tally in its output — cannot be scored";
+  if (r.timedOut) {
+    return `timed out after ${TIMEOUT_MS / 1000}s (${timeoutPhase(r).prose})`;
+  }
+  const how = describeEnd(r);
+  if (r.counts) {
+    return r.counts.failed > 0 || how === null
+      ? `${r.counts.failed} failed`
+      : `${r.counts.failed} failed, but the child ${how}`;
+  }
+  return "no pass/fail tally in its output — cannot be scored"
+    + (how === null ? "" : ` (the child ${how})`);
 }
 
 /** Typecheck the whole project before running anything, and fail the run if
@@ -493,6 +721,8 @@ async function main() {
   console.log(`${files.length} files · ${passed} passed · ${failed} failed`);
   const retriedLine = retriedSummaryLine(results);
   if (retriedLine) console.log(retriedLine);
+  const gracedLine = gracedSummaryLine(results);
+  if (gracedLine) console.log(gracedLine);
   if (broken.length) {
     for (const b of broken) {
       console.error(`\n--- ${b.name}: ${b.why}`);

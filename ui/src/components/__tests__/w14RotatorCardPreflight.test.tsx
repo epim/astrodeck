@@ -15,8 +15,16 @@
 //   NOT MEASURED IS NOT FAILED: `sky_sign` / `trusted` are null until measured
 //   and absent from an older server; FAILED is for `trusted === false` only.
 //   THE BUTTON SAYS WHAT IT DOES: about 22 degrees of travel, four plate solves.
-//   A PRESS THAT WOULD CHANGE NOTHING IS REFUSED: once both halves are known the
-//   server measures nothing, so the button is disabled with its reason.
+//   A PRESS THAT WOULD CHANGE NOTHING IS REFUSED: once both halves are known and
+//   the follow test PASSED the server measures nothing, so the button is
+//   disabled with its reason. A FAILED follow test leaves it live: the press
+//   runs that test again on its own (#697).
+//
+//   DELIBERATE PIN CHANGE (backlog WP-114, #697, wave 15 integration). Two cases
+//   below pinned the behaviour #697 replaced ("a FAILED one, which stays failed
+//   until the rig reconnects", and a disabled button over a failed rotator).
+//   They say so where they stand; w15RotatorCardRetest.test.tsx covers the
+//   retest itself.
 //
 // MUTANTS RUN (each from a byte backup of RotatorCard.tsx, restored
 // byte-identically, sha256 compared, the mutant text grepped out), 8 cases:
@@ -25,8 +33,8 @@
 //   `if (!rot.trusted) {`). 6/8 passed; red on "a rotator nobody has tested is
 //   not a failed one":
 //     x ...: the line says FAILED for a rotator whose test has not run (got
-//     "FAILED: the camera did not follow a 20 degree step, so rotation is off
-//     until the rig reconnects")
+//     "FAILED: the camera did not follow a 20 degree step, so rotation is off.
+//     Press Test rotator to measure it again")
 //   and on "a measured sign, a passed test and a failed test are each said".
 //
 //   U4 "route typo" (`/api/rotator/preflight` posted as `/api/rotator/preflite`).
@@ -179,8 +187,14 @@ test("a measured sign, a passed test and a failed test are each said", () => {
     "a passed test is not stated");
   seed({}, rotator({ sky_sign: -1, trusted: false }));
   mount();
-  assert(/^FAILED:/.test(line()) && /rotation is off until the rig reconnects/.test(line()),
+  // DELIBERATE PIN CHANGE (#697): this asserted /rotation is off until the rig
+  // reconnects/. A failure is cleared by Test rotator now, not by a reconnect.
+  assert(/^FAILED:/.test(line()) && /rotation is off/.test(line()),
     `a failed test is not stated (got "${line()}")`);
+  assert(/Press Test rotator to measure it again/.test(line()),
+    `a failed test does not say what clears it (got "${line()}")`);
+  assert(!/reconnects/.test(line()),
+    `a failed test still says a reconnect clears it (got "${line()}")`);
 });
 
 await testAsync("pressing it posts the preflight route and nothing else", async () => {
@@ -196,7 +210,10 @@ await testAsync("pressing it posts the preflight route and nothing else", async 
 });
 
 await testAsync("once both halves are known the button is disabled and posts nothing", async () => {
-  seed({}, rotator({ sky_sign: -1, trusted: false }));
+  // DELIBERATE PIN CHANGE (#697): this seeded `trusted: false` and expected the
+  // button disabled. A FAILED rotator leaves it live now (a press re-tests it),
+  // so the disabled state is a rotator that PASSED.
+  seed({}, rotator({ sky_sign: -1, trusted: true }));
   mount();
   assert(button().disabled === true, "Test rotator is live when there is nothing left to measure");
   assert(/already measured the rotator/.test(button().getAttribute("title") || ""),

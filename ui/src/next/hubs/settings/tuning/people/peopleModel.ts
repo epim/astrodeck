@@ -73,16 +73,83 @@ export const PEOPLE_CAP = "admin.users" as const;
 export const PEOPLE_LOCK_SENTENCE = `Managing people and sign-in needs ${accessPhrase(PEOPLE_CAP)}.`;
 export const PEOPLE_LIST_HIDDEN_TITLE = "PEOPLE LIST HIDDEN";
 export const PEOPLE_LIST_HIDDEN_HINT = `The people list needs ${accessPhrase(PEOPLE_CAP)}. Nothing was requested from the rig.`;
-/** ...and what the same region says over the RELAY, where the capability is not
- *  the blocker. `/api/users` is fenced by PREFIX and for every method, so an
- *  admin on the tunnel cannot read the list either - and "needs admin access"
- *  told to an admin is the wrong-blocker defect the fence rule exists to
- *  prevent. */
-export const PEOPLE_LIST_LAN_ONLY_TITLE = "PEOPLE LIST IS LAN-ONLY";
-export const PEOPLE_LIST_LAN_ONLY_HINT =
-  "Accounts are a trust root, so the rig answers the account list only on its own "
-  + "network - for every role, an admin included. Nothing was requested. Open "
-  + "AstroDeck on the LAN to add, disable or delete people.";
+
+// ------------------------------------------------- people over the RELAY (#685)
+// `/api/users` used to be LAN-only in full, which left an admin off the LAN
+// unable to read or change anyone. It is now open in a narrowed form behind a
+// "signed in recently" rule, so this area no longer says "LAN-only" about the
+// list. What is still true is said exactly where it applies: the changes that
+// stay on the LAN, and the rule that governs the ones that do not.
+
+/** The `code` the rig answers a relayed change with when the sign-in is too
+ *  old. Matches `server/astrodeck/auth/deps.py`'s `require_recent_signin`. */
+export const STEP_UP_CODE = "step_up_required" as const;
+
+/** The same five minutes as the server's `STEP_UP_MAX_AGE_S` (300 s). The
+ *  server is the authority; this only words the hint and times the "signed in
+ *  again" note out, so an out-of-date number here costs a wrong sentence and
+ *  never a wrong decision. */
+export const STEP_UP_WINDOW_MIN = 5;
+
+/** Did the rig refuse this change because the sign-in is too old? Checked by
+ *  `code`, never by status: a capability 403 carries none, and "sign in again"
+ *  told to somebody who lacks the role is the wrong blocker. */
+export function isStepUpRequired(e: unknown): boolean {
+  return !!e && typeof e === "object" && (e as { code?: unknown }).code === STEP_UP_CODE;
+}
+
+/** The one sentence `errText` returns for it. The rows and the add form report
+ *  failures as a bare string, so this exact text is also how the editor above
+ *  them recognises a step-up refusal (`isStepUpMessage`). */
+export const STEP_UP_MESSAGE = "Sign in again to manage people from outside the LAN.";
+
+export function isStepUpMessage(message: string | null | undefined): boolean {
+  return message === STEP_UP_MESSAGE;
+}
+
+/** The prefix the rig puts on a `local_only` reason it can be specific about
+ *  (`server/astrodeck/auth/local_routes.py`'s `_relay_refuses`), as opposed to
+ *  the fence middleware's generic one. */
+export const LAN_CHANGE_PREFIX = "This change needs the LAN:";
+
+export const PEOPLE_RELAY_TITLE = "CHANGES NEED A RECENT SIGN-IN";
+export const PEOPLE_RELAY_RULE =
+  `You are reaching the rig through the relay. The relay can see and replay a saved sign-in but cannot make you type a password or pass Google's check, so before it changes who may use the rig it asks for a sign-in less than ${STEP_UP_WINDOW_MIN} minutes old. Reading this list needs no sign-in.`;
+export const PEOPLE_RELAY_SCOPE =
+  "Over the relay you can add a Google-only viewer or operator, move someone between viewer and operator, disable or enable them, and delete them. Passwords, administrators and email changes need the LAN.";
+export const STEP_UP_TITLE = "SIGN IN AGAIN";
+export const STEP_UP_REQUIRED_HINT =
+  `The rig refused that change because this sign-in is more than ${STEP_UP_WINDOW_MIN} minutes old. Sign in again, then repeat the change.`;
+export const STEP_UP_FRESH_HINT =
+  `Signed in again. Changes to people are open for ${STEP_UP_WINDOW_MIN} minutes.`;
+/** The hint over a change the editor is HOLDING (#734): a password sign-in sends
+ *  it again for the person; Google leaves the page, so nothing can be held across
+ *  it. Said as two clauses so the person is not told to repeat what will be
+ *  repeated, nor promised a retry that Google cannot give. */
+export const STEP_UP_RETRY_HINT =
+  `The rig refused that change because this sign-in is more than ${STEP_UP_WINDOW_MIN} minutes old. Sign in again below. A password sign-in sends the change again for you; Google returns to the home screen, so repeat it there.`;
+export const STEP_UP_OPEN = "SIGN IN AGAIN";
+export const STEP_UP_SUBMIT = "SIGN IN AGAIN";
+export const STEP_UP_BUSY = "SIGNING IN";
+export const STEP_UP_USERNAME = "Username";
+export const STEP_UP_PASSWORD = "Password";
+export const STEP_UP_FAILED = "That sign-in did not work. Check the username and password.";
+export const STEP_UP_RATE_LIMITED = "Too many sign-in attempts. Wait a minute and try again.";
+export const STEP_UP_GOOGLE_NOTE =
+  "Google sends you back to the home screen. Open Settings and People again, then repeat the change.";
+
+/** The roles a RELAYED admin can hand out or move a non-admin between. Matches
+ *  `_RELAY_ROLES` in `server/astrodeck/auth/local_routes.py`. The rig is the
+ *  authority and answers 403 `local_only` for any other role, so a copy that has
+ *  drifted costs a refusal and never a wrong grant. */
+export const PEOPLE_RELAY_ROLES: readonly PrincipalRole[] = ["viewer", "operator"];
+
+/** ADD USER over the relay while Google sign-in is not configured. The only
+ *  account the rig accepts there is a Google-only one, so there is nothing to
+ *  offer; this is said in place of the generic "set a password instead", which
+ *  is advice the relay cannot follow. */
+export const PEOPLE_RELAY_NO_GOOGLE =
+  "Over the relay an account can only be created for Google sign-in, and Google sign-in is not configured on this rig. Add this person at the rig, or set up Google first.";
 
 export const METHODS_HIDDEN_TITLE = "SIGN-IN METHODS HIDDEN";
 export const METHODS_HIDDEN_HINT = `Reading the sign-in configuration needs ${accessPhrase(PEOPLE_CAP)}. Nothing was requested from the rig.`;
@@ -94,12 +161,22 @@ export const METHODS_HIDDEN_HINT = `Reading the sign-in configuration needs ${ac
  *  `UsersPanel.tsx:42-51`; 409 keeps the server's own message because that is
  *  where "last admin" and "duplicate username" are told apart. */
 export function errText(e: unknown, fallback: string): string {
-  // `local_only` FIRST. The fence refuses every /api/users and /api/auth/config
-  // request over the relay, for an admin as readily as for anyone else, and the
-  // server's own detail for it ("this security-sensitive operation is LAN-only")
-  // says nothing a user can act on. One sentence, the same one every locked
-  // control here states.
-  if (isLocalOnly(e)) return LOCAL_ONLY_REASON;
+  // `step_up_required` FIRST: it is a 403 too, and a bare "403" fallthrough
+  // would print the server's detail where the editor above needs the exact
+  // sentence to recognise it by (`isStepUpMessage`).
+  if (isStepUpRequired(e)) return STEP_UP_MESSAGE;
+  // `local_only` next. The fence refuses /api/auth/config, and the password
+  // reset under /api/users, over the relay for an admin as readily as for
+  // anyone else, and the server's own detail for the fence ("this
+  // security-sensitive operation is LAN-only") says nothing a user can act on:
+  // one sentence, the same one every locked control here states. The people
+  // routes that refuse from INSIDE the handler (an administrator, a password on
+  // a new account, an email change) say exactly which rule applied, and that
+  // sentence is the useful one, so it passes through.
+  if (isLocalOnly(e)) {
+    const said = e instanceof ApiError ? e.message : "";
+    return said.startsWith(LAN_CHANGE_PREFIX) ? said : LOCAL_ONLY_REASON;
+  }
   if (e instanceof ApiError) {
     if (e.status === 409) return e.message || "That change conflicts with what the rig already has.";
     if (e.status === 422) return "Password is too long (max 72 bytes).";

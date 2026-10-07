@@ -5,14 +5,22 @@
 //
 // A door (the classic Atlas, the #/next Sky FRAME) hands over what it framed
 // as a `WizardPrefill`, and this sheet walks the rest: TARGET, FRAMING,
-// FILTERS, GUIDING, REVIEW. EACH STEP SHOWS WHAT ARRIVED AND ASKS ONLY WHAT IS
-// MISSING (wizardModel `stepReason`, the one rule for the NEXT lock and the
-// line under each step): a name and coordinates that came from the framing
-// are shown, not asked; a mosaic with no angle is asked for one; a rig with no
-// camera field is offered a single target, since the grid cannot be laid out
-// without one; filters, counts and guiding are always asked, because a door
-// knows none of them. The stop condition and auto-resume steps are not built
-// (#191, #195).
+// FILTERS, GUIDING, NIGHT, RESUME, REVIEW. EACH STEP SHOWS WHAT ARRIVED AND
+// ASKS ONLY WHAT IS MISSING (wizardModel `stepReason`, the one rule for the
+// NEXT lock and the line under each step): a name and coordinates that came
+// from the framing are shown, not asked; a mosaic with no angle is asked for
+// one; a rig with no camera field is offered a single target, since the grid
+// cannot be laid out without one; filters, counts and guiding are always
+// asked, because a door knows none of them.
+//
+// NIGHT AND RESUME (backlog WP-100, #196) ASK WHAT DUSK WINDOW HOLDS, and open
+// on the node's own defaults: when the night starts (the three dusks or a
+// clock time) and stops (dawn or a clock time; "None" is the editor's, and the
+// server refuses it for a wizard night), the lowest altitude a target is shot
+// at, and whether the flow resumes on later nights. RESUME asks it in the
+// OWNER'S WORDS (`AUTO_RESUME_LABEL`, ruling 7 on #189) with the help text the
+// DUSK field carries (`AUTO_RESUME_HELP`), both imported from nodeDefs.ts and
+// never copied, so the editor and this sheet cannot come to say two things.
 //
 // ONE SHEET, NO FORK (D13). The classic `SendToWizardHost` and the #/next
 // `flowWizard` sheet both mount this file through its lazy door (index.ts);
@@ -31,7 +39,13 @@
 // THE REVIEW IS THE SERVER'S. After the save the sheet asks `POST
 // /api/flows/{id}/compile` for the saved flow and prints its readouts (subs
 // and hours, per panel and in all) and the doctor's issues, never a number of
-// its own (wizardModel `reviewBlocks`). RUN goes through the one loop every
+// its own (wizardModel `reviewBlocks`), and `GET /api/flows/{id}/tonight` for
+// the server's brief, which is the review's first line (wizardModel
+// `briefOf`). THE BRIEF IS NEVER A GATE: it is a read of its own, a failed
+// one says "the brief is unavailable", and RUN is locked by the compile's
+// danger, loss or broken wire and by nothing about the brief; the wizard
+// stays usable with the Tonight route down, off the network or refused to a
+// role that may not read it. RUN goes through the one loop every
 // RUN button shares, `runAnsweringQuestions` on `POST /api/flows/{id}/run`,
 // with every gate that route applies, and is locked with its reason while the
 // compile shows a danger or a loss (wizardModel `runLock`). Both RUN and OPEN
@@ -51,7 +65,7 @@
 import "./wizard.css";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type JSX, type ReactNode } from "react";
 import { Overlay } from "../../Overlay";
-import { HonestButton } from "../../ui";
+import { HonestButton, InfoDot } from "../../ui";
 import { useStore } from "../../../store";
 import { accessPhrase, useCanControlCapture, useCanControlMount, useRoleConnected } from "../../../lib/caps";
 import { effectiveOptics } from "../../../lib/effective";
@@ -60,12 +74,15 @@ import { flowsApi, type FlowCompileResult, type FlowUnmapped } from "../../../li
 import { cyclePlanRows, resolveWheel, setSlotExposure, toggleSlot } from "../cyclePlanRows";
 import { askContinue, isRunPhaseLive, runAnsweringQuestions, runBlockedReason } from "../flowRunControls";
 import { FLOW_NOT_OPENED } from "../flowsSlice";
+import { AUTO_RESUME_HELP, AUTO_RESUME_LABEL } from "../nodeDefs";
 import {
-  ANGLE_WORDS, MOSAIC_ANGLES, STEP_TITLE, STEPS, UNGUIDED_CAP_S,
-  angleArrived, angleOf, angleWords, fieldChanged, fieldWords, firstGap, initialAnswers,
-  isMosaicFraming, overCap, planRows, plansMosaic, reviewBlocks, reviewFindings, runLock,
-  savedFlowOf, stepReason, targetOf, wizardBody,
-  type SavedFlow, type WizardAnswers, type WizardPrefill, type WizardRig, type WizardStep,
+  ANGLE_WORDS, AUTO_RESUME_CHOICES, CLOCK_TIME, DUSK_STARTS, DUSK_STOPS, MIN_ALT_MAX_DEG, MIN_ALT_MIN_DEG,
+  MOSAIC_ANGLES, STEP_TITLE, STEPS, UNGUIDED_CAP_S,
+  angleArrived, angleOf, angleWords, briefLine, briefOf, fieldChanged, fieldWords, firstGap,
+  initialAnswers, isMosaicFraming, nightWords, overCap, planRows, plansMosaic, resumeWords,
+  reviewBlocks, reviewFindings, runLock, savedFlowOf, stepReason, targetOf, wizardBody,
+  type BriefRead, type DuskStart, type DuskStop, type SavedFlow, type WizardAnswers,
+  type WizardPrefill, type WizardRig, type WizardStep,
 } from "./wizardModel";
 
 // ------------------------------------------------------------------ words
@@ -103,6 +120,23 @@ export const CLOSE_WHILE_BUSY =
   "Waiting for the server: this closes once it has answered, so what it did is shown here first.";
 export const GENERATE_SAYS =
   "GENERATE saves the flow to My flows. The numbers on this step then come from the server's compile of what it saved.";
+/** What each NIGHT choice is called on its chip. The values are DUSK WINDOW's
+ *  own strings (`DUSK_STARTS`, `DUSK_STOPS`), so these are only the capitals. */
+const START_WORDS: Record<DuskStart, string> = {
+  "Astro dusk": "ASTRO DUSK", "Nautical dusk": "NAUTICAL DUSK", "Civil dusk": "CIVIL DUSK", "Clock time": "CLOCK TIME",
+};
+const STOP_WORDS: Record<DuskStop, string> = { Dawn: "DAWN", "Clock time": "CLOCK TIME" };
+/** Why the stop has two choices where the editor has three. True of the code:
+ *  the compile warns that a run with no stop "images into daylight and does
+ *  not park at dawn", and the server refuses `None` for a wizard night. */
+export const STOP_NONE_NOTE =
+  "A stop of None is not offered here: the run would image into daylight and not park at dawn. DUSK WINDOW in the editor has it.";
+/** Where a clock time is read: `schedule._clock_time_near_now` takes local
+ *  time on the machine the server runs on, which is the rig's. */
+export const CLOCK_NOTE = "A clock time is read on the rig computer's clock.";
+/** The RESUME row's label is the owner's, and wide: it takes the row, where
+ *  `.swz-label` is a 30% column made for one-word labels. */
+const WIDE_LABEL: CSSProperties = { flex: "1 1 auto" };
 
 /** THE TITLE WRAPS rather than cutting the target's name (#189 S6, found by
  *  the real-page probe, routes_s5_s6.json). `.swz-title` is one line with an
@@ -211,6 +245,8 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
   const [saved, setSaved] = useState<SavedFlow | null>(null);
   const [compiled, setCompiled] = useState<FlowCompileResult | null>(null);
   const [compileFailed, setCompileFailed] = useState<string | null>(null);
+  // The server's brief of the saved flow: a read of its own, never a gate.
+  const [brief, setBrief] = useState<BriefRead>({ state: "waiting" });
   const [acting, setActing] = useState<"run" | "open" | null>(null);
 
   // Whether the sheet is still mounted, for the answers that land after an
@@ -246,6 +282,22 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
     }
   }, []);
 
+  // THE BRIEF IS READ ON ITS OWN, and a read that fails is "unavailable", in
+  // words, and nothing else: it touches neither `compiled` nor `compileFailed`,
+  // which are what lock RUN (`runLock`), so a Tonight route that is down, slow
+  // or refused to this role (it is `view.site_derived`) costs the review one
+  // line and never the night. Only the brief's text is kept, never the
+  // answer, which is derived from the site.
+  const readBrief = useCallback(async (id: string) => {
+    setBrief({ state: "waiting" });
+    try {
+      const text = briefOf(await flowsApi.tonight(id));
+      if (alive.current) setBrief(text === null ? { state: "unavailable" } : { state: "ok", text });
+    } catch {
+      if (alive.current) setBrief({ state: "unavailable" });
+    }
+  }, []);
+
   const generateReason = !canCapture
     ? `Generating a flow needs ${accessPhrase("control.capture")}.`
     : generating ? BUSY
@@ -270,6 +322,7 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
       if (!alive.current) return;
       setSaved(read.flow);
       void check(read.flow.id);
+      void readBrief(read.flow.id);
     } catch (e) {
       // The route's 422 names the answer it refused, in the generator's own
       // words; it goes on the review, where the answers are summarised,
@@ -575,6 +628,87 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
     </>
   );
 
+  // NIGHT: DUSK WINDOW's start, stop and altitude floor. Each clock is asked
+  // beside its "Clock time" and nowhere else (wizardModel `stepReason`).
+  const nightStep = (
+    <>
+      <div className="swz-row swz-chips" role="radiogroup" aria-label="Start">
+        <span className="swz-label">START</span>
+        {DUSK_STARTS.map((s, i) => (
+          <button
+            key={s} type="button" role="radio" aria-checked={answers.start === s}
+            data-testid={`wizard-start-${i}`}
+            className={`swz-btn${answers.start === s ? " swz-on" : ""}`}
+            onClick={() => set({ start: s })}
+          >
+            {START_WORDS[s]}
+          </button>
+        ))}
+      </div>
+      {answers.start === CLOCK_TIME && (
+        <Ask k="start-clock" label="START AT (HH:MM)" value={answers.startClock}
+          onChange={(v) => set({ startClock: v })} placeholder="21:30" />
+      )}
+      <div className="swz-row swz-chips" role="radiogroup" aria-label="Stop">
+        <span className="swz-label">STOP</span>
+        {DUSK_STOPS.map((s, i) => (
+          <button
+            key={s} type="button" role="radio" aria-checked={answers.stop === s}
+            data-testid={`wizard-stop-${i}`}
+            className={`swz-btn${answers.stop === s ? " swz-on" : ""}`}
+            onClick={() => set({ stop: s })}
+          >
+            {STOP_WORDS[s]}
+          </button>
+        ))}
+      </div>
+      {answers.stop === CLOCK_TIME && (
+        <Ask k="stop-clock" label="STOP AT (HH:MM)" value={answers.stopClock}
+          onChange={(v) => set({ stopClock: v })} placeholder="03:30" />
+      )}
+      <Ask k="min-alt" label="MIN ALTITUDE (DEG)" value={answers.minAlt}
+        onChange={(v) => set({ minAlt: v })} mode="decimal"
+        placeholder={`${MIN_ALT_MIN_DEG} to ${MIN_ALT_MAX_DEG}`} />
+      <p className="swz-note" data-testid="wizard-night-note">
+        {STOP_NONE_NOTE}
+        {(answers.start === CLOCK_TIME || answers.stop === CLOCK_TIME) ? ` ${CLOCK_NOTE}` : ""}
+      </p>
+    </>
+  );
+
+  // RESUME: the owner's question in the owner's words, and the help text the
+  // DUSK field carries, through the one InfoDot the editor's row uses. The
+  // help is also on the radiogroup by `aria-describedby`, as that row does it,
+  // so a screen reader reaches it from the control and not only from the dot.
+  const resumeHelpId = "wizard-resume-help";
+  const resumeStep = (
+    <>
+      <div className="swz-row" data-testid="wizard-resume-ask">
+        <span className="swz-label" style={WIDE_LABEL} data-testid="wizard-resume-label">{AUTO_RESUME_LABEL}</span>
+        <InfoDot label={`Explain: ${AUTO_RESUME_LABEL}`} content={AUTO_RESUME_HELP} />
+      </div>
+      <div className="swz-row swz-chips" role="radiogroup" aria-label={AUTO_RESUME_LABEL} aria-describedby={resumeHelpId}>
+        <button
+          type="button" role="radio" aria-checked={answers.autoResume}
+          data-testid="wizard-resume-on"
+          className={`swz-btn${answers.autoResume ? " swz-on" : ""}`}
+          onClick={() => set({ autoResume: true })}
+        >
+          {AUTO_RESUME_CHOICES[0].toUpperCase()}
+        </button>
+        <button
+          type="button" role="radio" aria-checked={!answers.autoResume}
+          data-testid="wizard-resume-off"
+          className={`swz-btn${!answers.autoResume ? " swz-on" : ""}`}
+          onClick={() => set({ autoResume: false })}
+        >
+          {AUTO_RESUME_CHOICES[1].toUpperCase()}
+        </button>
+      </div>
+      <span id={resumeHelpId} className="sr-only" data-testid="wizard-resume-help">{AUTO_RESUME_HELP}</span>
+    </>
+  );
+
   const planWords = planRows(answers.plan).map(([f, s]) => `${f} ${s} s`).join(", ");
   const findings = reviewFindings(compiled);
   const blocks = saved ? reviewBlocks(saved, compiled) : [];
@@ -602,6 +736,14 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
         <span className="swz-label">GUIDING</span>
         <span className="swz-value">{answers.guiding ? "guided" : "unguided"}</span>
       </div>
+      <div className="swz-row" data-testid="wizard-summary-night">
+        <span className="swz-label">NIGHT</span>
+        <span className="swz-value">{nightWords(answers)}</span>
+      </div>
+      <div className="swz-row" data-testid="wizard-summary-resume">
+        <span className="swz-label">RESUME</span>
+        <span className="swz-value">{resumeWords(answers)}</span>
+      </div>
       <p className="swz-note">{GENERATE_SAYS}</p>
       {genError && (
         <p className="swz-note swz-banner swz-loss" role="alert" data-testid="wizard-generate-error">
@@ -611,6 +753,11 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
     </>
   ) : (
     <>
+      {/* THE FIRST LINE IS THE SERVER'S BRIEF of the saved flow, as it read it
+          back from the graph (`briefLine`): a placeholder while the read is out
+          so the numbers below do not jump, and "unavailable" when it fails.
+          It gates nothing: `runReason` never reads it. */}
+      <p className="swz-note" data-testid="wizard-brief" data-state={brief.state}>{briefLine(brief)}</p>
       <p className="swz-note" data-testid="wizard-saved">{`Saved as ${saved.name} in My flows.`}</p>
       {saved.notes.map((n, i) => <p key={i} className="swz-note swz-banner" data-testid="wizard-note">{n}</p>)}
       <div data-testid="wizard-review-numbers">
@@ -651,7 +798,8 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
   );
 
   const body: Record<WizardStep, JSX.Element> = {
-    target: targetStep, framing: framingStep, filters: filtersStep, guiding: guidingStep, review: reviewStep,
+    target: targetStep, framing: framingStep, filters: filtersStep, guiding: guidingStep,
+    night: nightStep, resume: resumeStep, review: reviewStep,
   };
 
   // ------------------------------------------------------------ the chrome

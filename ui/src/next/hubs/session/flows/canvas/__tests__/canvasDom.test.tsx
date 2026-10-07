@@ -130,9 +130,9 @@ const { flowCanvasSheets } = await import("../sheets");
 // case 8 holds them to the classic strip's words.
 const { EMPTY_LOG_TEXT, RUN_EMPTY_LOG_TEXT } = await import("../FlowLogStrip");
 const {
-  ADD_STAGE_LABEL, CHECKS_DRAFT_PREFIX, RUN_UNSAVED_REASON,
-  SAVE_CLEAN_REASON, SAVE_READONLY_REASON, SAVE_STATE_CLEAN, SAVE_STATE_DIRTY,
-  SAVE_STATE_READONLY, resolveWireDrop,
+  ADD_STAGE_LABEL, CHECKS_DRAFT_PREFIX, RUN_UNSAVED_EXAMPLE_REASON, RUN_UNSAVED_REASON,
+  SAVE_CLEAN_REASON, SAVE_READONLY_REASON, SAVE_STATE_CLEAN,
+  SAVE_STATE_DIRTY, SAVE_STATE_READONLY, resolveWireDrop,
   MARK_LOST, MARK_PARTIAL, MARK_RIG, RIG_VALUE_PREFIX,
 } = await import("../canvasModel");
 const { clearMountedFlowCanvas, flowCanvasDropPoint, setMountedFlowCanvas } =
@@ -674,23 +674,73 @@ await testAsync("SAVE stores the graph, and the toolbar says whether the rig has
   eq(tid("flow-save-state").textContent, SAVE_STATE_CLEAN, "and the cue must go back to SAVED");
 });
 
-await testAsync("RUN is refused while the graph on screen is not the graph on the rig", async () => {
+// DELIBERATE PIN CHANGE (#688 part 2, WP-99; the orchestrator's ruling for
+// this WP: "relax that lock for non-read-only flows, keep it for read-only
+// Examples"). This case used to pin that RUN is LOCKED over an edited graph
+// (aria-disabled, the title `RUN_UNSAVED_REASON`, no request, no arm, a toast
+// saying why), because `POST /run` runs the STORED flow and the toolbar had
+// no way to save first. Since wave 14 the store's `flowsRun` saves the canvas
+// before it posts and refuses when the save did not keep the edit
+// (w14FlowRunFlushes.test.tsx), and since this WP the flow saves itself two
+// seconds after the last edit, so the lock guarded a window the store now
+// closes. Pinned instead, over the same edited-flow fixture:
+//   (a) an edited ordinary flow's RUN is LIVE and arms on the first tap;
+//   (b) the confirming tap PUTs the flow and only THEN posts the run, which
+//       is the point: the lock is safe to drop only because of that order;
+//   (c) an edited EXAMPLE, which the server never stores, stays LOCKED with
+//       the example's own sentence, posts nothing and says why.
+// MUTANT "RUN locked again over an edit" (FlowCanvasToolbar.tsx: the line
+// `const runReason = hookRunReason;` made `const runReason = hookRunReason ??
+// (running ? null : unsavedRunReason(dirty, readonly));`, the import
+// restored). Observed, canvasDom.test 35/36, red at (a):
+//   x an edited flow's RUN is live and saves it before it posts; an edited
+//     Example stays locked: an edited ordinary flow's RUN is locked: the store
+//     saves the canvas before it posts, so the lock guards nothing and sends
+//     the operator to a SAVE the autosave is about to make
+//     expected null
+//     got      true
+// MUTANT "RUN posts before it saves" (flowsSlice.ts `flowsRun`: the `await
+// saveBeforeRead();` made `void 0;`). Observed, 35/36, red at (b): "RUN never
+// PUT the edited flow" (the mutant posts the stored flow and sends no PUT).
+await testAsync("an edited flow's RUN is live and saves it before it posts; an edited Example stays locked", async () => {
   seed("admin", ADMIN_CAPS, { dirty: true });
   await mount(createElement(FlowCanvasToolbar as any));
 
   const run = tid("flow-run");
-  eq(run.getAttribute("aria-disabled"), "true",
-    "RUN starts the SAVED flow, so with unsaved edits it would start a graph nobody is looking at");
-  assert(run.getAttribute("disabled") == null, "never the native disabled attribute");
-  eq(run.getAttribute("title"), RUN_UNSAVED_REASON, "and the refusal has to name the way out");
-
-  const before = asked.filter((a) => a.method === "POST").length;
+  eq(run.getAttribute("aria-disabled"), null,
+    "an edited ordinary flow's RUN is locked: the store saves the canvas before it posts, so the lock "
+    + "guards nothing and sends the operator to a SAVE the autosave is about to make");
+  assert(run.getAttribute("title") !== RUN_UNSAVED_REASON, "RUN still names the old unsaved sentence");
+  eq(run.getAttribute("data-armed"), "false", "RUN must be a two-tap arm");
   click(run);
+  await settle();
+  eq(tid("flow-run").getAttribute("data-armed"), "true", "the first tap on an edited flow's RUN must arm");
+
+  const from = asked.length;
+  click(tid("flow-run"));
+  await settle();
+  const after = asked.slice(from);
+  const put = after.findIndex((a) => a.method === "PUT" && a.url === "/api/flows/flow-m16");
+  const post = after.findIndex((a) => a.method === "POST" && a.url === "/api/flows/flow-m16/run");
+  assert(put >= 0, "RUN never PUT the edited flow");
+  assert(post >= 0, "RUN never posted the run");
+  assert(put < post, "RUN posted the stored flow before the edit was PUT");
+
+  // (c) The Example: never stored, so the lock is the one honest answer.
+  seed("admin", ADMIN_CAPS, { dirty: true, record: { ...RECORD, readonly: true } as never });
+  await mount(createElement(FlowCanvasToolbar as any));
+  const ex = tid("flow-run");
+  eq(ex.getAttribute("aria-disabled"), "true",
+    "RUN starts the STORED example, so with edits on screen it would start a graph nobody is looking at");
+  assert(ex.getAttribute("disabled") == null, "never the native disabled attribute");
+  eq(ex.getAttribute("title"), RUN_UNSAVED_EXAMPLE_REASON, "and the refusal has to name the way out");
+  const before = asked.filter((a) => a.method === "POST").length;
+  click(ex);
   await settle();
   eq(asked.filter((a) => a.method === "POST").length, before,
     "a locked RUN still reached the network");
   eq(tid("flow-run").getAttribute("data-armed"), "false", "and it must not even arm");
-  assert(useStore.getState().toasts.some((t: any) => String(t.title) === RUN_UNSAVED_REASON),
+  assert(useStore.getState().toasts.some((t: any) => String(t.title) === RUN_UNSAVED_EXAMPLE_REASON),
     "a locked press must SAY the reason rather than swallow the tap");
 });
 
@@ -808,13 +858,22 @@ await testAsync("a wire can be removed from the stage it leaves", async () => {
   // a SAVE, and a RUN that refuses to start the graph the rig still holds.
   assert(tid("flow-stages-save") != null,
     "a phone that can break a graph and cannot store the repair is worse than a read-only list");
-  eq(tid("flow-stages-run").getAttribute("aria-disabled"), "true",
-    "RUN would start the version on the rig, which still has the wire that was just cut");
-  eq(tid("flow-stages-run").getAttribute("title"), RUN_UNSAVED_REASON, "and it has to say so");
-  assert(String(container.textContent).includes(RUN_UNSAVED_REASON),
-    "the reason has to be readable without a hover a touch screen cannot perform");
-  assert(!/Read-only - This flow has unsaved/.test(String(container.textContent)),
-    "an unsaved edit is not a read-only flow, and the two sentences must not be framed alike");
+  // DELIBERATE PIN CHANGE (#688 part 2, WP-99; see the toolbar's case in
+  // section 8). This used to pin RUN LOCKED here, with `RUN_UNSAVED_REASON`
+  // as title and as a line in the sheet, because RUN would start the version
+  // on the rig that still had the wire just cut. `flowsRun` now saves the
+  // canvas first and the flow saves itself, so RUN is live, and the sentence
+  // that sent the operator to SAVE is nowhere on the sheet. An edited Example
+  // keeps its own lock (section 8, and the hook's reason). MUTANT "RUN locked
+  // again over an edit" (FlowStagesPhoneSheet.tsx: `const runReason =
+  // waitingReason ?? hookRunReason;` made `waitingReason ?? hookRunReason ??
+  // (running ? null : unsavedRunReason(dirty, readonly))`, the import
+  // restored). Observed, 35/36, in this case: "RUN is locked on the phone over
+  // an edit that the store saves first", expected null, got true.
+  eq(tid("flow-stages-run").getAttribute("aria-disabled"), null,
+    "RUN is locked on the phone over an edit that the store saves first");
+  assert(!String(container.textContent).includes(RUN_UNSAVED_REASON),
+    "the sheet still tells the operator to save first");
 });
 
 await testAsync("the phone's stage editor route keeps the flow in the URL", async () => {

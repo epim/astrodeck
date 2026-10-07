@@ -22,6 +22,15 @@ The hard-won rules from the adversarial UX critiques are encoded here:
   (:meth:`_wallclock_loop`, independent of the engine's frames) and again,
   best-effort, whenever the engine's frame path calls it; *its absence* is
   what pages them.
+* **The dead-man ping carries a status line, and never its own url** (#606
+  part A, #694). With :attr:`AlertDispatcher.beacon_source` set the ping is a
+  POST whose body is the closed-vocabulary line ``rig_beacon`` renders (state,
+  frames, last log level, boot cause), so the owner's monitor shows what the
+  rig was doing when it went dark. A monitor that will not take it is pinged
+  with a plain GET as before: the beacon may never turn a working dead-man
+  into a failing one. And the url's PATH is the ping secret for a
+  healthchecks-style monitor, so no log line carries it
+  (:meth:`AlertDispatcher._scrub_url`).
 * **The reader never awaits a sink** (#538). The bus subscription is bounded
   and drops its oldest event when full, and it used to be read by a loop that
   awaited every send inline, up to ``_HTTP_TIMEOUT_S`` per sink. A hung
@@ -74,6 +83,7 @@ import httpx
 
 from .aio import reap
 from .events import RELAY_GAP, SITE_DERIVED_KEY, bus
+from .rig_beacon import is_closed_vocabulary
 
 # State-change event types are NEVER deduped (C1-18). These are subscribed by
 # event *type*, not severity, so they also bypass the per-sink min_level gate
@@ -115,6 +125,19 @@ DEADMAN_INTERVAL_S = 60.0
 # How often the wall-clock task wakes to check what is due. Small relative to the
 # deadman interval and the (minutes-granularity) heartbeat cadence.
 _WALLCLOCK_TICK_S = 5.0
+# What a monitor says to a POST it will not take, as opposed to one that is down
+# or that really lacks the check (#606): any 4xx, because 405 is the textbook
+# answer but 404 is what an Express route registered for GET alone gives a POST
+# (an Uptime Kuma push monitor on a version before it took any method) and
+# 400/413/415 are a body or a content type refused; and 501, "method not
+# implemented". Any of these is retried ONCE as a plain GET, and remembered
+# only if that GET is accepted (a check that is really gone fails both). Not in
+# the set: 408 and 429, which are the monitor's load rather than a verdict on
+# the method, and every 5xx but 501, a server having a bad minute: treating
+# those as a verdict would drop the beacon for the rest of the process.
+_POST_REFUSED = (frozenset(range(400, 500)) - {408, 429}) | {501}
+# The word a log line carries in place of a dead-man url's path (#694).
+_PATH_WITHHELD = "<path withheld>"
 
 # Source tag on the dispatcher's own diagnostic logs so they are NOT routed back
 # through the alert pipeline (would otherwise self-feed a failure loop).
@@ -314,6 +337,20 @@ class AlertDispatcher:
         # secret and nothing that prints this object may be able to leak it.
         self._last_deadman_ok: float | None = None
         self._last_deadman_ok_for: int | None = None
+        # The status line the ping carries (#606 part A): a callable returning
+        # the text, or None for the plain GET the ping always was. Set by the
+        # app once the engine exists (``rig_beacon.make_source``); the
+        # dispatcher is built before it, so this cannot be a constructor
+        # argument.
+        self.beacon_source: Callable[[], str] | None = None
+        # The url (as a hash, for the same reason as ``_last_deadman_ok_for``)
+        # whose monitor refused a POST and then accepted a GET: it is pinged
+        # with a GET from then on. Per url, not per process, so pasting a new
+        # monitor that does take a POST gets the beacon again.
+        self._deadman_get_only_for: int | None = None
+        # The reason the beacon was last left off a ping, so it is said once per
+        # reason and not once a minute; None while the beacon is going out.
+        self._beacon_warned: str | None = None
         # The outbox (#538): alerts the reader built, oldest first, for the
         # sender task. ``_outbox_ready`` wakes the sender; it is made by run()
         # on the loop that runs it, since an asyncio.Event binds to the first
@@ -942,7 +979,9 @@ class AlertDispatcher:
     # -- dead-man's-switch -----------------------------------------------------
 
     async def deadman_ping(self) -> None:
-        """Trigger a GET of the configured external healthcheck URL (#542).
+        """Trigger a ping of the configured external healthcheck URL (#542): a
+        POST carrying the status beacon when :attr:`beacon_source` is set
+        (#606), else a GET.
 
         While the outbox pipeline is live (:meth:`run` has started it — the
         wall-clock task and the engine's frame path are both such callers),
@@ -994,7 +1033,7 @@ class AlertDispatcher:
             return
         try:
             client = await self._ensure_client()
-            r = await client.get(url)
+            r = await self._send_deadman(client, url)
         except (httpx.HTTPError, OSError) as e:
             # Unreachable monitor: the missed ping IS the signal to the external
             # service, but warn ONCE locally so a user who set up a monitor we
@@ -1030,19 +1069,79 @@ class AlertDispatcher:
         self._last_deadman_ok = time.monotonic()
         self._last_deadman_ok_for = hash(url)
 
+    async def _send_deadman(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+        """One dead-man ping, as a POST carrying the beacon when there is one,
+        else the plain GET it always was (#606 part A).
+
+        A monitor that refuses the POST (:data:`_POST_REFUSED`) is asked again
+        as a GET, and if THAT is accepted the refusal is remembered for this
+        url, so a GET-only monitor costs one extra request, once. The GET's
+        answer is what the caller judges, so a check that is really gone
+        warns exactly as it did before the beacon existed. A transport error
+        propagates to the caller untouched: it says nothing about the method."""
+        body = self._beacon_body(url)
+        if body is None:
+            return await client.get(url)
+        r = await client.post(url, content=body, headers={"Content-Type": "text/plain"})
+        if r.status_code not in _POST_REFUSED:
+            return r
+        r = await client.get(url)
+        if 200 <= r.status_code < 400:
+            self._deadman_get_only_for = hash(url)
+        return r
+
+    def _beacon_body(self, url: str) -> bytes | None:
+        """The beacon as a POST body, or None when this ping should be a plain
+        GET: no source, a monitor already known to refuse a POST, or a source
+        that failed or returned text outside the closed vocabulary.
+
+        Never raises. The ping is the one thing this exists for, so a beacon
+        bug costs the beacon and nothing else, and says so once per reason (an
+        owner whose monitor never shows a status must be able to learn why).
+        The log line names the exception's TYPE and never its text: the text
+        is whatever the source's author put in it."""
+        source = self.beacon_source
+        if source is None or self._deadman_get_only_for == hash(url):
+            return None
+        try:
+            text = source()
+            reason = None if is_closed_vocabulary(text) else (
+                "its text is outside the closed vocabulary, so it was not sent")
+        except Exception as e:            # noqa: BLE001 - a beacon bug never stops the ping
+            text = None
+            reason = f"the source raised {type(e).__name__}"
+        if reason is not None:
+            if self._beacon_warned != reason:
+                self._beacon_warned = reason
+                self.bus.log("warning",
+                             f"dead-man's-switch beacon left off the ping: {reason}",
+                             _ALERT_LOG_SOURCE)
+            return None
+        self._beacon_warned = None
+        return text.encode("ascii")
+
     @staticmethod
     def _scrub_url(url: str) -> str:
-        """Drop any ``user:pass@`` userinfo and query string from a url before it
-        goes into a log line (a deadman url can carry a ping secret in the path or
-        query — keep scheme+host+path only, sans userinfo)."""
+        """The scheme and host of a url, for a log line, and nothing after them.
+
+        Userinfo, query and fragment are dropped, and so is the PATH, replaced
+        by ``_PATH_WITHHELD`` (#694): for a healthchecks-style monitor
+        (``https://<host>/<uuid>``) the path IS the ping secret, and whoever
+        holds it can ping the check as healthy or pause it, which silences the
+        alert set up for a dead rig. A log line is read by anyone who can read
+        logs: the night file, the ``/api/logs`` ring, every sink that forwards
+        a warning. Anything that does not parse as scheme://host comes back as
+        a bare ``<url>``, never as the text it was given."""
         try:
             parts = urlsplit(url)
-        except (ValueError, TypeError):
+            host = parts.hostname or ""
+            if parts.port:
+                host = f"{host}:{parts.port}"
+        except (ValueError, TypeError, AttributeError):
             return "<url>"
-        host = parts.hostname or ""
-        if parts.port:
-            host = f"{host}:{parts.port}"
-        return f"{parts.scheme}://{host}{parts.path}"
+        if not parts.scheme or not host:
+            return "<url>"
+        return f"{parts.scheme}://{host}/{_PATH_WITHHELD}"
 
     # -- test ------------------------------------------------------------------
 

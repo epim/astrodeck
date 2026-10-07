@@ -24,8 +24,17 @@
 //
 //   A PRESS THAT WOULD CHANGE NOTHING IS LOCKED WITH ITS REASON. The server
 //   measures only what this connection has not measured, so once both halves
-//   are known (including a FAILED one, which stays failed until the rig
-//   reconnects) the button says why it has nothing to do instead of posting.
+//   are known AND the follow test PASSED the button says why it has nothing to
+//   do instead of posting. A FAILED follow test is the one state that stays
+//   live: the press runs it again on its own (#697), so the operator who has
+//   re-seated the coupling does not need to reconnect the rig.
+//
+//   DELIBERATE PIN CHANGE (backlog WP-114, #697, wave 15 integration). Two cases
+//   below pinned the behaviour #697 replaced: that a FAILED test "stays failed
+//   until the rig reconnects" and so locks the button. The failure line now says
+//   "rotation is off" and "Press TEST ROTATOR to measure it again", and a failed
+//   rotator leaves the button live (w15RotatorRetest.test.tsx covers the retest
+//   itself). The two re-pinned cases say so where they stand.
 //
 //   THE SAME GATES AS THE OTHER TWO SOLVING BUTTONS: the capability, a camera,
 //   and the `rotate_to_pa` lane (the preflight spawns on it).
@@ -38,7 +47,8 @@
 //   is not a failed one":
 //     x a rotator nobody has tested is not a failed one: the line says FAILED
 //     for a rotator whose test has not run (got "FAILED: the camera did not
-//     follow a 20 degree step, so rotation is off until the rig reconnects")
+//     follow a 20 degree step, so rotation is off. Press TEST ROTATOR to
+//     measure it again")
 //   and on "a measured sign is named, with its sign".
 //
 //   U2 "locked once known removed" (`preflightReason` made `solveReason`).
@@ -246,12 +256,18 @@ test("a passed follow test is said in words", () => {
     "a passed test is not stated");
 });
 
-test("a failed follow test says rotation is off until the rig reconnects", () => {
+test("a failed follow test says rotation is off and what measures it again", () => {
+  // DELIBERATE PIN CHANGE (#697): this asserted /rotation is off until the rig
+  // reconnects/. A failure is cleared by TEST ROTATOR now, not by a reconnect.
   seed({}, { rotator: rotator({ sky_sign: -1, trusted: false }) });
   mount();
   assert(/^FAILED:/.test(line()), `the line does not lead with FAILED (got "${line()}")`);
-  assert(/rotation is off until the rig reconnects/.test(line()),
-    `the line does not say what the failure costs and what clears it (got "${line()}")`);
+  assert(/rotation is off/.test(line()),
+    `the line does not say what the failure costs (got "${line()}")`);
+  assert(/Press TEST ROTATOR to measure it again/.test(line()),
+    `the line does not say what clears it (got "${line()}")`);
+  assert(!/reconnects/.test(line()),
+    `the line still says a reconnect clears it (got "${line()}")`);
   assert(id("rotator-preflight-line").className.includes("nx-rot-err"),
     "a failed test is not drawn as an error");
 });
@@ -286,10 +302,13 @@ test("once both halves are known the button is locked with its reason", () => {
 });
 
 await testAsync("a locked TEST ROTATOR posts nothing", async () => {
-  seed({}, { rotator: rotator({ sky_sign: -1, trusted: false }) });
+  // DELIBERATE PIN CHANGE (#697): this seeded `trusted: false` and expected the
+  // button locked. A FAILED rotator leaves it live now (a press re-tests it), so
+  // the locked state is a rotator that PASSED, which has nothing left to measure.
+  seed({}, { rotator: rotator({ sky_sign: -1, trusted: true }) });
   mount();
   assert(locked(id("rotator-preflight")),
-    "precondition failed: a failed rotator left the button live");
+    "precondition failed: a measured, passed rotator left the button live");
   asked.length = 0;
   click(id("rotator-preflight"));
   await settle();
