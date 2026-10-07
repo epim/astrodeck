@@ -682,6 +682,19 @@ class AutofocusResult:
     #: sweep got that far; None otherwise. Carried for the engine's lines,
     #: which say the number a sparse-field retry was decided on.
     start_stars: int | None = None
+    #: True on a result that is NOT A FAILURE of the sweep but a probe that
+    #: did not clear the line the caller set (#558): ``run_native_autofocus``
+    #: was given ``min_probe_stars``, counted fewer at the start position on
+    #: a probe that was not clipped, and declined to sweep, the focuser back
+    #: where it started. ``success`` is False because nothing was focused,
+    #: and ``sparse_field`` is True because the field is; the sequence
+    #: engine reads ``gated`` FIRST, since the retry at twice the exposure
+    #: and the ``af_failure_action`` escalation both answer a sweep that
+    #: RAN and failed, and neither applies to a sweep that was never
+    #: attempted. Only the native sweep sets it, and only when asked: the
+    #: initial autofocus and every plan refocus pass no line, so it is
+    #: False for them whatever the field.
+    gated: bool = False
 
 
 #: The BROADBAND sweep pair. Named rather than left in the signature because a
@@ -846,7 +859,8 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                         step: int | None = None, steps_each_side: int = 4,
                         binning: int = 2, expose_guard=None,
                         hub=None, provider=None,
-                        tracking_check=None) -> AutofocusResult:
+                        tracking_check=None,
+                        min_probe_stars: int | None = None) -> AutofocusResult:
     """Run a V-curve autofocus sweep.
 
     ``step`` None — the default — sizes the sweep from this focuser's measured
@@ -867,6 +881,16 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     applied); ``None`` proceeds, because unreadable is not a verdict and a
     driver that cannot answer must not cost a focus run. ``None`` for the whole
     parameter — every existing caller — behaves exactly as before.
+
+    ``min_probe_stars`` (optional, #558): a line for the sweep's own probe
+    frame. When the probe counts fewer stars than this at the start position,
+    on a frame that is not clipped, the sweep is declined rather than run and
+    the result says so (``AutofocusResult.gated``). The sequence engine's
+    owed sparse-field re-sweep is the one caller that passes it: it asks
+    "has the sky come back" by the measurement the sweep itself would be
+    judged on. Only the native (``astrodeck``) provider measures a probe, so
+    only it can gate; the backend and legacy numpy paths ignore the line and
+    never set ``gated``. ``None``, the default, gates nothing.
 
     Provider routing (spec §5): who runs autofocus is a per-capability choice
     (auto|backend|astrodeck). Callers that have a ``hub`` pass it (or a resolved
@@ -901,7 +925,8 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
             return await run_native_autofocus(
                 camera, focuser, exposure_s=exposure_s, gain=gain, step=step,
                 steps_each_side=steps_each_side, binning=binning,
-                expose_guard=expose_guard, tracking_check=tracking_check)
+                expose_guard=expose_guard, tracking_check=tracking_check,
+                min_probe_stars=min_probe_stars)
 
     # --- legacy path (no provider context) ----------------------------------
     if getattr(focuser, "supports_native_autofocus", False):

@@ -225,6 +225,25 @@ MAX_REARM_AFTER_FAILURE = 3
 #: temperature delta is how a rig ends up focusing once a night.
 FRESH_FOCUS_S = 30 * 60.0
 
+#: How often the sweep owed since two sparse-field failures asks whether the
+#: field can be focused on yet (#558), seconds, monotonic. Ten minutes, the
+#: cadence the group centring hold retries at (`CENTRING_HOLD_RETRY_S`). It is
+#: a COST choice, not a measurement of the sky: a probe is one exposure at the
+#: focus scope's own settings, a luminance borrow through the wheel, and one
+#: native pass of up to about 30 s, so at a probe every ten minutes the
+#: overhead stays under about a tenth of the night while the sky that starved
+#: the sweeps (it passed within the hour on 2026-09-28) is still found within
+#: one cadence of clearing. It was a light-frame star count against the
+#: probe's line, which cleared at about the first light frame whatever the sky
+#: was doing; the probe itself now makes the measurement, once per cadence.
+SPARSE_RESWEEP_EVERY_S = 600.0
+#: How often a PROBE THE FIELD DID NOT CLEAR is said in words, after the first
+#: (#558), seconds. The probe repeats every ``SPARSE_RESWEEP_EVERY_S`` for as
+#: long as the sky stays thin, which can be hours; one line per probe would
+#: bury the night log in the same sentence, and the native sweep already logs
+#: each probe's count.
+SPARSE_RESWEEP_LOG_EVERY_S = 30 * 60.0
+
 #: An autofocus longer than this, run UNGUIDED, earns a re-centre before guiding
 #: starts. Seconds.
 #:
@@ -1111,15 +1130,27 @@ class SequenceEngine:
         #: ruling 4). Set when a sweep and its retry at twice the exposure both
         #: failed on a sparse field under ``af_failure_action`` "warn", so the
         #: run carries on at the focus it had. ``_sparse_resweep_due`` is set
-        #: by the first light frame after that whose star count reaches
-        #: ``SPARSE_FIELD_WARN``, and the frame loop sweeps at the next
-        #: boundary. Any sweep clears both: whatever ran has answered the
+        #: by the first light frame that banks once ``_sparse_resweep_next``
+        #: has passed (#558: a CADENCE of ``SPARSE_RESWEEP_EVERY_S``, not a
+        #: light frame's star count, which is not comparable with the probe's
+        #: line), and the frame loop runs the owed sweep at the next boundary
+        #: as a GATED one: the native sweep takes its probe and declines to
+        #: sweep when it counts fewer than ``SPARSE_FIELD_WARN``, whereupon
+        #: the debt is kept and the next probe scheduled one cadence on. Any
+        #: sweep that RUNS clears both flags: whatever ran has answered the
         #: debt. The owed sweep's own failure owes nothing more, or a night
-        #: whose light frames always clear the line (they are longer and
-        #: finer-binned than a sweep's) would alternate one frame with two
-        #: failed sweeps until dawn.
+        #: whose probes always clear the line would alternate a frame with
+        #: two failed sweeps until dawn.
         self._sparse_resweep_owed = False
         self._sparse_resweep_due = False
+        #: ``time.monotonic()`` at which the owed sweep may next fall due,
+        #: None while nothing is owed. Set when the debt is created and again
+        #: after each gated probe.
+        self._sparse_resweep_next: float | None = None
+        #: ``time.monotonic()`` of the last "the probe did not clear" line,
+        #: None until the first, so the first says it and the rest at most
+        #: every ``SPARSE_RESWEEP_LOG_EVERY_S``. Reset when a debt is made.
+        self._sparse_gated_logged_at: float | None = None
         #: ``(session, frames seen, accepted map)`` for `_accepted_now`, or
         #: None until it is first asked.
         self._accepted_seen: tuple | None = None
@@ -1818,6 +1849,8 @@ class SequenceEngine:
         self._last_good_focus = None
         self._sparse_resweep_owed = False
         self._sparse_resweep_due = False
+        self._sparse_resweep_next = None
+        self._sparse_gated_logged_at = None
         self._accepted_seen = None
         self._focus_groups_acquired = set()
         # THE LADDER'S SWEEP IS THIS RUN'S GOOD SWEEP (#402), on a resume
@@ -9293,11 +9326,13 @@ class SequenceEngine:
             await self._apply_temp_comp()
             if self._sparse_resweep_due:
                 # THE SWEEP OWED SINCE TWO SPARSE-FIELD FAILURES (#507, H4
-                # orchestrator ruling 4), due since a frame found the sky
-                # rich enough again (`_note_sparse_resweep`). Here, where
-                # the plan's own refocus runs, so it inherits that one's
-                # place between the flip gates; and in its stead, since one
-                # sweep answers both.
+                # orchestrator ruling 4), due since a cadence has passed
+                # (`_note_sparse_resweep`, #558). Here, where the plan's own
+                # refocus runs, so it inherits that one's place between the
+                # flip gates; and in its stead, since one sweep answers
+                # both. It runs GATED: its own probe decides whether the
+                # field is rich enough, and a probe that is not declines the
+                # sweep and leaves the debt for the next cadence.
                 await self._autofocus("sparse-field re-sweep", step=step,
                                       target=target, resweep=True)
                 self._frame_had_event = True
@@ -9361,10 +9396,11 @@ class SequenceEngine:
             # advances. EVERY frame goes in the report.
             accepted = self._check_quality(info)
             # A sweep owed since two sparse-field failures falls due at the
-            # first light frame that counts enough stars (#507), accepted or
-            # not: the question is whether the sky can be focused on, not
-            # whether this frame is a keeper.
-            self._note_sparse_resweep(info, step, target)
+            # first light frame that banks once a cadence has passed (#507,
+            # #558), accepted or not: the question is whether the sky can be
+            # focused on, which the probe answers, not whether this frame is
+            # a keeper, and not how many stars this frame counted.
+            self._note_sparse_resweep(step, target)
             self._reporter_record(target, step, info, accepted=accepted)
             # SESSION STACK (monitor colour composite): ACCEPTED frames only.
             # A rejected sub is still written to disk, but it is not part of the
@@ -16772,11 +16808,22 @@ class SequenceEngine:
 
         When the retry fails too, the escalation applies as it always did.
         Under "warn" the run carries on at the focus it had, says where in
-        words, and owes a sweep at the first light frame whose star count
-        reaches the sparse line (``_sparse_resweep_owed``): the sky that
+        words, and owes a sweep (``_sparse_resweep_owed``): the sky that
         starved the sweep passed within the hour that night, and nothing
         swept again until a trigger fired. ``resweep`` marks that owed sweep
         itself, whose failure owes nothing more (see the field).
+
+        THE OWED SWEEP IS GATED ON ITS OWN PROBE (#558). It falls due on a
+        cadence (`_note_sparse_resweep`), and ``resweep`` gives the sweep
+        ``min_probe_stars=SPARSE_FIELD_WARN``: the native sweep takes its
+        usual probe and, when that counts fewer stars on a frame that is not
+        clipped, DECLINES to sweep (``AutofocusResult.gated``). A declined
+        probe is not a failure: no retry at twice the exposure, no
+        ``af_failure_action``, no change to when focus was last found. The
+        debt stays owed and the next probe is a cadence away. A provider
+        that cannot gate (a backend's own autofocus, the legacy numpy
+        sweep) runs the owed sweep on the cadence ungated, bounded by the
+        failure that owes nothing more.
         """
         self._set_state(detail=label)
         _t0 = time.time()
@@ -16806,17 +16853,45 @@ class SequenceEngine:
             exposure_s, gain = await self._sweep_settings_for_current_filter(label)
             _e, _g, binning = self._focus_scope_frame()
 
-            async def _sweep(seconds: float):
+            async def _sweep(seconds: float, *, gate: bool = False):
                 # `expose_guard` was missing here alone of the three callers:
                 # it is what stops a sweep frame and a sequence frame
                 # interleaving their imageready polls on one camera.
+                #
+                # ``gate`` is the OWED RE-SWEEP's line for its probe (#558),
+                # passed only then, and only on its first attempt: the
+                # initial autofocus and every plan refocus must sweep a
+                # sparse field (that is what the retry below is for), and
+                # a keyword nobody else passes is one the stand-ins for
+                # ``run_autofocus`` need not know.
+                kw = ({"min_probe_stars": SPARSE_FIELD_WARN} if gate else {})
                 return await run_autofocus(
                     cam, foc, hub=self.hub, exposure_s=seconds, gain=gain,
                     binning=binning, expose_guard=self.hub.exposure_guard,
                     tracking_check=self._tracking_now if needs_tracking
-                    else None)
+                    else None, **kw)
 
-            result = await _sweep(exposure_s)
+            result = await _sweep(exposure_s, gate=resweep)
+            if getattr(result, "gated", False):
+                # THE PROBE DID NOT CLEAR THE LINE (#558): the field is still
+                # as thin as the one that starved the sweeps, so NOTHING WAS
+                # SWEPT, and nothing failed. It is not retried at twice the
+                # exposure (the failed pair already was), it does not reach
+                # `af_failure_action` (a night that said "warn" must not be
+                # skipped or aborted for a sky that has not changed), and it
+                # leaves the focus bookkeeping alone: `_last_focus_at`,
+                # `_frames_since_focus` and `failed_reason` describe sweeps
+                # that ran. The debt this entry cleared is owed again, the
+                # next probe one cadence on. The enclosing ``finally`` puts
+                # the beam back as it does after any sweep, and the cost
+                # of the probe stays out of `_record_event_cost`: the ETA's
+                # autofocus cost is the cost of a SWEEP, and a declined
+                # probe would pull it down.
+                self._sparse_resweep_owed = True
+                self._sparse_resweep_next = (time.monotonic()
+                                             + SPARSE_RESWEEP_EVERY_S)
+                self._say_probe_declined(label, result)
+                return False
             # Read with a default: a provider's result that predates the
             # field (or a stand-in for one) is simply not a sparse failure.
             if not result.success and getattr(result, "sparse_field", False):
@@ -16922,8 +16997,9 @@ class SequenceEngine:
         focus THIS run, when there has been one, and say so, in the night log
         and the session report. With none (the initial autofocus), stay
         where the sweeps started, as before, and say that instead. Either
-        way owe a sweep at the first light frame whose star count reaches
-        ``SPARSE_FIELD_WARN`` (`_note_sparse_resweep`).
+        way owe a sweep, which falls due once ``SPARSE_RESWEEP_EVERY_S`` has
+        passed and runs gated on its own probe reaching
+        ``SPARSE_FIELD_WARN`` (`_note_sparse_resweep`, #558).
 
         D-09 (owner-approved 2026-09-30, #590) SUPERSEDES THE OLDER READING:
         ruling 4 as first worded ("the run continues at the last good
@@ -17038,40 +17114,74 @@ class SequenceEngine:
             self._record_safety(msg, "focus_carry_on")
             return
         self._sparse_resweep_owed = True
+        self._sparse_resweep_next = time.monotonic() + SPARSE_RESWEEP_EVERY_S
+        self._sparse_gated_logged_at = None
         msg = (f"{label} failed on a sparse field at both exposures: the "
                f"run carries on at {where}, {started} ({since}), and "
-               f"sweeps again at the first frame "
-               f"that finds at least {SPARSE_FIELD_WARN} stars")
+               f"probes the field again every "
+               f"{SPARSE_RESWEEP_EVERY_S / 60:.0f} minutes (the focus "
+               f"scope's own exposure), sweeping at the first probe that "
+               f"finds at least {SPARSE_FIELD_WARN} stars")
         bus.log("warning", msg, "sequence")
         self._record_safety(msg, "focus_carry_on")
 
-    def _note_sparse_resweep(self, info, step, target: Target) -> None:
-        """A light frame's star count against a sweep owed since two
-        sparse-field failures (#507): the first one to reach
-        ``SPARSE_FIELD_WARN`` makes the sweep due at the next frame
-        boundary, where the frame loop runs it. Said once, in words, with
-        the count that decided it. A dark, a flat or a calibration target
-        measures no sky, and a frame that reported no count decides
-        nothing.
+    def _note_sparse_resweep(self, step, target: Target) -> None:
+        """Called as a light frame banks: a sweep owed since two
+        sparse-field failures (#507) falls due once ``SPARSE_RESWEEP_EVERY_S``
+        has passed since the debt was made or since the last probe (#558),
+        and the frame loop runs it at the next frame boundary. Said once, in
+        words. A dark, a flat or a calibration target measures no sky, so
+        its frame does not start the clock.
 
-        THE LINE IS THE PROBE'S, THE COUNT A LIGHT FRAME'S, as the ruling
-        words it. A light frame is longer and usually finer-binned than the
-        sweep's probe, so it clears the line far more easily and the owed
-        sweep comes due at about the first light frame (#558, open). The
-        owed sweep's own failure owing nothing more is what bounds that."""
+        A CADENCE, NOT A COUNT. The ruling words this as "the first frame
+        whose star count clears the sparse threshold", and as first built
+        the engine compared a LIGHT frame's count with
+        ``SPARSE_FIELD_WARN``, the line the native sweep applies to its
+        short binned PROBE. A light frame is longer and usually finer-binned,
+        so it cleared the line at about the first frame whatever the sky was
+        doing. Whether the field can be focused on is what the probe says,
+        in the units the line was set in: this only decides WHEN to ask, and
+        the owed sweep, run gated (`_autofocus`), asks. It holds the sweep
+        to the cost the cadence budgets (`SPARSE_RESWEEP_EVERY_S`), and a
+        light frame's own count no longer decides anything."""
         if not self._sparse_resweep_owed or self._sparse_resweep_due:
             return
         if not self._is_light(step) or getattr(target, "calibration", False):
             return
-        stars = info.get("stars") if isinstance(info, dict) else None
-        if stars is None or int(stars) < SPARSE_FIELD_WARN:
+        nxt = self._sparse_resweep_next
+        if nxt is not None and time.monotonic() < nxt:
             return
         self._sparse_resweep_due = True
         bus.log("info",
-                f"{target.name}: this frame found {int(stars)} stars, at or "
-                f"over the sparse-field line of {SPARSE_FIELD_WARN}: the "
-                f"autofocus scheduled after the sparse-field failures will "
-                f"run at the next frame boundary", "sequence")
+                f"{target.name}: {SPARSE_RESWEEP_EVERY_S / 60:.0f} minutes "
+                f"since the sparse-field failures or the last probe: the "
+                f"autofocus owed since then will take a probe at the next "
+                f"frame boundary and sweep only if it finds at least "
+                f"{SPARSE_FIELD_WARN} stars", "sequence")
+
+    def _say_probe_declined(self, label: str, result) -> None:
+        """The owed sweep's probe did not clear the line (#558): say so in
+        the night log, the FIRST time and then at most every
+        ``SPARSE_RESWEEP_LOG_EVERY_S``. The native sweep already logs each
+        probe's count, so this line is the verdict and the schedule, not a
+        second count per probe; a thin sky can hold for hours and one
+        sentence every ten minutes would bury it. Informational, not a
+        warning: the run is doing what it said it would."""
+        now = time.monotonic()
+        last = self._sparse_gated_logged_at
+        if last is not None and now - last < SPARSE_RESWEEP_LOG_EVERY_S:
+            return
+        self._sparse_gated_logged_at = now
+        n0 = getattr(result, "start_stars", None)
+        seen = f"{n0} stars" if n0 is not None else "too few stars"
+        bus.log("info",
+                f"{label}: the probe counted {seen} at the start position, "
+                f"under the {SPARSE_FIELD_WARN} the sweep owed since the "
+                f"sparse-field failures waits for, so no sweep this time and "
+                f"the next probe in {SPARSE_RESWEEP_EVERY_S / 60:.0f} "
+                f"minutes (this is said now and at most every "
+                f"{SPARSE_RESWEEP_LOG_EVERY_S / 60:.0f} minutes after)",
+                "sequence")
 
     async def _panel_off_safe(self) -> None:
         """Best-effort flat-panel-off (PRO-5): an aborted/failed run must NEVER
