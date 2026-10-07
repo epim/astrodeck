@@ -12,10 +12,20 @@
 //     `app.py`'s `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES` + `_REMOTE_LOCAL_ONLY_
 //     EXACT` list: /api/config, /api/alerts, /api/drivers, /api/profiles,
 //     /api/connect, /api/survey/pack, /api/ephemeris, /api/locations,
-//     /api/switch/ports, the update routes, /api/users, /api/auth/*. A
-//     tunnelled session is a replayable bearer credential, so the rig answers
-//     403 `code: "local_only"` to every one of them - which is a refusal the
-//     user learns AFTER pressing an armed-looking button.
+//     /api/switch/ports, the update routes, /api/auth/*, and the password reset
+//     under /api/users. A tunnelled session is a replayable bearer credential,
+//     so the rig answers 403 `code: "local_only"` to every one of them - which
+//     is a refusal the user learns AFTER pressing an armed-looking button.
+//
+//     TWO THINGS NAMED HERE BEFORE ARE NOT ON THE FENCE ANY MORE (#685). The
+//     rest of /api/users is open over the relay in a narrowed form: the list
+//     read freely, and add a Google-only viewer or operator, move a non-admin
+//     between viewer and operator, enable or disable one, and delete one, behind
+//     a sign-in under five minutes old (`gateHook.useStepUp`). And `POST
+//     /api/profiles/<id>/activate` without `force` is allow-listed through the
+//     /api/profiles prefix. The rig is the authority on both; the rows the fence
+//     still refuses inside them (a password, an admin or syncer role, an admin
+//     target, `force`) answer 403 `local_only` and are locked per control.
 //
 // So the derivation lives here, once, and `connectionModel` imports it.
 //

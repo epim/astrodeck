@@ -23,7 +23,6 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass, field
 from pathlib import Path
-import os
 
 _VENDOR_DIR = Path(__file__).resolve().parent.parent.parent / "vendor" / "zwo"
 
@@ -188,22 +187,6 @@ def _find_dll(basename: str):
     stem = basename.rsplit(".", 1)[0]
     for c in candidates("zwo", stem, env_var="ASTRODECK_ZWO_SDK_DIR",
                         extra=alternatives):
-        if c.is_file():
-            dll = _loads_with_exports(c, exports)
-            if dll is not None:
-                return dll
-    return None
-
-
-def _find_dll_legacy(basename: str):
-    alternatives, exports = _DLL_SPECS[basename]
-    candidates: list[Path] = []
-    env = os.environ.get("ASTRODECK_ZWO_SDK_DIR")
-    if env:
-        candidates.append(Path(env) / basename)
-    candidates.append(_VENDOR_DIR / basename)
-    candidates.extend(Path(p) for p in alternatives)
-    for c in candidates:
         if c.is_file():
             dll = _loads_with_exports(c, exports)
             if dll is not None:

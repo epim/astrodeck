@@ -139,6 +139,70 @@
 //   x retriedSummaryLine names the phase beside the file: expected the phase
 //   id in the summary line, got: 1 file(s) froze after a clean tally and
 //   passed on a retry (#664): <the fixture's path>
+//
+// Backlog wave 15 (WP-115, #664 Part B) added the grace kill: a child that has
+// said __EXITING__ and still has not finished a few seconds later is killed by
+// the runner, passed with a note when its tally was clean, and, being no
+// timeout, never retried. Named mutants (applied to run-tests.mjs from a byte
+// backup, restored byte-identically, sha256-verified, and checked gone).
+// Observed failures, verbatim (the rest of the mutant list is in
+// w15ChildExitReport.test.ts):
+//
+// "a grace-killed child is retried" (shouldRetry's `return result.timedOut` ->
+// `return (result.timedOut || result.graceKilled)`). "w13CleanTallyTimeoutRetry
+// .test: 17/22 passed":
+//   x a non-timeout result is never retried, even with a clean tally: retrying
+//   is only ever about a timeout; a file that exited on its own has nothing to
+//   retry
+//   x a child the grace kill ended is not a timeout, so it is never retried: a
+//   grace-killed child must be reported as it is, not retried
+//   x a file whose process.exit() never returns is grace-killed and passed on
+//   the first attempt, never retried: a grace kill is not a freeze to retry,
+//   but the result says retried=true
+//
+// "the grace kill is never armed" (`if (exitGraceMs > 0) {` -> `if (false) {`).
+// "19/22 passed":
+//   x a file whose process.exit() never returns is grace-killed and passed on
+//   the first attempt, never retried: expected ok=true timedOut=false
+//   graceKilled=true, got ok=false timedOut=true graceKilled=false
+//   x runFileWithRetry with no grace argument still grace-kills a hung exit
+//   (the call main makes): the default grace, not the 30000ms timeout, must end
+//   a hung exit: ok=false timedOut=true graceKilled=false
+//
+// "gracedSummaryLine finds nothing" (`const killed = ...` -> `[]`). "21/22
+// passed":
+//   x the grace-killed pass reaches the summary note and not the retried line:
+//   a passed-with-a-note file must be named in the summary, got: null
+//
+// Three mutants the first version of this file let through, found by the WP-115
+// verifier, which is why the last two cases below exist. Every other case hands
+// runFileWithRetry its grace explicitly, so the production DEFAULT and what
+// `main` does with it were pinned by nothing:
+//
+// "the default grace is off" (runFileWithRetry's `exitGraceMs = EXIT_GRACE_MS`
+// -> `exitGraceMs = 0`). "21/22 passed", in about 75 s (the 30 s timeout, then
+// the retry's):
+//   x runFileWithRetry with no grace argument still grace-kills a hung exit
+//   (the call main makes): the default grace must be EXIT_GRACE_MS (5000ms),
+//   got 0ms
+//
+// "the grace is as long as the timeout" (`EXIT_GRACE_MS = 5_000` ->
+// `5_000_000`). "21/22 passed", same cost:
+//   x runFileWithRetry with no grace argument still grace-kills a hung exit
+//   (the call main makes): the default grace, not the 30000ms timeout, must end
+//   a hung exit: ok=false timedOut=true graceKilled=false
+//
+// "main passes its own grace" (main's `runFileWithRetry(files[next++])` ->
+// `runFileWithRetry(files[next++], 60_000, 0)`). "21/22 passed":
+//   x main gives runFileWithRetry only the file and prints the grace note: main
+//   passes runFileWithRetry a timeout or a grace of its own, so the default
+//   grace this file pins is not the one a real run gets
+//
+// "main never prints the note" (`if (gracedLine) console.log(gracedLine);` ->
+// `if (false) console.log(gracedLine);`). "21/22 passed":
+//   x main gives runFileWithRetry only the file and prints the grace note: main
+//   must print `gracedLine` whenever it is not null: a grace-killed pass is
+//   otherwise silent
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -166,20 +230,26 @@ interface RunOneResult {
   exiting?: boolean;
   retried?: boolean;
   firstPhase?: string;
+  graceKilled?: boolean;
+  exitGraceMs?: number;
 }
 interface RunTestsModule {
   runOne(file: string, timeoutMs?: number): Promise<RunOneResult>;
-  runFileWithRetry(file: string, timeoutMs?: number): Promise<RunOneResult>;
+  runFileWithRetry(file: string, timeoutMs?: number, exitGraceMs?: number): Promise<RunOneResult>;
   shouldRetry(result: {
     timedOut: boolean; output: string; imported?: boolean; exiting?: boolean;
+    graceKilled?: boolean;
   }): boolean;
   retriedSummaryLine(results: RunOneResult[]): string | null;
+  gracedSummaryLine(results: RunOneResult[]): string | null;
+  EXIT_GRACE_MS: number;
 }
 const nodeImport = (s: string): Promise<unknown> =>
   (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(s);
 const RUN_TESTS_URL = new URL("../../run-tests.mjs", import.meta.url).href;
-const { runOne, runFileWithRetry, shouldRetry, retriedSummaryLine } =
-  (await nodeImport(RUN_TESTS_URL)) as RunTestsModule;
+const {
+  runOne, runFileWithRetry, shouldRetry, retriedSummaryLine, gracedSummaryLine, EXIT_GRACE_MS,
+} = (await nodeImport(RUN_TESTS_URL)) as RunTestsModule;
 
 // ---------------------------------------------------------------- harness
 let passed = 0;
@@ -197,8 +267,18 @@ function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(m
 
 // Well under the real TIMEOUT_MS (60s) but far above the measured ~90ms
 // Node+tsx bootstrap for a trivial fixture, so a loaded CI runner cannot
-// flake this the way #664 itself flaked the real suite.
-const SMALL_TIMEOUT_MS = 3000;
+// flake this the way #664 itself flaked the real suite. It was 3000 until
+// 2026-10-07, when a box saturated by parallel agents proved that is not far
+// enough: in 3 of 25 loaded runs the RETRY's child needed longer than 3 s to
+// start, timed out too, and "a file that times out AFTER printing a clean
+// tally gets exactly one retry" failed with ok=false timedOut=true. The whole
+// budget applies to the retry's bootstrap, so it has to be generous; the cost
+// is paid only by the two fixtures that are killed on purpose.
+const SMALL_TIMEOUT_MS = 6000;
+// For the case that runs with the REAL default grace (EXIT_GRACE_MS, 5 s): far
+// above it plus a loaded box's bootstrap, so a timeout can only win if the grace
+// kill did not happen.
+const DEFAULT_PATH_TIMEOUT_MS = 30_000;
 
 // --------------------------------------------------- shouldRetry: pure cases
 // Fast, exact-boundary coverage before the slower real-process cases below -
@@ -248,6 +328,17 @@ test("a timeout whose import resolved but printed nothing scorable is never retr
   // a file is unscorable anyway; retrying it would only cost a second minute.
   assert(shouldRetry({ timedOut: true, output: "", imported: true, exiting: true }) === false,
     "no tally: never retried, whatever the markers say");
+});
+
+test("a child the grace kill ended is not a timeout, so it is never retried", () => {
+  // #664 Part B: a child that said __EXITING__ and never finished is killed by
+  // the runner and passed with a note. It looks like exit-hung to the phase
+  // logic (tally, both markers), so only the timedOut=false it carries keeps
+  // the retry from running a second child for a result already in.
+  assert(shouldRetry({
+    timedOut: false, output: "widget.test: 4/4 passed", imported: true, exiting: true,
+    graceKilled: true,
+  }) === false, "a grace-killed child must be reported as it is, not retried");
 });
 
 // --------------------------------------------------------- end-to-end cases
@@ -374,6 +465,121 @@ try {
     };
     assert(retriedSummaryLine([stillBroken]) === null,
       "a retry that did NOT pass belongs in the broken list, not the retried-and-passed summary line");
+  });
+
+  // ---- #664 Part B: a hung exit is killed by the grace, passed, and not retried
+  // The file prints a clean tally and then its process.exit() never returns
+  // (an 'exit' listener spins). It appends to a log on every run, so a retry
+  // (which must NOT happen: the grace kill is not a timeout) would show as a
+  // second line.
+  const exitAttempts = join(dir, "exit-attempts.log");
+  const hangInExitFile = join(dir, "hangInExit.test.mjs");
+  writeFileSync(
+    hangInExitFile,
+    [
+      'import { appendFileSync } from "node:fs";',
+      `appendFileSync(${JSON.stringify(exitAttempts)}, "x");`,
+      'console.log("hangInExit.test: 1/1 passed");',
+      'process.on("exit", () => { while (true) { /* busy -- exit never finishes */ } });',
+      "export const result = { passed: 1, failed: 0, total: 1 };",
+      "",
+    ].join(String.fromCharCode(10)),
+    "utf8",
+  );
+
+  let hangInExitFinal: RunOneResult | undefined;
+  await atest(
+    "a file whose process.exit() never returns is grace-killed and passed on the first attempt, never retried",
+    async () => {
+      // A timeout far above the grace, so only the grace kill can end it
+      // before the assertion's deadline (#669, #675).
+      const final = await runFileWithRetry(hangInExitFile, 40_000, 1500);
+      hangInExitFinal = final;
+      assert(final.ok === true && final.timedOut === false && final.graceKilled === true,
+        `expected ok=true timedOut=false graceKilled=true, got ok=${final.ok} timedOut=${final.timedOut} graceKilled=${final.graceKilled}`);
+      assert(final.retried === undefined,
+        `a grace kill is not a freeze to retry, but the result says retried=${final.retried}`);
+      // One "x" appended per child that ran.
+      const attempts = readFileSync(exitAttempts, "utf8").length;
+      assert(attempts === 1,
+        `expected exactly one child process (no retry), got ${attempts} attempt(s)`);
+    },
+  );
+
+  test("the grace-killed pass reaches the summary note and not the retried line", () => {
+    assert(hangInExitFinal !== undefined, "the previous case must have run first");
+    assert(retriedSummaryLine([hangInExitFinal!]) === null,
+      "nothing was retried, so the retried line must stay empty");
+    const line = gracedSummaryLine([hangInExitFinal!]);
+    assert(line !== null && line.includes("hangInExit.test.mjs") && line.includes("#664"),
+      `a passed-with-a-note file must be named in the summary, got: ${line}`);
+  });
+
+  // ---- #664 Part B: the grace kill is on for the call `main` actually makes
+  // Every case above hands runFileWithRetry its grace explicitly, so a default
+  // of 0 (or a grace as long as the timeout) would leave all of them green
+  // while the real run never killed anything: `main` calls
+  // runFileWithRetry(file) and takes whatever the defaults are. This runs the
+  // same shape with NO grace argument, under a timeout far above the real
+  // EXIT_GRACE_MS plus a loaded box's child bootstrap, so only the default
+  // grace can have ended it (#669, #675).
+  const hangInExitDefaultFile = join(dir, "hangInExitDefault.test.mjs");
+  writeFileSync(
+    hangInExitDefaultFile,
+    [
+      'console.log("hangInExitDefault.test: 1/1 passed");',
+      'process.on("exit", () => { while (true) { /* busy -- exit never finishes */ } });',
+      "export const result = { passed: 1, failed: 0, total: 1 };",
+      "",
+    ].join(String.fromCharCode(10)),
+    "utf8",
+  );
+  await atest(
+    "runFileWithRetry with no grace argument still grace-kills a hung exit (the call main makes)",
+    async () => {
+      const final = await runFileWithRetry(hangInExitDefaultFile, DEFAULT_PATH_TIMEOUT_MS);
+      assert(final.exitGraceMs === EXIT_GRACE_MS,
+        `the default grace must be EXIT_GRACE_MS (${EXIT_GRACE_MS}ms), got ${final.exitGraceMs}ms`);
+      assert(final.graceKilled === true && final.timedOut === false && final.ok === true,
+        `the default grace, not the ${DEFAULT_PATH_TIMEOUT_MS}ms timeout, must end a hung exit: `
+        + `ok=${final.ok} timedOut=${final.timedOut} graceKilled=${final.graceKilled}`);
+      assert(final.retried === undefined,
+        `a grace kill is not a freeze to retry, but the result says retried=${final.retried}`);
+    },
+  );
+
+  // `main` cannot be run from here (importing the module must not run the
+  // suite, and running it would), so what it does with these two is read from
+  // its source: it must call runFileWithRetry with the file and NOTHING else,
+  // which is what makes the default grace above the one it gets, and it must
+  // print gracedSummaryLine, which is the only place a passed-with-a-note file
+  // is visible once the run is over.
+  test("main gives runFileWithRetry only the file and prints the grace note", () => {
+    const src = readFileSync(new URL("../../run-tests.mjs", import.meta.url), "utf8");
+    const at = src.indexOf("async function main()");
+    assert(at >= 0, "run-tests.mjs no longer has `async function main()`: update this case");
+    const body = src.slice(at);
+    const call = body.indexOf("runFileWithRetry(");
+    assert(call >= 0, "main must run every file through runFileWithRetry");
+    let depth = 0;
+    let topLevelCommas = 0;
+    for (let i = call + "runFileWithRetry".length; i < body.length; i++) {
+      const c = body[i];
+      if (c === "(" || c === "[") depth++;
+      else if (c === ")" || c === "]") { depth--; if (depth === 0) break; }
+      else if (c === "," && depth === 1) topLevelCommas++;
+    }
+    assert(topLevelCommas === 0,
+      "main passes runFileWithRetry a timeout or a grace of its own, so the default grace "
+      + "this file pins is not the one a real run gets");
+    // The note is a variable main then prints: reading that it is ASKED for is
+    // not enough, a `if (false)` in front of the print would leave it silent.
+    const noted = /const\s+(\w+)\s*=\s*gracedSummaryLine\(results\)/.exec(body);
+    assert(noted !== null,
+      "main must ask gracedSummaryLine(results) for the note: without it a grace-killed pass is silent");
+    const v = noted![1];
+    assert(new RegExp("if\\s*\\(\\s*" + v + "\\s*\\)\\s*console\\.log\\(\\s*" + v + "\\s*\\)").test(body),
+      `main must print \`${v}\` whenever it is not null: a grace-killed pass is otherwise silent`);
   });
 
   // ---- negative: a hang with NO tally is never retried --------------------

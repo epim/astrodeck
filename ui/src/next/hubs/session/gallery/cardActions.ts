@@ -19,8 +19,9 @@
 
 import { ApiError } from "../../../../api";
 import {
-  deleteSession, getSession, isUnreadableRow, listSessionRows, patchSession, resumeSession,
-  unreadableDeleteBody, type DeleteSessionResult,
+  deleteSession, getSession, isUnreadableRow, listSessionRows, patchSession, restoreBody,
+  restoreSession, resumeSession, unreadableDeleteBody, type DeleteSessionResult,
+  type UnreadableListRow,
 } from "../../../../api/sessions";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import { accessPhrase } from "../../../../lib/caps";
@@ -172,15 +173,27 @@ export async function runAbandon(id: string, name: string, after: () => void): P
  *  is the safe direction (it names MORE as gone than an unreadable file with a
  *  backup actually loses), never the reverse. */
 async function deleteConfirmBody(id: string): Promise<string> {
+  const row = await unreadableRowFor(id);
+  return row ? unreadableDeleteBody(row) : CONFIRM_DELETE;
+}
+
+/** The unreadable row for `id` as the server lists it NOW, or null when there
+ *  is none or the lookup failed.
+ *
+ *  ONE LOOKUP FOR BOTH CONFIRMS (#280). The DELETE and RESTORE sentences each
+ *  depend on what the file is at the moment of the press (a backup beside a
+ *  damaged file, or a backup that is all that is left), so neither takes it on
+ *  faith from a card that may be a poll old. A failed lookup is not the action
+ *  failing, so it answers null and each caller falls to its safe sentence. */
+async function unreadableRowFor(id: string): Promise<UnreadableListRow | null> {
   try {
     const rows = await listSessionRows();
     const row = rows.find((r) => r.id === id);
-    if (row && isUnreadableRow(row)) return unreadableDeleteBody(row);
+    if (row && isUnreadableRow(row)) return row;
   } catch {
-    // A failed lookup is not the delete failing; fall through to the session
-    // sentence rather than block the confirm on it.
+    // Not the action failing; the caller falls back to its own sentence.
   }
-  return CONFIRM_DELETE;
+  return null;
 }
 
 /** The success toast's detail for a DELETE (#279). `backup_kept`/`detail`
@@ -208,6 +221,34 @@ export async function runDelete(id: string, name: string, after: () => void): Pr
     after();
   } catch (e) {
     toast("error", "Could not delete this session", say(e));
+  }
+}
+
+/** Put the backup beside an unreadable file in its place (#280).
+ *
+ *  A CONFIRM FIRST, because it replaces a damaged file whole (its bytes are
+ *  gone afterwards) and because frames accepted since the backup was taken are
+ *  not in it. The body is `restoreBody`'s, looked up fresh like the DELETE's:
+ *  the lookup failing falls back to the damaged-file wording, which says
+ *  MORE is lost, never less. The toast is the server's own `detail`, which
+ *  says what came back and that the session is dormant with auto-resume off,
+ *  so the card says nothing the server did not. */
+export async function runRestore(id: string, name: string, after: () => void): Promise<void> {
+  const row = await unreadableRowFor(id);
+  const go = await confirmDialog({
+    title: `Restore "${name}" from its backup?`,
+    body: restoreBody(row ?? { id }),
+    tone: "warn",
+    mode: "confirm",
+    confirmLabel: "Restore",
+  });
+  if (!go) return;
+  try {
+    const r = await restoreSession(id);
+    toast("success", "Session restored", r.detail);
+    after();
+  } catch (e) {
+    toast("error", "Could not restore this session", say(e));
   }
 }
 

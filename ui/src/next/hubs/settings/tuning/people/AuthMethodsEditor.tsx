@@ -80,15 +80,15 @@ export function AuthMethodsEditor(): JSX.Element {
   const config = useConfig();
   const auth = config?.auth ?? null;
   const canAdmin = useCanAdminUsers();
-  // `GET /api/users` is on the fence by prefix for every method, so the guided
-  // card's "does an enabled admin exist" read is refused over the relay too.
-  // It stays honest without it (no confirmed admin), and SAVE METHODS is locked
-  // by the same fence, so the card cannot mislead anyone into a half-setup.
+  // The guided card's "does an enabled admin exist" read is not made over the
+  // relay. The rig does answer `GET /api/users` there now (#685), but the card
+  // belongs to first-run setup, which is a LAN job, and SAVE METHODS below is
+  // fenced for every role, so a card that read the list and then could not save
+  // would only mislead. It stays honest without the read (no confirmed admin).
   const onRelay = useOnRelay();
   // `needsLan`: SAVE METHODS is `POST /api/auth/config`, an EXACT entry on the
-  // fence (every method), and the guided card reads `GET /api/users`, a fenced
-  // prefix. A tunnelled session is a replayable bearer credential, so the rig
-  // refuses both for an admin too.
+  // fence (every method). A tunnelled session is a replayable bearer
+  // credential, so the rig refuses it for an admin too.
   const { lockedReason, onExplain } = useLock({ cap: PEOPLE_CAP, needsLan: true });
 
   const [draft, setDraft] = useState<AuthDraft>({

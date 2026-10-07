@@ -468,7 +468,15 @@ class TestDuskFlats:
         flats = out["flats"]
         assert flats["start_unix"] < flats["end_unix"] < out["night"]["dusk_unix"]
         assert 10 * 60 < (flats["end_unix"] - flats["start_unix"]) < 90 * 60
-        assert any("Flats window" in s["msg"] for s in out["story"])
+        # WP-112 RE-PIN (#192's copy sweep, #603 job A): the engine has no
+        # dusk-flats stage, so the row no longer reads "Flats window (...):
+        # ... flats, exposure solved to 28 500 ADU per filter". It says the
+        # block is drawn and not run, and is STILL timed at the window's start,
+        # which is what this test is about (test_w15_dusk_flats_claim.py holds
+        # the wording).
+        (row,) = [s for s in out["story"] if "DUSK FLATS" in s["msg"]]
+        assert "is drawn but not run" in row["msg"], row["msg"]
+        assert row["t_unix"] == flats["start_unix"]
 
     def test_a_window_that_names_no_angles_is_left_unresolved(self):
         """A block drawn at a guessed hour is worse than no block: the operator

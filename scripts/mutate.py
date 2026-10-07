@@ -22,7 +22,7 @@ include those would have reported green on a file that was not the file under
 review -- a verification step grading something other than what ships, which
 is the same class as the model-downgrade re-review.
 
-Three rules, and the second is the one the incident turned on:
+Four rules, and the second is the one the incident turned on:
 
 1. Restore in a `finally`, and RETRY it. Twenty attempts at 0.5 s cleared it
    both times.
@@ -30,6 +30,14 @@ Three rules, and the second is the one the incident turned on:
    must stop the next mutation rather than become its baseline.
 3. Take the backup once, from a file whose digest matches the one recorded
    when the task started.
+4. Never snapshot in the repository's main checkout (#254). Parallel agents
+   share that one working tree, and a mutant in it is graded by, and
+   corrupts, every other agent's run. Work in a copy of the tree: a linked
+   worktree from scripts/wp_worktree.py, or a byte copy outside any
+   repository. `snapshot` refuses the main checkout, which is where every
+   mutation starts, and `restore` never refuses, so a mutant that is already
+   there can always be put back. ASTRODECK_MUTATE_SHARED_TREE=1 overrides it
+   for an operator who means it.
 
 Usage, from the repository root:
 
@@ -48,6 +56,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -71,8 +80,49 @@ def digest(target: Path) -> str:
     return hashlib.md5(target.read_bytes()).hexdigest()
 
 
+def _refuse_shared_tree(target: Path) -> None:
+    """Rule 4 (#254): stop a mutation that would start in the main checkout.
+
+    In a linked worktree `git rev-parse --git-dir` names the worktree's own
+    directory under `.git/worktrees/` while `--git-common-dir` names the main
+    repository's, so the two differ; in the main checkout they are the same
+    directory. The two are compared as resolved paths, not as printed: git
+    prints `.git` and `.git` from the repository root but an absolute path
+    and `../.git` from a directory below it.
+
+    A file outside any repository (a byte copy) is allowed: git failing is
+    the answer "there is no shared tree here". gate_run.py carries the same
+    test; this script is copied on its own, so it does not import it.
+    """
+    if os.environ.get("ASTRODECK_MUTATE_SHARED_TREE") == "1":
+        return
+    here = target.resolve().parent
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(here), "rev-parse", "--git-dir", "--git-common-dir"],
+            capture_output=True, text=True)
+    except OSError:                                # no git on this machine
+        return
+    lines = out.stdout.splitlines()
+    if out.returncode != 0 or len(lines) != 2:
+        return
+    git_dir, common_dir = (os.path.normcase(os.path.realpath(here / line))
+                           for line in lines)
+    if git_dir != common_dir:
+        return
+    raise SystemExit(
+        f"refusing to mutate {target.name}: it is in the repository's main "
+        f"checkout, which parallel agents share (#254). A mutant here is "
+        f"graded by every other run in the tree.\n"
+        f"Work in a copy of the tree instead: a linked worktree "
+        f"(`python scripts/wp_worktree.py add ...`) or a byte copy of the "
+        f"directory outside any repository. To override on purpose, set "
+        f"ASTRODECK_MUTATE_SHARED_TREE=1.")
+
+
 def snapshot(target: Path) -> str:
-    """Record the clean digest and take the one backup. Rule 3."""
+    """Record the clean digest and take the one backup. Rules 3 and 4."""
+    _refuse_shared_tree(target)
     state, backup = _state_path(target), _backup_path(target)
     if state.exists():
         raise SystemExit(

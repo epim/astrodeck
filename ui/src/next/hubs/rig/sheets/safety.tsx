@@ -1254,25 +1254,40 @@ export function escalationRows(esc: EscalationConfig | null): string[] {
   return rows;
 }
 
-function deadmanWord(h: AlertHealth | null): string {
-  const dm = h?.deadman;
-  if (!dm?.configured) return "NOT SET";
-  return dm.healthy ? "PINGING" : "NOT PINGING";
+// The dead-man row's three reads all come from `deadmanVerdict` (#125), the one
+// place that knows `AlertHealth.deadman.healthy` is only "no failure has been
+// WARNED about yet", which is also true before the first request leaves, so a
+// pasted typo reads healthy until its first attempt fails. Only
+// `last_ok_age_s`, the seconds since the monitor ACCEPTED a ping, makes PINGING
+// a fact; the Monitor hub's pill and the Settings panel already ask the
+// verdict, and this row used to ask `healthy` alone, so one rig read Waiting on
+// two screens and PINGING, in green, on the third.
+//
+// The import sits beside its only users rather than with the others, so the
+// dead-man change reads as one block.
+import { deadmanVerdict } from "../../../../lib/alertSinks";
+
+/** The right-hand word: NOT SET, WAITING, PINGING, STALE or UNREACHABLE. */
+export function deadmanWord(h: AlertHealth | null): string {
+  return deadmanVerdict(h).label.toUpperCase();
 }
 
-function deadmanTone(h: AlertHealth | null): "good" | "bad" | "dim" {
-  const dm = h?.deadman;
-  if (!dm?.configured) return "dim";
-  return dm.healthy ? "good" : "bad";
+/** `dim` for not set / waiting, `good` for pinging, `warn` for stale, `bad`
+ *  for unreachable: the verdict's own tone, never a stronger one. */
+export function deadmanTone(h: AlertHealth | null): "good" | "warn" | "bad" | "dim" {
+  return deadmanVerdict(h).tone;
 }
 
-function deadmanLine(h: AlertHealth | null): string {
-  const dm = h?.deadman;
-  if (!dm?.configured) return "not configured - nothing outside this rig is checking it is alive";
-  if (!dm.healthy) return "configured · NOT PINGING - the monitor URL is not being reached";
-  return dm.last_ping_age_s == null
-    ? "configured · healthy"
-    : `configured · healthy · last ping ${Math.round(dm.last_ping_age_s)}s ago`;
+/** The row's sub-line. A configured monitor's line is the verdict's own
+ *  detail (the accepted-ping age, or why there is none), which the word beside
+ *  it does not carry; it never says "healthy", which is the claim nothing
+ *  keeps. */
+export function deadmanLine(h: AlertHealth | null): string {
+  if (!h?.deadman?.configured) {
+    return "not configured - nothing outside this rig is checking it is alive";
+  }
+  const detail = deadmanVerdict(h).detail;
+  return `configured · ${detail.charAt(0).toLowerCase()}${detail.slice(1)}`;
 }
 
 // Re-exported so the DOM test can assert against the same string the sheet

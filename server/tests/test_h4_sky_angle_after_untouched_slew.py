@@ -65,11 +65,50 @@ H4-ENG-C-verify-mut from a byte backup:
   re-slew passes as its own.
 * "pier side stored raw": `record_sky_angle` storing the pier side as
   handed, not "east", "west" or None.
+
+THE FOUR IN-RUN RE-CENTRES (#526 part a, WP-107). Only the setup and the flip
+gate wrote a row; the four slews a run makes after them each ended in a
+solve of their own and wrote none: `_recentre_after_unguided_focus` (the
+re-centre before guiding starts), `_maybe_recover_guiding` (a lost star),
+`_hold_recentre_recalibrate` (the re-lock and dither-settle holds) and
+`_do_tracking_recovery` (the park/unpark recovery of a refused track). Each
+now records through the same `_record_sky_angle`, AFTER the goto and outside
+the `except` that logs a failed re-centre, so a recording error cannot be
+read as a re-centre that failed and a failed re-centre records nothing.
+Target setup, which passes `centring` to the tracking recovery and records
+the hop's row from it, is not recorded twice: only a recovery whose caller
+takes no result records its own.
+
+These cases call the real engine method on the real engine of a harness
+night (the report and the plan given it as `start` gives them; no run),
+against the harness's scripted goto and sky, since reaching each of the four
+inside a clocked night takes a lost star, a walking field, an unguided sweep
+and a refused track, each of which has its own file.
+
+* "no row at the unguided-focus re-centre": its `_record_sky_angle` call
+  removed.
+* "no row at the guiding-loss re-centre": the same, in
+  `_maybe_recover_guiding`.
+* "no row at the re-lock hold's re-centre": the same, in
+  `_hold_recentre_recalibrate`.
+* "no row at the tracking recovery's re-centre": the same, in
+  `_do_tracking_recovery`.
+* "the recovery records for the setup too": the `if report_centring:` guard
+  removed from `_do_tracking_recovery`'s call.
+* "the re-centre records after a failure": the call moved out of the `else`
+  of the re-centre's try, to follow it whatever the goto did (a goto that
+  solved and then raised, recorded).
+* "a stale record recorded at the re-centre" (added by the WP-107 verifier):
+  ``since=t0`` replaced by ``since=0.0`` in a re-centre's call, so an earlier
+  slew's record passes as the re-centre's own.
 """
 from __future__ import annotations
 
+import pytest
+
+import astrodeck.sequence.engine as engine_mod
 from _group_harness import (LON, T0, Night, group_hub, group_store,  # noqa: F401
-                            single)
+                            single, sky_record)
 from astrodeck.sequence import SequencePlan, schedule
 from astrodeck.sequence.report import SessionReporter
 
@@ -400,3 +439,282 @@ async def test_control_a_flip_re_slew_whose_solve_measured_nothing_adds_no_row(
     gone = [round(t - night.gotos[0][0], 1) for t, _w in night.gotos]
     assert got == [("west", gone[0]), ("east", gone[2])], (
         f"A's rows are {got}; the no-op re-slew solved nothing")
+
+
+# ---------------------------------------------------------------------------
+# the four in-run re-centres (#526 part a, WP-107)
+# ---------------------------------------------------------------------------
+
+RECENTRES = ["unguided focus", "guiding loss", "re-lock hold",
+             "tracking recovery"]
+#: The mount refused to track: what the hub's goto raises on a mount pinned at
+#: its meridian limit (the 2026-08-21 and 08-22 shape).
+REFUSED = RuntimeError("tracking on rejected (reply '0')")
+
+
+def _recentre_plan(target) -> SequencePlan:
+    """A plan that guides and recovers guiding, since two of the four re-centres
+    belong to the guiding ladder; the guider is the harness's scripted one."""
+    return SequencePlan(name="re-centres", guide=True, recover_guiding=True,
+                        dither_every=0, autofocus_every=0,
+                        meridian_flip=False, park_when_done=False,
+                        warm_cooler_when_done=False, targets=[target])
+
+
+def _in_run(night: Night, plan: SequencePlan):
+    """The harness night's own engine as a run leaves it before a re-centre:
+    the config, the plan (which resolves the policy from it), a report, and
+    the target the harness names each goto by. No run is started."""
+    eng = night.engine
+    eng._cfg = engine_mod.config_store.cfg()
+    eng.plan = plan
+    eng.reporter = SessionReporter(plan, report_id="w15-recentre-rows",
+                                   started_at=T0)
+    eng.state = {"state": "running", "target": plan.targets[0].name}
+    return eng
+
+
+async def _re_centre(which: str, eng, target) -> None:
+    """Drive the named re-centre through the engine's own method."""
+    if which == "unguided focus":
+        await eng._recentre_after_unguided_focus(
+            target, engine_mod.RECENTRE_AFTER_UNGUIDED_S + 1.0, guided=False)
+    elif which == "guiding loss":
+        # Guiding is down (the scripted guider starts inactive) and the
+        # attempts are not spent, so the ladder re-centres and restarts.
+        await eng._maybe_recover_guiding(target)
+    elif which == "re-lock hold":
+        await eng._hold_recentre_recalibrate(
+            "the re-lock rate is over its limit", target)
+    else:
+        assert await eng._recover_from_tracking_refusal(target), (
+            "premise: the tracking recovery ran to its end")
+
+
+def _rows_of(eng) -> list[dict]:
+    return [dict(r) for r in eng.reporter.build().sky_angles]
+
+
+@pytest.fixture
+def mount_at_its_limit(monkeypatch):
+    """The recovery's refusals pass (a configured site, dark at the night's
+    clock) and the mount reads not-tracking until a park clears it. Returns a
+    function that installs the pinned mount on a hub's telescope and answers
+    its state."""
+    monkeypatch.setattr(engine_mod, "TRACKING_CONFIRM_S", 0.0)
+
+    def pin(hub, *, refuse_goto: bool) -> dict:
+        tel = hub.devices["telescope"]
+        st = {"limit": True, "events": []}
+        set_on, get_on, park = tel.set_tracking, tel.get_tracking, tel.park
+
+        async def set_tracking(on):
+            if on and st["limit"] and refuse_goto:
+                st["events"].append("refused")
+                raise REFUSED
+            await set_on(on)
+
+        async def get_tracking():
+            return bool(await get_on()) and not st["limit"]
+
+        async def park_it():
+            st["events"].append("park")
+            st["limit"] = False
+            await park()
+
+        monkeypatch.setattr(tel, "set_tracking", set_tracking)
+        monkeypatch.setattr(tel, "get_tracking", get_tracking)
+        monkeypatch.setattr(tel, "park", park_it)
+        return st
+
+    return pin
+
+
+@pytest.mark.parametrize("which", RECENTRES)
+async def test_an_in_run_re_centre_that_left_the_rotator_untouched_adds_a_row(
+        which, group_hub, monkeypatch, mount_at_its_limit):
+    """Each of the four re-centres a run makes after its setup ends in a
+    solve of the sky angle, and with no angle commanded the rotator was not
+    asked anything: the angle is the train's, and it is a row, with the
+    solve's own PA, pier side, mechanical angle and the moment of the goto,
+    exactly one. Only the target setup and the flip gate wrote one before.
+
+    MUTANT "no row at the unguided-focus re-centre" (the `_record_sky_angle`
+    call removed from `_recentre_after_unguided_focus`): RED (observed), for
+    that case only:
+        AssertionError: the unguided focus re-centre solved a sky angle with
+        the rotator untouched and wrote no row: []
+    The three other mutants of that name, one per method, are RED for their
+    own case only (observed, the same message with the case's name).
+    """
+    if which == "tracking recovery":
+        mount_at_its_limit(group_hub, refuse_goto=False)
+    target = single("A", count=1)
+    night = Night(group_hub, monkeypatch, t0=T0, sky=_sky({"A": 92.7}))
+    eng = _in_run(night, _recentre_plan(target))
+    try:
+        await _re_centre(which, eng, target)
+        assert [c["rotation_deg"] for c in night.goto_calls] == [None], (
+            f"premise: the {which} re-centre made one goto and commanded no "
+            f"angle: {night.goto_calls}")
+        rows = _rows_of(eng)
+    finally:
+        await eng.reporter.flush()
+        await night.close()
+    assert rows == [
+        {"exposed_at": night.gotos[0][0], "target": "A",
+         "pier_side": "west", "mechanical_deg": MECH, "pa_deg": 92.7,
+         "source": "plate solve + sync"}], (
+        f"the {which} re-centre solved a sky angle with the rotator "
+        f"untouched and wrote no row: {rows}")
+
+
+@pytest.mark.parametrize("which", RECENTRES)
+async def test_control_an_in_run_re_centre_that_turned_the_rotator_adds_no_row(
+        which, group_hub, monkeypatch, mount_at_its_limit):
+    """CONTROL. The target carries a planned angle and each re-centre commands
+    it; the rotate loop ran and moved the rotator (the goto's ``rotation`` is
+    the loop's result), so the angle is the loop's and not the train's and no
+    row is written. Every case asserts the re-centre commanded the angle, so
+    none can pass by never reaching the goto.
+
+    MUTANT "recorded whatever the rotator did" (`_rotator_untouched`
+    answering True): RED (observed), all four cases (long line wrapped):
+        AssertionError: the unguided focus re-centre turned the rotator and
+        still wrote a row: [{'exposed_at': 1788313689.0, 'target': 'A',
+        'pier_side': 'west', 'mechanical_deg': 137.53, 'pa_deg': 30.1,
+        'source': 'plate solve + sync'}]
+    """
+    if which == "tracking recovery":
+        mount_at_its_limit(group_hub, refuse_goto=False)
+    loop = {"rotated": True, "pa_deg": 30.0, "attempts": 2, "error_deg": 0.3}
+
+    def goto(who: str, n: int, result: dict) -> dict:
+        return {**result, "rotation": dict(loop)}
+
+    target = single("A", count=1, rotation_deg=30.0)
+    night = Night(group_hub, monkeypatch, t0=T0, goto=goto,
+                  sky=_sky({"A": 30.1}))
+    eng = _in_run(night, _recentre_plan(target))
+    try:
+        await _re_centre(which, eng, target)
+        assert [c["rotation_deg"] for c in night.goto_calls] == [30.0], (
+            f"premise: the {which} re-centre commanded the planned angle: "
+            f"{night.goto_calls}")
+        rows = _rows_of(eng)
+    finally:
+        await eng.reporter.flush()
+        await night.close()
+    assert rows == [], (
+        f"the {which} re-centre turned the rotator and still wrote a row: "
+        f"{rows}")
+
+
+@pytest.mark.parametrize("which", RECENTRES)
+async def test_control_a_re_centre_whose_solve_measured_nothing_adds_no_row(
+        which, group_hub, monkeypatch, mount_at_its_limit):
+    """CONTROL (added by the WP-107 verifier). The re-centre's own solve
+    measured no angle (it failed, or reported no rotation), so the hub's
+    newest record is an earlier slew's, an hour old. It is not fresh for this
+    slew (`angle_check.fresh_sky_angle`: exposed at or after the goto began),
+    and recorded under this re-centre it would put that angle at this
+    pointing. Every case asserts the re-centre made its goto, so none can pass
+    by never reaching it.
+
+    MUTANT "a stale record recorded at the re-centre" (``since=t0`` replaced by
+    ``since=0.0`` in the re-centre's `_record_sky_angle` call): RED (observed),
+    for that case only (long line wrapped):
+        AssertionError: the unguided focus re-centre's solve measured nothing
+        and it still wrote a row, an earlier slew's: [{'exposed_at':
+        1788310089.0, 'target': 'A', 'pier_side': 'west', 'mechanical_deg':
+        137.53, 'pa_deg': 55.0, 'source': 'plate solve + sync'}]
+    """
+    if which == "tracking recovery":
+        mount_at_its_limit(group_hub, refuse_goto=False)
+    group_hub.last_sky_angle = sky_record(
+        55.0, T0 - 3600.0, pier_side="west", mechanical_deg=MECH)
+    target = single("A", count=1)
+    night = Night(group_hub, monkeypatch, t0=T0, sky=lambda who, n: None)
+    eng = _in_run(night, _recentre_plan(target))
+    try:
+        await _re_centre(which, eng, target)
+        assert len(night.goto_calls) == 1, (
+            f"premise: the {which} re-centre made its goto: "
+            f"{night.goto_calls}")
+        rows = _rows_of(eng)
+    finally:
+        await eng.reporter.flush()
+        await night.close()
+    assert rows == [], (
+        f"the {which} re-centre's solve measured nothing and it still wrote "
+        f"a row, an earlier slew's: {rows}")
+
+
+@pytest.mark.parametrize("which", RECENTRES[:3])
+async def test_a_re_centre_that_solved_and_then_failed_records_nothing_and_says_so(
+        which, group_hub, monkeypatch):
+    """The goto solved (the hub's record is fresh for the slew) and then
+    raised, as a mount that will not track after the slew does. The re-centre
+    is non-fatal by design and says it failed; it records no row, since the
+    slew's answer is unknown and the angle is not a measurement of a
+    re-centre that did not end. The tracking recovery is not here: it lets a
+    failed goto raise to its caller, which sets the target aside.
+
+    MUTANT "the re-centre records after a failure" (the call moved out of the
+    `else`, to follow the try whatever the goto did): RED (observed), for the
+    three cases (long line wrapped):
+        AssertionError: the unguided focus re-centre failed and still wrote
+        a row: [{'exposed_at': 1788313689.0, 'target': 'A', 'pier_side':
+        'west', 'mechanical_deg': 137.53, 'pa_deg': 92.7, 'source': 'plate
+        solve + sync'}]
+    """
+    target = single("A", count=1)
+    night = Night(group_hub, monkeypatch, t0=T0, sky=_sky({"A": 92.7}))
+    eng = _in_run(night, _recentre_plan(target))
+    solved_then_raised = group_hub.goto_and_center
+
+    async def goto(*a, **kw):
+        await solved_then_raised(*a, **kw)
+        raise REFUSED
+
+    monkeypatch.setattr(group_hub, "goto_and_center", goto)
+    try:
+        await _re_centre(which, eng, target)
+        rows = _rows_of(eng)
+    finally:
+        await eng.reporter.flush()
+        await night.close()
+    assert night.said("tracking on rejected"), (
+        f"premise: the {which} re-centre said it failed: {night.lines}")
+    assert rows == [], (
+        f"the {which} re-centre failed and still wrote a row: {rows}")
+
+
+async def test_a_setup_that_recovered_a_refused_track_is_one_row_not_two(
+        group_hub, monkeypatch, mount_at_its_limit):
+    """Target setup's goto dies on a mount pinned at its limit, the park/unpark
+    recovery re-centres the target, and setup records the hop's row from that
+    centring (the `centring` it handed the recovery). The recovery's own row
+    would be a second one for the same solve, so a recovery whose caller takes
+    the result writes none: exactly one row, the recovery's solve.
+
+    MUTANT "the recovery records for the setup too" (the `if report_centring:`
+    guard removed from `_do_tracking_recovery`'s call): RED (observed):
+        AssertionError: a recovered setup is two rows for one solve:
+        [('A', 92.7), ('A', 92.7)]
+    """
+    st = mount_at_its_limit(group_hub, refuse_goto=True)
+    plan = SequencePlan(name="recovered setup", guide=False, dither_every=0,
+                        autofocus_every=0, meridian_flip=False,
+                        park_when_done=False, warm_cooler_when_done=False,
+                        recover_guiding=False, targets=[single("A", count=1)])
+    night = Night(group_hub, monkeypatch, t0=T0, sky=_sky({"A": 92.7}))
+    rows = await _run(night, plan)
+    assert st["events"][:2] == ["refused", "park"], (
+        f"premise: setup's goto was refused and the recovery parked: "
+        f"{st['events']}")
+    assert night.said("recovered in"), (
+        f"premise: the recovery ran to its end: {night.said('A: ')}")
+    got = [(r["target"], r["pa_deg"]) for r in rows]
+    assert got == [("A", 92.7)], (
+        f"a recovered setup is two rows for one solve: {got}")

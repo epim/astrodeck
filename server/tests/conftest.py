@@ -1645,12 +1645,38 @@ class _TheTreeMustNotMove:
     In a repository where agents share one working tree, this is a normal thing
     to do by accident, which is why it gets a message rather than a shrug.
     Its cases are in `test_suite_guards_report_once.py`.
+
+    TWO TREES, ONE CLASS (#254). The same fault one directory over is a
+    parallel agent editing a test file or this conftest under a running suite:
+    the run then grades a mix of two versions of the tests. So `label` names
+    the tree for the headline, and `pytest_configure` registers the class a
+    second time over `server/tests`, as "astrodeck-tests-guard". `label`
+    defaults to "source tree" and `why` to the paragraph above's finding, so a
+    caller written before either existed (test_suite_guards_report_once.py
+    builds it that way) reads the words it always did. The second guard
+    catches a test file or conftest changed DURING the run; a mutant already
+    in a test file when the run starts moves nothing afterwards, and is
+    refused at the start by scripts/gate_run.py instead. The second guard's
+    cases are in `test_w15_tests_tree_guard.py`.
     """
 
     HEADLINE = "THIS RUN IS INVALID: the source tree changed while it ran"
 
-    def __init__(self, root: Path) -> None:
+    _SOURCE_WHY = (
+        "The tests that read their subject's source (inspect.getsource) "
+        "were reading a file that no longer matched the code they were "
+        "grading, and they can pass that way as easily as fail (issue "
+        "#118), so no verdict above can be trusted, the passes included. "
+        "Re-run on a quiescent tree.")
+
+    def __init__(self, root: Path, label: str = "source tree",
+                 why: str | None = None) -> None:
         self.root = root
+        self.label = label
+        # Set on the instance, so the class attribute above stays what a
+        # reader of the old code expects for the default label.
+        self.HEADLINE = f"THIS RUN IS INVALID: the {label} changed while it ran"
+        self._why = why or self._SOURCE_WHY
         #: path -> mtime at session start; None in a process that is not the
         #: run's (an xdist worker), which therefore never reports.
         self._before: dict[Path, int] | None = None
@@ -1686,13 +1712,9 @@ class _TheTreeMustNotMove:
             return result
         if session.exitstatus == pytest.ExitCode.OK:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
-        # Names only: paths under the package, never their contents.
+        # Names only: paths under the watched root, never their contents.
         body = [
-            "The tests that read their subject's source (inspect.getsource) "
-            "were reading a file that no longer matched the code they were "
-            "grading, and they can pass that way as easily as fail (issue "
-            "#118), so no verdict above can be trusted, the passes included. "
-            "Re-run on a quiescent tree.",
+            self._why,
             f"  changed or removed: {', '.join(changed) or 'none'}",
             f"  appeared: {', '.join(appeared) or 'none'}",
         ]
@@ -1829,6 +1851,20 @@ def pytest_configure(config):
     # which is before collection imports anything (see the class).
     config.pluginmanager.register(
         _TheTreeMustNotMove(_SERVER_DIR / "astrodeck"), "astrodeck-tree-guard")
+    # The same guard over the tests (#254): a test file or this conftest
+    # edited under a running suite makes the run grade two versions of it.
+    config.pluginmanager.register(
+        _TheTreeMustNotMove(
+            _SERVER_DIR / "tests", label="test tree",
+            why=("A test file or conftest.py changed while the suite was "
+                 "running, so the run graded a mix of two versions of the "
+                 "tests: modules already imported are the old text, files "
+                 "collected or read later are the new, and a test that "
+                 "scrapes a test file's source reads shifted lines (issue "
+                 "#254). No verdict above can be trusted, the passes "
+                 "included. Re-run in a copy of the tree that nothing else "
+                 "is editing.")),
+        "astrodeck-tests-guard")
     config.pluginmanager.register(
         _TheRealCapturesStayUntouched(_REAL_CAPTURE_ROOTS),
         "astrodeck-captures-guard")

@@ -33,6 +33,12 @@ have missed a boot that logged 41 alone.
 Nothing identifying leaves: the line carries event ids, a boot time and at most
 the base name of the process that asked for a restart. Not the computer name,
 not a user, not a path.
+
+#606 part A: the same read also leaves ONE WORD behind, :data:`BOOT_WORD`, for
+the dead-man beacon (``rig_beacon``) to carry off the box. The night log lives
+on the machine that is down, so the word is the only part of this evidence an
+owner can see from outside. It is a closed three-word vocabulary and is NOT the
+line: the line names a process and a time, the word names neither.
 """
 from __future__ import annotations
 
@@ -44,7 +50,21 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Any
 
-__all__ = ["classify", "parse_events", "log_boot_cause"]
+__all__ = ["classify", "parse_events", "log_boot_cause", "BOOT_WORD"]
+
+#: How the previous session ended, as one word for the dead-man beacon:
+#: "unexpected" (a crash, power loss or reset: Kernel-Power 41 / EventLog 6008),
+#: "normal" (a clean shutdown or a planned restart), or "unread". "unread" is
+#: both what it says until :func:`log_boot_cause` has finished (the System log
+#: is read off the loop, seconds after startup) and what it stays when the read
+#: finds nothing it can state: not Windows, wevtutil failing, no boot marker, or
+#: a boot with no record of how the session before it ended. A "normal" there
+#: would be a claim the System log never made.
+#:
+#: Read it as ``bootcause.BOOT_WORD`` at the moment of use, never
+#: ``from .bootcause import BOOT_WORD``: that binds the value once, at import,
+#: which is before the read and so would be "unread" for the life of the process.
+BOOT_WORD = "unread"
 
 _NS = {"e": "http://schemas.microsoft.com/win/2004/08/events/event"}
 #: How long after the boot marker an unexpected-shutdown event may be written
@@ -116,11 +136,23 @@ def classify(events: list[dict[str, Any]]) -> tuple[str, str]:
     ``level`` is "warning" for an unexpected end, "info" otherwise, so a night
     log read for trouble finds the one that matters without the rest.
     """
+    level, message, _word = _classify(events)
+    return (level, message)
+
+
+def _classify(events: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """``(level, message, word)``: :func:`classify`'s answer plus the
+    :data:`BOOT_WORD` that goes with it.
+
+    The word is decided HERE, beside the branch that decides the message, not
+    derived from the level afterwards: the level is "info" both for a clean
+    shutdown and for "the System log cannot say", and only the branch knows
+    which of the two it is."""
     events = sorted(events, key=lambda e: e["at"])
     boots = [e for e in events if e["id"] == 6005]
     if not boots:
         return ("info", "boot cause: no boot marker in the System log, so what "
-                        "the previous session ended as cannot be said")
+                        "the previous session ended as cannot be said", "unread")
     boot = boots[-1]["at"]
     when = boot.strftime("%Y-%m-%d %H:%M UTC")
     after = [e for e in events if boot - _KERNEL_LEAD <= e["at"] <= boot + _AT_BOOT]
@@ -130,7 +162,8 @@ def classify(events: list[dict[str, Any]]) -> tuple[str, str]:
         return ("warning",
                 f"boot cause: this PC started {when}, and the session before it "
                 f"ended UNEXPECTEDLY ({ids}) - power loss, a crash, or a "
-                f"firmware or thermal reset. Nothing shut it down on purpose.")
+                f"firmware or thermal reset. Nothing shut it down on purpose.",
+                "unexpected")
     before = [e for e in events if e["at"] < boot and e["id"] in (1074, 6006)]
     if before:
         last = before[-1]
@@ -147,11 +180,11 @@ def classify(events: list[dict[str, Any]]) -> tuple[str, str]:
             kind = (last["data"].get("param5", "") or "restart").strip()
             by = f" by {process}" if process else ""
             return ("info", f"boot cause: this PC started {when} after a planned "
-                            f"{kind}{by} (User32 1074).")
+                            f"{kind}{by} (User32 1074).", "normal")
         return ("info", f"boot cause: this PC started {when} after a clean "
-                        f"shutdown (EventLog 6006).")
+                        f"shutdown (EventLog 6006).", "normal")
     return ("info", f"boot cause: this PC started {when}; the System log holds no "
-                    f"record of how the session before it ended.")
+                    f"record of how the session before it ended.", "unread")
 
 
 def _read_system_log(timeout_s: float = 10.0) -> str:
@@ -170,7 +203,9 @@ def _read_system_log(timeout_s: float = 10.0) -> str:
 
 
 async def log_boot_cause(log=None) -> None:
-    """Read the System log off the event loop and write one line. Never raises."""
+    """Read the System log off the event loop, write one line and set
+    :data:`BOOT_WORD`. Never raises."""
+    global BOOT_WORD
     if log is None:
         from .events import bus
         log = bus.log
@@ -178,7 +213,10 @@ async def log_boot_cause(log=None) -> None:
         xml_text = await asyncio.to_thread(_read_system_log)
         if not xml_text:
             return                          # not Windows, or nothing readable
-        level, message = classify(parse_events(xml_text))
+        level, message, word = _classify(parse_events(xml_text))
+        # The word first: it is what the next dead-man ping carries, and the
+        # line below is a bus publish that can fail on its own account.
+        BOOT_WORD = word
         log(level, message, "system")
     except Exception:                       # noqa: BLE001 - never the reason boot fails
         return

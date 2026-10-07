@@ -389,6 +389,25 @@ class AdditionalBoundaryTests(unittest.TestCase):
             self.assertFalse(index.identify(source)['record_verified'])
             added=base/'Lib/unaccounted.py';added.write_bytes(b'copied data')
             self.assertFalse(index.identify(added)['record_verified'])
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows 8.3 short names only')
+    def test_a_short_name_base_still_contains_its_resolved_files(self):
+        """The hosted Windows runner's temp dir sits under RUNNER~1; resolve()
+        expands that, so identify() must compare resolved roots or a reviewed
+        runtime input reads as unreviewed (release run 37669607167).
+        MUTANT 'identify compares the unresolved base': RED with
+        'AssertionError: False is not true' when the short name differs."""
+        import ctypes
+        with tempfile.TemporaryDirectory() as directory:
+            long_dir=Path(directory)/'a long directory name'
+            (long_dir/'Lib').mkdir(parents=True)
+            source=long_dir/'Lib/known.py';source.write_bytes(b'reviewed runtime fixture')
+            buf=ctypes.create_unicode_buffer(1024)
+            if not ctypes.windll.kernel32.GetShortPathNameW(str(long_dir),buf,1024) or Path(buf.value).name==long_dir.name:
+                self.skipTest('8.3 short names are disabled on this volume')
+            index=proof.Sources.__new__(proof.Sources)
+            index.root=Path(directory)/'repository';index.base=Path(buf.value);index.paths={}
+            index.runtime_inputs={'Lib/known.py':{'sha256':proof.sha(source.read_bytes())}}
+            self.assertTrue(index.identify(Path(buf.value)/'Lib/known.py')['record_verified'])
     def test_reviewed_runtime_input_requires_exact_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);source=base/'Lib/known.py'

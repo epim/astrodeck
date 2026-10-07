@@ -176,6 +176,11 @@ export interface RestrictedAsset {
   source: string;
   without: string;
   satisfied: boolean;
+  /** What the server says about a row that is satisfied in a way worth saying
+   *  (the Player One SDK put there by the vendor's installer, with the
+   *  redistribution question still open, #632), or null (#705). An older server
+   *  sends none, which reads as null. */
+  detail: string | null;
   consent: { at: number; by: string; note: string } | null;
 }
 

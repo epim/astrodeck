@@ -12,10 +12,11 @@
 // `_REMOTE_LOCAL_ONLY_PREFIXES` and `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES` -
 // answering 403 `code: "local_only"` FOR EVERY ROLE, an admin included. Nothing
 // in Settings knew that: UPGRADE, CHECK NOW, SAVE SETTINGS, FACTORY RESET, SAVE
-// METHODS, the PEOPLE list, the sky-pack DOWNLOAD and DELETE, PUSH NOW, the
-// solver pick and REFRESH ELEMENTS all rendered armed from the sofa and the user
-// learned the refusal by pressing them. `gate.ts`'s `needsLan` is the fix, and
-// this file is what keeps it wired.
+// METHODS, the sky-pack DOWNLOAD and DELETE, PUSH NOW, the solver pick and
+// REFRESH ELEMENTS all rendered armed from the sofa and the user learned the
+// refusal by pressing them. `gate.ts`'s `needsLan` is the fix, and this file is
+// what keeps it wired. (The PEOPLE list was on that list until #685 opened it
+// over the relay; the PEOPLE block below pins what is open and what is not.)
 //
 // WHY THE PRINCIPAL IS AN ADMIN WITH EVERY CAPABILITY. `lockReason` ranks the
 // LAN rule ABOVE the capability rule, so a viewer would be locked either way and
@@ -29,9 +30,57 @@
 //   * move the `needsLan` rule below the cap rule in `gate.ts` -> nothing here
 //     moves (the admin holds every cap), but `lib/__tests__/gate.test.ts` goes
 //     red; that split is deliberate, this file grades the WIRING.
-//   * drop the `|| onRelay` guard from `UsersEditor.refresh` /
-//     `AuthMethodsEditor.refreshSetupUsers` / `FactoryResetEditor.refresh` ->
-//     "asks the rig for nothing it will refuse" fails on the recorded GET.
+//   * drop the `|| onRelay` guard from `AuthMethodsEditor.refreshSetupUsers` /
+//     `FactoryResetEditor.refresh` -> "asks the rig for nothing it will refuse"
+//     fails on the recorded GET.
+//   * PEOPLE is the one editor that went the OTHER way (#685): the rig now
+//     answers the list and four changes over the relay behind a sign-in under
+//     five minutes old, so the PEOPLE block below asserts the list IS requested,
+//     the controls ARE armed, and a `step_up_required` refusal opens SIGN IN
+//     AGAIN. Its named sabotages:
+//       - put `|| onRelay` back into `UsersEditor.refresh` -> "the list is
+//         requested over the relay" fails on the missing GET and the card;
+//       - make `isStepUpRequired` test `status === 403` instead of `code` ->
+//         "a capability refusal does not open SIGN IN AGAIN" goes red;
+//       - drop `markRequired()` from `UsersEditor.report` -> "a step_up_required
+//         refusal opens SIGN IN AGAIN" goes red;
+//       - drop the `LAN_CHANGE_PREFIX` pass-through in `errText` -> "a refusal
+//         that names its rule keeps its sentence" goes red;
+//       - drop `setPhase("fresh")` from `useStepUp.signInLocal` -> "a local
+//         sign-in posts /auth/local and closes the form" goes red.
+//     And the wave 15 integration's per-control locks and retry (#734, #731),
+//     each run from a byte backup of the file named, restored byte-identically
+//     (sha256 compared), `node --import tsx` on this file. Observed, all of
+//     them out of 30 cases:
+//       - `UserRow.tsx`: RESET's `lockedReason={resetLock}` made
+//         `lockedReason={lockedReason}`: 29/30, "x PEOPLE: over the relay RESET
+//         and the admin and syncer role options are locked with the LAN
+//         sentence, and the rest of the row stays armed: RESET renders ARMED over
+//         the relay - the rig refuses every password reset there (expected true,
+//         got null)";
+//       - `UserRow.tsx`: the role options' `lockedReason: ...` made `null`:
+//         29/30, the same case, "the ADMIN option renders ARMED over the relay -
+//         the rig refuses it (expected true, got null)";
+//       - `AddUserForm.tsx`: the same made `null`: 29/30, "x PEOPLE: over the
+//         relay the add form locks the admin and syncer roles and nothing else:
+//         the add form's ADMIN option renders ARMED over the relay - the rig
+//         refuses it (expected true, got null)";
+//       - `UserRow.tsx`: the enabled switch locked with `lanOnlyReason ??
+//         lockedReason`: 29/30, "the enabled switch is locked over the relay,
+//         but the rig does it behind a recent sign-in (expected null, got
+//         true)";
+//       - `UsersEditor.tsx`: the effect that sends the held change disabled
+//         (`if (phase !== "fresh") return;` made `if (true) return;`): 27/30, three
+//         cases, among them "x PEOPLE: a change the rig refused for want of a
+//         sign-in is sent again once a password sign-in lands: the refused change
+//         was not sent again after the sign-in (expected 2, got 1)";
+//       - `UsersEditor.tsx`: `onStepUp={hold}` not passed to `AddUserForm`: 29/30,
+//         "x PEOPLE: the same holds for ADD USER, and a held create is not sent
+//         from a form that has been emptied: a refused create did not open the
+//         SIGN IN AGAIN form (expected required, got idle)";
+//       - `AddUserForm.tsx`: the retry's `if (now.blocker === null)` guard
+//         removed: 29/30, "x ...: a held create was sent from a form that had
+//         been emptied (expected 1, got 2)".
 //   * lock everything unconditionally instead -> the VACUITY GUARD at the
 //     bottom fails: `cal-build` (POST /api/calibration/build, deliberately NOT
 //     on the fence) must stay pressable on the same mount, on the same origin.
@@ -92,8 +141,15 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------- fetch recorder
-interface Ask { url: string; method: string }
+interface Ask { url: string; method: string; body?: string }
 const asks: Ask[] = [];
+
+/** What the next `PATCH /api/users/<id>` answers. The default is a plain 200;
+ *  the PEOPLE block flips it to each refusal the rig can send and flips it back. */
+type PatchAnswer = "ok" | "step_up" | "capability" | "lan_reason" | "fence";
+const usersScenario: { patch: PatchAnswer; create: "ok" | "step_up" } = { patch: "ok", create: "ok" };
+const refuse = (status: number, data: any) =>
+  ({ ok: false, status, statusText: "Forbidden", json: async () => data });
 
 const CONFIG: any = {
   version: 11,
@@ -135,7 +191,7 @@ const ok = (data: any) => ({ ok: true, status: 200, statusText: "OK", json: asyn
 g.fetch = async (url: any, init: any) => {
   const u = String(url);
   const method = (init?.method ?? "GET").toUpperCase();
-  asks.push({ url: u, method });
+  asks.push({ url: u, method, body: typeof init?.body === "string" ? init.body : undefined });
   if (u.includes("/api/survey/pack")) {
     return ok({ present: true, bytes: 262_144_000, order: 4, fetched_at: 1_756_000_000, fetching: null });
   }
@@ -157,7 +213,48 @@ g.fetch = async (url: any, init: any) => {
     });
   }
   if (u.includes("/api/users")) {
-    return ok({ users: [{ id: "u1", username: "bear", email: "bear@rig", role: "admin", enabled: true }] });
+    if (method === "POST" && usersScenario.create === "step_up") {
+      return refuse(403, { detail: {
+        code: "step_up_required",
+        detail: "Sign in again to manage people from outside the LAN.",
+      } });
+    }
+    if (method === "POST") {
+      return { ok: true, status: 201, statusText: "Created", json: async () => (
+        { id: "u3", username: "new@rig", email: "new@rig", role: "operator", enabled: true }) };
+    }
+    if (method === "PATCH") {
+      switch (usersScenario.patch) {
+        case "step_up":
+          return refuse(403, { detail: {
+            code: "step_up_required",
+            detail: "Sign in again to manage people from outside the LAN.",
+          } });
+        case "capability":
+          return refuse(403, { detail: "capability not held" });
+        case "lan_reason":
+          return refuse(403, { detail: {
+            code: "local_only",
+            detail: "This change needs the LAN: an administrator can only be changed at the rig",
+          } });
+        case "fence":
+          return refuse(403, {
+            detail: "this security-sensitive operation is LAN-only", code: "local_only",
+          });
+        default:
+          return ok({ id: "u2", username: "guest@rig", email: "guest@rig", role: "operator", enabled: true });
+      }
+    }
+    return ok({ users: [
+      { id: "u1", username: "bear", email: "bear@rig", role: "admin", enabled: true },
+      { id: "u2", username: "guest@rig", email: "guest@rig", role: "viewer", enabled: true },
+    ] });
+  }
+  // A re-sign-in mints a cookie and the principal is read again. The principal
+  // answers as the same admin the tests seed, so a sign-in that "worked" does
+  // not swap the identity under the editor.
+  if (u.includes("/api/me")) {
+    return ok({ role: "admin", email: "admin@rig", caps: ALL_CAPS });
   }
   if (u.includes("/api/ephemeris/status")) {
     return ok({
@@ -348,27 +445,335 @@ test("FACTORY RESET: the counts say they were not read, never \"counting...\" fo
 });
 
 // ============================================================ PEOPLE > PEOPLE
-// `/api/users` is fenced by PREFIX and for every method, so the LIST READ is
-// refused as well as the four mutations under it.
+// The ONE editor that went the other way (#685). `/api/users` used to be fenced
+// by prefix for every method, so this editor showed a LAN-only card; the rig now
+// answers the list read and four changes (add a Google-only viewer or operator,
+// move someone between viewer and operator or enable/disable them, delete a
+// non-admin) over the relay behind a sign-in under five minutes old. So the
+// assertions are the mirror image of every other block here: the list IS
+// requested, the controls are armed, and the editor knows what to do when the
+// rig says the sign-in is too old.
+useStore.setState({
+  authMethods: { methods: ["local", "google"], google_configured: true, first_run: false },
+} as never);
 await mount(createElement(UsersEditor));
 
-await testAsync("PEOPLE: ADD USER refuses, and the list is never requested", async () => {
+const typeInto = async (el: any, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => {
+    setter.call(el, value);
+    el.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+};
+/** A press whose answer is a CHAIN of awaits (fetch, then the error path, then a
+ *  state update). `click` + `settle` leaves a gap between its two act scopes that
+ *  such a chain can land in, which React reports as an update outside act; this
+ *  keeps ONE act scope open across the whole chain. */
+const pressAndWait = async (el: any) => {
+  await act(async () => {
+    el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+  });
+};
+const usersGets = () => asks.filter((a) => a.method === "GET" && a.url.includes("/api/users"));
+const stepUpState = () => q("users-stepup")?.getAttribute("data-state");
+/** Press the OPERATOR option on the second person's role control and wait. */
+const changeGuestRole = async () => {
+  const rows = container.querySelectorAll('[data-testid="users-row"]');
+  eq(rows.length, 2, "the list did not render both people");
+  const option = rows[1].querySelector('[data-testid="users-row-role"] [data-value="operator"]');
+  assert(option != null, "the role control has no OPERATOR option to press");
+  await pressAndWait(option);
+};
+
+await testAsync("PEOPLE: the list is requested over the relay, and the controls are armed", async () => {
   assert(q("users-editor") != null, "the people editor never rendered");
-  eq(asks.filter((a) => a.url.includes("/api/users")).length, 0,
-    "GET /api/users was fired over the relay, where the rig refuses it for every role");
-  await refuses("users-add", "POST /api/users");
+  assert(usersGets().length >= 1,
+    "GET /api/users was not fired over the relay - the rig answers it now (#685)");
+  assert(q("users-lan-only") == null,
+    "the LAN-only card is still on the page over a list the rig now serves");
+  assert(q("users-list") != null, "the list never rendered over the relay");
+  eq(container.querySelectorAll('[data-testid="users-row"]').length, 2,
+    "the list is missing a person");
+  eq(q("users-add").getAttribute("aria-disabled"), null,
+    "ADD USER is locked over the relay, but the rig accepts it behind a recent sign-in");
+  eq(q("users-locknote"), null, "an admin is shown a read-only note over the relay");
 });
 
-test("PEOPLE: the list region says the LAN is the blocker, not a missing capability", () => {
-  const card = q("users-lan-only");
-  assert(card != null,
-    "the list is still 'reading the account list from the rig' - a spinner over a "
-    + "request this screen deliberately never makes");
-  assert(/LAN/.test(String(card.textContent)),
-    `the region does not name the relay: "${card.textContent}"`);
-  assert(!/admin access/.test(String(card.textContent)),
-    "an admin was told they need admin access - the wrong-blocker defect");
+test("PEOPLE: the card says what the five-minute rule is for and what stays on the LAN", () => {
+  const card = q("users-stepup");
+  assert(card != null, "no step-up card over the relay");
+  eq(stepUpState(), "idle", "the card opened before anything asked for a sign-in");
+  const text = String(card.textContent);
+  assert(/less than 5 minutes old/.test(text), `the rule's window is not stated: "${text}"`);
+  assert(/replay/.test(text), `the card does not say why the rule exists: "${text}"`);
+  assert(/Passwords, administrators and email changes need the LAN/.test(text),
+    `the card does not say what stays on the LAN: "${text}"`);
+  assert(!/admin access/.test(text), "an admin was told they need admin access");
 });
+
+await testAsync("PEOPLE: a step_up_required refusal opens SIGN IN AGAIN", async () => {
+  usersScenario.patch = "step_up";
+  asks.length = 0;
+  await changeGuestRole();
+  assert(writes().some((w) => w.method === "PATCH" && w.url.includes("/api/users/u2")),
+    "the change never reached the rig");
+  eq(stepUpState(), "required", "the refusal did not open the SIGN IN AGAIN form");
+  const card = String(q("users-stepup").textContent);
+  assert(/SIGN IN AGAIN/.test(card), `the block does not say SIGN IN AGAIN: "${card}"`);
+  assert(/more than 5 minutes old/.test(card), `the block does not say why: "${card}"`);
+  assert(q("users-stepup-google") != null, "no Google sign-in offered although Google is enabled");
+  assert(q("users-stepup-password") != null, "no local sign-in offered although local is enabled");
+  eq(String(q("users-error").textContent), "Sign in again to manage people from outside the LAN.",
+    "the failed change did not say what happened");
+});
+
+await testAsync("PEOPLE: a local sign-in posts /auth/local and closes the form", async () => {
+  usersScenario.patch = "ok";
+  asks.length = 0;
+  await typeInto(q("users-stepup-username"), "bear");
+  await typeInto(q("users-stepup-password"), "correct-horse");
+  await pressAndWait(q("users-stepup-submit"));
+  const post = asks.find((a) => a.method === "POST" && a.url.includes("/auth/local"));
+  assert(post != null, "the sign-in never reached /auth/local");
+  eq(JSON.parse(post!.body ?? "{}").username, "bear", "the typed username was not sent");
+  eq(JSON.parse(post!.body ?? "{}").password, "correct-horse", "the typed password was not sent");
+  eq(stepUpState(), "fresh", "a successful sign-in did not leave the form");
+  // The change the rig refused is sent again by itself (#734): one PATCH, the
+  // same one, to the same person.
+  const resent = writes().filter((w) => w.method === "PATCH" && w.url.includes("/api/users/u2"));
+  eq(resent.length, 1, "the refused change was not sent again after the sign-in");
+  eq(JSON.parse(resent[0].body ?? "{}").role, "operator", "the retry sent a different change");
+  assert(q("users-error") == null, "the refusal's sentence is still on the page after the retry");
+  assert(q("users-stepup-password") == null, "the password field is still on the page");
+  assert(/open for 5 minutes/.test(String(q("users-stepup").textContent)),
+    "the card does not say how long the sign-in lasts");
+});
+
+await testAsync("PEOPLE: a capability refusal does not open SIGN IN AGAIN", async () => {
+  // A 403 with no `code` is a role the caller lacks. Signing in again cannot
+  // help them, and offering it is the wrong-blocker defect the fence work exists
+  // to prevent.
+  await mount(createElement(UsersEditor));
+  usersScenario.patch = "capability";
+  await changeGuestRole();
+  eq(stepUpState(), "idle", "a capability refusal opened the SIGN IN AGAIN form");
+  eq(String(q("users-error").textContent), "capability not held",
+    "the capability refusal lost its sentence");
+});
+
+await testAsync("PEOPLE: a refusal that names its rule keeps its sentence", async () => {
+  await mount(createElement(UsersEditor));
+  usersScenario.patch = "lan_reason";
+  await changeGuestRole();
+  eq(String(q("users-error").textContent),
+    "This change needs the LAN: an administrator can only be changed at the rig",
+    "the rule the rig named was replaced by a generic sentence");
+  eq(stepUpState(), "idle", "a local_only refusal opened SIGN IN AGAIN");
+  // ... while the fence middleware's generic refusal still gets the one LAN sentence.
+  await mount(createElement(UsersEditor));
+  usersScenario.patch = "fence";
+  await changeGuestRole();
+  eq(String(q("users-error").textContent), LOCAL_ONLY_REASON,
+    "the fence's generic refusal did not get the shared LAN sentence");
+});
+
+// ------------------------------------- PEOPLE: per-control locks and the retry
+// (#734, #731; wave 15 integration of WP-105.) The rig refuses a password reset
+// and any role but viewer and operator over the relay, so those controls are
+// locked with the LAN sentence before anything is pressed, and every other
+// control on the same row stays armed. Both halves are asserted on ONE mount, so
+// neither can pass by the other being broken.
+
+const optionOf = (scope: any, group: string, value: string) =>
+  scope.querySelector(`[data-testid="${group}"] [data-value="${value}"]`) as any;
+
+await testAsync("PEOPLE: over the relay RESET and the admin and syncer role options are locked with the LAN sentence, and the rest of the row stays armed", async () => {
+  usersScenario.patch = "ok";
+  await mount(createElement(UsersEditor));
+  const rows = container.querySelectorAll('[data-testid="users-row"]');
+  eq(rows.length, 2, "the list did not render both people");
+  const guest = rows[1];
+  const reset = guest.querySelector('[data-testid="users-row-reset"]');
+  assert(reset != null, "no RESET on the row - nothing may be hidden");
+  eq(reset.getAttribute("aria-disabled"), "true",
+    "RESET renders ARMED over the relay - the rig refuses every password reset there");
+  eq(reset.getAttribute("title"), LOCAL_ONLY_REASON, "RESET names the wrong blocker");
+  for (const role of ["admin", "syncer"]) {
+    const opt = optionOf(guest, "users-row-role", role);
+    assert(opt != null, `the role control has no ${role.toUpperCase()} option - nothing may be hidden`);
+    eq(opt.getAttribute("aria-disabled"), "true",
+      `the ${role.toUpperCase()} option renders ARMED over the relay - the rig refuses it`);
+    eq(opt.getAttribute("title"), LOCAL_ONLY_REASON, `the ${role.toUpperCase()} option names the wrong blocker`);
+  }
+  // THE OTHER CONTROLS ON THE SAME ROW STAY ARMED.
+  const armed: Array<[string, any]> = [
+    ["the OPERATOR option", optionOf(guest, "users-row-role", "operator")],
+    ["the VIEWER option", optionOf(guest, "users-row-role", "viewer")],
+    ["the enabled switch", guest.querySelector('[data-testid="users-row-enabled"]')],
+    ["DELETE", guest.querySelector('[data-testid="users-row-delete"]')],
+  ];
+  for (const [what, el] of armed) {
+    assert(el != null, `${what} is not on the row`);
+    eq(el.getAttribute("aria-disabled"), null,
+      `${what} is locked over the relay, but the rig does it behind a recent sign-in`);
+  }
+  // Pressing a locked one explains and sends nothing; pressing an armed one sends.
+  asks.length = 0;
+  await act(async () => { useStore.setState({ toasts: [] } as never); });
+  await click(optionOf(guest, "users-row-role", "admin"));
+  assert(toastTitles().includes(LOCAL_ONLY_REASON),
+    `the locked ADMIN option refused in silence: ${JSON.stringify(toastTitles())}`);
+  await click(reset);
+  eq(writes().length, 0, `a locked control reached the rig: ${JSON.stringify(writes())}`);
+  assert(guest.querySelector('[data-testid="users-reset-form"]') == null,
+    "a locked RESET opened its password form, so a password could be typed for the relay");
+  await pressAndWait(optionOf(guest, "users-row-role", "operator"));
+  assert(writes().some((w) => w.method === "PATCH" && w.url.includes("/api/users/u2")),
+    "the armed OPERATOR option sent nothing");
+});
+
+await testAsync("PEOPLE: on the LAN the same row locks nothing for the LAN's sake", async () => {
+  usersScenario.patch = "ok";
+  act(() => { noteRemoteStatus({ via: "direct" }); });
+  try {
+    await mount(createElement(UsersEditor));
+    const guest = container.querySelectorAll('[data-testid="users-row"]')[1];
+    const lan: Array<[string, any]> = [
+      ["RESET", guest.querySelector('[data-testid="users-row-reset"]')],
+      ["the ADMIN option", optionOf(guest, "users-row-role", "admin")],
+      ["the SYNCER option", optionOf(guest, "users-row-role", "syncer")],
+    ];
+    for (const [what, el] of lan) {
+      assert(el != null, `${what} is not on the row`);
+      eq(el.getAttribute("aria-disabled"), null,
+        `${what} is locked on the LAN, where the rig does it`);
+    }
+  } finally {
+    act(() => { noteRemoteStatus({ via: "relay" }); });
+  }
+});
+
+await testAsync("PEOPLE: over the relay the add form locks the admin and syncer roles and nothing else", async () => {
+  usersScenario.create = "ok";
+  await mount(createElement(UsersEditor));
+  await click(q("users-add"));
+  const form = q("users-add-form");
+  assert(form != null, "ADD USER did not open its form");
+  for (const role of ["admin", "syncer"]) {
+    const opt = optionOf(form, "users-add-role", role);
+    assert(opt != null, `the add form has no ${role.toUpperCase()} option - nothing may be hidden`);
+    eq(opt.getAttribute("aria-disabled"), "true",
+      `the add form's ${role.toUpperCase()} option renders ARMED over the relay - the rig refuses it`);
+    eq(opt.getAttribute("title"), LOCAL_ONLY_REASON,
+      `the add form's ${role.toUpperCase()} option names the wrong blocker`);
+  }
+  for (const role of ["viewer", "operator"]) {
+    eq(optionOf(form, "users-add-role", role).getAttribute("aria-disabled"), null,
+      `the add form's ${role.toUpperCase()} option is locked over the relay, but the rig allows it`);
+  }
+  eq(q("users-add-username").getAttribute("aria-disabled"), null, "the username field is locked");
+  eq(optionOf(form, "users-add-method", "google").getAttribute("aria-disabled"), null,
+    "the Google-only method is locked over the relay, where it is the one method the rig allows");
+});
+
+await testAsync("PEOPLE: a change the rig refused for want of a sign-in is sent again once a password sign-in lands", async () => {
+  // The sequence the person lives: change a role, be asked to sign in again,
+  // sign in, and find the change made. The earlier cases cover the form and the
+  // sentence; this one is the retry on its own, on a fresh mount.
+  usersScenario.patch = "step_up";
+  await mount(createElement(UsersEditor));
+  asks.length = 0;
+  await changeGuestRole();
+  eq(stepUpState(), "required", "the refusal did not open the SIGN IN AGAIN form");
+  assert(/sends the change again for you/.test(String(q("users-stepup-why").textContent)),
+    `the hint does not say the change is held and will be sent again: "${q("users-stepup-why")?.textContent}"`);
+  eq(writes().filter((w) => w.method === "PATCH").length, 1, "premise: one refused PATCH");
+  usersScenario.patch = "ok";
+  await typeInto(q("users-stepup-username"), "bear");
+  await typeInto(q("users-stepup-password"), "correct-horse");
+  await pressAndWait(q("users-stepup-submit"));
+  const patches = writes().filter((w) => w.method === "PATCH" && w.url.includes("/api/users/u2"));
+  eq(patches.length, 2, "the refused change was not sent again after the sign-in");
+  eq(patches[1].body, patches[0].body, "the retry sent a different change");
+  eq(stepUpState(), "fresh", "the sign-in did not land");
+  // ONCE: a held change is not sent again by anything that follows.
+  await settle();
+  eq(writes().filter((w) => w.method === "PATCH").length, 2,
+    "the held change was sent a second time");
+});
+
+await testAsync("PEOPLE: nothing held means a sign-in sends nothing but the sign-in", async () => {
+  usersScenario.patch = "ok";
+  await mount(createElement(UsersEditor));
+  await pressAndWait(q("users-stepup-open"));
+  eq(stepUpState(), "required", "SIGN IN AGAIN did not open the form");
+  assert(!/sends the change again for you/.test(String(q("users-stepup-why").textContent)),
+    "the form promised to send a change that nobody had held");
+  asks.length = 0;
+  await typeInto(q("users-stepup-username"), "bear");
+  await typeInto(q("users-stepup-password"), "correct-horse");
+  await pressAndWait(q("users-stepup-submit"));
+  eq(stepUpState(), "fresh", "the sign-in did not land");
+  eq(writes().filter((w) => !w.url.includes("/auth/local")).length, 0,
+    `a sign-in with nothing held sent a change: ${JSON.stringify(writes())}`);
+});
+
+await testAsync("PEOPLE: the same holds for ADD USER, and a held create is not sent from a form that has been emptied", async () => {
+  const posts = () => writes().filter((w) => w.method === "POST" && w.url.endsWith("/api/users"));
+  const fillAndCreate = async () => {
+    await click(q("users-add"));
+    await typeInto(q("users-add-username"), "new@rig");
+    await typeInto(q("users-add-email"), "new@rig.example");
+    await click(optionOf(q("users-add-form"), "users-add-method", "google"));
+    asks.length = 0;
+    await pressAndWait(q("users-create"));
+  };
+
+  usersScenario.create = "step_up";
+  await mount(createElement(UsersEditor));
+  await fillAndCreate();
+  eq(posts().length, 1, "premise: CREATE reached the rig once");
+  eq(stepUpState(), "required", "a refused create did not open the SIGN IN AGAIN form");
+  usersScenario.create = "ok";
+  await typeInto(q("users-stepup-username"), "bear");
+  await typeInto(q("users-stepup-password"), "correct-horse");
+  await pressAndWait(q("users-stepup-submit"));
+  eq(posts().length, 2, "the refused create was not sent again after the sign-in");
+  eq(posts()[1].body, posts()[0].body, "the retry sent a different account");
+
+  // And the guard: the form was emptied between the refusal and the sign-in, so
+  // there is nothing to send.
+  usersScenario.create = "step_up";
+  await mount(createElement(UsersEditor));
+  await fillAndCreate();
+  eq(posts().length, 1, "premise: the second CREATE reached the rig once");
+  await typeInto(q("users-add-username"), "");
+  usersScenario.create = "ok";
+  await typeInto(q("users-stepup-username"), "bear");
+  await typeInto(q("users-stepup-password"), "correct-horse");
+  await pressAndWait(q("users-stepup-submit"));
+  eq(posts().length, 1, "a held create was sent from a form that had been emptied");
+});
+
+await testAsync("PEOPLE: without admin.users the list is not requested and there is no sign-in card", async () => {
+  usersScenario.patch = "ok";
+  await act(async () => { root.render(null); });
+  await settle();
+  seed();
+  useStore.setState({
+    principal: { role: "viewer", email: "view@rig", caps: ["view.status", "view.preview"] },
+  } as never);
+  asks.length = 0;
+  await act(async () => { root.render(createElement(UsersEditor)); });
+  await settle();
+  eq(usersGets().length, 0, "a viewer asked the rig for the list");
+  assert(q("users-hidden") != null, "the viewer's list region is missing");
+  eq(q("users-stepup"), null, "a viewer was offered a sign-in for a change it cannot make");
+});
+
+// Inside `act`: the viewer's editor above is still mounted and subscribes to this.
+await act(async () => { useStore.setState({ authMethods: null } as never); });
 
 // ================================================== PEOPLE > SIGN-IN METHODS
 // WITH NO METHOD ENABLED, which is the one state the guided setup card appears

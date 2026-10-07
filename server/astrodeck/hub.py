@@ -768,6 +768,47 @@ class SolveFrameTransient(DeviceError):
     (H4 contract 1), which the engine does not count as a centring strike."""
 
 
+# THE RIG-SIDE REASONS A FAILED SOLVE CAN NAME (#618). D-03 (backlog ruling
+# D-03, owner-approved 2026-09-30) sets a mosaic aside after two held passes
+# in a row that blame the identical rig-side reason, but every failed solve
+# used to reach the engine as one generic sentence, which the rule has to
+# read as no reason at all (the sky may be to blame for it). These two are
+# the causes the rig itself owns and that do not clear by themselves.
+#
+# FIXED WORDS, NO NUMBERS, NO PATHS, NO SITE DATA. The sentence becomes a
+# deferral's ``last_error``, a hold's clock key and the set-aside alert,
+# which quotes it with ``!r``: a figure that changes between tries would
+# restart the clock and defeat the match, and a path or a coordinate has no
+# business in any of those places.
+SOLVE_REASON_SOLVER_MISSING = (
+    "plate solve failed: no plate solver is available on this rig")
+SOLVE_REASON_FILE_LOCKED = (
+    "plate solve failed: another program held the solve frame's file open")
+
+
+def solve_failure_reason(exc: BaseException) -> str | None:
+    """The stable rig-side reason a failed solve names, or ``None`` (#618).
+
+    A PURE function of the exception's TYPE, never its words: a
+    ``SolveFrameTransient`` is ``SOLVE_REASON_FILE_LOCKED`` and a
+    ``providers.SolverUnavailable`` is ``SOLVE_REASON_SOLVER_MISSING``.
+    EVERYTHING ELSE is ``None``, and the engine keeps the generic text for
+    it: a cloud verdict (``FailedSolveError``), an ASTAP timeout, an
+    unrecognised error, a bare ``Exception``, and every ``NoLightError``
+    whatever it was judged against, since the no-light classifier is not
+    yet validated (#308) and a mosaic must not be set aside on its guess.
+    Once #308 closes, a ``NoLightError`` whose ``reference_kind`` is
+    ``DARK_MASTER`` is the one to map here."""
+    # In-function, as every other use of providers in this file: that module
+    # reaches back into the hub, so a module-level import is a cycle.
+    from .providers import SolverUnavailable
+    if isinstance(exc, SolveFrameTransient):
+        return SOLVE_REASON_FILE_LOCKED
+    if isinstance(exc, SolverUnavailable):
+        return SOLVE_REASON_SOLVER_MISSING
+    return None
+
+
 def _sharing_violation(e: BaseException) -> bool:
     """True for a Windows sharing violation, the transient this retries."""
     return (isinstance(e, PermissionError)
@@ -7382,10 +7423,14 @@ class Hub:
 
         PASS sets ``self._rotation_trusted = True`` and changes nothing else.
         FAIL sets it ``False``, and every ``rotate_to_pa`` call after this
-        refuses outright (D-05: "rotation is off for the night") until the
-        next self-test passes -- a caller that still wants frames shoots them
-        at whatever fixed angle the camera already sits, by simply not asking
-        for a rotation, the same as any other target with no rotator.
+        refuses outright (D-05: "rotation is off for the night") until a
+        self-test passes again. WHAT RUNS IT AGAIN: the operator's TEST ROTATOR
+        button (``POST /api/rotator/preflight``, which re-runs this after a
+        FAIL, #697), or the first rotating group of the next observing night
+        (the verdict is stamped with its night, #709). Nothing automatic
+        re-runs it within the night. A caller that still wants frames shoots
+        them at whatever fixed angle the camera already sits, by simply not
+        asking for a rotation, the same as any other target with no rotator.
 
         A SEPARATE MEASUREMENT FROM THE PER-MOVE FOLLOW CHECK
         (``_rotate_to_pa_attempts``'s own ``ROTATE_FOLLOW_FRACTION``, a
@@ -7503,8 +7548,9 @@ class Hub:
                     f"followed only {fraction:.0%} of the "
                     f"{mech_travel:+.2f}° commanded move (sky "
                     f"{sky_travel:+.2f}°); rotation is off for the night "
-                    f"and panels will be shot at a fixed angle until the "
-                    f"next self-test passes", "rotator")
+                    f"and panels will be shot at a fixed angle until "
+                    f"TEST ROTATOR (on the rotator panel) passes again",
+                    "rotator")
         bus.publish("rotator", action="self_test", passed=passed,
                     fraction=round(fraction, 3),
                     mechanical_travel_deg=round(mech_travel, 2),
@@ -7566,9 +7612,60 @@ class Hub:
         await rot.move_mechanical(_rotation.mod360(mech0 + step))
         return step
 
+    #: The follow-test verdict and the observing night it was measured on,
+    #: ``(trusted, events.night_key)``, or None when none is held. Reached only
+    #: through ``_rotation_trusted`` below, which is what every reader and
+    #: writer (the engine, the status block, ``rotate_to_pa``, the resume arm,
+    #: ``rotator_self_test``, ``_teardown``) already uses. A class-level None
+    #: so a hub built without ``__init__`` (a double) reads "not measured".
+    _rotation_verdict: tuple[bool, str] | None = None
+
+    @staticmethod
+    def _observing_night() -> str:
+        """The observing night (``events.night_key``, local noon to noon) the
+        rotator verdict is stamped with and read against. The import is made at
+        call time so ``events.night_key`` stays the ONE definition a test can
+        pin; a name bound at import would be a second clock (#682)."""
+        from .events import night_key
+        return night_key(time.time())
+
+    @property
+    def _rotation_trusted(self) -> bool | None:
+        """Whether ``rotator_self_test`` found the camera follows the rotator
+        ON THE CURRENT OBSERVING NIGHT: True (passed), False (failed), or None
+        (no verdict held for tonight). A verdict from another night reads as
+        None (#709).
+
+        WHY THE NIGHT. This was cleared only by ``_teardown``, so "rotation is
+        off for the night" really meant "off until the rig reconnects", and a
+        PASS from night 1 stood as night 2's in a process that outlived the
+        night, because the engine asks for a self-test only while the verdict
+        is None. A coupling re-seated or re-loosened between nights was neither
+        re-measured nor re-trusted. Stamped when SET (the setter below), judged
+        when READ, so every reader sees the same answer and none has to
+        remember to compare nights; the first rotating group of each night
+        then asks again.
+
+        THE LEARNED SIGN IS NOT STAMPED. It is which way the camera turns
+        against the motor, a fact about the train's geometry that re-seating a
+        coupling does not change, and the simulator's declared +1 would
+        otherwise be forgotten at every noon and cost every night a 2 degree
+        turn and two solves for nothing."""
+        verdict = self._rotation_verdict
+        if verdict is None:
+            return None
+        trusted, night = verdict
+        return trusted if night == self._observing_night() else None
+
+    @_rotation_trusted.setter
+    def _rotation_trusted(self, trusted: bool | None) -> None:
+        self._rotation_verdict = (
+            None if trusted is None else (trusted, self._observing_night()))
+
     async def ensure_rotator_ready(
             self, *, sign_step_deg: float = 2.0,
-            test_step_deg: float = ROTATOR_SELF_TEST_STEP_DEG) -> dict:
+            test_step_deg: float = ROTATOR_SELF_TEST_STEP_DEG,
+            retest_failed: bool = False) -> dict:
         """The rotator preflight (WP-88; #145, #594): measure what this
         connect has not measured, and nothing else. Returns ``{"sign",
         "trusted", "ran"}``: the hub's two values afterwards and which of
@@ -7587,9 +7684,21 @@ class Hub:
         so a second call, or the second hop of a rotating mosaic, exposes
         nothing. ``_teardown`` resets both, so the next connect measures
         again; a reconnect may bring back a different or re-coupled rotator.
-        A prior FAIL is not None, so it stays failed until the rig
-        reconnects: re-testing a coupling that already failed would let the
-        next hop quietly clear a verdict the operator has not acted on.
+        The follow-test verdict also has an observing night (#709): one
+        measured on another night reads as None, so the first call of each
+        night measures it again; the sign has none (see ``_rotation_trusted``).
+
+        A PRIOR FAIL STAYS FAILED FOR EVERY AUTOMATIC CALLER. It is not None,
+        so ``goto_and_center`` and the engine leave it alone: re-testing a
+        coupling that already failed would let the next hop quietly clear a
+        verdict the operator has not acted on. ONLY AN EXPLICIT OPERATOR
+        RETEST CLEARS IT (#697, backlog ruling for WP-114): ``retest_failed``
+        True, which ``POST /api/rotator/preflight`` (the TEST ROTATOR button)
+        passes, runs the follow test again when the last one FAILED, keeping
+        the learned sign. Before this the only way back, after the owner
+        re-seated the coupling (#594), was a whole-rig reconnect. A retest of
+        a rotator that is not failed measures nothing, as before, and a
+        retest that cannot run (a DeviceError) leaves the FAIL standing.
 
         UNDER ONE LOCK, so a goto and the button asking together measure
         once: the second caller waits, then finds both values known.
@@ -7605,7 +7714,8 @@ class Hub:
             if self._rotator_sky_sign is None:
                 await self.learn_rotator_sign(sign_step_deg)
                 ran.append("sign")
-            if self._rotation_trusted is None:
+            trusted = self._rotation_trusted
+            if trusted is None or (retest_failed and trusted is False):
                 await self.rotator_self_test(test_step_deg)
                 ran.append("self_test")
             return {"sign": self._rotator_sky_sign,
@@ -7650,7 +7760,8 @@ class Hub:
                 "rotator: the nightly self-test found the camera does not "
                 "reliably follow the rotator (D-05, #594), so rotation is "
                 "refused for the rest of the night; panels should be shot "
-                "at a fixed angle until rotator_self_test passes again")
+                "at a fixed angle until TEST ROTATOR (on the rotator panel) "
+                "passes again")
         from . import providers as _providers
         solver = _providers.pick_solver(self)
         rcfg = config_store.cfg().rotator
@@ -8048,7 +8159,16 @@ class Hub:
         when either is), so a caller that reads only the old key -- and
         ``_group_hop_checks`` until WP-21 adds the fallback -- keeps working
         unchanged. Both halves can be true in the same call (the rotate loop
-        degrades transiently and the centring solve that follows also does)."""
+        degrades transiently and the centring solve that follows also does).
+
+        ``solve_reason`` (#618), beside ``solve_failed``, is a fixed sentence
+        (``SOLVE_REASON_SOLVER_MISSING``, ``SOLVE_REASON_FILE_LOCKED``) when
+        the centring solve failed for a cause the rig owns, named by the
+        exception's type (`solve_failure_reason`). It is additive and appears
+        only then: a cloud verdict, a no-light verdict, a timeout or an
+        unknown error leave it out, and the engine reads its absence as the
+        generic failure. It is the centring solve's alone, not the rotate
+        loop's, and it never carries a number, a path or a site datum."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -8227,11 +8347,20 @@ class Hub:
                 # by ``_rot_keys`` from a rotate-phase hold earlier in this
                 # same call -- the ``|`` merge is what makes it a union, not
                 # a replacement.
+                #
+                # ``solve_reason`` (#618) names the cause when it is one the
+                # rig owns and the type says so (`solve_failure_reason`):
+                # it is what lets the engine's deferral carry a reason D-03
+                # can match across passes. Absent for every cause the
+                # system cannot name, so the engine's generic text stands.
+                reason = solve_failure_reason(e)
                 return ({"centered": False, "error_arcmin": None,
                          "attempts": attempt, "solve_failed": True} | _rot_keys
                         | ({"centring_solve_transient": True,
                             "solve_transient": True}
-                           if isinstance(e, SolveFrameTransient) else {}))
+                           if isinstance(e, SolveFrameTransient) else {})
+                        | ({"solve_reason": reason}
+                           if reason is not None else {}))
             from .catalog.coords import angular_sep_deg
             try:
                 err = angular_sep_deg(solved["ra_hours"], solved["dec_deg"],
@@ -8940,6 +9069,15 @@ class Hub:
                     # mount really has rather than a guess about somebody
                     # else's gearbox.
                     "max_rate_deg_s": getattr(tel, "max_rate_deg_s", None),
+                    # Does the driver have a reason to TRUST this position
+                    # (#144)? False after an AM5 reset until a sync: the mount
+                    # then reports its home position, pointing at the pole,
+                    # wherever the tube is. ALWAYS present, so a client never
+                    # has to tell "absent" from "known"; a driver with no such
+                    # flag reads True through the same ``getattr`` the nudge
+                    # route uses. Both UIs lock the step controls and pick the
+                    # ceiling rung off it.
+                    "position_known": bool(getattr(tel, "position_known", True)),
                     # Was this pointing CONFIRMED against the sky, or is it the
                     # mount's own opinion? See `note_pointing_verified`.
                     "pointing": {
@@ -9319,6 +9457,91 @@ class Hub:
             warm = self.warm_state()
             if warm is not None and "camera" in out:
                 out["camera"]["warm"] = warm
+        # THE FINGERPRINT IS RECORDED BEFORE THE PROBE BELOW WAITS (wave 15
+        # integration). The record writes what the reads above sampled, and the
+        # probe's wait is an await (a worker-thread hop, and up to five seconds
+        # when the guide camera stalls). Recorded after it, a poll that had read
+        # the focuser, then waited, then wrote that reading could put a position
+        # it took BEFORE the recovery ladder's sweep over the position the ladder
+        # had just vouched for (``fingerprint.vouch``), and the next tick swept
+        # again. Recorded here, the wait cannot age the sample.
+        # Record last-known device state so a power cut is DETECTABLE on the way
+        # back up. Read off ``out`` rather than re-querying: these values were
+        # just measured, and a second round of device reads on the status path
+        # would cost more than the feature. Coalesced to one write per 10s and
+        # swallows its own errors, so it is safe on this hot path.
+        #
+        # OFF THE LOOP (#97). Coalescing bounds how OFTEN this writes, not how
+        # LONG a write takes, and the write goes through the private-ACL path
+        # on a directory holding the night's images: py-spy caught this stack
+        # on the loop thread on 2026-09-19 and the write was measured at 7 s.
+        # record() takes its own lock, because this now runs on a worker thread
+        # and poll_status is entered both from _status_loop and from
+        # /api/status.
+        try:
+            from .devices import fingerprint as _fp
+            _m = out.get("mount") or {}
+            _f = out.get("focuser") or {}
+            _w = out.get("filterwheel") or {}
+            await asyncio.to_thread(
+                _fp.record, focuser_position=_f.get("position"),
+                filter_slot=_w.get("position"),
+                ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
+                parked=_m.get("parked"), tracking=_m.get("tracking"))
+            # The worker records a slow write, the loop says it: bus.publish is
+            # loop-affine (see fingerprint._slow_write_notice).
+            _slow = _fp.take_slow_write_notice()
+            if _slow:
+                bus.log("warning", _slow, "fingerprint")
+        except Exception:  # noqa: BLE001 — never break status over bookkeeping
+            pass
+        # THE GUIDE CAMERA'S LIVENESS (#16, job 2c). The imaging camera is asked
+        # for its temperature above every tick, and for a native camera that
+        # read is also the only thing that notices an IDLE unplug: the adapter
+        # raises ``CameraGone`` for the SDK's "closed/removed" codes and
+        # ``NativeCamera.get_temperature`` marks ``connected`` false and says so
+        # once (WP-89). The guide camera is the device that was actually
+        # stranded on 2026-09-12 and nothing asked it, so it read connected
+        # until a human noticed. The ANSWER IS DISCARDED, the side effect is the
+        # measurement; it runs before ``_guide_camera_info`` below so the frame
+        # that notices is the frame that says so.
+        #
+        # BOUNDED TWICE. Five seconds, because the frame is worth more than the
+        # answer and a USB stall on this camera must not hold it up (the
+        # imaging camera's read above has no bound and is not changed here). And
+        # ONE PROBE IN FLIGHT: a read still blocked inside the SDK when the wait
+        # ends keeps its worker thread, and a new probe every two seconds on top
+        # of it would take a thread a poll from the default executor until
+        # nothing else on the server (exposures, solves, the guider) could use
+        # one. So a probe that has not returned is left to finish and no second
+        # is started. A probe that never returns is not read as a drop: a slow
+        # answer is not a missing camera.
+        gcam = self.devices.get("guide_camera")
+        if gcam is not None and getattr(gcam, "connected", False):
+            try:
+                probe = getattr(self, "_guide_probe", None)
+                if probe is None or probe.done():
+                    probe = asyncio.ensure_future(gcam.get_temperature())
+                    # Nobody awaits this task, so its exception (CameraGone is
+                    # the expected one) is retrieved here or the loop reports
+                    # "Task exception was never retrieved" once per poll.
+                    probe.add_done_callback(
+                        lambda t: t.cancelled() or t.exception())
+                    self._guide_probe = probe
+                await asyncio.wait({probe}, timeout=5.0)
+            except Exception:
+                pass
+        # The probe may have just noticed an unplug (the adapter's ``CameraGone``
+        # marks the device disconnected from its worker thread). ``connected`` was
+        # built before the wait, so say it again for the guide camera: the frame
+        # that notices must say so in EVERY field, not only in the descriptor
+        # below (wave 15 integration).
+        _listed = out.get("connected")
+        if gcam is not None and isinstance(_listed, dict) and "guide_camera" in _listed:
+            try:
+                _listed["guide_camera"] = gcam.describe()
+            except Exception:
+                pass
         if self.guider and self.guider.connected:
             out["guider"] = self.guider.stats().__dict__ | {"name": self.guider.name}
         # Additive guide-camera descriptor so ConnectView can show the guiding
@@ -9371,36 +9594,6 @@ class Hub:
                 "healthy": healthy,
                 "warming_up": not self._bridge_ready,
             }
-        # Record last-known device state so a power cut is DETECTABLE on the way
-        # back up. Read off ``out`` rather than re-querying: these values were
-        # just measured, and a second round of device reads on the status path
-        # would cost more than the feature. Coalesced to one write per 10s and
-        # swallows its own errors, so it is safe on this hot path.
-        #
-        # OFF THE LOOP (#97). Coalescing bounds how OFTEN this writes, not how
-        # LONG a write takes, and the write goes through the private-ACL path
-        # on a directory holding the night's images: py-spy caught this stack
-        # on the loop thread on 2026-09-19 and the write was measured at 7 s.
-        # record() takes its own lock, because this now runs on a worker thread
-        # and poll_status is entered both from _status_loop and from
-        # /api/status.
-        try:
-            from .devices import fingerprint as _fp
-            _m = out.get("mount") or {}
-            _f = out.get("focuser") or {}
-            _w = out.get("filterwheel") or {}
-            await asyncio.to_thread(
-                _fp.record, focuser_position=_f.get("position"),
-                filter_slot=_w.get("position"),
-                ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
-                parked=_m.get("parked"), tracking=_m.get("tracking"))
-            # The worker records a slow write, the loop says it: bus.publish is
-            # loop-affine (see fingerprint._slow_write_notice).
-            _slow = _fp.take_slow_write_notice()
-            if _slow:
-                bus.log("warning", _slow, "fingerprint")
-        except Exception:  # noqa: BLE001 — never break status over bookkeeping
-            pass
         return out
 
 

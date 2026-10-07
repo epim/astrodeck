@@ -51,15 +51,38 @@ class _Rep:
 class TestTheBriefQuotesTheGraph:
     def test_every_number_comes_from_a_param(self):
         """"Edit a param, the sentence changes" is the export's own rule, so a
-        changed param must be visible in the prose and the OLD value gone."""
+        changed param must be visible in the prose and the OLD value gone.
+
+        DELIBERATE PIN CHANGE (backlog WP-112, #707, wave 15 integration). This
+        pinned the cloud threshold as a number the brief QUOTES: it asserted
+        "40%" in the brief, set the CLOUD WATCH dial to 25 and asserted "25%"
+        replaced it. That pinned the #707 bug itself: the engine never reads the
+        CLOUD WATCH dial (the cloud verdict comes from the frame's own judgement
+        and the safety monitor, not from this percentage), so a brief that quoted
+        it told the operator a number that decided nothing. WP-112 stopped
+        quoting it. The rule still holds for every number the brief DOES quote
+        (the case below, ``test_the_cycle_table_is_spelled_out_slot_by_slot``,
+        and the others); what this case pins is the other half of it: a dial the
+        engine ignores is NOT in the prose, so changing it leaves the brief
+        identical.
+
+        Named mutant "the dial quoted again" (``flows/tonight.py``'s ``brief``:
+        the cloud sentence's opening made ``f"If cloud cover is above
+        {cw.params.get('threshold')}% (this trigger fires on ..."``), run from
+        a byte backup and restored byte-identically (sha256 compared): RED,
+        ``assert '40%' not in before``, with the brief reading "If cloud cover
+        is above 40% (this trigger fires on the cloud detector's own verdict),
+        imaging pauses at the frame boundary ...".
+        """
         g = _ex("example-cycle")
         before = brief(g)
-        assert "40%" in before, before
+        assert "40%" not in before, before
 
         cw = next(n for n in g.nodes if n.type == "cloudwatch")
         cw.params["threshold"] = 25
-        after = brief(g)
-        assert "25%" in after and "40%" not in after, after
+        assert brief(g) == before, (
+            "a dial the engine never reads changed the brief: the sentence "
+            "quotes a number that decides nothing")
 
     def test_the_cycle_table_is_spelled_out_slot_by_slot(self):
         b = brief(_ex("example-cycle"))

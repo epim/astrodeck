@@ -137,16 +137,21 @@ HELD_PASS_SET_ASIDE_AT = 6
 #: more specific cause came back (``error_arcmin is None``, engine.py's
 #: ``_setup_target``): NOT a rig-side reason code, a RIG-OR-SKY-AMBIGUOUS
 #: one -- the system has no way yet to tell "no light through the filter"
-#: or "solver not found" (#563's own examples of a rig-side code) from "not
-#: enough stars because of cloud or a low altitude", which is the sky's.
-#: :func:`_held_pass_reason_code` reads this one exact text as no code at
-#: all, the same as an empty ``last_error``, so an all-fail centring hold
-#: whose every pass gives only this generic text -- every one today, since
-#: nothing downstream of a plain solve failure says more -- is read by
+#: from "not enough stars because of cloud or a low altitude", which is the
+#: sky's. :func:`_held_pass_reason_code` reads this one exact text as no
+#: code at all, the same as an empty ``last_error``, so an all-fail
+#: centring hold whose every pass gives only this generic text is read by
 #: HELD_PASS_ALERT_AT/HELD_PASS_SET_ASIDE_AT alone, never the immediate
-#: same-reason path. A genuinely distinguishing ``last_error`` (a caught
-#: exception's own text, once a future change attaches one) is unaffected
-#: and the immediate path applies to it as D-03 says.
+#: same-reason path.
+#:
+#: Two causes ARE named now (#618): the engine attaches the hub's fixed
+#: sentence in this text's place when the solve failed because no plate
+#: solver is available on the rig (``hub.SOLVE_REASON_SOLVER_MISSING``) or
+#: because another program held the solve frame's file open
+#: (``hub.SOLVE_REASON_FILE_LOCKED``), and the immediate path applies to
+#: those as D-03 says. Everything else -- a cloud verdict, a no-light
+#: verdict (the classifier is unvalidated, #308), a timeout, an unknown
+#: error -- still arrives as this generic text, and stays excluded.
 GENERIC_SOLVE_FAILURE = "plate solve failed — used raw GoTo"
 
 
@@ -902,6 +907,58 @@ class GroupRun:
             # nothing: the boundary drops those too (``is_live``).
             self._held = []
             self._held_centring = []
+            self.start_pass()
+
+    def retry_set_aside(self, panel: str) -> None:
+        """THE OPERATOR BRINGS A SET-ASIDE PANEL BACK (#600, backlog ruling
+        D-07, owner-approved 2026-09-30): live again, to be visited tonight,
+        with a clean slate, whatever it was set aside for.
+
+        Like :meth:`expire_set_aside`, which is the clock's version of the
+        same, and different in three ways. ANY kind comes back: a centring
+        set-aside expires by itself, and a floor, reject, angle, pier or
+        group one never does, which is exactly why the operator needs this.
+        It is NOT counted in ``expired``, which is the clock's count and the
+        one the one-expiry-a-night rule reads (the engine restores that
+        count itself, with the session's cleared records). And D-03's
+        held-pass counter goes back to nothing: the escalation to "set aside
+        for tonight" is the operator's to restart, and a retry made one held
+        pass short of it would be set aside again by the very next pass,
+        the retry undone before it was tried.
+
+        Whether the panel is in the rotation, and whether the sky lets it be
+        visited, is not decided here: the engine puts it back in its
+        scheduler's list and the next selection judges it by gating, a
+        window, the horizon and the meridian rule, as it judges every panel,
+        so a retry never forces a slew.
+
+        Asked of a panel that is not set aside, or of no member, this is a
+        caller bug and says so, as :meth:`expire_set_aside` does."""
+        if panel not in self.members:
+            raise ValueError(f"{panel!r} is not a member of this group")
+        if panel not in self.set_aside:
+            raise ValueError(f"{self.members[panel]} is not set aside")
+        # The same fresh pass an expiry gives a panel that comes back alone
+        # (see there): no other member is live, the boundary that set the last
+        # of them aside answered ``none_live`` and began no pass, so the
+        # counts standing are that closed pass's.
+        alone = not any(self.is_live(q) for q in self.members if q != panel)
+        del self.set_aside[panel]
+        self.set_aside_kind.pop(panel, None)
+        self.failed[panel] = 0
+        self.reject_visits[panel] = 0
+        self._streak_kinds[panel] = set()
+        self.visited.discard(panel)
+        self.held_streak = 0
+        self._held_pass_reason = None
+        if alone:
+            # Anything still held belongs to panels that are not live, and a
+            # count for them would set aside nothing. The transient list too,
+            # which ``expire_set_aside`` leaves: ``start_pass`` refuses while
+            # any of the three is held.
+            self._held = []
+            self._held_centring = []
+            self._held_transient = []
             self.start_pass()
 
     def _check_live(self, panel: str) -> None:

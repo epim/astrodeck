@@ -122,7 +122,7 @@ import {
   NO_WIRES_TEXT, RIG_VALUE_PREFIX, asNodeStatus, formatEta, framesWord, logTail,
   logTime, markTone, markWord, nodeMarkDetail, nodeMarkLevel, rigValueFor,
   saveLockReason, saveStateTone, saveStateWord, stageWord,
-  tonightLockReason, unsavedRunReason, wireRemoveLabel, wireRowLabel,
+  tonightLockReason, wireRemoveLabel, wireRowLabel,
 } from "./canvasModel";
 import "./canvas.css";
 
@@ -484,6 +484,9 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   const readouts = useFlowRunReadouts();
   const logs = useStore((s) => s.flows.logs);
   const dirty = useStore((s) => s.flows.dirty);
+  // True while a PUT is out (the autosave's, or SAVE's own): the pill says
+  // SAVING and SAVE does not send the same graph beside it, as on the toolbar.
+  const saving = useStore((s) => s.flows.saving);
   const readonly = useStore((s) => s.flows.record?.readonly ?? false);
   const save = useStore((s) => s.flowsSave);
   const applyFraming = useStore((s) => s.flowsApplyFraming);
@@ -598,10 +601,13 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   // or save, whatever `dirty` says about the flow left over from before.
   const waitingReason = waiting === null ? null
     : failed !== null ? FLOW_STAGES_NOT_OPENED_REASON : FLOW_STAGES_LOADING_REASON;
-  const runReason = waitingReason
-    ?? hookRunReason ?? (running ? null : unsavedRunReason(dirty, readonly));
-  const saveReason = waitingReason ?? saveLockReason(dirty, readonly);
-  const stateWord = saveStateWord(dirty, readonly);
+  // The hook's reason carries the one unsaved-edit refusal that survives the
+  // autosave (an edited Example, never stored); an ordinary edited flow is saved
+  // by `flowsRun` before it posts (#688), so it is not locked here, as on the
+  // toolbar.
+  const runReason = waitingReason ?? hookRunReason;
+  const saveReason = waitingReason ?? saveLockReason(dirty, readonly, saving);
+  const stateWord = saveStateWord(dirty, readonly, saving);
 
   /** BACK saves, exactly as the legacy `< LIBRARY` button did.
    *
@@ -635,7 +641,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
         : undefined}
       right={(
         <span data-testid="flow-stages-save-state">
-          <Pill tone={saveStateTone(dirty, readonly)} ariaLabel={`This flow: ${stateWord}`}>
+          <Pill tone={saveStateTone(dirty, readonly, saving)} ariaLabel={`This flow: ${stateWord}`}>
             {stateWord}
           </Pill>
         </span>
@@ -644,10 +650,12 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
       footer={(
         <div className="nx-flow-stages-foot" style={FOOT_STYLE}>
           <FlowTapWireBar />
-          {/* SAVE above RUN, because RUN is refused until it has been pressed.
-              A full-width pair would put the two most consequential buttons on
-              the phone under one thumb sweep, so SAVE is the smaller of the
-              two and RUN keeps the 56 px primary. */}
+          {/* SAVE above RUN. It was because RUN was refused until SAVE had been
+              pressed; since #688 RUN saves first and the flow saves itself, so
+              SAVE is "save now", and its place is the same for the reason that
+              remains: a full-width pair would put the two most consequential
+              buttons on the phone under one thumb sweep, so SAVE is the
+              smaller of the two and RUN keeps the 56 px primary. */}
           <ActionButton
             kind="secondary"
             size="lg"

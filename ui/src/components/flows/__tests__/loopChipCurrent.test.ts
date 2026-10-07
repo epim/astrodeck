@@ -5,7 +5,9 @@
 // canvases, MOUNTED over the real slice (#356; S7; spec 2026-09-23 flows
 // mosaic, 1.4 "its count withheld while stale", Revision 9 row 2). And, at
 // the bottom, the two comments that described a writer of `flows.statuses`
-// (#464, S7 orchestrator ruling 10).
+// (#464, S7 orchestrator ruling 10) and, since WP-111 (#464 part A), the two
+// card readers' comments that said every stage reads idle through a live run,
+// which the cards no longer draw (`showStatus = written || !runLive`).
 //
 //   Run directly:  node --import ./test-css-stub.mjs --import tsx src/components/flows/__tests__/loopChipCurrent.test.ts   (from ui/)
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
@@ -328,6 +330,69 @@ await test("#464: neither status reader claims a WS frame fills flows.statuses",
     if (/WS frame|WebSocket frame|filled from/i.test(doc)) why.push("its comment says the field is filled from a WS frame");
     if (!/NOTHING WRITES IT \(#464\)/.test(doc)) why.push("its comment does not say nothing writes the field (#464)");
     if (why.length) bad.push(`${file} ${fn}: ${why.join("; ")}`);
+  }
+  if (bad.length) throw new Error(bad.join("\n    "));
+});
+
+// ======= 5. #464 part A: the card readers say what they draw through a live run
+
+// WP-111 (backlog plan, #464 part A). The two card readers drew the field's
+// default, IDLE, through a live run of their own flow (the classic LED, the
+// #/next dot's name, tooltip and ring) and their comments said so: "every LED
+// here reads idle, a live run included" (FlowNodeCard.tsx `asStatus`, its
+// header) and "so every stage reads idle" (canvas/FlowNode.tsx, its header).
+// Both cards now treat an unwritten status as absent while the open flow's
+// run is live and draw no LED / dot (`showStatus = written || !runLive`, the
+// phone stage list's rule). w15NodeStatusLiveRun.test.ts grades the DOM; this
+// case holds the two sentences gone and the rule named in the comments that
+// sit on the readers, as case 4 does for the WS-frame claim.
+//
+// MUTANT "FlowNode header restored" (canvas/FlowNode.tsx's header put back
+// word for word as it stood before WP-111: "... `flows.statuses`, #464,
+// canvasModel `asNodeStatus`), so every stage reads idle; the status selector
+// is as narrow as the others ..."). Observed, loopChipCurrent.test 4/5:
+//   x #464 part A: the card readers' comments say no LED is drawn through a live run, not that every stage reads idle: next/hubs/session/flows/canvas/FlowNode.tsx header: its comment still says every stage reads idle through a live run; its comment does not name the rule `written || !runLive` (#464 part A)
+// MUTANT "asStatus doc restored" (FlowNodeCard.tsx `asStatus`'s tail put back:
+// "So every LED here reads idle, a live run included, until the engine
+// publishes the stage"). Observed, 4/5:
+//   x #464 part A: the card readers' comments say no LED is drawn through a live run, not that every stage reads idle: components/flows/FlowNodeCard.tsx asStatus: its comment still says every stage reads idle through a live run; its comment does not name the rule `written || !runLive` (#464 part A)
+// MUTANT "FlowNodeCard header restored" (its header's "so every LED reads
+// idle." put back). Observed, 4/5:
+//   x #464 part A: the card readers' comments say no LED is drawn through a live run, not that every stage reads idle: components/flows/FlowNodeCard.tsx header: its comment still says every stage reads idle through a live run; its comment does not name the rule `written || !runLive` (#464 part A)
+// Each was run from a byte backup of the file it edits, restored and
+// sha256-compared (WP-111), never left in the tree.
+await test("#464 part A: the card readers' comments say no LED is drawn through a live run, not that every stage reads idle", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = fileURLToPath(new URL("../../../", import.meta.url));
+  // The comment text with its `//` and ` *` margins taken off, on one line.
+  const flat = (c: string): string => c.replace(/\r/g, "")
+    .replace(/^\s*(\/\/|\/\*\*|\*\/|\*)[ \t]?/gm, "").replace(/\s+/g, " ");
+  const bad: string[] = [];
+  for (const [file, fn, stale] of [
+    ["next/hubs/session/flows/canvas/FlowNode.tsx", null, /so every stage reads\s+idle/i],
+    ["components/flows/FlowNodeCard.tsx", null, /so every LED reads\s+idle/i],
+    ["components/flows/FlowNodeCard.tsx", "asStatus", /every LED here reads\s+idle, a live run included/i],
+  ] as const) {
+    const text = readFileSync(src + file, "utf8");
+    let scope: string;
+    if (fn === null) {
+      // The file's header, up to the first import.
+      const imp = text.search(/\nimport /);
+      if (imp < 0) { bad.push(`${file}: no import found to end the header at`); continue; }
+      scope = flat(text.slice(0, imp));
+    } else {
+      // The doc comment that ends right above the reader's declaration.
+      const at = text.search(new RegExp(`\\n(export )?function ${fn}\\(`));
+      const open = at < 0 ? -1 : text.lastIndexOf("/**", at);
+      if (at < 0 || open < 0) { bad.push(`${file}: no documented ${fn} found`); continue; }
+      scope = flat(text.slice(open, at));
+    }
+    const where = fn === null ? `${file} header` : `${file} ${fn}`;
+    const why: string[] = [];
+    if (stale.test(scope)) why.push("its comment still says every stage reads idle through a live run");
+    if (!/written \|\| !runLive/.test(scope)) why.push("its comment does not name the rule `written || !runLive` (#464 part A)");
+    if (why.length) bad.push(`${where}: ${why.join("; ")}`);
   }
   if (bad.length) throw new Error(bad.join("\n    "));
 });

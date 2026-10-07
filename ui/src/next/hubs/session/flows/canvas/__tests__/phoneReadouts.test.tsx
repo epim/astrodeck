@@ -661,10 +661,19 @@ await test("START OVER on both phone monitors asks first, posts fresh on its yes
 
 // START OVER IS LOCKED WHEREVER RUN IS. It starts the stored flow as RUN
 // does, so the rig's refusals (here, no camera) lock it on all four surfaces,
-// and on the two #/next ones so does an unsaved edit: the press would start
-// the SAVED graph and walk away from the session the copy names while the
-// operator is looking at a graph that is not the one being started. A locked
-// press explains itself; it asks no confirm and posts nothing.
+// and so does an edited Example: the one flow still locked by an edit, on all
+// four surfaces, through useFlowRunControls' reason. A locked press explains
+// itself; it asks no confirm and posts nothing.
+//
+// DELIBERATE PIN CHANGE (backlog WP-99, #688, wave 15 integration). This case
+// used to pin that an UNSAVED EDIT locked RUN and START OVER on the two #/next
+// surfaces ("the press would start the SAVED graph"). WP-99 made the editor
+// autosave and deliberately dropped that lock for an ordinary flow: the run
+// reads the saved graph and the autosave has the edit on its way, so a dirty
+// flow runs. The one flow an edit still locks is a read-only Example, because
+// it can never be saved. The row that pinned the old behaviour,
+// "unsaved edits" on next-phone and next-toolbar, is replaced by "an edited
+// example" on all four surfaces; the old behaviour is not pinned anywhere.
 //
 // MUTANT "START OVER unlocked on the toolbar" (FlowCanvasToolbar.tsx: its
 // START OVER's `lockedReason={runReason}` removed). Observed, verifier's
@@ -679,10 +688,12 @@ await test("START OVER on both phone monitors asks first, posts fresh on its yes
 // MUTANT "START OVER unlocked in the classic header" (FlowHeader.tsx: its
 // START OVER's `reason={runReason}` made `reason={null}`). Observed, 10/11:
 //   x START OVER is locked wherever RUN is, and a locked press asks nothing and posts nothing: no camera: classic-header: START OVER is live while RUN is locked
-// MUTANT "START OVER past an unsaved edit" (FlowCanvasToolbar.tsx: its START
-// OVER locked by `hookRunReason`, the rig's refusals alone, in place of
-// `runReason`). Observed, 10/11:
-//   x START OVER is locked wherever RUN is, and a locked press asks nothing and posts nothing: unsaved edits: next-toolbar: START OVER is live while RUN is locked
+// RETIRED MUTANT "START OVER past an unsaved edit" (FlowCanvasToolbar.tsx: its
+// START OVER locked by `hookRunReason` in place of `runReason`). It was the
+// toolbar-only mutant for the unsaved-edit lock WP-99 removed; the toolbar's
+// `runReason` IS `hookRunReason` now, so that mutant changes nothing and no
+// case can fail under it. The edited-Example row below is pinned by the other
+// four mutants, each of which unlocks START OVER on one surface.
 await test("START OVER is locked wherever RUN is, and a locked press asks nothing and posts nothing", async () => {
   const START_OVER: Record<string, string> = {
     "next-phone": "flow-stages-start-over", "classic-monitor": "flow-start-over",
@@ -700,7 +711,9 @@ await test("START OVER is locked wherever RUN is, and a locked press asks nothin
       seed({ state: "idle" });
       act(() => { useStore.setState({ status: { connected: { camera: { connected: false } } } } as never); });
     }, ["next-phone", "classic-monitor", "classic-header", "next-toolbar"]],
-    ["unsaved edits", () => { seed({ state: "idle" }, { dirty: true }); }, ["next-phone", "next-toolbar"]],
+    ["an edited example", () => {
+      seed({ state: "idle" }, { dirty: true, record: { ...RECORD, readonly: true } });
+    }, ["next-phone", "classic-monitor", "classic-header", "next-toolbar"]],
   ];
   for (const [why, arrange, surfaces] of cases) {
     arrange();
@@ -718,7 +731,7 @@ await test("START OVER is locked wherever RUN is, and a locked press asks nothin
       eq(runPosts().length, before, `${why}: ${s}: a locked START OVER posted a run`);
     }
   }
-  // CONTROL: with the camera back and nothing unsaved, all four are live.
+  // CONTROL: with the camera back and an ordinary flow, all four are live.
   seed({ state: "idle" });
   await mount("tablet");
   for (const s of Object.keys(START_OVER)) {

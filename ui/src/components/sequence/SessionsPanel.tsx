@@ -25,6 +25,12 @@
 // the file and, when the row reports one, the backup that stays. The session
 // sentence ("Removes the session ledger and thumbnails") is a readable
 // session's only.
+//
+// A ROW WITH A BACKUP CAN BE RESTORED (#280). `backup: true` puts a RESTORE
+// button beside the trash icon: the server replaces the missing or damaged file
+// with `<id>.json.bak` (dormant, auto-resume off), after a confirm that says
+// what is lost (`restoreBody`). A backup whose file is already gone is a row of
+// its own (`orphan: true`), and its delete says the backup is what goes.
 import { useCallback, useEffect, useState } from "react";
 import { useStore, useWeather } from "../../store";
 import { Panel, Toggle } from "../ui";
@@ -37,8 +43,8 @@ import { setIgnoreTonight } from "../../api/weather";
 import { ensurePlanIds } from "../../lib/ids";
 import { mergePreview, targetProgress } from "../../lib/sessions";
 import {
-  deleteSession, getSession, isUnreadableRow, listSessionRows, patchSession, resumeSession,
-  unreadableDeleteBody,
+  deleteSession, getSession, isUnreadableRow, listSessionRows, patchSession, restoreBody,
+  restoreSession, resumeSession, unreadableDeleteBody, type UnreadableListRow,
 } from "../../api/sessions";
 import type { Session, SessionListRow, SessionRow } from "../../types";
 
@@ -169,6 +175,30 @@ export default function SessionsPanel() {
     if (ok) await act("Delete", () => deleteSession(id));
   };
 
+  // Put a row's backup in the place of its file (#280). The body is
+  // `restoreBody`'s, which differs for a file that is already gone. The
+  // server's own sentence is the toast, since it says what came back, and
+  // WHOLE (`verbatim`): a refusal names the step of a damaged backup to repair
+  // in its last clause, which the log-line truncation would cut. So this does
+  // not go through `act`, whose failure toast is truncated.
+  const onRestore = async (row: UnreadableListRow) => {
+    const ok = await confirmDialog({
+      title: `Restore session "${row.name}" from its backup?`,
+      body: restoreBody(row),
+      tone: "warn",
+      mode: "confirm",
+      confirmLabel: "Restore",
+    });
+    if (!ok) return;
+    try {
+      const r = await restoreSession(row.id);
+      showToast("success", r.detail, { verbatim: true });
+      await refresh();
+    } catch (e) {
+      showToast("error", `Restore failed: ${(e as Error).message}`, { verbatim: true });
+    }
+  };
+
   if (rows.length === 0) return null;
 
   return (
@@ -179,6 +209,9 @@ export default function SessionsPanel() {
           if (isUnreadableRow(r)) {
             // Read-only: the reason, and the delete gated exactly as a
             // session's (control.mount; it can never be the running one).
+            // The guard narrows to the #242 row; `backup` and `orphan` are
+            // read off the wider type (see `UnreadableListRow`).
+            const u: UnreadableListRow = r;
             return (
               <div key={r.id} className="border border-bad/40 bg-bg/50 p-3 flex flex-col gap-2"
                 data-testid={`session-unreadable-${r.id}`}>
@@ -192,13 +225,23 @@ export default function SessionsPanel() {
                   )}
                   <StatusChip status={r.status} />
                   <div className="flex-1" />
+                  {canControl && u.backup === true && (
+                    <button
+                      className="tap min-h-[44px] inline-flex items-center gap-1 !px-3 !text-[11px]
+                        border border-line2 text-dim hover:text-accent hover:border-accent/50"
+                      aria-label={`Restore unreadable session ${r.name}`}
+                      title={`Restore ${r.id} from ${r.id}.json.bak`}
+                      onClick={() => void onRestore(u)}>
+                      <Icon name="refresh" size={12} /> restore
+                    </button>
+                  )}
                   {canControl && (
                     <button
                       className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
                         border border-bad/60 text-bad hover:bg-bad/10"
                       aria-label={`Delete unreadable session ${r.name}`}
                       title={`Delete ${r.id}`}
-                      onClick={() => void onDelete(r.id, r.name, unreadableDeleteBody(r))}>
+                      onClick={() => void onDelete(r.id, r.name, unreadableDeleteBody(u))}>
                       <Icon name="trash" size={14} />
                     </button>
                   )}
