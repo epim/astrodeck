@@ -137,16 +137,21 @@ HELD_PASS_SET_ASIDE_AT = 6
 #: more specific cause came back (``error_arcmin is None``, engine.py's
 #: ``_setup_target``): NOT a rig-side reason code, a RIG-OR-SKY-AMBIGUOUS
 #: one -- the system has no way yet to tell "no light through the filter"
-#: or "solver not found" (#563's own examples of a rig-side code) from "not
-#: enough stars because of cloud or a low altitude", which is the sky's.
-#: :func:`_held_pass_reason_code` reads this one exact text as no code at
-#: all, the same as an empty ``last_error``, so an all-fail centring hold
-#: whose every pass gives only this generic text -- every one today, since
-#: nothing downstream of a plain solve failure says more -- is read by
+#: from "not enough stars because of cloud or a low altitude", which is the
+#: sky's. :func:`_held_pass_reason_code` reads this one exact text as no
+#: code at all, the same as an empty ``last_error``, so an all-fail
+#: centring hold whose every pass gives only this generic text is read by
 #: HELD_PASS_ALERT_AT/HELD_PASS_SET_ASIDE_AT alone, never the immediate
-#: same-reason path. A genuinely distinguishing ``last_error`` (a caught
-#: exception's own text, once a future change attaches one) is unaffected
-#: and the immediate path applies to it as D-03 says.
+#: same-reason path.
+#:
+#: Two causes ARE named now (#618): the engine attaches the hub's fixed
+#: sentence in this text's place when the solve failed because no plate
+#: solver is available on the rig (``hub.SOLVE_REASON_SOLVER_MISSING``) or
+#: because another program held the solve frame's file open
+#: (``hub.SOLVE_REASON_FILE_LOCKED``), and the immediate path applies to
+#: those as D-03 says. Everything else -- a cloud verdict, a no-light
+#: verdict (the classifier is unvalidated, #308), a timeout, an unknown
+#: error -- still arrives as this generic text, and stays excluded.
 GENERIC_SOLVE_FAILURE = "plate solve failed — used raw GoTo"
 
 
