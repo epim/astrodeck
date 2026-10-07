@@ -380,12 +380,17 @@ export default function SkyConditionsPanel({ chrome = "panel" }: {
             // rain-only and fail-open (server/astrodeck/weather.py `veto_reason`
             // — "RAIN VETOES. CLOUD DOES NOT."). A cloud hold is measured in-run
             // from the rig's own frames, so a cloud FORECAST holds nothing.
+            // The sentence after "high cloud tonight" is the one App.tsx's and
+            // NextApp.tsx's dialogs carry (#687); weatherHoldClaim.test.ts reads
+            // all three.
             <span className="text-warn inline-flex items-baseline gap-1">
               <Icon name="alert" size={11} className="self-center" />
               <span>
-                high cloud tonight — the forecast does not hold a run: a running
-                session holds on what its own frames show, and only forecast rain
-                inside the hour blocks an auto-resume
+                high cloud tonight. A cloud forecast does not hold a run. While
+                it images, the rig checks the sky in its own frames and pauses
+                when they show cloud. Only forecast rain within the next hour
+                holds anything: it blocks an automatic restart and dusk
+                preparation.
               </span>
             </span>
           )}

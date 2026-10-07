@@ -353,6 +353,15 @@ await testAsync("the dither distance is rig-level and rides the same whole-block
 await testAsync("DITHER NOW sends only the settle overrides the user actually set", async () => {
   // Blank is NOT zero: an empty settle field means "the guider's own default",
   // and sending 0 would be an instruction the guider obeys.
+  //
+  // Under PHD2, the guider that applies the settle pixels. The native guider
+  // (this file's default fixture) locks SETTLE PX and omits it from the body
+  // (#679, WP-94; w14GuiderSettleNative.test.tsx), so typing into the box and
+  // reading it back is a PHD2 case. The native fixture is restored below for
+  // the cases that follow.
+  seed({}, { providers: { guide: { kind: "backend", label: "PHD2", reason: "PHD2 bridge", options: [], eligible: [] } } });
+  mount();
+  await settle();
   asked.length = 0;
   click(q('[data-testid="guider-dither-now"]'));
   await settle();
@@ -371,6 +380,11 @@ await testAsync("DITHER NOW sends only the settle overrides the user actually se
   await settle();
   sent = asked.filter((a) => a.url.includes("/api/guide/dither"));
   eq(sent[0].body.settle_pixels, 1.5, "the settle-pixels override did not ride with the dither");
+  // Back to the native fixture the rest of the file runs against, on a fresh
+  // mount, so the cases below see what they saw before this one reseeded.
+  seed();
+  mount();
+  await settle();
 });
 
 // ================================================== calibration + the assistant
