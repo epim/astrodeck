@@ -95,9 +95,23 @@ export const INFO: Record<string, InfoTopic> = {
   },
   darks: {
     t: "DARKS AFTER",
-    b: "Queues darks and bias at the end of the night, with the wheel rotated to a blackout "
-      + "slot. They are shot at the same temperature and exposure as tonight's lights, which "
-      + "is the only way the library matches them later.",
+    // Says what the queue this chip adds does today (#745). It used to read
+    // "Queues darks and bias at the end of the night", which the engine keeps
+    // in neither half: the queue's bias and flat legs are not wired
+    // (`to_plan`'s calibration-queue note), and `withDarksAfter` wires the
+    // queue from the report's `done` event, which funds no end-of-night lane
+    // (the wind-down's day darks need a queue wired to SHUTDOWN COMPLETE).
+    // What the queue's quota does fund is the cloud hold's dark quota
+    // (`cloud_hold_darks`), so that is what is said. The chip's label,
+    // "darks after", is quick.tsx's and is not changed here.
+    // `w16QuickDarksCopy.test.ts` pins these words to the wiring: rewire the
+    // chip to SHUTDOWN COMPLETE and its premise goes red, which is the moment
+    // to say "at the end of the night" again.
+    b: "Adds a calibration queue that takes darks only; bias is not run yet. Each dark is shot "
+      + "with the wheel rotated to a blackout slot, at the same temperature and exposure as "
+      + "tonight's lights, which is the only way the library matches them later. They are taken "
+      + "while a cloud hold lasts, up to what the library still lacks, so a clear night takes "
+      + "none and nothing is queued for the end of the night.",
   },
   floor: {
     t: "HORIZON LIMIT",

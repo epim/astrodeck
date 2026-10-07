@@ -64,6 +64,15 @@ from .save_rules import (ACCEPTED_SUBS, COUNTED_TYPES, counts_attempts,
 #: read until the operator saves (``_migrate``, ``AUTO_RESUME_NOTE``).
 #: See ``_migrate`` for why the file version is the only thing that can tell
 #: either pair of readings apart.
+#:
+#: RETIRING ``repeat`` TOOK NO NUMBER (#195, WP-118). Once the ``campaign``
+#: block, the doctor and Tonight keyed on ``autoResume`` and the flow's own
+#: shape, nothing read ``repeat``; the vocabulary stopped declaring it and a
+#: stored one is inert, read as Automatic resume On like the missing key
+#: (``nodes.dusk_auto_resume``) and kept verbatim through a load and a save.
+#: There is nothing for a version to say: no stored word turns Off, and a build
+#: that reads such a file differently (0.3.41, which still keyed ``campaign``
+#: on it) runs the same night, with the same resume.
 FLOW_SCHEMA = 5
 
 #: What ``save()`` stamps a file whose graph uses a FLOW_SCHEMA 4 meaning and
@@ -263,8 +272,12 @@ def _owes_the_auto_resume_note(node_type, params) -> bool:
 
     ``repeat`` must be STORED as that word. A DUSK with no ``repeat`` key at
     all is a file older than the field (hand-written, or from before the
-    palette wrote it); the operator never chose, or was shown, "Single night"
-    for it, and a note quoting it would be about a choice they did not make.
+    palette wrote it) or one created since the vocabulary stopped declaring
+    it (WP-118); the operator never chose, or was shown, "Single night" for
+    it, and a note quoting it would be about a choice they did not make.
+    The other words ``repeat`` held ("Nightly until pool complete", "Nightly
+    x30") owe nothing: they read as On, and no build ever read them as "do
+    not resume" (0.3.40 read only "Single night" that way).
     An ``autoResume`` of ANY value, a blank one included, means the key exists
     and was written by a build that knew it, so nothing here is owed."""
     if node_type != "dusk" or not isinstance(params, dict):

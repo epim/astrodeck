@@ -23,6 +23,7 @@ reason to skip a check that must never be skipped.
 """
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 from dataclasses import dataclass
@@ -141,6 +142,40 @@ _last_pos: int | None = None
 #: Whether the device has re-proved itself since the last gap.
 _confirmed: bool = False
 
+#: THE ORDER IN WHICH READINGS WERE TAKEN AND MEASUREMENTS WERE ADOPTED (#760).
+#: ``vouch`` adopts a MEASURED position, and a status poll that read the
+#: focuser BEFORE that measurement and reaches ``record`` AFTER it would put the
+#: forgotten position back over it. Nothing said when a reading was taken, so
+#: ``new_sample_stamp`` does: a poll takes one before it reads the device,
+#: ``vouch`` takes one when it adopts, and a stamped reading older than the last
+#: vouch is ignored.
+#:
+#: A COUNTER, NOT A CLOCK. ``time.monotonic`` on Windows reads GetTickCount64
+#: and ticks every 15.625 ms, so a poll and a vouch inside one tick would tie,
+#: and no choice of ``<`` or ``<=`` is right for a tie: one accepts the stale
+#: reading, the other discards a fresh one. Two ``next`` calls on one counter
+#: are strictly ordered, and the order is the only thing wanted here.
+#:
+#: Taken WITHOUT any lock, because the caller is the event loop and
+#: ``_state_lock`` can be held across ``_ensure_boot``'s one-time file read; a
+#: stamp that waited on a disk read would put that read on the loop.
+#: ``itertools.count.__next__`` is a single C call and so atomic under the GIL.
+_stamps = itertools.count(1)
+#: The stamp ``vouch`` took when it last adopted a measurement, or None when it
+#: never has. Guarded by ``_state_lock``, like the trio it qualifies.
+_last_vouch_stamp: int | None = None
+
+
+def new_sample_stamp() -> int:
+    """A stamp to take BEFORE reading the device, to hand to ``record``.
+
+    Taken before the read, not after, so a reading that straddles a vouch is
+    counted as the older of the two. That errs the safe way: ignoring a good
+    sample costs one status poll (the next samples again, and is newer), while
+    accepting a stale one erases a measurement.
+    """
+    return next(_stamps)
+
 
 def _now() -> float:
     return time.monotonic()
@@ -189,6 +224,7 @@ def _ensure_boot() -> None:
     late on purpose — see its docstring.
     """
     global _boot, _boot_loaded, _boot_path, _known, _last_pos, _confirmed
+    global _last_vouch_stamp
     path = _path()
     if _boot_loaded and path == _boot_path:
         return
@@ -198,6 +234,7 @@ def _ensure_boot() -> None:
     _known = _last_pos = (_as_int(_boot.get("focuser_position"))
                           if isinstance(_boot, dict) else None)
     _confirmed = False            # a restart IS a gap; nothing watched yet
+    _last_vouch_stamp = None      # and no measurement of THIS state survives it
 
 
 def _observe(focuser_position: int | None) -> None:
@@ -226,9 +263,25 @@ def _observe(focuser_position: int | None) -> None:
     _last_pos = pos
 
 
+def _stale(sample_stamp: int | None) -> bool:
+    """Whether a reading was taken before the last ``vouch`` adopted a
+    measurement. The caller holds ``_state_lock``.
+
+    An UNSTAMPED reading is never stale: it is taken as of the moment it is
+    observed, under the lock, so it can only be newer than any vouch that has
+    already happened. That is every caller before #760, and it is why the lock
+    still has to be right (see ``_state_lock``): the stamp covers a reading
+    that was taken earlier and is delivered late, the lock covers one that is
+    delivered while a vouch is in progress.
+    """
+    return (sample_stamp is not None and _last_vouch_stamp is not None
+            and sample_stamp < _last_vouch_stamp)
+
+
 def record(*, focuser_position: int | None, filter_slot: int | None,
            ra_hours: float | None, dec_deg: float | None,
-           parked: bool | None, tracking: bool | None) -> None:
+           parked: bool | None, tracking: bool | None,
+           sample_stamp: int | None = None) -> None:
     """Persist current device state, at most once per interval.
 
     Written with the atomic writer so a power cut mid-write cannot leave a
@@ -238,10 +291,17 @@ def record(*, focuser_position: int | None, filter_slot: int | None,
     Callable from any thread; the caller on the status path dispatches it off
     the event loop. See ``_state_lock`` for why the observation and the write
     take different locks, and why neither is ever held across the other.
+
+    ``sample_stamp`` (#760) is a ``new_sample_stamp()`` the caller took BEFORE
+    it read the device. A reading older than the last ``vouch`` is ignored, in
+    full: it is neither a move nor a gap, only a report of how things stood
+    before a measurement. The write below then carries the vouched position
+    (it writes ``_last_pos``, never the argument), which is the better number.
     """
     global _last_write
     with _state_lock:
-        _observe(focuser_position)
+        if not _stale(sample_stamp):
+            _observe(focuser_position)
     with _write_lock:
         now = _now()
         if _last_write and now - _last_write < FINGERPRINT_WRITE_INTERVAL_S:
@@ -386,7 +446,7 @@ def vouch(*, focuser_position: int | None) -> None:
     after the measurement and silently replaces it. ``_ensure_boot`` is inside
     the lock too, because it writes the trio as well.
     """
-    global _known, _last_pos, _confirmed
+    global _known, _last_pos, _confirmed, _last_vouch_stamp
     pos = _as_int(focuser_position)
     if pos is None:
         return
@@ -394,6 +454,10 @@ def vouch(*, focuser_position: int | None) -> None:
         _ensure_boot()    # never let this be the read that skips the snapshot
         _known = _last_pos = pos
         _confirmed = True
+        # AFTER the snapshot, which clears it, and inside the lock the stale
+        # check reads it under: any stamped reading taken before this line is
+        # older than the measurement and will be ignored (#760).
+        _last_vouch_stamp = next(_stamps)
 
 
 def reset_for_tests() -> None:
@@ -406,9 +470,10 @@ def reset_for_tests() -> None:
     file survives, the process state does not.
     """
     global _last_write, _boot, _boot_loaded, _boot_path, _slow_write_notice
-    global _known, _last_pos, _confirmed
+    global _known, _last_pos, _confirmed, _last_vouch_stamp
     _last_write = 0.0
     _slow_write_notice = None
+    _last_vouch_stamp = None      # the counter itself keeps counting: stamps stay ordered
     _boot = None
     _boot_loaded = False
     _boot_path = None

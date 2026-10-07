@@ -67,6 +67,7 @@ from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at m
                      report_csv_columns)
 from ..persist import safe_id_path, safe_subpath, secure_private_tree
 from ..catalog import search          # rows AND the reasons for what is missing
+from ..catalog import panel_csv            # the mosaic panel CSV (#178)
 from ..catalog import survey_pack as survey_pack_mod
 from ..catalog.survey import router as survey_router
 from ..catalog.tiles import router as tiles_router
@@ -159,6 +160,10 @@ from ..flows.continuation import _capture_times, _describe
 # recount logs (S4 orchestrator ruling 2) names the two modes in the words the
 # recount question uses, so the operator reads one vocabulary for one change.
 from ..flows.continuation import _MODE_WORDS
+# The reopen question (#179): the report that says whether a COMPLETE session
+# is asked about, and the sentence the 409 carries, built beside the
+# dropped-steps one so the numbers have one source.
+from ..flows.continuation import reopen_detail, reopen_report
 from ..flows.doctor import UNGUIDED_SUB_LINE_S, check as flow_doctor
 from ..flows.models import (MY_FLOWS_FOLDER, FlowGraph, FlowRecord,
                             MigrationNote)
@@ -177,6 +182,9 @@ from ..flows.tonight import (banked_hours_by_target_from_reports,
 from ..rotation import angle_equals, map_sky_target, mod360, sky_to_mechanical
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
+# The module, not its names: the routes call ``sequence_coverage.<fn>`` so a
+# test (or a mutant) that replaces one is seen here (the coverage check, #177).
+from ..sequence import coverage as sequence_coverage
 from ..sequence.models import (FrameType, TargetGroup,
                                duplicate_name_warning, plan_identity_errors,
                                quota_unbounded, replan_cooling)
@@ -1137,7 +1145,8 @@ def _adopt_again_detail(steps: int) -> str:
 def _continue_flow_session(first_read: Session, plan: SequencePlan,
                            body: FlowRunBody,
                            evidence: AdoptEvidence | None = None, *,
-                           plan_saved_ts: float | None = None) -> dict:
+                           plan_saved_ts: float | None = None,
+                           reopen: bool = False) -> dict:
     """CONTINUE a flow's dormant session on tonight's compile, or refuse with
     a 409 that says what continuing would do (#189 S1, spec 5.9, D6).
 
@@ -1147,6 +1156,18 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     engine's ledger writes, a finalize - runs between the read and the start,
     and the lock holds off store writes made from worker threads, deletes
     included (#212).
+
+    A COMPLETE SESSION IS THE ONE OTHER STATUS IT ACCEPTS (#179, spec I-30),
+    and only when the route's first read asked to reopen it (``reopen``, the
+    route having found a ``reopen_report``): the flow was edited to owe more
+    and shares a step id with the finished session. Every other status is
+    still ``session_changed``. ResumeArm never starts a complete session, so
+    there is no arm to race, and an ``active`` one is somebody's run.
+    ``engine.start`` sets any session it is handed active, so reopening
+    changes nothing in the engine. The re-read is ASKED AGAIN under the lock
+    (``reopen_report``): a flow that no longer owes more is
+    ``session_changed``, and a press without ``accept_reopen`` is the first
+    question of all.
 
     That is the whole defence against the one-starter race (2026-09-18).
     ``patch_session`` loads, checks and saves in separate ``to_thread`` calls,
@@ -1165,6 +1186,12 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     The refusals come in the order the UI asks them, each one lifted only by
     its own flag on the next request:
 
+    (0) ``reopen`` - the session is COMPLETE, and the flow now owes more
+        (#179). Asked FIRST, because it is the larger decision: whether the
+        finished session is extended at all, which the three below only
+        qualify. It cannot meet (a), which needs no step id shared, and a
+        reopen shares one. START OVER (``fresh``) is the other answer, and
+        never reaches here.
     (a) ``adopt`` - no step id is shared, the ledger holds frames, and the
         session was saved before S1 (``saved_before_s1``: none of its ids is
         one the compile mints), so its uuid4 ids no compile produces again.
@@ -1214,7 +1241,8 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
             s = session_store.load(first_read.id)
         except (KeyError, SessionUnreadable):
             s = None
-        if s is None or s.status != "dormant":
+        if s is None or not (s.status == "dormant"
+                             or (reopen and s.status == "complete")):
             now = "no longer on disk" if s is None else f"now {s.status}"
             raise HTTPException(409, detail={
                 "code": "session_changed", "session_id": first_read.id,
@@ -1223,6 +1251,28 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
                           f"being prepared: it is {now}, so it was not "
                           f"continued and nothing was written. Press Run "
                           f"again."})
+        # THE REOPEN QUESTION, FIRST (#179). Asked of THIS read, not the
+        # route's: the report is pure, so the lock costs nothing to ask it
+        # under. A flow that owes nothing now is a changed session in the
+        # same sense as one that went active, and nothing is written.
+        reopened = None
+        if s.status == "complete":
+            reopened = reopen_report(s, plan)
+            if reopened is None:
+                raise HTTPException(409, detail={
+                    "code": "session_changed", "session_id": s.id,
+                    "status": s.status,
+                    "detail": "this flow's session changed while the run was "
+                              "being prepared: the flow no longer owes more "
+                              "than the finished session holds, so it was "
+                              "not reopened and nothing was written. Press "
+                              "Run again."})
+            if not body.accept_reopen:
+                raise HTTPException(409, detail={
+                    "code": "reopen", "detail": reopen_detail(reopened),
+                    "session_id": s.id, "recorded": reopened.recorded,
+                    "accepted": reopened.accepted, "quota": reopened.quota,
+                    "owed": reopened.owed})
         report = plan_replace_report(s, plan)
         adopted = None
         if _asks_adopt(s, report):
@@ -1332,6 +1382,15 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
                 f"{moved[1]:g}°C: subs at two sensor temperatures cannot "
                 f"share one dark library. START OVER begins a new session "
                 f"at {moved[1]:g}°C.", "sequence")
+    if reopened is not None:
+        # After the start, like the lines above: a start the engine refused
+        # reopened nothing. Info: the operator answered the question, so
+        # this is the record of what was done, for a night log that would
+        # otherwise show a session going active that was last seen complete.
+        bus.log("info",
+                f"'{s.name}' was complete; reopened because the flow now "
+                f"asks for {reopened.owed} more "
+                f"sub{'' if reopened.owed == 1 else 's'}", "sequence")
     if quiet_recount is not None:
         # After the start, like the temperature line: a refused start
         # continued nothing and changed no mode. Info, not warning: it is
@@ -1349,6 +1408,10 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     if adopted is not None:
         out["adopted"] = {"matched": adopted.frames_matched,
                           "unmatched": adopted.rest()}
+    if reopened is not None:
+        # Present only when it happened, as ``adopted`` is, so every answer
+        # that reopened nothing is byte-identical to before.
+        out["reopened"] = True
     if disarmed:
         # #595, D-04: CONTINUE arms this session exactly as a fresh start
         # does, so it rides the same singleton and can disarm another
@@ -2637,7 +2700,7 @@ class FlowRunBody(BaseModel):
     a checkbox that can wave that through is a checkbox that will be ticked
     once and never read again.
 
-    The last four answer CONTINUE's questions (#189 S1, spec 5.9). Run
+    The last five answer CONTINUE's questions (#189 S1, spec 5.9). Run
     continues the flow's own dormant session by default, and each flag is the
     operator saying yes to one thing that continuing would otherwise refuse
     to do without asking:
@@ -2649,6 +2712,11 @@ class FlowRunBody(BaseModel):
       from the flow (409 ``dropped_steps`` asks).
     * ``accept_recount`` - continue under a different ``count_mode``, which
       recounts every banked frame (409 ``recount`` asks).
+    * ``accept_reopen`` - reopen the flow's COMPLETE session, because the
+      flow was edited to owe more and shares a step id with it (409 ``reopen``
+      asks, #179). It answers the question and never starts the reopen
+      itself: a complete session that owes nothing starts fresh whatever it
+      says.
 
     None of them lifts any guard above: identity, the unbounded quota, the
     horizon and the Sun all apply to a continue exactly as to a fresh run."""
@@ -2658,6 +2726,7 @@ class FlowRunBody(BaseModel):
     adopt: bool = False
     accept_dropped: bool = False
     accept_recount: bool = False
+    accept_reopen: bool = False
 
 
 class ResumeBody(BaseModel):
@@ -3500,6 +3569,37 @@ def create_app(*, bind_host: str | None = None,
     app.include_router(ephemeris_router)
     app.include_router(video_router)
     app.include_router(planning_router)
+
+    # ------------------------------------------------ mosaic panel CSV (#178)
+    # The panel file the Target modal exports and imports, in the Telescopius
+    # column shape. view.status, NOT view.site_derived like
+    # /api/framing/mosaic: the answer is a function of the numbers the caller
+    # sent and of nothing the server knows about the site (no altitude, no
+    # date), so there is no coordinate for a sweep to recover. Every number
+    # and the angle convention live in catalog/panel_csv.py; these two routes
+    # call it and name what was wrong, and own nothing else.
+    @app.post("/api/framing/mosaic/csv",
+              dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def framing_mosaic_csv(spec: panel_csv.PanelCsvExportIn):
+        try:
+            text = panel_csv.export_csv(spec, spec.skip)
+        except panel_csv.PanelCsvError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
+        return Response(text, media_type="text/csv", headers={
+            "Content-Disposition": 'attachment; filename="astrodeck-panels.csv"',
+            # The convention travels with the file so the modal can show it
+            # without keeping a copy of the sentence.
+            "X-Panel-Csv-Convention": panel_csv.CONVENTION})
+
+    @app.post("/api/framing/mosaic/import",
+              dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def framing_mosaic_import(body: panel_csv.PanelCsvImportIn) -> dict:
+        try:
+            return panel_csv.parse_csv(body.text)
+        except panel_csv.PanelCsvError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
 
     # ---------------------------------------------------- health + version
     # /healthz is OPEN (no token, no session): the supervisor health-checks it on
@@ -5745,7 +5845,9 @@ def create_app(*, bind_host: str | None = None,
 
         Carries EVERY field the JSON record carries (UX #49: gain / offset /
         binning / ecc / altitude were silently dropped, so the CSV could not be
-        used to sort subs the report viewer could already rank), and pairs the
+        used to sort subs the report viewer could already rank; ``mosaic`` and
+        ``panel`` joined at #188, and the columns are held to ``FrameRecord.
+        model_fields`` by test_w1_report_bundle_site_redaction), and pairs the
         raw epoch ``ts`` with a readable UTC stamp instead of shipping
         ``1785084747.5023835`` alone -- EXCEPT ``altitude_deg``, which
         ``report_csv_columns`` drops for a principal lacking
@@ -5764,7 +5866,10 @@ def create_app(*, bind_host: str | None = None,
         cols = report_csv_columns(
             ["ts", "ts_utc", "target", "filter", "frame_type", "exposure_s",
              "gain", "offset", "binning", "accepted", "hfr", "ecc",
-             "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path"],
+             "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path",
+             # A mosaic's panel labels (#188, WP-127), appended so a reader
+             # of the columns by position reads what it always read.
+             "mosaic", "panel"],
             principal)
         import csv
         w = csv.writer(buf)
@@ -6526,7 +6631,9 @@ def create_app(*, bind_host: str | None = None,
           from the prototype (1 to 10, 13 and 14; 11 and 12 were removed on
           2026-08-16), the 15 mosaic rules M1 to M15 and L1, each an advisory
           ``{text, level}``; then the capture-geometry warnings
-          (``capture_geometry.plan_warnings``) and that inventory's note.
+          (``capture_geometry.plan_warnings``) and that inventory's note,
+          then, for a mosaic that runs with ``solve_saved_lights`` off, the
+          one ``note`` row ``coverage.stamping_note`` words (#177).
         * ``unmapped`` — what the compile emits that ``SequencePlan`` cannot
           carry. This is the list that stops a graph feature being silently
           inert, and it is the reason this endpoint is worth calling before a
@@ -6574,6 +6681,23 @@ def create_app(*, bind_host: str | None = None,
                                capture_geometry.plan_warnings(_plan, groups)]
             if note:
                 geometry_issues.append({"text": note, "level": "warn"})
+            # A MOSAIC THAT RUNS WITH PLATE SOLVING OFF (#177, WP-123): no
+            # saved light carries a WCS this run, so the coverage check has
+            # nothing to read and its report would be empty, which reads as a
+            # covered mosaic. The sentence and the rule (a mosaic group with a
+            # light target in it) are ``coverage.stamping_note``'s, the same
+            # call the coverage routes answer ``note`` with; None for a plan
+            # with no mosaic or with stamping on, so those add no row. A
+            # note, not a warning: nothing is wrong with the night, and
+            # stamping is the operator's call (it costs an ASTAP run a frame).
+            stamping_note = sequence_coverage.stamping_note(
+                _plan, bool(config_store.cfg().solve_saved_lights))
+            if stamping_note:
+                geometry_issues.append({
+                    "text": f"▸ MOSAIC - {stamping_note}. Turn on \"solve "
+                            f"saved lights\" to check every panel's seams "
+                            f"after the night.",
+                    "level": "note"})
         except GraphNotRunnable as e:
             # Not an error response: a half-built graph is the NORMAL state of
             # an editor. The canvas's compile (``flowsCompile``) runs when a
@@ -6581,7 +6705,9 @@ def create_app(*, bind_host: str | None = None,
             # LOOP PANELS, which write through ``flowsApplyFraming``; an edit
             # between them compiles nothing (#356), and Tonight asks for one
             # more: when Tonight is read over a graph the compile in hand was
-            # not made from (#688), so its PLAN is never a stale graph's.
+            # not made from (#688), so its PLAN is never a stale graph's, and
+            # after an undo or redo (#688), which puts a different graph on
+            # the canvas.
             # The modal also posts its own draft here once a framing edit
             # settles, for its RUN numbers.
             # The refusal is reported in the same list as every other loss.
@@ -6950,7 +7076,11 @@ def create_app(*, bind_host: str | None = None,
                 config_store.cfg().safety.close_dome_on_unsafe),
             rig=rig)
         session = session_store.current_for_flow(flow_id)
-        out = flow_progress(compiled, plan, session, flow_id=flow_id)
+        # ``now`` is handed on so a dormant session's set-aside panels are
+        # listed against the clock this request read (#727, WP-141); the
+        # answer for a session with no standing set-aside record is the
+        # answer it was.
+        out = flow_progress(compiled, plan, session, flow_id=flow_id, now=now)
         if session is not None:
             out["session"].update(replay_facts(session))
             # Present only on a dormant session, as ``locked_angle`` is only
@@ -7023,6 +7153,67 @@ def create_app(*, bind_host: str | None = None,
                                            time.time())
         except GraphNotRunnable as e:
             raise HTTPException(422, detail={"detail": str(e), "code": e.code})
+
+    def _coverage_payload(session: Session | None) -> dict:
+        """The coverage answer for one session (or none): ``coverage_report``'s
+        groups, the session's id and status, whether lights are being
+        plate-solved at all (``solve_saved_lights``) and, when a mosaic runs
+        with that off, the sentence that says its coverage cannot be checked.
+        Synchronous, so both routes run all of it on a worker thread.
+
+        READ-ONLY, AND ADVISORY (#177): the verifier reads headers and
+        arithmetic and writes nothing, and the ledger is never an output of
+        it (the session lock and the background stamping task make a write
+        from here a race). Nothing here turns stamping on: that costs an ASTAP
+        run per frame, and on the Pi it is the operator's call.
+
+        CAP_VIEW_STATUS, so a viewer can read it and NOTHING HERE MAY BE
+        DERIVED FROM THE SITE (spec 6.9, #19): fractions, counts, an offset
+        in arcminutes and an angle in degrees, and no RA or Dec of a frame.
+        The keys are the verifier's own, and held to an allow-list at the
+        wire by tests/test_w16_coverage_route.py."""
+        stamping = bool(config_store.cfg().solve_saved_lights)
+        if session is None:
+            return {"session": None, "stamping": stamping, "note": None,
+                    "groups": []}
+        report = sequence_coverage.coverage_report(session)
+        return {"session": {"id": session.id, "status": session.status},
+                "stamping": stamping,
+                "note": sequence_coverage.stamping_note(session.plan,
+                                                        stamping),
+                "groups": report["groups"]}
+
+    def _flow_coverage_payload(flow_id: str) -> dict:
+        """The coverage of the session ``run_flow`` would pick for this flow
+        (``current_for_flow``: the flow's newest by ``created_ts``, none when
+        that newest was abandoned), so the map and the progress chip can
+        never name different ledgers."""
+        return _coverage_payload(session_store.current_for_flow(flow_id))
+
+    # ORDERING: with the other static-before-parameterised flow routes, above
+    # GET /api/flows/{flow_id} (see the progress route's note).
+    @app.get("/api/flows/{flow_id}/coverage",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def get_flow_coverage(flow_id: str):
+        """Per mosaic panel of the flow's newest session: how many banked
+        lights are plate-solved ("stamped"), how many of those cover less of
+        their panel than the pointing budget allows ("flagged"), and the worst
+        overlap, offset and angle (#177; ``sequence/coverage.py``). The
+        modal's coverage map reads it in run mode. ADVISORY: it changes no
+        panel's completion, and a light with no WCS is ``unstamped``, never
+        covered.
+
+        OFF THE EVENT LOOP: a FITS header read per frame (memoised per path
+        and mtime), for every poll of a modal that is open. 404 for an id
+        ``flow_store.get`` does not answer, as the progress route does; the
+        ``KeyError`` is caught around that call alone, so a ``KeyError`` out
+        of the report is a 500 and not a flow that "was not found"."""
+        try:
+            await asyncio.to_thread(flow_store.get, flow_id)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+        return await asyncio.to_thread(_flow_coverage_payload, flow_id)
 
     @app.get("/api/flows/{flow_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -7202,6 +7393,14 @@ def create_app(*, bind_host: str | None = None,
         the write-locked section that does it, and its docstring lists the
         three 409s (``adopt``, ``recount``, ``dropped_steps``) that ask before
         continuing changes what the ledger counts. ``fresh`` starts over.
+
+        A COMPLETE newest session is ASKED ABOUT, never reopened silently
+        (#179): when the flow was edited to owe more and the compile shares a
+        step id with it (``reopen_report``), the press answers 409 ``reopen``
+        with the counts, and ``accept_reopen`` continues that session, so a
+        finished campaign can be extended in place. A complete session that
+        owes nothing, or shares no step id, starts fresh as it always did.
+        ``POST /api/flows/quick`` goes through this handler and inherits it.
         """
         try:
             rec = await asyncio.to_thread(flow_store.get, flow_id)
@@ -7307,9 +7506,12 @@ def create_app(*, bind_host: str | None = None,
         # after a START OVER the old session stays dormant (unarmed) forever,
         # and once the new one completes or is abandoned that rule would
         # reopen the ledger the operator chose to leave. A complete newest
-        # session starts fresh (spec 5.9; reopening one whose flow now owes
-        # more is I-30). The progress chip calls the same method, so it names
-        # the session this continues (#189 hardening A2).
+        # session starts fresh unless its flow now owes more and shares a step
+        # id with it, in which case the continue ASKS before it reopens it
+        # (``reopen``, #179, spec I-30): never silently, because the other
+        # answer, START OVER, walks away from the whole ledger. The progress
+        # chip calls the same method, so it names the session this continues
+        # (#189 hardening A2).
         #
         # This read is before an await, so it is only a hint: the continue
         # re-reads the session under the write lock before it decides.
@@ -7317,6 +7519,13 @@ def create_app(*, bind_host: str | None = None,
         if not body.fresh:
             latest = await asyncio.to_thread(
                 session_store.current_for_flow, flow_id)
+        # Pure and cheap (a report of two plans and a count), so asked here
+        # on the loop as ``plan_replace_report`` is for the ADOPT gate below.
+        # A report is the route's reason to hand a COMPLETE session to the
+        # continue; the locked section asks it again of its own read.
+        reopen = None
+        if latest is not None and latest.status == "complete":
+            reopen = reopen_report(latest, plan)
         # ADOPT'S CATALOGUE WORK, HERE AND NEVER IN THE LOCK (#249). The
         # match needs every target name resolved, and a body's position at
         # its capture instants: a full catalogue search each, 10 to 35 ms,
@@ -7351,10 +7560,10 @@ def create_app(*, bind_host: str | None = None,
             # Both branches, and nothing awaits between here and either
             # start: CONTINUE's locked section is synchronous too (#189 A7).
             _refuse_while_resume_recovers()
-            if latest is not None and latest.status == "dormant":
+            if latest is not None and (latest.status == "dormant" or reopen):
                 continued = _continue_flow_session(
                     latest, plan, body, evidence,
-                    plan_saved_ts=plan_saved_ts)
+                    plan_saved_ts=plan_saved_ts, reopen=bool(reopen))
             else:
                 # Synchronous, and it owns its own task — do not await it, and
                 # do not wrap it in a busy lane. "Already running" is raised in
@@ -7464,17 +7673,81 @@ def create_app(*, bind_host: str | None = None,
         # matrix that matched on None would count a +20 °C dark as cover for a
         # -5 °C light.
         setpoint = getattr(config_store.cfg().cooling, "setpoint_c", None)
+
+        def mechanical_angle_of(sky_deg) -> float | None:
+            """The rotator MECHANICAL angle a light planned at sky PA
+            ``sky_deg`` is shot at (#176, WP-122), or None for no constraint.
+
+            A flat is matched by the metal's angle (a dust shadow follows the
+            metal, not the sky), and the plan states the SKY angle, so the row
+            needs the conversion the rotate loop makes
+            (``rotation.sky_to_mechanical``, anchored on the rotator's last
+            trusted calibration with the learned sign). None, which the matrix
+            reads as "any flat serves", when the light carries no planned
+            angle or the rotator is not calibrated: ``_rotator_sync_anchor``
+            falls back to the bare live reading when no calibration record
+            agrees with the device's sync, and a number built on that would
+            invent an angle the night does not have. The route makes no device
+            read, so it hands the anchor a NaN reading and treats the NaN
+            coming back as that fallback."""
+            if sky_deg is None:
+                return None
+            rot = hub.devices.get("rotator")
+            if rot is None or not getattr(rot, "connected", False):
+                return None
+            try:
+                anchor_mech, anchor_offset = hub._rotator_sync_anchor(
+                    rot, math.nan)
+                if math.isnan(anchor_mech):
+                    return None
+                return mod360(sky_to_mechanical(
+                    float(sky_deg), anchor_mech, anchor_offset,
+                    hub._effective_rotator_sign()))
+            except (TypeError, ValueError):
+                return None
+
         if flow_id is not None:
             try:
                 rec = await asyncio.to_thread(flow_store.get, flow_id)
             except KeyError:
                 raise HTTPException(404, detail={"code": "not_found"})
             compiled = compile_plan(rec.graph, rec.name)
+            # THE LIGHTS, ONE GROUP PER PLAN TARGET: ``(sky angle, steps)``. A
+            # mosaic's PANELS are plan targets, each with the angle it is
+            # commanded (a rotating block's own ``pa_deg``, #175), and the
+            # compile alone has only the block; so the plan is what is read.
+            # A graph the plan refuses (``GraphNotRunnable``, a half-built
+            # flow is the normal state of an editor) falls back to the
+            # compile's targets with no angle, which is what this route
+            # always did for them.
+            lights: list[tuple[float | None, list[dict]]] = []
+            try:
+                _plan, _lost = to_sequence_plan(
+                    compiled, rec.graph, flow_id=flow_id,
+                    cool_to=getattr(config_store.cfg().cooling,
+                                    "setpoint_c", None),
+                    camera_can_cool=_camera_can_cool(),
+                    closes_on_unsafe=bool(
+                        config_store.cfg().safety.close_dome_on_unsafe),
+                    rig=_rig_facts())
+                for t in _plan.targets:
+                    lights.append((t.rotation_deg, [
+                        {"exposure_s": s.exposure_s, "gain": s.gain,
+                         "binning": s.binning, "filter": s.filter}
+                        for s in t.steps
+                        if str(s.frame_type).lower() == "light"]))
+            except GraphNotRunnable:
+                lights = [(None, list(t.get("steps") or []))
+                          for t in compiled.get("targets") or []]
             seen: set[tuple] = set()
-            for target in compiled.get("targets") or []:
-                for step in target.get("steps") or []:
+            for sky, steps in lights:
+                # One angle per target: a rotating mosaic's panels each have
+                # their own, and each is a row of its own below.
+                mech = mechanical_angle_of(sky)
+                for step in steps:
                     key = (step.get("exposure_s"), step.get("gain"),
-                           step.get("binning"), step.get("filter"))
+                           step.get("binning"), step.get("filter"),
+                           None if mech is None else round(mech, 3))
                     if key in seen or not step.get("exposure_s"):
                         continue
                     seen.add(key)
@@ -7482,7 +7755,8 @@ def create_app(*, bind_host: str | None = None,
                         exposure_s=float(step.get("exposure_s") or 0),
                         gain=int(step.get("gain") or 0), offset=30,
                         temp_c=setpoint, binning=int(step.get("binning") or 1),
-                        filter=str(step.get("filter") or ""))))
+                        filter=str(step.get("filter") or "")),
+                        rotation_deg=mech))
             cq = (compiled.get("automation") or {}).get("calibration_queue") or {}
             quota = int(cq.get("quota") or DEFAULT_QUOTA)
         c = config_store.cfg().calibration
@@ -7522,7 +7796,7 @@ def create_app(*, bind_host: str | None = None,
         c = config_store.cfg().calibration
         rep = await asyncio.to_thread(
             cal_library.build, sigma=c.stack_sigma, temp_bin_width=c.temp_bin_c,
-            max_frames=c.max_stack_frames)
+            max_frames=c.max_stack_frames, rotator_bin_deg=c.rotator_bin_deg)
         return vars(rep)
 
     @app.delete("/api/calibration/masters/{master_id}",
@@ -8246,8 +8520,25 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/sequence/stack",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
-    async def session_stack_state():
-        return hub.session_stack_status()
+    async def session_stack_state(panel: str = ""):
+        """The stack's status: the foreground panel, or ``?panel=<key or name>``.
+
+        Every top-level key describes the panel asked for and ``panels`` lists
+        them all, so a client that sends no ``panel`` reads exactly what it
+        always read. An unknown panel is an EMPTY picture, not an error: this
+        route is polled, and a panel the memory budget released between two
+        polls must read as "nothing there" rather than fail the poll.
+
+        ``hub.session_stack_status`` is the foreground view and is what no
+        ``panel`` gets, untouched. A panel is the stacker's own status with the
+        hub's ``backfill`` block laid over it: the pass is one per stacker, not
+        one per panel, and ``available`` is the hub's to count."""
+        if not panel:
+            return hub.session_stack_status()
+        body = hub.session_stack.status(panel)
+        body["backfill"] = hub.session_stack_status().get("backfill",
+                                                          body["backfill"])
+        return body
 
     # CAP_VIEW_PREVIEW, not CAP_VIEW_STATUS: this route returns PIXELS OF THE
     # SKY, which is the thing every other preview route is gated on. Counts and
@@ -8255,8 +8546,19 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/sequence/stack/preview.jpg",
              dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
-    async def session_stack_preview(size: int = 1600, channel: str = ""):
+    async def session_stack_preview(size: int = 1600, channel: str = "",
+                                    panel: str = ""):
         """The session stack as a JPEG: the composite, or ONE channel.
+
+        ``?panel=<key or name>`` renders that mosaic panel's own stack instead
+        of the foreground's (#172): the key is the target's id and a name is
+        accepted for a hand-typed URL. No panel is the foreground, with the
+        response this route has always given, byte for byte: ``X-Stack-Panel``
+        is sent ONLY when a panel was asked for, and carries the key actually
+        rendered, percent-encoded because a target can be named with a
+        character a header cannot carry. A panel that is not stacked is a 404
+        in its own words, and it is checked first, so a missing panel is never
+        reported as a missing channel.
 
         ``?channel=Ha`` renders that channel's own running mean instead of
         the colour composite (#D-SES-1), so "show me just Ha" stops being a
@@ -8274,13 +8576,22 @@ def create_app(*, bind_host: str | None = None,
         nothing."""
         capped = max(256, min(4096, int(size)))
         name = (channel or "").strip()
+        if panel and not hub.session_stack.has_panel(panel):
+            raise HTTPException(404, "nothing stacked for that panel yet")
         if name:
             # ``hub.session_stack`` is public and the stacker owns the
             # resolution, so there is no hub wrapper to add here.
             got = await asyncio.to_thread(
-                hub.session_stack.channel_preview, name, capped)
+                functools.partial(hub.session_stack.channel_preview, name,
+                                  capped, panel=panel or None))
             if got is None:
                 raise HTTPException(404, "nothing stacked in that channel yet")
+        elif panel:
+            got = await asyncio.to_thread(
+                functools.partial(hub.session_stack.rgb_preview, capped,
+                                  panel=panel))
+            if got is None:
+                raise HTTPException(404, "nothing stacked for that panel yet")
         else:
             got = await asyncio.to_thread(hub.session_stack_preview, capped)
             if got is None:
@@ -8296,12 +8607,19 @@ def create_app(*, bind_host: str | None = None,
         # about the picture it sits under. ``X-Stack-Channel`` is empty for
         # the composite, which is how a client tells the two renders apart
         # without re-reading its own request.
-        return Response(jpeg, media_type="image/jpeg", headers={
+        headers = {
             "Cache-Control": "no-store",
             "X-Stack-Seq": str(meta.get("seq", 0)),
             "X-Stack-Frames": str(meta.get("frames", 0)),
             "X-Stack-Channel": str(meta.get("channel", "") or ""),
-        })
+        }
+        if panel:
+            # Local import: this route is the only user and the module's own
+            # import block is not this change's to touch.
+            from urllib.parse import quote
+            headers["X-Stack-Panel"] = quote(
+                str(meta.get("panel", "") or ""), safe="")
+        return Response(jpeg, media_type="image/jpeg", headers=headers)
 
     # ---- live-preview routes (live-preview spec §4.4) ---------------------
     # Canonical URL: the client builds `/api/preview/{id}` and reads `mime` from
@@ -8952,6 +9270,47 @@ def create_app(*, bind_host: str | None = None,
         hub.note_move("ra", 0.0)
         hub.note_move("dec", 0.0)
         return {"ok": True}
+
+    @app.post("/api/mount/trust-position")
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.trust_position"})
+    async def mount_trust_position(
+            request: Request,
+            principal: Principal = Depends(require(CAP_CONTROL_MOUNT))):
+        """The operator says the tube is physically at the mount's home or park
+        position, which clears ``position_known`` without a plate-solve (#144).
+
+        WHY THE ROUTE EXISTS. After a power cycle an AM5 reports its home
+        position wherever the tube is, and the driver latches ``position_known``
+        False on that signature. Two things lift it: a plate-solved sync, and
+        this. A mount powered up parked at home reads the same pole, so the
+        latch is set at the start of EVERY night until the first sync, and "I
+        know, it is at home" needs a way to be said that is not a solve.
+
+        AN ATTESTATION, NOT A MEASUREMENT. It reads nothing from the mount and
+        moves nothing: reading the position to confirm it would confirm the
+        very number the latch says is wrong. What it does is lift the guard that
+        stops a nudge computing a destination from a believed position and
+        restore the solar-cone check on a manual jog, so a wrong word from the
+        operator is paid for in exactly those two places. The audit line says
+        who gave it, because their word is the only evidence behind the clear.
+
+        The answer carries the driver's OWN verdict afterwards
+        (``position_known``), not an assumption: a driver that keeps its own
+        evidence and declines to clear must not be reported as cleared, since
+        the client unlocks off this answer. A driver with nothing to trust
+        (``Telescope.trust_position`` is a no-op by default) answers true."""
+        try:
+            tel = hub.require("telescope")
+            await tel.trust_position()
+        except DeviceError as e:
+            raise _err(e)
+        # WHO SAID IT. No coordinate and no angle in the line: the home position
+        # is the pole, so any number read from it is a latitude oracle (#140).
+        from ..auth import audit as auth_audit   # lazy, as auth/deps.py does
+        auth_audit.record("trust_position", ok=True, request=request,
+                          user=principal.email or principal.role)
+        return {"ok": True,
+                "position_known": bool(getattr(tel, "position_known", True))}
 
     @app.post("/api/mount/tracking", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.set_tracking"})
@@ -10319,6 +10678,20 @@ def create_app(*, bind_host: str | None = None,
         longitude. `_redact_sequence_for` decides it, the same helper the WS
         `sequence` event and the monitor snapshot use."""
         return _redact_sequence_for(_sequence_envelope(engine), principal)
+
+    @app.get("/api/sequence/coverage",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def sequence_coverage_live():
+        """``GET /api/flows/{id}/coverage`` for the session a run is writing to
+        right now (``active_session``): the run-mode modal's poll while a night
+        is under way. No run is an empty answer (``session`` null), not an
+        error. Same payload, same privacy (nothing from the site, no sky
+        coordinate of a frame), same read-only, off-the-loop rules; see
+        ``_coverage_payload``."""
+        def live() -> dict:
+            return _coverage_payload(active_session())
+        return await asyncio.to_thread(live)
 
     # ----------------------------------------------------------------- monitor
 

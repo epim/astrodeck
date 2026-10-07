@@ -259,7 +259,10 @@ async def test_a_live_retry_takes_a_set_aside_for_now_at_once_not_at_its_expiry(
 
     RED under mutant "wait not ended by a retry" (the ``and not
     self._pending_retries`` of ``_wait_until_or_retry`` removed, so the idle
-    wait runs to the waiter's wake, as ``_wait_until`` always did), observed:
+    wait runs to the waiter's wake, as ``_wait_until`` always did; since WP-140
+    (#726) that function is ``_wait_until_or_queued`` and the check it ends on
+    is ``_queued_for_the_scheduler``, where the same mutant, re-run, still goes
+    red on this case), observed:
 
         AssertionError: 2-2 was tried at [120.0, 180.0, 360.0, 3240.0, 3300.0,
         3360.0], the retry at 1200.0 s was not taken up: it waited for its

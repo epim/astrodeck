@@ -98,7 +98,8 @@ import { countsAttempts, countsNotice } from "../countsNotice";
 import {
   angleLocks, angleOf, angleOffer, cameraFieldLine, currentAnswer, doneState, draftCentre,
   draftFromParams, driftBanner, framingPatch, gridAngleLock, gridLock, gridOf, layoutOf,
-  loadViewPrefs, matchCamera, matchCameraLock, moveLine, mosaicRequest, panelDrawState, parseSkip,
+  loadViewPrefs, matchCamera, matchCameraLock, mergeImportedPanels, moveLine, mosaicRequest,
+  panelCsvExportLock, panelCsvRequest, panelDrawState, parseSkip,
   readoutStrip, reframeDecision, requestKey, runLines, runPanelsOf, saveViewPrefs, setAngleMode,
   stripAngle, suggestGrid, takeOffer, toggleSkip, toleranceLine, useMeasured, useMeasuredLine,
   ZOOM_MAX_DEG, ZOOM_MIN_DEG,
@@ -398,14 +399,29 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
     JSON.stringify(runPanelsOf(groupForBlock(s.sequence, runGroupId), rows, cols, runGrid, s.sequence)));
   const run = useMemo(() => JSON.parse(runKey) as Record<string, PanelRunState>, [runKey]);
 
-  // ---- RETRY SET-ASIDE PANELS (#600): a run control, in run mode only
+  // ---- RETRY SET-ASIDE PANELS (#600): a run control, in run mode; and, for a
+  // DORMANT session (#727, WP-141), the same button on a sheet that is not in
+  // run mode. The dormant retry is the stored session's, so it names the
+  // session as well as the group (`retrySetAside(group, sessionId)`). PANELS
+  // draws the button only while some row is set aside, and outside run mode
+  // a row is set aside only from the progress block's `set_aside` (present
+  // only on a dormant session's block), so no button stands for nothing to
+  // take back. The route resolves the group against the session's FROZEN
+  // plan: a re-framed flow may 404, which the note below says in the
+  // server's words.
+  const dormantRetrySession = !runMode && progress?.session?.status === "dormant"
+    ? progress.session.id : null;
+  const retryGroupId = runMode ? runGroupId
+    : dormantRetrySession !== null ? progressBlock?.group_id ?? null : null;
   const [retrying, setRetrying] = useState(false);
   const [retryNote, setRetryNote] = useState<string | null>(null);
   const onRetry = () => {
-    if (retrying || runGroupId === null) return;
+    if (retrying || retryGroupId === null) return;
     setRetrying(true);
     setRetryNote(null);
-    flowsApi.retrySetAside(runGroupId).then(
+    (dormantRetrySession !== null
+      ? flowsApi.retrySetAside(retryGroupId, dormantRetrySession)
+      : flowsApi.retrySetAside(retryGroupId)).then(
       (res) => { if (alive.current) setRetryNote(retryWords(res)); },
       (e) => { if (alive.current) setRetryNote(`The retry was refused: ${(e as Error)?.message ?? e}`); },
     ).finally(() => { if (alive.current) setRetrying(false); });
@@ -765,6 +781,16 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
                   onRows={(n) => setGrid({ rows: n })}
                   onOverlap={(pct) => patchDraft({ overlap: pct })}
                   onMatchCamera={() => setDraft((d) => matchCamera(d, rig))}
+                  // EXPORT PANELS / IMPORT PANELS (#178, WP-130): the panel
+                  // list in the shape Telescopius reads and writes. The draft
+                  // decides what is posted and whether it can be; an import
+                  // writes only the geometry back (`mergeImportedPanels`).
+                  panelCsv={{
+                    request: panelCsvRequest(draft),
+                    exportLock: panelCsvExportLock(draft),
+                    onImported: (imported) =>
+                      setDraft((d) => mergeImportedPanels(d, imported, rig)),
+                  }}
                   explain={setExplained}
                 />
                 <AngleSection
@@ -794,7 +820,7 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
                 onOrder={(v) => patchDraft({ order: v })}
                 onToggle={(r, c) => onPanelTap(r - 1, c - 1)}
                 frozen={frozen}
-                onRetry={runMode && runGroupId !== null ? onRetry : undefined}
+                onRetry={retryGroupId !== null ? onRetry : undefined}
                 retryLocked={!canControlMount ? RETRY_NEEDS_ACCESS : retrying ? RETRY_IN_FLIGHT : null}
                 retryNote={retryNote}
                 explain={setExplained}

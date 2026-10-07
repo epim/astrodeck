@@ -353,9 +353,22 @@ class TestEveryBlockWhereItsLaneRuns:
 #: darks for whatever the library lacks (its bias and flat legs are not run
 #: yet)". test_w15_dusk_flats_claim.py holds
 #: the wording and the switch behind it. Deliberate, not a regression.
+#:
+#: WP-144 RE-PIN (backlog wave 16: #743, wave 16 integration). The cloud
+#: sentence of the same three Examples no longer says "once the sky holds
+#: clear for 4 min it re-cools": CLOUD WATCH's "Clear must hold" minutes
+#: (`clearFor`) never reach the engine, which counts consecutive check
+#: frames, so the brief says "once consecutive check frames read clear it
+#: re-cools". Only that clause moved. Deliberate, not a regression.
+#:
+#: WP-118 RE-PIN (backlog wave 16: #195, wave 16 integration). "example-pool"
+#: is a campaign now (a pool in a flow whose Automatic resume is On, which is
+#: the default), so its brief ends with the campaign's own closing sentence,
+#: "Once all 4 targets have the frames they ask for, the rig stays parked."
+#: Only that sentence was added. Deliberate, not a regression.
 EXAMPLE_BRIEFS = {
     "example-campaign": (
-        "This flow arms at astronomical dusk (−30 min). It then selects the best of M33, NGC 7331, IC 1396, M45 - above 30°, at least 40° from the moon (if up), within 4 h of the meridian. For each target it autofocuses (v-curve sweep), guides with PHD2 (settle below 1.5″, dither every 3 frames). Capture interleaves one sub per filter per pass - L 60 s × 45, R 60 s × 45, G 60 s × 45, B 60 s × 45, Ha 180 s × 45, OIII 180 s × 45, SII 180 s × 45 - so every channel grows evenly. When a target's quota is met, a session report is cut and the pool advances to the next best - finished targets are never re-selected. If the active target sinks to the 30° floor, it is set aside for tonight - a restart tonight does not retry it, the next night does - and the next best takes over. If cloud cover is detected (this trigger fires on the cloud detector's own verdict), imaging pauses at the frame boundary and the calibration queue takes darks for whatever the library lacks (its bias and flat legs are not run yet); once the sky holds clear for 4 min it re-cools the sensor to setpoint and waits for it to stabilize, restores the filter, re-centers, refocuses if drifted, and resumes at the same slot. When astronomical night ends, the mount parks and the dust flap + dome closes, then the camera warms; the flow re-arms at the next dusk and resumes mid-cycle from the session log. Rain, wind, or power failure aborts and parks unconditionally - a stale reading counts as unsafe. Once all 4 targets hold their 45-cycle quota, the rig stays parked."),
+        "This flow arms at astronomical dusk (−30 min). It then selects the best of M33, NGC 7331, IC 1396, M45 - above 30°, at least 40° from the moon (if up), within 4 h of the meridian. For each target it autofocuses (v-curve sweep), guides with PHD2 (settle below 1.5″, dither every 3 frames). Capture interleaves one sub per filter per pass - L 60 s × 45, R 60 s × 45, G 60 s × 45, B 60 s × 45, Ha 180 s × 45, OIII 180 s × 45, SII 180 s × 45 - so every channel grows evenly. When a target's quota is met, a session report is cut and the pool advances to the next best - finished targets are never re-selected. If the active target sinks to the 30° floor, it is set aside for tonight - a restart tonight does not retry it, the next night does - and the next best takes over. If cloud cover is detected (this trigger fires on the cloud detector's own verdict), imaging pauses at the frame boundary and the calibration queue takes darks for whatever the library lacks (its bias and flat legs are not run yet); once consecutive check frames read clear it re-cools the sensor to setpoint and waits for it to stabilize, restores the filter, re-centers, refocuses if drifted, and resumes at the same slot. When astronomical night ends, the mount parks and the dust flap + dome closes, then the camera warms; the flow re-arms at the next dusk and resumes mid-cycle from the session log. Rain, wind, or power failure aborts and parks unconditionally - a stale reading counts as unsafe. Once all 4 targets hold their 45-cycle quota, the rig stays parked."),
     "example-m31": (
         "This flow arms at astronomical dusk (−30 min). It then arms M31 - "
         "Andromeda. For each target it autofocuses (v-curve sweep), guides "
@@ -373,8 +386,8 @@ EXAMPLE_BRIEFS = {
         "cloud cover is detected (this trigger fires on the cloud "
         "detector's own verdict), imaging pauses at the frame boundary and "
         "the calibration queue takes darks for whatever the library lacks "
-        "(its bias and flat legs are not run yet); once the sky holds clear "
-        "for 4 min "
+        "(its bias and flat legs are not run yet); once consecutive check "
+        "frames read clear "
         "it re-cools the sensor to setpoint and waits for it to stabilize, "
         "restores the filter, re-centers, refocuses if drifted, and resumes "
         "at the same slot. Rain, wind, or power failure aborts and parks "
@@ -389,8 +402,8 @@ EXAMPLE_BRIEFS = {
         "when the run ends. If cloud cover is detected (this trigger fires "
         "on the cloud detector's own verdict), imaging pauses at the frame "
         "boundary and the calibration queue takes darks for whatever the "
-        "library lacks (its bias and flat legs are not run yet); once the "
-        "sky holds clear for 4 min it re-cools the sensor to setpoint and "
+        "library lacks (its bias and flat legs are not run yet); once "
+        "consecutive check frames read clear it re-cools the sensor to setpoint and "
         "waits for it to stabilize, restores the filter, re-centers, "
         "refocuses if drifted, and resumes at the same slot."),
     "example-pool": (
@@ -402,7 +415,8 @@ EXAMPLE_BRIEFS = {
         "A session report is appended when the run ends. If the active target "
         "sinks to the 30° floor, it is set aside for tonight - a restart "
         "tonight does not retry it, the next night does - and the next best "
-        "takes over."),
+        "takes over. Once all 4 targets have the frames they ask for, the rig "
+        "stays parked."),
     "example-nb": (
         "This flow arms at astronomical dusk (−30 min). It then arms NGC 7000 "
         "- North America. For each target it autofocuses (v-curve sweep), "

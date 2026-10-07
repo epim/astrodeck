@@ -33,7 +33,8 @@ import math
 import time
 from pathlib import Path
 from statistics import median
-from typing import Any, Callable, NamedTuple
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, NamedTuple
 
 from ..aio import reap
 from ..config import config_store, frames_payload
@@ -1171,9 +1172,16 @@ class SequenceEngine:
         #: None until the first, so the first says it and the rest at most
         #: every ``SPARSE_RESWEEP_LOG_EVERY_S``. Reset when a debt is made.
         self._sparse_gated_logged_at: float | None = None
-        #: ``(session, frames seen, accepted map)`` for `_accepted_now`, or
-        #: None until it is first asked.
+        #: ``(session, frames seen, accepted map)``: the memo behind
+        #: `_ledger_counts` (#516), or None until it is first asked, and
+        #: again after `start` and once the run's session is let go.
         self._accepted_seen: tuple | None = None
+        #: Whether the focuser took the per-filter offset of the move
+        #: `_sweep_through_luminance` made to luminance (#723, WP-143): False
+        #: from the moment the wheel moved and the offset did not follow, so
+        #: the move BACK (`_restore_filter_after_sweep`) moves the wheel only
+        #: and does not apply the inverse of an offset the focuser never took.
+        self._luminance_offset_landed: bool = True
         #: The focus groups acquired this run (#189 U-05, spec 5.6 step 6),
         #: keyed by `_focus_group_key`: a target's ``mosaic_group``, or its
         #: own id when it has none. A group's first acquisition owes a sweep
@@ -2230,13 +2238,15 @@ class SequenceEngine:
         would move every single-target finish clock for the moments before
         its setup begins.
 
-        THE LEDGER IS WALKED ONCE PER CALL (#189 A9). In accepted mode each
-        `_step_complete` asks ``Session.accepted``, which walks every frame of
-        the session; asked per step, one ETA was targets x steps walks of a
+        THE LEDGER IS NOT WALKED PER CALL (#189 A9, #516). In accepted mode
+        each `_step_complete` asks the ledger's accepted count; asked per
+        step against the session, one ETA was targets x steps walks of a
         ledger that grows all night, and `compute_eta` runs on every status
-        publish. The map is taken once here and every step is answered from
-        it, through the same `_step_complete`, so the definition of done stays
-        one definition. Attempts mode reads ``_done`` and takes no map.
+        publish. The map is taken once here, from the memo
+        (`_accepted_now`, extended from the frames banked since it was last
+        asked), and every step is answered from it, through the same
+        `_step_complete`, so the definition of done stays one definition.
+        Attempts mode reads ``_done`` and takes no map.
 
         A ROTATING GROUP'S MEMBER OWES A HOP PER VISIT (#189 S2, spec 5.10):
         "the hops still to make become the visits still to make". Each visit
@@ -2249,9 +2259,7 @@ class SequenceEngine:
         if not self.plan:
             return 0
         cur = self._acquiring_ti
-        accepted = (self._session.accepted_by_step()
-                    if self.plan.count_mode == "accepted"
-                    and self._session is not None else None)
+        accepted = self._accepted_now()
         owing = 0
         for ti, target in enumerate(self.plan.targets):
             if target.calibration:
@@ -2268,7 +2276,7 @@ class SequenceEngine:
         return max(0, owing - 1) if cur is None else owing
 
     def _visits_owed(self, target: Target, group: TargetGroup,
-                     accepted: dict[str, int] | None) -> int:
+                     accepted: Mapping[str, int] | None) -> int:
         """The visits a group member still owes tonight, each one a hop.
 
         A round is one pass over the member's short steps, ``per_visit``
@@ -2718,7 +2726,9 @@ class SequenceEngine:
                 "id": self._session.id,
                 "name": self._session.name,
                 "count_mode": getattr(self.plan, "count_mode", "attempts"),
-                "accepted": self._session.total_accepted(),
+                # `Session.total_accepted()`, from the memo and in either
+                # count mode (#516): a publish is made several times a frame.
+                "accepted": sum(self._ledger_counts().values()),
                 "target": kw.get("target", self.state.get("target")),
             })
         # schedule=None is an explicit CLEAR (wave-3 §2): the waiting sub-state
@@ -3338,6 +3348,10 @@ class SequenceEngine:
         if self._report_finalized:
             return
         self._report_finalized = True
+        # A RETRY ASKED AFTER THE SCHEDULER HAD RETURNED (#728). First, so the
+        # report that is finalized next names it and the session saved below
+        # carries it.
+        self._hand_pending_retries_to_the_session()
         rid = None
         if self.reporter is not None:
             try:
@@ -3456,6 +3470,66 @@ class SequenceEngine:
                 bus.log("warning", f"session save failed: {e}", "sequence")
             self._record_flow_result(self._session, reason)
             self._session = None
+            # The memo is the finished session's: let it go with it, so the
+            # engine does not pin a project's whole ledger map until the
+            # next run starts.
+            self._accepted_seen = None
+
+    def _hand_pending_retries_to_the_session(self) -> None:
+        """What is still queued for the scheduler when the run is finalized
+        goes to the SESSION, as the dormant route would put it there (#728):
+        the records tonight holds for those panels are marked cleared, the
+        report names the retry, and the night log says so.
+
+        THE WINDOW. `retry_set_aside` answers ``live`` and only queues while
+        the run is going and its session is held, and the scheduler returns
+        before the session is cleared: the idle stop's own wait
+        (``IDLE_STOP_FINISH_S``, the first thing the run does after the
+        scheduler) stands between the two. A retry asked there was queued, the
+        operator was told so, and nothing drained it: the next `start`
+        discards the queue. This is the end of the run, the only point where
+        the queue is certainly never drained, so it is emptied here, into the
+        record the continue reads.
+
+        HONOURED, NOT REFUSED. The panel is still set aside in the run's own
+        state (it was dropped from the scheduler's list, or is set aside for
+        now), and nothing slews anywhere: the session is dormant, and the same
+        night's CONTINUE, restart or auto-resume takes the panel up, exactly as
+        after the dormant route (`note_set_aside_cleared`, ``set_aside_on`` no
+        longer reads a cleared record). Said in words only, as the drain's own
+        line is (6.9).
+
+        Never raises: this is called from the one path that must always
+        complete, and a record that cannot be marked is a warning, with the
+        queue emptied either way (it is the run's, and the run is over)."""
+        ids, self._pending_retries = self._pending_retries, []
+        session, plan = self._session, self.plan
+        if not ids or session is None or plan is None:
+            return
+        try:
+            by_id = {t.id: t for t in plan.targets}
+            wanted = [pid for pid in ids if pid in by_id]
+            standing = {r["target_id"] for r in session.note_set_aside_cleared(
+                wanted, night=night_key(time.time()))}
+            brought: dict[str, list[Target]] = {}
+            for pid in wanted:
+                t = by_id[pid]
+                group = self._group_of(t)
+                if pid in standing and group is not None:
+                    brought.setdefault(group.id, []).append(t)
+                    if self.reporter:
+                        self.reporter.mark_retried(t)
+            for gid, targets in brought.items():
+                group = self._groups[gid]
+                names = ", ".join(self._panel_name(t) for t in targets)
+                bus.log("info",
+                        f"{group.name or group.id}: set-aside panels retried "
+                        f"by the operator: {names}; the run had no scheduler "
+                        f"left to take them up, so the next start tonight "
+                        f"does", "sequence")
+        except Exception as e:  # noqa: BLE001 - a terminal path never raises
+            bus.log("warning", f"a retry asked as the run ended could not be "
+                               f"recorded: {e}", "sequence")
 
     #: How a night's ending reads on a flow card. The card renders "" | ok |
     #: warn | bad, and the distinction that matters to somebody scanning a
@@ -4081,11 +4155,12 @@ class SequenceEngine:
                 if wait_ts - now > WAIT_TEARDOWN_S and not deferral:
                     await self._idle_park_hold(
                         "the next target is a long wait away")
-                # THE WAIT ENDS EARLY FOR THE OPERATOR'S RETRY (#600): it
+                # THE WAIT ENDS EARLY FOR ANYTHING QUEUED (#600, #726): it
                 # can be 45 minutes long (a set-aside waiting for its
-                # expiry), and a panel brought back meanwhile is to be
-                # taken up now.
-                await self._wait_until_or_retry(wait_ts)
+                # expiry), and a panel brought back meanwhile, or a target
+                # an instruction has dropped, is to be taken up now, not
+                # when the soonest waiter's clock runs out.
+                await self._wait_until_or_queued(wait_ts)
             else:
                 # waiting but no resolvable start_ts (e.g. below-alt with unknown
                 # ETA): a short bounded, cancel-responsive sleep then re-evaluate.
@@ -5455,35 +5530,68 @@ class SequenceEngine:
                 run.note_complete(t.id)
             self._drop_from(remaining, t)
 
-    def _accepted_now(self) -> dict[str, int] | None:
+    def _accepted_now(self) -> Mapping[str, int] | None:
         """The ledger's accepted frames per step, as
         ``Session.accepted_by_step`` answers, in accepted mode; None in
         attempts mode, where `_step_complete` reads ``_done`` and takes no
-        map.
-
-        KEPT UP TO DATE FROM THE TAIL (#537, the #516 budget). Within a run
-        the engine's session only grows: a frame is appended once with its
-        verdict (`_record_session_frame`), and a regrade is refused while
-        the session is active and works on the store's copy besides. So the
-        map taken once is extended by the frames banked since, and
-        `_drop_complete` asks it at every selection without a full walk of
-        the ledger each time (0.6 walks a banked frame on test_s7_ledger_
-        cost's 2000-frame night, over its budget). Walked afresh for a new
-        session object or a ledger that is somehow shorter than last seen."""
-        s, plan = self._session, self.plan
-        if s is None or plan is None or plan.count_mode != "accepted":
+        map. It is `_ledger_counts` in the one mode that counts the ledger,
+        so a caller that takes a map to hand down (`_drop_complete`,
+        `_remaining_hops`, `_order_snapshot`) gets the memo's view and never
+        walks."""
+        plan = self.plan
+        if (self._session is None or plan is None
+                or plan.count_mode != "accepted"):
             return None
+        return self._ledger_counts()
+
+    def _ledger_counts(self) -> Mapping[str, int]:
+        """The ledger's accepted frames per step, as
+        ``Session.accepted_by_step`` answers, for ANY count mode, as a
+        READ-ONLY view: the one memo behind every accepted-count read the
+        engine makes (#516, spec 10 risk 8: counts are taken once, not at
+        every check).
+
+        Mode-free because the published session sub-state reports
+        ``accepted`` in attempts mode too. The readers that must not count
+        the ledger in attempts mode, where ``_done`` is the count
+        (`_remaining_hops`, `_order_snapshot`, `_drop_complete`), ask
+        `_accepted_now`, which is None there.
+
+        KEPT UP TO DATE FROM THE TAIL (#537, #516). Within a run the
+        engine's session only grows: a frame is appended once with its
+        verdict (`_record_session_frame`); the one route that sets an
+        override (``PATCH /api/sessions/{id}/frames/{frame_id}``) answers 409
+        for an active session and edits the store's copy besides; and
+        ``save_run_state`` takes the operator-owned fields from the file and
+        never the frames. So the map taken once is extended by the frames
+        banked since, and a frame costs one count instead of a walk of the
+        project's whole ledger, a dozen times (about 0.84 ms each at 10 000
+        frames). Walked afresh for a new session object (the key is the
+        object, not its length: a second session of as many frames is not
+        the first) and for a ledger that is somehow shorter than last seen.
+        A verdict changed in place on a frame already counted is NOT seen,
+        which is the premise above: a regrade is made between runs, on the
+        store's copy, and `start` drops the memo.
+
+        THE DICT UNDER THE VIEW IS EXTENDED IN PLACE, so the view is for a
+        synchronous expression: take the counts, read them, let go. Held
+        across an await it would answer for frames banked since, and a
+        caller must never write to it, which the view refuses."""
+        s = self._session
+        if s is None:
+            return MappingProxyType({})
         frames = s.frames
+        n = len(frames)
         seen = self._accepted_seen
-        if seen is None or seen[0] is not s or seen[1] > len(frames):
+        if seen is None or seen[0] is not s or seen[1] > n:
             acc = s.accepted_by_step()
         else:
             acc = seen[2]
-            for f in frames[seen[1]:]:
+            for f in frames[seen[1]:n]:
                 if f.effective():
                     acc[f.step_id] = acc.get(f.step_id, 0) + 1
-        self._accepted_seen = (s, len(frames), acc)
-        return acc
+        self._accepted_seen = (s, n, acc)
+        return MappingProxyType(acc)
 
     def _group_cols(self, group: TargetGroup) -> int:
         """The layout's column count (`panel_order`: the layout's, never one
@@ -5503,10 +5611,10 @@ class SequenceEngine:
         """The pass's one snapshot for the order (spec 5.2): the fraction of
         each member's frames banked, counted as `_step_complete` counts them,
         and when each was last visited, from the ledger's frame times and
-        this run's visits. One ledger walk for the whole group."""
-        accepted = (self._session.accepted_by_step()
-                    if self.plan is not None and self.plan.count_mode == "accepted"
-                    and self._session is not None else None)
+        this run's visits. The counts are the memo's (`_accepted_now`); the
+        one walk of the ledger is the last-visit scan below, for the whole
+        group."""
+        accepted = self._accepted_now()
         fraction: dict[str, float] = {}
         for t in members:
             total = sum(s.count for s in t.steps)
@@ -5904,12 +6012,14 @@ class SequenceEngine:
         while the engine's records of tonight hold it). Raises ``KeyError``
         for a group the plan does not carry.
 
-        ONE WINDOW IT DOES NOT CLOSE: a retry asked after the scheduler has
-        returned but before ``_finalize_report`` has cleared the session (the
-        idle-stop's wait, seconds) is queued and never drained, and the next
-        ``start`` discards it. The session is dormant with the record
-        standing, and a second press, now on the dormant path, brings it
-        back."""
+        THE WINDOW AT THE RUN'S END IS CLOSED (#728): a retry asked after the
+        scheduler has returned but before ``_finalize_report`` has cleared the
+        session (the idle-stop's wait, seconds) is queued and never drained
+        by the scheduler, so the run's end hands the queue to the SESSION
+        (``_hand_pending_retries_to_the_session``): the records tonight holds
+        for those panels are marked cleared, the report names the retry, and
+        the same night's CONTINUE, restart or auto-resume takes the panel up,
+        exactly as after the dormant route. No second press is needed."""
         plan = self.plan
         if not self.running or self._session is None or plan is None:
             return {"live": False, "queued": []}
@@ -6016,8 +6126,25 @@ class SequenceEngine:
             bus.log("info", f"{group.name or group.id}: set-aside panels "
                             f"retried by the operator: {labels}", "sequence")
 
-    async def _wait_until_or_retry(self, deadline_ts: float) -> None:
-        """`_wait_until`, ended early by a retry the operator queued (#600).
+    def _queued_for_the_scheduler(self) -> bool:
+        """Is anything waiting for the scheduler's next selection to take it
+        up (#726)? The one check the idle wait ends on: a set-aside panel the
+        operator asked back (``_pending_retries``, #600) or a ``skip_target``
+        aimed at a target the scheduler is not shooting
+        (``_pending_skips``). Both are drained at the top of `_schedule_loop`,
+        before anything is gated, so a wait that ended on either finds the
+        queue empty at its very next selection and cannot end on it twice.
+
+        ONE CHECK, NOT ONE PER QUEUE, so a third queue is added here and in
+        the drain and the wait learns it with them: the wait was taught about
+        retries alone (WP-104) and the skip queue, drained by the same loop
+        top, waited out the same clock. Pure reads of two containers; no
+        device I/O."""
+        return bool(self._pending_retries or self._pending_skips)
+
+    async def _wait_until_or_queued(self, deadline_ts: float) -> None:
+        """`_wait_until`, ended early by anything queued for the scheduler
+        (#600 for a retry, #726 for the rest: `_queued_for_the_scheduler`).
 
         The scheduler's idle wait is ONE `_wait_until` to its soonest waiter's
         wake, which for a panel set aside for now is its 45 minute expiry, for
@@ -6027,18 +6154,29 @@ class SequenceEngine:
         and returns only at the deadline. A retry queued meanwhile sat in
         ``_pending_retries`` until then, and the operator who had just fixed the
         cause and pressed RETRY watched the run wait out the clock it was meant
-        to cut short.
+        to cut short; a skip aimed at a future target sat in ``_pending_skips``
+        the same way, and a waiter the instruction had dropped was still waited
+        for.
 
         So the same wait is taken one step at a time, and ends at the first
-        step after a retry is queued, where the selection drains it
-        (`_drain_set_aside_retries`). Every step is a whole `_wait_until` pass:
-        the checkpoint, the safety gate and the idle clock, as before, and the
-        first step is taken whatever the deadline, so the guaranteed pass that
-        makes a past deadline impossible to spin on is kept. A deadline already
-        past is one such pass, as it always was."""
+        step after something is queued, where the selection drains it
+        (`_drain_set_aside_retries`, the skip drain). Every step is a whole
+        `_wait_until` pass: the checkpoint, the safety gate and the idle
+        clock, as before, and the first step is taken whatever the deadline, so
+        the guaranteed pass that makes a past deadline impossible to spin on is
+        kept. A deadline already past is one such pass, as it always was.
+
+        THE STEPS ARE THE ENGINE'S OWN TASK'S, deliberately, and not an event
+        raced against a timer on a task of its own: the clocked harness parks
+        only the engine's tasks on its fake clock (tests/_group_harness.py), so
+        a helper task sleeping the wait would be real seconds, and an engine
+        whose waits cannot be advanced cannot be tested for any night that
+        idles. The price is the step: a queued event is taken within one
+        ``SCHEDULE_WAIT_STEP_S`` of being queued, which is the cadence the
+        safety gate already runs at beside it."""
         await self._wait_until(min(deadline_ts,
                                    time.time() + SCHEDULE_WAIT_STEP_S))
-        while time.time() < deadline_ts and not self._pending_retries:
+        while time.time() < deadline_ts and not self._queued_for_the_scheduler():
             await self._wait_until(min(deadline_ts,
                                        time.time() + SCHEDULE_WAIT_STEP_S))
 
@@ -7167,7 +7305,7 @@ class SequenceEngine:
         return cancelled
 
     def _target_complete(self, ti: int, target: Target, *,
-                         accepted: dict[str, int] | None = None) -> bool:
+                         accepted: Mapping[str, int] | None = None) -> bool:
         """Has this target got everything it asked for? ONE definition of done
         (#158): every step answers `_step_complete`, the question the cycle
         driver asks.
@@ -7468,15 +7606,41 @@ class SequenceEngine:
                                     "to the mosaic's angle", kind="rotation")
 
     @staticmethod
+    def _planned_pa(target: Target, group: TargetGroup) -> float | None:
+        """The angle the camera is PLANNED at for one panel of ``group``
+        (#175): the panel's own ``rotation_deg`` when the group rotates and
+        the panel carries one, else the group's layout angle.
+
+        A block that corrects meridian convergence (`to_plan.
+        corrects_convergence`) commands each panel its own angle, its
+        corners some degrees off the group's ``pa_deg`` (6 at Dec 75 for a
+        3x3 at 25%), and its tolerance is held to THAT angle. Judged against
+        the group's, a corner that sat exactly where it was told would read
+        as off and be set aside by the correction meant to help it. A fixed
+        camera, or a panel with no angle of its own, has the group's layout
+        angle, which is what a block that does not correct gives every
+        panel, so those plans are judged as they always were. None when the
+        group has no angle (the check is then off, spec 3.4)."""
+        own = getattr(target, "rotation_deg", None)
+        if group.rotate and own is not None:
+            return own
+        return group.pa_deg
+
+    @staticmethod
     def _hop_angle_within(group: TargetGroup, rec: dict | None,
-                          since: float) -> bool:
+                          since: float, *,
+                          target: Target | None = None) -> bool:
         """True when this hop measured the camera within the group's angle
-        tolerance of its layout angle, mod 180: a record exposed at or after
-        ``since`` (the hop start), judged by `angle_check.angle_verdict`, the
-        rule ``_group_angle_check`` applies. A group with no finite angle or
-        tolerance has nothing to judge by, and a missing, stale or unreadable
-        record is no evidence: each answers False, so the deferral stands."""
-        pa, tol = group.pa_deg, group.angle_tolerance_deg
+        tolerance of the angle ``target`` is planned at (`_planned_pa`; the
+        group's layout angle with no ``target``), mod 180: a record exposed
+        at or after ``since`` (the hop start), judged by
+        `angle_check.angle_verdict`, the rule ``_group_angle_check`` applies.
+        A group with no finite angle or tolerance has nothing to judge by,
+        and a missing, stale or unreadable record is no evidence: each
+        answers False, so the deferral stands."""
+        pa = (SequenceEngine._planned_pa(target, group)
+              if target is not None else group.pa_deg)
+        tol = group.angle_tolerance_deg
         if (pa is None or tol is None or not math.isfinite(pa)
                 or not math.isfinite(tol) or tol < 0):
             return False
@@ -7489,7 +7653,9 @@ class SequenceEngine:
     # ---- the angle: the check on every hop (U-04) and ruling 9's lock ------
     #
     # A mosaic's panels share the group's layout angle, and every hop checks
-    # the angle its centring measured against it (spec 5.6 step 4, 6.12). A
+    # the angle its centring measured against it (spec 5.6 step 4, 6.12) -
+    # against the panel's own planned angle where the block corrects
+    # meridian convergence, `_planned_pa` (#175). A
     # target with no angle of its own locks the angle of its first shot and
     # is then commanded to it, or checked against it, like a planned one
     # (Revision 2, ruling 9). Both read the one measurement there is,
@@ -7961,8 +8127,19 @@ class SequenceEngine:
         tolerance negative included) has no check: None disables it (spec
         3.4), and `angle_verdict` refuses the others as a caller's bug.
         Every line is words and the camera's own angles; none carries a
-        number the site sets (6.9)."""
-        pa, tol = group.pa_deg, group.angle_tolerance_deg
+        number the site sets (6.9).
+
+        THE ANGLE IS THE PANEL'S OWN (#175): a rotating group whose block
+        corrects meridian convergence plans each panel at its own
+        ``rotation_deg`` (`_planned_pa`), and the tolerance is held to that
+        angle. WITH ROTATION OFF FOR THE NIGHT (D-05) it is the group's: the
+        camera sits at one angle, the block's, for every panel, and judged
+        against a corner's own angle a camera nothing can turn would be set
+        aside for an angle it cannot reach."""
+        rotates = group.rotate and not self._rotation_off_tonight()
+        pa = (self._planned_pa(target, group) if rotates
+              else group.pa_deg)
+        tol = group.angle_tolerance_deg
         if (pa is None or tol is None or not math.isfinite(pa)
                 or not math.isfinite(tol) or tol < 0):
             return
@@ -7984,7 +8161,9 @@ class SequenceEngine:
         # camera off its angle sets the group aside once, with the
         # turn-the-camera wording, where a rotator's ``off`` defers the
         # panel pass after pass for an angle nothing will bring it to.
-        rotates = group.rotate and not self._rotation_off_tonight()
+        # (``rotates``, read above with the angle it picks; the rotator's own
+        # reading stands in for a missing measurement only against the
+        # panel's planned angle, the one it was commanded.)
         reads = None
         if rotates and verdict.kind == "no_measurement":
             reads = await self._rotator_evidence(pa, centring)
@@ -8619,7 +8798,19 @@ class SequenceEngine:
                             f"{target.name}: the mount would not track after "
                             f"the slew ({e})", "sequence")
                     if await self._tracking_now() is False:
-                        if not await self._recover_from_tracking_refusal(target):
+                        # THE RECOVERY'S RE-CENTRE IS THE HOP'S SOLVE (#738),
+                        # and this call site records the hop's row from it
+                        # at the common `_record_sky_angle` below. An empty
+                        # ``centring`` is how a caller says it takes the
+                        # result: the recovery then records nothing of its
+                        # own, and the one solve is one row. Without it a
+                        # centring-off target that had a refused track
+                        # recovered was two identical rows for one solve.
+                        # The result itself is not read here (this target
+                        # asked for no centring; the recovery's own line
+                        # says whether its re-centre converged).
+                        if not await self._recover_from_tracking_refusal(
+                                target, centring={}):
                             raise
                     else:
                         raise
@@ -8661,7 +8852,8 @@ class SequenceEngine:
         if member is not None and hop_centring is not None:
             self._group_hop_checks(
                 target, member, hop_centring, hop_miss,
-                angle_ok=self._hop_angle_within(member, hop_angle, hop_wall0))
+                angle_ok=self._hop_angle_within(member, hop_angle, hop_wall0,
+                                                target=target))
         if member is not None and "telescope" in self.hub.devices:
             await self._group_angle_check(target, member, hop_centring,
                                           hop_angle, hop_wall0)
@@ -8964,12 +9156,9 @@ class SequenceEngine:
             # measured since. Here rather than in `_run_step`, whose gate
             # stack the group driver leaves untouched (spec D7).
             self._take_pending_lock(target)
-        panel_kw: dict = {}
+        panel_kw: dict = self._panel_labels(target, step)
         group = self._group_of(target) if target is not None else None
         if group is not None and str(step.frame_type).lower() == "light":
-            panel_kw = {"mosaic": naming.mosaic_label(group.name, group.id),
-                        "panel": naming.panel_label(target.panel_row,
-                                                    target.panel_col)}
             # A MERIDIAN WAIT ENDS WITH THE FIRST EXPOSURE AFTER IT, not at
             # the crossing (spec 5.10, 6.9): from here the panel and the pass
             # go back to every viewer, at crossing plus hop plus exposure,
@@ -9197,7 +9386,7 @@ class SequenceEngine:
                     await self._panel_off_safe()
 
     def _step_complete(self, target: Target, step, *,
-                       accepted: dict[str, int] | None = None) -> bool:
+                       accepted: Mapping[str, int] | None = None) -> bool:
         """Has this step got everything it asked for?
 
         The two count modes disagree about what "everything" means, and the
@@ -9205,18 +9394,18 @@ class SequenceEngine:
         counts the ledger's accepted frames, ``attempts`` counts frames taken.
         Asking the wrong one is how a night either stops early or never stops.
 
-        ``accepted`` is the session's ``accepted_by_step()`` map, taken once by
-        a caller that asks about many steps (`_remaining_hops`), so the ledger
-        is not walked again for every step. It changes where the accepted
-        count is read from, never which count is read: attempts mode and a
-        calibration target ignore it.
+        ``accepted`` is the ledger's accepted map (`_accepted_now`), taken once
+        by a caller that asks about many steps (`_remaining_hops`), so it is
+        not looked up again for every step. Without one the same memo is
+        asked (`_ledger_counts`), so no caller walks the ledger. It changes
+        where the accepted count is read from, never which count is read:
+        attempts mode and a calibration target ignore it.
         """
         plan = self.plan
         if plan is not None and plan.count_mode == "accepted" \
                 and not target.calibration and self._session is not None:
-            got = (accepted.get(step.id, 0) if accepted is not None
-                   else self._session.accepted(step.id))
-            return got >= step.count
+            counts = accepted if accepted is not None else self._ledger_counts()
+            return counts.get(step.id, 0) >= step.count
         return self._done.get(f"{target.id}:{step.id}", 0) >= step.count
 
     async def _run_steps(self, ti: int, target: Target,
@@ -9476,8 +9665,10 @@ class SequenceEngine:
         quota = plan.count_mode == "accepted" and not target.calibration
 
         def _quota_met() -> bool:
+            # The memo's count (#516): asked twice a frame, and it used to
+            # walk the whole ledger each time.
             return (self._session is not None
-                    and self._session.accepted(step.id) >= step.count)
+                    and self._ledger_counts().get(step.id, 0) >= step.count)
 
         if quota:
             if _quota_met():
@@ -9606,7 +9797,7 @@ class SequenceEngine:
             await self._await_guider_quiet("this frame")
 
             self._begin_frame(ti, si, step.exposure_s)
-            shown = (self._session.accepted(step.id) + 1
+            shown = (self._ledger_counts().get(step.id, 0) + 1
                      if quota and self._session is not None else i + 1)
             self._set_state(state="running",
                             detail=f"{target.name}: {step.filter or 'no filter'} "
@@ -9646,7 +9837,8 @@ class SequenceEngine:
             # switch is off, and total by construction (Hub.session_stack_add
             # swallows its own failures) -- a preview must not end a night.
             if accepted:
-                self.hub.session_stack_add(info, target=target.name)
+                self.hub.session_stack_add(info, target=target.name,
+                                           target_id=target.id)
             # Every linear sub is already a cloud measurement - hub's preview
             # path runs cloud_score on it and puts the verdict in info["cloud"].
             # Reading it here costs nothing and makes the sky verdict exactly as
@@ -9792,7 +9984,7 @@ class SequenceEngine:
         """
         owed = step.count
         if self._session is not None:
-            owed = max(0, step.count - self._session.accepted(step.id))
+            owed = max(0, step.count - self._ledger_counts().get(step.id, 0))
         line = (f"{target.name}: {step.filter or 'no filter'} set aside for "
                 f"tonight after {rejects} consecutive rejects — its {owed} "
                 f"frame(s) remain pending in the session log; a restart tonight does not "
@@ -9819,6 +10011,22 @@ class SequenceEngine:
             return str(resolved)
         return (step.filter or None)
 
+    def _panel_labels(self, target: Target | None, step) -> dict:
+        """``{"mosaic": ..., "panel": ...}`` for a GROUP MEMBER'S LIGHT frame
+        (#189 U-08, #188), else ``{}``: the one rule behind the FITS cards
+        `_capture` writes (``MOSAIC``, ``PANEL``) and the labels the session
+        report's frame record carries (`_reporter_record`), so the file and
+        the report cannot name different panels. A non-member's frame and a
+        dark a hold shoots on a panel carry neither. ``naming.panel_label``
+        raises for a member with no grid position, which a caller keeps
+        inside its own try."""
+        group = self._group_of(target) if target is not None else None
+        if group is None or str(step.frame_type).lower() != "light":
+            return {}
+        return {"mosaic": naming.mosaic_label(group.name, group.id),
+                "panel": naming.panel_label(target.panel_row,
+                                            target.panel_col)}
+
     def _reporter_record(self, target: Target, step, info: dict, *, accepted: bool) -> None:
         """Record one frame to the session report (every frame, with its accepted
         flag). Best-effort; never lets a report-write hiccup break the run."""
@@ -9838,6 +10046,11 @@ class SequenceEngine:
             temp = getattr(frame, "temperature_c", None)
         saved = info.get("saved_path") if isinstance(info, dict) else None
         try:
+            # WHICH MOSAIC AND WHICH PANEL (#188): a group member's LIGHT
+            # frame says, as the FITS cards it was written with do; every
+            # other frame records neither. Inside the try, so a panel with no
+            # grid position logs "report record failed" and not a crash.
+            labels = self._panel_labels(target, step)
             self.reporter.record_frame(FrameRecord(
                 ts=time.time(), target=target.name,
                 filter=self._effective_filter(step, info),
@@ -9846,7 +10059,9 @@ class SequenceEngine:
                 guide_rms_total=rms, saved_path=saved,
                 gain=getattr(step, "gain", None), offset=getattr(step, "offset", None),
                 binning=getattr(step, "binning", None), ecc=ecc,
-                altitude_deg=_frame_altitude(target, self.hub.site, time.time())))
+                altitude_deg=_frame_altitude(target, self.hub.site, time.time()),
+                mosaic=labels.get("mosaic") or None,
+                panel=labels.get("panel") or None))
         except Exception as e:
             bus.log("warning", f"report record failed: {e}", "sequence")
 
@@ -11845,6 +12060,36 @@ class SequenceEngine:
                     "sequence")
             return quota, 0
 
+    async def _camera_off_its_cooling_target(self) -> float | None:
+        """The sensor's reading when it is MEASURED away from the plan's
+        cooling target (further than ``COOLER_AT_TARGET_C``, the band the
+        cooling wait itself calls at target), else None (#764).
+
+        None is "not shown to be warm", and covers every way nobody can say:
+        a plan with no ``cool_to`` (no setpoint to be away from), no camera or
+        one that is not connected (the dark's own call fails, as it always
+        did), a camera that cannot cool (`_cool_and_wait` shoots those at
+        ambient too), a sensor read that raises or times out, and a reading
+        that is not there. An unreadable sensor is not a verdict: only a
+        measured reading refuses, so a rig whose temperature read is the
+        thing that is broken is not stopped from building darks it could
+        always build. One bounded read, ``COOLER_CMD_TIMEOUT_S``."""
+        target_c = getattr(self.plan, "cool_to", None) if self.plan else None
+        if target_c is None:
+            return None
+        cam = self.hub.devices.get("camera")
+        if (cam is None or not getattr(cam, "connected", False)
+                or not getattr(cam, "can_cool", False)):
+            return None
+        try:
+            t = float(await asyncio.wait_for(cam.get_temperature(),
+                                             COOLER_CMD_TIMEOUT_S))
+        except (asyncio.TimeoutError, Exception):    # noqa: BLE001
+            return None
+        if not math.isfinite(t) or abs(t - target_c) <= COOLER_AT_TARGET_C:
+            return None
+        return t
+
     async def _hold_darks(self, target: Target | None) -> bool:
         """Shoot ONE dark matched to the interrupted step. ``True`` if it did.
 
@@ -11868,6 +12113,32 @@ class SequenceEngine:
             return False
 
         if self._hold_darks_want is None:
+            # NO DARKS BEFORE THE RUN'S FIRST FRAME ON A CAMERA MEASURED AWAY
+            # FROM ITS COOLING TARGET (#764). Before the #711 seed ``step`` was
+            # None until the first frame, so a hold entered before it shot
+            # nothing; seeded from the plan's first light step it reaches here
+            # at dusk, and a camera that did not cool (the run-start wait
+            # timed out under ``cooling_action = warn``, or the sensor is
+            # still walking down) would shoot darks at a temperature the
+            # library is not indexed by: cover for nothing, on a disk that
+            # fills. Asked of the SENSOR, once per hold (the refusal is the
+            # hold's, as the shortfall is: ``_hold_darks_want`` is reset as a
+            # hold opens), and only until the run has opened an exposure: a
+            # hold in the middle of a night behaves as it always did, and the
+            # cooler gate on its release is what asks about the sensor then.
+            warm = (await self._camera_off_its_cooling_target()
+                    if self._exposures_taken <= 0 else None)
+            if warm is not None:
+                self._hold_darks_want = 0
+                bus.log("info", f"cloud hold: no darks before the run's first "
+                                f"frame - the camera reads {warm:.1f}°C "
+                                f"against its {self.plan.cool_to:g}°C "
+                                f"setpoint, so a dark taken now would be a "
+                                f"warm one; holding without shooting",
+                        "sequence")
+                self._set_state(detail="held for cloud - no darks yet, the "
+                                       "camera is not at its cooling target")
+                return False
             want, have = self._hold_darks_shortfall(step, quota)
             self._hold_darks_want = want
             if want <= 0:
@@ -13712,7 +13983,23 @@ class SequenceEngine:
             bus.log("warning", f"{reason} — continuing", "sequence")
         return False
 
-    async def _apply_filter(self, step) -> None:
+    async def _apply_filter(self, step, *, apply_offset: bool = True) -> None:
+        """Move the wheel to ``step``'s filter and shift the focuser by the
+        per-filter offset delta.
+
+        THE WHEEL MOVE AND THE FOCUSER MOVE ARE ONE CHANGE (#723, WP-143).
+        The next frame's offset delta is derived from the wheel's REAL slot,
+        so a wheel that moved while the focuser did not take the offset is
+        shot one filter's worth of steps out of focus, or has the inverse of
+        an offset it never took applied on its way back. So when the focuser
+        step fails (anything but a ``SafetyAbort``, whose teardown owns every
+        device) the wheel is put back where it was, best effort
+        (`_put_the_wheel_back`), and the failure still propagates as it
+        always did.
+
+        ``apply_offset`` False moves the wheel alone: the way back from a
+        luminance move whose offset never landed
+        (`_restore_filter_after_sweep`)."""
         if "filterwheel" not in self.hub.devices:
             return
         # `require` RAISES when a device is registered but not connected, and
@@ -13766,69 +14053,101 @@ class SequenceEngine:
         # changes). Skipped when either end of the move is a blackout slot: its
         # offset is a placeholder zero, not a measurement, so honouring it would
         # yank the focuser to the reference position and back for a dark.
-        offsets = getattr(fw, "filter_offsets", []) or []
-        if self._policy.apply_filter_offsets and "focuser" in self.hub.devices \
-                and len(offsets) > max(new_slot, old_slot) \
-                and not fw.is_opaque(new_slot) and not fw.is_opaque(old_slot):
-            delta = offsets[new_slot] - offsets[old_slot]
-            if delta:
-                # ARRIVES FROM THE SAME SIDE AS EVERY OTHER MOVE (focus.approach).
-                # This is the move most likely to be swallowed whole by backlash
-                # and least likely to be noticed: the offsets on this rig are 18
-                # to 20 steps on a focuser with about 40 steps of slack, so an
-                # OUTWARD offset turns the motor and leaves the tube where it
-                # was — L and G then shoot at R and B's focus, with this log
-                # line saying the offset was applied and nothing anywhere
-                # disagreeing. An autofocus sweep at least measures itself; a
-                # 20-step offset move measures nothing.
-                foc = self.hub.require("focuser")
-                pos = await _bounded(foc.get_position(), FOCUSER_MOVE_TIMEOUT_S,
-                                     "focuser get_position")
-                overshoot = configured_overshoot()
-                await _bounded(
-                    approach(foc, pos + delta, overshoot=overshoot, current=pos),
-                    FOCUSER_MOVE_TIMEOUT_S, "focuser offset move",
-                    note="the focuser may be left above the offset position")
-                bus.log("info", f"applied filter offset {delta:+d} for {label}", "sequence")
-                # AND THE COMPENSATION REFERENCE MOVES WITH IT.
-                #
-                # `tempcomp.decide` computes an ABSOLUTE target,
-                # `reference_position + steps_per_c * (temp - reference_temp)`,
-                # and nothing here used to touch that reference - so the moment
-                # this offset landed, the drawtube was `delta` steps away from
-                # where compensation believed focus was. The very next frame
-                # boundary "corrected" that as drift and moved it straight back.
-                # Ha then shot at L's focus, with BOTH log lines present and
-                # nothing anywhere disagreeing: the offset line says it applied
-                # +120, the compensation line says it moved -120 for the
-                # temperature, and neither is wrong on its own.
-                #
-                # WHY THE REFERENCE SHIFTS RATHER THAN `decide` GAINING A TERM.
-                # The alternative was to carry the accumulated filter offset as
-                # an extra input to `decide`. That would mean a second piece of
-                # engine state threaded into a module whose entire value is that
-                # it is PURE - the nine-rule table is tested with no focuser, no
-                # clock and no engine, and every new argument is a new way for
-                # the tested arithmetic and the running arithmetic to differ.
-                # Shifting the reference keeps `decide` untouched.
-                #
-                # It is also the more exact statement. "reference_position +
-                # delta at the SAME reference_temp_c" is literally true - this
-                # filter focuses `delta` steps from the last one, at every
-                # temperature - whereas re-anchoring on the current reading
-                # would additionally swallow whatever drift had not been
-                # corrected yet and silently rebase the night's baseline on a
-                # filter change.
-                self._shift_temp_comp_reference(delta)
-                if overshoot and delta > 0:
-                    # "up to", because the extra leg is clamped to the
-                    # focuser's ceiling and dropped entirely at the top of its
-                    # travel — where there is no room, the tube arrives outward
-                    # and this line must not claim otherwise.
-                    bus.log("debug", f"that offset was outward, so the move went "
-                                     f"up to {overshoot} steps past "
-                                     f"{pos + delta} and came back down onto it",
-                            "sequence")
+        try:
+            offsets = getattr(fw, "filter_offsets", []) or []
+            if apply_offset and self._policy.apply_filter_offsets \
+                    and "focuser" in self.hub.devices \
+                    and len(offsets) > max(new_slot, old_slot) \
+                    and not fw.is_opaque(new_slot) and not fw.is_opaque(old_slot):
+                delta = offsets[new_slot] - offsets[old_slot]
+                if delta:
+                    # ARRIVES FROM THE SAME SIDE AS EVERY OTHER MOVE (focus.approach).
+                    # This is the move most likely to be swallowed whole by backlash
+                    # and least likely to be noticed: the offsets on this rig are 18
+                    # to 20 steps on a focuser with about 40 steps of slack, so an
+                    # OUTWARD offset turns the motor and leaves the tube where it
+                    # was — L and G then shoot at R and B's focus, with this log
+                    # line saying the offset was applied and nothing anywhere
+                    # disagreeing. An autofocus sweep at least measures itself; a
+                    # 20-step offset move measures nothing.
+                    foc = self.hub.require("focuser")
+                    pos = await _bounded(foc.get_position(), FOCUSER_MOVE_TIMEOUT_S,
+                                         "focuser get_position")
+                    overshoot = configured_overshoot()
+                    await _bounded(
+                        approach(foc, pos + delta, overshoot=overshoot, current=pos),
+                        FOCUSER_MOVE_TIMEOUT_S, "focuser offset move",
+                        note="the focuser may be left above the offset position")
+                    bus.log("info", f"applied filter offset {delta:+d} for {label}", "sequence")
+                    # AND THE COMPENSATION REFERENCE MOVES WITH IT.
+                    #
+                    # `tempcomp.decide` computes an ABSOLUTE target,
+                    # `reference_position + steps_per_c * (temp - reference_temp)`,
+                    # and nothing here used to touch that reference - so the moment
+                    # this offset landed, the drawtube was `delta` steps away from
+                    # where compensation believed focus was. The very next frame
+                    # boundary "corrected" that as drift and moved it straight back.
+                    # Ha then shot at L's focus, with BOTH log lines present and
+                    # nothing anywhere disagreeing: the offset line says it applied
+                    # +120, the compensation line says it moved -120 for the
+                    # temperature, and neither is wrong on its own.
+                    #
+                    # WHY THE REFERENCE SHIFTS RATHER THAN `decide` GAINING A TERM.
+                    # The alternative was to carry the accumulated filter offset as
+                    # an extra input to `decide`. That would mean a second piece of
+                    # engine state threaded into a module whose entire value is that
+                    # it is PURE - the nine-rule table is tested with no focuser, no
+                    # clock and no engine, and every new argument is a new way for
+                    # the tested arithmetic and the running arithmetic to differ.
+                    # Shifting the reference keeps `decide` untouched.
+                    #
+                    # It is also the more exact statement. "reference_position +
+                    # delta at the SAME reference_temp_c" is literally true - this
+                    # filter focuses `delta` steps from the last one, at every
+                    # temperature - whereas re-anchoring on the current reading
+                    # would additionally swallow whatever drift had not been
+                    # corrected yet and silently rebase the night's baseline on a
+                    # filter change.
+                    self._shift_temp_comp_reference(delta)
+                    if overshoot and delta > 0:
+                        # "up to", because the extra leg is clamped to the
+                        # focuser's ceiling and dropped entirely at the top of its
+                        # travel — where there is no room, the tube arrives outward
+                        # and this line must not claim otherwise.
+                        bus.log("debug", f"that offset was outward, so the move went "
+                                         f"up to {overshoot} steps past "
+                                         f"{pos + delta} and came back down onto it",
+                                "sequence")
+        except SafetyAbort:
+            raise
+        except Exception:
+            await self._put_the_wheel_back(fw, old_slot, label)
+            raise
+
+    async def _put_the_wheel_back(self, fw, slot: int, label: str) -> None:
+        """Send ``fw`` back to ``slot`` after `_apply_filter` moved it and the
+        focuser's offset step failed (#723, WP-143), so the wheel and the
+        focuser agree again: the wheel where it was, the focuser where it was.
+
+        BEST EFFORT, and it says what it did either way. It runs on the way
+        out of a failing move, so nothing it raises may replace the failure
+        that is already on its way up (a ``SafetyAbort`` included); a wheel
+        that cannot be sent back is left where it is and the warning names it
+        (`_sweep_through_luminance` asks the wheel where it is and owes the
+        way back, without an offset, in that case)."""
+        try:
+            await _bounded(fw.set_position(slot), FILTER_MOVE_TIMEOUT_S,
+                           f"filter → slot {slot} (undo)")
+            bus.log("warning",
+                    f"filter → {label}: the focuser's offset move failed, so "
+                    f"the wheel went back to slot {slot} and no offset is "
+                    f"owed", "sequence")
+        except Exception as e:      # noqa: BLE001
+            bus.log("warning",
+                    f"filter → {label}: the focuser's offset move failed and "
+                    f"the wheel could not be sent back to slot {slot} ({e}); "
+                    f"it stays where it is, with no offset applied",
+                    "sequence")
 
     async def _flip_safety_gate(self, target: Target) -> None:
         """The flip's own pre-slew safety + mount-floor gate (the flip IS a
@@ -15011,6 +15330,8 @@ class SequenceEngine:
         here = (self._started_at, id(target))
         if not spent:
             self._sky_read_at_bound = None
+            # THE STAND-DOWN'S OWN MARK (#737), forgotten on the same terms.
+            self._stand_down_said_at = None
         if not (spent and getattr(self, "_sky_read_at_bound", None) == here):
             if await self._sky_closed_before_recovery(
                     target, why="guiding was lost"):
@@ -15086,8 +15407,22 @@ class SequenceEngine:
             # to no purpose. The run continues unguided, which is what it would
             # have done had the guider never come up at all, and the detail
             # says so instead of claiming to be recovering.
-            bus.log("warning", f"{why}; standing down from recovery and "
-                    f"continuing unguided", "sequence")
+            #
+            # SAID ONCE, NOT AT EVERY BOUNDARY AFTER IT (#737, the #704
+            # class: the sky read above, here the warning). The guider stays
+            # inactive and this branch is reached again at every frame
+            # boundary for the rest of the night: ten warning lines in ten
+            # frames, each repeating a sentence the first already said. It is
+            # said on arriving at the bound, once for this target in this run
+            # (the key is the sky read's, and is forgotten whenever the
+            # attempts are not spent, so a new spell, the next target and the
+            # next run each say it once). The detail is NOT guarded: the frame
+            # loop writes its own between two boundaries, and this is what
+            # puts "recovery stood down" back where the screens read it.
+            if getattr(self, "_stand_down_said_at", None) != here:
+                bus.log("warning", f"{why}; standing down from recovery and "
+                        f"continuing unguided", "sequence")
+                self._stand_down_said_at = here
             self._set_state(detail="guiding lost; recovery stood down")
             return
 
@@ -16469,11 +16804,7 @@ class SequenceEngine:
         # hop's own row from this very solve, so a row here would be a second
         # one for it. The flip and the tracking enforcement pass none and
         # record nothing else, so the flip's recovery, which returns before the
-        # flip's own row, is recorded here. KNOWN: setup's uncentred branch
-        # passes none either and records the hop's row after the recovery, so
-        # a refused track recovered there, on a target with centring off, is
-        # two identical rows for one solve; that call is not this method's
-        # to change.
+        # flip's own row, is recorded here.
         if report_centring:
             self._record_sky_angle(target, since=t0, commanded=rotation,
                                    result=result, rec=self._sky_angle_now())
@@ -16973,8 +17304,30 @@ class SequenceEngine:
                 # be put back reliably. Stay put rather than restore the wrong
                 # slot with the wrong offset.
                 return None
-            await self._apply_filter(ExposureStep(filter=names[lum],
-                                                  exposure_s=1.0, count=1))
+            self._luminance_offset_landed = True
+            try:
+                await self._apply_filter(ExposureStep(filter=names[lum],
+                                                      exposure_s=1.0, count=1))
+            except SafetyAbort:
+                raise
+            except Exception as e:      # noqa: BLE001
+                # THE MOVE FAILED PARTWAY (#723, WP-143). `_apply_filter` puts
+                # the wheel back itself when only the focuser's offset failed,
+                # so the common answer here is "the wheel is where it was"
+                # and the sweep goes on through the filter in the beam. When
+                # the wheel is anywhere else, or cannot say, the way back is
+                # OWED: return the name so `_autofocus` sends it, and send it
+                # without an offset, since the focuser never took the one for
+                # the way out.
+                if await self._wheel_is_home(fw, cur):
+                    raise
+                self._luminance_offset_landed = False
+                bus.log("warning",
+                        f"{label}: the move to {names[lum]!r} failed partway "
+                        f"({e}) and the wheel is not on {back!r}; it will be "
+                        f"sent back after the sweep, without an offset, "
+                        f"since the focuser never took one", "sequence")
+                return back
             bus.log("info",
                     f"{label}: sweeping through {names[lum]!r} instead of "
                     f"{back!r} — a broadband sweep is minutes shorter, and the "
@@ -16990,6 +17343,21 @@ class SequenceEngine:
                              f"beam", "sequence")
             return None
 
+    @staticmethod
+    async def _wheel_is_home(fw, slot: int) -> bool:
+        """Is ``fw`` reading ``slot`` and not moving? False for any other
+        slot, for a wheel in transit and for one that cannot be read: the
+        caller treats "cannot say" as "not there" (the hub's borrow reads it
+        the same way, #723). Bounded, and never raises."""
+        try:
+            where = int(await _bounded(fw.get_position(), FILTER_MOVE_TIMEOUT_S,
+                                       "filter get_position"))
+            moving = bool(await _bounded(fw.is_moving(), FILTER_MOVE_TIMEOUT_S,
+                                         "filter is_moving"))
+            return where == int(slot) and not moving
+        except Exception:           # noqa: BLE001
+            return False
+
     async def _restore_filter_after_sweep(self, name: str, label: str) -> None:
         """Put ``name`` back after a luminance sweep, applying the offset.
 
@@ -17001,8 +17369,14 @@ class SequenceEngine:
         moves it and applies the delta from wherever it actually is.
         """
         try:
-            await self._apply_filter(ExposureStep(filter=name, exposure_s=1.0,
-                                                  count=1))
+            # THE OFFSET IS UNDONE ONLY IF IT WAS APPLIED (#723, WP-143): a
+            # move to luminance whose offset never landed is undone with the
+            # wheel alone, never with the inverse of an offset the focuser
+            # did not take.
+            await self._apply_filter(
+                ExposureStep(filter=name, exposure_s=1.0, count=1),
+                apply_offset=self._luminance_offset_landed)
+            self._luminance_offset_landed = True
         except Exception as e:      # noqa: BLE001
             bus.log("warning",
                     f"{label}: could not put {name!r} back after the luminance "

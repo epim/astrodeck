@@ -54,6 +54,13 @@ class FrameMeta:
     focuser_pos: int | None = None
     focuser_temp_c: float | None = None
     rotator_angle_deg: float | None = None
+    #: The rotator's MECHANICAL angle, 0..360 (#176): where the metal is,
+    #: which ``rotator_angle_deg`` (the SKY position angle) is not. The sky
+    #: angle moves whenever the rotator is re-synced and the metal does not,
+    #: and a dust shadow follows the metal, so this is the angle a flat is
+    #: keyed and matched by. Written as ROTMECH, beside ROTATANG, never in
+    #: its place.
+    rotator_mech_deg: float | None = None
     egain_e_per_adu: float | None = None
     # quality (already on the frame)
     hfr: float | None = None
@@ -461,6 +468,14 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
         hdr["FOCTEMP"] = (float(m.focuser_temp_c), "Focuser temperature (C)")
     if _finite(m.rotator_angle_deg):
         hdr["ROTATANG"] = (float(m.rotator_angle_deg), "Rotator sky PA (deg)")
+    if _finite(m.rotator_mech_deg):
+        # The card the calibration index reads (``calibration.keys``), on
+        # lights and flats alike. Not ROTATANG: that one is a SKY angle, and
+        # the same physical angle reads differently after a re-sync. A frame
+        # with no rotator writes neither card, and a reader takes the
+        # absence as "unknown", never as zero.
+        hdr["ROTMECH"] = (float(m.rotator_mech_deg),
+                          "Rotator mechanical angle (deg)")
     if _finite(m.egain_e_per_adu):
         hdr["EGAIN"] = (float(m.egain_e_per_adu), "Gain (e-/ADU)")
     # --- quality ---

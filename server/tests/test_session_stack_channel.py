@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Session stack: rendering ONE channel, not the composite with a tint on it.
 
-The stacker has always kept one accumulator per channel -- ``self._stacks`` is
-a ``LiveStacker`` per ``channel_for(filter)`` and has been since the feature
-landed. What did not exist was a way to LOOK at one of them: ``rgb_preview``
+The stacker has always kept one accumulator per channel -- each panel's slot
+(``slot.stacks``) is a ``LiveStacker`` per ``channel_for(filter)`` and has been
+since the feature landed (the table was the stacker's own ``_stacks`` until
+panels got slots, #172). What did not exist was a way to LOOK at one of them: ``rgb_preview``
 only ever composited, so "show me just Ha" could only ever be answered in the
 browser, by tinting or masking the colour composite. That answer is a lie in
 the one case the operator asks the question for -- checking whether the Ha subs
@@ -223,11 +224,18 @@ def test_a_new_frame_makes_a_new_channel_render():
 def test_reset_empties_the_per_channel_cache():
     # Reset throws the pixels away. A cache entry that outlived it would keep
     # serving last target's Ha under the new target's name.
+    # DELIBERATE PIN CHANGE (#172 part A, WP-121). The cache moved off the
+    # stacker and into each panel's slot, so the old assertion on
+    # `s._cache`/`s._cache_stamp` has nothing to read. What it guarded still
+    # holds and is stronger now: the cache lives in the slot, so a reset that
+    # drops the slot drops its cache with it and none can outlive the pixels.
     s = narrowband()
     assert s.channel_preview("Ha", 200) is not None
+    slot = s._resolve(None)
+    assert slot.cache, "the render was not cached at all; the test is vacuous"
     s.reset()
     assert s.channel_preview("Ha", 200) is None
-    assert s._cache == {} and s._cache_stamp == {}
+    assert s._slots == {}
 
 
 def test_the_cache_cannot_outgrow_one_entry_per_channel():
@@ -243,5 +251,9 @@ def test_the_cache_cannot_outgrow_one_entry_per_channel():
     s.rgb_preview(120)
     for ch in CHANNEL_ORDER:
         assert s.channel_preview(ch, 120) is not None, ch
-    assert len(s._cache) == len(CHANNEL_ORDER) + 1
-    assert set(s._cache) == {None, *CHANNEL_ORDER}
+    # DELIBERATE PIN CHANGE (#172 part A, WP-121): the bound is per panel now,
+    # and the cache that holds it is the slot's own (`slot.cache`, keyed by
+    # None or the channel, exactly as `stacker._cache` was).
+    cache = s._resolve(None).cache
+    assert len(cache) == len(CHANNEL_ORDER) + 1
+    assert set(cache) == {None, *CHANNEL_ORDER}

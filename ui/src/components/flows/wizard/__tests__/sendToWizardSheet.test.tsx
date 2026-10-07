@@ -471,7 +471,30 @@ await test("the review prints the recorded compile's numbers and the doctor's ve
   eq(checks.length, 1, "the saved flow was not checked by the server, once");
   eq(qa("wizard-review-line").map((l) => l.textContent),
     ["5 panels: 40 subs per panel, 200 in all", "0.67 h per panel, 3.33 h in all"], "the review's numbers:");
+  // RE-PINNED AT THE WAVE 16 INTEGRATION (WP-123, #177): the recorded compile
+  // is a mosaic's with plate solving off, so the doctor raises its ONE note
+  // row (`coverage.stamping_note`), and the recording was re-recorded with it.
+  // The verdict printed is that note and not "The doctor raised nothing."; a
+  // note locks nothing. The clean verdict is graded on a compile with no
+  // issues in the next case.
+  eq(qa("wizard-issue").map((l) => l.getAttribute("data-level")), ["note"],
+    "the recorded compile's one doctor row is not a note");
+  assert(/coverage cannot be checked: frames are not being plate-solved/.test(q("wizard-issue").textContent),
+    `the doctor's note did not print: ${q("wizard-issue")?.textContent}`);
+  assert(q("wizard-doctor-clear") === null, "the sheet says the doctor raised nothing beside a note");
+  eq(qa("wizard-run-reason").length, 0, `RUN is locked on a note: ${q("wizard-run-reason")?.textContent}`);
+  assert(!locked(btn("wizard-run")), "RUN is locked on a note");
+});
+
+await test("a compile the doctor has nothing to say about prints that it raised nothing", async () => {
+  setup();
+  answer = routes({ compile: { ...FX.compile, issues: [] } });
+  mount(fxPrefill());
+  walkToReview();
+  click(btn("wizard-generate"));
+  await flush();
   eq(q("wizard-doctor-clear")?.textContent, DOCTOR_CLEAR, "a clean compile did not say the doctor raised nothing");
+  eq(qa("wizard-issue").length, 0, "a clean compile printed a doctor row");
   eq(qa("wizard-run-reason").length, 0, `RUN is locked on a clean compile: ${q("wizard-run-reason")?.textContent}`);
   assert(!locked(btn("wizard-run")), "RUN is locked on a clean compile");
 });
@@ -1207,7 +1230,9 @@ await test("a brief that cannot be read says so and never locks RUN", async () =
     assert(!locked(btn("wizard-open-editor")), `${what}: OPEN IN EDITOR is locked`);
     // And the compile's own findings still print: nothing the brief did
     // reached them.
-    eq(q("wizard-doctor-clear")?.textContent, DOCTOR_CLEAR, `${what}: the doctor's verdict did not print`);
+    // The recorded compile carries the stamping note since the wave 16
+    // integration (see the case above), so "the doctor's verdict" is that.
+    eq(qa("wizard-issue").length, 1, `${what}: the doctor's verdict did not print`);
     click(btn("wizard-run"));
     await flush();
     eq(runPosts().length, 1, `${what}: RUN did not post the run`);

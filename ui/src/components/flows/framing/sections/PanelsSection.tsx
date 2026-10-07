@@ -62,6 +62,20 @@
 // would never fire in the one mode that shows it. A HonestButton, so a
 // viewer reads why it is locked, in a line of its own as well as the tooltip
 // (the sheet's "explained" banner is not drawn read-only).
+//
+// A DORMANT SESSION'S SET-ASIDE PANELS ARE ROWS TOO (#727, backlog wave 16).
+// The rows above read set-aside state off the live `state.group`, so once a
+// run ended owing a set-aside panel nothing said so and no button could be
+// drawn, although the server's dormant retry (POST with `session_id`) works.
+// The progress route now lists tonight's standing set-aside panels of a
+// dormant session on the mosaic block (`set_aside`, server
+// `progress._set_aside_tonight`), and `panelRows` gives each such panel the
+// same `set_aside` row state the live run would, so it is worded, left out of
+// the order and drawn dotted exactly as a live one is. A live state wins when
+// both speak, a panel the draft skips is not set aside (an unsaved SKIP says
+// it will not be shot at all), and a block whose grid is not the draft's says
+// nothing, as the counts do not (`progressByCell`). No reason is shown: the
+// route sends none, only the panel and whether it may still expire tonight.
 
 import type { JSX, ReactNode } from "react";
 import { HonestButton } from "../../../ui";
@@ -164,9 +178,34 @@ export interface PanelRow {
   peakAlt: number | null;
   altError: string | null;
   /** What the live run is doing to this panel (run mode, spec 2.6), or null:
-   *  not in run mode, or nothing to draw. */
+   *  not in run mode, or nothing to draw. A dormant session's standing
+   *  set-aside panel (#727) carries the `set_aside` state here too, from the
+   *  progress block, when no live state speaks for it. */
   run?: PanelRunState | null;
 }
+
+/** One panel a DORMANT session holds a standing set-aside record for tonight
+ *  (#727; server `progress._set_aside_tonight`, whose docstring is the
+ *  contract). Words and flags only: no reason (free text), kind, night or
+ *  time. `row` and `col` are 0-based, as every progress cell is. */
+export interface DormantSetAside {
+  target_id: string;
+  name: string;
+  row: number | null;
+  col: number | null;
+  /** The engine's `for_now`: a centring set-aside that may still expire
+   *  tonight, which a restart takes up again when its time comes. */
+  for_now: boolean;
+}
+
+/** The progress block as the route answers it once the route hands in the
+ *  clock (#727): `FlowProgressBlock` plus `set_aside`, present only on a
+ *  mosaic block of a dormant session that holds one. flowsApi.ts does not
+ *  declare it yet, so it is read here through this widening, which is
+ *  harmless once it does. */
+export type ProgressBlockWithSetAside = FlowProgressBlock & {
+  set_aside?: readonly DormantSetAside[];
+};
 
 /** Snake order (`compute_mosaic`): even rows west to east, odd rows back. */
 export function snakeIndex(row0: number, col0: number, cols: number): number {
@@ -175,18 +214,24 @@ export function snakeIndex(row0: number, col0: number, cols: number): number {
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+/** Does the block's progress describe THIS grid? A grid change restarts every
+ *  count (spec 2.5), so another grid's numbers, and its set-aside cells,
+ *  name the wrong panels. A single target's block has no `grid` and one
+ *  panel at 0,0. */
+function describesGrid(progress: FlowProgressBlock, rows: number, cols: number): boolean {
+  const g = progress.grid;
+  return g ? g.rows === rows && g.cols === cols : rows * cols === 1;
+}
+
 /** The progress route's counts for this grid, keyed "r0,c0" (0-based), or an
- *  empty map when the block's progress describes another grid: a grid change
- *  restarts every count (spec 2.5), so the old grid's numbers name the wrong
- *  panels. A single target's block has no `grid` and one panel at 0,0. */
+ *  empty map when the block's progress describes another grid
+ *  (`describesGrid`). */
 function progressByCell(
   progress: FlowProgressBlock | null | undefined, rows: number, cols: number,
 ): Map<string, { banked: number; total: number }> {
   const out = new Map<string, { banked: number; total: number }>();
   if (!progress) return out;
-  const g = progress.grid;
-  const same = g ? g.rows === rows && g.cols === cols : rows * cols === 1;
-  if (!same) return out;
+  if (!describesGrid(progress, rows, cols)) return out;
   for (const p of progress.panels ?? []) {
     if (!finite(p.row) || !finite(p.col)) continue;
     out.set(`${p.row},${p.col}`, { banked: finite(p.banked) ? p.banked : 0, total: finite(p.total) ? p.total : 0 });
@@ -200,13 +245,33 @@ function progressByCell(
   return out;
 }
 
+/** The set-aside state a DORMANT session's standing set-aside panels get,
+ *  keyed "r0,c0" (0-based), from the block's `set_aside` (#727): the state a
+ *  live run publishes for the same panel, so `runLine` words it, and the
+ *  order and the sky treat it, alike. `forNow` is the engine's flag. An empty
+ *  reason, because the route sends none and `runLine` then says only
+ *  "set aside tonight" or "set aside for now; tried once more tonight". Empty
+ *  when the block describes another grid (`describesGrid`). */
+function setAsideByCell(
+  progress: ProgressBlockWithSetAside | null | undefined, rows: number, cols: number,
+): Map<string, PanelRunState> {
+  const out = new Map<string, PanelRunState>();
+  if (!progress || !describesGrid(progress, rows, cols)) return out;
+  // A null cell (an id that matches no cell of the grid) keys "null,null"
+  // and so matches no panel; no guard is needed to keep it out.
+  for (const s of progress.set_aside ?? []) {
+    out.set(`${s.row},${s.col}`, { kind: "set_aside", reason: "", forNow: s.for_now === true });
+  }
+  return out;
+}
+
 /** The PANELS rows for a grid, in run order as described above. */
 export function panelRows(a: {
   rows: number;
   cols: number;
   /** 1-based [row, col] pairs (framingModel `parseSkip`). */
   skip: ReadonlyArray<readonly [number, number]>;
-  progress: FlowProgressBlock | null | undefined;
+  progress: ProgressBlockWithSetAside | null | undefined;
   /** The route's panels for the CURRENT spec, or null. */
   answerPanels: readonly MosaicPanel[] | null;
   order: string;
@@ -216,6 +281,7 @@ export function panelRows(a: {
 }): PanelRow[] {
   const { rows, cols } = a;
   const counts = progressByCell(a.progress, rows, cols);
+  const dormantAside = setAsideByCell(a.progress, rows, cols);
   const skipped = new Set(a.skip.map(([r, c]) => `${r - 1},${c - 1}`));
   const alt = new Map<string, MosaicPanel>();
   for (const p of a.answerPanels ?? []) alt.set(`${p.row},${p.col}`, p);
@@ -230,7 +296,10 @@ export function panelRows(a: {
         skipped: skipped.has(k), banked: n.banked, total: n.total,
         peakAlt: ap && finite(ap.transit_alt) ? ap.transit_alt : null,
         altError: ap?.transit_alt_error ?? null,
-        run: a.run?.[`${r0 + 1}-${c0 + 1}`] ?? null,
+        // A LIVE STATE WINS; a dormant session's standing set-aside speaks
+        // only where no run does, and never for a panel the draft skips
+        // (#727: an unsaved SKIP says it will not be shot at all).
+        run: a.run?.[`${r0 + 1}-${c0 + 1}`] ?? (skipped.has(k) ? null : dormantAside.get(k) ?? null),
         snake: snakeIndex(r0, c0, cols),
         fraction: n.total > 0 ? n.banked / n.total : 0,
       });

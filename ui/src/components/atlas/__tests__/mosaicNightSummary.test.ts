@@ -103,8 +103,9 @@ const PICKED: Same<Pick<PanelNight, Read>, Pick<MosaicPanel, Read>> = true;
  *    'transit_alt_error' does not exist in type 'MosaicPanel'. */
 const ROUTE_ANSWER: MosaicResult = {
   panels: [
-    { row: 0, col: 0, ra_hours: 0.7, dec_deg: 41.27, rotation_deg: 0, transit_alt: 63.6 },
-    { row: 0, col: 1, ra_hours: 0.72, dec_deg: 41.27, rotation_deg: 0,
+    { row: 0, col: 0, ra_hours: 0.7, dec_deg: 41.27, rotation_deg: 0, convergence_deg: 0, pa_deg: 0,
+      transit_alt: 63.6 },
+    { row: 0, col: 1, ra_hours: 0.72, dec_deg: 41.27, rotation_deg: 0, convergence_deg: 0, pa_deg: 0,
       transit_alt_error: "OSError: ephemeris table unreadable" },
   ],
   total_fov_x_deg: 2.2,
@@ -144,7 +145,8 @@ test("control: a night nobody asked about carries neither key, and says no reaso
   // The route's plain answer (no night asked for) has neither key on any
   // panel. The summary is not asked about such an answer by either caller,
   // but if it were it must say so rather than invent a cause.
-  const plain: MosaicPanel[] = [{ row: 0, col: 0, ra_hours: 0.7, dec_deg: 41.27, rotation_deg: 0 }];
+  const plain: MosaicPanel[] = [{ row: 0, col: 0, ra_hours: 0.7, dec_deg: 41.27, rotation_deg: 0,
+    convergence_deg: 0, pa_deg: 0 }];
   const s = summarisePanelNight(plain, 30);
   eq(s.reasons.join(" | "), "no reason was given", "the reasons for a panel with neither key");
 });

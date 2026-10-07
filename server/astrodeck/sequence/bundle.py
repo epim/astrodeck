@@ -115,6 +115,12 @@ class Group:
     masters: dict[str, str]        # kind.lower() -> bundle-relative dest
     master_sources: dict[str, str] # kind.lower() -> abs source path
     missing_masters: tuple[str, ...]  # title-case kinds with no match
+    #: The mosaic this group is a panel of and the panel's ``"r-c"`` label,
+    #: from the group's frames (#188); None for a target that is no mosaic's
+    #: panel. A panel is a separate stack: the frames of two panels are never
+    #: co-added, so ``mosaic`` is part of what makes a group (``build_bundle``).
+    mosaic: str | None = None
+    panel: str | None = None
 
 
 @dataclass(frozen=True)
@@ -400,7 +406,9 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
     """Build a :class:`Bundle` from a finished report + a master library.
 
     1. Select light subs with a truthy, ``is_local`` ``saved_path``.
-    2. Group by (target, filter, exposure, gain, binning).
+    2. Group by (target, filter, exposure, gain, binning, mosaic): a mosaic's
+       panel is a separate stack and is never co-added with another mosaic's
+       (#188).
     3. Weight each sub within its group and normalize so the best sub = 1.0.
        ``weight_altitude`` (opt-in, off by default) folds a ``sin(alt)``
        transparency term into that weight (§4 decision 2 follow-up).
@@ -434,7 +442,9 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
         warnings.append("No master library configured — masters were not matched. "
                         "The bundle ships the lights uncalibrated.")
 
-    # 1 + 2: select locals, group in first-seen order.
+    # 1 + 2: select locals, group in first-seen order. THE MOSAIC IS PART OF
+    # THE KEY (#188): two mosaics whose panels carry the same target name are
+    # different stacks, and a panel is never co-added with anything else.
     grouped: dict[tuple, list[FrameRecord]] = {}
     order: list[tuple] = []
     for fr in report.frames:
@@ -442,16 +452,31 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
             continue
         if not fr.saved_path or not is_local(fr.saved_path):
             continue
-        key = (fr.target, fr.filter, fr.exposure_s, fr.gain, fr.binning)
+        key = (fr.target, fr.filter, fr.exposure_s, fr.gain, fr.binning,
+               fr.mosaic or None)
         if key not in grouped:
             grouped[key] = []
             order.append(key)
         grouped[key].append(fr)
 
+    # A distinct key is not a distinct STACK while two groups share a folder:
+    # the build script copies a group's lights into its ``lights/`` and the
+    # stacker opens that folder as one stack. So a folder that more than one
+    # mosaic's group would land in is put under each such group's mosaic.
+    # Every other folder is what it has always been.
+    bases = {k: _group_dir(k[0], k[1], k[2], k[3], k[4]) for k in order}
+    mosaics_in: dict[str, set] = {}
+    for k in order:
+        mosaics_in.setdefault(bases[k], set()).add(k[5])
+    shared_dirs = {d for d, ms in mosaics_in.items() if len(ms) > 1}
+
     groups: list[Group] = []
     for key in order:
-        target, filt, exp, gain, binning = key
+        target, filt, exp, gain, binning, _mosaic = key
         frames = grouped[key]
+        # From the group's first frame, as the panel is: every frame of a
+        # group carries the mosaic its key names.
+        mosaic = frames[0].mosaic or None
 
         hfrs = [f.hfr for f in frames if f.hfr is not None and f.hfr > 0]
         rmss = [f.guide_rms_total for f in frames
@@ -466,7 +491,10 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
         max_raw = max(raw) if raw else 0.0
         norm = [(w / max_raw) if max_raw > 0 else 1.0 for w in raw]
 
-        gdir = _group_dir(target, filt, exp, gain, binning)
+        gdir = bases[key]
+        if mosaic and gdir in shared_dirs:
+            gdir = f"{sanitize_component(mosaic, 'loose') or 'Mosaic'}/{gdir}"
+        panel = next((f.panel for f in frames if f.panel), None)
         lights: list[LightEntry] = []
         for fr, w in zip(frames, norm):
             dest = _light_dest(layout, gdir, Path(fr.saved_path).name)
@@ -507,7 +535,8 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
         groups.append(Group(
             dir=gdir, target=target, filter=filt, exposure_s=exp, gain=gain,
             binning=binning, lights=tuple(lights), masters=masters,
-            master_sources=master_sources, missing_masters=tuple(missing)))
+            master_sources=master_sources, missing_masters=tuple(missing),
+            mosaic=mosaic, panel=panel))
 
     # 5. Warn about what this bundle does NOT contain. `warnings: []` is read as
     #    "nothing to report", so it must never be empty while the bundle is
@@ -582,7 +611,8 @@ def externalize_bundle(bundle: Bundle,
               exposure_s=g.exposure_s, gain=g.gain, binning=g.binning,
               lights=tuple(_replace_src(l, _rel(l.src)) for l in g.lights),
               masters=dict(g.masters), master_sources=_sources(g),
-              missing_masters=tuple(g.missing_masters))
+              missing_masters=tuple(g.missing_masters),
+              mosaic=g.mosaic, panel=g.panel)
         for g in bundle.groups)
     return Bundle(report_id=bundle.report_id, plan_name=bundle.plan_name,
                   layout=bundle.layout, groups=groups,
@@ -630,6 +660,8 @@ def manifest_json(bundle: Bundle) -> dict:
             {
                 "dir": g.dir,
                 "target": g.target,
+                "mosaic": g.mosaic,
+                "panel": g.panel,
                 "filter": g.filter,
                 "exposure_s": g.exposure_s,
                 "gain": g.gain,
@@ -676,6 +708,8 @@ def bundle_summary(bundle: Bundle) -> dict:
             {
                 "dir": g.dir,
                 "target": g.target,
+                "mosaic": g.mosaic,
+                "panel": g.panel,
                 "filter": g.filter,
                 "exposure_s": g.exposure_s,
                 "gain": g.gain,
@@ -696,9 +730,11 @@ def bundle_summary(bundle: Bundle) -> dict:
     }
 
 
+#: ``mosaic`` and ``panel`` are APPENDED, after ``src``: a consumer that reads
+#: this file by column position keeps reading what it read before #188.
 _CSV_COLS = ["target", "filter", "exposure_s", "gain", "binning", "accepted",
              "keep", "hfr", "fwhm_est", "ecc", "guide_rms", "sensor_temp_c",
-             "altitude_deg", "weight", "dest", "src"]
+             "altitude_deg", "weight", "dest", "src", "mosaic", "panel"]
 
 
 def weights_csv(bundle: Bundle) -> str:
@@ -725,6 +761,8 @@ def weights_csv(bundle: Bundle) -> str:
                 "weight": l.weight,
                 "dest": l.dest,
                 "src": l.src,
+                "mosaic": g.mosaic,
+                "panel": g.panel,
             }
             w.writerow(["" if row[c] is None else row[c] for c in _CSV_COLS])
     return buf.getvalue()
@@ -806,6 +844,12 @@ def readme_text(bundle: Bundle) -> str:
         for wmsg in bundle.warnings:
             lines.append(f"  - {wmsg}")
         lines.append("")
+    if any(g.mosaic for g in bundle.groups):
+        lines.append("Mosaic panels (the groups marked 'mosaic' below):")
+        lines.append("  each panel is one of the separate stacks of its mosaic. Stack every")
+        lines.append("  panel on its own, then stitch the stacked panels; never co-add")
+        lines.append("  frames from two panels.")
+        lines.append("")
     lines.append("Groups:")
     if not bundle.groups:
         lines.append("  (none — no local light subs were available to bundle)")
@@ -815,8 +859,10 @@ def readme_text(bundle: Bundle) -> str:
         kept = sum(1 for l in g.lights if l.keep)
         subs = (f"{len(g.lights)} subs" if bundle.keep_threshold is None
                 else f"{len(g.lights)} subs, {kept} kept")
+        mosaic = ("" if not g.mosaic else f"  mosaic {g.mosaic}"
+                  + (f" panel {g.panel}" if g.panel else ""))
         lines.append(f"  {g.dir}  ({subs})  "
-                     f"masters: {matched}  missing: {missing}")
+                     f"masters: {matched}  missing: {missing}{mosaic}")
     lines.append("")
     return "\n".join(lines)
 

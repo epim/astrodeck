@@ -191,8 +191,11 @@ export interface QuickFlowResult {
  *    flow (409 `dropped_steps`).
  *  - `acceptRecount`: continue under a different count mode, which recounts
  *    every banked frame (409 `recount`).
+ *  - `acceptReopen`: reopen the flow's COMPLETE session because the flow was
+ *    edited to owe more (409 `reopen`, #179). An answer, never a command: a
+ *    complete session that owes nothing starts fresh whatever this says.
  *
- *  The last four are CONTINUE's (#189 S1, spec 5.9; server `FlowRunBody`). The
+ *  The last five are CONTINUE's (#189 S1, spec 5.9; server `FlowRunBody`). The
  *  server asks them one at a time, so a re-post must carry every flag already
  *  accepted - `nextRunFlags` in flowsSlice is the one place that builds one. */
 export interface FlowRunFlags {
@@ -202,6 +205,7 @@ export interface FlowRunFlags {
   adopt?: boolean;
   acceptDropped?: boolean;
   acceptRecount?: boolean;
+  acceptReopen?: boolean;
 }
 
 /** Which ledger tonight's frames go into (server `run_flow`'s `session`).
@@ -224,6 +228,10 @@ export interface FlowRunSession {
     matched: number;
     unmatched: { frames?: number; reason?: string; target?: string }[];
   };
+  /** True only when this run reopened a session that was COMPLETE, because
+   *  the flow was edited to owe more and the operator said yes (server
+   *  `_continue_flow_session`, #179). Absent on every other answer. */
+  reopened?: boolean;
 }
 
 export interface FlowRunResult {
@@ -289,6 +297,18 @@ export interface FlowProgressSkipped {
   banked: number;
 }
 
+/** One panel a dormant session's standing set-aside record holds back
+ *  tonight (#727, WP-141): the panel's target id, its name and its 0-based
+ *  grid position. */
+export interface FlowProgressSetAside {
+  target_id: string;
+  name: string;
+  row: number | null;
+  col: number | null;
+  /** A centring set-aside that may still expire tonight. */
+  for_now: boolean;
+}
+
 /** One canvas node: `node_id` is the node's id, which is how a card finds its
  *  own block. */
 export interface FlowProgressBlock {
@@ -316,6 +336,11 @@ export interface FlowProgressBlock {
    *  the block (every panel skipped, or no coordinates), so no run will ever
    *  publish its group. */
   group_id?: string | null;
+  /** Present only on a mosaic block of a DORMANT session that holds a
+   *  standing set-aside record for tonight (#727, server `progress.
+   *  _set_aside_tonight`): the panels a RETRY would take back. Words and
+   *  flags only, `row` and `col` 0-based. */
+  set_aside?: FlowProgressSetAside[];
   /** A TARGET block's locked angle: the one every panel the plan holds is
    *  locked to (server `progress._block_lock`). Absent when any panel is
    *  unlocked or two panels disagree, and on a POOL block. */
@@ -558,11 +583,14 @@ export const flowsApi = {
    *  clear a dome refusal: everything else on that list costs frames, and a roof
    *  that will not close costs equipment.
    *
-   *  All six flags go on EVERY request, false unless set, so a body says in
-   *  full what was accepted and a reader of the request never has to know the
-   *  server's defaults. A bare boolean is the older `(id, acceptUnmapped,
-   *  force)` form, still accepted; the third argument is read only in that
-   *  form, and the object form carries its own `force`. */
+   *  The first six flags go on EVERY request, false unless set, so a body says
+   *  in full what was accepted and a reader of the request never has to know
+   *  the server's defaults. `accept_reopen` (#179) goes only when it is true:
+   *  a request that never meets that question keeps the body it always had,
+   *  byte for byte, which the Send-to-Wizard sheet's test pins. The server
+   *  reads its absence as false. A bare boolean is the older `(id,
+   *  acceptUnmapped, force)` form, still accepted; the third argument is read
+   *  only in that form, and the object form carries its own `force`. */
   run: (id: string, flags: FlowRunFlags | boolean = {}, force = false) => {
     const f: FlowRunFlags = typeof flags === "boolean"
       ? { acceptUnmapped: flags, force }
@@ -574,6 +602,7 @@ export const flowsApi = {
       adopt: f.adopt === true,
       accept_dropped: f.acceptDropped === true,
       accept_recount: f.acceptRecount === true,
+      ...(f.acceptReopen === true ? { accept_reopen: true } : {}),
     });
   },
 

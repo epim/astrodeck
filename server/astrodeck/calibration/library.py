@@ -13,8 +13,9 @@ is ``strip_rows × width × n_frames × 4 B`` — independent of full-frame size
 rather than a naive ``np.stack`` of every full frame."""
 from __future__ import annotations
 
+import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -24,7 +25,8 @@ from ..events import bus
 from ..gallery import THUMBS_DIRNAME, TRASH_DIRNAME
 from ..imaging.fitsio import write_name_card
 from ..persist import read_json_or, safe_id_path, write_json_atomic
-from .keys import CAL_FRAME_TYPES, CalKey, key_from_header, key_index_id
+from .keys import (CAL_FRAME_TYPES, ROTATOR_BIN_DEG, ROTATOR_CARD, CalKey,
+                   key_from_header, key_index_id, mech_angle)
 from .matcher import Gap, LightNeed, MasterRecord, MatchTolerance, coverage_for
 from .stacker import stack_frames
 
@@ -61,6 +63,15 @@ DARK_OK_CARD = "DARKOK"
 _MASTER_FIELDS = ("id", "frame_type", "exposure_s", "gain", "offset", "temp_c",
                   "binning", "filter", "frame_count", "path", "built_ts")
 
+#: Manifest fields a row MAY lack, read with ``.get`` and defaulting to None
+#: (#176). ``rotator_mech_deg`` is new: a manifest an older build wrote has no
+#: such key, and requiring it in ``_valid_row`` would drop every master the
+#: library holds from the list, so a library that was complete the day before
+#: an upgrade would read empty the day after. Anything added here must be
+#: something whose absence means "unknown", never a fact the row cannot do
+#: without.
+_OPTIONAL_MASTER_FIELDS = ("rotator_mech_deg",)
+
 
 def _rejected_by_dark_check(header) -> bool:
     """True when this frame's header says the dark check CONTRADICTED it.
@@ -87,6 +98,27 @@ class BuildReport:
 class _Bucket:
     key: CalKey
     paths: list[Path]
+    #: The ROTMECH of each frame that carries one (a flat's; #176). The
+    #: master's own angle is their circular mean.
+    angles: list[float] = field(default_factory=list)
+
+    def mean_angle(self) -> float | None:
+        return _circular_mean(self.angles)
+
+
+def _circular_mean(angles: list[float]) -> float | None:
+    """The mean of mechanical angles ON THE CIRCLE, in [0, 360), to a
+    milli-degree; None for none. 359.6 and 0.4 average to 0.0, where an
+    arithmetic mean says 180 and would stamp a master that matches a light
+    on the opposite side of the camera. The flats of one bin are within a
+    degree or two of each other, so the resultant is never near zero."""
+    if not angles:
+        return None
+    s = sum(math.sin(math.radians(a)) for a in angles)
+    c = sum(math.cos(math.radians(a)) for a in angles)
+    if s == 0.0 and c == 0.0:
+        return angles[0]
+    return round(math.degrees(math.atan2(s, c)) % 360.0, 3) % 360.0
 
 
 def _valid_row(r: object) -> bool:
@@ -145,6 +177,12 @@ def _write_master_fits(data: np.ndarray, out_path: Path, key: CalKey,
     # were shot through. A dark's or a bias's key has no filter, and the
     # helper writes no card for an empty one.
     write_name_card(h, "FILTER", key.filter)
+    if key.rotator_mech_deg is not None:
+        # The master's own angle (the mean of its frames', #176), under the
+        # card name a frame carries it as, so the file says what the manifest
+        # row says. Absent for a flat with no card, and for darks and bias.
+        h[ROTATOR_CARD] = (key.rotator_mech_deg,
+                           "Rotator mechanical angle (deg)")
     h["NFRAMES"] = (frame_count, "source frames stacked")
     h["MASTER"] = (True, "AstroDeck master calibration frame")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,7 +226,8 @@ def build_master_streamed(paths: list[Path], out_path: Path, *, method: str,
 
 
 def _distinct_ids(buckets: dict[tuple[str, str], _Bucket],
-                  temp_bin_width: float) -> dict[str, _Bucket]:
+                  temp_bin_width: float,
+                  rotator_bin_deg: float = ROTATOR_BIN_DEG) -> dict[str, _Bucket]:
     """``{id: bucket}`` in which no two ids are one file (#372).
 
     An id is a master's file name, and two ids that differ only in case are
@@ -221,7 +260,8 @@ def _distinct_ids(buckets: dict[tuple[str, str], _Bucket],
                 f"flats for filters {names} would have shared one master "
                 f"file, so each master's file name carries a digest of its "
                 f"filter's name", "calibration")
-        minted += [(key_index_id(b.key, temp_bin_width, digest=True), b)
+        minted += [(key_index_id(b.key, temp_bin_width, digest=True,
+                                 rotator_bin_deg=rotator_bin_deg), b)
                    for _kid, b in group]
     out: dict[str, _Bucket] = {}
     taken: dict[str, _Bucket] = {}
@@ -313,7 +353,8 @@ class CalibrationLibrary:
                 continue
             yield p, header, float(ts)
 
-    def _bucket_raw(self, temp_bin_width: float
+    def _bucket_raw(self, temp_bin_width: float,
+                    rotator_bin_deg: float = ROTATOR_BIN_DEG
                     ) -> tuple[dict[str, _Bucket], list[tuple[Path, str]]]:
         """``(buckets, rejected)`` — the frames that will be stacked, and the
         ones the dark check contradicted, each with the evidence sentence off
@@ -337,21 +378,27 @@ class CalibrationLibrary:
             if _rejected_by_dark_check(header):
                 rejected.append((p, str(header.get("DARKWHY", "")).strip()))
                 continue
-            ident = (key_index_id(key, temp_bin_width), key.filter)
+            ident = (key_index_id(key, temp_bin_width,
+                                  rotator_bin_deg=rotator_bin_deg), key.filter)
             b = buckets.get(ident)
             if b is None:
-                buckets[ident] = _Bucket(key=key, paths=[p])
+                b = buckets[ident] = _Bucket(key=key, paths=[p])
             else:
                 b.paths.append(p)
-        return _distinct_ids(buckets, temp_bin_width), rejected
+            if key.rotator_mech_deg is not None:
+                b.angles.append(key.rotator_mech_deg)
+        return _distinct_ids(buckets, temp_bin_width, rotator_bin_deg), rejected
 
-    def scan_raw(self, temp_bin_width: float) -> dict[str, list[Path]]:
-        buckets, _rejected = self._bucket_raw(temp_bin_width)
+    def scan_raw(self, temp_bin_width: float,
+                 rotator_bin_deg: float = ROTATOR_BIN_DEG
+                 ) -> dict[str, list[Path]]:
+        buckets, _rejected = self._bucket_raw(temp_bin_width, rotator_bin_deg)
         return {kid: b.paths for kid, b in buckets.items()}
 
     def build(self, *, sigma: float = 3.0, temp_bin_width: float = 5.0,
-              max_frames: int = 100, strip_rows: int = 64) -> BuildReport:
-        buckets, rejected = self._bucket_raw(temp_bin_width)
+              max_frames: int = 100, strip_rows: int = 64,
+              rotator_bin_deg: float = ROTATOR_BIN_DEG) -> BuildReport:
+        buckets, rejected = self._bucket_raw(temp_bin_width, rotator_bin_deg)
         if rejected:
             # Named, not counted. "3 frames skipped" tells the operator nothing
             # they can act on; the evidence sentence off the frame's own header
@@ -364,7 +411,12 @@ class CalibrationLibrary:
         records: list[MasterRecord] = []
         indexed = 0
         for kid, bucket in buckets.items():
-            key = bucket.key
+            # The bucket's key is its FIRST frame's; the master's own angle is
+            # the circular mean of every frame's in the bin (#176), which is
+            # what a light is compared with. Of the frames bucketed and not
+            # of the ones ``max_frames`` keeps: the subsample is even, and a
+            # bin is a degree or two wide.
+            key = replace(bucket.key, rotator_mech_deg=bucket.mean_angle())
             # ENFORCEMENT, not belt-and-braces. `kid` carries a filter name that
             # came out of a FITS header this process did not necessarily write
             # (_bucket_raw rglobs every *.fits under the capture dir), and the
@@ -402,7 +454,8 @@ class CalibrationLibrary:
                 id=kid, frame_type=key.frame_type, exposure_s=key.exposure_s,
                 gain=key.gain, offset=key.offset, temp_c=key.temp_c,
                 binning=key.binning, filter=key.filter, frame_count=n,
-                path=str(out), built_ts=time.time()))
+                path=str(out), built_ts=time.time(),
+                rotator_mech_deg=key.rotator_mech_deg))
         self._save_manifest(records)
         return BuildReport(masters_built=len(records), frames_indexed=indexed,
                            buckets=len(buckets))
@@ -410,7 +463,14 @@ class CalibrationLibrary:
     def list_masters(self) -> list[MasterRecord]:
         raw = read_json_or(self._manifest_path(), {})
         rows = raw.get("masters", []) if isinstance(raw, dict) else []
-        return [MasterRecord(**{k: r[k] for k in _MASTER_FIELDS})
+        # The optional fields through ``.get`` and the angle through the key's
+        # own reader (#176): a manifest an older build wrote has no
+        # ``rotator_mech_deg``, and a hand-edited one may hold junk, which
+        # reads as unknown rather than as an angle or as a reason to drop the
+        # master.
+        return [MasterRecord(**{k: r[k] for k in _MASTER_FIELDS},
+                             **{k: mech_angle(r.get(k))
+                                for k in _OPTIONAL_MASTER_FIELDS})
                 for r in rows if _valid_row(r)]
 
     def _save_manifest(self, records: list[MasterRecord]) -> None:

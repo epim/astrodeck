@@ -39,6 +39,7 @@ mount's altitude or azimuth: every geometric premise is asked as a yes or no.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 
@@ -875,8 +876,41 @@ async def test_a_calibration_hold_asks_the_mount_nothing_and_does_not_slew(
     (observed) -
         AssertionError: the calibration hold asked the mount ['is_parked',
         'slew', 'set_tracking']
+
+    INDEPENDENT OF THE STATUS POLL'S TIMING (#763). The sim hub's background
+    status loop reads the mount too (``get_tracking`` and the rest, every 2 s
+    of real time, the first read as soon as the hub connects), and the spies
+    below sit on the same simulated telescope, so they recorded the loop's
+    reads along with the hold's: ``asked == []`` held only because the first
+    poll's mount reads had finished before the spies were installed. The
+    integrator's change that moved the guide-camera probe to the top of
+    ``poll_status``, which delays those reads, made it fail three runs of three
+    with ``['get_tracking', ...]`` and was abandoned. The poll is cancelled
+    before the spies go in, as the clocked harness stops it for a night
+    (``Night._stop_the_status_poll``), so the only reader left is the hold.
+    Not "spy only the hold's own task": ``asyncio.wait_for`` runs its
+    argument in a task of its own before Python 3.12, and a call the hold made
+    through one would be missed.
+
+    MUTANT "the status poll's mount reads land after the spies" (``await
+    asyncio.sleep(0.01)`` as the first line of ``Hub.poll_status``, from a
+    byte backup of hub.py): the case as it stood before this change was RED
+    under it in every run, six of six (observed):
+        AssertionError: the calibration hold asked the mount
+        ['get_tracking', 'is_parked', 'time_to_meridian_flip', 'pier_side',
+        'get_tracking']
+    and the case as it stands now is GREEN under it, three of three, with the
+    calibration-guard mutant above still RED for its own words. (A 0.05 s
+    sleep does not show it: the hold is over before the poll reads at all,
+    so the delay that matters is the one that lands inside the hold, 1 to
+    20 ms.)
     """
     e = SequenceEngine(sim_hub)
+    poll = getattr(sim_hub, "_status_task", None)
+    if poll is not None and not poll.done():
+        poll.cancel()
+        await asyncio.gather(poll, return_exceptions=True)
+    assert poll is None or poll.done(), "premise: the hub's status poll is off"
     alpha = _target("Alpha", _ra_at(-3.0, time.time()), 40.0)
     darks = Target(name="darks", ra_hours=0.0, dec_deg=0.0, calibration=True,
                    center=False, autofocus_first=False,

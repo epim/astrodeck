@@ -503,12 +503,27 @@ class TestHeaderBridge:
         assert frame_from_header(light, ts=NOW) is None
         assert frame_from_header({}, ts=NOW) is None
 
-    def test_the_rotator_angle_comes_off_ROTATANG(self):
-        """The card ``imaging.fitsio`` writes as 'Rotator sky PA (deg)'. It is
-        the axis ``CalKey`` does not carry and the flats row turns on."""
-        f = frame_from_header({"IMAGETYP": "FLAT", "FILTER": "Ha", "ROTATANG": 23.4},
+    def test_the_rotator_angle_comes_off_ROTMECH(self):
+        """The card ``imaging.fitsio`` writes as 'Rotator mechanical angle
+        (deg)'. It is the axis ``CalKey`` carries (``rotator_mech_deg``) and
+        the flats row turns on.
+
+        RE-PINNED FOR BACKLOG WP-122 (#176, wave 16 integration): this read
+        ROTATANG, the SKY position angle. A flat is keyed and matched by the
+        metal's angle (a dust shadow follows the metal, and the sky angle
+        moves whenever the rotator is re-synced), so the row reads ROTMECH.
+        ROTATANG alone is a legacy frame whose mechanical angle is unknown,
+        and unknown is no constraint."""
+        f = frame_from_header({"IMAGETYP": "FLAT", "FILTER": "Ha", "ROTMECH": 23.4},
                               ts=NOW)
         assert f.rotation_deg == pytest.approx(23.4)
+
+    def test_a_sky_angle_alone_is_not_the_mechanical_angle(self):
+        """The legacy case: a flat that carries ROTATANG and no ROTMECH has an
+        UNKNOWN mechanical angle, not the sky angle read as one."""
+        f = frame_from_header({"IMAGETYP": "FLAT", "FILTER": "Ha", "ROTATANG": 23.4},
+                              ts=NOW)
+        assert f.rotation_deg is None
 
     def test_an_unreadable_angle_is_unknown_rather_than_zero(self):
         """Zero is a real camera angle. Coercing a junk card to 0.0 would claim

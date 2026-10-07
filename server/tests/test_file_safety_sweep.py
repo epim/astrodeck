@@ -223,7 +223,9 @@ def test_calibration_build_skips_a_bucket_it_cannot_contain(tmp_path, monkeypatc
     lib = lib_mod.CalibrationLibrary(lambda: captures)
     # (buckets, rejected) — the second element carries the frames the dark
     # check contradicted, which this test has none of.
-    monkeypatch.setattr(lib, "_bucket_raw", lambda _w: ({
+    # `build` passes the temperature bin AND the rotator bin (#176, WP-122), so
+    # the stub takes whatever it is handed.
+    monkeypatch.setattr(lib, "_bucket_raw", lambda _w, *_a, **_k: ({
         "../../escape": lib_mod._Bucket(
             key=CalKey(frame_type="BIAS", exposure_s=0.0, gain=0, offset=0,
                        temp_c=None, binning=1, filter=""),

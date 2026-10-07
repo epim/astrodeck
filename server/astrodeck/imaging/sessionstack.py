@@ -63,6 +63,20 @@ on purpose: the operator has told us the bandpass, there is no colour in the
 frame the filter did not put there, and the 2x2 mean is then exactly the
 luminance we want. See :func:`channels_for`.
 
+**One picture per panel, kept across visits.** A rotating mosaic hands the
+stacker a frame of panel A, then B, then C, and back to A. The stack used to
+have ONE identity, (target, run), and reseeded whenever it changed, so every hop
+threw the previous panel's pixels away and the live stack never built. Each
+panel is now its own slot (:class:`_Slot`), keyed by the target's id when the
+caller gives one (names repeat in a plan with no group; ids do not) and else by
+its name, and only the RUN is shared: a second run is a new picture for every
+panel. Reads default to the FOREGROUND panel, the one the latest accepted frame
+fed, so a one-target night is a one-slot stacker that answers exactly as the old
+single stack did. Memory is the price of keeping panels, so there is a budget
+(``max_bytes``): when an add takes the accumulators of every panel past it, the
+panel least recently ADDED to (never the one being fed) is released, named in
+``evicted``, and starts again if the run returns to it.
+
 **Backfill and the live path share one lock.** ``add`` is called from the
 sequence engine's frame loop (on the event loop thread) and, while a backfill
 runs, from a worker thread reading old subs off disk. Everything that touches
@@ -80,11 +94,12 @@ import math
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from PIL import Image
 
+from ..events import bus
 from .livestack import LiveStacker, _axis_slices
 from .registration import register
 
@@ -104,6 +119,13 @@ DEFAULT_PREVIEW_SIZE = 1600
 WHITE_PERCENTILE = 99.8
 #: asinh steepness. Higher lifts the faint end harder.
 ASINH_A = 30.0
+#: The most the accumulators of every panel may hold together, in bytes (decimal
+#: MB, the unit the arithmetic in the module docstring uses). One panel costs
+#: 19.6 MB per filter at the rig's 1563x1044 grid, so an LRGB panel is 78 MB and
+#: this holds seven of them; a 3x3 mosaic would ask for about 705 MB on a box
+#: with 4 GB, and the stack gives up its least recently fed panel before it
+#: takes the rest of the box.
+DEFAULT_MAX_BYTES = 600_000_000
 
 #: Every filter name this rig has ever written into a FITS header, folded onto
 #: the seven channels the composite understands. Anything unrecognised -- a
@@ -372,61 +394,126 @@ def stretch_channels(planes: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return out
 
 
-class SessionStacker:
-    """One ``LiveStacker`` per filter plus the composite over them.
+@dataclass
+class _Slot:
+    """One panel's picture: its accumulators and everything that describes them.
 
-    ``enabled`` is the user's switch and survives a run ending; ``reset`` throws
-    the pixels away. ``add`` is the only write path; it is called from the
-    sequence engine's frame loop once per ACCEPTED light, and from a backfill
-    worker for the subs the run accepted BEFORE the switch was flipped. Both
-    hold ``self._lock`` for the whole accumulation -- see the module docstring.
+    Everything that used to be a field of the stacker and described THE picture
+    lives here, so a panel is dropped, evicted or re-rendered by dealing with
+    one object and nothing about it can outlive it. That includes the render
+    cache: a cache held by the stacker had to be purged by hand wherever a
+    picture died, and the day one purge was missed a dead panel's pixels would
+    have kept serving under a live panel's name.
+    """
+    #: The panel key: the target's id when the caller gave one, else its name.
+    key: str
+    #: The name to show. Several panels can share one (ids are unique where
+    #: names can repeat in a plan with no group).
+    target: str
+    stacks: dict[str, LiveStacker] = field(default_factory=dict)
+    #: Frames already folded in, by :func:`frame_key`. See
+    #: :meth:`SessionStacker._holds` for why the check is across ALL slots.
+    seen: set[str] = field(default_factory=set)
+    factor: int = 0
+    #: The stacker's change counter as it stood at this panel's last accepted
+    #: add. Monotonic across panels, so it doubles as the "least recently
+    #: added" clock the budget evicts by.
+    seq: int = 0
+    #: Rendered JPEGs by CHANNEL, with ``None`` for the composite. One entry per
+    #: view the UI can ask for, because a client watching the Ha channel and a
+    #: client watching the composite are polling the same panel and a
+    #: single-slot cache would make each of them re-render the other's picture
+    #: on every poll.
+    cache: dict[str | None, tuple[bytes, dict]] = field(default_factory=dict)
+    #: ``(seq, size, rendered_at)`` per cache entry -- the age and the
+    #: identity have to be per entry too, or a fresh composite render would
+    #: make a stale channel render look current.
+    cache_stamp: dict[str | None, tuple[int, int, float]] = field(
+        default_factory=dict)
+    rendered_at: float = 0.0
+
+    def nbytes(self) -> int:
+        """What this panel's accumulators hold, measured and not estimated: the
+        three float32 planes of every channel's ``LiveStacker``. Read each time,
+        because a stacker that re-seeds (the frame size changed) swaps its
+        arrays."""
+        total = 0
+        for stack in self.stacks.values():
+            for name in ("_sum", "_sumsq", "_cov"):
+                plane = getattr(stack, name, None)
+                if plane is not None:
+                    total += int(plane.nbytes)
+        return total
+
+
+class SessionStacker:
+    """One ``LiveStacker`` per filter, per PANEL, plus the composite over them.
+
+    A panel is whatever the caller names with ``target`` / ``target_id`` -- a
+    mosaic tile, or simply the one target of an ordinary night. Each panel is a
+    :class:`_Slot` and they are kept across visits: a rotating mosaic comes
+    back to panel A with A's pixels still in it. The one identity that is NOT
+    per panel is the RUN (``session``): a second run is a new picture for every
+    panel, because the mount was re-centred and the rotator may have moved.
+
+    The FOREGROUND panel is the one the most recent accepted frame fed. Every
+    read that is not told a ``panel`` describes it, which is what makes a
+    one-target night answer exactly as it did when there was one picture.
+
+    ``enabled`` is the user's switch and survives a run ending; ``reset``
+    throws the pixels away. ``add`` is the only write path; it is called from
+    the sequence engine's frame loop once per ACCEPTED light, and from a
+    backfill worker for the subs the run accepted BEFORE the switch was
+    flipped. Both hold ``self._lock`` for the whole accumulation -- see the
+    module docstring.
     """
 
     def __init__(self, *, max_side: int = MAX_STACK_SIDE,
                  clip_sigma: float = 4.0,
-                 min_render_interval_s: float = MIN_RENDER_INTERVAL_S) -> None:
+                 min_render_interval_s: float = MIN_RENDER_INTERVAL_S,
+                 max_bytes: int = DEFAULT_MAX_BYTES) -> None:
         self.max_side = int(max_side)
         self.clip_sigma = float(clip_sigma)
         self.min_render_interval_s = float(min_render_interval_s)
+        #: The most the accumulators of ALL panels may hold together. Checked
+        #: after an add, from the measured arrays; see :meth:`_enforce_budget`.
+        self.max_bytes = int(max_bytes)
         self.enabled = False
-        #: Guards every read and write of the accumulators, the identity, the
-        #: seen-set and the render cache. RLock because ``add`` can call
-        #: ``reset`` and ``rgb_preview`` calls ``status``.
+        #: Guards every read and write of the slots, the identity and the
+        #: evicted list. RLock because ``add`` can call ``_drop_all`` and
+        #: ``rgb_preview`` calls ``status``.
         self._lock = threading.RLock()
-        self._stacks: dict[str, LiveStacker] = {}
-        #: Frames already folded in, by :func:`frame_key`. THE reason enabling,
-        #: disabling and re-enabling cannot double-count, and the reason a
-        #: backfill skips whatever the live path has already taken. A frame with
-        #: no key (a NINA sub, an unsaved capture) is stacked and not recorded:
-        #: there is nothing to compare a later sighting against.
-        self._seen: set[str] = set()
+        #: Panels by key, in the order they were first seen (which is the order
+        #: a chip row should show them in: a row that reshuffled at every hop
+        #: would be a row nobody could tap).
+        self._slots: dict[str, _Slot] = {}
+        #: The key of the foreground panel, or None before anything is stacked
+        #: and after every panel has been dropped.
+        self._fg: str | None = None
+        #: Names of panels whose pixels the budget released, in the order it
+        #: did so, each once. A panel that has since come back and restarted is
+        #: still listed: the point is that its count is not the night's.
+        self._evicted: list[str] = []
         #: Bumped by ``reset``/``stop``. A backfill worker carries the value it
         #: started with and gives up when it changes, so switching the stack off
         #: or pressing Reset stops the disk reads instead of filling a stack the
         #: operator just threw away.
         self._generation = 0
         self._backfill = BackfillProgress()
+        #: The foreground panel's display name, kept after a Reset so the empty
+        #: picture's caption still says what was cleared.
         self._target = ""
         #: Which RUN these pixels belong to (the engine's report id). A second
         #: run on the same target is a new picture -- the mount was re-centred,
         #: the rotator may have moved, and last night's stack is not this
-        #: night's -- so the identity is (target, run), not target alone.
+        #: night's -- so a run change drops EVERY panel.
         self._session = ""
-        self._factor = 0
         #: bumped on every accepted add, so a client can tell "the picture
-        #: changed" from "I polled again" without decoding the JPEG.
+        #: changed" from "I polled again" without decoding the JPEG. One
+        #: counter for the whole stacker: a per-panel counter could repeat a
+        #: value when the foreground flips from one panel to another and a
+        #: client would read two different pictures as unchanged.
         self._seq = 0
-        #: Rendered JPEGs by CHANNEL, with ``None`` for the composite. One
-        #: entry per view the UI can ask for, because a client watching the Ha
-        #: channel and a client watching the composite are polling the same
-        #: stacker and a single-slot cache would make each of them re-render
-        #: the other's picture on every poll.
-        self._cache: dict[str | None, tuple[bytes, dict]] = {}
-        #: ``(seq, size, rendered_at)`` per cache entry -- the age and the
-        #: identity have to be per entry too, or a fresh composite render would
-        #: make a stale channel render look current.
-        self._cache_stamp: dict[str | None, tuple[int, int, float]] = {}
-        self._rendered_at = 0.0
 
     # ------------------------------------------------------------- lifecycle
     def start(self) -> dict:
@@ -442,9 +529,13 @@ class SessionStacker:
         return self.status()
 
     def reset(self, target: str = "", session: str = "") -> dict:
-        """Throw the pixels away. The OPERATOR's reset (and ``stop``), so it
-        bumps the generation and any backfill in flight gives up -- carrying on
-        filling a stack somebody just cleared would undo the button press."""
+        """Throw EVERY panel's pixels away. The OPERATOR's reset (and ``stop``),
+        so it bumps the generation and any backfill in flight gives up -- carrying
+        on filling a stack somebody just cleared would undo the button press.
+
+        ``session`` is the run to keep (the hub passes the current one, so the
+        next frame of the same run is not a second reset), and ``target`` is the
+        caption the emptied picture keeps."""
         with self._lock:
             self._generation += 1
             if not self._backfill.running:
@@ -454,47 +545,61 @@ class SessionStacker:
             # it a fresh zeroed block instead would leave the operator with
             # "1 of 0" -- the worker's remaining steps landing on a counter that
             # never knew about them.
-            self._reseed(target, session)
+            self._drop_all(session)
+            self._target = target
             return self.status()
 
-    def _reseed(self, target: str, session: str) -> None:
-        """Drop the pixels and adopt a new (target, run) identity.
+    def _drop_all(self, session: str) -> None:
+        """Release every panel and adopt ``session`` as the run.
 
-        Deliberately does NOT bump the generation: ``add`` calls this the first
-        time a frame names a target, which on a freshly started stack is EVERY
-        first frame -- including the backfill's own. Aborting a backfill on the
-        reseed its own first frame caused would make the feature a one-frame
-        no-op. The worker watches the identity instead (see ``run_backfill``).
+        Replaces the old ``_reseed``, which also adopted a TARGET: the target is
+        no longer part of the identity, only the run is. Deliberately does NOT
+        bump the generation: ``add`` calls this the first time a frame names a
+        new run, which on a freshly started stack is EVERY first frame --
+        including the backfill's own. Aborting a backfill on the drop its own
+        first frame caused would make the feature a one-frame no-op. The worker
+        watches the run instead (see ``run_backfill``).
         """
-        self._stacks.clear()
-        self._seen.clear()
-        self._target = target
+        self._slots.clear()
+        self._evicted.clear()
+        self._fg = None
+        self._target = ""
         self._session = session
-        self._factor = 0
         self._seq += 1
-        self._cache.clear()
-        self._cache_stamp.clear()
-        self._rendered_at = 0.0
 
     # ------------------------------------------------------------- accumulate
+    @staticmethod
+    def _panel_key(name: str, target_id: str | None) -> str:
+        """The target's id when it has one, else its name. Ids are unique where
+        names can repeat, so two targets both called "M42" in a plan with no
+        group are two panels rather than one picture of both."""
+        return str(target_id) if target_id else name
+
     def add(self, data: np.ndarray, filter_name: str | None,
             exposure_s: float, *, target: str | None = None,
             session: str | None = None,
             bayer_pattern: str | None = None,
-            key: str | None = None) -> str | None:
-        """Fold one accepted light into its filter's stack.
+            key: str | None = None,
+            target_id: str | None = None) -> str | None:
+        """Fold one accepted light into its panel's, and its filter's, stack.
 
         Returns the channels it landed on joined by ``+`` (``"L"``, ``"Ha"``,
         or ``"R+G+B"`` for a debayered OSC sub), or None when nothing was
         stacked -- disabled, no pixels, no stars to register on, or a frame this
-        stacker has already consumed. A target or run different from the one in
-        hand resets first: a stack that spans two objects is not a picture of
-        either.
+        stacker has already consumed. The panel is ``target_id`` when given,
+        else ``target``; with neither it is the foreground panel. A RUN
+        different from the one in hand drops every panel first: a stack that
+        spans two nights is not a picture of either. A different target is just
+        a different panel and costs the others nothing.
 
         ``bayer_pattern`` is the sub's own mosaic (``CameraFrame.bayer_pattern``
         live, ``BAYERPAT`` off disk); pass it through :func:`effective_bayer`
         with the frame's binning first. ``key`` is the frame's identity on disk
-        and is what makes a second sighting a no-op -- see :attr:`_seen`.
+        and is what makes a second sighting a no-op -- see :meth:`_holds`.
+
+        A panel exists only once a frame has LANDED in it. A refused first frame
+        (no stars, cloud) leaves no empty panel behind and does not take the
+        foreground: an empty picture is not something to show.
 
         THE WHOLE BODY IS UNDER THE LOCK. The de-duplication check and the
         accumulation it guards have to be one critical section, or a backfill
@@ -508,39 +613,121 @@ class SessionStacker:
         if arr.ndim != 2 or arr.size == 0:
             return None
         ident = frame_key(key)
+        released: list[str] = []
         with self._lock:
-            if ident and ident in self._seen:
+            if ident and self._holds(ident):
                 return None
-            new_target = self._target if target is None else (target or "")
+            # Which panel, decided BEFORE a run change can clear the foreground
+            # it would otherwise have defaulted to.
+            if target is None and not target_id:
+                held = self._slots.get(self._fg) if self._fg is not None else None
+                name = held.target if held is not None else self._target
+                pkey = self._fg if self._fg is not None else name
+            else:
+                name = target or ""
+                pkey = self._panel_key(name, target_id)
             new_session = self._session if session is None else (session or "")
-            if (new_target, new_session) != (self._target, self._session):
-                self._reseed(new_target, new_session)
-            if not self._factor:
-                self._factor = downsample_factor(arr.shape,
-                                                 max_side=self.max_side)
-            factor = self._factor
+            reseeded = new_session != self._session
+            if reseeded:
+                self._drop_all(new_session)
 
+            slot = self._slots.get(pkey)
+            fresh = slot is None
+            if fresh:
+                slot = _Slot(key=pkey, target=name)
+            if not slot.factor:
+                slot.factor = downsample_factor(arr.shape,
+                                                max_side=self.max_side)
             planes, shared = self._planes(arr, filter_name, bayer_pattern,
-                                          factor)
+                                          slot.factor)
             landed: list[str] = []
             for ch, small in planes.items():
-                stack = self._stacks.get(ch)
+                stack = slot.stacks.get(ch)
                 if stack is None:
                     stack = LiveStacker(clip_sigma=self.clip_sigma)
-                    self._stacks[ch] = stack
+                    slot.stacks[ch] = stack
                 outcome = stack.add(small, float(exposure_s or 0.0),
                                     stars=shared)
                 if outcome.accepted:
                     landed.append(ch)
             if not landed:
+                # A fresh slot built for this frame is simply never inserted.
                 return None
             # Recorded only on a frame that actually contributed, so a sub the
             # stacker refused can be retried by a later backfill rather than
             # being permanently written off.
             if ident:
-                self._seen.add(ident)
+                slot.seen.add(ident)
+            if fresh and not reseeded:
+                # A new panel is a new picture on screen, which the old single
+                # stack announced by reseeding. Keeps `seq` moving exactly as
+                # it did for the first frame of a night.
+                self._seq += 1
             self._seq += 1
-            return "+".join(landed)
+            slot.seq = self._seq
+            if fresh:
+                self._slots[pkey] = slot
+            self._fg = pkey
+            self._target = slot.target
+            result = "+".join(landed)
+            released = self._enforce_budget(pkey)
+        # Said outside the lock: the bus is not ours and a subscriber must never
+        # be able to hold up the frame loop while the accumulators are locked.
+        for name in released:
+            bus.log("warning",
+                    f"Session stack: released the {name} panel to stay under "
+                    f"the {self.max_bytes // 1_000_000} MB memory budget; it "
+                    "restarts when the run returns to it", "capture")
+        return result
+
+    def _holds(self, ident: str) -> bool:
+        """Whether ANY panel already holds this frame. Call under the lock.
+
+        Across all slots, not the panel being fed. A frame is a file on disk and
+        belongs to one panel; if the backfill and the live path ever named its
+        panel differently (an id on one side, a name on the other) a per-slot
+        check would fold one photograph into two pictures.
+        """
+        return any(ident in s.seen for s in self._slots.values())
+
+    def _held(self) -> int:
+        """Bytes held by every panel's accumulators. Call under the lock."""
+        return sum(s.nbytes() for s in self._slots.values())
+
+    def held_bytes(self) -> int:
+        with self._lock:
+            return self._held()
+
+    def _enforce_budget(self, fed: str) -> list[str]:
+        """Release panels, least recently ADDED first, until the accumulators fit
+        :attr:`max_bytes`. Returns the names newly recorded as evicted, for the
+        caller to log once the lock is released. Call under the lock.
+
+        Never the panel just fed: it is the picture being built, and a budget
+        smaller than one panel would otherwise release the only thing there is.
+        Such a panel simply exceeds the budget, which is the honest outcome.
+
+        The budget is read AFTER the add, from the arrays themselves, so the
+        figure is measured and cannot drift from what the frame really cost. The
+        price is that the peak is the budget plus one panel's worth for the
+        length of one add, which is a transient and not a leak.
+
+        The evicted panel reseeds on its next visit: today's behaviour, for
+        that panel only. A mosaic with more panels than the budget holds will
+        reseed at every visit under a round-robin, because the panel least
+        recently added is always the one the rotation is about to come back to.
+        """
+        newly: list[str] = []
+        while self._held() > self.max_bytes:
+            victims = [s for k, s in self._slots.items() if k != fed]
+            if not victims:
+                break
+            victim = min(victims, key=lambda s: s.seq)
+            del self._slots[victim.key]
+            if victim.target not in self._evicted:
+                self._evicted.append(victim.target)
+                newly.append(victim.target)
+        return newly
 
     def _planes(self, arr: np.ndarray, filter_name: str | None,
                 bayer_pattern: str | None, factor: int
@@ -591,14 +778,14 @@ class SessionStacker:
         return self._backfill
 
     def has_frame(self, key: str | None) -> bool:
-        """Whether this sub is already in the stack. A cheap pre-check so a
-        backfill can skip the disk read; ``add`` re-checks under the lock, which
-        is the check that actually decides."""
+        """Whether this sub is already in the stack, in any panel. A cheap
+        pre-check so a backfill can skip the disk read; ``add`` re-checks under
+        the lock, which is the check that actually decides."""
         ident = frame_key(key)
         if not ident:
             return False
         with self._lock:
-            return ident in self._seen
+            return self._holds(ident)
 
     def backfill_begin(self, total: int) -> BackfillProgress:
         """Arm the progress counter for a pass over ``total`` frames."""
@@ -643,45 +830,52 @@ class SessionStacker:
 
     @property
     def target(self) -> str:
+        """The foreground panel's name."""
         return self._target
 
     @property
     def session(self) -> str:
         return self._session
 
-    def channels(self) -> list[ChannelStatus]:
+    def _resolve(self, panel: str | None) -> _Slot | None:
+        """The slot a ``panel`` argument means, or None. Call under the lock.
+
+        No panel (None or empty) is the foreground. Otherwise the panel KEY
+        wins, so an id always means the panel it names; failing that a target
+        NAME, which is what a hand-typed URL will carry. Where several panels
+        share the name the most recently added answers, because that is the one
+        the run is shooting.
+        """
+        if panel is None or panel == "":
+            return self._slots.get(self._fg) if self._fg is not None else None
+        want = str(panel)
+        hit = self._slots.get(want)
+        if hit is not None:
+            return hit
+        named = [s for s in self._slots.values() if s.target == want]
+        return max(named, key=lambda s: s.seq) if named else None
+
+    def has_panel(self, panel: str | None) -> bool:
+        """Whether ``panel`` names something stacked (None = the foreground)."""
         with self._lock:
-            out = [ChannelStatus(ch, s.frames, s.integrated_s, s.rejected)
-                   for ch, s in self._stacks.items()]
+            return self._resolve(panel) is not None
+
+    def _channels_of(self, slot: _Slot | None) -> list[ChannelStatus]:
+        if slot is None:
+            return []
+        out = [ChannelStatus(ch, s.frames, s.integrated_s, s.rejected)
+               for ch, s in slot.stacks.items()]
         out.sort(key=lambda c: CHANNEL_ORDER.index(c.channel)
                  if c.channel in CHANNEL_ORDER else 99)
         return out
 
-    def status(self) -> dict:
+    def channels(self, panel: str | None = None) -> list[ChannelStatus]:
         with self._lock:
-            chans = self.channels()
-            age = (round(time.time() - self._rendered_at, 1)
-                   if self._rendered_at else None)
-            return {
-                "enabled": self.enabled,
-                "target": self._target,
-                "session": self._session,
-                "seq": self._seq,
-                "channels": [c.to_dict() for c in chans],
-                "frames": sum(c.frames for c in chans),
-                "integrated_s": round(sum(c.integrated_s for c in chans), 1),
-                "rejected": sum(c.rejected for c in chans),
-                "mode": self.mode(),
-                "downsample": self._factor,
-                "has_image": bool(chans),
-                "render_age_s": age,
-                "backfill": self._backfill.to_dict(),
-            }
+            return self._channels_of(self._resolve(panel))
 
-    def mode(self) -> str | None:
-        """What kind of composite the channels in hand make: broadband colour,
-        narrowband colour, or a single-channel grey. None when empty."""
-        have = {c.channel for c in self.channels()}
+    @staticmethod
+    def _mode_of(chans: list[ChannelStatus]) -> str | None:
+        have = {c.channel for c in chans}
         if not have:
             return None
         if have & {"R", "G", "B"}:
@@ -690,12 +884,70 @@ class SessionStacker:
             return "narrowband"
         return "mono"
 
+    def mode(self, panel: str | None = None) -> str | None:
+        """What kind of composite the channels in hand make: broadband colour,
+        narrowband colour, or a single-channel grey. None when empty."""
+        with self._lock:
+            return self._mode_of(self._channels_of(self._resolve(panel)))
+
+    def _panels(self) -> list[dict]:
+        out = []
+        for s in self._slots.values():
+            chans = self._channels_of(s)
+            out.append({"key": s.key, "target": s.target,
+                        "frames": sum(c.frames for c in chans),
+                        "integrated_s": round(sum(c.integrated_s
+                                                  for c in chans), 1),
+                        "seq": s.seq})
+        return out
+
+    def _status_locked(self, slot: _Slot | None,
+                       asked: str | None = None) -> dict:
+        chans = self._channels_of(slot)
+        rendered_at = slot.rendered_at if slot is not None else 0.0
+        age = round(time.time() - rendered_at, 1) if rendered_at else None
+        return {
+            "enabled": self.enabled,
+            "target": (slot.target if slot is not None
+                       else (asked or self._target)),
+            "session": self._session,
+            "seq": slot.seq if slot is not None else self._seq,
+            "channels": [c.to_dict() for c in chans],
+            "frames": sum(c.frames for c in chans),
+            "integrated_s": round(sum(c.integrated_s for c in chans), 1),
+            "rejected": sum(c.rejected for c in chans),
+            "mode": self._mode_of(chans),
+            "downsample": slot.factor if slot is not None else 0,
+            "has_image": bool(chans),
+            "render_age_s": age,
+            "backfill": self._backfill.to_dict(),
+            "panels": self._panels(),
+            "evicted": list(self._evicted),
+        }
+
+    def status(self, panel: str | None = None) -> dict:
+        """The stack as one panel's picture (default: the foreground), plus the
+        list of every panel.
+
+        Every top-level key is the one it always was and describes the panel
+        asked for, so a client that has never heard of panels reads the
+        foreground exactly as it read the single picture. ``panels`` and
+        ``evicted`` are the two additions, and they describe the whole stack
+        whichever panel was asked about. A panel that is not stacked reads as an
+        empty picture rather than raising: this is what a poll gets for a panel
+        the budget released between two polls.
+        """
+        with self._lock:
+            return self._status_locked(self._resolve(panel),
+                                       asked=panel or None)
+
     # -------------------------------------------------------------- composite
-    def _aligned_planes(self) -> tuple[dict[str, np.ndarray], int, int] | None:
-        """Every channel's running mean, on one grid, shifted onto the busiest
-        channel's reference frame."""
+    def _aligned_planes(self, slot: _Slot
+                        ) -> tuple[dict[str, np.ndarray], int, int] | None:
+        """Every channel of one panel's running mean, on one grid, shifted onto
+        the busiest channel's reference frame."""
         means: dict[str, np.ndarray] = {}
-        for ch, s in self._stacks.items():
+        for ch, s in slot.stacks.items():
             m = s.mean()
             if m is not None:
                 means[ch] = m
@@ -703,11 +955,11 @@ class SessionStacker:
             return None
         # The busiest channel is the reference: it has the most frames behind
         # its constellation and the least to gain from being moved.
-        primary = max(means, key=lambda c: (self._stacks[c].frames,
+        primary = max(means, key=lambda c: (slot.stacks[c].frames,
                                             -CHANNEL_ORDER.index(c)
                                             if c in CHANNEL_ORDER else -99))
         h, w = means[primary].shape
-        ref_stars = getattr(self._stacks[primary], "_ref_stars", [])
+        ref_stars = getattr(slot.stacks[primary], "_ref_stars", [])
 
         out: dict[str, np.ndarray] = {}
         for ch, m in means.items():
@@ -722,7 +974,7 @@ class SessionStacker:
                 out[ch] = m
                 continue
             reg = None
-            cur_stars = getattr(self._stacks[ch], "_ref_stars", [])
+            cur_stars = getattr(slot.stacks[ch], "_ref_stars", [])
             if ref_stars and cur_stars:
                 try:
                     reg = register(ref_stars, cur_stars)
@@ -742,8 +994,9 @@ class SessionStacker:
             out[ch] = shifted
         return out, h, w
 
-    def compose(self) -> np.ndarray | None:
-        """The composite as float RGB in [0,1], shape (h, w, 3). None when empty.
+    def compose(self, panel: str | None = None) -> np.ndarray | None:
+        """One panel's composite as float RGB in [0,1], shape (h, w, 3). None
+        when the panel is empty or not stacked (default: the foreground).
 
         L is folded in last and as a LUMINANCE SUBSTITUTION: each channel gets
         ``L - y`` added, where ``y`` is the composite's own luminance. The
@@ -753,7 +1006,16 @@ class SessionStacker:
         line produces grey rather than needing a second code path.
         """
         with self._lock:
-            got = self._aligned_planes()
+            slot = self._resolve(panel)
+        if slot is None:
+            return None
+        return self._compose_slot(slot)
+
+    def _compose_slot(self, slot: _Slot) -> np.ndarray | None:
+        with self._lock:
+            if self._slots.get(slot.key) is not slot:
+                return None               # dropped or released since it was named
+            got = self._aligned_planes(slot)
             if got is None:
                 return None
             planes, h, w = got
@@ -777,27 +1039,29 @@ class SessionStacker:
         return np.clip(rgb, 0.0, 1.0)
 
     # ------------------------------------------------------------ render cache
-    def _cached(self, key: str | None, size: int,
+    def _cached(self, slot: _Slot, key: str | None, size: int,
                 now: float) -> tuple[bytes, dict] | None:
-        """The stored render for one view, or None. Call under the lock.
+        """The stored render of one panel's view, or None. Call under the lock.
 
         The rule is the one the composite has always used, applied per entry: a
-        render is reused until a frame is added AND ``min_render_interval_s``
-        has passed since THAT entry was built, so a phone polling every second
-        costs one dict lookup rather than a percentile over a few megapixels.
+        render is reused until a frame is added to THIS PANEL AND
+        ``min_render_interval_s`` has passed since THAT entry was built, so a
+        phone polling every second costs one dict lookup rather than a
+        percentile over a few megapixels, and a frame landing on panel B is not
+        a reason to re-render panel A.
         """
-        got = self._cache.get(key)
+        got = slot.cache.get(key)
         if got is None:
             return None
-        seq, cached_size, at = self._cache_stamp.get(key, (-1, 0, 0.0))
+        seq, cached_size, at = slot.cache_stamp.get(key, (-1, 0, 0.0))
         if cached_size != int(size):
             return None
-        if seq == self._seq or now - at < self.min_render_interval_s:
+        if seq == slot.seq or now - at < self.min_render_interval_s:
             return got
         return None
 
-    def _store(self, key: str | None, size: int, seq: int, now: float,
-               payload: tuple[bytes, dict]) -> tuple[bytes, dict]:
+    def _store(self, slot: _Slot, key: str | None, size: int, seq: int,
+               now: float, payload: tuple[bytes, dict]) -> tuple[bytes, dict]:
         """Keep one render. Call under the lock.
 
         ``seq`` is the value read BEFORE the render started, not the one that
@@ -805,42 +1069,48 @@ class SessionStacker:
         picture with a frame it does not contain, and the next poll would be
         served the stale one as current.
         """
-        self._cache[key] = payload
-        self._cache_stamp[key] = (int(seq), int(size), now)
-        self._rendered_at = now
+        slot.cache[key] = payload
+        slot.cache_stamp[key] = (int(seq), int(size), now)
+        slot.rendered_at = now
         # Bound the cache at one composite plus one per channel. It cannot grow
         # past that by construction -- the keys are None and the output of
         # `channel_for`, which is always one of CHANNEL_ORDER -- so this loop is
         # unreachable today. It is here so that adding an alias that folds onto
         # an eighth channel cannot quietly turn the cache into a leak, and it
         # drops the entry from BOTH dicts rather than only flagging it.
-        while len(self._cache) > len(CHANNEL_ORDER) + 1:
-            oldest = min(self._cache,
-                         key=lambda k: self._cache_stamp.get(k, (0, 0, 0.0))[2])
-            self._cache.pop(oldest, None)
-            self._cache_stamp.pop(oldest, None)
+        while len(slot.cache) > len(CHANNEL_ORDER) + 1:
+            oldest = min(slot.cache,
+                         key=lambda k: slot.cache_stamp.get(k, (0, 0, 0.0))[2])
+            slot.cache.pop(oldest, None)
+            slot.cache_stamp.pop(oldest, None)
         return payload
 
-    def rgb_preview(self, size: int = DEFAULT_PREVIEW_SIZE, *,
-                    quality: int = 85) -> tuple[bytes, dict] | None:
-        """(JPEG bytes, meta) for the composite, or None when nothing is stacked.
+    def rgb_preview(self, size: int = DEFAULT_PREVIEW_SIZE,
+                    panel: str | None = None, *, quality: int = 85
+                    ) -> tuple[bytes, dict] | None:
+        """(JPEG bytes, meta) for one panel's composite, or None when nothing is
+        stacked there (default panel: the foreground).
 
-        Cached under the key ``None`` -- see :meth:`_cached`.
+        Cached under the key ``None`` in that panel's own cache -- see
+        :meth:`_cached`. ``meta["panel"]`` is the key of the panel rendered.
         """
         now = time.time()
         with self._lock:
-            hit = self._cached(None, size, now)
+            slot = self._resolve(panel)
+            if slot is None:
+                return None
+            hit = self._cached(slot, None, size, now)
             if hit is not None:
                 return hit
             # The seq the render is ABOUT to be built from, read before the lock
             # is dropped.
-            seq_at_start = self._seq
+            seq_at_start = slot.seq
 
-        rgb = self.compose()
+        rgb = self._compose_slot(slot)
         if rgb is None:
             with self._lock:
-                self._cache.pop(None, None)
-                self._cache_stamp.pop(None, None)
+                slot.cache.pop(None, None)
+                slot.cache_stamp.pop(None, None)
             return None
         arr8 = (rgb * 255.0 + 0.5).astype(np.uint8)
         pil = Image.fromarray(arr8, mode="RGB")
@@ -852,14 +1122,23 @@ class SessionStacker:
         pil.save(buf, format="JPEG", quality=quality, optimize=False)
 
         with self._lock:
-            meta = dict(self.status())
-            meta.update({"width": pil.width, "height": pil.height})
-            return self._store(None, size, seq_at_start, now,
+            if self._slots.get(slot.key) is not slot:
+                # A reset, a new run or the budget took the panel while this
+                # was rendering. The picture is of a stack that no longer
+                # exists, so it must not be cached as the current one, and it
+                # must not be returned either.
+                return None
+            meta = self._status_locked(slot)
+            meta.update({"width": pil.width, "height": pil.height,
+                         "panel": slot.key})
+            return self._store(slot, None, size, seq_at_start, now,
                                (buf.getvalue(), meta))
 
     def channel_preview(self, channel: str, size: int = DEFAULT_PREVIEW_SIZE,
-                        *, quality: int = 85) -> tuple[bytes, dict] | None:
-        """(JPEG bytes, meta) for ONE channel's running mean, or None.
+                        panel: str | None = None, *, quality: int = 85
+                        ) -> tuple[bytes, dict] | None:
+        """(JPEG bytes, meta) for ONE channel's running mean in one panel, or
+        None (default panel: the foreground).
 
         The accumulators were always per channel; this is the render that was
         missing, so "show me just Ha" stops being a colour filter over the
@@ -873,8 +1152,8 @@ class SessionStacker:
         asked in the operator's vocabulary and has to be told the answer in the
         stacker's.
 
-        None means REFUSE, and the route turns it into a 404. Two ways to get
-        there and both matter:
+        None means REFUSE, and the route turns it into a 404. Three ways to get
+        there and all matter:
 
           * an empty name is not "the L channel", it is "no channel asked for".
             ``channel_for("")`` is ``L``, so folding it would serve one filter
@@ -882,7 +1161,8 @@ class SessionStacker:
           * a channel with no accumulator (``Sii`` on a night that shot none)
             has no pixels. Rendering it anyway would produce a black frame,
             which on a monitor page at 3am is indistinguishable from a dead
-            sensor or a closed shutter.
+            sensor or a closed shutter;
+          * a panel that is not stacked has no channels at all.
         """
         name = (channel or "").strip()
         if not name:
@@ -890,15 +1170,16 @@ class SessionStacker:
         key = channel_for(name)
         now = time.time()
         with self._lock:
-            if key not in self._stacks:
+            slot = self._resolve(panel)
+            if slot is None or key not in slot.stacks:
                 return None
-            hit = self._cached(key, size, now)
+            hit = self._cached(slot, key, size, now)
             if hit is not None:
                 return hit
-            mean = self._stacks[key].mean()
+            mean = slot.stacks[key].mean()
             if mean is None:
                 return None
-            seq_at_start = self._seq
+            seq_at_start = slot.seq
 
         # Out of the lock from here: `LiveStacker.mean()` builds a fresh array,
         # so a frame landing mid-render changes the NEXT picture, not this one.
@@ -927,17 +1208,18 @@ class SessionStacker:
         pil.save(buf, format="JPEG", quality=quality, optimize=False)
 
         with self._lock:
-            stack = self._stacks.get(key)
-            if stack is None:
-                # A reset landed while this was rendering. The picture is of a
-                # stack that no longer exists, so it must not be cached as the
-                # current one -- and it must not be returned either.
+            stack = slot.stacks.get(key)
+            if stack is None or self._slots.get(slot.key) is not slot:
+                # A reset (or the budget) landed while this was rendering. The
+                # picture is of a stack that no longer exists, so it must not
+                # be cached as the current one -- and it must not be returned
+                # either.
                 return None
-            meta = dict(self.status())
+            meta = self._status_locked(slot)
             meta.update({
                 "width": pil.width, "height": pil.height,
-                "channel": key,
-                # THIS channel's counts, replacing the whole-stack totals
+                "channel": key, "panel": slot.key,
+                # THIS channel's counts, replacing the whole-panel totals
                 # `status()` carries. The caption under a single-channel view
                 # has to say how much went into that channel; reporting the
                 # night's total beside one filter's pixels is the caption
@@ -946,5 +1228,5 @@ class SessionStacker:
                 "integrated_s": round(stack.integrated_s, 1),
                 "rejected": stack.rejected,
             })
-            return self._store(key, size, seq_at_start, now,
+            return self._store(slot, key, size, seq_at_start, now,
                                (buf.getvalue(), meta))

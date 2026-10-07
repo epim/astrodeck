@@ -23,7 +23,10 @@ behind, which must never be picked up again and never written:
 
     newest      chip names      Run
     dormant     the newest      continues the newest
-    complete    the newest      starts fresh (reopening one is I-30)
+    complete    the newest      starts fresh, because its flow owes nothing
+                                more (a flow edited to owe more is ASKED
+                                about first: #179, WP-120, held by
+                                test_w16_reopen_complete_session.py)
     abandoned   nothing (null)  starts fresh
 
 THE HARNESS is ``test_flows_continue.py``'s ``rig``: the real app over ASGI on
@@ -160,6 +163,12 @@ async def test_the_chip_and_run_pick_the_same_session(rig, newest):
         assert r.status_code == 200, r.text
     new = session_store.load(new_id)
     assert new.status == newest, "premise: the newer session's status"
+    if newest == "complete":
+        # The row is the control for "a complete session starts fresh", which
+        # holds for a flow that owes nothing more. One that owed more would be
+        # asked about instead (WP-120), and this test would then exercise a
+        # different rule.
+        assert new.owed() == 0, "premise: the complete session owes nothing"
     assert new.created_ts > old.created_ts, "premise: the newer one is newer"
     assert session_store.load(old.id).status == "dormant"
 
@@ -173,8 +182,9 @@ async def test_the_chip_and_run_pick_the_same_session(rig, newest):
     # What each half must say, case by case (the table in the module
     # docstring). Together they are the agreement: Run continues the session
     # the chip names exactly when that session is dormant, and otherwise
-    # starts fresh. The chip is checked first so a failure names the half
-    # that broke.
+    # starts fresh (a complete one whose flow owes more is asked about first;
+    # the flow here is unedited, so this one owes nothing). The chip is
+    # checked first so a failure names the half that broke.
     if newest == "abandoned":
         assert chip is None, "the chip named a session Run will not continue"
     else:

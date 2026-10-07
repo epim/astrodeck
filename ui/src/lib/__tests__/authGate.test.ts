@@ -456,7 +456,7 @@ const STORE_ACTIONS: string[] = [
   // is classified in ClearedRigState, not here.
   "flowsLoadLibrary", "flowsOpen", "flowsCloseEditor", "flowsSave",
   "flowsAddNode", "flowsMoveNode", "flowsSetParam", "flowsDeleteSel",
-  "flowsConnect", "flowsSetName",
+  "flowsConnect", "flowsSetName", "flowsUndo", "flowsRedo",
   "flowsSelect", "flowsSetEditNode",
   "flowsSetPan", "flowsSetZoom", "flowsFit",
   "flowsBeginWire", "flowsMoveWire", "flowsEndWire", "flowsTapPort",
