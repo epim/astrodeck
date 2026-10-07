@@ -18,9 +18,12 @@ That is issue #137's suggested fix item 1 exactly: quiet on the first tick,
 one warning once the outage has run ``BLIND_WARN_AFTER`` ticks, then a
 repeating error every ``BLIND_LOG_EVERY`` ticks from ``BLIND_ERROR_AFTER`` on.
 Items 2-4 of the issue (last-known-position fallback and a park attempt while
-blind, publishing ``blind_since`` on ``/api/safety/state``) touch files this
-WP does not own (``hub.py``, ``api/app.py``) and are left for the issue to
-stay open against.
+blind, publishing ``blind_since`` on ``/api/safety/state``) touched files that
+WP did not own and were left for the issue to stay open against. They are
+built by WP-87 in ``test_w14_sun_watch_blind_fallback.py``, which also moves
+the dropped-link branch (a telescope object that is not ``connected``) onto
+the same escalating clock; this file's cases are unchanged and still guard the
+``get_position``-failure path.
 
 Shares its rig/config fixtures with ``test_sun_watch.py`` (rootdir-relative
 import, the pattern already used across this suite, e.g.

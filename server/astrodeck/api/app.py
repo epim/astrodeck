@@ -5410,11 +5410,19 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/safety/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def safety_state():
-        """``{connected, reading|null, streak, stale}`` for the Monitor/Settings
-        safety widget. ``reading`` is the hub's CACHED own-cadence read (never an
-        inline ``is_safe()`` — C1-12); ``streak`` is the engine's consecutive
-        same-verdict count (the gate's hysteresis), read defensively so this lane
-        stays decoupled from the engine lane landing its counters."""
+        """``{connected, reading|null, streak, stale, sun_watch}`` for the
+        Monitor/Settings safety widget. ``reading`` is the hub's CACHED
+        own-cadence read (never an inline ``is_safe()`` — C1-12); ``streak`` is
+        the engine's consecutive same-verdict count (the gate's hysteresis), read
+        defensively so this lane stays decoupled from the engine lane landing its
+        counters.
+
+        ``sun_watch`` is ``{blind, blind_since, last_position_at, armed}`` (#137):
+        whether the sun-exclusion net can currently see the mount, since when,
+        when it last read a position, and whether its task is alive. TIMES AND
+        BOOLEANS ONLY, which is what lets this stay readable at ``view.status``
+        for a viewer: the position the net last read, and anything derived from
+        it, is a latitude oracle (#140) and is never part of this."""
         reading = await hub.safety_reading()
         reading_dict = hub._safety_reading_dict(reading) if reading else None
         stale = bool(reading.stale) if reading else False
@@ -5431,6 +5439,7 @@ def create_app(*, bind_host: str | None = None,
             "reading": reading_dict,
             "streak": streak,
             "stale": stale,
+            "sun_watch": sun_watch.state(),
         }
 
     @app.post("/api/safety/simulate", dependencies=[Depends(require(CAP_CONFIG_SAFETY))])
