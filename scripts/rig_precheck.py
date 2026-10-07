@@ -15,6 +15,7 @@ Exit codes: 0 idle, 3 busy (the reasons are printed), 2 could not tell.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import urllib.error
@@ -22,6 +23,11 @@ import urllib.request
 
 ROOT = os.environ.get("ASTRODECK_INSTALL_ROOT", r"C:\Users\James\AstroDeck")
 BASE = "http://127.0.0.1:8800"
+#: How often the server pings the dead-man URL. A COPY of
+#: ``astrodeck.alerting.DEADMAN_INTERVAL_S``: this script runs under the rig's
+#: venv with nothing of the server on its path, so it cannot import it. A test
+#: compares the two, so the copy cannot drift without a red.
+DEADMAN_INTERVAL_S = 60.0
 
 
 def _site_line() -> str:
@@ -57,7 +63,43 @@ def _site_line() -> str:
     return f"configured ({elevation})"
 
 
-def _watch_line() -> str:
+def _deadman_state(health: object) -> str:
+    """Whether the configured dead-man has actually been ANSWERED. (#125)
+
+    ``health`` is the ``deadman`` block of ``/api/alerts/health``. Its
+    ``healthy`` is "no failure has been warned about", which is also true
+    before the first request leaves, so a freshly pasted URL and a typo both
+    read healthy; ``last_ok_age_s`` is the seconds since the monitor last
+    ACCEPTED a ping, None if it never has. Only that makes the line a fact.
+
+    Total on purpose: a block that is absent, lacks the key, or carries a
+    string, a bool, a negative or a non-finite number is "UNKNOWN", never
+    "answering". The only things that leave are the words below and one
+    integer age; the block's other keys are never read, so nothing in it, a
+    url included, can reach the output.
+    """
+    if not isinstance(health, dict):
+        return ("dead-man configured, ping state UNKNOWN (the server's health "
+                "was not read)")
+    if "last_ok_age_s" not in health:
+        return ("dead-man configured, ping state UNKNOWN (this server does not "
+                "report accepted pings)")
+    age = health["last_ok_age_s"]
+    if age is None:
+        return "dead-man configured but NO ping has been accepted since start"
+    if (isinstance(age, bool) or not isinstance(age, (int, float))
+            or not math.isfinite(age) or age < 0):
+        return "dead-man configured, ping state UNKNOWN (the server's age was not a number)"
+    # Three missed intervals is where an external monitor's grace would have run
+    # out and paged; anything fresher is a monitor that is hearing from us.
+    if age < 3 * DEADMAN_INTERVAL_S:
+        return ("dead-man configured and answering (last ping accepted "
+                f"{age:.0f} s ago)")
+    return ("dead-man configured but NO ping has been accepted in the last "
+            f"{age:.0f} s (one is sent every {DEADMAN_INTERVAL_S:.0f} s)")
+
+
+def _watch_line(deadman_health: object = None) -> str:
     """Is anything outside this PC watching it? Counts and booleans only.
 
     Issue #125: the rig went offline and nothing said so. The product already
@@ -67,9 +109,14 @@ def _watch_line() -> str:
     week and nothing would have noticed. This line puts that state in front of
     every deploy instead of leaving it to be found by the next outage.
 
+    "Configured" is not "watched": a URL nothing has answered is a rig no
+    external service has heard from. ``deadman_health`` is the ``deadman``
+    block of ``/api/alerts/health`` (None when it could not be read), and what
+    it adds is whether the monitor has ACCEPTED a ping (`_deadman_state`).
+
     The dead-man URL carries a per-ping secret in its path, and a sink carries
     a token or a webhook URL, so nothing here can print either: the facts that
-    leave are a boolean and two counts.
+    leave are a boolean, an age and two counts.
     """
     try:
         with open(os.path.join(ROOT, "config", "astrodeck.json"),
@@ -84,7 +131,7 @@ def _watch_line() -> str:
     if not deadman and not live:
         return ("UNWATCHED - no dead-man URL and no alert channel: if this PC "
                 "stops, nothing outside it will say so (issue #125)")
-    parts = ["dead-man configured" if deadman
+    parts = [_deadman_state(deadman_health) if deadman
              else "NO dead-man URL - an alert channel cannot report its own PC dying"]
     parts.append(f"{len(live)} alert channel(s), {verified} verified")
     return "; ".join(parts)
@@ -168,6 +215,16 @@ def main(argv: list[str]) -> int:
         print(f"could not read rig state: {type(exc).__name__}: {exc}")
         return 0 if report_only else 2
 
+    # Read on its own, outside the try above: the watched line is information
+    # and the deploy gate is the BUSY check below, so a health route that errors
+    # must degrade that one line to UNKNOWN rather than turn a readable rig into
+    # "could not read rig state" (exit 2).
+    try:
+        health = _get(cookie, "/api/alerts/health")
+    except (OSError, urllib.error.HTTPError, ValueError):
+        health = None
+    deadman_health = health.get("deadman") if isinstance(health, dict) else None
+
     mount = status.get("mount") or {}
     connected = {k: bool(v.get("connected")) for k, v in (status.get("connected") or {}).items()}
     print("connected:", ", ".join(f"{k}={'yes' if v else 'NO'}" for k, v in sorted(connected.items())))
@@ -177,7 +234,7 @@ def main(argv: list[str]) -> int:
     lanes = status.get("busy_lanes") or status.get("busy") or {}
     print(f"busy lanes: {lanes if lanes else 'none'}")
     print("site: " + _site_line())
-    print("watched: " + _watch_line())
+    print("watched: " + _watch_line(deadman_health))
     print("recovery: " + _recovery_line())
     for flag in ("looping", "bahtinov_active", "live_stack_active"):
         print(f"{flag}: {status.get(flag)}")
