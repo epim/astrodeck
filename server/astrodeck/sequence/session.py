@@ -348,24 +348,67 @@ class Session(BaseModel):
                 return rec
         return None
 
+    def note_set_aside_cleared(self, target_ids: Iterable[str], *,
+                               night: str) -> list[dict]:
+        """The operator brings ``target_ids``' set-aside panels back for
+        ``night`` (#600, backlog ruling D-07, owner-approved 2026-09-30):
+        mark every record tonight holds for those targets ``"cleared": True``,
+        whole-panel and step-level alike, and return the ones that STOOD (not
+        expired, not cleared already), in the order they were made.
+
+        The marker is on the record itself, as ``"expired"`` is, and for the
+        same reason: the record stays, as history of what the night did and
+        of what the operator undid, and a plain flag beside it needs no
+        migration (SESSION_SCHEMA stays 1; a build that predates it ignores
+        the flag and reads the record as standing, which is what it always
+        did). ``set_aside_on`` no longer reads a cleared record, so a restart,
+        CONTINUE or an auto-resume tonight takes the panel up as if it had
+        never been set aside.
+
+        An EXPIRED record of the same target is marked too, though it is not
+        returned: ``set_aside_expiries_on`` ignores a cleared one, which is
+        what gives the panel its one expiry for the night back (#534). Kept
+        counted, a centring set-aside that expired once and was set aside
+        again for good would be retried by the operator and then stand for
+        the rest of the night however it failed, with the one chance the
+        first set-aside had already spent.
+
+        Nothing site-derived is stored: a flag and no time (6.9)."""
+        wanted = set(target_ids)
+        standing: list[dict] = []
+        for rec in self.set_aside:
+            if (rec.get("night") != night or rec.get("cleared")
+                    or rec.get("target_id") not in wanted):
+                continue
+            if not rec.get("expired"):
+                standing.append(rec)
+            rec["cleared"] = True
+        return standing
+
     def set_aside_on(self, night: str) -> list[dict]:
         """The set-aside records for ``night`` that still stand, in the order
         they were made. A crash-resume passes ``events.night_key()`` and does
         not retry these; any other night's records are history, and so is a
         centring set-aside that has expired (``note_set_aside_expired``,
-        #534): its panel is tried again tonight."""
+        #534): its panel is tried again tonight. So is one the operator
+        cleared (``note_set_aside_cleared``, #600)."""
         return [r for r in self.set_aside
-                if r.get("night") == night and not r.get("expired")]
+                if r.get("night") == night and not r.get("expired")
+                and not r.get("cleared")]
 
     def set_aside_expiries_on(self, night: str) -> dict[str, int]:
         """How many times each target's set-aside expired on ``night`` (#534):
         the expired whole-target records, by target id. AT MOST ONE EXPIRY
         PER PANEL PER NIGHT is read from here, by the engine at a restart and
         by the resume arm, so the second set-aside of a night stands for the
-        rest of it however often the run is restarted."""
+        rest of it however often the run is restarted.
+
+        A record the operator cleared is not counted (#600): a retry restores
+        the panel's one expiry, as if its set-asides tonight had not been."""
         out: dict[str, int] = {}
         for r in self.set_aside:
             if (r.get("night") == night and r.get("expired")
+                    and not r.get("cleared")
                     and r.get("step_id") is None and r.get("target_id")):
                 out[r["target_id"]] = out.get(r["target_id"], 0) + 1
         return out

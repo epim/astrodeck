@@ -54,6 +54,19 @@
 // `group_id` (flowRunState `groupForBlock`), never by name, and nothing of
 // the run's timing is shown: no meridian countdown, no visit clock (5.10).
 //
+// RETRY SET-ASIDE PANELS (#600; backlog ruling D-07, owner-approved
+// 2026-09-30). In run mode PANELS offers a button that asks the live run to
+// take its set-aside panels back (`flowsApi.retrySetAside`, with the group id
+// the progress block names; `control.mount`, so a viewer reads why it is
+// locked). It is a run control and not an edit, so it works in the sheet
+// that is otherwise read-only: PANELS carries its own fieldset for the
+// controls the frozen draft disables (`PanelsSection`'s `frozen`), and the
+// sheet's fieldset is split around it, since a button inside a disabled
+// fieldset is natively disabled whatever its own props say. What the press
+// did is a line under the button; the panels' rows follow the live state,
+// which the run publishes when it takes them up, and the progress counts
+// follow the frames the slice already re-reads for (#214).
+//
 // THE LAYOUT (spec 2.2) IS framing.css's, chosen by container queries on the
 // sheet itself and never by a width breakpoint class: phone portrait stacks
 // a 48 px header, the sky pinned OUTSIDE the scroller at min(100vw, 52svh)
@@ -64,14 +77,14 @@
 // landscape (667-932 px wide) in the portrait stack.
 
 import "./framing.css";
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import { Overlay } from "../../Overlay";
 import { HonestButton } from "../../ui";
 import { useStore } from "../../../store";
 import { accessPhrase, useCapability } from "../../../lib/caps";
 import { effectiveOptics, opticsOverrideProfile } from "../../../lib/effective";
 import { fovFromOptics, mosaicGrid, mosaicTotalFov } from "../../../lib/framing";
-import type { FlowCompileResult } from "../../../lib/flowsApi";
+import { flowsApi, type FlowCompileResult } from "../../../lib/flowsApi";
 import type { CatalogEntry, FramingSession, MosaicPanel } from "../../../types";
 import { groupForBlock, type PanelRunState } from "../flowRunState";
 import { MosaicNightCard } from "../../../next/hubs/sky/frame/MosaicNightCard";
@@ -126,6 +139,24 @@ export const COMPILE_NEEDS_ACCESS =
 export const ANY_ANGLE_HOLDS_NONE =
   "ANY ANGLE holds no angle: choose ROTATE TO or CAMERA FIXED AT to set one";
 export const GONE = "That stage is no longer in this flow.";
+/** Why RETRY SET-ASIDE PANELS is locked for a principal without
+ *  `control.mount` (#600): a retried panel is slewed to by the run. */
+export const RETRY_NEEDS_ACCESS =
+  `retrying set-aside panels hands them back to the run, which slews to them, and needs ${accessPhrase("control.mount")}`;
+/** Why it is locked between a press and the server's answer. */
+export const RETRY_IN_FLIGHT = "a retry is on its way to the run";
+
+/** What a retry's answer says, in words (#600): the panels queued, which the
+ *  run takes up at its next selection and judges as any other panel's, so one
+ *  still unfit is set aside again; or, for a stored session, the ones cleared. */
+export function retryWords(res: { queued?: string[]; cleared?: string[] } | null | undefined): string {
+  const q = res?.queued ?? [];
+  if (q.length > 0) {
+    return `Retry queued for ${q.join(", ")}: the run takes ${q.length === 1 ? "it" : "them"} up at its next selection and sets ${q.length === 1 ? "it" : "them"} aside again if still unfit.`;
+  }
+  const c = res?.cleared ?? [];
+  return c.length > 0 ? `Cleared ${c.join(", ")} for tonight.` : "Nothing was set aside.";
+}
 
 // ------------------------------------------------------------------ props
 
@@ -233,6 +264,7 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   const wsConnected = useStore((s) => s.wsConnected);
   const canSite = useCapability("view.site_derived");
   const canCompile = useCapability("control.capture");
+  const canControlMount = useCapability("control.mount");
   const applyFraming = useStore((s) => s.flowsApplyFraming);
   const setSetting = useStore((s) => s.flowsSetSetting);
   const compileFlow = useStore((s) => s.flowsCompile);
@@ -365,6 +397,19 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   const runKey = useStore((s) =>
     JSON.stringify(runPanelsOf(groupForBlock(s.sequence, runGroupId), rows, cols, runGrid, s.sequence)));
   const run = useMemo(() => JSON.parse(runKey) as Record<string, PanelRunState>, [runKey]);
+
+  // ---- RETRY SET-ASIDE PANELS (#600): a run control, in run mode only
+  const [retrying, setRetrying] = useState(false);
+  const [retryNote, setRetryNote] = useState<string | null>(null);
+  const onRetry = () => {
+    if (retrying || runGroupId === null) return;
+    setRetrying(true);
+    setRetryNote(null);
+    flowsApi.retrySetAside(runGroupId).then(
+      (res) => { if (alive.current) setRetryNote(retryWords(res)); },
+      (e) => { if (alive.current) setRetryNote(`The retry was refused: ${(e as Error)?.message ?? e}`); },
+    ).finally(() => { if (alive.current) setRetrying(false); });
+  };
 
   // ---- the panels, in run order, and as the sky draws them
   const rowsModel = useMemo(() => panelRows({
@@ -694,7 +739,7 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
               onFocus={(e) => setTyping(isTextField(e.target))}
               onBlur={(e) => setTyping(isTextField(e.relatedTarget))}
             >
-              <fieldset className="tfs-fieldset" disabled={frozen}>
+              <FrozenFieldset frozen={frozen}>
                 <legend className="sr-only">{`Framing of ${name || "this target"}`}</legend>
                 <WhereSection
                   name={String(draft.name)} ra={String(draft.ra)} dec={String(draft.dec)}
@@ -737,14 +782,24 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
                   onOffer={onTakeOffer}
                   explain={setExplained}
                 />
-                <PanelsSection
-                  rows={rowsModel}
-                  order={String(draft.order)}
-                  showAltitude={canSite}
-                  nightCard={nightCard}
-                  onOrder={(v) => patchDraft({ order: v })}
-                  onToggle={(r, c) => onPanelTap(r - 1, c - 1)}
-                />
+              </FrozenFieldset>
+              {/* PANELS keeps its own fieldset for the controls a frozen
+                  draft disables, so RETRY SET-ASIDE PANELS, a run control,
+                  stays pressable in run mode (#600; see the header). */}
+              <PanelsSection
+                rows={rowsModel}
+                order={String(draft.order)}
+                showAltitude={canSite}
+                nightCard={nightCard}
+                onOrder={(v) => patchDraft({ order: v })}
+                onToggle={(r, c) => onPanelTap(r - 1, c - 1)}
+                frozen={frozen}
+                onRetry={runMode && runGroupId !== null ? onRetry : undefined}
+                retryLocked={!canControlMount ? RETRY_NEEDS_ACCESS : retrying ? RETRY_IN_FLIGHT : null}
+                retryNote={retryNote}
+                explain={setExplained}
+              />
+              <FrozenFieldset frozen={frozen}>
                 {ownsStage && (
                   <RunSection
                     onePanel={!draftMulti}
@@ -774,13 +829,21 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
                   onIfNotCentred={(v) => patchDraft({ ifNotCentred: v })}
                   explain={setExplained}
                 />
-              </fieldset>
+              </FrozenFieldset>
             </div>
           </div>
         </div>
       </div>
     </Overlay>
   );
+}
+
+/** The fieldset that freezes the draft's controls while `frozen`. A component
+ *  and not a tag written twice because PANELS sits between two of them (#600,
+ *  see the header): the sheet's controls above and below it are frozen by one
+ *  reader of `frozen`, and the sheet states it once. */
+function FrozenFieldset({ frozen, children }: { frozen: boolean; children: ReactNode }): JSX.Element {
+  return <fieldset className="tfs-fieldset" disabled={frozen}>{children}</fieldset>;
 }
 
 /** A draft number as a stepper shows it: the value, or `fallback` when the

@@ -541,6 +541,19 @@ export const flowsApi = {
    *  plan. The TARGET card's chip reads it through `progressChip`. */
   progress: (id: string) => api.get<FlowProgress>(`${one(id)}/progress`),
 
+  /** RETRY SET-ASIDE PANELS (#600; backlog ruling D-07, owner-approved
+   *  2026-09-30): `POST /api/sequence/retry-set-aside`, `control.mount`.
+   *  `group` is the live `state.group.id` the progress block names, or null
+   *  for every group of the plan. While a run is live the server QUEUES the
+   *  panels (`queued`, their `r-c` labels) and the run takes them up at its
+   *  next selection, judging each as it judges any panel; `sessionId` is for
+   *  a stored session with no run, whose records it clears (`cleared`).
+   *  409 "nothing is set aside" and 404 are the server's own words. */
+  retrySetAside: (group: string | null, sessionId?: string) =>
+    api.post<{ queued?: string[]; cleared?: string[]; live: boolean }>(
+      "/api/sequence/retry-set-aside",
+      sessionId ? { group, session_id: sessionId } : { group }),
+
   /** `acceptUnmapped` is the operator saying "run the rest anyway". It does NOT
    *  clear a dome refusal: everything else on that list costs frames, and a roof
    *  that will not close costs equipment.

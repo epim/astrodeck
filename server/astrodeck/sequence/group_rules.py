@@ -909,6 +909,58 @@ class GroupRun:
             self._held_centring = []
             self.start_pass()
 
+    def retry_set_aside(self, panel: str) -> None:
+        """THE OPERATOR BRINGS A SET-ASIDE PANEL BACK (#600, backlog ruling
+        D-07, owner-approved 2026-09-30): live again, to be visited tonight,
+        with a clean slate, whatever it was set aside for.
+
+        Like :meth:`expire_set_aside`, which is the clock's version of the
+        same, and different in three ways. ANY kind comes back: a centring
+        set-aside expires by itself, and a floor, reject, angle, pier or
+        group one never does, which is exactly why the operator needs this.
+        It is NOT counted in ``expired``, which is the clock's count and the
+        one the one-expiry-a-night rule reads (the engine restores that
+        count itself, with the session's cleared records). And D-03's
+        held-pass counter goes back to nothing: the escalation to "set aside
+        for tonight" is the operator's to restart, and a retry made one held
+        pass short of it would be set aside again by the very next pass,
+        the retry undone before it was tried.
+
+        Whether the panel is in the rotation, and whether the sky lets it be
+        visited, is not decided here: the engine puts it back in its
+        scheduler's list and the next selection judges it by gating, a
+        window, the horizon and the meridian rule, as it judges every panel,
+        so a retry never forces a slew.
+
+        Asked of a panel that is not set aside, or of no member, this is a
+        caller bug and says so, as :meth:`expire_set_aside` does."""
+        if panel not in self.members:
+            raise ValueError(f"{panel!r} is not a member of this group")
+        if panel not in self.set_aside:
+            raise ValueError(f"{self.members[panel]} is not set aside")
+        # The same fresh pass an expiry gives a panel that comes back alone
+        # (see there): no other member is live, the boundary that set the last
+        # of them aside answered ``none_live`` and began no pass, so the
+        # counts standing are that closed pass's.
+        alone = not any(self.is_live(q) for q in self.members if q != panel)
+        del self.set_aside[panel]
+        self.set_aside_kind.pop(panel, None)
+        self.failed[panel] = 0
+        self.reject_visits[panel] = 0
+        self._streak_kinds[panel] = set()
+        self.visited.discard(panel)
+        self.held_streak = 0
+        self._held_pass_reason = None
+        if alone:
+            # Anything still held belongs to panels that are not live, and a
+            # count for them would set aside nothing. The transient list too,
+            # which ``expire_set_aside`` leaves: ``start_pass`` refuses while
+            # any of the three is held.
+            self._held = []
+            self._held_centring = []
+            self._held_transient = []
+            self.start_pass()
+
     def _check_live(self, panel: str) -> None:
         if panel not in self.members:
             raise ValueError(f"{panel!r} is not a member of this group")
