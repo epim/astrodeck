@@ -38,6 +38,15 @@
 // module both editors import), never a second set. Over a live run it says
 // why the edit is waiting: the autosave holds it until the run ends.
 //
+// UNDO AND REDO (#688 part 3, WP-117). The autosave makes a slip permanent two
+// seconds after it, so the desktop header carries the two controls, beside
+// PLAN, and Ctrl/Cmd+Z does the same from the canvas (`FlowCanvas`). They are
+// honest-disabled: dimmed, still pressable, and a press SAYS why there is
+// nothing to step to. DESKTOP ONLY: the tablet row has no width to spare
+// (the pill above already brings it to the edge of 700 px) and the phone
+// row's title would go, so below the desktop tier the canvas carries them
+// instead, over its own corner, where a touch screen's thumb already is.
+//
 // RUN SAYS WHAT IT WILL DO (#189 S5, spec 5.9). With a dormant session the
 // button reads `CONTINUE M31 MOSAIC (night 3, 412/1890 subs)`, the one copy
 // every RUN surface prints (`useFlowRunControls().copy`), and START OVER sits
@@ -54,7 +63,9 @@ import type { FlowTier } from "./geometry";
 import {
   START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts, type RunCopy,
 } from "./flowRunControls";
-import { AUTOSAVE_PAUSED_NOTE, SAVE_READONLY_REASON, saveStateWord } from "./flowsTypes";
+import {
+  AUTOSAVE_PAUSED_NOTE, SAVE_READONLY_REASON, redoReason, saveStateWord, undoReason,
+} from "./flowsTypes";
 
 // RUN's honest-disabled sentence moved to `flowRunControls.tsx` when the phone
 // MONITOR tab needed the same button. Re-exported from here because that is
@@ -190,6 +201,11 @@ const useBackendMode = () => useStore((s) => s.status?.mode);
 const useDirty = () => useStore((s) => s.flows.dirty);
 const useReadonly = () => useStore((s) => s.flows.record?.readonly ?? false);
 const useSaving = () => useStore((s) => s.flows.saving);
+// Why UNDO / REDO cannot act, or null when they can: a string or null, so exact
+// under Object.is. A node drag writes the history on every pointer move, and
+// none of this row re-renders for it until a stack goes empty or non-empty.
+const useUndoWhy = () => useStore((s) => undoReason(s.flows));
+const useRedoWhy = () => useStore((s) => redoReason(s.flows));
 
 /** The pill's colour: warn only for edits the rig does not hold and nothing is
  *  sending. The WORD carries the state, so this never has to. */
@@ -211,6 +227,8 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
   const dirty = useDirty();
   const readonly = useReadonly();
   const saving = useSaving();
+  const undoWhy = useUndoWhy();
+  const redoWhy = useRedoWhy();
 
   // RUN/STOP — one implementation, shared with the phone MONITOR tab's
   // full-width button. `running` counts `stopping`: the engine publishes
@@ -239,6 +257,8 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
 
   const closeEditor = useStore((s) => s.flowsCloseEditor);
   const setUi = useStore((s) => s.flowsSetUi);
+  const undo = useStore((s) => s.flowsUndo);
+  const redo = useStore((s) => s.flowsRedo);
 
   const chipLabel = checksLabel(issues.length);
   // The compiler has not answered yet (a fresh open, or every compile so far
@@ -258,6 +278,8 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
   const showValid = editor && !phone && !running;
   const showProv = !phone;
   const phoneTitle = phone && editor;
+  // Desktop only: see the header comment. Below it the canvas carries them.
+  const showHistory = editor && tier === "desktop";
 
   return (
     // <header> inside <main> is NOT a banner landmark (its nearest sectioning
@@ -311,6 +333,40 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
       {/* 6 — spacer. Skipped when the phone title already owns the slack, or the
           two flex-1 children would halve a title that has to truncate first. */}
       {!phoneTitle && <div className="flex-1 min-w-0" />}
+
+      {/* 6a — UNDO / REDO (#688 part 3). Honest-disabled: dimmed, never inert,
+          and a press on a dimmed one says why (`explain`, the same toast RUN's
+          refusals use). The shortcut is in the title of the live control. */}
+      {showHistory && (
+        <>
+          <HonestButton
+            className="btn !text-[11px] !tracking-[0.12em] !px-2.5 !py-[7px] shrink-0"
+            reason={undoWhy}
+            onExplain={explain}
+            onClick={undo}
+          >
+            <span
+              data-testid="flow-undo"
+              title={undoWhy ? undefined : "Undo the last edit (Ctrl+Z, or Cmd+Z on a Mac)"}
+            >
+              UNDO
+            </span>
+          </HonestButton>
+          <HonestButton
+            className="btn !text-[11px] !tracking-[0.12em] !px-2.5 !py-[7px] shrink-0"
+            reason={redoWhy}
+            onExplain={explain}
+            onClick={redo}
+          >
+            <span
+              data-testid="flow-redo"
+              title={redoWhy ? undefined : "Redo the edit you undid (Ctrl+Shift+Z, or Ctrl+Y)"}
+            >
+              REDO
+            </span>
+          </HonestButton>
+        </>
+      )}
 
       {/* 6b — PLAN EDITOR (#239 stage B). Plan left the nav rail; this is one of
           its two doors (the other is Settings > Safety > Imaging standards).

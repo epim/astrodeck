@@ -34,12 +34,13 @@
 // ✎ (which stops propagation) drags nothing, and why an input port — which gets
 // no `onPointerDown` at all — cannot start a reverse drag (§D.4 rule 2).
 import { useCallback, useEffect, useRef } from "react";
-import type { CSSProperties, PointerEvent as RPointerEvent } from "react";
+import type { CSSProperties, JSX, PointerEvent as RPointerEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store";
+import { HonestButton } from "../ui";
 import { NODE_DEFS } from "./nodeDefs";
 import { clampZoom, nodeW, type FlowTier, type PortDir } from "./geometry";
-import type { PortKind } from "./flowsTypes";
+import { historyKeyAction, redoReason, undoReason, type PortKind } from "./flowsTypes";
 import { flowLoopRefusal, laneMismatchRefusal, type ProposedWire } from "./flowLoop";
 import FlowNodeCard from "./FlowNodeCard";
 import FlowWireLayer from "./FlowWireLayer";
@@ -179,6 +180,35 @@ interface Pinch {
   mid0: { x: number; y: number };
 }
 
+/** UNDO and REDO over the canvas's top-right corner, above `+ ADD STAGE`, at
+ *  the tiers whose header has no room for them (#688 part 3, WP-117): the
+ *  tablet row is already at the edge of 700 px and the phone row would lose its
+ *  title. Honest-disabled, as the desktop header's pair is: dimmed, still
+ *  pressable, and a press says why there is nothing to step to. 44 px tall, the
+ *  touch floor, like the button under it. Its own subscriptions, a string or
+ *  null each, so a node drag (a history write per pointer move) re-renders it
+ *  only when a stack empties or fills. */
+function FlowHistoryFloat(): JSX.Element {
+  const undoWhy = useStore((s) => undoReason(s.flows));
+  const redoWhy = useStore((s) => redoReason(s.flows));
+  const undo = useStore((s) => s.flowsUndo);
+  const redo = useStore((s) => s.flowsRedo);
+  const enqueueToast = useStore((s) => s.enqueueToast);
+  const explain = (reason: string): void => enqueueToast({ level: "warning", title: reason });
+  const cls = "h-11 px-4 rounded-[10px] border border-line2 bg-raise text-ink cursor-pointer "
+    + "font-display font-semibold text-[11px] tracking-[0.12em]";
+  return (
+    <div className="absolute right-3 bottom-24 z-[5] flex gap-2" data-testid="flow-history-float">
+      <HonestButton className={cls} reason={undoWhy} onExplain={explain} onClick={undo}>
+        <span data-testid="flow-undo">UNDO</span>
+      </HonestButton>
+      <HonestButton className={cls} reason={redoWhy} onExplain={explain} onClick={redo}>
+        <span data-testid="flow-redo">REDO</span>
+      </HonestButton>
+    </div>
+  );
+}
+
 export default function FlowCanvas({ tier }: FlowCanvasProps) {
   // ── subscriptions, all narrow (§B.3) ────────────────────────────────────
   // The canvas is the ONE subscriber to the node array and passes each node down
@@ -207,6 +237,8 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
   const moveWire = useStore((s) => s.flowsMoveWire);
   const endWire = useStore((s) => s.flowsEndWire);
   const deleteSel = useStore((s) => s.flowsDeleteSel);
+  const undo = useStore((s) => s.flowsUndo);
+  const redo = useStore((s) => s.flowsRedo);
   const setUi = useStore((s) => s.flowsSetUi);
   const enqueueToast = useStore((s) => s.enqueueToast);
 
@@ -529,6 +561,17 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
       // is a button. Read at press time, as #/next's canvas reads its open
       // sheets (FlowCanvasSurface.tsx), so the handler cannot go stale.
       if (document.querySelector('[aria-modal="true"]')) return;
+      // UNDO AND REDO (#688 part 3, WP-117): Ctrl or Cmd+Z, Ctrl or
+      // Cmd+Shift+Z, Ctrl+Y. Past BOTH guards above, so in a param field or the
+      // flow's name Ctrl+Z is the browser's own text undo, and under a modal it
+      // does not rewrite a graph the operator cannot see. Consumed, so the
+      // browser does not also act on the key.
+      const step = historyKeyAction(e);
+      if (step) {
+        e.preventDefault();
+        if (step === "undo") undo(); else redo();
+        return;
+      }
       if (e.key === "Delete" || e.key === "Backspace") {
         // Marked consumed, following Tooltip's convention (ui.tsx:525-529): an
         // outer dismissable can then tell the key was already used. It also
@@ -548,7 +591,7 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [deleteSel, fit]);
+  }, [deleteSel, fit, undo, redo]);
 
   // ── render ──────────────────────────────────────────────────────────────
   const selEdge = selEdgeId ? edges.find((e) => e.id === selEdgeId) : undefined;
@@ -623,6 +666,10 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
       </div>
 
       <FlowZoomCluster onFit={fit} />
+
+      {/* Beside the add button, at the tiers that show it: the header carries
+          the pair at desktop only. */}
+      {showAddFloat && <FlowHistoryFloat />}
 
       {showAddFloat && (
         // Purple border, cyan fill and ink — the same treatment as RUN,

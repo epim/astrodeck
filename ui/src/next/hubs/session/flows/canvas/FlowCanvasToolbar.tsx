@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // FlowCanvasToolbar.tsx - the canvas's own 48 px row (wave R7 parity row A1).
 //
-// NINE THINGS, LEFT TO RIGHT, AND NOTHING THE SHELL ALREADY RENDERS. The shell
+// TEN THINGS, LEFT TO RIGHT, AND NOTHING THE SHELL ALREADY RENDERS. The shell
 // owns the wordmark, the flows pill with its count, the rig chips, the
 // backend/provider badge (`header-backend`), the role chip and the night toggle
 // at every breakpoint, so this row carries only what is about THIS flow:
@@ -11,11 +11,21 @@
 //   2. PLAN
 //   3. the validation pill, with the checker's own issue list behind it
 //   4. ETA, while a run is live
-//   5. the save-state pill - SAVED / UNSAVED EDITS / READ ONLY
-//   6. SAVE
-//   7. TONIGHT
-//   8. RUN / STOP, which reads CONTINUE over a dormant session
-//   9. START OVER, beside CONTINUE only (#189 S5)
+//   5. UNDO and REDO (#688 part 3, WP-117), honest-disabled: dimmed, never
+//      inert, and a press says why there is nothing to step to. Ctrl/Cmd+Z
+//      does the same from the canvas (`FlowCanvasSurface`)
+//   6. the save-state pill - SAVED / UNSAVED EDITS / READ ONLY
+//   7. SAVE
+//   8. TONIGHT
+//   9. RUN / STOP, which reads CONTINUE over a dormant session
+//  10. START OVER, beside CONTINUE only (#189 S5)
+//
+// UNDO AND REDO SIT BESIDE THE SAVE STATE BECAUSE THE FLOW SAVES ITSELF (#688
+// part 2): two seconds after the last edit the canvas is the stored flow, so
+// a slip is permanent unless it can be taken back, and the controls that move
+// the canvas between states read as one thing with the word that says which
+// state it is in. Undoing marks the flow edited, so the autosave stores the
+// undone graph in its turn.
 //
 // SAVE IS HERE BECAUSE THE CANVAS HAD NO SAVE AT ALL (whole-branch review, R5
 // P0). `flowsSave` and `flowsCloseEditor` existed, the store tracked `dirty`,
@@ -101,6 +111,9 @@ import {
 import { countsNotice } from "../../../../../components/flows/countsNotice";
 import { replayNotice } from "../../../../../components/flows/replayNotice";
 import type { FlowIssue } from "../../../../../lib/flowsApi";
+import {
+  redoReason, undoReason,
+} from "../../../../../components/flows/flowsTypes";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
 import { useStore } from "../../../../../store";
 import { nav } from "../../../../router";
@@ -235,6 +248,13 @@ export function FlowCanvasToolbar(): JSX.Element {
   // SAVE does not send a second one beside it.
   const saving = useStore((s) => s.flows.saving);
   const save = useStore((s) => s.flowsSave);
+  // UNDO and REDO: why each cannot act, or null when it can (a string or null,
+  // so exact under Object.is). A node drag writes the history on every pointer
+  // move, and this row re-renders only when a stack empties or fills.
+  const undoWhy = useStore((s) => undoReason(s.flows));
+  const redoWhy = useStore((s) => redoReason(s.flows));
+  const undo = useStore((s) => s.flowsUndo);
+  const redo = useStore((s) => s.flowsRedo);
   // A string or null, so exact under Object.is: a pan or a status tick
   // re-renders nothing here.
   const countsLine = useStore((s) => countsNotice(s.flows.graph, s.flows.countsNote));
@@ -348,6 +368,29 @@ export function FlowCanvasToolbar(): JSX.Element {
           )}
         </span>
       )}
+
+      {/* UNDO and REDO (#688 part 3): kind ghost, so the row's one SECONDARY
+          stays SAVE. A press on a dimmed one explains itself, as SAVE's does. */}
+      <ActionButton
+        kind="ghost"
+        data-testid="flow-undo"
+        lockedReason={undoWhy}
+        onExplain={explain}
+        onPress={undo}
+        ariaLabel="Undo the last edit"
+      >
+        UNDO
+      </ActionButton>
+      <ActionButton
+        kind="ghost"
+        data-testid="flow-redo"
+        lockedReason={redoWhy}
+        onExplain={explain}
+        onPress={redo}
+        ariaLabel="Redo the edit you undid"
+      >
+        REDO
+      </ActionButton>
 
       {/* The dirty cue, in a word. It sits beside SAVE so the state and the
           control that changes it read as one thing. */}
