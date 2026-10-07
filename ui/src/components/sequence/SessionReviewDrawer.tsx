@@ -23,7 +23,8 @@ import { useStore } from "../../store";
 import { accessPhrase, useCanControlMount } from "../../lib/caps";
 import { getSession, patchFrame } from "../../api/sessions";
 import {
-  filterFrames, pruneSelection, toggleSel, verdictOf, withOverride,
+  filterFrames, groupChoice, groupIdResolver, mosaicGroupsOf, mosaicRollup,
+  pruneSelection, targetChoiceOf, toggleSel, verdictOf, withOverride, withTargetChoice,
 } from "../../lib/sessionReview";
 import type { FrameFilters } from "../../lib/sessionReview";
 import type { Session } from "../../types";
@@ -94,7 +95,12 @@ export default function SessionReviewDrawer({ id, onClose }: {
   const bands = [...new Set(session.frames.map((f) => filterOf(f.step_id)))]
     .filter((b) => b !== "—")
     .sort();
-  const frames = filterFrames(session.frames, flt, filterOf);
+  // #188: a mosaic's panels are N targets named "<name> r-c"; the plan's
+  // snapshot says which belong together, so the select, the roll-up and the
+  // `group_id` filter can treat them as the one mosaic they are.
+  const mosaics = mosaicGroupsOf(session.plan);
+  const groupOf = groupIdResolver(mosaics);
+  const frames = filterFrames(session.frames, flt, filterOf, groupOf);
   const targetName = (tid: string): string =>
     targets.find((t) => t.id === tid)?.name ?? tid.slice(0, 8);
   const remainingTotal = remaining
@@ -105,8 +111,31 @@ export default function SessionReviewDrawer({ id, onClose }: {
   // hidden-but-selected frame can never be regraded invisibly by a bulk action.
   const applyFlt = (next: FrameFilters) => {
     setFlt(next);
-    setSel((s) => pruneSelection(s, filterFrames(session.frames, next, filterOf)));
+    setSel((s) => pruneSelection(s, filterFrames(session.frames, next, filterOf, groupOf)));
   };
+
+  // The target select: a mosaic is one optgroup ("all panels", then a panel per
+  // grid place) at the place its first panel holds in the plan, a single target
+  // a plain option. The group's own option is what `group_id` filters by.
+  const mosaicById = new Map(mosaics.map((g) => [g.id, g]));
+  const emitted = new Set<string>();
+  const targetOptions = targets.map((t) => {
+    const gid = t.id ? groupOf(t.id) : undefined;
+    const g = gid ? mosaicById.get(gid) : undefined;
+    if (!g) return <option key={t.id} value={t.id}>{t.name}</option>;
+    if (emitted.has(g.id)) return null;
+    emitted.add(g.id);
+    return (
+      <optgroup key={`group:${g.id}`} label={g.name}>
+        <option value={groupChoice(g.id)}>all panels</option>
+        {g.panels.map((p) => <option key={p.target_id} value={p.target_id}>{p.label}</option>)}
+      </optgroup>
+    );
+  });
+  // The roll-up counts the WHOLE session, not the filtered grid: it is the
+  // map the filters navigate by, and a panel's row must not vanish or reset to
+  // zero because another filter hid its frames.
+  const rollup = mosaicRollup(mosaics, session.frames);
 
   const bulk = async (override: "accept" | "reject") => {
     // Belt-and-braces: only ever regrade the intersection of the selection and
@@ -166,11 +195,11 @@ export default function SessionReviewDrawer({ id, onClose }: {
   const body = (
     <>
       <div className="flex items-center gap-2 pb-2 flex-wrap text-[11px]">
-        <select className="field tap min-h-[44px] !py-1 !w-28" value={flt.target_id ?? ""}
+        <select className="field tap min-h-[44px] !py-1 !w-28" value={targetChoiceOf(flt)}
           aria-label="Filter by target"
-          onChange={(e) => applyFlt({ ...flt, target_id: e.target.value || undefined })}>
+          onChange={(e) => applyFlt(withTargetChoice(flt, e.target.value))}>
           <option value="">all targets</option>
-          {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          {targetOptions}
         </select>
         <select className="field tap min-h-[44px] !py-1 !w-32" value={flt.night ?? ""}
           aria-label="Filter by night"
@@ -220,6 +249,43 @@ export default function SessionReviewDrawer({ id, onClose }: {
           {regradeReason}
         </p>
       )}
+      {/* MOSAIC ROLL-UP (#188). One header per mosaic and one row per panel, in
+          grid order, so a 3x3 reads as one mosaic and not nine unrelated
+          targets. Tapping a row filters the grid to that panel (tapping it
+          again clears the filter). The pressed state carries a tick as well as
+          the accent, for the same reason the frame cards do: under :root.night
+          a hue alone is not a channel. Counts are the effective verdict, so a
+          regrade below moves them. */}
+      {rollup.map((g) => (
+        <div key={g.id} role="group" aria-label={`${g.name} panels`}
+          data-rollup-group={g.id} className="border border-line p-2 mb-2 flex flex-col gap-1.5">
+          <div data-rollup-header className="flex items-baseline gap-2 flex-wrap">
+            <span className="font-display font-semibold text-accent tracking-wider text-[12px]">{g.name}</span>{" "}
+            <span className="mono text-[11px] text-dim">{g.accepted} accepted · {g.rejected} rejected</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
+            {g.panels.map((p) => {
+              const on = flt.target_id === p.target_id;
+              return (
+                <button key={p.target_id} data-rollup-row={p.target_id}
+                  className={`tap min-h-[44px] text-left border-2 px-2 py-1 flex items-center gap-1.5 ${
+                    on ? "border-accent bg-accent/10" : "border-line"}`}
+                  aria-pressed={on}
+                  onClick={() => applyFlt(withTargetChoice(flt, on ? "" : p.target_id))}>
+                  <span aria-hidden data-rollup-tick={on ? "on" : "off"}
+                    className={`shrink-0 ${on ? "text-accent" : "text-transparent"}`}>
+                    <Icon name="check" size={12} />
+                  </span>
+                  <span className="flex flex-col min-w-0">
+                    <span data-panel-label className="mono text-[11px] truncate">{p.label}</span>{" "}
+                    <span className="mono text-[10px] text-dim">{p.accepted} accepted · {p.rejected} rejected</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
       {/* what the filters are actually showing — with a band filter on, an
           empty grid must say so rather than look like a load failure (#37). */}
       <p className="mono text-[11px] text-dim pb-2">
