@@ -337,12 +337,41 @@ def compute_mosaic(spec: MosaicSpecIn | dict) -> dict:
             eta = gx * sin_t + gy * cos_t
             ra_hours, dec_deg = deproject(
                 xi, eta, spec.ra_hours, spec.dec_deg)
+            # THE CAMERA ANGLE THIS PANEL NEEDS (#175, I-26): a frame at sky
+            # position angle ``theta_i`` lies on the grid when ``theta_i =
+            # theta + n_i``, ``n_i`` being local north at the panel from +eta
+            # toward +xi (``panel_convergence_deg``). The camera's up for PA
+            # ``theta_i`` sits at ``n_i - theta_i`` on the grid plane and the
+            # grid's up at ``-theta``: image up is north turned toward WEST
+            # by the angle, the rig's convention (CROTA2, confirmed on a real
+            # solve, #175). That is a statement about where UP points, so the
+            # rig's mirrored frame (positive det(CD): east to the right with
+            # north up) does not enter: parity decides which way east lies
+            # across the image, and only a caller that derives an angle from
+            # a WCS needs it. ``rotation_deg`` stays the LAYOUT angle, the one
+            # the grid and the Atlas's rectangles are turned by
+            # (``_corners``): carrying the corrected angle there would draw
+            # the wedges the correction removes. ``convergence_deg`` is
+            # ``n_i`` itself, for a caller that wants the turn on its own.
+            # ``_corners`` (the re-frame carry) turns every corner by
+            # ``rotation_deg`` too, so the carry keeps modelling a camera at
+            # one angle; it is left as it was.
+            centre = {"ra_hours": ra_hours, "dec_deg": dec_deg}
+            n_i = panel_convergence_deg(centre, spec.ra_hours, spec.dec_deg)
+            # Wrapped into [0, 360) as ``rotation.mod360`` wraps, and past
+            # its one hole: ``%`` of a tiny negative sum is exactly 360.0 in
+            # floating point, which is not a position angle in [0, 360).
+            pa_deg = (spec.rotation_deg + n_i) % 360.0
+            if pa_deg >= 360.0:
+                pa_deg = 0.0
             panels.append({
                 "row": r,
                 "col": c,
                 "ra_hours": ra_hours,   # already %24-wrapped by deproject
                 "dec_deg": dec_deg,
                 "rotation_deg": spec.rotation_deg,
+                "convergence_deg": n_i,
+                "pa_deg": pa_deg,
             })
 
     total_fov_x = (cols - (cols - 1) * overlap) * spec.fov_x_deg
@@ -496,14 +525,43 @@ def _overlap_width_deg(frame: dict) -> float:
     return min(widths) if widths else overlap * min(fov_x, fov_y)
 
 
+def panel_footprint(ra_hours: float, dec_deg: float, pa_deg: float,
+                    fov_x: float, fov_y: float) -> list[tuple[float, float]]:
+    """One panel's four corners, ``[(ra_hours, dec_deg) x 4]``, laid out in
+    THAT PANEL's own tangent plane about ``(ra_hours, dec_deg)`` with
+    ``deproject``: the rectangle ``fov_x`` wide and ``fov_y`` tall, turned to
+    ``pa_deg`` by the turn ``compute_mosaic`` gives the grid, so a corner sits
+    where the camera frame's corner is.
+
+    The corner math ``_corners`` ran inline, public so that a second caller
+    measures the same geometry and not a copy (the coverage check,
+    ``sequence/coverage.py``, #177; the re-frame carry, #172). The order is
+    ``_CORNERS``': ``(-x, -y)``, ``(-x, +y)``, ``(+x, -y)``, ``(+x, +y)``,
+    which is a Z and not a ring; a caller that walks the outline takes
+    0, 1, 3, 2. ``pa_deg`` is a number: "any angle" is the caller's to lay out
+    (``_corners`` lays it at 0)."""
+    theta = math.radians(pa_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    points = []
+    for sx, sy in _CORNERS:
+        gx, gy = sx * fov_x / 2.0, sy * fov_y / 2.0
+        # The same turn ``compute_mosaic`` gives the grid, so a corner
+        # sits where the camera frame's corner is.
+        xi = gx * cos_t - gy * sin_t
+        eta = gx * sin_t + gy * cos_t
+        points.append(deproject(xi, eta, ra_hours, dec_deg))
+    return points
+
+
 def _corners(frame: dict, at: tuple[float, float] | None) -> dict:
     """Every panel's four corners, ``{(row, col): [(ra_hours, dec_deg) x 4]}``.
 
     The panels come from ``compute_mosaic``, the one projection, and each
     corner is placed at its panel's angle in THAT PANEL's own tangent plane
-    with ``deproject``, where the camera frame actually lies. "Any angle" is
-    laid out at 0: no angle is recorded, so none can have moved, and two
-    any-angle frames compare their positions and fields alone.
+    with ``deproject`` (``panel_footprint``), where the camera frame actually
+    lies. "Any angle" is laid out at 0: no angle is recorded, so none can
+    have moved, and two any-angle frames compare their positions and fields
+    alone.
 
     A frame that holds a name and no coordinates (a name-keyed block's
     anchor) is laid out at ``at``, where the catalogue puts the object now;
@@ -532,17 +590,8 @@ def _corners(frame: dict, at: tuple[float, float] | None) -> dict:
         fov_x_deg=fov_x, fov_y_deg=fov_y)
     corners: dict = {}
     for p in compute_mosaic(spec)["panels"]:
-        theta = math.radians(p["rotation_deg"])
-        cos_t, sin_t = math.cos(theta), math.sin(theta)
-        points = []
-        for sx, sy in _CORNERS:
-            gx, gy = sx * fov_x / 2.0, sy * fov_y / 2.0
-            # The same turn ``compute_mosaic`` gives the grid, so a corner
-            # sits where the camera frame's corner is.
-            xi = gx * cos_t - gy * sin_t
-            eta = gx * sin_t + gy * cos_t
-            points.append(deproject(xi, eta, p["ra_hours"], p["dec_deg"]))
-        corners[(p["row"], p["col"])] = points
+        corners[(p["row"], p["col"])] = panel_footprint(
+            p["ra_hours"], p["dec_deg"], p["rotation_deg"], fov_x, fov_y)
     return corners
 
 
@@ -619,17 +668,33 @@ def reframe_carry(anchor, new, *,
 
 # ------------------------------------------- convergence and angle budget
 
-def _local_north_deg(panel: dict, ra0_hours: float, dec0_deg: float) -> float:
-    """Local north at a panel centre, as a direction on the GRID's tangent
-    plane: degrees from +eta toward +xi (east). Found as A.1 found it, by
-    projecting a point ``NORTH_PROBE_DEG`` north of the centre; within that
-    distance of the pole the probe goes south instead, and is reversed."""
+def panel_convergence_deg(panel: dict, ra0_hours: float,
+                          dec0_deg: float) -> float:
+    """Meridian convergence at a panel: local north at the panel centre, as a
+    direction on the GRID's tangent plane (tangent at ``ra0_hours``,
+    ``dec0_deg``), in degrees from +eta toward +xi (east). Found as A.1 found
+    it, by projecting a point ``NORTH_PROBE_DEG`` north of the centre; within
+    that distance of the pole the probe goes south instead, and is reversed.
+
+    Positive for a panel WEST of the grid's centre (north leans toward the
+    pole, which is east of it on the plane), negative for one east of it,
+    and 0 along the centre meridian. It is what ``convergence_share`` weighs
+    between neighbours, and what ``compute_mosaic`` adds to the block's angle
+    for each panel's own (``pa_deg``, #175): the same number, so the budget
+    the doctor charges and the correction the compile commands are one
+    measure of local north. Mirrored by ``panelConvergenceDeg`` in
+    ``ui/src/lib/framing.ts``."""
     ra, dec = panel["ra_hours"], panel["dec_deg"]
     step = NORTH_PROBE_DEG if dec + NORTH_PROBE_DEG <= 90.0 else -NORTH_PROBE_DEG
     x0, y0 = project(ra, dec, ra0_hours, dec0_deg)
     x1, y1 = project(ra, dec + step, ra0_hours, dec0_deg)
     sign = 1.0 if step > 0 else -1.0
     return math.degrees(math.atan2(sign * (x1 - x0), sign * (y1 - y0)))
+
+
+#: The name ``convergence_share`` and the spec-claims test read: the same
+#: function, kept so that the share and the panel keys cannot be two measures.
+_local_north_deg = panel_convergence_deg
 
 
 def _seam_share(lever_deg: float, turn_deg: float, width_deg: float) -> float:

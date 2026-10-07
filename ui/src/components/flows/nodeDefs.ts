@@ -245,6 +245,17 @@ export const AUTO_RESUME_CHOICES = ["On", "Off"] as const;
 export const AUTO_RESUME_LABEL =
   "Automatic resume on subsequent nights until capture quota is fulfilled";
 
+/** Whether a DUSK WINDOW with these params resumes on subsequent nights:
+ *  false only for an explicit "Off". Mirrors nodes.py `dusk_auto_resume`, down
+ *  to what reads On: a missing key, a blank, a value this build does not offer
+ *  and any `repeat` a stored file still holds, none of which the operator
+ *  chose as Off. The one place the client decides it (the card's footer, the
+ *  RUN notice through `runCopy.graphResumes`), so the two cannot disagree
+ *  with the server's plan about the same flow. */
+export function duskAutoResume(p: Record<string, string | number> | undefined | null): boolean {
+  return String(p?.autoResume || "On") !== "Off";
+}
+
 /** The INTERIM hover text for `autoResume`, flagged for the owner to approve
  *  (spec Revision 2, ruling 7: "What ships"). The owner's own text, below,
  *  promises four things the code does not all do today, and a tooltip must be
@@ -298,11 +309,13 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // same order, for the same reason (see its comment there).
     params: {
       start: "Astro dusk", offset: -30, startClock: "",
-      stop: "Dawn", stopClock: "", minAlt: 30, repeat: "Single night",
-      // #195: nodes.py carries the same key, in the same place. `repeat` stays
-      // so a stored file still loads and the campaign block keeps its key, but
-      // it has no row any more (ROWLESS_PARAMS) and no longer decides whether
-      // the flow resumes: that is `autoResume`, "On" when a flow says nothing.
+      stop: "Dawn", stopClock: "", minAlt: 30,
+      // #195: nodes.py carries the same key, in the same place. Whether the
+      // flow resumes is `autoResume`, "On" when a flow says nothing. There is
+      // no `repeat` here (WP-118): it was the first answer to the same
+      // question, no editor has offered it since 0.3.41 and nothing reads it
+      // now (the server keys the campaign block on `autoResume` and the
+      // flow's shape). A stored one is kept verbatim and reads as On.
       autoResume: "On",
     },
     fields: [
@@ -326,13 +339,11 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // reads "Astro dusk -30m → dawn" rather than "+-30m". The tail names the
     // UNUSUAL case only, because the usual one would be noise on every card in
     // the library: "· one night" for a flow whose Automatic resume is Off (a
-    // subsequent night does not resume it), and "· nightly" for a stored
-    // `repeat` campaign that still resumes. Off wins: it is what the run does.
-    // `repeat` is read here because it still keys the campaign block
-    // (nodes.py).
+    // subsequent night does not resume it). A flow that resumes says nothing,
+    // and a stored `repeat` is not read (WP-118): the card used to add
+    // "· nightly" for one, a claim about a retired word.
     sum: (p) => txt(p.start) + " " + (num(p.offset) >= 0 ? "+" : "") + txt(p.offset) + "m → " + low(p.stop)
-      + (txt(p.autoResume) === "Off" ? " · one night"
-        : p.repeat && txt(p.repeat) !== "Single night" ? " · nightly" : ""),
+      + (!duskAutoResume(p) ? " · one night" : ""),
   },
   target: {
     type: "target",
@@ -894,11 +905,6 @@ export const LEGACY_TYPES: readonly LegacyNodeType[] = ["slew"];
  *  param without a row is a value the operator can never change, which the
  *  parity test refuses. */
 export const ROWLESS_PARAMS: Partial<Record<FlowNodeType, readonly string[]>> = {
-  // `repeat` is retired from the editor (#195): `autoResume` replaced its row.
-  // It stays a stored param so a saved file loads and the compile's campaign
-  // block keeps its key, which is why it is declared here rather than dropped
-  // from `params` (the parity test holds both tables to nodes.py's).
-  dusk: ["repeat"],
   // `counts` is withdrawn from the editor (Revision 2, ruling 2): every new
   // block counts accepted subs, and a save switches an old one. `frameAnchor`
   // is written by the server at every save (ruling 3), never typed.

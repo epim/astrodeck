@@ -56,6 +56,12 @@ frame, over frames 500 to 2000:
             1.0 full re-read, 387 bytes of file (Windows, CRLF lines);
             the night ran in 65.3 s of wall time
     after:  12.75 full walks, 1.0 save, 0 re-reads, 387 bytes; 33.9 s
+    after #516 (every read through the engine's one memo, below):
+            0.12 full walks, all of them the order snapshot's own scan of
+            the last visits, once a pass of four visits; ``accepted_by_step``
+            ran 3 times in the whole night (the memo's first build, and the
+            two ``Session.owed()`` reads of the run's ending) against 25 268
+            before; 1.0 save, 0 re-reads, 387 bytes
 
 THE BUDGET, pinned below as deterministic assertions. Per banked frame:
 
@@ -66,10 +72,15 @@ THE BUDGET, pinned below as deterministic assertions. Per banked frame:
 * NO re-read of the session file after this process's own write (#514,
   fixed in ``session.py``).
 * AT MOST ``NIGHT_WALKS_MAX`` full walks of the ledger on the night's plan
-  shape, against 12.75 measured. Spec risk 8's "once per pass" holds only for
-  ``_order_snapshot``; the other 12.5 come from the engine asking the session
-  again at each check (#516, an engine.py lever for S7-ENG-SAFE, with the
-  spec sentence for S7-DOC).
+  shape, against 0.12 measured (12.75 before #516). Spec risk 8's "once per
+  pass" held only for ``_order_snapshot``; the other 12.6 were the engine
+  asking the session again at each check, and they all go through
+  ``SequenceEngine._ledger_counts`` now: one memo, extended from the frames
+  banked since it was last asked, handed out read-only. The walk left is
+  ``_order_snapshot``'s own scan of the last visits, once a pass. The budget
+  sits between that and the least a bypass adds: a reader that walks again
+  is at least as costly as the order snapshot's scan (0.25 with it bypassed),
+  and every other reader costs a walk or two a frame.
 * AT MOST ``NIGHT_BYTES_PER_FRAME_MAX`` bytes of file per frame on the
   harness's frames (387 measured), and ``RIG_BYTES_PER_FRAME_MAX`` on a
   rig-shaped frame (548 to 568 measured, 10 000 to 1000 frames).
@@ -83,7 +94,9 @@ is the response time a person reads as instant. Before this change it was
 158.6 ms for the write plus 12.75 x 0.837 ms of walks, about 170 ms, and
 about 330 ms on a camera with pixels (two writes). That was out of budget,
 and it is #514. After it, it is 35.1 ms plus 12.75 x 0.834 ms, about 46 ms,
-or about 81 ms with the thumbnail's second write (#515). The Orange Pi
+or about 81 ms with the thumbnail's second write (#515). Since #516 the
+walks are 0.12 x 0.834 ms, about 0.1 ms, so the write is nearly all of it:
+about 35 ms, or about 70 ms with the thumbnail's second write. The Orange Pi
 appliance has not been measured; #515 and #516 are the levers that widen the
 margin on a slower host.
 
@@ -125,8 +138,11 @@ from astrodeck.sequence.session import (Session, SessionFrame, SessionStore,
 # ------------------------------------------------------------------ the budget
 
 #: Full walks of ``Session.frames`` per banked frame on the night's plan
-#: shape: 12.75 measured (#516).
-NIGHT_WALKS_MAX = 13.0
+#: shape: 0.12 measured, 12.75 before the one memo (#516). The walk left is
+#: `_order_snapshot`'s scan of the last visits, once a pass; one reader
+#: bypassing the memo adds at least as much again (0.25 with that one
+#: bypassed), so the budget sits between the two.
+NIGHT_WALKS_MAX = 0.15
 #: Bytes of session file per banked frame on the harness's frames: 387
 #: measured on Windows, where each line ends CRLF (fewer on Linux).
 NIGHT_BYTES_PER_FRAME_MAX = 400.0
@@ -376,6 +392,45 @@ async def test_a_2000_frame_mosaic_night_keeps_the_ledger_budget(
     banked frame: one save, no re-read, at most ``NIGHT_WALKS_MAX`` full
     walks of the ledger, and at most ``NIGHT_BYTES_PER_FRAME_MAX`` bytes of
     file.
+
+    THE WALK BUDGET since #516 (0.15, against 0.12 measured and 12.75 before
+    the one memo, `SequenceEngine._ledger_counts`). The next three mutants
+    were run on that code, each from a byte backup, restored and
+    sha256-checked after, the one test run alone:
+
+    MUTANT "no memo" (`_ledger_counts` returns ``MappingProxyType(s.
+    accepted_by_step())``, a fresh walk at every ask). RED (observed):
+        AssertionError: a banked frame walks the ledger 13.37 times, against
+        a budget of 0.15: {'frames': 2000, 'window': [500, 2000], 'walks':
+        13.374, 'saves': 1.0, 'loads': 0.0, 'bytes': 387.0013333333333,
+        'file_bytes': 782861, 'save_ms_median_last_200': 26.03, 'calls':
+        {'accepted_by_step': 26518, 'owed': 2}}
+        assert 13.374 <= 0.15
+
+    MUTANT "`_quota_met` bypasses the memo" (``self._session.accepted(
+    step.id)`` in place of ``self._ledger_counts().get(step.id, 0)``: one
+    reader, asked twice a frame). RED (observed):
+        AssertionError: a banked frame walks the ledger 3.12 times, against
+        a budget of 0.15: {'frames': 2000, 'window': [500, 2000], 'walks':
+        3.1246666666666667, 'saves': 1.0, 'loads': 0.0, 'bytes': 387.0,
+        'file_bytes': 782860, 'save_ms_median_last_200': 26.29, 'calls':
+        {'accepted_by_step': 6003, 'owed': 2}}
+        assert 3.1246666666666667 <= 0.15
+
+    MUTANT "`_order_snapshot` bypasses the memo" (its map taken as
+    ``self._session.accepted_by_step()``, once a pass: the cheapest reader to
+    bring back, which is why the budget sits under the 0.25 it makes). RED
+    (observed):
+        AssertionError: a banked frame walks the ledger 0.25 times, against
+        a budget of 0.15: {'frames': 2000, 'window': [500, 2000], 'walks':
+        0.24933333333333332, 'saves': 1.0, 'loads': 0.0, 'bytes': 387.0,
+        'file_bytes': 782861, 'save_ms_median_last_200': 31.33, 'calls':
+        {'accepted_by_step': 253, 'owed': 2}}
+        assert 0.24933333333333332 <= 0.15
+
+    THE MUTANTS BELOW were observed in S7, when the walk count was 12.75 and
+    the budget 13 (a 'walks' of 12.749 and an ``assert ... <= 13.0`` in
+    their quotes), and are kept as the record of what each one does:
 
     MUTANT "a second save per frame" (``save_run_state`` calls
     ``self.save(session)`` twice). RED (observed):

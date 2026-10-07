@@ -382,3 +382,101 @@ export const SAVE_READONLY_REASON =
 export const AUTOSAVE_PAUSED_NOTE =
   "Autosave is paused while this flow's run is live, because a save re-anchors the counts "
   + "of blocks that have banked subs. The edit is saved a moment after the run ends.";
+
+// ------------------------------------------------------------- undo and redo
+//
+// The editor saves itself two seconds after the last edit (#688 part 2), so a
+// slip is permanent two seconds after it is made unless it can be taken back
+// (#688 part 3, WP-117). The history lives in `FlowsState.history` and is
+// written by the slice's one commit choke point; everything here is the pure
+// part both editors import, so the classic header, the #/next toolbar and
+// the two canvases' key handlers cannot word or decide one thing two ways.
+
+/** The most edits one open flow remembers. The 51st drops the oldest
+ *  (backlog ruling for #688 part 3). Entries are references to graph objects
+ *  that edits replace rather than mutate, so 50 of them are 50 pointers and
+ *  the nodes and edges an edit did not touch, shared. */
+export const FLOW_HISTORY_CAP = 50;
+
+/** Two writes of the same kind on the same thing, no further apart than this,
+ *  are one edit: a node dragged (a write per pointer move), a field typed into
+ *  (a write per keystroke). A gap of exactly this long still joins; the
+ *  window slides, so a slow drag with no pause this long in it is one entry
+ *  however long it takes. */
+export const FLOW_COALESCE_MS = 800;
+
+/** One state the operator can go back to: the graph, AND the flow's name,
+ *  which lives on the record rather than in the graph and is edited through
+ *  its own action. Undoing a rename has to give the old name back. */
+export interface FlowSnapshot {
+  graph: FlowGraphRec;
+  name: string;
+}
+
+/** What the last write was, for the coalescing test. `kind` is the sort of
+ *  write, `id` the thing written (a node id, or the flow's id for its name),
+ *  `key` the field, and `at` the time of the last write that joined it. */
+export interface FlowCommitKey {
+  kind: "move" | "param" | "name";
+  id: string;
+  key: string;
+  at: number;
+}
+
+/** The open flow's edit history. `past` is oldest first, so the next undo is
+ *  its LAST entry; `future` is what undo has set aside, the next redo being
+ *  its last entry. Both are replaced, never mutated. */
+export interface FlowHistory {
+  past: readonly FlowSnapshot[];
+  future: readonly FlowSnapshot[];
+  /** The last write, while another write of the same kind could still join
+   *  it; null after any other kind of write, an undo, a redo, an open and a
+   *  close, so a burst never straddles one of those. */
+  lastCommit: FlowCommitKey | null;
+}
+
+/** No history: what an open and a close leave, and what the sign-out reset
+ *  writes (it spreads `FLOWS_INIT`). One frozen value, so writing it twice is
+ *  no change of identity. */
+export const FLOW_HISTORY_EMPTY: FlowHistory = Object.freeze({
+  past: Object.freeze([]) as readonly FlowSnapshot[],
+  future: Object.freeze([]) as readonly FlowSnapshot[],
+  lastCommit: null,
+});
+
+/** `f`'s history, or the empty one for a `flows` state built by hand without
+ *  it (a test's miniature store, an older fixture): every reader goes through
+ *  here, so a missing key reads as "nothing to undo" instead of throwing. */
+export function historyOf(f: { history?: FlowHistory }): FlowHistory {
+  return f.history ?? FLOW_HISTORY_EMPTY;
+}
+
+export const canUndo = (f: { history?: FlowHistory }): boolean => historyOf(f).past.length > 0;
+export const canRedo = (f: { history?: FlowHistory }): boolean => historyOf(f).future.length > 0;
+
+/** Why UNDO cannot act, in words, or null when it can. A control that only
+ *  looked dimmed would not say whether it was broken or had nothing to do. */
+export const UNDO_NOTHING_REASON =
+  `Nothing to undo. Edits made since this flow was opened can be undone, the last ${FLOW_HISTORY_CAP} of them.`;
+export const REDO_NOTHING_REASON =
+  "Nothing to redo. An edit that has been undone can be redone until the flow is edited again.";
+
+export const undoReason = (f: { history?: FlowHistory }): string | null =>
+  canUndo(f) ? null : UNDO_NOTHING_REASON;
+export const redoReason = (f: { history?: FlowHistory }): string | null =>
+  canRedo(f) ? null : REDO_NOTHING_REASON;
+
+/** What a keystroke asks of the history, or null for none: Ctrl or Cmd+Z is
+ *  undo, Ctrl or Cmd+Shift+Z redo, and Ctrl+Y redo (Windows' own spelling;
+ *  Cmd+Y is the browser's History on a Mac and is left alone). Alt, with any
+ *  of them, is somebody else's chord. The caller decides WHETHER the key may
+ *  act at all (never while typing, never under a modal) before it asks. */
+export function historyKeyAction(
+  e: { key: string; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean },
+): "undo" | "redo" | null {
+  if (e.altKey || (!e.ctrlKey && !e.metaKey)) return null;
+  const k = e.key.toLowerCase();
+  if (k === "z") return e.shiftKey ? "redo" : "undo";
+  if (k === "y" && e.ctrlKey && !e.metaKey && !e.shiftKey) return "redo";
+  return null;
+}

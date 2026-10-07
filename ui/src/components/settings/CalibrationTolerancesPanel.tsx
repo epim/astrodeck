@@ -56,6 +56,10 @@ export default function CalibrationTolerancesPanel(): JSX.Element {
   // The one rule pydantic can't express: a bin narrower than the match tolerance
   // means two frames can match each other and still land in different stacks.
   const binTooNarrow = draft.temp_bin_c < draft.temp_tol_c;
+  // The five fields on screen only: the stored block also carries
+  // `rotator_bin_deg` (#176), which this panel passes through unseen.
+  const atDefaults = (Object.keys(DEFAULTS) as (keyof CalibrationConfig)[])
+    .every((k) => draft[k] === DEFAULTS[k]);
 
   const save = async () => {
     if (busy || !dirty || binTooNarrow) return;
@@ -168,8 +172,12 @@ export default function CalibrationTolerancesPanel(): JSX.Element {
           <button
             type="button"
             className="btn min-h-[44px] sm:min-h-0"
-            onClick={() => setDraft({ ...DEFAULTS })}
-            disabled={busy || JSON.stringify(draft) === JSON.stringify(DEFAULTS)}
+            // Keeps the stored block's rotator bin (#176): it has no control
+            // here, and a draft without it would SAVE as "back to the default".
+            onClick={() => setDraft((d) => (d.rotator_bin_deg === undefined
+              ? { ...DEFAULTS }
+              : { ...DEFAULTS, rotator_bin_deg: d.rotator_bin_deg }))}
+            disabled={busy || atDefaults}
           >
             Reset to defaults
           </button>

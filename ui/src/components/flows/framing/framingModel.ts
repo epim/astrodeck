@@ -1235,6 +1235,113 @@ export function toggleSkip(text: string | number | undefined, rows: number, cols
   return [formatSkip(next), ...unread].filter((s) => s !== "").join(", ");
 }
 
+// ------------------------------------------------ the panel file (#178)
+//
+// A block's panels as a file in the Telescopius shape (Pane, RA, DEC, Position
+// Angle (East), width, height, Overlap, Row, Column), and a file back as a
+// draft. THE SERVER OWNS THE FILE: every number in it and the angle
+// convention (AstroDeck's rotation runs from north through west, the file's
+// angle from north through east) live in server `catalog/panel_csv.py`, so the
+// angle cannot be wrong in two places. This section converts no angle and
+// states no convention: it builds the request, reads the answer and merges the
+// draft the server returns, and the sentence the modal shows is the server's.
+
+/** The file's download name; the server proposes the same one. */
+export const PANEL_CSV_FILENAME = "astrodeck-panels.csv";
+
+export const NO_COORDINATES_TO_EXPORT =
+  "the file lists where each panel points: type the coordinates, or search the object, first";
+export const NO_FIELD_TO_EXPORT = "the file carries the camera field: MATCH CAMERA takes it from the rig";
+export const NO_ANGLE_TO_EXPORT = "the file carries a position angle: choose a camera angle first";
+export const NOTHING_TO_EXPORT = "every panel is skipped, so there is nothing to write";
+
+/** The body of `POST /api/framing/mosaic/csv`: the layout `mosaicRequest`
+ *  builds, plus the block's `skip` text so a skipped panel is left out. */
+export interface PanelCsvRequest extends MosaicRequest {
+  skip: string;
+}
+
+/** Why EXPORT PANELS cannot act, or null. The server refuses the same four
+ *  cases (`export_csv`); this says so before the press. */
+export function panelCsvExportLock(draft: FramingDraft): string | null {
+  const l = layoutOf(draft);
+  if (draftCentre(draft) === null) return NO_COORDINATES_TO_EXPORT;
+  if (!(l.fov_x > 0 && l.fov_y > 0)) return NO_FIELD_TO_EXPORT;
+  if (l.rotation_deg === null) return NO_ANGLE_TO_EXPORT;
+  if (livePanels(draft) === 0) return NOTHING_TO_EXPORT;
+  return null;
+}
+
+/** What EXPORT PANELS posts, or null while it is locked. */
+export function panelCsvRequest(draft: FramingDraft): PanelCsvRequest | null {
+  if (panelCsvExportLock(draft) !== null) return null;
+  const req = mosaicRequest(draft, undefined);
+  return req === null ? null : { ...req, skip: textOf(draft, "skip") };
+}
+
+/** The draft keys an import writes: the geometry, and nothing the operator
+ *  chose for the block (its name, its centring, its run settings). */
+export const PANEL_CSV_KEYS = [
+  "ra", "dec", "rows", "cols", "overlap", "fovX", "fovY", "fovFrom", "rotation", "skip",
+] as const satisfies readonly DraftKey[];
+
+/** `POST /api/framing/mosaic/import`'s answer: the draft in the node's own
+ *  shape, what the server could not take as written, and the convention
+ *  sentence to show with them. */
+export interface PanelCsvImport {
+  draft: Params;
+  warnings: string[];
+  convention: string;
+}
+
+export type PanelCsvRead = { ok: true; value: PanelCsvImport } | { ok: false; why: string };
+
+/** The import answer, checked key by key: the draft goes into the modal's
+ *  edit buffer, so a value that is not a number or text is named here and not
+ *  discovered at DONE. */
+export function readPanelCsvImport(v: unknown): PanelCsvRead {
+  const bad = (why: string): PanelCsvRead => ({ ok: false, why });
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return bad("the answer is not an object");
+  const o = v as Record<string, unknown>;
+  const d = o.draft;
+  if (d === null || typeof d !== "object" || Array.isArray(d)) return bad("the answer has no draft");
+  const draft: Params = {};
+  for (const key of PANEL_CSV_KEYS) {
+    const x = (d as Record<string, unknown>)[key];
+    if (typeof x === "string" || (typeof x === "number" && Number.isFinite(x))) draft[key] = x;
+    else return bad(`the draft's ${key} is not a number or text`);
+  }
+  if (!Array.isArray(o.warnings) || !o.warnings.every((w) => typeof w === "string")) {
+    return bad("the answer's warnings are not a list of text");
+  }
+  if (typeof o.convention !== "string") return bad("the answer has no convention");
+  return { ok: true, value: { draft, warnings: o.warnings as string[], convention: o.convention } };
+}
+
+/** The draft with an import's panels in it, through `draftFromParams` like
+ *  every other way a draft is made. The geometry keys are the file's;
+ *  everything else is the draft's own. Nothing is written to the node here:
+ *  DONE writes `framingPatch` and asks the re-frame question (`reframeDecision`,
+ *  counts carry or restart) exactly as for a hand edit.
+ *
+ *  A file gives the grid an angle, so ANY ANGLE is no longer what it is. The
+ *  operator chose that angle by choosing the file, and the file's own number
+ *  is what the AngleSection then shows: ROTATE TO it, CAMERA FIXED AT it where
+ *  the rig says there is no rotator (as `angleOffer` reads that rig), or the
+ *  mode the block was already in. */
+export function mergeImportedPanels(
+  draft: FramingDraft, imported: Params, rig: RigBlock | null | undefined,
+): FramingDraft {
+  const next: Params = { ...draft };
+  for (const key of PANEL_CSV_KEYS) {
+    const v = imported[key];
+    if (v !== undefined) next[key] = v;
+  }
+  const mode = angleOf(draft);
+  next.angle = mode !== "Any angle" ? mode : rig?.has_rotator === false ? "Camera fixed at PA" : "Rotate to PA";
+  return draftFromParams(next);
+}
+
 // ------------------------------------------------ per-viewer storage (2.7)
 //
 // Survey choice and zoom are a convenience for the person looking, kept in

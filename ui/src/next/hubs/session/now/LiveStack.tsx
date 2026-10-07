@@ -43,6 +43,18 @@
 // sit in the frame's flow, which grows to hold them: centred in a fixed 180 px
 // frame, the card in the desktop column was taller than its box, and the chips
 // at the top printed over its heading and the first line of its body.
+//
+// A MOSAIC HAS ONE STACK PER PANEL AND THE ROW OF CHIPS ABOVE THE PICTURE IS HOW
+// YOU CHOOSE (#172). The server keeps each panel's pixels across visits, so the
+// stack no longer restarts at every hop; the chips name the panels with their
+// sub counts, and the picture follows the latest panel until one is pinned. The
+// row is drawn ONLY when there is more than one panel: with one it would say
+// what the badge already says, and every one-target night looks as it always
+// did. Pinning a panel changes the URL the picture is fetched from AND the
+// status the screen reads (see stackView.ts), so the badge and the channel strip
+// describe the panel on screen. A panel the server released to stay under its
+// memory budget is said once under the picture, because the count in its chip
+// restarted from zero and nothing else on the screen would say why.
 
 import { useState, type CSSProperties, type JSX } from "react";
 
@@ -52,10 +64,10 @@ import { accessPhrase, useCanControlCapture } from "../../../../lib/caps";
 import { fmtClock } from "../../../../lib/eta";
 import { fmtCount } from "../../../../lib/gallery";
 import { usePreview, useSeq, useStore, useTelemetryStale, useWsPhase } from "../../../../store";
-import { ActionButton, Bar, EmptyCard, Mono } from "../../../ui";
+import { ActionButton, Bar, Chip, EmptyCard, Mono } from "../../../ui";
 import { explainLock } from "../../../shell/explain";
 import { phaseOf, phaseWord } from "./phase";
-import { useStackView, useSessionStackStatus } from "./stackView";
+import { latestPanel, panelLabels, useStackView, useSessionStackStatus } from "./stackView";
 import { useSubFrame } from "./useSubFrame";
 import { useNowIncidents } from "./useNowIncidents";
 
@@ -113,9 +125,17 @@ export function channelFallbackNote(name: string, frames: number): string {
     : `Nothing stacked in ${name} yet - showing the combined picture.`;
 }
 
+/** The sentence under the picture when the server released panels to stay under
+ *  its memory budget. Null when it released none. */
+export function evictedNote(names: readonly string[] | undefined): string | null {
+  if (!names || names.length === 0) return null;
+  return `${names.join(", ")} ${names.length === 1 ? "was" : "were"} released to stay `
+    + "under the memory budget; a panel starts again from zero when the run returns to it.";
+}
+
 export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
   const { status, busy, error, answered, start } = useSessionStackStatus();
-  const { channel, cssFilter, stretch } = useStackView();
+  const { channel, cssFilter, stretch, panel, setPanel } = useStackView();
   // Which (seq, channel) pair the server has already refused. Keyed by the pair
   // rather than a bare boolean so a new frame (seq moves) or a different chip
   // asks again by itself: the channel that was empty at 21:10 is the one the
@@ -140,7 +160,18 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
   const available = status?.backfill?.available ?? 0;
   const bfLine = backfillLabel(status?.backfill);
 
-  const viewKey = `${status?.seq ?? 0}|${channel ?? ""}`;
+  // The chip row. `status.panels` is the whole stack's list whichever panel the
+  // rest of the status describes; absent from an older server, which reads as
+  // one panel and so no row.
+  const panels = status?.panels ?? [];
+  const labels = panelLabels(panels);
+  const showPanelChips = panels.length > 1;
+  // Following the latest, the chip lit is the one the latest frame fed.
+  const litPanel = panel ?? latestPanel(panels)?.key ?? null;
+  const panelWord = (status?.target ?? "") || "tonight's target";
+  const evicted = evictedNote(status?.evicted);
+
+  const viewKey = `${status?.seq ?? 0}|${channel ?? ""}|${panel ?? ""}`;
   const channelMissing = channel != null && missingKey === viewKey;
   // What is actually on screen, which is what everything below must describe.
   const shown = channelMissing ? null : channel;
@@ -215,14 +246,36 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
 
   return (
     <div data-testid="now-live-stack" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {showPanelChips && (
+        <div
+          data-testid="live-stack-panels"
+          role="group"
+          aria-label="Mosaic panels"
+          style={{ display: "flex", gap: 5, overflowX: "auto", minWidth: 0 }}
+        >
+          {panels.map((p, i) => (
+            <Chip
+              key={p.key}
+              active={litPanel === p.key}
+              count={p.frames}
+              onClick={() => setPanel(panel === p.key ? null : p.key)}
+              data-testid={`panel-chip-${p.key}`}
+            >
+              {labels[i]}
+            </Chip>
+          ))}
+        </div>
+      )}
       {hasImage && status ? (
         <div data-testid="live-stack-frame" style={{ ...frameStyle, height }}>
           <img
-            src={sessionStackImageUrl(status.seq, 1200, shown ?? undefined)}
+            // The panel rides on the URL ONLY while one is pinned: following
+            // the latest is the request this screen has always made.
+            src={sessionStackImageUrl(status.seq, 1200, shown ?? undefined, panel ?? undefined)}
             onError={() => { if (channel) setMissingKey(viewKey); }}
             alt={shown
-              ? `Live stack of ${status.target || "tonight's target"}, ${shown} channel only`
-              : `Live stack of ${status.target || "tonight's target"}`}
+              ? `Live stack of ${panelWord}, ${shown} channel only`
+              : `Live stack of ${panelWord}`}
             data-testid="live-stack-image"
             style={{
               position: "absolute", inset: 0, width: "100%", height: "100%",
@@ -302,6 +355,11 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
           <Mono size={10} tone="warn">
             {channelFallbackNote(channel, status ? channelFrames(status, channel) : 0)}
           </Mono>
+        </span>
+      )}
+      {evicted && (
+        <span data-testid="live-stack-evicted">
+          <Mono size={10} tone="warn">{evicted}</Mono>
         </span>
       )}
       {bfLine && <Mono size={10} tone="dim">{bfLine}</Mono>}

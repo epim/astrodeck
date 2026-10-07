@@ -255,8 +255,13 @@ async def test_an_ascii_slot_writes_no_filtutf8_and_keys_as_before(sim_hub):
     assert fitsio.FILTER_UTF8 not in hdr
     key = key_from_header(hdr)
     temp = round(float(hdr["CCD-TEMP"]), 3)
-    assert key == CalKey("FLAT", 0.2, 100, 30, temp, 1, "Ha"), key
-    assert key_index_id(key, 5.0) == "flat_g100_o30_b1_fHa"
+    # RE-PINNED FOR BACKLOG WP-122 (#176, wave 16 integration): the sim hub's
+    # rotator is connected at mechanical 0.0, so the flat now correctly
+    # carries ROTMECH 0.0, the key gains ``rotator_mech_deg=0.0`` and the
+    # bucket id its ``_r0`` suffix. This test's point, no FILTUTF8 and a slot
+    # name that keys exactly as before, is unchanged.
+    assert key == CalKey("FLAT", 0.2, 100, 30, temp, 1, "Ha", 0.0), key
+    assert key_index_id(key, 5.0) == "flat_g100_o30_b1_fHa_r0"
     groups = nightstack.flats_by_filter([flat])
     assert list(groups) == ["HA"], groups
     assert read_backfill_frame(BackfillItem(path=light))[1] == "Ha"

@@ -1285,6 +1285,67 @@ OVERLAP_MAX_PCT = 50.0
 PASSES_MAX = 20
 VISIT_MAX_MIN = 180.0
 
+#: THE PER-PANEL ANGLE (#175, spec I-26 and S8; backlog ruling R-4, whose
+#: sign half is measured). With it on, a block whose angle is "rotate" is
+#: commanded each panel's OWN position angle, the block's plus that panel's
+#: meridian convergence (``framing.compute_mosaic``'s ``pa_deg``), where it
+#: used to command the block's one angle to every panel and leave wedge gaps
+#: at the corners at high declination or low overlap. A block that is
+#: "fixed" or "any" is untouched: a camera that cannot turn cannot correct.
+#:
+#: ONE SWITCH, READ AT CALL TIME by this module's compile and by the doctor
+#: (``corrects_convergence``), so the plan and what the doctor says of it
+#: cannot disagree. Off, every compiled plan is the one every earlier build
+#: made, byte for byte (``test_w16_mosaic_panel_pa``). #175 stays open until
+#: #145's pier-east pair is measured on the rig: the sky sense and the learned
+#: mechanical sign are measured on pier west, and a flip is not yet shown to
+#: leave the sign alone.
+CORRECT_MOSAIC_CONVERGENCE = True
+
+#: The least turn worth a rotation per hop, in degrees: ``RotatorConfig.
+#: tolerance_deg``'s default, the rotate loop's own convergence bound. A panel
+#: that turns less than the rotator can settle to would be moved for nothing,
+#: and every move of the one-sided approach overshoots by
+#: ``ROTATOR_BACKLASH_DEG`` and comes back, a cost each hop would pay. A block
+#: whose worst panel turns less than this keeps the block's angle on every
+#: panel, so a low-declination mosaic compiles as it always did. Held to the
+#: config default by a test, so the two cannot drift.
+CONVERGENCE_MIN_DEG = 1.0
+
+
+def corrects_convergence(panels, *, rotate: bool, rig=None) -> bool:
+    """Whether a block's panels are each commanded their own angle: the
+    switch is on, the block is "rotate", the rig is not known to lack a
+    rotator, and the worst panel turns at least ``CONVERGENCE_MIN_DEG``.
+
+    ``panels`` is ``framing.compute_mosaic``'s list (each carries
+    ``convergence_deg``). A rig that says it has NO rotator is a fixed camera
+    turned by hand, which cannot correct, so it keeps the block's angle and
+    the budget convergence charges; unknown (None) is not no. The doctor
+    asks this same function (M6, M15), so a block it calls corrected is one
+    the compile corrects."""
+    if not CORRECT_MOSAIC_CONVERGENCE or not rotate:
+        return False
+    if rig is not None and rig.has_rotator is False:
+        return False
+    worst = max((abs(p["convergence_deg"]) for p in panels), default=0.0)
+    return worst >= CONVERGENCE_MIN_DEG
+
+
+def corrected_tolerance_deg(spec) -> float:
+    """A.2's tolerance for a block whose panels are each held to their own
+    angle: the budget ``ROTATION_BUDGET`` with convergence taken as 0, since
+    a panel is judged against the angle it needs and its neighbours' turn
+    against it is the correction, not an error. It is what
+    ``framing.angle_tolerance_deg`` answers for ONE panel of the same field
+    and overlap, which has no neighbour and so no convergence: the one copy
+    of A.2's formula and its clamps, reached through the public function."""
+    from ..catalog import framing
+    if isinstance(spec, dict):
+        spec = framing.MosaicSpecIn(**spec)
+    return framing.angle_tolerance_deg(
+        spec.model_copy(update={"rows": 1, "cols": 1}))
+
 
 def _number(value) -> float | None:
     """``value`` as a finite float, or None for anything that is not one (a
@@ -1469,9 +1530,12 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
     (rows from the top, snaking), SKIPPED PANELS DROPPED. Each is named
     "<name> <row>-<col>" 1-based and carries its 0-based ``panel_row`` and
     ``panel_col``, the group's id as ``mosaic_group``, the rotator's PA only
-    for "rotate", ``acquisition = "cycle"`` when a stage cycles or the loop
-    wire rotates the panels, the block's centring, ``autofocus_skip_if_fresh``
-    (a hop does not move the focuser, spec 5.6) and the dusk schedule.
+    for "rotate" (each panel's own where the block corrects meridian
+    convergence, ``corrects_convergence``, #175; the block's angle on every
+    panel otherwise), ``acquisition = "cycle"`` when a stage cycles or the
+    loop wire rotates the panels, the block's centring,
+    ``autofocus_skip_if_fresh`` (a hop does not move the focuser, spec 5.6)
+    and the dusk schedule.
 
     The group's id is ``identity.group_id`` over the block's key
     (``_block_key``: its anchor), so a panel's id, ``target_id(group, row,
@@ -1506,7 +1570,15 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
             "fov_x_deg": nums["fov_x"], "fov_y_deg": nums["fov_y"]}
     try:
         layout_panels = framing.compute_mosaic(spec)["panels"]
-        tolerance = framing.angle_tolerance_deg(spec)
+        # EACH PANEL ITS OWN ANGLE, OR ALL THE BLOCK'S (#175). Corrected, a
+        # panel is commanded and checked against its ``pa_deg`` and the
+        # tolerance is A.2's with no convergence taken from it; otherwise
+        # every panel is the block's angle and convergence is charged, as
+        # it was.
+        corrected = corrects_convergence(layout_panels,
+                                         rotate=angle == "rotate", rig=rig)
+        tolerance = (corrected_tolerance_deg(spec) if corrected
+                     else framing.angle_tolerance_deg(spec))
     except ValidationError as e:
         # THE LAYOUT REFUSES THE CENTRE BEFORE ANY PANEL IS MADE (#362):
         # ``MosaicSpecIn`` holds the sphere's bounds, so an RA typed as 30h
@@ -1539,7 +1611,9 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
         panel = {"name": (f"{name} {row + 1}-{col + 1}" if name
                           else f"{row + 1}-{col + 1}"),
                  "ra_hours": p["ra_hours"], "dec_deg": p["dec_deg"],
-                 "rotation_deg": commanded,
+                 # The panel's own angle when the block corrects (a block at
+                 # layout 0 still commands its corners), else the block's.
+                 "rotation_deg": p["pa_deg"] if corrected else commanded,
                  "schedule": _target_schedule(base_schedule, entry,
                                               is_pool=False),
                  "steps": copy.deepcopy(steps),
@@ -1580,10 +1654,16 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                                   "least_complete"),
         # Only "Shoot anyway" lets a panel shoot off its tile.
         "require_centred": m.get("require_centred") is not False,
+        # The LAYOUT angle, corrected or not: a corrected block's panels each
+        # carry their own ``rotation_deg`` (`corrects_convergence`, #175),
+        # and the engine plans a rotating member by that one, falling back to
+        # this (`SequenceEngine._planned_pa`).
         "pa_deg": layout,
         "rotate": angle == "rotate",
         # A.2 with convergence's share taken first (Revision 1): how far the
         # camera may sit off `pa_deg` before the corner overlap runs out.
+        # For a corrected block, how far off its panel's own angle, with no
+        # convergence taken (`corrected_tolerance_deg`).
         "angle_tolerance_deg": tolerance,
         "skipped_ids": skipped_ids,
         # Provenance only; `_group_cols` reads `cols` as a fallback.

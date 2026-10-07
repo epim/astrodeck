@@ -102,8 +102,21 @@ export interface UseStepUpResult {
   /** POST /auth/local. True on success; the principal is re-read so the screen
    *  sees the new session. */
   signInLocal: (username: string, password: string) => Promise<boolean>;
-  /** Full-page redirect to the Google sign-in (`GET /auth/login`). */
-  signInGoogle: () => void;
+  /** Full-page redirect to the Google sign-in (`GET /auth/login`). With
+   *  `returnTo` (a bare in-app hash route, `#/...`) the rig brings the browser
+   *  back to that route after the callback instead of the home screen (#733);
+   *  the rig refuses anything that is not such a route, and falls back to the
+   *  home screen. */
+  signInGoogle: (returnTo?: string) => void;
+}
+
+/** The address the Google sign-in starts at: the rig's login route under the
+ *  relay's mount prefix when there is one (`u`), with `returnTo` as `return`
+ *  when given. Percent-encoded, because a `#` in a query string is not part of
+ *  the query. The one builder both UIs use (#733). */
+export function googleLoginHref(returnTo?: string): string {
+  const base = u("/auth/login");
+  return returnTo ? `${base}?return=${encodeURIComponent(returnTo)}` : base;
 }
 
 export function useStepUp(): UseStepUpResult {
@@ -142,8 +155,8 @@ export function useStepUp(): UseStepUpResult {
     }
   }, []);
 
-  const signInGoogle = useCallback(() => {
-    window.location.href = u("/auth/login");
+  const signInGoogle = useCallback((returnTo?: string) => {
+    window.location.href = googleLoginHref(returnTo);
   }, []);
 
   const enabled = methods?.methods ?? [];

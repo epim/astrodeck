@@ -205,6 +205,46 @@ def test_panel_0_0_is_the_north_west_corner_and_the_list_is_the_snake():
         (0, 0), (0, 1), (0, 2), (1, 2), (1, 1), (1, 0)]
 
 
+def test_the_recorded_panels_carry_the_per_panel_angle_in_the_rigs_sense():
+    """What the UI tests read the two per-panel keys by (#175): panel
+    ``convergence_deg`` is local north on the grid's plane from +eta toward
+    +xi, so it is POSITIVE on the west column (north leans toward the pole,
+    east of a panel west of the centre), negative on the east column and 0
+    on the middle one; ``pa_deg`` is the layout angle plus it, wrapped; and
+    ``rotation_deg`` is still the layout angle on every panel, which is what
+    the Atlas draws the rectangles at.
+
+    Read off the recorded answer rather than recomputed, so this holds the
+    FILE to the convention. Each mutant had the fixture rewritten FROM it,
+    so the equality test above passed and this one is what failed.
+
+    Mutant "n_i sign flipped" in ``panel_convergence_deg`` failed:
+        AssertionError: panel (0, 0) is not turned toward the east: -1.31...
+        assert -1.3136419413493814 > 0
+
+    Mutant "pa_deg = rotation_deg" failed:
+        AssertionError: panel (0, 0): pa_deg 0.0 is not rotation_deg 0.0 +
+        convergence_deg 1.3136419413493814, wrapped
+    """
+    fx = _fixture()
+    layout = fx["request"]["rotation_deg"]
+    by_rc = {(p["row"], p["col"]): p for p in fx["response"]["panels"]}
+    for p in by_rc.values():
+        assert p["rotation_deg"] == layout, p
+        want = (layout + p["convergence_deg"]) % 360.0
+        assert p["pa_deg"] == pytest.approx(want, abs=1e-9), (
+            f"panel ({p['row']}, {p['col']}): pa_deg {p['pa_deg']} is not "
+            f"rotation_deg {layout} + convergence_deg "
+            f"{p['convergence_deg']}, wrapped")
+    for r in range(fx["request"]["rows"]):
+        west, mid, east = (by_rc[(r, c)]["convergence_deg"] for c in range(3))
+        assert west > 0, (
+            f"panel ({r}, 0) is not turned toward the east: {west}")
+        assert east < 0, (
+            f"panel ({r}, 2) is not turned toward the west: {east}")
+        assert mid == pytest.approx(0.0, abs=1e-9), (r, mid)
+
+
 def _write_fixture() -> None:
     """Rewrite the file from ``compute_mosaic`` (what the route answers for
     this request: it adds nothing without ``date``/``transit_alt``/an

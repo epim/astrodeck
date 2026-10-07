@@ -13,7 +13,11 @@ import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import GotoStrip from "../components/GotoStrip";
 import type { CatalogEntry, LogLine, PreflightAlt } from "../types";
 import { altTone, fmtAlt, fmtMag } from "../lib/catalogFormat";
-import { slewRatesWithCeiling } from "../lib/slewController";
+import {
+  POSITION_UNKNOWN_NOTE, TRUST_POSITION_CONFIRM_BODY, TRUST_POSITION_CONFIRM_LABEL,
+  TRUST_POSITION_CONFIRM_TITLE, TRUST_POSITION_LABEL, positionKnown,
+  slewRatesWithCeiling,
+} from "../lib/slewController";
 
 /** Severity glyph for an altitude cell — shape, not colour-only (spec §5 / critique3 #7).
  *  `alt` is absent for a viewer-role search result (no view.site_derived), in
@@ -108,6 +112,13 @@ export default function MountView() {
   const maxRateDegS = m?.max_rate_deg_s ?? null;
   const slewRates = useMemo(() => slewRatesWithCeiling(maxRateDegS),
                             [maxRateDegS]);
+
+  // #144: false after a power-up or reset, until a plate-solve sync or the
+  // operator's word. Only an explicit false counts (an engine older than the
+  // flag sends none). The pad below reads the same flag off the same status for
+  // its own half (the ceiling rung, the altitude guard); this view owns the note
+  // and the TRUST POSITION button, and stops printing the home reading.
+  const positionIsKnown = positionKnown(m);
 
   // ---------------------------------------------------------- in-flight state
   // TWO KINDS OF ROUTE, TWO KINDS OF TRUTH.
@@ -249,6 +260,42 @@ export default function MountView() {
     }
   };
 
+  // TRUST POSITION (#144): the operator's word that the tube is physically at
+  // the mount's home or park position, which the mount's own report then
+  // matches. Out of service for a viewer, during any motion (the claim is about
+  // a tube at rest) and while another command is on the wire.
+  const trustBlocked = !canMount || !m || pending !== null || laneBusy || !!m.slewing;
+  const trustPosition = async (): Promise<void> => {
+    if (trustBlocked) return;
+    // ASKED FIRST, in the words of what is being claimed: one tap beside the pad
+    // must not switch off a guard on a word the operator did not mean.
+    const sure = await confirmDialog({
+      title: TRUST_POSITION_CONFIRM_TITLE,
+      body: TRUST_POSITION_CONFIRM_BODY,
+      tone: "warn",
+      mode: "confirm",
+      confirmLabel: TRUST_POSITION_CONFIRM_LABEL,
+    });
+    if (!sure) return;
+    await act("trust", async () => {
+      const res = await api.post<{ position_known?: boolean }>("/api/mount/trust-position");
+      // The answer is the driver's verdict afterwards: a driver that keeps its
+      // own evidence and declines must not be reported as cleared. The view lets
+      // go on the next status frame, never on this press.
+      if (res?.position_known === false) {
+        showToast("warning",
+          "The mount did not accept that its position is known. Run Solve & Sync instead.");
+        return;
+      }
+      enqueueToast({
+        level: "success",
+        title: "Position trusted",
+        detail: "The mount's coordinates are taken as true from the next status "
+          + "update. Solve & Sync later replaces this with a measurement.",
+      });
+    });
+  };
+
   // Same debounce as the Atlas's CatalogSearch, and it had the same race:
   // `clearTimeout` cancels a debounce that has not fired, but a request already
   // ON THE WIRE still lands and still calls setResults. Over a phone's link to
@@ -366,9 +413,21 @@ export default function MountView() {
           <div className="grid grid-cols-2 gap-x-4 gap-y-3">
             <Stat label="RA (J2000)" value={m?.ra_str ?? "—"} />
             <Stat label="Dec (J2000)" value={m?.dec_str ?? "—"} />
-            <Stat label="Altitude" value={m ? `${m.alt}°` : "—"}
-              tone={m && m.alt < 20 ? "warn" : undefined} />
-            <Stat label="Azimuth" value={m ? `${m.az}°` : "—"} />
+            {/* While the mount does not know where it points it reports its
+                HOME position, and an altitude read there is the site latitude,
+                not the tube's height (#144, #140). Neither angle is printed.
+                A viewer has no view.site_derived, so the server REMOVES alt and
+                az from their frame (api/redact.py `_MOUNT_DERIVED_KEYS`): the
+                stat says hidden rather than printing the template's
+                "undefined°". */}
+            <Stat label="Altitude"
+              value={!m ? "—" : !positionIsKnown ? "unknown"
+                : typeof m.alt === "number" ? `${m.alt}°` : "hidden"}
+              tone={m && (!positionIsKnown || m.alt < 20) ? "warn" : undefined} />
+            <Stat label="Azimuth"
+              value={!m ? "—" : !positionIsKnown ? "unknown"
+                : typeof m.az === "number" ? `${m.az}°` : "hidden"}
+              tone={m && !positionIsKnown ? "warn" : undefined} />
             {/* The lane-derived states come FIRST. A native AM5 leaves
                 `slewing` false for the whole park and the whole home walk, so
                 this stat read IDLE while the mount was physically travelling —
@@ -520,6 +579,31 @@ export default function MountView() {
               toggles, alt-guard, NINA mode. SlewPad itself hard-guards on the cap
               (it can't post moves for a viewer); the disabled inputs here are the
               visible read-only affordance. */}
+          {/* WHY THE PAD BEHAVES DIFFERENTLY, above it where it is read first.
+              Information, not an alarm: a mount powered up parked at home reads
+              the same pole as a reset one, so this is the ORDINARY start of
+              every night until the first plate-solve sync. The pad itself has
+              already moved to the ceiling rung and dropped its horizon guard. */}
+          {!positionIsKnown && (
+            <div className="mb-3 flex flex-col gap-2" data-testid="mount-position-note">
+              <p className="text-[12px] leading-snug text-dim" role="status">
+                {POSITION_UNKNOWN_NOTE}
+              </p>
+              <button className="btn tap min-h-[44px]"
+                disabled={trustBlocked}
+                aria-busy={pending === "trust" || undefined}
+                title={!canMount ? "Attesting the mount's position needs control of the mount."
+                  : (laneBusy || m?.slewing)
+                    ? "The mount is moving - say where the tube is once it has stopped."
+                    : undefined}
+                onClick={() => void trustPosition()}>
+                {TRUST_POSITION_LABEL}
+              </button>
+              <p className="text-[12px] text-dim">
+                {TRUST_POSITION_LABEL} says the tube is physically at its home or park position.
+              </p>
+            </div>
+          )}
           <SlewPad rates={slewRates} maxRateDegS={maxRateDegS} />
           <div className="flex items-center justify-center gap-2 mt-4 border-t border-line pt-3">
             <button className="btn tap min-h-[44px]" disabled={!canMount || solving}

@@ -192,6 +192,13 @@ class TestTheTwoAnswersAgree:
         assert eng._target_complete(0, t) is True
 
         session.frames[0].override = "reject"
+        # RE-PINNED FOR BACKLOG WP-125 (#516, wave 16 integration): the memo
+        # (`_ledger_counts`) does not see a verdict changed IN PLACE on a frame
+        # it already counted, by design: in production a regrade is made
+        # between runs, on the store's copy (PATCH /api/sessions/{id}/frames/
+        # {frame_id} answers 409 for an active session, test_sessions_api.py),
+        # and `start()` drops the memo. This models that truthfully.
+        eng._accepted_seen = None
         step_says = eng._step_complete(t, step)
         target_says = eng._target_complete(0, t)
         assert step_says is False, "the ledger regrade did not reach _step_complete"
