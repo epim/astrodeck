@@ -56,6 +56,25 @@ export const LOG_RING = 120;
  *  final count right. */
 export const LIVE_PROGRESS_MIN_MS = 30_000;
 
+/** The quiet an edit must be followed by before the flow saves itself (#688
+ *  part 2, WP-99): 2000 ms after the LAST edit, so a burst (a node dragged, a
+ *  param typed into) is one PUT and a pause is what ends it. Never a timer for
+ *  a retry: see `autosaveFire`. */
+export const AUTOSAVE_QUIET_MS = 2000;
+
+/** How long the optimistic `flows.run.phase` is believed on its own when the
+ *  autosave asks whether a run of this flow is live: the RUN button's own
+ *  number (`RUN_PHASE_BRIDGE_MS`, #647). That one lives in flowRunControls.tsx,
+ *  which imports this module, so it cannot be imported back without a cycle;
+ *  w15FlowHeaderSaveState.test.tsx pins the two equal. */
+export const AUTOSAVE_RUN_BRIDGE_MS = 20_000;
+
+/** The end of the flow-log line an autosave that did not keep the edit says
+ *  (`could not autosave: <reason>; <this>`): the ruling that a failed PUT is
+ *  retried only on the next edit, never on a timer, so a server 422 does not
+ *  loop, stated where the operator reads it. */
+export const AUTOSAVE_RETRY_NOTE = "it is tried again after your next edit";
+
 /** The toast title when `flowsOpen` refuses to replace the open flow (#450).
  *  The same words the #/next doors (openFlow.ts `FLOW_OPEN_FAILED`) and the
  *  wizard put on a failed open, so the store's toast model coalesces a
@@ -128,6 +147,13 @@ export interface FlowsState {
   record: FlowRecordRec | null;
   graph: FlowGraphRec;
   dirty: boolean;
+  /** True while a PUT of the open flow is out, whoever asked for it: the
+   *  autosave, a SAVE press, a way out of the editor, TONIGHT or RUN. It is
+   *  the SAVING word both editors' pills draw (`saveStateWord`), and it
+   *  follows the newest PUT, so two overlapping saves stay SAVING until the
+   *  second settles. It says nothing about whether the flow is stored:
+   *  that is `dirty`, which a PUT that fails leaves true. */
+  saving: boolean;
 
   // ── selection and editing are SEPARATE, per the README.
   //    On desktop the inspector follows `sel`. On tablet and phone only the
@@ -244,7 +270,7 @@ export function compiledIsCurrent(f: Pick<FlowsState, "compiled" | "graph">): bo
 
 export const FLOWS_INIT: FlowsState = {
   cards: [], folders: [], libraryLoaded: false, libraryError: null,
-  record: null, graph: { nodes: [], edges: [] }, dirty: false,
+  record: null, graph: { nodes: [], edges: [] }, dirty: false, saving: false,
   sel: null, editNode: null,
   // The prototype opens at this pan/zoom; a fresh canvas that started at 1.0/0,0
   // shows the first node hard against the corner.
@@ -931,6 +957,143 @@ export function createFlowsActions(
     await get().flowsSave();
   };
 
+  // ───────────────────────────────────────────────────────────────── AUTOSAVE
+  //
+  // THE EDITOR SAVES ITSELF (#688 part 2, WP-99). Before it, the canvas and the
+  // stored flow were two graphs from the first edit until a SAVE press or a way
+  // out, and the classic editor has no SAVE press at all. Part 1 made the
+  // readers of the stored flow (Tonight, RUN) save first; this makes the
+  // standing state a short window.
+  //
+  // DRIVEN OFF THE STORE'S OWN WRITES, not off the actions: every edit
+  // replaces the graph object (`touch`) or the record's name, and a write that
+  // came some other way (the TARGET modal's DONE, a hand-built state) is an
+  // edit just the same. `onFlowsWrite` below is the one place that decides.
+  //
+  //   - 2000 ms of quiet, then ONE PUT per burst (`AUTOSAVE_QUIET_MS`): an edit
+  //     moves the deadline, it does not add a save.
+  //   - Never for a read-only Example: `flowsSave` declines one by itself, so
+  //     the guard is what keeps a timer, and a log line, from existing.
+  //   - NEVER WHILE A RUN OF THIS FLOW IS LIVE: a save re-anchors the counts of
+  //     banked blocks (`saveAnswerLines`, `reanchorToast`), and an unattended
+  //     timer must not do that to a night in progress. The edit is HELD and
+  //     saved a moment after the run ends, or by a way out, or by TONIGHT.
+  //   - A FAILED PUT IS RETRIED ONLY ON THE NEXT EDIT, never on a timer: a
+  //     server 422 on a graph the operator has stopped touching would
+  //     otherwise loop for the rest of the night. Said once on the flow log.
+  //   - ONE SAVE IN FLIGHT AT A TIME, the rule `saveBeforeRead` states.
+
+  /** The pending autosave's timer, or null. One at most: scheduling again
+   *  takes the old one down first. */
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** An edit the autosave wanted to save and a live run held back. The run's
+   *  end (`onFlowsWrite`) schedules it; any other way the autosave is
+   *  cancelled, or scheduled afresh, drops it. */
+  let heldByRun = false;
+
+  /** The newest sequence state the subscription has seen. Every write of
+   *  `sequence`, the snapshot a reconnect lands included, passes through it,
+   *  so this is the rig's state as of the last store write; `flows` itself
+   *  does not carry it. */
+  let seqSeen: SequenceState | undefined;
+
+  const cancelAutosave = (): void => {
+    if (autosaveTimer !== null) clearTimeout(autosaveTimer);
+    autosaveTimer = null;
+    heldByRun = false;
+  };
+
+  /** An open, writable flow with edits the rig does not hold. */
+  const autosaveEligible = (f: FlowsState): f is FlowsState & { record: FlowRecordRec } =>
+    f.record !== null
+    && !f.record.readonly
+    && f.dirty;
+
+  /** Is a run of the OPEN flow live? Read as the RUN button reads it
+   *  (`useFlowRunControls`' `running`): the rig's live run is one of this
+   *  flow's sessions, or the client's own optimistic `phase` says a start has
+   *  just been posted and the engine has not published yet.
+   *
+   *  THE PHASE ALONE IS BELIEVED ONLY INSIDE ITS BRIDGE WINDOW (#647). A run
+   *  that ends while ANOTHER flow is open never clears the latch (`onSequence`
+   *  clears it for the open flow's own sessions), and an unbounded read would
+   *  then hold every later flow's autosave for the rest of the page's life.
+   *  A latch with no stamp is believed: `flowsRun` always stamps one, so it
+   *  is a state nothing real writes, and the safe way to read it. */
+  const runLive = (): boolean => {
+    const f = get().flows;
+    const bridging = isRunPhaseLive(f.run.phase)
+      && (f.run.startedAt === null || Date.now() - f.run.startedAt < AUTOSAVE_RUN_BRIDGE_MS);
+    return bridging
+      || openFlowOwns(liveSessionOf(seqSeen));
+  };
+
+  /** The timer's work: save, if the flow still wants it and may have it.
+   *  Every condition is read again NOW, not carried from when the edit was
+   *  made: the flow may have been saved by a press, closed, replaced, or a
+   *  run may have started in the two seconds. */
+  const autosaveFire = async (): Promise<void> => {
+    autosaveTimer = null;
+    const id = get().flows.record?.id;
+    // THE PUT OUT NOW, if any, and what it carried: a save the operator asked
+    // for, or the burst's own earlier PUT. WAITED FOR, not sent beside
+    // (`saveBeforeRead`).
+    const out = saving;
+    if (savingPromise) await savingPromise;
+    const f = get().flows;
+    if (!autosaveEligible(f) || f.record.id !== id) return;
+    if (runLive()) { heldByRun = true; return; }
+    // THE PUT WE WAITED ON CARRIED EXACTLY WHAT IS ON SCREEN, and the flow is
+    // still dirty, so it failed. That PUT was this graph's one attempt: only
+    // an edit earns the next (a failed PUT is retried only on the next edit).
+    const carried = out !== null && out.id === id
+      && out.graph === f.graph && out.name === f.record.name;
+    if (carried) return;
+    await get().flowsSave();
+    const now = get().flows;
+    // STILL DIRTY, STILL THE SAME GRAPH AND NAME, STILL THIS FLOW: the PUT
+    // failed (its catch wrote `libraryError`). An edit that landed inside the
+    // PUT, a close, an open and a save that worked are all different.
+    if (now.record?.id === id && now.dirty
+        && now.graph === f.graph && now.record.name === f.record.name) {
+      get().flowsAppendLog(
+        `could not autosave: ${now.libraryError ?? "the server did not accept it"}; ${AUTOSAVE_RETRY_NOTE}`,
+        "warn",
+      );
+    }
+  };
+
+  const scheduleAutosave = (): void => {
+    cancelAutosave();
+    autosaveTimer = setTimeout(() => { void autosaveFire(); }, AUTOSAVE_QUIET_MS);
+  };
+
+  /** What the subscription does with one store write. Called on EVERY write
+   *  in the app (status ticks every 2 s), so the first line is the one
+   *  comparison that lets nearly all of them go. */
+  const onFlowsWrite = (s: FlowsWatch, prev: FlowsWatch): void => {
+    const f = s.flows;
+    const p = prev.flows;
+    if (f === p && s.sequence === prev.sequence) return;
+    // No flow open: nothing to save, and a timer left armed would fire into
+    // whatever opens next. A close and the sign-out gate's reset both land
+    // here (the gate waits for nothing).
+    if (!f.record) { cancelAutosave(); return; }
+    // AN EDIT is the graph object or the name changing; the answer to a save
+    // (the server's record, a counts switch written into the graph) is not one
+    // unless an edit landed inside the PUT, in which case `dirty` says so.
+    const edited = f.graph !== p.graph
+      || f.record.name !== p.record?.name;
+    if (edited && autosaveEligible(f)) { scheduleAutosave(); return; }
+    // THE RUN ENDED (or its latch was cleared) with an edit held back: it is
+    // now the same as an edit made just now, so it gets its quiet window.
+    if (heldByRun && (s.sequence !== prev.sequence || f.run !== p.run)
+        && autosaveEligible(f) && !runLive()) {
+      scheduleAutosave();
+    }
+  };
+
   /** Re-read the open flow's progress into `flows.progress` (#189 S1 item 9).
    *  Never rejects, and every caller starts it without awaiting it.
    *
@@ -1042,8 +1205,14 @@ export function createFlowsActions(
   // lines, previews), so it does one comparison before anything else. It
   // used to drop the private session set when no flow was open; the list is
   // state now, dropped by the writes that close the record (#449).
+  //
+  // The second job is the autosave's (`onFlowsWrite`). `seqSeen` is taken
+  // FIRST, so the live-run test an edit's own write triggers reads the
+  // sequence that write carries.
   api?.subscribe((s, prev) => {
+    seqSeen = s.sequence;
     if (s.sequence !== prev.sequence) onSequence(prev.sequence, s.sequence);
+    onFlowsWrite(s, prev);
   });
 
   return {
@@ -1065,6 +1234,11 @@ export function createFlowsActions(
     },
 
     flowsOpen: async (id) => {
+      // THE PENDING AUTOSAVE IS TAKEN DOWN: this open saves the flow it leaves
+      // itself, just below, and the timer must not fire into the save it makes.
+      // An edit that lands during that save arms a new one (`onFlowsWrite`),
+      // which is what keeps a refused open's flow from sitting unsaved.
+      cancelAutosave();
       // EVERY WAY OUT SAVES FIRST, AND AN OPEN IS A WAY OUT (#450). The rule
       // lived on the exits that are components (the canvas host's BACK and
       // its stranded-route effect, the Flows screen's, the stage sheet's,
@@ -1208,6 +1382,10 @@ export function createFlowsActions(
       if (!record || record.readonly || !dirty) return;
       const sent = { id: record.id, graph, name: record.name };
       saving = sent;
+      // THE SAVING WORD (`flows.saving`): written with the PUT, before it, so
+      // no render sees a PUT out under a pill that says SAVED or UNSAVED
+      // EDITS. Cleared by the `finally` below, which follows `saving` itself.
+      set((s) => patch(s, { saving: true }));
       // #500 residual: this call's own completion, exposed as `savingPromise`
       // so `flowsOpen`'s carried-save branch can await THIS exact PUT rather
       // than firing a second one. Wrapped rather than just awaiting `flowsSave()`
@@ -1305,6 +1483,15 @@ export function createFlowsActions(
         set((s) => patch(s, { libraryError: errText(e) }));
       } finally {
         if (saving === sent) { saving = null; savingPromise = null; }
+        // THE WORD FOLLOWS THE NEWEST PUT, not this one: while a later save is
+        // out `saving` is still set (only the save that is current clears it
+        // above), so an older PUT settling does not put SAVING out under it.
+        // A failed PUT lands here too: `dirty` is then still true, and the
+        // pill falls back to UNSAVED EDITS. Written only when it changes, so a
+        // reset of `flows` (sign-out) is not written over for nothing.
+        if (get().flows.saving !== (saving !== null)) {
+          set((s) => patch(s, { saving: saving !== null }));
+        }
       }
       })();
       savingPromise = run;
@@ -1312,6 +1499,9 @@ export function createFlowsActions(
     },
 
     flowsCloseEditor: async () => {
+      // As `flowsOpen`: the close saves for itself, below, and an edit that
+      // lands inside that save arms a new autosave.
+      cancelAutosave();
       await get().flowsSave();
       // A SAVE THAT FAILED MUST NOT BE CLEARED AWAY (#500). `dirty` once the
       // save above has settled is the same test `flowsOpen`'s own refusal

@@ -122,7 +122,7 @@ import {
   NO_WIRES_TEXT, RIG_VALUE_PREFIX, asNodeStatus, formatEta, framesWord, logTail,
   logTime, markTone, markWord, nodeMarkDetail, nodeMarkLevel, rigValueFor,
   saveLockReason, saveStateTone, saveStateWord, stageWord,
-  tonightLockReason, unsavedRunReason, wireRemoveLabel, wireRowLabel,
+  tonightLockReason, wireRemoveLabel, wireRowLabel,
 } from "./canvasModel";
 import "./canvas.css";
 
@@ -598,8 +598,11 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   // or save, whatever `dirty` says about the flow left over from before.
   const waitingReason = waiting === null ? null
     : failed !== null ? FLOW_STAGES_NOT_OPENED_REASON : FLOW_STAGES_LOADING_REASON;
-  const runReason = waitingReason
-    ?? hookRunReason ?? (running ? null : unsavedRunReason(dirty, readonly));
+  // The hook's reason carries the one unsaved-edit refusal that survives the
+  // autosave (an edited Example, never stored); an ordinary edited flow is saved
+  // by `flowsRun` before it posts (#688), so it is not locked here, as on the
+  // toolbar.
+  const runReason = waitingReason ?? hookRunReason;
   const saveReason = waitingReason ?? saveLockReason(dirty, readonly);
   const stateWord = saveStateWord(dirty, readonly);
 
@@ -644,10 +647,12 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
       footer={(
         <div className="nx-flow-stages-foot" style={FOOT_STYLE}>
           <FlowTapWireBar />
-          {/* SAVE above RUN, because RUN is refused until it has been pressed.
-              A full-width pair would put the two most consequential buttons on
-              the phone under one thumb sweep, so SAVE is the smaller of the
-              two and RUN keeps the 56 px primary. */}
+          {/* SAVE above RUN. It was because RUN was refused until SAVE had been
+              pressed; since #688 RUN saves first and the flow saves itself, so
+              SAVE is "save now", and its place is the same for the reason that
+              remains: a full-width pair would put the two most consequential
+              buttons on the phone under one thumb sweep, so SAVE is the
+              smaller of the two and RUN keeps the 56 px primary. */}
           <ActionButton
             kind="secondary"
             size="lg"
