@@ -329,6 +329,7 @@ class DawnPark:
         if parked:
             self._settled = True
             self._clear_failure()
+            self._tell_sun_watch_it_is_parked()
             bus.log("info", f"dawn: the Sun has reached {alt:+.1f}° and the "
                             f"mount is already parked", "safety")
             await self._release_cooler(alt)
@@ -393,6 +394,7 @@ class DawnPark:
             return
         self._settled = True
         self._clear_failure()
+        self._tell_sun_watch_it_is_parked()
         # Logged AFTER the await, so the line means "parked", not "asked to" —
         # the same rule /api/mount/park follows. Warning level ON PURPOSE: the
         # AlertDispatcher routes warning and error to every configured sink, and
@@ -582,6 +584,27 @@ class DawnPark:
             return None
 
     # -------------------------------------------------------------- internals
+
+    def _tell_sun_watch_it_is_parked(self) -> None:
+        """Tell the sun watch the mount is parked, now that this net has seen it
+        so (#696): its park returned, or ``is_parked`` read True. The sun
+        watch's blind fallback projects from the last position IT read, and a
+        park it did not see leaves that position stale; if the link then drops
+        before its next tick it logs a false "Parking now" error and parks a
+        parked mount.
+
+        Reached through the hub (``SunWatch`` sets ``hub.sun_watch`` itself),
+        the way the status node finds the dew controller: no import, no
+        global, and a hub without one (every test double, a build without the
+        net) is a no-op. Never raises, and never before ``_settled`` is set: a
+        bookkeeping failure must not cost this net its own park."""
+        try:
+            watch = getattr(self.hub, "sun_watch", None)
+            if watch is not None:
+                watch.note_parked()
+        except Exception as e:      # noqa: BLE001 - see the docstring
+            bus.log("debug", f"dawn park could not tell the sun watch the "
+                             f"mount is parked ({e})", "safety")
 
     def _hands_off_reason(self, cfg) -> str | None:
         """Why this rig is somebody else's right now, or None if it is nobody's."""

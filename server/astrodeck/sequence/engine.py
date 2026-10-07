@@ -18056,6 +18056,18 @@ class SequenceEngine:
                     except asyncio.CancelledError:
                         cancelled = True
                 parked = parking.result()
+                if parked:
+                    # #696: the sun watch's blind fallback projects from the
+                    # last position IT read, which this park has made stale.
+                    # Before the cancel below, which ends the run but not the
+                    # park. Through the hub, as the status node finds the dew
+                    # controller; never raises into the roof close.
+                    try:
+                        watch = getattr(self.hub, "sun_watch", None)
+                        if watch is not None:
+                            watch.note_parked()
+                    except Exception:      # noqa: BLE001
+                        pass
                 if cancelled:
                     if not parked:
                         await self._stop_after_a_failed_park()
