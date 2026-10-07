@@ -262,7 +262,39 @@ GOTO_TIMEOUT_S = 420.0          # slew + iterated solve→sync→re-slew centeri
 #: rotate loop's slew, solves and moves, run before the centring. Every bound
 #: that wraps a goto commanding an angle adds it: a target's setup, and the
 #: meridian flip, whose re-centre commands the angle too (ruling 9).
-ROTATION_ALLOWANCE_S = 300.0
+#:
+#: 360, RAISED FROM 300 FOR D-05's NIGHTLY SELF-TEST (backlog ruling D-05,
+#: owner-approved 2026-09-30; #648). The self-test leaves the rotator 20
+#: degrees from where it found it (`Hub.rotator_self_test`), so the first
+#: rotating hop of a night cannot lean on the rotate shortcut (U-06), which
+#: leaves a rotator alone that already reads the angle: that hop runs the
+#: whole rotate loop. Priced at its worst, that is four solves and about 22
+#: degrees of net travel (the 20 degree step undone, and a residual), plus
+#: the 10 degrees of the one-sided approach's overshoot and return
+#: (``rotation.ROTATOR_BACKLASH_DEG``, 5 out and 5 back).
+#:   * a solve is 3 s of exposure (the default of the rotate loop and of the
+#:     self-test), ASTAP's own 60 s cap (solve/astap.py) and about 20 s for
+#:     the wheel borrow, the download and the frame write: 83 s, so four
+#:     are 332 s;
+#:   * travel is priced at the device layer's own bound, a full revolution
+#:     inside ``Rotator.MOVE_TIMEOUT_S`` (180 s, so 0.5 s a degree): 32
+#:     degrees are 16 s;
+#:   * 332 + 16 = 348 s, rounded up to the next whole minute: 360.
+#: At 300 a loop with the shortcut gone could outrun the bound, and the bound
+#: that fires is a safety abort of the whole night.
+ROTATION_ALLOWANCE_S = 360.0
+#: D-05 (#648): how many times a night the engine asks ``Hub.rotator_self_test``
+#: before it leaves the rotator's coupling unmeasured. A self-test that could
+#: not run (a solve that failed, a rotator that did not move) says nothing
+#: about the coupling, so it is asked once more at the next hop. Two caps the
+#: cost at four exposures and 40 degrees of rotator travel a night, on a rig
+#: whose sky or rotator will not cooperate.
+ROTATOR_SELF_TEST_ATTEMPTS = 2
+#: The bound on that one call: two solves (83 s each, by the arithmetic above)
+#: and the 20 degree step (10 s) are 176 s, and 240 leaves a minute over. It is
+#: a device await like every other, so an expiry is a safety abort (`_bounded`)
+#: and not a warning the night carries on from.
+ROTATOR_SELF_TEST_TIMEOUT_S = 240.0
 PARK_TIMEOUT_S = 240.0          # park / unpark
 # (the meridian flip's bounds are below, because they are built out of the
 #  guide-start bounds that follow.)
@@ -7305,6 +7337,175 @@ class SequenceEngine:
             return None
         return float(lock["pa_deg"])
 
+    # ---- D-05, the engine half (#648): the nightly rotator self-test, and a
+    # fixed angle once rotation is off -------------------------------------
+    #
+    # WP-32b built the primitives in hub.py: ``Hub.rotator_self_test`` and the
+    # ``_rotation_trusted`` gate that makes ``rotate_to_pa`` refuse once a
+    # self-test has failed. The engine owed the other two halves of D-05
+    # (backlog ruling, owner-approved 2026-09-30): run the self-test once a
+    # night, before the first rotating group's first hop, and shoot at a
+    # fixed angle when it fails. Without the second, a failed trust made
+    # every rotate raise, `_group_hop_checks` turned each into a deferral,
+    # and a rotating mosaic shot nothing for the rest of the night.
+    #
+    # Class-level defaults, not ``__init__``/``start`` state: each is KEYED
+    # by what makes it stale (the observing night, the run's report), so no
+    # reset has to remember it, and a new night or a new run reads it fresh.
+
+    #: The observing night (`night_key`) on which ``Hub.rotator_self_test``
+    #: last ANSWERED, a PASS or a FAIL. One answer a night: a reconnect that
+    #: clears the hub's verdict mid-night does not buy a second self-test.
+    _rotator_tested_night: str | None = None
+    #: ``(night, asks)``: how many times the engine asked tonight, answered
+    #: or not, against ``ROTATOR_SELF_TEST_ATTEMPTS``. A different night
+    #: starts again from none.
+    _rotator_test_tries: tuple[str, int] = ("", 0)
+    #: The id of the report "rotation is off" was last said into. A new run
+    #: has a report of its own and says it there once; the same run never
+    #: says it twice.
+    _rotation_off_said_in: str | None = None
+
+    def _rotation_off_tonight(self) -> bool:
+        """Whether the self-test has MEASURED the camera not following the
+        rotator, so rotation is off for the night. None (never measured) is
+        not off: only a measured failure gates anything, as in hub.py, and
+        a hub double that has no verdict has measured nothing. Tolerant of
+        an engine with no hub at all, which the tests that grade the
+        angle methods on a bare engine build (``__new__``)."""
+        hub = getattr(self, "hub", None)
+        return getattr(hub, "_rotation_trusted", None) is False
+
+    def _say_rotation_off(self) -> None:
+        """Say once per run that rotation is off for the night: one night-log
+        warning and one report entry (``rotation_off``, which the morning
+        report shows as it does ``focus_carry_on``).
+
+        THE LIMIT IS IN THE SENTENCE. With nothing to turn the camera, a
+        mosaic laid out at an angle is judged as a fixed camera is
+        (`_group_angle_check`): shot only where the camera already sits
+        within its tolerance of that angle, and set aside once, with the
+        turn-the-camera wording, where it does not. A reader who sees only
+        "panels are shot at a fixed angle" would expect every panel shot.
+        Words only: nothing in it comes from the site (#19, #140)."""
+        key = getattr(self.reporter, "id", "")
+        if self._rotation_off_said_in == key:
+            return
+        self._rotation_off_said_in = key
+        msg = ("rotation is off for the night: the rotator self-test found "
+               "the camera does not follow the rotator, so no turn is "
+               "requested and panels are shot at a fixed angle. A mosaic "
+               "laid out at an angle is shot only where the camera already "
+               "sits within its tolerance of that angle; where it does "
+               "not, the mosaic is set aside once: turn the camera or "
+               "re-frame at the measured angle")
+        bus.log("warning", msg, "sequence")
+        self._record_safety(msg, "rotation_off")
+
+    async def _ensure_rotator_self_test(self, target) -> None:
+        """D-05 (backlog ruling, owner-approved 2026-09-30; #648): before the
+        first rotating group's first hop of an observing night, ask the hub
+        to measure whether the camera follows the rotator
+        (``Hub.rotator_self_test``: a 20 degree step, two solves, 90%).
+
+        WHEN. A member of a group that rotates, which will command its
+        angle, centred, on a rig with a connected rotator, whose coupling
+        the hub has not measured yet (None: WP-88's first-use goto can
+        measure it too, and a value already there is not measured again),
+        not already answered tonight, and at most ``ROTATOR_SELF_TEST_
+        ATTEMPTS`` times a night. A flow with no rotating group, a fixed
+        group, a single framed target (not a mosaic: it keeps today's
+        behaviour, the hub's refusal degrading its rotate) and a rig with no
+        rotator never reach the hub.
+
+        FIRST PUT THE MOUNT ON THE PANEL'S FIELD, WITHOUT TURNING IT. The
+        self-test solves wherever the mount points now, which at the first
+        hop is wherever the last night left it, and a solve there may find
+        no field to measure. One centring attempt, no angle: only a
+        solvable field is wanted, the hop's own goto centres. The guider is
+        stood down first and the last spell's stop retry ended, as the hop
+        does before ITS slew (#148): this one runs ahead of them.
+
+        BEFORE THE HOP'S CLOCK. Called ahead of ``hop_t0`` and
+        ``hop_wall0``, so the minutes it takes are not charged to the first
+        hop's measured cost (`_record_event_cost`), and the sky angles its
+        own solves record (the rotator 20 degrees round) are stale for the
+        hop's angle check, which reads only what was exposed since the hop
+        began.
+
+        OUTCOMES. A PASS or a FAIL stamps the night (the hub has set its
+        verdict; `_setup_target` and `_group_angle_check` read it through
+        `_rotation_off_tonight`). A call that could not RUN (a solve that
+        failed, a rotator that did not move, a goto that raised) leaves the
+        trust unknown, spends one attempt, says so once, and the night
+        carries on exactly as it did before D-05: the hub's per-move follow
+        check is the backstop. A cancel and a `SafetyAbort`, a bound that
+        fired included, propagate: nothing may carry on past a timeout as if
+        the coupling had been measured."""
+        member = self._group_of(target)
+        if (member is None or not member.rotate
+                or getattr(target, "rotation_deg", None) is None
+                or not getattr(target, "center", False)
+                or "telescope" not in self.hub.devices
+                or not self._rotator_connected()):
+            return
+        if getattr(self.hub, "_rotation_trusted", None) is not None:
+            return
+        self_test = getattr(self.hub, "rotator_self_test", None)
+        if self_test is None:
+            return
+        night = night_key(time.time())
+        if self._rotator_tested_night == night:
+            return
+        tried_on, tried = self._rotator_test_tries
+        if tried_on != night:
+            tried = 0
+        if tried >= ROTATOR_SELF_TEST_ATTEMPTS:
+            return
+        self._rotator_test_tries = (night, tried + 1)
+        mosaic = member.name or member.id
+        await self._cancel_idle_stop_retry()
+        if self.plan.guide:
+            await self._stand_down_guider()
+        # THE MOMENT OF THIS LINE CAN BE THE CROSSING (spec 6.9, #166). The
+        # first hop of a night can be the one that ENDS a mosaic's meridian
+        # wait, and this line is said at the start of that hop, a moment
+        # after the flagged "target N/M" line, so unflagged its timestamp is
+        # the transit of a known RA, which is the longitude, for anyone who
+        # can read /api/logs. Flagged exactly while `_site_timed` says the
+        # run's publishes are, so a night with no such wait says it as it
+        # always said a line. The lines after it (a solve's, the verdict's)
+        # come a goto and a solve later: the coarse residual the spec
+        # accepts for the first frame, not a moment of the crossing.
+        bus.log("info",
+                f"{mosaic}: testing that the camera follows the rotator "
+                f"before the first rotated panel (D-05; attempt "
+                f"{tried + 1} of {ROTATOR_SELF_TEST_ATTEMPTS})", "sequence",
+                site_derived=self._site_timed())
+        try:
+            # ``max_attempts`` is the target's own when it sets one
+            # (`_centring_kwargs`), and passing both is a TypeError.
+            await _bounded(
+                self.hub.goto_and_center(
+                    target.ra_hours, target.dec_deg, rotation_deg=None,
+                    **{**self._centring_kwargs(target), "max_attempts": 1}),
+                GOTO_TIMEOUT_S,
+                f"goto+center {target.name} for the rotator self-test")
+            await _bounded(self_test(), ROTATOR_SELF_TEST_TIMEOUT_S,
+                           "rotator self-test")
+        except (SafetyAbort, asyncio.CancelledError):
+            raise
+        except Exception as e:      # noqa: BLE001 - it said nothing either way
+            bus.log("warning",
+                    f"{mosaic}: the rotator self-test could not run ({e}); "
+                    f"the coupling stays unmeasured and the night carries "
+                    f"on as it was, asking for the mosaic's angle"
+                    + ("" if tried + 1 < ROTATOR_SELF_TEST_ATTEMPTS
+                       else "; it is not asked again tonight"),
+                    "sequence")
+            return
+        self._rotator_tested_night = night
+
     def _settle_locked_angle(self, target, hop_angle: dict | None,
                              since: float) -> None:
         """The end of ``target``'s setup, for ruling 9 (spec Revision 2).
@@ -7471,8 +7672,14 @@ class SequenceEngine:
             if run is not None:
                 run.angle_verified = True
             self._group_angle_read[group.id] = (verdict.measured_deg, label)
+        # D-05 (#648): a rotator the self-test found not following is no
+        # rotator for tonight, so the group is judged as a fixed camera is: a
+        # camera off its angle sets the group aside once, with the
+        # turn-the-camera wording, where a rotator's ``off`` defers the
+        # panel pass after pass for an angle nothing will bring it to.
+        rotates = group.rotate and not self._rotation_off_tonight()
         reads = None
-        if group.rotate and verdict.kind == "no_measurement":
+        if rotates and verdict.kind == "no_measurement":
             reads = await self._rotator_evidence(pa, centring)
         # The layout's panels: the members the plan carries, and the ones the
         # operator skipped, which are still tiles of the same layout.
@@ -7480,7 +7687,7 @@ class SequenceEngine:
             1 for t in (self.plan.targets if self.plan else [])
             if self._group_of(t) is group)
         decision = angle_decision(
-            verdict.kind, rotate=group.rotate,
+            verdict.kind, rotate=rotates,
             angle_verified=bool(run is not None and run.angle_verified),
             rotator_evidence=reads is not None,
             shoot_anyway=not group.require_centred,
@@ -7850,6 +8057,13 @@ class SequenceEngine:
         # wait is the sky's, not this acquisition's.
         await self._await_target_window(target)
 
+        # D-05 (#648): the first rotating group's first hop of a night
+        # measures whether the camera follows the rotator BEFORE anything
+        # asks it to turn. After the gates above, since it moves the mount,
+        # and before the hop's clock below, since it is a once-a-night
+        # preflight and not this acquisition's cost. See the helper.
+        await self._ensure_rotator_self_test(target)
+
         # THE HOP'S CLOCK STARTS HERE, after the gates (#189 U-07). The safety
         # gate can hold for weather, and a rain hold charged to the hop would
         # price every later hop at the length of a shower. The initial sweep
@@ -7871,6 +8085,19 @@ class SequenceEngine:
         # unframed target locked on its first shot (ruling 9). None when
         # there is neither, which is exactly the call every earlier plan made.
         rotation = self._commanded_rotation(target)
+        # D-05 (#648): ROTATION OFF FOR THE NIGHT. Once the self-test has
+        # measured the camera not following the rotator, the hub refuses
+        # every rotate, so no angle is requested: asking would be refused
+        # at every hop, and `_group_hop_checks` would turn each refusal into
+        # a deferral of every panel for the rest of the night, which is the
+        # opposite of D-05's "panels are shot at a fixed angle". The group
+        # is then judged by the fixed-camera rules in `_group_angle_check`.
+        # Every spelling of the angle below (the centred goto, the no-light
+        # hold's retries, the uncentred slew's "asked for" line) reads this
+        # one local, so it is withheld here and nowhere else.
+        if rotation is not None and self._rotation_off_tonight():
+            self._say_rotation_off()
+            rotation = None
         # A new acquisition: whatever the last one was still waiting to lock
         # belongs to it, not to this one.
         self._angle_lock_pending = None

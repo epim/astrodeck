@@ -695,7 +695,20 @@ def commanded_rotation(session: Session, target: Target,
     A LOCK THAT IS NOT A FINITE NUMBER COMMANDS NOTHING. ``lock_angle``
     refuses one, but the session is a JSON file and Python's JSON reads NaN
     and Infinity: handed on, a NaN would reach the rotate loop, where every
-    comparison it makes is false."""
+    comparison it makes is false.
+
+    NO ANGLE ONCE ROTATION IS OFF FOR THE NIGHT (D-05, backlog ruling,
+    owner-approved 2026-09-30; #648). When the hub has MEASURED the camera
+    not following the rotator (``_rotation_trusted`` False, from the nightly
+    self-test) it refuses every ``rotate_to_pa``, so the engine commands no
+    angle (`SequenceEngine._rotation_off_tonight`) and this answers None for
+    the same reason: asked, the re-centre would provoke a refused rotate
+    and a warning in a recovery that is racing the dawn, and the frames are
+    shot at a fixed angle either way. Planned angle and lock alike. Only a
+    measured failure counts (None, never measured, commands as before), and
+    a caller with no hub has no verdict to read."""
+    if hub is not None and getattr(hub, "_rotation_trusted", None) is False:
+        return None
     if target.rotation_deg is not None:
         return target.rotation_deg
     lock = session.locked_angle(target.id)
