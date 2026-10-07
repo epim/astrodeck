@@ -15,7 +15,13 @@
 //   - reverse-RA / reverse-Dec toggles persisted via store.setTouch (R7).
 //   - keyboard nudge fallback (Enter/Space = one pulse at the selected rate — R19).
 //   - client alt-guard: below MIN_SLEW_ALT_DEG the pad auto-stops + flashes
-//     "below horizon limit" (R30).
+//     "below horizon limit" (R30). OFF while the mount says it does not know
+//     where it points (`status.mount.position_known === false`, #144): the
+//     altitude it would read is the mount's home reading, so the guard is
+//     dropped, no altitude is printed, and the pad says the guard is off. The
+//     same state selects the ceiling rung ONCE (an operator driving a reset
+//     tube home by eye wants the fast rung) and refuses the NINA tap, which is
+//     a goto from that believed position.
 //   - NINA mode: hold disabled (NINA move_axis raises); tap = small relative GOTO;
 //     a one-line note instead of a dead pad (R8).
 //   - global safety: blur / visibilitychange(hidden) / setLocked(true) forceStop
@@ -46,6 +52,10 @@ import {
   SlewController,
   SLEW_RATES,
   MIN_SLEW_ALT_DEG,
+  ALT_GUARD_OFF_NOTE,
+  POSITION_UNKNOWN_STEPS_REASON,
+  fastestRungIndex,
+  positionKnown,
   rateGlyph,
   type SlewState,
   type Axis,
@@ -185,6 +195,10 @@ export default function SlewPad(props: SlewPadProps = {}) {
   const parked = !!m?.parked;
   // !canMount makes the pad read-only for viewers (controls inert, not 403-on-tap).
   const padDisabled = noMount || parked || !canMount;
+  // Read off the SAME status the pad already subscribes to, not passed in by the
+  // host: both hosts mount this pad, and a flag a host could forget to pass is a
+  // guard that quietly stays on in the one state it must be off (#144).
+  const positionIsKnown = positionKnown(m);
 
   // Keep mutable refs the controller closures read so we never rebuild it per render.
   const rateIdxRef = useRef(rateIdx);
@@ -199,6 +213,8 @@ export default function SlewPad(props: SlewPadProps = {}) {
   touchRef.current = touch;
   const altRef = useRef<number | null>(m?.alt ?? null);
   altRef.current = m?.alt ?? null;
+  const knownRef = useRef(positionIsKnown);
+  knownRef.current = positionIsKnown;
   const ninaRef = useRef(isNina);
   ninaRef.current = isNina;
 
@@ -210,6 +226,7 @@ export default function SlewPad(props: SlewPadProps = {}) {
         reverseRa: () => touchRef.current.reverseRa,
         reverseDec: () => touchRef.current.reverseDec,
         getAlt: () => altRef.current,
+        getPositionKnown: () => knownRef.current,
         getMaxRate: () => maxRateRef.current ?? null,
         isNina: () => ninaRef.current,
         postMove: async (axis, rateDegS) => {
@@ -228,6 +245,21 @@ export default function SlewPad(props: SlewPadProps = {}) {
             // NINA: no manual pulse path -> a small relative GOTO from current pos.
             const cur = useStore.getState().status?.mount;
             if (!cur) return;
+            // That goto is `current position + offset`, and the current
+            // position is the one thing a reset mount cannot give (#144): the
+            // tube would be sent to wherever the believed position plus 0.25
+            // degrees lands. Refused out loud, so the tap is never swallowed
+            // in silence - and through `enqueueToast`, NOT `showToast`: that
+            // runs the sentence through `humanizeLog`, whose "plate" + "solve"
+            // rule replaces any message containing both with "Plate-solve
+            // failed - check focus/exposure", the opposite of what this says,
+            // and which truncates anything past 140 characters.
+            if (!knownRef.current) {
+              useStore.getState().enqueueToast({
+                level: "warning", title: POSITION_UNKNOWN_STEPS_REASON,
+              });
+              return;
+            }
             const DELTA_DEG = 0.25; // small, predictable centering nudge
             const ra_hours =
               axis === "ra"
@@ -343,6 +375,27 @@ export default function SlewPad(props: SlewPadProps = {}) {
       ctrl.forceStop();
     }
   }, [padDisabled, ctrl, clearFallback]);
+
+  // THE CEILING RUNG, ONCE PER TRANSITION (#144). A mount that has just lost its
+  // position can only be recovered by driving the tube home by eye, and the pad
+  // opens on the tap-only GUIDE rung, which cannot do that. So the moment the
+  // position goes unknown the selection moves to the fastest rung the pad has -
+  // the ceiling rung when the mount reported a ceiling, the shipped top stop
+  // when it did not.
+  //
+  // ONCE, and not "while unknown": the effect has no dependency list on purpose
+  // and compares against the previous render's answer, so it fires on the edge
+  // (known -> unknown) and on a pad mounted into an already-unknown state (the
+  // ref starts at `true`), and never on the status frames in between. An
+  // operator who then picks a slower rung for the last few degrees keeps it; a
+  // pad that re-forced the ceiling every two seconds would be one the operator
+  // cannot steer. A later clear-and-relatch is a new edge and selects again.
+  const prevKnown = useRef(true);
+  useEffect(() => {
+    const was = prevKnown.current;
+    prevKnown.current = positionIsKnown;
+    if (was && !positionIsKnown) setRateIdx(fastestRungIndex(ratesRef.current));
+  });
 
   const curRate = rates[rateIdx] ?? rates[0];
   const holdDisabledForRate = curRate.rateDegS <= 0 || isNina;
@@ -664,9 +717,17 @@ export default function SlewPad(props: SlewPadProps = {}) {
             moves wrong way? toggle reverse - direction depends on pier side &amp; image
             orientation
           </p>
-          {m && m.alt < MIN_SLEW_ALT_DEG + 5 && (
+          {m && positionIsKnown && m.alt < MIN_SLEW_ALT_DEG + 5 && (
             <p className="text-center text-[12px] text-warn mt-1">
               near horizon ({m.alt.toFixed(0)}°) - slew auto-stops below {MIN_SLEW_ALT_DEG}°
+            </p>
+          )}
+          {/* The guard's absence is said, not left to be assumed: with the
+              altitude line gone nothing else on the pad would tell an operator
+              that holding toward the horizon is no longer stopped for them. */}
+          {m && !positionIsKnown && (
+            <p className="text-center text-[12px] text-warn mt-1 max-w-[260px] mx-auto">
+              {ALT_GUARD_OFF_NOTE}
             </p>
           )}
         </>
