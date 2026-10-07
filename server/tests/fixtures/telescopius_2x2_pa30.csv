@@ -1,0 +1,11 @@
+# Copyright (c) 2026 James Penick
+# SPDX-License-Identifier: Apache-2.0
+# SYNTHESISED in the documented Telescopius shape (issue 178), not a real export: replace it with one.
+# A 2 x 2 of 2.0 x 1.33 deg panes at 20 percent overlap, centred on 00h 42m 44.3s +41 16 09, with the
+# top of the frame at position angle 30 east of north (AstroDeck rotation 330). The pane centres were
+# laid out by an independent first-principles script, not by AstroDeck's own projection.
+Pane,RA,DEC,Position Angle (East),width,height,Overlap,Row,Column
+1,00h 40m 26.20s,+42:07:42.2,30,2,1.33,20,1,1
+2,00h 47m 50.70s,+41:19:22.2,30,2,1.33,20,1,2
+3,00h 37m 38.47s,+41:12:05.1,30,2,1.33,20,2,1
+4,00h 44m 58.81s,+40:24:25.8,30,2,1.33,20,2,2
