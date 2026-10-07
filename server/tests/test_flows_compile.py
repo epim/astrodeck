@@ -496,6 +496,14 @@ class TestTheExamplesCompile:
         it), so a compile that began writing the key for these seven fails
         here, not in a digest.
 
+        RE-PINNED FOR BACKLOG WP-118 (#195, wave 16 integration): example-pool
+        also compiles a ``campaign`` block now (see the pop above); popped
+        and checked, with the rest of its compile still the fixture's. RED
+        under mutant "a pool is no campaign" (``compile.campaign_block``
+        answering None for a pool), observed for example-pool:
+            AssertionError: example-pool, a pool with Automatic resume On, is
+            a campaign
+
         Mutant "an Example compiles the old Single-night reading" (the
         0.3.40 reading restored in ``nodes.dusk_auto_resume``: ``and
         str(params.get("repeat") or "Single night") != "Single night"``):
@@ -539,6 +547,18 @@ class TestTheExamplesCompile:
             f"{compiled.get('resume_across_nights')!r} (a Single-night "
             f"DUSK WINDOW with Automatic resume On resumes, so the key, "
             f"written only for Off, must be absent)")
+        # BOUNDED THE SAME WAY, ONCE MORE, FOR BACKLOG WP-118 (#195, wave 16
+        # integration): the `campaign` block is keyed on Automatic resume and
+        # the flow's shape (`compile.campaign_block`), no longer on DUSK
+        # WINDOW's retired `repeat`, so `example-pool` (a pool, Automatic
+        # resume at its default On) gains it, exactly as `example-campaign`
+        # always had it. Popped off and checked here, not folded into the
+        # fixture, for the reason the keys above are not.
+        if ex_id == "example-pool":
+            assert compiled.pop("campaign", None) == {
+                "repeat": "nightly", "until": "pool_complete",
+                "resume": "cursor"}, (
+                "example-pool, a pool with Automatic resume On, is a campaign")
         got = json.dumps(compiled, ensure_ascii=False)
         want = json.dumps(LEGACY_EXAMPLES[ex_id], ensure_ascii=False)
         assert got == want, f"{ex_id} changed its compile beyond the S3 keys"

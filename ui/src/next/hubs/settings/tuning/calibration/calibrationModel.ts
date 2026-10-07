@@ -102,7 +102,9 @@ export const TOL_DEFAULTS: CalibrationConfig = {
 };
 
 export interface ToleranceField {
-  key: keyof CalibrationConfig;
+  /** The five tolerances the editor has a control for; `rotator_bin_deg`
+   *  (#176) is carried through a SAVE unseen. */
+  key: Exclude<keyof CalibrationConfig, "rotator_bin_deg">;
   label: string;
   unit?: string;
   hint: string;
@@ -166,6 +168,28 @@ export const TOLERANCE_FIELDS: readonly ToleranceField[] = [
  *  is not a guard. */
 export function binTooNarrow(d: CalibrationConfig): boolean {
   return d.temp_bin_c < d.temp_tol_c;
+}
+
+/** Whether the five tolerances on screen are the defaults. Compared field by
+ *  field over the fields the editor SHOWS, never as the whole object: the
+ *  stored block also carries `rotator_bin_deg` (#176), which the editor passes
+ *  through unseen, and a block that differs from `TOL_DEFAULTS` only by a key
+ *  the editor has no control for would otherwise read as "not the defaults"
+ *  and leave RESET live on a screen that already shows them. */
+export function atTolDefaults(d: CalibrationConfig): boolean {
+  return TOLERANCE_FIELDS.every((f) => d[f.key] === TOL_DEFAULTS[f.key]);
+}
+
+/** The draft RESET puts on screen: the defaults for the five tolerances the
+ *  editor shows, and every other key of the stored block as it was.
+ *  `rotator_bin_deg` (#176) has no control, so a RESET that wrote
+ *  `TOL_DEFAULTS` over the draft would drop it, the SAVE after it would send
+ *  none, and the server would put it back to ITS default: a hidden setting
+ *  changed by a button that names five others (wave 16 integration). */
+export function resetTolerances(d: CalibrationConfig): CalibrationConfig {
+  return d.rotator_bin_deg === undefined
+    ? { ...TOL_DEFAULTS }
+    : { ...TOL_DEFAULTS, rotator_bin_deg: d.rotator_bin_deg };
 }
 
 export function binWarning(d: CalibrationConfig): string {

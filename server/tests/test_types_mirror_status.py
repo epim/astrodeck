@@ -470,7 +470,10 @@ def _flows_api_optional(name: str) -> set[str]:
 def _progress_blocks() -> list[dict]:
     """The blocks of one real ``flow_progress`` answer with every shape a
     block takes: a single TARGET locked to an angle, a POOL, and a 2x2
-    mosaic with a panel skipped. JSON-rendered, as the route serves it."""
+    mosaic with a panel skipped and, since WP-141 (#727), one panel a DORMANT
+    session holds a standing set-aside record for (so the mosaic block carries
+    ``set_aside``, which only such a block does). JSON-rendered, as the route
+    serves it."""
     from astrodeck.flows.compile import compile_plan
     from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
     from astrodeck.flows.progress import flow_progress
@@ -509,7 +512,15 @@ def _progress_blocks() -> list[dict]:
                       locked_angles={single.id: {
                           "pa_deg": 12.5, "solved_at": 1.0,
                           "exposed_at": 1.0, "source": "plate solve"}})
-    got = flow_progress(compiled, plan, session, flow_id=flow)
+    # WP-141 (#727): a standing whole-panel set-aside record for the mosaic's
+    # first shot panel, tonight by the clock handed in, so its block carries
+    # `set_aside` (a rejects set-aside, which has no expiry: for_now false).
+    from astrodeck.events import night_key
+    now = 1_800_000_000.0
+    panel = next(t for t in plan.targets if t.mosaic_group)
+    session.note_set_aside(panel.id, "rejected every frame",
+                           night=night_key(now), kind="rejects")
+    got = flow_progress(compiled, plan, session, flow_id=flow, now=now)
     return json.loads(json.dumps(got))["blocks"]
 
 
@@ -517,9 +528,21 @@ def test_the_progress_block_type_is_what_the_route_answers():
     """Every key a real block carries is declared on flowsApi.ts's
     ``FlowProgressBlock``, and every declared key is carried by some block;
     the keys only some blocks carry (a mosaic's ``grid``, ``skipped`` and
-    ``group_id``, a lock's ``locked_angle``) are exactly the ones marked
-    optional; and every value is one its TS type admits, ``group_id``'s
-    string included. The same for a block's panels (``FlowProgressPanel``).
+    ``group_id``, a lock's ``locked_angle``, a dormant session's mosaic's
+    ``set_aside``) are exactly the ones marked optional; and every value is
+    one its TS type admits, ``group_id``'s string included. The same for a
+    block's panels (``FlowProgressPanel``).
+
+    RE-PINNED FOR BACKLOG WP-141 (#727, wave 16 integration): flowsApi.ts
+    declares ``set_aside?: FlowProgressSetAside[]`` on the block now, and the
+    answer this walks holds a standing record, so the key is both declared and
+    sent; before, no payload built here carried it and the declaration could
+    not have been checked. RED under mutant "drop set_aside from flowsApi.ts"
+    (the optional member removed from ``FlowProgressBlock``), observed:
+
+        E   AssertionError: FlowProgressBlock drifted: the route sends
+            ['set_aside'], which flowsApi.ts does not declare, and flowsApi.ts
+            declares [], which the route never sends
 
     RED against flowsApi.ts as it was before S5 (no ``group_id``, and no
     ``locked_angle`` on either type, though the route has sent it since the
@@ -568,6 +591,9 @@ def test_the_progress_block_type_is_what_the_route_answers():
     assert kinds == [("target", False, True), ("pool", False, False),
                      ("target", True, False)], (
         f"premise: a locked single target, a pool and a mosaic: {kinds}")
+    assert [("set_aside" in b) for b in blocks] == [False, False, True], (
+        "premise: only the mosaic block of the dormant session carries "
+        "set_aside")
 
     for what, records in (("FlowProgressBlock", blocks),
                           ("FlowProgressPanel",

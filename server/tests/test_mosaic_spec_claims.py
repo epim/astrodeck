@@ -9512,9 +9512,15 @@ def test_3_6_says_flow_schema_4_as_s3_built_it():
             store_mod.V3_SCHEMA) == (5, 4, 3), (
         "3.6 says FLOW_SCHEMA 5 (#195, WP-85) over the v4 and v3 stamps")
     dusk = NODE_DEFS["dusk"].params
-    assert "repeat" in dusk and dusk.get("autoResume") == "On", (
-        "3.6 says DUSK keeps its `repeat` and, since #195, gains "
-        "`autoResume`, On by default")
+    # RE-PINNED FOR BACKLOG WP-118 (#195, wave 16 integration): 3.6's "DUSK
+    # keeps its `repeat`" is S3's record of what S3 built, and stays in the
+    # spec as that. WP-118 retired the param afterwards (the vocabulary no
+    # longer declares it; 3.6's as-built paragraph for WP-118 says so), so the
+    # code half of the claim turns round: DUSK declares `autoResume`, On by
+    # default, and no `repeat`.
+    assert "repeat" not in dusk and dusk.get("autoResume") == "On", (
+        "3.6 says DUSK kept its `repeat` at S3 and, since #195, gains "
+        "`autoResume`, On by default; WP-118 has retired `repeat`")
     single = {**_M31, "rows": 1, "cols": 1, "counts": "Every sub taken"}
     wait = {"whenWaiting": "Wait for the mosaic"}
     run = ["t.target -> c.run"]
@@ -18603,8 +18609,12 @@ def test_s4_says_the_third_and_fourth_waves_and_what_s4_did_not_build():
                "RUN's campaign line for a flow whose automatic resume is off "
                "(2.4), because DUSK has no `autoResume` until #195 brings it "
                "with FLOW_SCHEMA 5; backlog WP-85 (2026-10-07) later brought "
-               "the option and the schema, and RUN's line for a flow whose "
-               "automatic resume is off is still not built",
+               "the option and the schema, backlog WP-112 (#712) built the "
+               "Target modal's campaign line for it "
+               "(`framingApi.campaignLine`), and backlog WP-118 (2026-10-07) "
+               "built RUN's sentence for it (`runCopy.RESUME_OFF_LINE`, "
+               "ruling 7), which every RUN surface prints since the wave 16 "
+               "integration (`copy.notice`)",
                "#342's other two suggestions, an unconditional `:Td#` before "
                "`:hP#` and a park that takes the pulse lock, because S4 "
                "orchestrator ruling 9 asked only for the silent no-op's "
@@ -18639,30 +18649,39 @@ def test_s4_says_the_third_and_fourth_waves_and_what_s4_did_not_build():
     # "no autoResume at FLOW_SCHEMA 4", the proof that RUN's line for a flow
     # whose automatic resume is off could not be built yet. The option and the
     # schema (5) exist now, so that proof is gone, and the claim that is still
-    # true is the one the spec's S4 line now ends on: RUN's line for such a
-    # flow is not built. It is checked as the absence of the line, in the one
-    # file that writes RUN's copy (`runCopy.ts`) and the campaign line the
-    # framing sheet draws (`framingModel.ts`'s `campaignLine`): neither reads
-    # `autoResume`. The first thing to build that line will turn this red,
-    # which is the day this entry and the spec's sentence are replaced.
-    run_line_for_off = any(
-        "autoResume" in _ui(rel) for rel in (
-            "components/flows/runCopy.ts",
-            "components/flows/framing/framingModel.ts"))
+    # true is the one the spec's S4 line then ended on: RUN's line for such a
+    # flow is not built.
+    #
+    # RE-PINNED AGAIN IN WP-118 AND ITS WAVE 16 INTEGRATION (#195,
+    # deliberate). It is built: `runCopy.ts` writes the sentence
+    # (`RESUME_OFF_LINE`) and answers it as `copy.notice`, and every surface
+    # that draws the RUN button prints it. So the third entry leaves the
+    # tuple of things not built (three now), and the claim that replaces it
+    # is its opposite, `run_line_built`: the sentence exists, and the classic
+    # header and both #/next RUN surfaces read `copy.notice`. The first
+    # surface to stop printing it turns this red. Spec section 8's S4 line
+    # says it.
+    run_line_built = "RESUME_OFF_LINE" in _ui("components/flows/runCopy.ts") \
+        and all("copy.notice" in _ui(rel) for rel in (
+            "components/flows/FlowHeader.tsx",
+            "next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx",
+            "next/hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx"))
+    assert run_line_built, (
+        "section 8's S4 says RUN's sentence for a flow whose automatic "
+        "resume is off is built (`runCopy.RESUME_OFF_LINE`) and every RUN "
+        "surface prints it (`copy.notice`)")
     absent = (re.search(r"\b(?:function|const) reframeCarry\b",
                         ui_all) is None,
               ang_sep_refused and finite_refused,
-              not run_line_for_off,
               len(campaign) == 2 and not any(
                   re.search(r"\bpanels\b", p.read_text(encoding="utf-8"))
                   for p in campaign))
-    assert absent == (True, True, True, True), (
+    assert absent == (True, True, True), (
         f"(no client reframe_carry, coords.angular_sep_deg and "
-        f"framing._finite both refuse a non-finite input, no RUN line for a "
-        f"flow whose automatic resume is off, no campaign view reading "
-        f"panels) = {absent}; section 8's S4 says each is not built, and "
-        f"WP-45 built #324's shared helper on top of that without changing "
-        f"the other three")
+        f"framing._finite both refuse a non-finite input, no campaign view "
+        f"reading panels) = {absent}; section 8's S4 says each is not built, "
+        f"and WP-45 built #324's shared helper on top of that without "
+        f"changing the others")
 
 
 # ===================== S4's second wave, its second verification (S4-DOC3)
@@ -25183,15 +25202,23 @@ def test_10_and_a_3_say_the_ledger_cost_and_budget():
     about 170 ms a banked frame at 10 000 frames before S7, 330 ms on a
     camera with pixels, about 46 ms since; `session_text` and the thumbnail
     save; "once per pass" true of the order snapshot alone, 12.75 walks per
-    frame (#516, open). A.3 says the budget: the five limits
-    ``test_s7_ledger_cost.py`` pins, each with its measured value.
+    frame (#516, fixed in backlog WP-125). A.3 says the budget: the five
+    limits ``test_s7_ledger_cost.py`` pins, each with its measured value.
+
+    RE-PINNED FOR BACKLOG WP-125 (#516, wave 16 integration): every accepted-
+    count read now goes through the engine's one memo, so a banked frame walks
+    the ledger 0.12 times and ``NIGHT_WALKS_MAX`` is 0.15 (it was 13.0, the
+    12.75 walks measured before the fix); risk 8 says "(#516, fixed in
+    backlog WP-125)" where it said "(#516, open)"; A.3 says "(0.12 measured,
+    12.75 before #516)" where it said "(12.75 measured)".
 
     The code: the budget constants, read from the ledger test's own text;
     its docstring's measured table for the 10 000-frame line; the session
     writer; the thumbnail's save only for a session no longer live.
 
     RED under the test_s7_ledger_cost.py mutant "a looser walk budget"
-    (``NIGHT_WALKS_MAX = 13.0`` made ``14.0``):
+    (``NIGHT_WALKS_MAX = 0.15`` made ``0.30``; it read ``13.0`` made
+    ``14.0`` before WP-125, and the observed text below is that run's):
 
         AssertionError: (the ledger test's budget, its measured lines, the
         pydantic_core writer, the thumbnail's save only for a session no longer
@@ -25235,7 +25262,7 @@ def test_10_and_a_3_say_the_ledger_cost_and_budget():
     thumb = ("if live is None or live.id != session.id:" in inspect.getsource(
         SequenceEngine._render_thumb))
     got = (consts, measured, writer, thumb)
-    assert got == ({"NIGHT_WALKS_MAX": 13.0,
+    assert got == ({"NIGHT_WALKS_MAX": 0.15,
                     "NIGHT_BYTES_PER_FRAME_MAX": 400.0,
                     "RIG_BYTES_PER_FRAME_MAX": 600.0,
                     "SERIALISER_RATIO_MAX": 0.5}, True, True, True), (
@@ -25250,7 +25277,8 @@ def test_10_and_a_3_say_the_ledger_cost_and_budget():
                   "about 170 ms of event-loop time", "about 330 ms",
                   "(`session_text`, #514)", "(#515)", "about 46 ms at 10 000 "
                   "frames", "\"Counts are snapshotted once per pass\" was true "
-                  "of the order snapshot alone", "(#516, open)"), "risk 8")
+                  "of the order snapshot alone",
+                  "(#516, fixed in backlog WP-125)"), "risk 8")
     budget = _line(_section("A.3"), "- The ledger, per banked frame")
     _says(budget, (
         f"at most `NIGHT_WALKS_MAX` ({consts['NIGHT_WALKS_MAX']:g})",
@@ -25258,7 +25286,8 @@ def test_10_and_a_3_say_the_ledger_cost_and_budget():
         f"({consts['NIGHT_BYTES_PER_FRAME_MAX']:g})",
         f"`RIG_BYTES_PER_FRAME_MAX` ({consts['RIG_BYTES_PER_FRAME_MAX']:g})",
         f"under `SERIALISER_RATIO_MAX` ({consts['SERIALISER_RATIO_MAX']:g})",
-        "(12.75 measured)", "(387 measured)", "(548 to 568 measured)",
+        "(0.12 measured, 12.75 before #516)", "(387 measured)",
+        "(548 to 568 measured)",
         "(0.24 measured)", "(S7, #514; risk 8)"), "A.3")
     kept = "Counts are snapshotted once per pass. The cost" in _spec()
     assert not kept, "risk 8 still says counts are snapshotted once per pass"

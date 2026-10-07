@@ -44,10 +44,10 @@ import { useLock } from "../../../../lib/gateHook";
 import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { ActionButton, Card, Label, LockNote, Mono, NumberField } from "../../../../ui";
 import {
-  binTooNarrow, binWarning, TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON, TOL_BUSY_REASON,
+  atTolDefaults, binTooNarrow, binWarning, TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON, TOL_BUSY_REASON,
   TOL_CLEAN_REASON, TOL_DEFAULTS, TOL_DIRTY_NOTE, TOL_INTRO, TOL_RESET_LABEL, TOL_SAVE_FAILED,
-  TOL_SAVE_LABEL, TOL_SAVED_NOTE, TOL_TITLE, toleranceForbidden, toleranceLockSentence,
-  TOLERANCE_FIELDS, toleranceSummary,
+  resetTolerances, TOL_SAVE_LABEL, TOL_SAVED_NOTE, TOL_TITLE, toleranceForbidden,
+  toleranceLockSentence, TOLERANCE_FIELDS, toleranceSummary,
 } from "./calibrationModel";
 
 export function CalibrationTolerancesEditor(): JSX.Element {
@@ -73,7 +73,7 @@ export function CalibrationTolerancesEditor(): JSX.Element {
   }, [seed]);
 
   const dirty = JSON.stringify(draft) !== seed;
-  const atDefaults = JSON.stringify(draft) === JSON.stringify(TOL_DEFAULTS);
+  const atDefaults = atTolDefaults(draft);
   const narrow = binTooNarrow(draft);
 
   const patch = (p: Partial<CalibrationConfig>): void =>
@@ -160,7 +160,7 @@ export function CalibrationTolerancesEditor(): JSX.Element {
             data-testid="cal-reset"
             lockedReason={resetLock}
             onExplain={lock.onExplain}
-            onPress={() => { setDraft({ ...TOL_DEFAULTS }); }}
+            onPress={() => { setDraft((d) => resetTolerances(d)); }}
           >
             {TOL_RESET_LABEL}
           </ActionButton>

@@ -1173,6 +1173,12 @@ class SequenceEngine:
         #: `_ledger_counts` (#516), or None until it is first asked, and
         #: again after `start` and once the run's session is let go.
         self._accepted_seen: tuple | None = None
+        #: Whether the focuser took the per-filter offset of the move
+        #: `_sweep_through_luminance` made to luminance (#723, WP-143): False
+        #: from the moment the wheel moved and the offset did not follow, so
+        #: the move BACK (`_restore_filter_after_sweep`) moves the wheel only
+        #: and does not apply the inverse of an offset the focuser never took.
+        self._luminance_offset_landed: bool = True
         #: The focus groups acquired this run (#189 U-05, spec 5.6 step 6),
         #: keyed by `_focus_group_key`: a target's ``mosaic_group``, or its
         #: own id when it has none. A group's first acquisition owes a sweep
@@ -6003,12 +6009,14 @@ class SequenceEngine:
         while the engine's records of tonight hold it). Raises ``KeyError``
         for a group the plan does not carry.
 
-        ONE WINDOW IT DOES NOT CLOSE: a retry asked after the scheduler has
-        returned but before ``_finalize_report`` has cleared the session (the
-        idle-stop's wait, seconds) is queued and never drained, and the next
-        ``start`` discards it. The session is dormant with the record
-        standing, and a second press, now on the dormant path, brings it
-        back."""
+        THE WINDOW AT THE RUN'S END IS CLOSED (#728): a retry asked after the
+        scheduler has returned but before ``_finalize_report`` has cleared the
+        session (the idle-stop's wait, seconds) is queued and never drained
+        by the scheduler, so the run's end hands the queue to the SESSION
+        (``_hand_pending_retries_to_the_session``): the records tonight holds
+        for those panels are marked cleared, the report names the retry, and
+        the same night's CONTINUE, restart or auto-resume takes the panel up,
+        exactly as after the dormant route. No second press is needed."""
         plan = self.plan
         if not self.running or self._session is None or plan is None:
             return {"live": False, "queued": []}
@@ -9144,12 +9152,9 @@ class SequenceEngine:
             # measured since. Here rather than in `_run_step`, whose gate
             # stack the group driver leaves untouched (spec D7).
             self._take_pending_lock(target)
-        panel_kw: dict = {}
+        panel_kw: dict = self._panel_labels(target, step)
         group = self._group_of(target) if target is not None else None
         if group is not None and str(step.frame_type).lower() == "light":
-            panel_kw = {"mosaic": naming.mosaic_label(group.name, group.id),
-                        "panel": naming.panel_label(target.panel_row,
-                                                    target.panel_col)}
             # A MERIDIAN WAIT ENDS WITH THE FIRST EXPOSURE AFTER IT, not at
             # the crossing (spec 5.10, 6.9): from here the panel and the pass
             # go back to every viewer, at crossing plus hop plus exposure,
@@ -10002,6 +10007,22 @@ class SequenceEngine:
             return str(resolved)
         return (step.filter or None)
 
+    def _panel_labels(self, target: Target | None, step) -> dict:
+        """``{"mosaic": ..., "panel": ...}`` for a GROUP MEMBER'S LIGHT frame
+        (#189 U-08, #188), else ``{}``: the one rule behind the FITS cards
+        `_capture` writes (``MOSAIC``, ``PANEL``) and the labels the session
+        report's frame record carries (`_reporter_record`), so the file and
+        the report cannot name different panels. A non-member's frame and a
+        dark a hold shoots on a panel carry neither. ``naming.panel_label``
+        raises for a member with no grid position, which a caller keeps
+        inside its own try."""
+        group = self._group_of(target) if target is not None else None
+        if group is None or str(step.frame_type).lower() != "light":
+            return {}
+        return {"mosaic": naming.mosaic_label(group.name, group.id),
+                "panel": naming.panel_label(target.panel_row,
+                                            target.panel_col)}
+
     def _reporter_record(self, target: Target, step, info: dict, *, accepted: bool) -> None:
         """Record one frame to the session report (every frame, with its accepted
         flag). Best-effort; never lets a report-write hiccup break the run."""
@@ -10021,6 +10042,11 @@ class SequenceEngine:
             temp = getattr(frame, "temperature_c", None)
         saved = info.get("saved_path") if isinstance(info, dict) else None
         try:
+            # WHICH MOSAIC AND WHICH PANEL (#188): a group member's LIGHT
+            # frame says, as the FITS cards it was written with do; every
+            # other frame records neither. Inside the try, so a panel with no
+            # grid position logs "report record failed" and not a crash.
+            labels = self._panel_labels(target, step)
             self.reporter.record_frame(FrameRecord(
                 ts=time.time(), target=target.name,
                 filter=self._effective_filter(step, info),
@@ -10029,7 +10055,9 @@ class SequenceEngine:
                 guide_rms_total=rms, saved_path=saved,
                 gain=getattr(step, "gain", None), offset=getattr(step, "offset", None),
                 binning=getattr(step, "binning", None), ecc=ecc,
-                altitude_deg=_frame_altitude(target, self.hub.site, time.time())))
+                altitude_deg=_frame_altitude(target, self.hub.site, time.time()),
+                mosaic=labels.get("mosaic") or None,
+                panel=labels.get("panel") or None))
         except Exception as e:
             bus.log("warning", f"report record failed: {e}", "sequence")
 
@@ -13951,7 +13979,23 @@ class SequenceEngine:
             bus.log("warning", f"{reason} — continuing", "sequence")
         return False
 
-    async def _apply_filter(self, step) -> None:
+    async def _apply_filter(self, step, *, apply_offset: bool = True) -> None:
+        """Move the wheel to ``step``'s filter and shift the focuser by the
+        per-filter offset delta.
+
+        THE WHEEL MOVE AND THE FOCUSER MOVE ARE ONE CHANGE (#723, WP-143).
+        The next frame's offset delta is derived from the wheel's REAL slot,
+        so a wheel that moved while the focuser did not take the offset is
+        shot one filter's worth of steps out of focus, or has the inverse of
+        an offset it never took applied on its way back. So when the focuser
+        step fails (anything but a ``SafetyAbort``, whose teardown owns every
+        device) the wheel is put back where it was, best effort
+        (`_put_the_wheel_back`), and the failure still propagates as it
+        always did.
+
+        ``apply_offset`` False moves the wheel alone: the way back from a
+        luminance move whose offset never landed
+        (`_restore_filter_after_sweep`)."""
         if "filterwheel" not in self.hub.devices:
             return
         # `require` RAISES when a device is registered but not connected, and
@@ -14005,69 +14049,101 @@ class SequenceEngine:
         # changes). Skipped when either end of the move is a blackout slot: its
         # offset is a placeholder zero, not a measurement, so honouring it would
         # yank the focuser to the reference position and back for a dark.
-        offsets = getattr(fw, "filter_offsets", []) or []
-        if self._policy.apply_filter_offsets and "focuser" in self.hub.devices \
-                and len(offsets) > max(new_slot, old_slot) \
-                and not fw.is_opaque(new_slot) and not fw.is_opaque(old_slot):
-            delta = offsets[new_slot] - offsets[old_slot]
-            if delta:
-                # ARRIVES FROM THE SAME SIDE AS EVERY OTHER MOVE (focus.approach).
-                # This is the move most likely to be swallowed whole by backlash
-                # and least likely to be noticed: the offsets on this rig are 18
-                # to 20 steps on a focuser with about 40 steps of slack, so an
-                # OUTWARD offset turns the motor and leaves the tube where it
-                # was — L and G then shoot at R and B's focus, with this log
-                # line saying the offset was applied and nothing anywhere
-                # disagreeing. An autofocus sweep at least measures itself; a
-                # 20-step offset move measures nothing.
-                foc = self.hub.require("focuser")
-                pos = await _bounded(foc.get_position(), FOCUSER_MOVE_TIMEOUT_S,
-                                     "focuser get_position")
-                overshoot = configured_overshoot()
-                await _bounded(
-                    approach(foc, pos + delta, overshoot=overshoot, current=pos),
-                    FOCUSER_MOVE_TIMEOUT_S, "focuser offset move",
-                    note="the focuser may be left above the offset position")
-                bus.log("info", f"applied filter offset {delta:+d} for {label}", "sequence")
-                # AND THE COMPENSATION REFERENCE MOVES WITH IT.
-                #
-                # `tempcomp.decide` computes an ABSOLUTE target,
-                # `reference_position + steps_per_c * (temp - reference_temp)`,
-                # and nothing here used to touch that reference - so the moment
-                # this offset landed, the drawtube was `delta` steps away from
-                # where compensation believed focus was. The very next frame
-                # boundary "corrected" that as drift and moved it straight back.
-                # Ha then shot at L's focus, with BOTH log lines present and
-                # nothing anywhere disagreeing: the offset line says it applied
-                # +120, the compensation line says it moved -120 for the
-                # temperature, and neither is wrong on its own.
-                #
-                # WHY THE REFERENCE SHIFTS RATHER THAN `decide` GAINING A TERM.
-                # The alternative was to carry the accumulated filter offset as
-                # an extra input to `decide`. That would mean a second piece of
-                # engine state threaded into a module whose entire value is that
-                # it is PURE - the nine-rule table is tested with no focuser, no
-                # clock and no engine, and every new argument is a new way for
-                # the tested arithmetic and the running arithmetic to differ.
-                # Shifting the reference keeps `decide` untouched.
-                #
-                # It is also the more exact statement. "reference_position +
-                # delta at the SAME reference_temp_c" is literally true - this
-                # filter focuses `delta` steps from the last one, at every
-                # temperature - whereas re-anchoring on the current reading
-                # would additionally swallow whatever drift had not been
-                # corrected yet and silently rebase the night's baseline on a
-                # filter change.
-                self._shift_temp_comp_reference(delta)
-                if overshoot and delta > 0:
-                    # "up to", because the extra leg is clamped to the
-                    # focuser's ceiling and dropped entirely at the top of its
-                    # travel — where there is no room, the tube arrives outward
-                    # and this line must not claim otherwise.
-                    bus.log("debug", f"that offset was outward, so the move went "
-                                     f"up to {overshoot} steps past "
-                                     f"{pos + delta} and came back down onto it",
-                            "sequence")
+        try:
+            offsets = getattr(fw, "filter_offsets", []) or []
+            if apply_offset and self._policy.apply_filter_offsets \
+                    and "focuser" in self.hub.devices \
+                    and len(offsets) > max(new_slot, old_slot) \
+                    and not fw.is_opaque(new_slot) and not fw.is_opaque(old_slot):
+                delta = offsets[new_slot] - offsets[old_slot]
+                if delta:
+                    # ARRIVES FROM THE SAME SIDE AS EVERY OTHER MOVE (focus.approach).
+                    # This is the move most likely to be swallowed whole by backlash
+                    # and least likely to be noticed: the offsets on this rig are 18
+                    # to 20 steps on a focuser with about 40 steps of slack, so an
+                    # OUTWARD offset turns the motor and leaves the tube where it
+                    # was — L and G then shoot at R and B's focus, with this log
+                    # line saying the offset was applied and nothing anywhere
+                    # disagreeing. An autofocus sweep at least measures itself; a
+                    # 20-step offset move measures nothing.
+                    foc = self.hub.require("focuser")
+                    pos = await _bounded(foc.get_position(), FOCUSER_MOVE_TIMEOUT_S,
+                                         "focuser get_position")
+                    overshoot = configured_overshoot()
+                    await _bounded(
+                        approach(foc, pos + delta, overshoot=overshoot, current=pos),
+                        FOCUSER_MOVE_TIMEOUT_S, "focuser offset move",
+                        note="the focuser may be left above the offset position")
+                    bus.log("info", f"applied filter offset {delta:+d} for {label}", "sequence")
+                    # AND THE COMPENSATION REFERENCE MOVES WITH IT.
+                    #
+                    # `tempcomp.decide` computes an ABSOLUTE target,
+                    # `reference_position + steps_per_c * (temp - reference_temp)`,
+                    # and nothing here used to touch that reference - so the moment
+                    # this offset landed, the drawtube was `delta` steps away from
+                    # where compensation believed focus was. The very next frame
+                    # boundary "corrected" that as drift and moved it straight back.
+                    # Ha then shot at L's focus, with BOTH log lines present and
+                    # nothing anywhere disagreeing: the offset line says it applied
+                    # +120, the compensation line says it moved -120 for the
+                    # temperature, and neither is wrong on its own.
+                    #
+                    # WHY THE REFERENCE SHIFTS RATHER THAN `decide` GAINING A TERM.
+                    # The alternative was to carry the accumulated filter offset as
+                    # an extra input to `decide`. That would mean a second piece of
+                    # engine state threaded into a module whose entire value is that
+                    # it is PURE - the nine-rule table is tested with no focuser, no
+                    # clock and no engine, and every new argument is a new way for
+                    # the tested arithmetic and the running arithmetic to differ.
+                    # Shifting the reference keeps `decide` untouched.
+                    #
+                    # It is also the more exact statement. "reference_position +
+                    # delta at the SAME reference_temp_c" is literally true - this
+                    # filter focuses `delta` steps from the last one, at every
+                    # temperature - whereas re-anchoring on the current reading
+                    # would additionally swallow whatever drift had not been
+                    # corrected yet and silently rebase the night's baseline on a
+                    # filter change.
+                    self._shift_temp_comp_reference(delta)
+                    if overshoot and delta > 0:
+                        # "up to", because the extra leg is clamped to the
+                        # focuser's ceiling and dropped entirely at the top of its
+                        # travel — where there is no room, the tube arrives outward
+                        # and this line must not claim otherwise.
+                        bus.log("debug", f"that offset was outward, so the move went "
+                                         f"up to {overshoot} steps past "
+                                         f"{pos + delta} and came back down onto it",
+                                "sequence")
+        except SafetyAbort:
+            raise
+        except Exception:
+            await self._put_the_wheel_back(fw, old_slot, label)
+            raise
+
+    async def _put_the_wheel_back(self, fw, slot: int, label: str) -> None:
+        """Send ``fw`` back to ``slot`` after `_apply_filter` moved it and the
+        focuser's offset step failed (#723, WP-143), so the wheel and the
+        focuser agree again: the wheel where it was, the focuser where it was.
+
+        BEST EFFORT, and it says what it did either way. It runs on the way
+        out of a failing move, so nothing it raises may replace the failure
+        that is already on its way up (a ``SafetyAbort`` included); a wheel
+        that cannot be sent back is left where it is and the warning names it
+        (`_sweep_through_luminance` asks the wheel where it is and owes the
+        way back, without an offset, in that case)."""
+        try:
+            await _bounded(fw.set_position(slot), FILTER_MOVE_TIMEOUT_S,
+                           f"filter → slot {slot} (undo)")
+            bus.log("warning",
+                    f"filter → {label}: the focuser's offset move failed, so "
+                    f"the wheel went back to slot {slot} and no offset is "
+                    f"owed", "sequence")
+        except Exception as e:      # noqa: BLE001
+            bus.log("warning",
+                    f"filter → {label}: the focuser's offset move failed and "
+                    f"the wheel could not be sent back to slot {slot} ({e}); "
+                    f"it stays where it is, with no offset applied",
+                    "sequence")
 
     async def _flip_safety_gate(self, target: Target) -> None:
         """The flip's own pre-slew safety + mount-floor gate (the flip IS a
@@ -16722,11 +16798,7 @@ class SequenceEngine:
         # hop's own row from this very solve, so a row here would be a second
         # one for it. The flip and the tracking enforcement pass none and
         # record nothing else, so the flip's recovery, which returns before the
-        # flip's own row, is recorded here. KNOWN: setup's uncentred branch
-        # passes none either and records the hop's row after the recovery, so
-        # a refused track recovered there, on a target with centring off, is
-        # two identical rows for one solve; that call is not this method's
-        # to change.
+        # flip's own row, is recorded here.
         if report_centring:
             self._record_sky_angle(target, since=t0, commanded=rotation,
                                    result=result, rec=self._sky_angle_now())
@@ -17226,8 +17298,30 @@ class SequenceEngine:
                 # be put back reliably. Stay put rather than restore the wrong
                 # slot with the wrong offset.
                 return None
-            await self._apply_filter(ExposureStep(filter=names[lum],
-                                                  exposure_s=1.0, count=1))
+            self._luminance_offset_landed = True
+            try:
+                await self._apply_filter(ExposureStep(filter=names[lum],
+                                                      exposure_s=1.0, count=1))
+            except SafetyAbort:
+                raise
+            except Exception as e:      # noqa: BLE001
+                # THE MOVE FAILED PARTWAY (#723, WP-143). `_apply_filter` puts
+                # the wheel back itself when only the focuser's offset failed,
+                # so the common answer here is "the wheel is where it was"
+                # and the sweep goes on through the filter in the beam. When
+                # the wheel is anywhere else, or cannot say, the way back is
+                # OWED: return the name so `_autofocus` sends it, and send it
+                # without an offset, since the focuser never took the one for
+                # the way out.
+                if await self._wheel_is_home(fw, cur):
+                    raise
+                self._luminance_offset_landed = False
+                bus.log("warning",
+                        f"{label}: the move to {names[lum]!r} failed partway "
+                        f"({e}) and the wheel is not on {back!r}; it will be "
+                        f"sent back after the sweep, without an offset, "
+                        f"since the focuser never took one", "sequence")
+                return back
             bus.log("info",
                     f"{label}: sweeping through {names[lum]!r} instead of "
                     f"{back!r} — a broadband sweep is minutes shorter, and the "
@@ -17243,6 +17337,21 @@ class SequenceEngine:
                              f"beam", "sequence")
             return None
 
+    @staticmethod
+    async def _wheel_is_home(fw, slot: int) -> bool:
+        """Is ``fw`` reading ``slot`` and not moving? False for any other
+        slot, for a wheel in transit and for one that cannot be read: the
+        caller treats "cannot say" as "not there" (the hub's borrow reads it
+        the same way, #723). Bounded, and never raises."""
+        try:
+            where = int(await _bounded(fw.get_position(), FILTER_MOVE_TIMEOUT_S,
+                                       "filter get_position"))
+            moving = bool(await _bounded(fw.is_moving(), FILTER_MOVE_TIMEOUT_S,
+                                         "filter is_moving"))
+            return where == int(slot) and not moving
+        except Exception:           # noqa: BLE001
+            return False
+
     async def _restore_filter_after_sweep(self, name: str, label: str) -> None:
         """Put ``name`` back after a luminance sweep, applying the offset.
 
@@ -17254,8 +17363,14 @@ class SequenceEngine:
         moves it and applies the delta from wherever it actually is.
         """
         try:
-            await self._apply_filter(ExposureStep(filter=name, exposure_s=1.0,
-                                                  count=1))
+            # THE OFFSET IS UNDONE ONLY IF IT WAS APPLIED (#723, WP-143): a
+            # move to luminance whose offset never landed is undone with the
+            # wheel alone, never with the inverse of an offset the focuser
+            # did not take.
+            await self._apply_filter(
+                ExposureStep(filter=name, exposure_s=1.0, count=1),
+                apply_offset=self._luminance_offset_landed)
+            self._luminance_offset_landed = True
         except Exception as e:      # noqa: BLE001
             bus.log("warning",
                     f"{label}: could not put {name!r} back after the luminance "

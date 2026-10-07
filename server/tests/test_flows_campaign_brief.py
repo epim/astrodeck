@@ -560,8 +560,26 @@ class TestWhatTheCampaignTabWillSay:
         Repeat (DUSK WINDOW's Automatic resume replaced it, default On), so
         the note says which of the two this flow is, and it must not mention
         Repeat at all. The Off variant, which names CONTINUE, is graded in
-        test_w14_autoresume_tonight.py."""
+        test_w14_autoresume_tonight.py.
+
+        RE-PINNED AGAIN FOR BACKLOG WP-118 (#195, wave 16 integration): the
+        campaign now keys on Automatic resume and the flow's shape
+        (``compile.campaign_block``), not on DUSK WINDOW's retired ``repeat``,
+        so ``example-pool`` (a pool, Automatic resume at its default On) IS a
+        campaign, and with no ledger its note is the campaign's own "The
+        session log is unavailable ..." sentence. The "Automatic resume is on"
+        sentence is now reached only by a pool with NO DUSK WINDOW, which
+        carries no opinion and resumes as it always has; this case grades
+        both."""
         c = _campaign(_ex("example-pool"), None)
+        assert c["has_pool"] is True and c["is_campaign"] is True
+        assert c["note"].startswith(
+            "The session log is unavailable, so captured totals cannot be "
+            "shown. "), c["note"]
+        assert "Repeat" not in c["note"], c["note"]
+        bare = _ex("example-pool")
+        bare.nodes = [n for n in bare.nodes if n.type != "dusk"]
+        c = _campaign(bare, None)
         assert c["has_pool"] is True and c["is_campaign"] is False
         assert c["note"] == (
             "Automatic resume is on (DUSK WINDOW): a subsequent night "

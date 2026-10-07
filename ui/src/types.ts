@@ -2008,6 +2008,12 @@ export interface CalibrationConfig {
   temp_bin_c: number;         // 0..50  — stacking bucket width; must be >= temp_tol_c
   stack_sigma: number;        // >0..10 — sigma-clip threshold when combining
   max_stack_frames: number;   // 1..1000 — cap on frames per master
+  /** #176 (WP-122): the rotator-angle bin a FLAT's master is keyed by, 0..30
+   *  degrees, 0 = no binning, else at least the matcher's 1 degree tolerance.
+   *  Optional: an older server sends none, and the tolerance editors do not
+   *  show it - they carry it through a SAVE unchanged and leave it out of the
+   *  "already the defaults" comparison (`atTolDefaults`). */
+  rotator_bin_deg?: number;
 }
 
 export interface EscalationConfig {
@@ -2054,6 +2060,11 @@ export interface TargetBreakdown {
   rejected: number;
   integration_s: number;
   by_filter: FilterBreakdown[];
+  /** The mosaic this row is a panel of and the panel's "r-c" label (#188),
+   *  null or absent for a target that is no panel and for a report written
+   *  before the labels existed. */
+  mosaic?: string | null;
+  panel?: string | null;
 }
 
 // ----------------------------------------------------- PRO-10 stacking bundle
@@ -2071,6 +2082,10 @@ export interface BundleGroupSummary {
   accepted_count: number;
   kept_count?: number;                  // subs with weight >= keep_threshold
   masters: Record<string, boolean>; // {dark:true, flat:true, bias:false}
+  /** The mosaic the group's panel belongs to (#188), null or absent for a
+   *  group that is no panel. */
+  mosaic?: string | null;
+  panel?: string | null;
 }
 export interface BundlePreview {
   report_id: string;
@@ -2156,7 +2171,13 @@ export interface MosaicPanel {
   col: number;
   ra_hours: number;                        // server returns ra already %24-wrapped
   dec_deg: number;
+  /** The LAYOUT angle, the one the Atlas draws the panel's rectangle at. */
   rotation_deg: number;
+  /** Meridian convergence at this panel, degrees from +eta toward +xi (#175). */
+  convergence_deg: number;
+  /** The camera's sky position angle for this panel, in [0,360): the layout
+   *  angle plus `convergence_deg` (#175). */
+  pa_deg: number;
   transit_alt?: number;                    // peak alt tonight (NOT instantaneous "now" alt)
   /** Why this panel has no `transit_alt`, in the server's words
    *  (`framing._stamp_transit_alt`). Present exactly when a night was asked

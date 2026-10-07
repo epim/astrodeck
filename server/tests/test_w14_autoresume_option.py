@@ -131,13 +131,19 @@ def test_the_single_night_repeat_does_not_read_as_off():
 def test_the_wizards_graph_resumes():
     """A flow the guided wizard makes (`generate_record`) is the commonest
     DUSK WINDOW there is, and the one 0.3.40 stopped resuming: it carries the
-    DUSK defaults `create_params` writes, `repeat: "Single night"` among them.
-    It compiles without the key and its plan resumes, and it states its
-    `autoResume` outright, so the choice is visible in the file."""
+    DUSK defaults `create_params` writes. It compiles without the key and its
+    plan resumes, and it states its `autoResume` outright, so the choice is
+    visible in the file.
+
+    RE-PINNED FOR BACKLOG WP-118 (#195, wave 16 integration): this premise
+    was that the wizard's DUSK still carries `repeat: "Single night"`, "the
+    old default". `repeat` is retired (the vocabulary declares no such
+    param), so the premise is now that the wizard's DUSK carries none, and
+    the case still grades what it was for: it resumes."""
     record = generate_record(KIND_DEEP_SKY, None, "M31")
     dusk = next(n for n in record.graph.nodes if n.type == "dusk")
-    assert dusk.params.get("repeat") == "Single night", (
-        "premise: the wizard's DUSK still carries the old default")
+    assert "repeat" not in dusk.params, (
+        "premise: the wizard's DUSK carries the retired `repeat`")
     assert dusk.params.get("autoResume") == "On"
     compiled = compile_plan(record.graph, record.name)
     assert "resume_across_nights" not in compiled
@@ -198,13 +204,18 @@ def test_a_flow_with_no_dusk_window_resumes():
     assert plan.resume_across_nights is True
 
 
-def test_the_vocabulary_has_the_option_and_still_keeps_repeat():
-    """`autoResume` is a DUSK param, "On" by default; `repeat` stays in the
-    table so a stored file still loads and the campaign block keeps its key
-    (the retirement of `repeat` is a later change)."""
+def test_the_vocabulary_has_the_option_and_no_longer_declares_repeat():
+    """`autoResume` is a DUSK param, "On" by default.
+
+    RE-PINNED FOR BACKLOG WP-118 (#195, wave 16 integration), and renamed
+    (it was `..._and_still_keeps_repeat`): this case said `repeat` stays in
+    the table "so a stored file still loads and the campaign block keeps its
+    key (the retirement of `repeat` is a later change)". That change is
+    WP-118. A stored `repeat` still loads (`with_defaults` keeps it verbatim,
+    inert), but the vocabulary no longer declares the param."""
     params = NODE_DEFS["dusk"].params
     assert params["autoResume"] == "On"
-    assert params["repeat"] == "Single night"
+    assert "repeat" not in params
 
 
 def test_plan_extras_still_only_ever_writes_false():
@@ -217,20 +228,40 @@ def test_plan_extras_still_only_ever_writes_false():
         "resume_across_nights"] is False
 
 
-def test_the_campaign_block_is_still_keyed_on_repeat():
-    """Ruling 5 of this work package: `campaign` stays keyed on `repeat`, so
-    every campaign compile is byte-identical to before. Turning auto-resume
-    Off does not remove it (retiring `repeat` is a later change), and the
-    default flow still has none."""
+def test_the_campaign_block_is_keyed_on_automatic_resume_and_a_pool():
+    """RE-PINNED FOR BACKLOG WP-118 (#195, wave 16 integration), and renamed
+    (it was `..._is_still_keyed_on_repeat`). Ruling 5 of WP-85 kept `campaign`
+    keyed on `repeat` "so every campaign compile is byte-identical to before",
+    and said turning auto-resume Off did not remove it; retiring `repeat` was
+    left for later. That is WP-118: a campaign is a POOL in a flow whose
+    Automatic resume is On (`compile.campaign_block`), and a stored `repeat`
+    is inert.
+
+    So: the default single-target flow has no block (nothing to come back
+    to); a pool flow with Automatic resume On has it; Off removes it (the
+    flow is told not to come back); a stored `repeat` changes nothing either
+    way; and the block's own three keys are what they were."""
+    block = {"repeat": "nightly", "until": "pool_complete",
+             "resume": "cursor"}
+
+    def pool_compiled(**dusk_params) -> dict:
+        graph = FlowGraph(
+            nodes=[_n("d", "dusk", **dusk_params),
+                   _n("p", "pool", 200, members="M42, M13", minAlt=0,
+                      moonSep=0, maxHA=0),
+                   _n("c", "capture", 400, exposure=60, count=10, filter="L")],
+            edges=[_e("d", "window", "p", "arm"), _e("p", "target", "c", "run")])
+        return compile_plan(graph, "n")
+
     assert "campaign" not in _compiled()
     assert "campaign" not in _compiled(autoResume="Off")
-    nightly = _compiled(repeat="Nightly until pool complete")
-    assert nightly["campaign"] == {"repeat": "nightly",
-                                   "until": "pool_complete",
-                                   "resume": "cursor"}
-    both = _compiled(repeat="Nightly until pool complete", autoResume="Off")
-    assert both["campaign"] == nightly["campaign"]
-    assert both["resume_across_nights"] is False
+    assert "campaign" not in _compiled(repeat="Nightly until pool complete")
+    assert pool_compiled()["campaign"] == block
+    assert pool_compiled(repeat="Single night")["campaign"] == block
+    assert pool_compiled(repeat="Nightly until pool complete")["campaign"] == block
+    assert "campaign" not in pool_compiled(autoResume="Off")
+    off = pool_compiled(autoResume="Off", repeat="Nightly until pool complete")
+    assert "campaign" not in off and off["resume_across_nights"] is False
 
 
 # ============================================================== the engine

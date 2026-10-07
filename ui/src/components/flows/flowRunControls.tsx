@@ -48,7 +48,7 @@ import {
 import { flowRunLive, isRunPhaseLive, knownSessions } from "./flowRunState";
 import { unsavedRunReason } from "./flowsTypes";
 import {
-  START_OVER_TITLE, runCopy, runReadouts, startOverBody,
+  START_OVER_TITLE, graphResumes, runCopy, runReadouts, startOverBody,
   type RunCopy, type RunReadouts,
 } from "./runCopy";
 
@@ -102,10 +102,10 @@ export { isRunPhaseLive } from "./flowRunState";
 // of each question is the server's sentence, verbatim and once: it holds the
 // numbers being decided on. The title only frames the decision.
 
-/** The codes a CONTINUE question can carry: the three the slice names, and
- *  `reopen` (409 `reopen`, #179), asked when the flow's newest session is
+/** The codes a CONTINUE question can carry: the four the slice names, `reopen`
+ *  (409 `reopen`, #179) being asked when the flow's newest session is
  *  COMPLETE and the flow was edited to owe more. */
-export type ContinueQuestionCode = FlowContinueCode | "reopen";
+export type ContinueQuestionCode = FlowContinueCode;
 
 /** What the question is deciding. Not a restatement of the sentence under it. */
 export const CONTINUE_TITLE: Record<ContinueQuestionCode, string> = {
@@ -360,7 +360,13 @@ export function useFlowRunControls(): FlowRunControls {
   // every 30 s), so the memo below recomputes that rarely.
   const name = useStore((s) => s.flows.record?.name ?? "");
   const progress = useStore((s) => s.flows.progress);
-  const copy = useMemo(() => runCopy(name, progress, running), [name, progress, running]);
+  // Whether the flow ON THE CANVAS resumes on a later night (#195, WP-118):
+  // the same graph `countsNotice` reads, so RUN's notice follows an edit to
+  // DUSK WINDOW's Automatic resume the moment it is made, saved or not. A
+  // boolean, so exact under Object.is: a node drag re-renders nothing here.
+  const resumes = useStore((s) => graphResumes(s.flows.graph));
+  const copy = useMemo(() => runCopy(name, progress, running, resumes),
+    [name, progress, running, resumes]);
 
   const canControlMount = useCanControlMount();
   const camera = useRoleConnected("camera");

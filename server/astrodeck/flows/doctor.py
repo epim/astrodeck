@@ -322,6 +322,26 @@ def _pass_seconds(graph: FlowGraph, block) -> float:
     return total
 
 
+#: DUSK WINDOW's two clock times resolve independently to the occurrence
+#: nearest now (``schedule._clock_time_near_now``: within 12 hours of it), so
+#: a Stop more than this many minutes after the Start, or none at all, lands
+#: at or before the Start (#719, WP-144).
+CLOCK_WINDOW_MAX_MIN = 720
+
+
+def _clock_minutes(value) -> int | None:
+    """Minutes past midnight of an "HH:MM" clock card, read the way the
+    schedule reads it (``schedule._clock_time_near_now``: two ints around a
+    colon), or None for a blank or unparseable one."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        hh, mm = (int(x) for x in value.split(":", 1))
+    except (ValueError, AttributeError):
+        return None
+    return hh * 60 + mm
+
+
 def _mmss(seconds: float) -> str:
     s = int(round(seconds))
     return f"{s // 60} m {s % 60:02d} s" if s >= 60 else f"{s} s"
@@ -660,6 +680,36 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
                 "never accepts would be retried without end. Stop the night "
                 "at Dawn (DUSK WINDOW), or set Settings > Standards > 'Give up "
                 "on a step after'.", "warn"))
+
+    # DUSK WINDOW's Stop is a Clock time that is not after its Start (#719,
+    # WP-144). Both clock cards resolve to the occurrence nearest now, so a
+    # forward gap from Start to Stop of more than twelve hours, or none, puts
+    # the stop at or before the start and the run ends before it begins:
+    # "22:00" to "21:00" is 23 hours forward. A past-midnight window (22:00 to
+    # 03:30, 5.5 hours) and an exact twelve are fine. A blank or unreadable
+    # card says nothing: M9 and the compile already speak for a blank Stop.
+    # A DESIGN-TIME WARNING, NOT THE ENGINE'S PREDICATE: the two cards snap
+    # independently to the occurrence within 12 h of the moment the window is
+    # frozen, so a forward gap under twelve hours can still resolve backwards
+    # at some hours of the day; this catches the always-wrong windows. A sun
+    # Start with a Clock Stop needs a site and is Tonight's to say.
+    for n in graph.nodes:
+        if (n.type != "dusk" or n.params.get("start") != "Clock time"
+                or n.params.get("stop") != "Clock time"):
+            continue
+        began = _clock_minutes(n.params.get("startClock"))
+        ended = _clock_minutes(n.params.get("stopClock"))
+        if began is None or ended is None:
+            continue
+        gap = (ended - began) % 1440
+        if gap == 0 or gap > CLOCK_WINDOW_MAX_MIN:
+            out.append(Issue(
+                f"▸ {NODE_DEFS['dusk'].label} - Stop "
+                f"{str(n.params.get('stopClock')).strip()} is not after Start "
+                f"{str(n.params.get('startClock')).strip()} within a night: a "
+                f"clock stop resolves to the occurrence nearest now, so this "
+                f"run would end before it begins. Set a Stop later than the "
+                f"Start (past midnight is fine, up to 12 hours).", "warn"))
 
     # M10. A measured hop against the visit it buys (spec 5.3: a visit runs
     # `passes` rounds, and at least `minVisit` minutes of shutter).

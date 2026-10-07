@@ -39,6 +39,11 @@ from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
 M31_RA = "00h 42m 44s"
 M31_DEC = "+41° 16′ 09″"
 
+#: The camera that shoots every panel at one angle, the case M6 and M15 price
+#: (#175: a rotating block's panels are each commanded their own angle, and
+#: both rules are silent for it).
+FIXED = "Camera fixed at PA"
+
 #: A rig that agrees with the baseline: the field it was framed with, a
 #: rotator, reject guards on, and a hop that costs an eighth of a visit.
 CLEAN_RIG = RigFacts(fov_deg=(2.0, 1.33), has_rotator=True,
@@ -476,7 +481,7 @@ class TestM6Convergence:
         share = framing.convergence_share(_spec(1, 4, 0.10, 75.0))
         assert share == pytest.approx(0.389, abs=0.0005)
         hit = _one(check(_mosaic(rows=1, cols=4, overlap=10,
-                                 dec="+75 00 00", rotation=0)), M6)
+                                 dec="+75 00 00", rotation=0, angle=FIXED)), M6)
         assert (hit.level, hit.text) == (
             "warn", f"▸ TARGET M31 - at Dec 75 meridian convergence turns "
             f"neighbouring panels against each other, which uses "
@@ -493,7 +498,7 @@ class TestM6Convergence:
         share = framing.convergence_share(_spec(3, 3, 0.25, 41.0))
         assert share == pytest.approx(0.031, abs=0.0005)
         assert not _hits(check(_mosaic(rows=3, cols=3, dec="+41 00 00",
-                                       rotation=0)), M6)
+                                       rotation=0, angle=FIXED)), M6)
 
     def test_just_over_a_quarter_is_warned(self):
         """The same 4x1 at 10% at Dec 68 uses 25.8%, just over spec 1.8's
@@ -504,7 +509,7 @@ class TestM6Convergence:
         share = framing.convergence_share(_spec(1, 4, 0.10, 68.0))
         assert 0.25 < share < 0.26
         assert _one(check(_mosaic(rows=1, cols=4, overlap=10,
-                                  dec="+68 00 00", rotation=0)),
+                                  dec="+68 00 00", rotation=0, angle=FIXED)),
                     M6).level == "warn"
 
     def test_just_under_a_quarter_is_not(self):
@@ -516,7 +521,7 @@ class TestM6Convergence:
         share = framing.convergence_share(_spec(1, 4, 0.10, 66.0))
         assert 0.23 < share < 0.25
         assert not _hits(check(_mosaic(rows=1, cols=4, overlap=10,
-                                       dec="+66 00 00", rotation=0)), M6)
+                                       dec="+66 00 00", rotation=0, angle=FIXED)), M6)
 
     def test_past_the_budget_m15_speaks_instead(self):
         """A 4x1 at 10% at Dec 80 uses 58.8%: M15's danger, not M6 beside it.
@@ -525,7 +530,7 @@ class TestM6Convergence:
         neighbouring panels against each other, which uses 58.8% of their 10%
         overlap. Widen the overlap or use fewer columns.', level='warn')]``."""
         issues = check(_mosaic(rows=1, cols=4, overlap=10, dec="+80 00 00",
-                               rotation=0))
+                               rotation=0, angle=FIXED))
         assert _one(issues, M15).level == "danger"
         assert not _hits(issues, M6)
 
@@ -1033,7 +1038,7 @@ class TestM15BudgetSpent:
         assert share >= framing.ROTATION_BUDGET
         assert framing.angle_tolerance_deg(spec) == 0.0
         hit = _one(check(_mosaic(rows=1, cols=4, overlap=10,
-                                 dec="+80 00 00", rotation=0)), M15)
+                                 dec="+80 00 00", rotation=0, angle=FIXED)), M15)
         assert (hit.level, hit.text) == (
             "danger", f"▸ TARGET M31 - at Dec 80 meridian convergence alone "
             f"uses {share * 100:.1f}% of the overlap, which leaves no room for "
@@ -1049,7 +1054,7 @@ class TestM15BudgetSpent:
         assert framing.angle_tolerance_deg(spec) == pytest.approx(0.47,
                                                                   abs=0.005)
         assert not _hits(check(_mosaic(rows=1, cols=4, overlap=10,
-                                       dec="+75 00 00", rotation=0)), M15)
+                                       dec="+75 00 00", rotation=0, angle=FIXED)), M15)
 
     def test_no_overlap_is_a_spent_budget_in_other_words(self):
         """An infinite share. Mutant "k = 0.5" turned this red, and showed
@@ -1058,7 +1063,7 @@ class TestM15BudgetSpent:
         meridian convergence turns neighbouring panels against each other,
         which uses inf% of their 0% overlap. Widen the overlap or use fewer
         columns.')])``."""
-        hit = _one(check(_mosaic(overlap=0)), M15)
+        hit = _one(check(_mosaic(overlap=0, angle=FIXED)), M15)
         assert "with no overlap, meridian convergence at Dec 41" in hit.text
 
 
@@ -1263,11 +1268,11 @@ class TestTheWordsAtTheEdges:
         The control below stays green under it, as it says.
         """
         typed = check(_mosaic(rows=1, cols=4, overlap=10, ra="00h 00m 00s",
-                              dec="+80 00 00", rotation=0))
+                              dec="+80 00 00", rotation=0, angle=FIXED))
         as_text = _one(typed, M15)
         assert as_text.level == "danger"
         zero = check(_mosaic(rows=1, cols=4, overlap=10, ra=0,
-                             dec="+80 00 00", rotation=0))
+                             dec="+80 00 00", rotation=0, angle=FIXED))
         assert _one(zero, M15) == as_text, (
             "an RA of the number 0 is 0h, measured as the text '00h 00m 00s' is")
 

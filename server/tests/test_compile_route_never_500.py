@@ -538,10 +538,11 @@ SLICE_TS = UI_SRC / "components" / "flows" / "flowsSlice.ts"
 
 #: The store actions that refresh ``flows.compiled``, which is what the
 #: comment names: a flow opened, a save, DONE or LOOP PANELS, which write
-#: through ``flowsApplyFraming``, and (WP-86, #688) Tonight read over a graph
-#: the compile in hand was not made from, ``flowsFetchTonight``.
+#: through ``flowsApplyFraming``, (WP-86, #688) Tonight read over a graph
+#: the compile in hand was not made from, ``flowsFetchTonight``, and (WP-117,
+#: #688) an undo or a redo, ``flowsUndo`` and ``flowsRedo``.
 COMPILING_ACTIONS = {"flowsOpen", "flowsSave", "flowsApplyFraming",
-                     "flowsFetchTonight"}
+                     "flowsFetchTonight", "flowsUndo", "flowsRedo"}
 
 
 def _compile_payload_text() -> str:
@@ -606,18 +607,33 @@ class TestTheCommentSaysWhenTheEditorCompiles:
             "_compile_payload still claims a compile on every edit")
         for words in ("when a flow opens", "after each save", "done",
                       "#356", "when tonight is read over a graph the "
-                      "compile in hand was not made from (#688)"):
+                      "compile in hand was not made from (#688)",
+                      "after an undo or redo (#688)"):
             assert words in text, words
 
     def test_the_moments_it_names_are_the_ones_the_editor_has(self):
         """The UI half of the same claim, so it cannot go stale: the store
         actions that call ``flowsCompile`` are exactly a flow opened, a
-        save, ``flowsApplyFraming`` (DONE, LOOP PANELS) and, since WP-86
-        (#688), ``flowsFetchTonight`` (Tonight read over a graph the compile
-        in hand was not made from), and outside the slice only the Target
-        modal's DONE (``commit``) calls it, for a DONE that changed only the
-        flow setting. A compile added to any other action, a param edit say,
-        makes the comment false again.
+        save, ``flowsApplyFraming`` (DONE, LOOP PANELS), since WP-86
+        (#688) ``flowsFetchTonight`` (Tonight read over a graph the compile
+        in hand was not made from) and, since WP-117 (#688), ``flowsUndo``
+        and ``flowsRedo`` (the graph just changed is compiled), and outside
+        the slice only the Target modal's DONE (``commit``) calls it, for a
+        DONE that changed only the flow setting. A compile added to any other
+        action, a param edit say, makes the comment false again.
+
+        RE-PINNED FOR BACKLOG WP-117 (#688, wave 16 integration): an undo or
+        a redo puts a different graph on the canvas, so each compiles it
+        (``get().flowsCompile()``); both join the set and the
+        ``_compile_payload`` comment names them ("after an undo or redo
+        (#688)").
+
+        RED under mutant "the comment lacks the undo moment" (the ``after an
+        undo or redo (#688)`` words taken out of the refusal's comment in
+        ``_compile_payload``), observed in
+        ``test_it_no_longer_claims_a_compile_on_every_edit``:
+
+            E   AssertionError: after an undo or redo (#688)
 
         RE-PINNED FOR BACKLOG WP-86 (#688, wave 14 integration): Tonight now
         awaits a compile when the one in hand is not current, which is a

@@ -47,7 +47,7 @@ import { acceptedByFilter, tonightNightKey } from "./filters";
 import { subsPhrase } from "./LiveStack";
 import { sendControl } from "./sendControl";
 import { useActiveSession } from "./sessionData";
-import { useSessionStackStatus } from "./stackView";
+import { useSessionStackStatus, useStackView } from "./stackView";
 import { useSubFrame } from "./useSubFrame";
 
 /** The Monitor's own view-only note, as one sentence. */
@@ -72,6 +72,7 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
   const canPreview = useCan("view.preview");
   const { session } = useActiveSession();
   const { status: stack } = useSessionStackStatus();
+  const { panel } = useStackView();
 
   const [aborting, setAborting] = useState(false);
   const [downloadNote, setDownloadNote] = useState<string | null>(null);
@@ -164,7 +165,15 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
     .reduce((a, b) => a + b, 0);
   const subs = session ? acceptedTonight : (seq.progress?.frames_done ?? 0);
 
-  const stackHref = stack && stack.has_image ? sessionStackImageUrl(stack.seq, 2400) : null;
+  // THE PINNED PANEL'S PICTURE (#172, WP-121 integration). `stack` is the
+  // status of the panel pinned on screen (`useSessionStackStatus` asks for
+  // `?panel=`), so its `seq` and `target` belong to THAT panel; the link has
+  // to ask for the same panel's picture, or SAVE STACK would download the
+  // latest panel's composite under the pinned panel's name. `panel` is null
+  // while following the latest, and the URL is then the one this app has
+  // always built.
+  const stackHref = stack && stack.has_image
+    ? sessionStackImageUrl(stack.seq, 2400, undefined, panel ?? undefined) : null;
   const stackName = `${(stack?.target || seq.target || "stack").replace(/\s+/g, "-")}-stack.jpg`;
 
   const btnSize = size;

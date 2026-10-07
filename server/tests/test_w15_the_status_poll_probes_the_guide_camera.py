@@ -273,8 +273,13 @@ def _is_the_probe_of(cam):
 
 async def test_a_hung_guide_camera_does_not_hold_up_the_status_frame(
         sim_hub, monkeypatch):
-    """m3. The imaging camera's read has no bound; the guide camera's has one,
-    five seconds, because the probe's answer is worth less than the frame."""
+    """m3. The guide camera's read is bounded at five seconds, because the
+    probe's answer is worth less than the frame.
+
+    (This once also said the imaging camera's read had no bound. It has one
+    since WP-143, #724: ``Hub._imaging_temperature``, bounded by
+    ``STATUS_CAMERA_TEMPERATURE_TIMEOUT_S``, graded in
+    test_w16_status_temperature_is_bounded.py.)"""
     release = threading.Event()
     try:
         cam = await _with_guide_camera(sim_hub, _Adapter(block=release))
