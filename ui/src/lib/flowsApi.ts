@@ -297,6 +297,18 @@ export interface FlowProgressSkipped {
   banked: number;
 }
 
+/** One panel a dormant session's standing set-aside record holds back
+ *  tonight (#727, WP-141): the panel's target id, its name and its 0-based
+ *  grid position. */
+export interface FlowProgressSetAside {
+  target_id: string;
+  name: string;
+  row: number | null;
+  col: number | null;
+  /** A centring set-aside that may still expire tonight. */
+  for_now: boolean;
+}
+
 /** One canvas node: `node_id` is the node's id, which is how a card finds its
  *  own block. */
 export interface FlowProgressBlock {
@@ -324,6 +336,11 @@ export interface FlowProgressBlock {
    *  the block (every panel skipped, or no coordinates), so no run will ever
    *  publish its group. */
   group_id?: string | null;
+  /** Present only on a mosaic block of a DORMANT session that holds a
+   *  standing set-aside record for tonight (#727, server `progress.
+   *  _set_aside_tonight`): the panels a RETRY would take back. Words and
+   *  flags only, `row` and `col` 0-based. */
+  set_aside?: FlowProgressSetAside[];
   /** A TARGET block's locked angle: the one every panel the plan holds is
    *  locked to (server `progress._block_lock`). Absent when any panel is
    *  unlocked or two panels disagree, and on a POOL block. */

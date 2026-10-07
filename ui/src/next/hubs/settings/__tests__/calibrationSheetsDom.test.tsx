@@ -170,7 +170,7 @@ const { CalibrationSheet } = await import("../sheets/CalibrationSheet");
 const { SkyPackSheet } = await import("../sheets/SkyPackSheet");
 const {
   buildReportLine, binWarning, groupHeading, libraryLoadError, PACK_RETRY_HINT,
-  TOL_BIN_REASON, TOL_CLEAN_REASON, TOLERANCE_FIELDS,
+  TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON, TOL_CLEAN_REASON, TOLERANCE_FIELDS,
 } = await import("../tuning/calibration");
 
 // ------------------------------------------------------------------- harness
@@ -546,6 +546,63 @@ await test("SAVE is locked with a reason until something changes, and refuses a 
 // Sabotage: fold the error into the empty state and the "not an empty library"
 // assertion goes red - which matters, because "no masters yet" is an
 // instruction to spend a night shooting frames you may already have.
+
+// A stored block carries `rotator_bin_deg` (#176, WP-122), which neither editor
+// has a control for. WAVE 16 INTEGRATION. Two named mutants, each from a byte
+// backup restored and sha256-compared, 15/16 passed:
+//   "atDefaults over the whole object" (the editor's `atDefaults` read as
+//   `JSON.stringify(draft) === JSON.stringify(TOL_DEFAULTS)`, the line as it
+//   was): x ... RESET is live on a screen showing the defaults, because the
+//   block carries a key the editor has no control for (expected these are
+//   already the defaults, got null)
+//   "the draft drops the key" (the draft rebuilt from the five fields): x ...
+//   SAVE dropped the stored rotator bin, so the server would reset it to its
+//   default (expected 7, got undefined)
+await test("a stored rotator bin is carried through, and does not make the defaults read as changed", async () => {
+  seedAdmin({ config: { calibration: { ...CALIBRATION, rotator_bin_deg: 2 } } });
+  reset();
+  const m = mount(CalibrationSheet);
+  await settle();
+  eq(tid(m.host, "cal-reset").getAttribute("title"), TOL_ALREADY_DEFAULT_REASON,
+    "RESET is live on a screen showing the defaults, because the block carries a key the editor has no control for");
+  unmount(m);
+
+  seedAdmin({ config: { calibration: { ...CALIBRATION, rotator_bin_deg: 7 } } });
+  reset();
+  const m2 = mount(CalibrationSheet);
+  await settle();
+  const box = tid(m2.host, "cal-tolerance-temp_tol_c");
+  await typeInto(box, "3");
+  await blur(box);
+  await click(tid(m2.host, "cal-save"));
+  const body = posts.find((p) => p.url.includes("/api/config/calibration"))?.body as any;
+  eq(body?.temp_tol_c, 3, "SAVE sent a different tolerance from the one on screen");
+  eq(body?.rotator_bin_deg, 7, "SAVE dropped the stored rotator bin, so the server would reset it to its default");
+  unmount(m2);
+});
+
+// RESET MUST NOT UNDO A HIDDEN SETTING (wave 16 integration, verifier). The
+// editor has no control for `rotator_bin_deg`, so a RESET that wrote the
+// defaults over the draft dropped it, and the SAVE after it reset it to the
+// server's default. NAMED MUTANT "RESET writes the bare defaults"
+// (`resetTolerances` made `{ ...TOL_DEFAULTS }`, from a byte backup restored
+// and sha256-compared), RED, 16/17 passed:
+//   x RESET puts the five tolerances back and keeps the stored rotator bin:
+//     SAVE after RESET dropped the stored rotator bin, so the server would
+//     reset it to its default (expected 7, got undefined)
+await test("RESET puts the five tolerances back and keeps the stored rotator bin", async () => {
+  seedAdmin({ config: { calibration: { ...CALIBRATION, temp_tol_c: 4, rotator_bin_deg: 7 } } });
+  reset();
+  const m = mount(CalibrationSheet);
+  await settle();
+  await click(tid(m.host, "cal-reset"));
+  await click(tid(m.host, "cal-save"));
+  const body = posts.find((p) => p.url.includes("/api/config/calibration"))?.body as any;
+  eq(body?.temp_tol_c, 2, "RESET did not put the tolerance back to its default");
+  eq(body?.rotator_bin_deg, 7,
+    "SAVE after RESET dropped the stored rotator bin, so the server would reset it to its default");
+  unmount(m);
+});
 
 await test("a failed masters load renders as an error with a RETRY, never as an empty library", async () => {
   MASTERS_RESPONSE = { status: 500, body: "disk unreadable" };

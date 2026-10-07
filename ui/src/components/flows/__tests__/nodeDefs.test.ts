@@ -675,11 +675,14 @@ test("fields cover the created params exactly, less the declared rowless ones", 
       assert(k in createParams(t), `${t} declares rowless ${k}, which it does not have`);
     }
   }
-  // DELIBERATE PIN CHANGE (#195): DUSK's `repeat` has no row since
-  // `autoResume` replaced it, and stays a stored param (the campaign block
-  // keeps its key), so it is the third rowless declaration.
-  eq(Object.keys(ROWLESS_PARAMS).sort().join(","), "dusk,pool,target", "types with a rowless param");
-  eq((ROWLESS_PARAMS.dusk ?? []).join(","), "repeat", "DUSK's rowless params");
+  // DELIBERATE PIN CHANGE (#195): DUSK's `repeat` had no row once
+  // `autoResume` replaced it, and stayed a stored param, so it was the third
+  // rowless declaration. RE-PINNED FOR BACKLOG WP-118 (wave 16 integration):
+  // `repeat` is retired from the vocabulary altogether (a stored one is kept
+  // verbatim by the server and read by nothing), so DUSK declares no rowless
+  // param and only POOL and TARGET do.
+  eq(Object.keys(ROWLESS_PARAMS).sort().join(","), "pool,target", "types with a rowless param");
+  eq((ROWLESS_PARAMS.dusk ?? []).join(","), "", "DUSK's rowless params");
 });
 
 test("every control is one of the three, and only selects carry options", () => {
@@ -811,8 +814,14 @@ test("DUSK WINDOW's Automatic resume is the owner's exact label, an On/Off selec
   eq(fieldValue(f!, { autoResume: "Off" }), "Off", "a stored Off still shows Off");
   assert(!defOf("dusk").fields.some((x) => x.key === "repeat"),
     "DUSK WINDOW still offers Repeat: autoResume replaced it");
-  eq(defOf("dusk").params.repeat, "Single night",
-    "repeat stays a stored param, with its old default, so saved files load");
+  // RE-PINNED FOR BACKLOG WP-118 (wave 16 integration): this said `repeat`
+  // "stays a stored param, with its old default, so saved files load" and
+  // expected "Single night". The vocabulary no longer declares it; a saved
+  // file that stores one still loads (the server keeps it verbatim, inert).
+  assert(!("repeat" in defOf("dusk").params),
+    "DUSK WINDOW still declares `repeat`, which WP-118 retired");
+  assert(!("repeat" in createParams("dusk")),
+    "a new DUSK WINDOW is created with the retired `repeat`");
 });
 
 test("DUSK WINDOW's Automatic resume help is the interim text and says what Off does", () => {
@@ -908,9 +917,16 @@ test("sum() tracks changed params", () => {
     "Astro dusk +15m → dawn", "a non-negative offset gains the + sign");
   eq(defOf("pool").sum({ ...defOf("pool").params, members: "M8", strategy: "Round robin" }),
     "1 candidates · round robin · quota ×45", "pool counts comma-separated members");
+  // RE-PINNED FOR BACKLOG WP-118 (wave 16 integration): a stored `repeat` used
+  // to turn the footer's tail to " · nightly" ("a repeat turns the window into
+  // a campaign"). It is inert now: the footer says nothing for it, and says
+  // "one night" only for Automatic resume Off.
   eq(defOf("dusk").sum({ ...defOf("dusk").params, repeat: "Nightly ×30" }),
-    "Astro dusk -30m → dawn · nightly",
-    "a repeat turns the window into a campaign, and the footer says so");
+    "Astro dusk -30m → dawn",
+    "a stored repeat is not read: the footer has no tail for it");
+  eq(defOf("dusk").sum({ ...defOf("dusk").params, autoResume: "Off" }),
+    "Astro dusk -30m → dawn · one night",
+    "Automatic resume Off is the footer's only tail");
   eq(defOf("cycle").sum({ ...defOf("cycle").params, plan: "Ha 300, OIII 300", cycles: 12 }),
     "2 filters · 1/pass · ×12", "the cycle footer counts its own slots");
 });

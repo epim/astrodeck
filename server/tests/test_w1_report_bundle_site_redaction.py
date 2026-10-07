@@ -342,6 +342,41 @@ class TestReportCsvRoute:
         assert "41.7" in body
 
 
+class TestReportCsvCarriesEveryField:
+    """The route's docstring promises "EVERY field the JSON record carries",
+    and ``FrameRecord`` grew two (``mosaic``, ``panel``, #188 / WP-127) while
+    the column list is written out by hand: a claim nothing kept, so the CSV
+    dropped the labels the JSON carried. Held to the model now.
+
+    RED under mutant "the labels left out of the columns" (``"mosaic",
+    "panel"`` removed from ``report_frames_csv``'s list), observed:
+
+        AssertionError: the frames CSV drops FrameRecord fields the JSON
+        record carries: ['mosaic', 'panel']
+    """
+
+    def test_an_operators_header_has_every_frame_record_field(
+            self, client, as_role, monkeypatch, captures):
+        _install_report(monkeypatch, captures)
+        as_role(OPERATOR)
+        header = client.get("/api/reports/r1/frames.csv").text.splitlines()[0]
+        cols = set(header.split(","))
+        dropped = sorted(set(FrameRecord.model_fields) - cols)
+        assert not dropped, (
+            f"the frames CSV drops FrameRecord fields the JSON record "
+            f"carries: {dropped}")
+
+    def test_a_labelled_frame_writes_its_mosaic_and_panel(
+            self, client, as_role, monkeypatch, captures):
+        rep = _install_report(monkeypatch, captures)
+        rep.frames[0].mosaic = "M31"
+        rep.frames[0].panel = "1-2"
+        as_role(OPERATOR)
+        lines = client.get("/api/reports/r1/frames.csv").text.splitlines()
+        row = dict(zip(lines[0].split(","), lines[1].split(",")))
+        assert (row["mosaic"], row["panel"]) == ("M31", "1-2"), row
+
+
 class TestWeightAltitudeIsRefused:
     """The 3 bundle routes named in #567's suggested fix -- ``bundle``,
     ``bundle.zip`` and ``bundle/materialize`` -- each refuse

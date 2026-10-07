@@ -231,6 +231,11 @@
     "refocus_delta_c": 0.0
    }
   },
-  "issues": []
+  "issues": [
+   {
+    "text": "\u25b8 MOSAIC - coverage cannot be checked: frames are not being plate-solved. Turn on \"solve saved lights\" to check every panel's seams after the night.",
+    "level": "note"
+   }
+  ]
  }
 }

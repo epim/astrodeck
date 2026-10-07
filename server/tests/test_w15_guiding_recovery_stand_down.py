@@ -93,9 +93,10 @@ async def test_a_stood_down_run_reads_the_sky_once_not_at_every_frame(
         await eng._maybe_recover_guiding(t)
 
     # THE PREMISE IS THAT THE BOUND WAS REACHED AND HELD, not how often the
-    # engine says so: the stand-down line is repeated at every boundary today
-    # (a defect of its own, reported with this change), and a premise that
-    # counted it would go red the day that is fixed, for the wrong reason.
+    # engine says so. (The stand-down line was once repeated at every
+    # boundary, a defect of its own; WP-140, #737, made it say once, and
+    # test_w16_engine_scheduler.py grades that. This premise still only asks
+    # that the line exists, so it does not move with the count.)
     assert _warnings(bus_lines, "standing down from recovery"), (
         f"premise: the engine stood down: {rig.calls}")
     assert eng._guiding_recoveries == engine_mod._MAX_GUIDING_RECOVERIES, (

@@ -464,6 +464,12 @@ export function FlowCanvasToolbar(): JSX.Element {
       {countsLine && (
         <BannerCard tone="info" text={countsLine} data-testid="flow-canvas-counts" />
       )}
+      {/* What RUN does for a flow whose Automatic resume is Off (#195, WP-118):
+          `copy.notice`, empty for a flow that resumes and on STOP. A standing
+          line beside the button, never part of its words. */}
+      {copy.notice !== "" && (
+        <BannerCard tone="info" text={copy.notice} data-testid="flow-canvas-run-notice" />
+      )}
       {replayLine && (
         <BannerCard tone="warn" text={replayLine} data-testid="flow-canvas-replay" />
       )}

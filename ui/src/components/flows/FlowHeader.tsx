@@ -512,6 +512,11 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
           reason={runReason}
           onExplain={explain}
           onClick={runAct}
+          // What an Off flow does on a later night (#195, WP-118), as the
+          // button's hover text: the row has no width to print a sentence
+          // (README section 5 fits it at 390 px), and the #/next surfaces
+          // print the same `copy.notice` as a line.
+          title={copy.notice !== "" ? copy.notice : undefined}
         >
           <RunWords copy={copy} compact={phone} />
         </HonestButton>

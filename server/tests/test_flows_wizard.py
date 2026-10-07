@@ -637,8 +637,17 @@ _S3_POOL_KEYS = {"counts"}
 #: assumed: with ``autoResume`` popped from each dusk node (asserting it is
 #: "On" on every one) the same dump hashes to the PREVIOUS pin,
 #: ``a1c99c1bf839...``, byte for byte.
+#:
+#: RE-PINNED AGAIN IN WP-118 (#195, wave 16 integration), deliberately, for
+#: one change and nothing else: the wizard's DUSK WINDOW no longer carries
+#: ``repeat`` (the select was retired; the vocabulary declares no such param
+#: and ``generate()`` writes none), so none of the 576 dumped graphs has the
+#: ``"repeat": "Single night"`` line the pin above included. Checked, not
+#: assumed: with ``repeat: "Single night"`` put back on every dusk node (the
+#: key absent on every one first) the same dump hashes to the PREVIOUS pin,
+#: ``78de26ba0b8e...``, byte for byte.
 THREE_ANSWER_GRAPHS_SHA256 = \
-    "78de26ba0b8efabf1f916d2c9f3a27c31b40624a40094c3d34d161d45d77f0a7"
+    "0443f1c77294e2f2a4fcec722ebfd3f28aefe6fbec2c0b778124480d685f38e7"
 
 #: The pre-S3 generator's PLAN for every three-answer body with target "M31"
 #: (THREE_KINDS x all 64 chip subsets), ids blanked, hashed the same way.

@@ -156,8 +156,11 @@ def _locked(t, pa: float = 33.0):
     """An engine whose session holds the target's locked angle (ruling 9) and
     whose rig has a connected rotator, so the lock is commanded."""
     e, hub = _guided(t)
+    # RE-PINNED FOR BACKLOG WP-125 (#516, wave 16 integration): `_set_state`
+    # reads the ledger through the engine's one memo, which asks `frames` and
+    # `accepted_by_step()`; the double used to answer `total_accepted()`.
     e._session = SimpleNamespace(
-        id="s-lock", name="locked", total_accepted=lambda: 0,
+        id="s-lock", name="locked", frames=[], accepted_by_step=lambda: {},
         locked_angle=lambda tid: ({"pa_deg": pa} if tid == t.id else None))
     hub.devices["rotator"] = SimpleNamespace(connected=True)
     return e, hub

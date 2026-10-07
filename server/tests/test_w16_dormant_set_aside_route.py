@@ -25,12 +25,11 @@ app.py, whose ``_flow_progress_payload`` is the one line that wires it
 (``flow_progress(compiled, plan, session, flow_id=flow_id, now=now)``). So the
 first case below stands in for that one line, wrapping the route's
 ``flow_progress`` with the app's own pinned clock, and proves the rest of the
-chain end to end; the second is the case that asks for the real wiring and is
-``xfail(strict=True)`` until it lands: the day ``_flow_progress_payload``
-passes ``now`` it XPASSes, which fails the suite with a message, and the
-marker is then deleted. NOTHING ELSE changes with the wiring: every answer
-without a standing record is the answer it was (the allow-list and the type
-mirror walk sessions with none).
+chain end to end; the second asks for the real wiring. It was
+``xfail(strict=True)`` until the wave 16 integration passed ``now`` in the
+route, when it XPASSed and the marker was deleted. NOTHING ELSE changes with
+the wiring: every answer without a standing record is the answer it was (the
+allow-list and the type mirror walk sessions with none).
 """
 from __future__ import annotations
 
@@ -141,15 +140,19 @@ async def test_the_listed_panels_are_panels_the_dormant_retry_clears(
         "a panel that owes nothing is left alone by the retry, and by the block")
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "needs app.py _flow_progress_payload to pass now= to flow_progress "
-    "(WP-141 blocked_on: app.py is not that work package's file); delete "
-    "this marker when it does"))
 async def test_the_route_hands_the_clock_in(api, monkeypatch):
     """The real wiring, no stand-in: GET progress on the seeded dormant
     session lists 1-1 under the pinned app clock. Until the route passes
-    ``now`` the answer is the answer before #727 and this fails; the day it
-    does, the XPASS(strict) says to delete the marker."""
+    ``now`` the answer is the answer before #727 and this fails.
+
+    WIRED AT THE WAVE 16 INTEGRATION: ``_flow_progress_payload`` passes
+    ``now=now`` to ``flow_progress``, so the strict xfail this case carried
+    (it XPASSed the day the route was wired) is deleted.
+
+    RED under mutant "the clock not handed in" (``now=now`` removed from the
+    ``flow_progress`` call in ``_flow_progress_payload``), observed:
+
+        AssertionError: assert [] == ['<1-1 target id>']"""
     fid, _session, _plan, (p11, _p12, _p21) = await _seeded(api, monkeypatch)
     block = _mosaic(await api.ok(fid))
     assert [e["target_id"] for e in block.get("set_aside", [])] == [p11.id]

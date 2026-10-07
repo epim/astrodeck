@@ -165,11 +165,25 @@ def test_a_cycle_row_of_an_off_flow_says_it_too():
 # ============================================================ the CAMPAIGN tab
 
 def test_a_pool_flow_that_resumes_says_so_and_names_no_repeat():
-    """example-pool is a pool with the default `repeat`: not a campaign by
-    the old key, but it IS resuming, and the note says that rather than the
-    advice it used to give (set DUSK WINDOW -> Repeat), which points at a
-    control the editor no longer has."""
+    """example-pool is a pool that resumes, and the note says that rather than
+    the advice it used to give (set DUSK WINDOW -> Repeat), which points at a
+    control the editor no longer has.
+
+    RE-PINNED FOR BACKLOG WP-118 (#195, wave 16 integration). This case said
+    example-pool was "not a campaign by the old key, but it IS resuming" and
+    pinned the "Automatic resume is on" sentence. A campaign is a pool in a
+    flow whose Automatic resume is On now (`compile.campaign_block`), so
+    example-pool IS a campaign and its note ends with the campaign's own
+    dawn sentence (`_DAWN`: each dusk resumes where the log left off); the "on"
+    sentence is reached by a pool with NO DUSK WINDOW, which carries no
+    opinion about resuming, and is pinned here on that flow."""
     c = _campaign(_example("example-pool"), None)
+    assert c["has_pool"] is True and c["is_campaign"] is True
+    assert c["note"].endswith(_DAWN), c["note"]
+    assert "Repeat" not in c["note"] and "Single-night" not in c["note"]
+    bare = _example("example-pool")
+    bare.nodes = [n for n in bare.nodes if n.type != "dusk"]
+    c = _campaign(bare, None)
     assert c["has_pool"] is True and c["is_campaign"] is False
     assert c["note"] == ("Automatic resume is on (DUSK WINDOW): a subsequent "
                          "night resumes this flow where the session log left "
@@ -178,9 +192,11 @@ def test_a_pool_flow_that_resumes_says_so_and_names_no_repeat():
 
 
 def test_a_pool_flow_that_is_off_says_so_and_does_not_promise_a_campaign():
-    """The note names the option and what to do about it, and does not say
-    that turning it on makes this a campaign: `is_campaign` is still keyed on
-    `repeat`, so flipping the option would not do that."""
+    """The note names the option and what to do about it, and does not
+    promise a campaign. (It once added "`is_campaign` is still keyed on
+    `repeat`, so flipping the option would not do that"; since WP-118 turning
+    the option on DOES make this pool flow a campaign, which the note does not
+    need to say: it says what to do, and the CAMPAIGN tab says the rest.)"""
     c = _campaign(_set_dusk(_example("example-pool"), autoResume="Off"), None)
     assert c["has_pool"] is True and c["is_campaign"] is False
     assert _NO_LATER_RESUME in c["note"], c["note"]
@@ -198,8 +214,16 @@ def test_a_campaign_that_resumes_keeps_the_dawn_sentence_word_for_word():
 
 
 def test_a_campaign_that_is_off_says_a_later_night_does_not_resume():
-    """The campaign block is still keyed on `repeat` until it is retired, so this is
-    still a campaign, and its note stops promising that each dusk resumes.
+    """A pool flow that turned Automatic resume Off says a later night does
+    not resume it, and stops promising that each dusk resumes.
+
+    RE-PINNED FOR BACKLOG WP-118 (#195, wave 16 integration). This case said
+    "the campaign block is still keyed on `repeat` until it is retired, so
+    this is still a campaign". It is retired: a pool flow with Automatic
+    resume Off is told not to come back, so it is NO campaign
+    (`compile.campaign_block`), and the sentence it reads is the generic Off
+    note of the not-a-campaign branch (`_NO_LATER_RESUME`), the one the pool
+    case above pins.
 
     MUTANT "campaign note ignores the option" (`_campaign`'s ``resumes`` read
     as True) turned this red, run from a byte backup and restored and
@@ -212,8 +236,8 @@ def test_a_campaign_that_is_off_says_a_later_night_does_not_resume():
     """
     c = _campaign(_set_dusk(_example("example-campaign"), autoResume="Off"),
                   None)
-    assert c["is_campaign"] is True
-    assert c["note"].endswith(_DAWN_OFF), c["note"]
+    assert c["has_pool"] is True and c["is_campaign"] is False
+    assert _NO_LATER_RESUME in c["note"], c["note"]
     assert "Each dusk resumes" not in c["note"], c["note"]
 
 

@@ -59,18 +59,18 @@
 // the People route (`PEOPLE_RETURN`, a bare `#/...` fragment: no scheme, host
 // or path, so the rig can only append it to a base it chose itself). The rig
 // half, reading `return` from the signed pre-auth cookie and refusing anything
-// that is not such a fragment, is in `auth/routes.py`; until the rig reads it
-// the callback still lands on the home screen, which is what
-// `STEP_UP_GOOGLE_NOTE` says, and that sentence goes when the rig half does.
+// that is not such a fragment, is in `auth/routes.py` (wave 16 integration),
+// so `STEP_UP_GOOGLE_NOTE` says the callback lands back on People.
 
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { listUsers } from "../../../../../api/backends";
-import { u } from "../../../../../lib/base";
 import { useCanAdminUsers } from "../../../../../lib/caps";
 import { usePrincipal } from "../../../../../store";
 import type { User } from "../../../../../types";
 import { LOCAL_ONLY_REASON } from "../../../../lib/gate";
-import { useLock, useOnRelay, useStepUp, type UseStepUpResult } from "../../../../lib/gateHook";
+import {
+  googleLoginHref, useLock, useOnRelay, useStepUp, type UseStepUpResult,
+} from "../../../../lib/gateHook";
 import { ActionButton, Card, EmptyCard, Field, LockNote, Mono, TextInput } from "../../../../ui";
 import { AddUserForm } from "./AddUserForm";
 import { Note, Section, Verdict } from "./PeopleSection";
@@ -98,7 +98,7 @@ export const PEOPLE_RETURN = "#/settings/users/users";
  *  route as `return`. Percent-encoded, because a `#` in a query string is not
  *  part of the query. */
 export function googleStepUpHref(): string {
-  return `${u("/auth/login")}?return=${encodeURIComponent(PEOPLE_RETURN)}`;
+  return googleLoginHref(PEOPLE_RETURN);
 }
 
 /** Full-page redirect to the Google sign-in, as `useStepUp().signInGoogle` does,

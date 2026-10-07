@@ -63,10 +63,11 @@
 //      /h/home-1/auth/login?return=%23%2Fsettings%2Fusers%2Fusers, got
 //      /auth/login?return=%23%2Fsettings%2Fusers%2Fusers)"
 //
-// THE RIG HALF (`auth/routes.py`) is not in this tree: `server/tests/
-// test_w16_google_return_path.py` (48 cases, the open-redirect refusals among
-// them) and the change itself are in WP-145's `blocked_on`, run in a scratch copy
-// of server/. Until it lands, `return` is an ignored query parameter.
+// THE RIG HALF (`auth/routes.py`) landed at the wave 16 integration:
+// `server/tests/test_w16_google_return_path.py` (the open-redirect refusals
+// among its cases) grades it. The classic People panel asks the same way, for
+// the classic Settings screen: `components/settings/__tests__/
+// w16ClassicGoogleReturn.test.tsx`.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

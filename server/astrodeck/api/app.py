@@ -5845,7 +5845,9 @@ def create_app(*, bind_host: str | None = None,
 
         Carries EVERY field the JSON record carries (UX #49: gain / offset /
         binning / ecc / altitude were silently dropped, so the CSV could not be
-        used to sort subs the report viewer could already rank), and pairs the
+        used to sort subs the report viewer could already rank; ``mosaic`` and
+        ``panel`` joined at #188, and the columns are held to ``FrameRecord.
+        model_fields`` by test_w1_report_bundle_site_redaction), and pairs the
         raw epoch ``ts`` with a readable UTC stamp instead of shipping
         ``1785084747.5023835`` alone -- EXCEPT ``altitude_deg``, which
         ``report_csv_columns`` drops for a principal lacking
@@ -5864,7 +5866,10 @@ def create_app(*, bind_host: str | None = None,
         cols = report_csv_columns(
             ["ts", "ts_utc", "target", "filter", "frame_type", "exposure_s",
              "gain", "offset", "binning", "accepted", "hfr", "ecc",
-             "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path"],
+             "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path",
+             # A mosaic's panel labels (#188, WP-127), appended so a reader
+             # of the columns by position reads what it always read.
+             "mosaic", "panel"],
             principal)
         import csv
         w = csv.writer(buf)
@@ -6626,7 +6631,9 @@ def create_app(*, bind_host: str | None = None,
           from the prototype (1 to 10, 13 and 14; 11 and 12 were removed on
           2026-08-16), the 15 mosaic rules M1 to M15 and L1, each an advisory
           ``{text, level}``; then the capture-geometry warnings
-          (``capture_geometry.plan_warnings``) and that inventory's note.
+          (``capture_geometry.plan_warnings``) and that inventory's note,
+          then, for a mosaic that runs with ``solve_saved_lights`` off, the
+          one ``note`` row ``coverage.stamping_note`` words (#177).
         * ``unmapped`` — what the compile emits that ``SequencePlan`` cannot
           carry. This is the list that stops a graph feature being silently
           inert, and it is the reason this endpoint is worth calling before a
@@ -6674,6 +6681,23 @@ def create_app(*, bind_host: str | None = None,
                                capture_geometry.plan_warnings(_plan, groups)]
             if note:
                 geometry_issues.append({"text": note, "level": "warn"})
+            # A MOSAIC THAT RUNS WITH PLATE SOLVING OFF (#177, WP-123): no
+            # saved light carries a WCS this run, so the coverage check has
+            # nothing to read and its report would be empty, which reads as a
+            # covered mosaic. The sentence and the rule (a mosaic group with a
+            # light target in it) are ``coverage.stamping_note``'s, the same
+            # call the coverage routes answer ``note`` with; None for a plan
+            # with no mosaic or with stamping on, so those add no row. A
+            # note, not a warning: nothing is wrong with the night, and
+            # stamping is the operator's call (it costs an ASTAP run a frame).
+            stamping_note = sequence_coverage.stamping_note(
+                _plan, bool(config_store.cfg().solve_saved_lights))
+            if stamping_note:
+                geometry_issues.append({
+                    "text": f"▸ MOSAIC - {stamping_note}. Turn on \"solve "
+                            f"saved lights\" to check every panel's seams "
+                            f"after the night.",
+                    "level": "note"})
         except GraphNotRunnable as e:
             # Not an error response: a half-built graph is the NORMAL state of
             # an editor. The canvas's compile (``flowsCompile``) runs when a
@@ -6681,7 +6705,9 @@ def create_app(*, bind_host: str | None = None,
             # LOOP PANELS, which write through ``flowsApplyFraming``; an edit
             # between them compiles nothing (#356), and Tonight asks for one
             # more: when Tonight is read over a graph the compile in hand was
-            # not made from (#688), so its PLAN is never a stale graph's.
+            # not made from (#688), so its PLAN is never a stale graph's, and
+            # after an undo or redo (#688), which puts a different graph on
+            # the canvas.
             # The modal also posts its own draft here once a framing edit
             # settles, for its RUN numbers.
             # The refusal is reported in the same list as every other loss.
@@ -7050,7 +7076,11 @@ def create_app(*, bind_host: str | None = None,
                 config_store.cfg().safety.close_dome_on_unsafe),
             rig=rig)
         session = session_store.current_for_flow(flow_id)
-        out = flow_progress(compiled, plan, session, flow_id=flow_id)
+        # ``now`` is handed on so a dormant session's set-aside panels are
+        # listed against the clock this request read (#727, WP-141); the
+        # answer for a session with no standing set-aside record is the
+        # answer it was.
+        out = flow_progress(compiled, plan, session, flow_id=flow_id, now=now)
         if session is not None:
             out["session"].update(replay_facts(session))
             # Present only on a dormant session, as ``locked_angle`` is only
@@ -7643,17 +7673,81 @@ def create_app(*, bind_host: str | None = None,
         # matrix that matched on None would count a +20 °C dark as cover for a
         # -5 °C light.
         setpoint = getattr(config_store.cfg().cooling, "setpoint_c", None)
+
+        def mechanical_angle_of(sky_deg) -> float | None:
+            """The rotator MECHANICAL angle a light planned at sky PA
+            ``sky_deg`` is shot at (#176, WP-122), or None for no constraint.
+
+            A flat is matched by the metal's angle (a dust shadow follows the
+            metal, not the sky), and the plan states the SKY angle, so the row
+            needs the conversion the rotate loop makes
+            (``rotation.sky_to_mechanical``, anchored on the rotator's last
+            trusted calibration with the learned sign). None, which the matrix
+            reads as "any flat serves", when the light carries no planned
+            angle or the rotator is not calibrated: ``_rotator_sync_anchor``
+            falls back to the bare live reading when no calibration record
+            agrees with the device's sync, and a number built on that would
+            invent an angle the night does not have. The route makes no device
+            read, so it hands the anchor a NaN reading and treats the NaN
+            coming back as that fallback."""
+            if sky_deg is None:
+                return None
+            rot = hub.devices.get("rotator")
+            if rot is None or not getattr(rot, "connected", False):
+                return None
+            try:
+                anchor_mech, anchor_offset = hub._rotator_sync_anchor(
+                    rot, math.nan)
+                if math.isnan(anchor_mech):
+                    return None
+                return mod360(sky_to_mechanical(
+                    float(sky_deg), anchor_mech, anchor_offset,
+                    hub._effective_rotator_sign()))
+            except (TypeError, ValueError):
+                return None
+
         if flow_id is not None:
             try:
                 rec = await asyncio.to_thread(flow_store.get, flow_id)
             except KeyError:
                 raise HTTPException(404, detail={"code": "not_found"})
             compiled = compile_plan(rec.graph, rec.name)
+            # THE LIGHTS, ONE GROUP PER PLAN TARGET: ``(sky angle, steps)``. A
+            # mosaic's PANELS are plan targets, each with the angle it is
+            # commanded (a rotating block's own ``pa_deg``, #175), and the
+            # compile alone has only the block; so the plan is what is read.
+            # A graph the plan refuses (``GraphNotRunnable``, a half-built
+            # flow is the normal state of an editor) falls back to the
+            # compile's targets with no angle, which is what this route
+            # always did for them.
+            lights: list[tuple[float | None, list[dict]]] = []
+            try:
+                _plan, _lost = to_sequence_plan(
+                    compiled, rec.graph, flow_id=flow_id,
+                    cool_to=getattr(config_store.cfg().cooling,
+                                    "setpoint_c", None),
+                    camera_can_cool=_camera_can_cool(),
+                    closes_on_unsafe=bool(
+                        config_store.cfg().safety.close_dome_on_unsafe),
+                    rig=_rig_facts())
+                for t in _plan.targets:
+                    lights.append((t.rotation_deg, [
+                        {"exposure_s": s.exposure_s, "gain": s.gain,
+                         "binning": s.binning, "filter": s.filter}
+                        for s in t.steps
+                        if str(s.frame_type).lower() == "light"]))
+            except GraphNotRunnable:
+                lights = [(None, list(t.get("steps") or []))
+                          for t in compiled.get("targets") or []]
             seen: set[tuple] = set()
-            for target in compiled.get("targets") or []:
-                for step in target.get("steps") or []:
+            for sky, steps in lights:
+                # One angle per target: a rotating mosaic's panels each have
+                # their own, and each is a row of its own below.
+                mech = mechanical_angle_of(sky)
+                for step in steps:
                     key = (step.get("exposure_s"), step.get("gain"),
-                           step.get("binning"), step.get("filter"))
+                           step.get("binning"), step.get("filter"),
+                           None if mech is None else round(mech, 3))
                     if key in seen or not step.get("exposure_s"):
                         continue
                     seen.add(key)
@@ -7661,7 +7755,8 @@ def create_app(*, bind_host: str | None = None,
                         exposure_s=float(step.get("exposure_s") or 0),
                         gain=int(step.get("gain") or 0), offset=30,
                         temp_c=setpoint, binning=int(step.get("binning") or 1),
-                        filter=str(step.get("filter") or ""))))
+                        filter=str(step.get("filter") or "")),
+                        rotation_deg=mech))
             cq = (compiled.get("automation") or {}).get("calibration_queue") or {}
             quota = int(cq.get("quota") or DEFAULT_QUOTA)
         c = config_store.cfg().calibration
@@ -7701,7 +7796,7 @@ def create_app(*, bind_host: str | None = None,
         c = config_store.cfg().calibration
         rep = await asyncio.to_thread(
             cal_library.build, sigma=c.stack_sigma, temp_bin_width=c.temp_bin_c,
-            max_frames=c.max_stack_frames)
+            max_frames=c.max_stack_frames, rotator_bin_deg=c.rotator_bin_deg)
         return vars(rep)
 
     @app.delete("/api/calibration/masters/{master_id}",

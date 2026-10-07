@@ -24,7 +24,7 @@ import type {
 } from "../../lib/flowsApi";
 import { runIsLive } from "../../lib/lastSessionFrame";
 import type { SequenceState, ToastLevel } from "../../types";
-import { isRunPhaseLive, knownSessions } from "./flowRunState";
+import { isRunPhaseLive, knownSessions, runLatchEnds } from "./flowRunState";
 import { NODE_DEFS, createParams } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
 import {
@@ -407,23 +407,27 @@ export interface FlowsActions {
 // A 409 from `POST /api/flows/{id}/run` is sometimes a refusal and sometimes a
 // QUESTION: the server stating what running would do and waiting for a yes.
 // Two kinds of question exist. `unmapped` is about the graph (parts of it the
-// engine will not honour). The three below are CONTINUE's (#189 S1, spec 5.9):
+// engine will not honour). The four below are CONTINUE's (#189 S1, spec 5.9):
 // since S1, Run continues the flow's own dormant session, and it asks before
-// continuing changes what that session's ledger counts.
+// continuing changes what that session's ledger counts; since #179 it also
+// asks before it reopens a finished one.
 
-/** The three CONTINUE questions, in the server's order (`_continue_flow_session`):
+/** The four CONTINUE questions, in the server's order (`_continue_flow_session`):
  *
  *  - `adopt`: the session was saved before flows kept their step ids, so no
  *    step id is shared; ADOPT re-keys the frames that match exactly one step.
  *  - `recount`: the compile's count mode differs from the session's, and the
  *    ledger is counted by the plan's mode, so every banked frame recounts.
  *  - `dropped_steps`: steps that hold frames are gone from the flow.
+ *  - `reopen` (#179): the flow's newest session is COMPLETE and the flow was
+ *    edited to owe more; yes reopens it and carries on with what it banked,
+ *    START OVER starts a fresh one beside it.
  *
  *  NOT `session_changed`. That 409 says the session moved under the request
  *  (ResumeArm started it) and to press Run again; no flag answers it, so it is
  *  a refusal and goes to the log with the rest. */
-export type FlowContinueCode = "adopt" | "dropped_steps" | "recount";
-const CONTINUE_CODES: readonly string[] = ["adopt", "dropped_steps", "recount"];
+export type FlowContinueCode = "adopt" | "dropped_steps" | "recount" | "reopen";
+const CONTINUE_CODES: readonly string[] = ["adopt", "dropped_steps", "recount", "reopen"];
 
 export interface FlowContinueQuestion {
   code: FlowContinueCode;
@@ -460,6 +464,7 @@ const FLAG_FOR: Record<FlowRunAcceptance, keyof FlowRunFlags> = {
   adopt: "adopt",
   dropped_steps: "acceptDropped",
   recount: "acceptRecount",
+  reopen: "acceptReopen",
   fresh: "fresh",
 };
 
@@ -523,7 +528,9 @@ export function sessionLogLine(raw: unknown): string | null {
   if (s.continued !== true || night === null || kept === null || added === null) {
     return null;
   }
-  let line = `continued night ${night}: ${count(kept, "step")} kept, ${added} new`;
+  // A reopened FINISHED session says so (#179): the operator who pressed
+  // Run on a complete flow should read that it went back into the old ledger.
+  let line = `${s.reopened === true ? "reopened the finished session, night" : "continued night"} ${night}: ${count(kept, "step")} kept, ${added} new`;
   if (dropped) line += `, ${dropped} dropped (their subs stay on disk)`;
   const matched = num(s.adopted?.matched);
   if (matched !== null) {
@@ -1323,7 +1330,14 @@ export function createFlowsActions(
     // one. Guarded on `isRunPhaseLive` so an already-idle `phase` (the common
     // case: this subscription fires on every sequence write, not just this
     // flow's) is not rewritten on every unrelated tick.
-    if (ended && isRunPhaseLive(get().flows.run.phase)) {
+    //
+    // #717: NOT ONLY THE OPEN FLOW'S RUN. `ended` needs the ended session to be
+    // one the open flow knows, and `knownSessions` answers none while no flow
+    // is open, so a run that ended with the editor closed (or another flow
+    // open) left the latch up for the four raw readers to draw as marching
+    // wires. `runLatchEnds` (flowRunState.ts) also ends it when any live run
+    // ended, whichever flow is open.
+    if (runLatchEnds(get().flows.run.phase, ended, prev, next)) {
       set((s) => patch(s, { run: { ...s.flows.run, phase: "idle", startedAt: null } }));
     }
     const wasFrames = framesOf(prev);
