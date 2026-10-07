@@ -2903,7 +2903,39 @@ _REMOTE_LOCAL_ONLY_EXACT = frozenset({
     "/api/update/config",
     "/api/sync/push/now",
 })
-_REMOTE_LOCAL_ONLY_PREFIXES = ("/api/users", "/api/discover")
+_REMOTE_LOCAL_ONLY_PREFIXES = ("/api/discover",)
+# LAN-only whatever an allow-list row below says: checked BEFORE it, so widening
+# ``_REMOTE_ALLOWED_ROUTES`` later cannot reopen one of these. A password is a
+# credential and the relay would see it in the request body.
+_REMOTE_LOCAL_ONLY_PATTERNS = (
+    re.compile(r"^/api/users/[^/]+/password$"),
+)
+# Prefixes that are FAIL-CLOSED over the relay: a relayed request under one is
+# refused unless a row of ``_REMOTE_ALLOWED_ROUTES`` names its method and path.
+# ``/api/users`` used to be a plain LAN-only prefix (since 173cc996), which left
+# an admin off the LAN unable to list or change anyone (#685); the owner's
+# requirement is that user management is not LAN-only, so four operations are
+# opened, each behind a sign-in under five minutes old for a mutation
+# (``auth.deps.require_recent_signin``) and each narrowed by the content rules
+# in ``auth/local_routes.py``. A route added under /api/users later is LAN-only
+# until somebody lists it here.
+_REMOTE_ALLOWLIST_ONLY_PREFIXES = ("/api/users",)
+# (METHOD, path pattern) rows a relayed request may use even though a fenced
+# prefix covers the path. Exact match on both: a trailing slash, another
+# method or an extra segment is NOT one of these.
+_REMOTE_ALLOWED_ROUTES = (
+    ("GET", re.compile(r"^/api/users$")),
+    ("POST", re.compile(r"^/api/users$")),
+    ("PATCH", re.compile(r"^/api/users/[^/]+$")),
+    ("DELETE", re.compile(r"^/api/users/[^/]+$")),
+    # Activating a profile that is ALREADY SAVED. The route takes a saved id and
+    # nothing else, and the content of a profile can only be written by the
+    # still-fenced POST/PATCH/PUT /api/profiles, so no caller-chosen
+    # destination exists to abuse. ``force`` (abort a running sequence and
+    # disarm auto-resume) is refused over the relay inside ``activate_profile``;
+    # ``/apply``, ``/api/connect/*`` and ``/api/discover`` stay fenced.
+    ("POST", re.compile(r"^/api/profiles/[^/]+/activate$")),
+)
 # These route families either choose host filesystem/network destinations or
 # cause the server to probe/connect to caller-selected local resources. Reads
 # remain available where useful, but no tunnelled bearer session may mutate or
@@ -3195,6 +3227,37 @@ def _path_is_open(path: str) -> bool:
     return False
 
 
+def _under(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _remote_fence_denies(method: str, path: str) -> bool:
+    """True iff a RELAY-tunnelled ``method`` ``path`` must be refused 403
+    ``local_only``. The one decision the fence middleware makes, kept as a pure
+    function so every row of it can be tested without a request.
+
+    Order matters and is the point: the exact paths and the explicit LAN-only
+    patterns are refused FIRST, so no allow-list row can reopen them; then the
+    allow-list; then the fenced prefixes (``/api/users`` fail-closed, the rest
+    for unsafe methods only)."""
+    method = method.upper()
+    if path in _REMOTE_LOCAL_ONLY_EXACT:
+        return True
+    if any(pattern.match(path) for pattern in _REMOTE_LOCAL_ONLY_PATTERNS):
+        return True
+    if any(method == allowed and pattern.match(path)
+           for allowed, pattern in _REMOTE_ALLOWED_ROUTES):
+        return False
+    if any(_under(path, prefix) for prefix in _REMOTE_LOCAL_ONLY_PREFIXES):
+        return True
+    if any(_under(path, prefix)
+           for prefix in _REMOTE_ALLOWLIST_ONLY_PREFIXES):
+        return True
+    unsafe_method = method not in {"GET", "HEAD", "OPTIONS"}
+    return unsafe_method and any(
+        _under(path, prefix) for prefix in _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES)
+
+
 def create_app(*, bind_host: str | None = None,
                allowed_hosts: str | None = None) -> FastAPI:
     host_allowlist = _trusted_hosts(
@@ -3241,13 +3304,7 @@ def create_app(*, bind_host: str | None = None,
                 return JSONResponse(
                     {"detail": "missing or invalid auth token"}, status_code=401)
         path = request.url.path
-        if (remote and (
-                path in _REMOTE_LOCAL_ONLY_EXACT
-                or any(path == prefix or path.startswith(prefix + "/")
-                       for prefix in _REMOTE_LOCAL_ONLY_PREFIXES)
-                or (unsafe_method and any(
-                    path == prefix or path.startswith(prefix + "/")
-                    for prefix in _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES)))):
+        if remote and _remote_fence_denies(request.method, path):
             return JSONResponse(
                 {"detail": "this security-sensitive operation is LAN-only",
                  "code": "local_only"},
@@ -6018,7 +6075,7 @@ def create_app(*, bind_host: str | None = None,
 
     @app.post("/api/profiles/{profile_id}/activate", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
     @declare(CAP_CONFIG_BACKEND)
-    async def activate_profile(profile_id: str,
+    async def activate_profile(profile_id: str, request: Request,
                                body: ProfileApplyBody | None = None):
         """Set a profile active AND connect its rig (W1.6 / C2). Reuses the
         ``_spawn_connect`` convention so it can't run concurrently with ``apply``
@@ -6031,8 +6088,22 @@ def create_app(*, bind_host: str | None = None,
         alignment is running and ``force`` is not set (the connect is destructive
         - it disconnects the current rig). Auto-resume's recovery ladder counts
         as running (#238); forced, it is stopped with its session disarmed and
-        waited for before the connect (see ``connect_rig``)."""
+        waited for before the connect (see ``connect_rig``).
+
+        Over the relay (#685, backlog ruling) an UNFORCED activate of a saved
+        profile is allowed: it takes only a saved id, the profile's content is
+        written by the still-fenced profile routes, and it already 409s while
+        anything runs. ``force`` is 403 ``local_only`` there, answered before
+        anything else: it aborts a running sequence and disarms auto-resume,
+        which is a decision made at the rig, not by a cookie the relay carries.
+        A relayed caller still needs ``config.backend``, so this opens nothing
+        a role did not already hold."""
         force = bool(body and body.force)
+        if force and _scope_is_remote(request):
+            raise HTTPException(403, detail={
+                "detail": "forcing a profile over a running sequence is "
+                          "LAN-only: it stops the run and disarms auto-resume",
+                "code": "local_only"})
         if not _profile_exists(profile_id):
             raise HTTPException(404, "profile not found")
         busy = _teardown_busy_detail()

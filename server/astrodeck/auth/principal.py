@@ -28,6 +28,15 @@ class Principal:
     email: str | None = None                   # None under the "none" provider
     caps: frozenset[str] = field(default_factory=frozenset)  # resolved cap set
     jti: str | None = None                     # session/link id, for the revoke registry
+    # How this session was minted ("local" | "google" | "admin_token") and when,
+    # as the SIGNED ``authn`` / ``iat`` claims. Both default to None, which is
+    # what every principal that did not come from a signed cookie carries (the
+    # open default, the bearer token, a viewer link), so none of them can ever
+    # pass the "signed in recently" gate in ``deps.require_recent_signin``.
+    # Deliberately absent from ``to_public``: they are inputs to a check, not
+    # something the UI should be able to read back and reason about.
+    authn: str | None = None
+    iat: int | None = None
 
     def has(self, cap: str) -> bool:
         """True iff this principal holds ``cap``. The sole authorization check."""

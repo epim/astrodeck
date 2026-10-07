@@ -230,8 +230,17 @@ class SessionCookieProvider:
         caps = caps_for_role(role)
         if not caps:
             return None  # unknown role holds nothing -> fail closed
+        # ``authn`` and ``iat`` ride the principal so ``require_recent_signin``
+        # can ask WHEN this session was minted. ``iat`` is kept only if it is a
+        # real integer (a bool is an int to Python and is not a timestamp); any
+        # other shape becomes None, which that gate refuses.
+        iat = claims.get("iat")
+        if isinstance(iat, bool) or not isinstance(iat, int):
+            iat = None
         return Principal(role=role, email=email,
-                         caps=caps, jti=jti if isinstance(jti, str) else None)
+                         caps=caps, jti=jti if isinstance(jti, str) else None,
+                         authn=authn if isinstance(authn, str) else None,
+                         iat=iat)
 
 
 class LocalAuthProvider:
