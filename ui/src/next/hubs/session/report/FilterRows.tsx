@@ -10,6 +10,9 @@
 //
 // `By target` is the same row nested under a target heading, so a filter that
 // looks thin in the headline table can be traced to the target that ran short.
+// A mosaic's panels are the exception to "one heading per target": they sit
+// under ONE heading for the mosaic, with the panels' sum, a block per panel
+// (#188).
 
 import type { JSX } from "react";
 import { Bar, Card, EmptyCard, Label, Mono } from "../../../ui";
@@ -79,7 +82,116 @@ export function ByFilterCard({ rows }: { rows: FilterBreakdown[] }): JSX.Element
   );
 }
 
-export function ByTargetCard({ targets }: { targets: TargetBreakdown[] }): JSX.Element {
+/** A target's row as the server writes it. A mosaic's panel also carries the
+ *  mosaic's name and its own `r-c` label (#188), which `mosaic` and `panel`
+ *  name here; both are null for a target that is no panel, and absent from a
+ *  report written before they existed. */
+export type MosaicTarget = TargetBreakdown & {
+  mosaic?: string | null;
+  panel?: string | null;
+};
+
+export interface PanelRef {
+  target: MosaicTarget;
+  /** Where this row sits in the report's own `targets`, which the test ids and
+   *  keys use so a panel's id does not change when its mosaic is grouped. */
+  index: number;
+}
+
+export type TargetRow =
+  | { kind: "target"; target: MosaicTarget; index: number }
+  | {
+    kind: "mosaic";
+    mosaic: string;
+    panels: PanelRef[];
+    /** The panels' accepted frames, rejects and accepted integration, summed. */
+    frames: number;
+    rejected: number;
+    integration_s: number;
+  };
+
+/** `[row, column]` of a panel's `r-c` label, or null for one that is not that
+ *  shape (a member the plan gave no grid position). */
+function gridPosition(label: string | null | undefined): [number, number] | null {
+  const m = /^(\d+)-(\d+)$/.exec(label ?? "");
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+/** Grid order, then the report's order for a panel with no position. The
+ *  report lists targets by first frame, which for a mosaic is the order the
+ *  panels were VISITED, so it is never the order the chart reads in. */
+function byGrid(a: PanelRef, b: PanelRef): number {
+  const pa = gridPosition(a.target.panel);
+  const pb = gridPosition(b.target.panel);
+  if (pa && pb) return pa[0] - pb[0] || pa[1] - pb[1];
+  if (pa) return -1;
+  if (pb) return 1;
+  return a.index - b.index;
+}
+
+/** The report's targets as rows: a target that is no panel stays a row of its
+ *  own, and every target that shares a `mosaic` becomes one group with a
+ *  summed roll-up. A group sits where its first panel was, so the card still
+ *  reads in the order the night ran; its panels are in grid order. Pure, and
+ *  shared by the classic report. */
+export function groupTargetsByMosaic(targets: MosaicTarget[]): TargetRow[] {
+  const rows: TargetRow[] = [];
+  const open = new Map<string, Extract<TargetRow, { kind: "mosaic" }>>();
+  targets.forEach((t, index) => {
+    if (!t.mosaic) {
+      rows.push({ kind: "target", target: t, index });
+      return;
+    }
+    let group = open.get(t.mosaic);
+    if (!group) {
+      group = { kind: "mosaic", mosaic: t.mosaic, panels: [], frames: 0, rejected: 0, integration_s: 0 };
+      open.set(t.mosaic, group);
+      rows.push(group);
+    }
+    group.panels.push({ target: t, index });
+    group.frames += t.frames;
+    group.rejected += t.rejected;
+    group.integration_s += t.integration_s;
+  });
+  for (const group of open.values()) group.panels.sort(byGrid);
+  return rows;
+}
+
+/** One target's block: its heading and totals, then its filters. A panel uses
+ *  the same block under its mosaic's header, headed by its label. */
+function TargetBlock({ t, index, heading }: {
+  t: TargetBreakdown;
+  index: number;
+  heading: string;
+}): JSX.Element {
+  const s = shares(t.by_filter);
+  const rejected = rejectedLine(t.rejected);
+  return (
+    <div className="nx-report-block" data-testid={`report-target-${index}`}>
+      <div className="nx-report-head">
+        <Label size={11}>{heading}</Label>
+        <span className="nx-report-figures">
+          <Mono size={10.5} tone="dim">
+            {`${t.frames} frames · ${fmtDuration(t.integration_s)}`}
+          </Mono>
+          {rejected != null && <Mono size={10.5} tone="warn">{rejected}</Mono>}
+        </span>
+      </div>
+      <div className="nx-report-target">
+        {t.by_filter.map((f, fi) => (
+          <FilterRow
+            key={`${f.filter}-${fi}`}
+            f={f}
+            share={s[fi]}
+            testid={`report-target-${index}-filter-${f.filter || "none"}`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function ByTargetCard({ targets }: { targets: MosaicTarget[] }): JSX.Element {
   return (
     <Card data-testid="report-by-target">
       <div className="nx-report-block">
@@ -87,27 +199,36 @@ export function ByTargetCard({ targets }: { targets: TargetBreakdown[] }): JSX.E
         {targets.length === 0 && (
           <EmptyCard title={REPORT_COPY.noTargets} data-testid="report-target-empty" />
         )}
-        {targets.map((t, ti) => {
-          const s = shares(t.by_filter);
-          const rejected = rejectedLine(t.rejected);
+        {groupTargetsByMosaic(targets).map((row, gi) => {
+          if (row.kind === "target") {
+            return (
+              <TargetBlock
+                key={`${row.target.name}-${row.index}`}
+                t={row.target}
+                index={row.index}
+                heading={row.target.name}
+              />
+            );
+          }
+          const rejected = rejectedLine(row.rejected);
           return (
-            <div className="nx-report-block" key={`${t.name}-${ti}`} data-testid={`report-target-${ti}`}>
+            <div className="nx-report-block" key={`mosaic-${row.mosaic}-${gi}`} data-testid={`report-mosaic-${gi}`}>
               <div className="nx-report-head">
-                <Label size={11}>{t.name}</Label>
+                <Label size={11}>{row.mosaic}</Label>
                 <span className="nx-report-figures">
                   <Mono size={10.5} tone="dim">
-                    {`${t.frames} frames · ${fmtDuration(t.integration_s)}`}
+                    {`${row.panels.length} ${row.panels.length === 1 ? "panel" : "panels"} · ${row.frames} frames · ${fmtDuration(row.integration_s)}`}
                   </Mono>
                   {rejected != null && <Mono size={10.5} tone="warn">{rejected}</Mono>}
                 </span>
               </div>
               <div className="nx-report-target">
-                {t.by_filter.map((f, fi) => (
-                  <FilterRow
-                    key={`${f.filter}-${fi}`}
-                    f={f}
-                    share={s[fi]}
-                    testid={`report-target-${ti}-filter-${f.filter || "none"}`}
+                {row.panels.map((p) => (
+                  <TargetBlock
+                    key={`${p.target.name}-${p.index}`}
+                    t={p.target}
+                    index={p.index}
+                    heading={p.target.panel ? `Panel ${p.target.panel}` : p.target.name}
                   />
                 ))}
               </div>

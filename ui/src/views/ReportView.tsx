@@ -32,6 +32,7 @@ import {
 } from "../lib/bundleView";
 import { accessPhrase, useCanControlCapture } from "../lib/caps";
 import { BASE } from "../lib/base";
+import { groupTargetsByMosaic } from "../next/hubs/session/report/FilterRows";
 import type {
   BundleGroupSummary,
   BundleMaterializeResult,
@@ -39,6 +40,7 @@ import type {
   FilterBreakdown,
   SessionReport,
   SessionReportSummary,
+  TargetBreakdown,
 } from "../types";
 
 /** `<filter> · <frames> frames · <integration> · HFR <median>` + optional
@@ -53,6 +55,34 @@ function FilterRow({ f }: { f: FilterBreakdown }) {
         {f.hfr_median != null ? f.hfr_median.toFixed(2) : "—"}
         {f.rejected > 0 && <span className="text-warn"> · {f.rejected} rejected</span>}
       </span>
+    </div>
+  );
+}
+
+/** One target's block in the by-target panel: its name and totals, then its
+ *  filters. A mosaic's panel is the same block under the mosaic's header,
+ *  headed by its panel label (#188). */
+function TargetBlock({ t, heading, testid }: {
+  t: TargetBreakdown;
+  heading: string;
+  testid: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1" data-testid={testid}>
+      <div className="flex items-center justify-between gap-2 text-sm flex-wrap">
+        <span className="text-ink font-medium">{heading}</span>
+        <span className="text-xs text-dim mono">
+          {t.frames} frames · {fmtDuration(t.integration_s)}
+          {t.rejected > 0 && ` · ${t.rejected} rejected`}
+        </span>
+      </div>
+      <div className="overflow-x-auto pl-3 border-l border-line/40">
+        <div className="min-w-[400px]">
+          {t.by_filter.map((f, fi) => (
+            <FilterRow key={`${f.filter}-${fi}`} f={f} />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -591,24 +621,41 @@ export default function ReportView() {
               <p className="text-dim text-xs">no targets</p>
             ) : (
               <div className="flex flex-col gap-4">
-                {report.targets.map((t, ti) => (
-                  <div key={`${t.name}-${ti}`} className="flex flex-col gap-1">
-                    <div className="flex items-center justify-between gap-2 text-sm flex-wrap">
-                      <span className="text-ink font-medium">{t.name}</span>
-                      <span className="text-xs text-dim mono">
-                        {t.frames} frames · {fmtDuration(t.integration_s)}
-                        {t.rejected > 0 && ` · ${t.rejected} rejected`}
-                      </span>
-                    </div>
-                    <div className="overflow-x-auto pl-3 border-l border-line/40">
-                      <div className="min-w-[400px]">
-                        {t.by_filter.map((f, fi) => (
-                          <FilterRow key={`${f.filter}-${fi}`} f={f} />
+                {groupTargetsByMosaic(report.targets).map((row, gi) =>
+                  row.kind === "target" ? (
+                    <TargetBlock
+                      key={`${row.target.name}-${row.index}`}
+                      t={row.target}
+                      heading={row.target.name}
+                      testid={`report-target-${row.index}`}
+                    />
+                  ) : (
+                    // A mosaic's panels under ONE header with their sum, not
+                    // N unrelated targets (#188).
+                    <div
+                      key={`mosaic-${row.mosaic}-${gi}`}
+                      className="flex flex-col gap-2"
+                      data-testid={`report-mosaic-${gi}`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-sm flex-wrap">
+                        <span className="text-ink font-medium">{row.mosaic}</span>
+                        <span className="text-xs text-dim mono">
+                          {row.panels.length} {row.panels.length === 1 ? "panel" : "panels"} · {row.frames} frames · {fmtDuration(row.integration_s)}
+                          {row.rejected > 0 && ` · ${row.rejected} rejected`}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-3 pl-3 border-l border-line/40">
+                        {row.panels.map((p) => (
+                          <TargetBlock
+                            key={`${p.target.name}-${p.index}`}
+                            t={p.target}
+                            heading={p.target.panel ? `Panel ${p.target.panel}` : p.target.name}
+                            testid={`report-panel-${p.index}`}
+                          />
                         ))}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
               </div>
             )}
           </Panel>
