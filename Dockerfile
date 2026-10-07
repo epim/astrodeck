@@ -6,8 +6,11 @@
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 -t astrodeck:latest .
 #
-# Two stages: node builds the SPA, python installs the server. The runtime stage
-# carries neither toolchain.
+# Two build stages: node builds the SPA, python installs the server. The runtime
+# stage carries neither toolchain. The native engine (astrodeck_native, the Rust
+# crate behind native guiding and autofocus) is NOT compiled here: the release
+# builds one wheel per platform (packaging/build_native.py) and the image installs
+# exactly that wheel, handed in as the `native` build context (see below).
 #
 # The SPA is copied INSIDE the package (astrodeck/webui) rather than left beside
 # it, because a sibling directory is a repo-layout assumption that does not
@@ -36,6 +39,18 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir ./server
 COPY server/ ./server/
 RUN pip install --no-cache-dir --no-deps ./server
+
+# ------------------------------------------------------- native engine input
+# The release's native wheels arrive through a NAMED BUILD CONTEXT:
+#
+#   docker buildx build --build-context native=<directory of .whl files> --build-arg REQUIRE_NATIVE=1 .
+#
+# This empty stage is what the name `native` resolves to when no context is
+# given, which is what keeps a plain `docker build .` and docker-compose.yml's
+# `build: .` working: they produce a development image with no native engine, and
+# say so. A named context called `native` replaces this stage. BuildKit is
+# required (the default since Docker 23), because RUN --mount is BuildKit syntax.
+FROM scratch AS native
 
 # ------------------------------------------------------------------ runtime
 FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS runtime
@@ -77,6 +92,52 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     ASTRODECK_CONFIG_DIR=/data/config \
     ASTRODECK_CAPTURE_DIR=/data/captures
+
+# The release's native engine, installed from the `native` context and proven by
+# the probe in the same RUN: a wheel pip refuses (for example a manylinux tag newer
+# than this base image's glibc) or one that installs but does not run fails the
+# build, so no image is ever pushed with an engine nothing exercised. There is no
+# --force flag on purpose: refusing an incompatible wheel is the point. (Measured
+# 2026-10: the pinned base is Debian 13 with glibc 2.41, the hosted build runners
+# that tag the wheels have 2.39, and pip refused a synthetic manylinux_2_42 wheel.)
+#
+# The wheel is chosen by this image's architecture. The glob names linux so a
+# release folder that also holds the windows and macOS wheels never matches, and
+# two wheels for one architecture is an error rather than a guess.
+#
+# REQUIRE_NATIVE=1 (the release image job) also fails a build that was given no
+# wheel for this architecture. Without it, a missing wheel makes a DEVELOPMENT
+# image: it runs, it has no native engine, and the build says so on stderr. The
+# probe stays in the image either way, so `docker run --rm <image> python
+# /opt/native_probe.py` reports which kind of image this is.
+COPY packaging/native_probe.py /opt/native_probe.py
+ARG REQUIRE_NATIVE=0
+RUN --mount=type=bind,from=native,target=/native \
+    set -eu; \
+    say() { printf '%s\n' "$@" >&2; }; \
+    case "${REQUIRE_NATIVE}" in 0|1) ;; *) say "ERROR: REQUIRE_NATIVE must be 0 or 1"; exit 2 ;; esac; \
+    set -- /native/astrodeck_native-*-abi3-*linux*"$(uname -m)"*.whl; \
+    if [ ! -e "$1" ]; then \
+        if [ "${REQUIRE_NATIVE}" = 1 ]; then \
+            say "ERROR: REQUIRE_NATIVE=1 but the native build context holds no astrodeck_native wheel for $(uname -m)"; \
+            exit 1; \
+        fi; \
+        say "" \
+            "================================================================" \
+            "WARNING: DEVELOPMENT IMAGE. THE NATIVE ENGINE IS NOT INSTALLED." \
+            "No astrodeck_native wheel was supplied for $(uname -m), so this image has" \
+            "no native guiding and no native autofocus. Release images are built with" \
+            "REQUIRE_NATIVE=1 and the release wheels (--build-context native=<dir>)." \
+            "Confirm: docker run --rm <image> python /opt/native_probe.py" \
+            "================================================================"; \
+        exit 0; \
+    fi; \
+    if [ "$#" -ne 1 ]; then \
+        say "ERROR: several astrodeck_native wheels match this architecture; supply exactly one:" "$@"; \
+        exit 1; \
+    fi; \
+    pip install --no-cache-dir --disable-pip-version-check --no-deps "$1"; \
+    python /opt/native_probe.py
 
 # Both are bind/volume mount points. Config holds the rig profile, the site and
 # the user store; captures holds every frame. Seed exact ownership and private

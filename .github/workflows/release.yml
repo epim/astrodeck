@@ -268,8 +268,12 @@ jobs:
             dist/*.whl.sha256
             dist/astrodeck-sbom.cdx.json
 
-  # OCI native-engine packaging and inventory remain tracked separately (#655).
-  # Existing image behavior is retained behind the complete artifact gates.
+  # The image installs the release's own native wheels (the ones the binaries job
+  # gated and uploaded) and is proven before it is named: it is pushed under a
+  # candidate name only, the native probe runs inside that exact pushed image on
+  # both architectures, and only then does the version tag and :latest appear
+  # (#655). Nothing user-visible exists before the probe passes. The inventory
+  # gate over what the image adds beyond its base is #655 part B, not yet here.
   image:
     needs: publish
     runs-on: ubuntu-latest
@@ -277,11 +281,27 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      IMAGE_REPO: ghcr.io/${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 0
+      # Outside the workspace on purpose: this folder also receives the two frozen
+      # binaries, which must not be sent to the build as part of its context.
+      - name: Download the accepted linux payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: accepted-linux-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/accepted
+      - name: Stage only the native wheels as the image's native build context
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/native-wheels"
+          cp "$RUNNER_TEMP"/accepted/astrodeck_native-*.whl "$RUNNER_TEMP/native-wheels/"
+          ls -l "$RUNNER_TEMP/native-wheels"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -289,11 +309,41 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      # REQUIRE_NATIVE=1: a missing or refused wheel fails this build instead of
+      # producing a development image. The Dockerfile's own build-time probe has
+      # already run once per platform by the time this step succeeds.
+      - name: Build and push the candidate image
+        id: candidate
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
+          build-contexts: |
+            native=${{ runner.temp }}/native-wheels
+          build-args: |
+            REQUIRE_NATIVE=1
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+          tags: ${{ env.IMAGE_REPO }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
+      # The probe runs the pushed image itself, by digest, on both architectures
+      # (arm64 under QEMU). The printed verdict is asserted, not only the status, and
+      # it reaches the log before it is judged: the probe reports WHY it failed (an
+      # error type) on stdout, which a captured `$(...)` under `bash -e` would discard
+      # together with the failing step.
+      - name: Probe the native engine in the pushed image on both architectures
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE_REPO }}@${{ steps.candidate.outputs.digest }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            echo "native probe on $platform"
+            verdict=$(mktemp)
+            docker run --rm --platform "$platform" "$IMAGE" python /opt/native_probe.py | tee "$verdict"
+            grep -F '"native_available": true' "$verdict" > /dev/null
+          done
+      # The same digest that was probed, never a rebuild.
+      - name: Give the probed image its release names
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE_REPO }}@${{ steps.candidate.outputs.digest }}
+          REF_NAME: ${{ github.ref_name }}
+        run: docker buildx imagetools create --tag "$IMAGE_REPO:$REF_NAME" --tag "$IMAGE_REPO:latest" "$IMAGE"
