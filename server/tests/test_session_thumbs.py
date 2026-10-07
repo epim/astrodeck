@@ -186,6 +186,15 @@ async def test_abort_drains_pending_thumb_tasks(sim_hub, monkeypatch, bus_lines)
     to finish winding down first; the thumb render stays gated shut, pending,
     all the same. Passed 10 of 10 after the wait was added.
 
+    AND THE LATENCY IT EXPOSED IS FIXED (#289 job 2, WP-107). The reap now
+    looks every ``REAP_LOOK_S`` (20 ms), not every ``IDLE_STOP_FINISH_POLL_S``,
+    so the wind-down ends within 20 ms of the guider's stop instead of up to
+    a quarter second after it (test_w15_reap_by_wakes_promptly.py grades the
+    cadence without a clock). The wait stays: "complete" is still published
+    before the wind-down begins, and the abort below must find the run ended.
+    Ten runs of this file under ``-n 8 -p no:randomly`` after the change: 10
+    of 10 green, 5 passed each.
+
     RED under mutant "abort does not drain" (``await
     self._drain_thumb_tasks()`` removed from ``abort``), observed:
 
