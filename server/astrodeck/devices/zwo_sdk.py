@@ -16,7 +16,6 @@ exports the full CAA SDK while ``CAA_SRC.dll`` lacks the mechanical API).
 from __future__ import annotations
 
 import ctypes
-import os
 import sys
 from pathlib import Path
 
@@ -138,23 +137,6 @@ def _find_dll(basename: str):
     stem = basename.rsplit(".", 1)[0]
     for c in candidates("zwo", stem, env_var="ASTRODECK_ZWO_SDK_DIR",
                         extra=alternatives):
-        if c.is_file():
-            dll = _loads_with_exports(c, exports)
-            if dll is not None:
-                return dll
-    return None
-
-
-def _find_dll_legacy(basename: str):
-    """Locate + load the named SDK DLL per the search order; None if absent."""
-    alternatives, exports = _DLL_SPECS[basename]
-    candidates: list[Path] = []
-    env = os.environ.get("ASTRODECK_ZWO_SDK_DIR")
-    if env:
-        candidates.append(Path(env) / basename)
-    candidates.append(_VENDOR_DIR / basename)
-    candidates.extend(Path(p) for p in alternatives)
-    for c in candidates:
         if c.is_file():
             dll = _loads_with_exports(c, exports)
             if dll is not None:
