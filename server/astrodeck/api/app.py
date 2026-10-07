@@ -2345,6 +2345,51 @@ class FlowWizardBody(BaseModel):
     cycles: int | None = None
     #: On lights the Guiding chip; off says it stays dark.
     guiding: bool | None = None
+    #: THE NIGHT AND RESUME ANSWERS (backlog WP-100, #196): what the sheet's
+    #: NIGHT and RESUME steps ask, written to the lane's one DUSK WINDOW.
+    #: Every one defaults to None and writes NOTHING then, for the reason the
+    #: door's answers above do: a default here would be written into every
+    #: flow the sheet has ever made, and "silent" is not "answered Dawn".
+    #: Each is checked by the wizard's own reader, before pydantic's coercion
+    #: (a ``true`` is not a stop, and read as 1.0 it would be a floor of one
+    #: degree nobody chose), and the generator checks them again, with the
+    #: pairs that only make sense together (a "Clock time" and its clock).
+    stop: str | None = None
+    stop_clock: str | None = None
+    start: str | None = None
+    start_clock: str | None = None
+    min_alt: float | None = None
+    auto_resume: str | None = None
+
+    @field_validator("stop", mode="before")
+    @classmethod
+    def _stop(cls, v):
+        return flow_wizard.checked_stop(v)
+
+    @field_validator("start", mode="before")
+    @classmethod
+    def _start(cls, v):
+        return flow_wizard.checked_start(v)
+
+    @field_validator("stop_clock", mode="before")
+    @classmethod
+    def _stop_clock(cls, v):
+        return flow_wizard.checked_clock("stop_clock", v)
+
+    @field_validator("start_clock", mode="before")
+    @classmethod
+    def _start_clock(cls, v):
+        return flow_wizard.checked_clock("start_clock", v)
+
+    @field_validator("min_alt", mode="before")
+    @classmethod
+    def _min_alt(cls, v):
+        return flow_wizard.checked_min_alt(v)
+
+    @field_validator("auto_resume", mode="before")
+    @classmethod
+    def _auto_resume(cls, v):
+        return flow_wizard.checked_auto_resume(v)
 
     @field_validator("cycles", mode="before")
     @classmethod
@@ -6535,6 +6580,14 @@ def create_app(*, bind_host: str | None = None,
         flow refuses it. The camera field and the measured angle stay rig
         facts too; a client sends none of the three. A refusal of a door
         answer is the same 422, naming the answer.
+
+        THE NIGHT AND RESUME ANSWERS (backlog WP-100, #196): ``stop``,
+        ``stop_clock``, ``start``, ``start_clock``, ``min_alt`` and
+        ``auto_resume``, which the sheet's NIGHT and RESUME steps ask, go to
+        the generator as they came, each None when the body does not carry
+        it, and write nothing then. A "Clock time" without its clock, a clock
+        with no "Clock time" to belong to, and a stop of "None" are refused
+        in the generator's words, the same 422.
         """
         sky = getattr(hub, "last_sky_angle", None)
         measured = sky.get("pa_deg") if isinstance(sky, dict) else None
@@ -6551,7 +6604,10 @@ def create_app(*, bind_host: str | None = None,
                 angle_mode=body.angle_mode, pa_deg=body.pa_deg,
                 use_measured=body.use_measured, skip=body.skip, ra=body.ra,
                 dec=body.dec, cycle_plan=body.cycle_plan, cycles=body.cycles,
-                guiding=body.guiding, rig=_rig_facts(),
+                guiding=body.guiding, stop=body.stop,
+                stop_clock=body.stop_clock, start=body.start,
+                start_clock=body.start_clock, min_alt=body.min_alt,
+                auto_resume=body.auto_resume, rig=_rig_facts(),
                 measured_pa_deg=measured, wheel=_rig_wheel())
         except ValueError as e:
             raise HTTPException(422, detail={"detail": str(e),
