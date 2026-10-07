@@ -1824,6 +1824,15 @@ class FocuserSetPositionBody(BaseModel):
 
 class RotatorMoveBody(BaseModel):
     position_deg: float
+    #: Send the single mechanical move to the target, with none of the
+    #: one-sided approach's overshoot (#526), and log it as a calibration move
+    #: (#594, WP-88). For a measurement that asks whether the camera follows
+    #: the rotator (``scripts/rig_rotator_follow.py``): a move against the
+    #: approach direction otherwise goes ``ROTATOR_BACKLASH_DEG`` past its
+    #: target and comes back, which adds 10 degrees of travel to the thing
+    #: under test. False by default, so Go and the nudge buttons, which post
+    #: here too, keep the approach.
+    direct: bool = False
 
 
 class RotatorReverseBody(BaseModel):
@@ -9009,9 +9018,16 @@ def create_app(*, bind_host: str | None = None,
         # route's own gap): every caller that moves the rotator now arrives
         # from the one side, exactly as the rotate loop does. Go and the ±1
         # degree nudges both post here (RotatorCard.tsx, RotatorPanel.tsx),
-        # so both inherit it.
-        return _spawn("rotator", hub._approach_rotator_mechanical(
-            rot, mech_target, mech, rcfg, epoch)) | {
+        # so both inherit it. ``direct`` (#594, WP-88) is the one caller that
+        # must not: a measurement of whether the camera follows the rotator
+        # sends the single mechanical move, through the same epoch-checked leg
+        # loop. Passed only when set, so the default call is the one it was.
+        moves = (hub._approach_rotator_mechanical(
+                     rot, mech_target, mech, rcfg, epoch, direct=True)
+                 if body.direct else
+                 hub._approach_rotator_mechanical(
+                     rot, mech_target, mech, rcfg, epoch))
+        return _spawn("rotator", moves) | {
             "target_deg": round(target, 2), "adjusted": adjusted}
 
     @app.post("/api/rotator/halt",
@@ -9056,6 +9072,38 @@ def create_app(*, bind_host: str | None = None,
         except DeviceError as e:
             raise _err(e)
         return _spawn("rotate_to_pa", hub.sync_rotator_to_sky(body.exposure_s))
+
+    @app.post("/api/rotator/preflight",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def rotator_preflight():
+        """TEST ROTATOR (WP-88; #145, #594): learn the sky/mechanical sign and
+        check the camera follows the rotator, measuring only what this connect
+        has not measured (``Hub.ensure_rotator_ready``).
+
+        TURNS THE ROTATOR about 22 degrees and takes four plate solves, so it
+        is refused up front, with nothing done, while a sequence or an
+        exposure holds the camera: a run's frames would be ruined and its
+        field mis-registered. A live loop is not refused, as for the other
+        two solving routes: the calibrations yield the camera themselves.
+        ``goto_and_center`` runs the same preflight by
+        itself on the first rotating hop of a connect; this is the operator's
+        way to run it ahead of time, at dusk, with the answer on the status
+        block (``rotator.sky_sign``, ``rotator.trusted``). Runs on the
+        ``rotate_to_pa`` lane, like the other two solving routes, so a second
+        press while one runs is the lane's own 409. A failure is a log line;
+        the result is the status block."""
+        if engine.running or hub._capture_lock.locked():
+            raise HTTPException(
+                409, "camera is busy (a sequence or an exposure is running); "
+                     "rotator preflight refused")
+        _refuse_if_camera_owned()
+        try:
+            hub.require("rotator")
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        return _spawn("rotate_to_pa", hub.ensure_rotator_ready())
 
     @app.post("/api/rotator/rotate-to-pa",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
