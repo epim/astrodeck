@@ -467,7 +467,7 @@
     {
       "id": "OP-027",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "After a completed flow, the toolbar can still show **STOP**. Verify that the run is idle in [Monitor](monitor.md), then reload the page before starting again. Do not press the stale **STOP** to clear it: it can start another run.",
+      "claim": "After a completed flow, the toolbar can still show **STOP** ([#647](https://github.com/epim/astrodeck/issues/647)). Verify that the run is idle in [Monitor](monitor.md), then reload the page before starting again. Do not press the stale **STOP** to clear it: it can start another run.",
       "sources": [
         {
           "path": "ui/src/components/flows/flowRunControls.tsx",

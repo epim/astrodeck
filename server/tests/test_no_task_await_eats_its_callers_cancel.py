@@ -31,10 +31,14 @@ scan: ``with contextlib.suppress(BaseException):`` (``BaseException`` catches
 (CancelledError, ...): pass`` written out instead of a ``suppress``. WP-35
 converted every site of both spellings outside ``engine.py``, ``app.py`` and
 ``resume_arm.py`` (``server/tests/test_w4_cancel_safe_awaits.py`` behaviourally
-pins two of them) and widened the guard below to scan both. The three hot
-files keep the shape until WP-59 converts them there too, and sit on the
-guard's allowlist in the meantime, named by function so a drifting line number
-cannot desync the allowlist from the site it names.
+pins two of them) and widened the guard below to scan both. WP-59 converted
+the three hot files' remaining sites too (``SequenceEngine.abort``, the
+shielded flip-wait ``finally`` in ``SequenceEngine._flip_bounded``,
+``_lifespan``, ``_spawn.wrapped``, ``_spawn_connect.wrapped`` and
+``ResumeArm.stop`` -- see ``server/tests/test_w13_*cancel_safe*.py``), and
+taught the scan to tell apart the one shape that LOOKS like #235/#252 but
+isn't (a loop that re-awaits the same shielded future until it is actually
+done -- ``_loop_rewait_exempt_line``, below), so ``_ALLOWLIST`` is now empty.
 
 Each test names the mutation it was shown RED under, run from a byte-for-byte
 backup of ``hub.py`` and restored byte-identical afterwards, with the observed
@@ -369,14 +373,83 @@ def _handler_swallows(h: ast.ExceptHandler) -> bool:
     return not any(isinstance(n, ast.Raise) for n in _walk_body(h.body))
 
 
+def _loop_rewait_exempt_line(node: ast.While) -> int | None:
+    """``while not X.done(): try: await asyncio.shield(X) except
+    CancelledError: ...`` is NOT the eaten-cancel shape, whatever its handler
+    does with the exception -- #252's own first comment calls this out by
+    name for ``hub.py``'s ``_run_to_its_bound``, and ``SequenceEngine._run``'s
+    UNSAFE wind-down loop (engine.py) has the identical shape for the
+    identical reason.
+
+    THE DISTINCTION. A one-shot ``try: await task except CancelledError:
+    pass`` really does let the caller run on: the ``except`` is the last the
+    wait is ever heard from, so whatever follows it runs whether the
+    CancelledError was the task's own or the caller's. A loop that keeps
+    re-awaiting the SAME future, still shielded, until ``X.done()`` is true
+    cannot do that -- a cancel caught inside the ``try`` just ends that one
+    iteration, and the very next thing the caller's task does is ``await
+    asyncio.shield(X)`` again, not whatever follows the loop. The caller only
+    ever gets past the loop once ``X`` is actually finished, which is the same
+    postcondition ``astrodeck.aio.reap`` promises. What the two known sites do
+    with the fact that a cancel arrived differs (``_run_to_its_bound`` hands
+    it back as a return value for ``Hub._teardown`` to read against a
+    cancel-count captured before the loop; ``SequenceEngine._run`` sets a
+    local flag and raises right after the loop) and is NOT this scan's
+    question to answer in general -- answering it would mean tracing
+    arbitrary data flow out of the function, which is exactly the kind of
+    allowlist-by-another-name this exemption exists to avoid. The loop shape
+    alone already establishes the one fact #235/#252 cares about: the caller
+    does not run on past its cancel while ``X`` is still alive.
+
+    Returns the inner ``Try``'s line number when ``node`` is exactly this
+    shape (a single ``Try`` as the whole loop body, awaiting
+    ``asyncio.shield`` of the SAME name the loop's ``.done()`` test reads, with
+    at least one handler that catches ``CancelledError``), else None. A false
+    negative here (a loop just different enough not to match) falls through to
+    the ordinary ``try``/``except`` scan below and is reported like any other
+    site -- cheaper than widening this match until it risks exempting a real
+    one-shot swallow that merely sits inside some unrelated loop.
+    """
+    test = node.test
+    if not (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)):
+        return None
+    done_call = test.operand
+    if not (isinstance(done_call, ast.Call)
+            and isinstance(done_call.func, ast.Attribute)
+            and done_call.func.attr == "done"):
+        return None
+    future = _name(done_call.func.value)
+    if (future is None or len(node.body) != 1
+            or not isinstance(node.body[0], ast.Try)):
+        return None
+    try_node = node.body[0]
+    shields_same_future = any(
+        isinstance(inner, ast.Await) and isinstance(inner.value, ast.Call)
+        and _name(inner.value.func) == "shield" and inner.value.args
+        and _name(inner.value.args[0]) == future
+        for inner in _walk_body(try_node.body))
+    if not shields_same_future:
+        return None
+    if not any(_handler_catches_cancel(h) for h in try_node.handlers):
+        return None
+    return try_node.lineno
+
+
 def _eaten_cancels_tryexcept(source: str, filename: str) -> list[str]:
     """``file:line`` of every ``try: await <task> except CancelledError...:
     <no raise>`` -- #252's second spelling (``task.cancel()`` then a plain
     ``try``/``except`` where a ``suppress`` would have been, as the first
-    spelling is nothing else)."""
+    spelling is nothing else) -- except a ``Try`` that is itself a
+    ``_loop_rewait_exempt_line`` loop body, which is a different, safe shape
+    (see there)."""
+    tree = ast.parse(source, filename=filename)
+    exempt = {ln for node in ast.walk(tree) if isinstance(node, ast.While)
+             for ln in (_loop_rewait_exempt_line(node),) if ln is not None}
     hits = []
-    for node in ast.walk(ast.parse(source, filename=filename)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Try):
+            continue
+        if node.lineno in exempt:
             continue
         body_awaits_a_task = any(
             isinstance(inner, ast.Await) and _awaits_a_task(inner)
@@ -417,36 +490,35 @@ def _qualname_at(tree: ast.AST, lineno: int) -> str | None:
 #: instance appearing anywhere else still fails loudly. Keyed by (path
 #: relative to the package, the enclosing function's qualified name).
 #:
-#: * The three "hot" files WP-35's plan explicitly defers (``engine.py``,
-#:   ``app.py``, ``resume_arm.py``): WP-59 converts these and removes their
-#:   entries here. Found by running this scan over the real tree rather than
-#:   copied from the issue, so the set is exact for the tree WP-35 ran on,
-#:   not the 2026-09-24 one the issue was filed against.
-#: * ``hub.py``'s ``_run_to_its_bound`` is not a bug at all: it re-awaits the
-#:   SAME shielded task in a loop until it is done, then raises the caller's
-#:   cancel itself -- but the ``raise`` sits in the surrounding ``except``,
-#:   outside the handler this scan looks inside of, so the naive check cannot
-#:   tell it apart from a swallow (#252's first comment calls this out by
-#:   name and recommends exactly this allowlisting).
+#: EMPTY (WP-59). It held two kinds of entry until now:
+#:
+#: * The three "hot" files WP-35's plan explicitly deferred (``engine.py``,
+#:   ``app.py``, ``resume_arm.py``) -- ``SequenceEngine.abort``, the shielded
+#:   flip-wait ``finally`` in ``SequenceEngine._flip_bounded``, ``_lifespan``,
+#:   ``_spawn.wrapped``, ``_spawn_connect.wrapped`` and ``ResumeArm.stop``.
+#:   WP-59 converted all six to ``astrodeck.aio.reap`` (or, for the two
+#:   ``wrapped`` closures, a bare ``raise`` after the log -- they are a
+#:   task's OWN top level catching its OWN cancellation, not a reap of some
+#:   other task, so there is nothing to hand ``reap`` there; the fix is the
+#:   same one ``resume_arm.py``'s ``_run`` already used).
+#: * ``hub.py``'s ``_run_to_its_bound`` and ``SequenceEngine._run``'s own
+#:   wind-down loop at the UNSAFE teardown are not bugs at all: each
+#:   re-awaits the SAME shielded task in a loop until it is done, so a
+#:   cancel caught inside the ``try`` never lets the caller past it -- the
+#:   next thing the caller's task does is ``await`` the same shielded future
+#:   again, not whatever follows the loop (#252's first comment calls this
+#:   out by name for ``_run_to_its_bound`` and recommends either teaching the
+#:   scan the shape or allowlisting it). ``_loop_rewait_exempt_line`` above
+#:   now recognises the shape directly, so neither needs an entry here.
 #:   ``test_teardown_cancel_cleanup.py::test_control_a_cancel_during_the_
-#:   disconnects_waits_for_them`` pins that the cancel does get out.
-#:   ``SequenceEngine._run``'s own wind-down loop at the UNSAFE teardown is
-#:   the same shape, for the same reason, and also not WP-35's file to edit.
+#:   disconnects_waits_for_them`` separately pins that ``_run_to_its_bound``'s
+#:   cancel does get out to ``Hub._teardown``'s caller.
 #: * ``weather.py``'s ``WeatherService.stop`` turned up widening this scan
 #:   for #252 and was reported as its own defect (#628); WP-37 (f) fixed it
 #:   by switching to ``aio.reap``, so its entry here is removed rather than
 #:   kept -- it no longer matches anything, and the stale-entry check below
 #:   would fail if it stayed.
-_ALLOWLIST: set[tuple[str, str]] = {
-    ("hub.py", "_run_to_its_bound"),
-    ("sequence/engine.py", "SequenceEngine.abort"),
-    ("sequence/engine.py", "SequenceEngine._run"),
-    ("sequence/engine.py", "SequenceEngine._flip_bounded"),
-    ("api/app.py", "_lifespan"),
-    ("api/app.py", "_spawn.wrapped"),
-    ("api/app.py", "_spawn_connect.wrapped"),
-    ("sequence/resume_arm.py", "ResumeArm.stop"),
-}
+_ALLOWLIST: set[tuple[str, str]] = set()
 
 
 #: The #235 shape as ``stop_guiding`` had it, the same with a bare
@@ -479,6 +551,12 @@ async def teardown(self):
 #: #252's second spelling: the same two shapes written as a plain
 #: ``try``/``except`` where a ``suppress`` would have been (``pass``), and
 #: one that re-raises -- which is NOT this shape and must not be flagged.
+#: ``near_miss_loop`` guards WP-59's ``_loop_rewait_exempt_line`` against
+#: over-matching: it LOOKS like the safe re-await-until-done loop, but shields
+#: a DIFFERENT future (``other``) than the one its ``.done()`` test reads
+#: (``step``) -- a cut-and-paste of the safe shape onto the wrong variable
+#: would still be a genuine one-shot swallow of whatever ``other`` is, and
+#: must still be flagged.
 _KNOWN_POSITIVE_TRYEXCEPT = '''
 import asyncio
 
@@ -502,13 +580,23 @@ async def propagates(self):
         await self._task
     except asyncio.CancelledError:
         raise
+
+async def near_miss_loop(self, step, other):
+    while not step.done():
+        try:
+            await asyncio.shield(other)
+        except asyncio.CancelledError:
+            pass
 '''
 
 #: What it must not flag: the fix, a suppress/except that cannot catch a
-#: cancel, a suppress around a fresh call rather than a task, and a
-#: try/except that re-raises on some branch (resume_arm.py's ladder cancel
-#: shape: it only sometimes propagates, by design, and the scan must trust a
-#: ``raise`` anywhere in the handler rather than guess which branch runs).
+#: cancel, a suppress around a fresh call rather than a task, a try/except
+#: that re-raises on some branch (resume_arm.py's ladder cancel shape: it only
+#: sometimes propagates, by design, and the scan must trust a ``raise``
+#: anywhere in the handler rather than guess which branch runs), and
+#: ``rewaits_until_done`` -- ``hub.py``'s ``_run_to_its_bound`` /
+#: ``SequenceEngine._run``'s UNSAFE wind-down shape (WP-59): a loop that
+#: re-awaits the SAME shielded future until it is done.
 _KNOWN_NEGATIVE = '''
 import asyncio
 import contextlib
@@ -534,6 +622,14 @@ async def sometimes_propagates(self, condition):
             raise
         result = None
     return result
+
+async def rewaits_until_done(self, step):
+    while not step.done():
+        try:
+            await asyncio.shield(step)
+        except asyncio.CancelledError:
+            pass
+    return step.exception()
 '''
 
 
@@ -543,7 +639,7 @@ def test_the_scan_fires_on_the_known_shapes_and_only_them():
     assert _eaten_cancels(_KNOWN_POSITIVE, "known.py") == [
         "known.py:10", "known.py:15", "known.py:20"]
     assert _eaten_cancels_tryexcept(_KNOWN_POSITIVE_TRYEXCEPT, "known.py") == [
-        "known.py:6", "known.py:13"]
+        "known.py:6", "known.py:13", "known.py:27"]
     assert _eaten_cancels(_KNOWN_NEGATIVE, "known.py") == []
     assert _eaten_cancels_tryexcept(_KNOWN_NEGATIVE, "known.py") == []
 
@@ -584,6 +680,25 @@ def test_no_await_of_a_task_under_astrodeck_suppresses_a_cancel():
         a try/except that swallows it (#235, widened by #252), which eats a
         cancel of their caller too; wait through astrodeck.aio.reap instead:
         ['remote/relay_client.py:886']
+
+    WP-59: the three "hot" files' six sites (``SequenceEngine.abort``, the
+    shielded flip-wait ``finally`` in ``SequenceEngine._flip_bounded``,
+    ``_lifespan``, ``_spawn.wrapped``, ``_spawn_connect.wrapped`` and
+    ``ResumeArm.stop``) are converted and exercised by their own dedicated
+    tests (``server/tests/test_w13_*cancel_safe*.py``), each with its own
+    named mutant restoring the pre-WP-59 shape at that one site -- not
+    repeated here, since a revert at any of the six is already a known
+    positive for THIS scan (every site above is simultaneously a
+    ``_KNOWN_POSITIVE``/``_KNOWN_POSITIVE_TRYEXCEPT`` shape).
+
+    MUTANT "neutralize ``_loop_rewait_exempt_line`` to always return None"
+    (WP-59) -- RED, observed verbatim (both real sites the exemption was
+    added for, now unmasked):
+
+        AssertionError: these await a task under suppress(CancelledError) or
+        a try/except that swallows it (#235, widened by #252), which eats a
+        cancel of their caller too; wait through astrodeck.aio.reap instead:
+        ['hub.py:735', 'sequence/engine.py:3064']
     """
     files = [p for p in _PACKAGE.rglob("*.py") if "__pycache__" not in p.parts]
     rel = {p.relative_to(_PACKAGE).as_posix() for p in files}
