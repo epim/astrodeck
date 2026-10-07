@@ -9144,6 +9144,47 @@ def create_app(*, bind_host: str | None = None,
         hub.note_move("dec", 0.0)
         return {"ok": True}
 
+    @app.post("/api/mount/trust-position")
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.trust_position"})
+    async def mount_trust_position(
+            request: Request,
+            principal: Principal = Depends(require(CAP_CONTROL_MOUNT))):
+        """The operator says the tube is physically at the mount's home or park
+        position, which clears ``position_known`` without a plate-solve (#144).
+
+        WHY THE ROUTE EXISTS. After a power cycle an AM5 reports its home
+        position wherever the tube is, and the driver latches ``position_known``
+        False on that signature. Two things lift it: a plate-solved sync, and
+        this. A mount powered up parked at home reads the same pole, so the
+        latch is set at the start of EVERY night until the first sync, and "I
+        know, it is at home" needs a way to be said that is not a solve.
+
+        AN ATTESTATION, NOT A MEASUREMENT. It reads nothing from the mount and
+        moves nothing: reading the position to confirm it would confirm the
+        very number the latch says is wrong. What it does is lift the guard that
+        stops a nudge computing a destination from a believed position and
+        restore the solar-cone check on a manual jog, so a wrong word from the
+        operator is paid for in exactly those two places. The audit line says
+        who gave it, because their word is the only evidence behind the clear.
+
+        The answer carries the driver's OWN verdict afterwards
+        (``position_known``), not an assumption: a driver that keeps its own
+        evidence and declines to clear must not be reported as cleared, since
+        the client unlocks off this answer. A driver with nothing to trust
+        (``Telescope.trust_position`` is a no-op by default) answers true."""
+        try:
+            tel = hub.require("telescope")
+            await tel.trust_position()
+        except DeviceError as e:
+            raise _err(e)
+        # WHO SAID IT. No coordinate and no angle in the line: the home position
+        # is the pole, so any number read from it is a latitude oracle (#140).
+        from ..auth import audit as auth_audit   # lazy, as auth/deps.py does
+        auth_audit.record("trust_position", ok=True, request=request,
+                          user=principal.email or principal.role)
+        return {"ok": True,
+                "position_known": bool(getattr(tel, "position_known", True))}
+
     @app.post("/api/mount/tracking", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.set_tracking"})
     async def tracking(on: bool):
