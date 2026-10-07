@@ -32,14 +32,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import re
 import threading
 import time
 
 import pytest
 
 from _group_harness import (SPIN_BOUND_S, Night, SpinNeverYielded, group_hub,
-                            group_store, single)
+                            group_store, single, watchdog_timeline)
 from astrodeck.sequence import SequenceEngine
 from astrodeck.sequence.models import SequencePlan
 
@@ -166,12 +165,9 @@ async def test_a_spin_that_never_yields_fails_the_night_and_names_the_spin(
     # watchdog's own report text carries its own timeline (the real-seconds
     # `away` it measured the instant it fired, `_SpinWatchdog._describe`'s
     # own words), so that is what the bound is read from.
-    timeline = re.search(
-        r"did not come back for ([0-9.]+) s of real time, against a bound "
-        r"of ([0-9.]+) s", failed)
-    assert timeline, f"the failure text carries no watchdog timeline:\n{failed}"
-    away_s, reported_bound_s = (float(timeline.group(1)),
-                                float(timeline.group(2)))
+    # (The pattern is `_group_harness.watchdog_timeline`'s, shared with the
+    # two other tests that read it, so none of them drifts from the text.)
+    away_s, reported_bound_s = watchdog_timeline(failed)
     assert reported_bound_s == BOUND_S, (
         f"the report's own bound ({reported_bound_s} s) does not match "
         f"this case's BOUND_S ({BOUND_S} s): {failed}")

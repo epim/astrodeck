@@ -702,6 +702,14 @@ class NativeGuider(Guider):
         self._settle_open = False
         self._settle_done = asyncio.Event()
         self._settle_error: str | None = None
+        # #14: over-cap pulses ``_pulse`` limited to the mount's single-pulse
+        # cap, counted by WHERE they happened ("settle" = inside a dither's
+        # settle window, where the recenter step is over the cap by design;
+        # "guide" = anywhere else, which the engine's own clamp makes
+        # unreachable), plus whether the current window's one info line has
+        # been said. Both belong to a session: ``start_guiding`` zeroes them.
+        self._cap_clips = {"settle": 0, "guide": 0}
+        self._settle_clip_said = False
 
         self._last_frame = None            # last exposed numpy frame (guide_frame)
         # ...and WHEN it was exposed (monotonic). ``guide_frame``'s idle branch
@@ -920,6 +928,8 @@ class NativeGuider(Guider):
                 self._reacquire = 0
                 self._fault_frames = 0
                 self._settle_open = False
+                self._cap_clips = {"settle": 0, "guide": 0}
+                self._settle_clip_said = False
                 # GN-03: a start is a fresh SESSION and its re-lock counters start
                 # at zero. A recovery restart (the sequence engine's
                 # ``_maybe_recover_guiding``, or the re-lock hold itself) comes
@@ -1578,6 +1588,19 @@ class NativeGuider(Guider):
         star loss latches ``_lost``."""
         try:
             while not self._stop.is_set():
+                # #684: give the event loop a turn on EVERY frame. Under
+                # ASTRODECK_FAST_TEST the sim's exposure dwell is 0, so
+                # ``_expose`` never suspends, and a frame that dispatches no
+                # pulse (``idle``, ``settle``, the fault-frame ``continue``
+                # below) has no await of its own: the pulse's sim dwell was the
+                # one yield in a frame, so a stretch of non-pulse frames hung
+                # the whole test PROCESS instead of failing it. Here and not in
+                # ``_expose`` on purpose: a test that replaces ``_expose`` with
+                # a non-suspending fake would otherwise hang again. On a rig
+                # every frame is a real exposure, so this costs nothing there.
+                # (A cancel arriving at this await is the ``except
+                # asyncio.CancelledError: raise`` below.)
+                await asyncio.sleep(0)
                 try:
                     frame = await self._expose()
                 except DeviceError as e:
@@ -1774,6 +1797,12 @@ class NativeGuider(Guider):
         if self._engine_settling():
             self._settle_open = True
             return
+        # Outside a window, the next one is a NEW window and gets its own
+        # over-cap line (#14). Cleared on every frame outside a window, not
+        # only on the one that closes it: the first clipped step of a dither is
+        # dispatched before this method has ever seen that window open, so the
+        # latch must not depend on having seen it.
+        self._settle_clip_said = False
         if not self._settle_open:
             return  # no window was open; nothing to close
         self._settle_open = False
@@ -1784,16 +1813,89 @@ class NativeGuider(Guider):
 
     async def _pulse(self, action: dict) -> None:
         """Apply a single-axis pulse or a (RA, Dec) pulse pair (dossier §7:
-        up to two pulse-guides per accepted frame)."""
+        up to two pulse-guides per accepted frame). A pulse longer than the
+        mount's cap is limited to it here (``_limit_to_mount_cap``)."""
         if action["action"] == "pulse":
-            await self.tel.pulse_guide(action["dir"], int(action["ms"]))
+            await self.tel.pulse_guide(
+                action["dir"],
+                self._limit_to_mount_cap(action["dir"], int(action["ms"])))
             return
         ra = action.get("ra")
         dec = action.get("dec")
         if ra:
-            await self.tel.pulse_guide(ra["dir"], int(ra["ms"]))
+            await self.tel.pulse_guide(
+                ra["dir"], self._limit_to_mount_cap(ra["dir"], int(ra["ms"])))
         if dec:
-            await self.tel.pulse_guide(dec["dir"], int(dec["ms"]))
+            await self.tel.pulse_guide(
+                dec["dir"], self._limit_to_mount_cap(dec["dir"], int(dec["ms"])))
+
+    def _mount_pulse_cap_ms(self) -> int | None:
+        """The longest single pulse the mount delivers
+        (``Telescope.max_pulse_ms``), or None when it publishes none (Alpaca,
+        the sim, PHD2's path). Only a finite number that is at least 1 ms
+        counts: a Mock or a string attribute must not become a 1 ms cap, a NaN
+        or an infinity must not reach ``int()`` (it raises, and an error out of
+        a pulse ends the guide loop), and 0.5 must not become a cap of 0 ms
+        that zeroes every over-length pulse."""
+        cap = getattr(self.tel, "max_pulse_ms", None)
+        if (isinstance(cap, bool) or not isinstance(cap, (int, float))
+                or not math.isfinite(cap)):
+            return None
+        cap = int(cap)
+        return cap if cap > 0 else None
+
+    def _limit_to_mount_cap(self, direction: str, ms: int) -> int:
+        """Return the pulse length to send: ``ms``, or the mount's cap when
+        ``ms`` is over it. #14.
+
+        The AM5 driver clips an over-cap pulse itself (``_capped_ms``) and
+        warns, at most once a minute. Across three pulled night logs every one
+        of those 50 events was a dither: ``dither()`` shifts the lock and the
+        engine's fast recenter (a recovery move, so it bypasses the per-axis
+        duration clamps) asks for the whole offset in one pulse, the driver
+        clips it, and the guide loop closes the rest over the next frames. The
+        clip is expected on every dither, which left the driver's line unable
+        to tell it from a genuine saturation. So the guider limits the pulse
+        FIRST, to the value the driver would have delivered (the bytes on the
+        wire do not change), and says which kind it was:
+
+          * inside a settle window: ONE info line per window;
+          * anywhere else: a WARNING each time. The engine lowers its own
+            ``max_ra/dec_duration_ms`` to the cap (``_build_engine_config``),
+            so an over-cap guide correction means that clamp is not holding.
+
+        After this, a source=mount "capped to" line in a night log is an
+        anomaly by definition: the driver's clip stays as the backstop for any
+        other caller.
+
+        The window is ``_settle_open`` OR the engine's own state. ``dither()``
+        opens the engine's window at once, but ``_settle_open`` only flips in
+        ``_sync_settle_window`` after this frame's dispatch, and the over-cap
+        recenter step is the first frame after ``dither()``: ``_settle_open``
+        alone calls exactly that pulse an anomaly. Read at dispatch time, and
+        only when a pulse is actually over the cap.
+
+        No cap published, or ``ms`` at or under it (``ms <= 0`` included):
+        returned unchanged, nothing said."""
+        cap = self._mount_pulse_cap_ms()
+        if cap is None or ms <= cap:
+            return ms
+        settle = self._settle_open or self._engine_settling()
+        self._cap_clips["settle" if settle else "guide"] += 1
+        if not settle:
+            bus.log("warning",
+                    f"native guider: {direction} pulse of {ms} ms is over the "
+                    f"mount's {cap} ms cap outside a dither settle window; "
+                    f"limited to {cap} ms (the engine clamps its own "
+                    f"corrections to the cap, so this should not happen; "
+                    f"{self._cap_clips['guide']} this session)", "guide")
+        elif not self._settle_clip_said:
+            self._settle_clip_said = True
+            bus.log("info",
+                    f"native guider: dither recenter step {direction} {ms} ms "
+                    f"limited to the mount's {cap} ms cap; the guide loop "
+                    f"closes the rest", "guide")
+        return cap
 
     async def _handle_lock_lost(self, reason: str | None) -> None:
         """Map the engine's ``lock_lost`` reasons to the bus/recovery semantics.

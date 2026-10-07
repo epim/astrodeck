@@ -204,8 +204,17 @@ class _Wheel:
 #: generated DUSK node now carries both at "", moving every one of the 768
 #: blobs by the same two new params and nothing else. Regenerated from the
 #: SAME code path against the fixed code.
+#:
+#: RE-PINNED IN BACKLOG WP-85 (#195, wave 14, 2026-10-07): DUSK WINDOW's
+#: Repeat row became "Automatic resume on subsequent nights until capture
+#: quota is fulfilled", and NODE_DEFS gained its ``autoResume`` param at
+#: "On", so every generated DUSK node now carries it and every one of the
+#: 768 blobs moves by that one param and nothing else. PROVEN, not assumed:
+#: with ``autoResume`` popped from each generated DUSK node the digest is
+#: the previous pin, 2a1d2378..., byte for byte. Regenerated from the SAME
+#: code path against the fixed code.
 TODAYS_ANSWERS_SHA256 = \
-    "2a1d2378d35eaef5d2ef706e7172068ed20a095c6e2e5da0350a5bf508cb4fd1"
+    "92aa6664eaf1af9e80467951bdc5c4db3a3f39e12113b7b9d7be184885598031"
 
 #: The chip subsets the route is asked, one of each shape a new answer's
 #: default could move: none, the Guiding chip alone, every chip but it, and
@@ -965,6 +974,11 @@ class TestTheRecordedAnswer:
         NODE_DEFS gained DUSK WINDOW's clock params, backlog WP-09 #191,
         2026-09-30): the recorded DUSK node gained ``startClock``/
         ``stopClock`` at ``""``, nothing else moved.
+
+        RE-RECORDED AGAIN IN WAVE 14 (``ASTRODECK_REWRITE_WIZARD_FIXTURE=1``,
+        backlog WP-85 #195, 2026-10-07): the recorded DUSK node gained
+        ``"autoResume": "On"`` beside ``"repeat": "Single night"``, and
+        nothing else moved (the byte diff of the file is that one line).
         """
         text = _recording(client, monkeypatch)
         if REWRITE:

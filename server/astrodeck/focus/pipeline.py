@@ -68,6 +68,8 @@ only a telescope can test.
 """
 from __future__ import annotations
 
+from ..aio import reap
+
 #: Star count used for the hypothetical when the caller passes no counts. The
 #: engine reads `star_count` as a fit weight and as its no-star sentinel (0
 #: means "this frame had nothing in it"), so the one thing this must not be is
@@ -224,10 +226,22 @@ class Prefetch:
         ``cancel`` is for the teardown path only, where the sweep itself is
         already being cancelled and waiting out an exposure would just delay a
         halt the user asked for.
+
+        A CANCEL AIMED AT THE CALLER IS NOT A SPECULATIVE FAILURE (#710). This
+        used to be ``try: return await self.task / except BaseException: return
+        None``, and ``BaseException`` takes ``CancelledError`` with it. A
+        caller cancelled while it waited here had its cancel delivered to the
+        exposure it awaits, and the ``CancelledError`` that came back was
+        eaten with the task's own, so the focus sweep ran on past a halt the
+        operator asked for (the same shape as #235 and #252, found by #681's
+        wider scan). It now waits through ``aio.reap``, which absorbs whatever
+        the TASK ended with and lets a cancel of the caller out once the task
+        has finished, and reads the task's result afterwards: a frame for a
+        task that finished, None for one that was cancelled or raised.
         """
         if cancel:
             self.task.cancel()
-        try:
-            return await self.task
-        except BaseException:      # noqa: BLE001 - a guess must not raise
-            return None
+        await reap(self.task)
+        if self.task.cancelled() or self.task.exception() is not None:
+            return None             # a guess must not raise
+        return self.task.result()

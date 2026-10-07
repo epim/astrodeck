@@ -443,28 +443,16 @@ export function saveLockReason(dirty: boolean, readonly: boolean): string | null
   return dirty ? null : SAVE_CLEAN_REASON;
 }
 
-/** RUN executes the STORED flow, so unsaved edits are a refusal, not a silent
- *  save.
- *
- *  Two answers were available - save then run, or refuse - and this is the
- *  refusal, for two reasons. A save can fail (an example flow refuses one
- *  outright, and a PUT can 409), and a save-then-run that swallowed that would
- *  start the OLD graph while the operator watched their edit on screen and
- *  believed it went with it. And with the refusal in place the validation pill
- *  can go on describing exactly the graph RUN will execute, which is the second
- *  half of the same finding. */
-export const RUN_UNSAVED_REASON = "This flow has unsaved changes - save it first.";
-
-/** The example-flow case, which has no SAVE to send the operator to. It names
- *  the blocker AND the way out; a lock with neither is a dead end. */
-export const RUN_UNSAVED_EXAMPLE_REASON =
-  "This example flow cannot be saved, so RUN would start the stored version, not the one "
-  + "drawn here. Leave the flow and open it again to drop these edits.";
-
-export function unsavedRunReason(dirty: boolean, readonly: boolean): string | null {
-  if (!dirty) return null;
-  return readonly ? RUN_UNSAVED_EXAMPLE_REASON : RUN_UNSAVED_REASON;
-}
+// RUN_UNSAVED_REASON, RUN_UNSAVED_EXAMPLE_REASON and unsavedRunReason live in
+// `components/flows/flowsTypes` since #688 (WP-86), the pure module both
+// editors may import: the classic header's RUN lock for an edited example and
+// the store's own RUN refusal say the same sentence this toolbar does, and a
+// copy of it is how two editors come to word one fact two ways. Re-exported
+// here, under their own names, so every import of them from this module (the
+// canvas index, the toolbar, the phone stage list, the tests) is unchanged.
+export {
+  RUN_UNSAVED_REASON, RUN_UNSAVED_EXAMPLE_REASON, unsavedRunReason,
+} from "../../../../../components/flows/flowsTypes";
 
 // ------------------------------------------------------------- wire, in words
 

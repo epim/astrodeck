@@ -32,7 +32,7 @@
 // computed by the pure `runCopy.ts`. The #/next surfaces reach them through
 // this module, which the r7Parity allow-list already names as the one place
 // that decides what RUN does and says, so they take on no new legacy import.
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { api, ApiError } from "../../api";
@@ -45,6 +45,7 @@ import {
   type FlowRunAcceptance, type FlowsActions,
 } from "./flowsSlice";
 import { flowRunLive, isRunPhaseLive, knownSessions } from "./flowRunState";
+import { unsavedRunReason } from "./flowsTypes";
 import {
   START_OVER_TITLE, runCopy, runReadouts, startOverBody,
   type RunCopy, type RunReadouts,
@@ -350,6 +351,10 @@ export function useFlowRunControls(): FlowRunControls {
 
   const canControlMount = useCanControlMount();
   const camera = useRoleConnected("camera");
+  // An EXAMPLE flow with edits on screen (#688). Booleans, so exact under
+  // Object.is: `dirty` flips once per edit run, not per edit.
+  const dirty = useStore((s) => s.flows.dirty);
+  const readonly = useStore((s) => s.flows.record?.readonly === true);
 
   const run = useStore((s) => s.flowsRun);
   const appendLog = useStore((s) => s.flowsAppendLog);
@@ -395,13 +400,28 @@ export function useFlowRunControls(): FlowRunControls {
     }
   }, [appendLog, enqueueToast]);
 
+  // ONE START AT A TIME (#688). `flowsRun` now saves the canvas before it
+  // posts, so the gap between the press and the POST is a PUT's round trip,
+  // over the relay a second or more, with nothing on the button to say it
+  // was heard. A second press in that gap would run its own flush and post a
+  // second run, which the server refuses with a "could not start" line under
+  // a night that did start. The latch covers the question dialogs too: a
+  // press made while one is open cannot happen, and CANCEL releases it.
+  const starting = useRef(false);
+
   const start = useCallback(async () => {
-    const outcome = await runAnsweringQuestions(
-      run,
-      askUnmappedWith(pushConfirm),
-      (q) => askContinue(q, pushConfirm, resolveConfirm),
-    );
-    warnIfDisarmed(outcome);
+    if (starting.current) return;
+    starting.current = true;
+    try {
+      const outcome = await runAnsweringQuestions(
+        run,
+        askUnmappedWith(pushConfirm),
+        (q) => askContinue(q, pushConfirm, resolveConfirm),
+      );
+      warnIfDisarmed(outcome);
+    } finally {
+      starting.current = false;
+    }
   }, [pushConfirm, resolveConfirm, run, warnIfDisarmed]);
 
   // START OVER, BEHIND A CONFIRM (spec 5.9: "START OVER behind a confirm").
@@ -413,22 +433,28 @@ export function useFlowRunControls(): FlowRunControls {
   // `fresh` on the first request: the server can still ask the graph
   // question, and every re-post keeps `fresh`.
   const startOver = useCallback(async () => {
-    const ok = await pushConfirm({
-      title: START_OVER_TITLE,
-      body: startOverBody(copy),
-      confirmLabel: START_OVER_LABEL,
-      cancelLabel: "CANCEL",
-      tone: "warn",
-      mode: "confirm",
-    });
-    if (!ok) return;
-    const outcome = await runAnsweringQuestions(
-      run,
-      askUnmappedWith(pushConfirm),
-      (q) => askContinue(q, pushConfirm, resolveConfirm),
-      { fresh: true },
-    );
-    warnIfDisarmed(outcome);
+    if (starting.current) return;
+    starting.current = true;
+    try {
+      const ok = await pushConfirm({
+        title: START_OVER_TITLE,
+        body: startOverBody(copy),
+        confirmLabel: START_OVER_LABEL,
+        cancelLabel: "CANCEL",
+        tone: "warn",
+        mode: "confirm",
+      });
+      if (!ok) return;
+      const outcome = await runAnsweringQuestions(
+        run,
+        askUnmappedWith(pushConfirm),
+        (q) => askContinue(q, pushConfirm, resolveConfirm),
+        { fresh: true },
+      );
+      warnIfDisarmed(outcome);
+    } finally {
+      starting.current = false;
+    }
   }, [copy, pushConfirm, resolveConfirm, run, warnIfDisarmed]);
 
   // THE ACTION IS DECIDED ON `ours`, NEVER ON `running` (#162). `running` is a
@@ -456,7 +482,15 @@ export function useFlowRunControls(): FlowRunControls {
 
   return {
     running,
-    reason: runBlockedReason(canControlMount, camera.connected, running),
+    // AN EDITED EXAMPLE KEEPS RUN LOCKED (#688, ruling (d)). Any other edited
+    // flow is saved by `flowsRun` before it posts, and refused there if the
+    // save did not keep the edit; an Example is never saved, so RUN would
+    // start the stored version under the edit on screen. The #/next toolbar
+    // read this lock already (`unsavedRunReason`); it is the same sentence,
+    // now also on the classic header and the phone MONITOR tab, and a STOP
+    // is never locked by it (`running`).
+    reason: runBlockedReason(canControlMount, camera.connected, running)
+      ?? (running || !readonly ? null : unsavedRunReason(dirty, true)),
     explain,
     act,
     copy,

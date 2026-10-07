@@ -34,7 +34,8 @@ import re
 from ..devices.base import DomePolicy
 from .identity import finite_number
 from .models import FlowEdge, FlowGraph, FlowNode
-from .nodes import NODE_DEFS, parse_cycle_plan, port_kind, target_angle
+from .nodes import (NODE_DEFS, dusk_auto_resume, parse_cycle_plan, port_kind,
+                    target_angle)
 
 #: Trigger vocabulary, and what the engine can now do with it.
 #:
@@ -1397,15 +1398,23 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             }
         else:
             plan_campaign = None
-        # #195: "Single night" now means auto-resume does not arm across
-        # nights (`SequencePlan.resume_across_nights`, `ResumeArm.tick`).
-        # Every other `repeat` value keeps coming back by design, so it keeps
-        # the field True - the same value a flow with no DUSK WINDOW gets,
-        # below.
-        resume_across_nights = repeat != "Single night"
+        # WHETHER THE FLOW RESUMES ON LATER NIGHTS (#195, owner ruling 7 on
+        # #189) IS `autoResume`'S, AND NOTHING ELSE'S. Only an explicit "Off"
+        # makes it False (`SequencePlan.resume_across_nights`, read by
+        # `_finalize_report` at the stop boundary and by `ResumeArm.tick`
+        # the next night); a missing key, a value this build does not offer
+        # and every `repeat` all read ON.
+        #
+        # 0.3.40 decided this from `repeat` (`repeat != "Single night"`), and
+        # `repeat`'s own default IS "Single night", so every DUSK WINDOW flow
+        # nobody had touched compiled to "do not resume": the opposite of the
+        # ruling, which says the option defaults ON and that a saved "Single
+        # night" must NOT be read as Off. `repeat` still keys the `campaign`
+        # block above, and no longer reads into this.
+        resume_across_nights = dusk_auto_resume(dusk.params)
     else:
         plan_campaign = None
-        # A flow with no DUSK WINDOW carries no opinion on repeat at all, so
+        # A flow with no DUSK WINDOW carries no opinion on resuming at all, so
         # it keeps doing what it has always done: whatever ends the run
         # leaves it dormant and armed, exactly as before this field existed.
         resume_across_nights = True
@@ -1479,8 +1488,8 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     # ABSENT WHEN TRUE (#195), the same convention as `campaign` above and for
     # the same reason: `SequencePlan.resume_across_nights` already defaults to
     # True, so every compile before this field existed - and every one of
-    # today's that is not "Single night" - must produce the exact same dict it
-    # always has. Only "Single night" writes anything here.
+    # today's that is not an explicit `autoResume` "Off" - must produce the
+    # exact same dict it always has. Only "Off" writes anything here.
     if not resume_across_nights:
         out["resume_across_nights"] = False
     # Absent when empty for the same reason, and because an empty list on

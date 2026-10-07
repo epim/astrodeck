@@ -443,13 +443,24 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #: like ``schedule.twilight_deg`` above, it rides through the whole chain
 #: unchanged and all five hashes move together again. Regenerated from the
 #: SAME code path, with no other change.
+#:
+#: RE-PINNED AGAIN FOR BACKLOG WP-85 (#195, wave 14, 2026-10-07), IN REVERSE
+#: OF THE ONE ABOVE: DUSK WINDOW's "Repeat" row is replaced by "Automatic
+#: resume ... until capture quota is fulfilled", default On, so the quick
+#: flow compiles ``resume_across_nights: true`` again and the key is back to
+#: what it was before WP-34's change. All five hashes move together a second
+#: time. PROVEN, not assumed: with ``resume_across_nights`` set back to false
+#: in the dump, every one of the five hashes below reproduces the pin it
+#: replaces, byte for byte (the old pins were 14927009..., b348979b...,
+#: dae5d3cb..., a167e74c... and 4d53fa6e...), and the fixture
+#: ``ngc7331_quick.json`` differs from its old self by that one line.
 GOLDEN_SHA256 = \
-    "1492700944d4dd6f1b76a278913fc3acfebbbffc3f88f39066205dc21c3529c8"
+    "79f917c9882b2a12273a46fed4d30c972b0690ca4cd81fdb747df69d03c4f627"
 
 #: The hash as the S3 compile task left it. With the count mode set back to
 #: "attempts", the compiled plan must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S3W = \
-    "b348979b25f3cb76b01837bcb373dfd8f0613d93e9d9c35cb563cf74012d1d21"
+    "ed6035fbc31ad7361adc5b04b314f2a7ef0060a6672d3c0434c846065ed8aa5d"
 
 #: The one value the S3 wizard task moved on the plan, and what it was.
 S3W_COUNT = {"count_mode": "accepted"}
@@ -458,17 +469,17 @@ S3W_COUNT_BEFORE = {"count_mode": "attempts"}
 #: The hash as S2 left it. With the S3 centring set back to null, the
 #: compiled plan must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S3 = \
-    "dae5d3cb87265c2d378e0940c494b78b5c55e2e1dcdec6c98895421c6d16b69c"
+    "6705600fd437a9ce5f6e1e7e2acd111bafe5551c5285cfef8d30141c307fb97f"
 
 #: The hash as S1 left it. With the four S2 keys taken off, the compiled plan
 #: must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S2 = \
-    "a167e74ca39cf15f18c7930431e6685f9dfc87d0c23771622285e4d3513bd03c"
+    "fa4f7f53e4ebacc0ee716f6d16f53a5795fe7162562d35508dc6d7fb43d7d6db"
 
 #: The hash as #150 left it. With the S2 keys and the three S1 keys taken off,
 #: the compiled plan must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S1 = \
-    "4d53fa6e933caf67bc75f74318559f77c1f66f2697b8f5fd54c1f0c05c87f2cc"
+    "cab280185842ac51f00f27f4993504bbea05bcb405133e0cc18851049aff5a3e"
 
 #: The S1 keys and the defaults the fixture carries them at.
 S1_KEYS = {"center_tolerance_arcmin": None, "center_attempts": None,

@@ -30,12 +30,11 @@ numbers, not just two ways of writing the same one."""
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 
 import pytest
 
-from _group_harness import Night
+from _group_harness import Night, watchdog_timeline
 from astrodeck.sequence import SequenceEngine
 
 from test_group_harness_watchdog import BOUND_S, SPIN_LIMIT_S, _plan, _run  # noqa: F401 (shared harness + fixtures)
@@ -87,11 +86,9 @@ async def test_a_slow_teardown_does_not_move_the_watchdogs_own_timeline(
     done, failed, took = await _run(night)
 
     assert failed is not None, f"the night did not fail; run returned {done!r}"
-    timeline = re.search(
-        r"did not come back for ([0-9.]+) s of real time, against a bound "
-        r"of ([0-9.]+) s", failed)
-    assert timeline, f"the failure text carries no watchdog timeline:\n{failed}"
-    away_s = float(timeline.group(1))
+    # The pattern is `_group_harness.watchdog_timeline`'s, shared with the two
+    # other tests that read the same sentence (#683).
+    away_s, _reported_bound_s = watchdog_timeline(failed)
 
     # THE FIX (#620): the watchdog's own measurement must not be moved by
     # a slow teardown, because it fires and writes its report BEFORE

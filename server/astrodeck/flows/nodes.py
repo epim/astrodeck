@@ -194,9 +194,23 @@ NODE_DEFS: dict[str, NodeDef] = {
         # same sun-based start every other choice did, silently. Blank by
         # default, as an operator who has not picked the clock option yet
         # has typed no time.
+        #
+        # `autoResume` (#195, owner ruling 7 on #189) is whether a flow that
+        # ends short of its quota comes back on a SUBSEQUENT night by
+        # itself. Its missing-key default is "On", what every flow did until
+        # 0.3.40 and what the owner ruled it must stay: a flow saved before
+        # the key existed has not chosen anything, so it must read as
+        # resuming. Read it through `dusk_auto_resume`, never
+        # `params.get(...) == "On"`.
+        #
+        # `repeat` is kept in the table so a stored file still loads, and it
+        # still keys the `campaign` block (compile.py), but it no longer
+        # decides whether a session resumes: 0.3.40 read its default "Single
+        # night" as "do not resume", the opposite of ruling 7, which is what
+        # `autoResume` undoes. The editor no longer offers it (`nodeDefs.ts`).
         params={"start": "Astro dusk", "offset": -30, "startClock": "",
                 "stop": "Dawn", "stopClock": "", "minAlt": 30,
-                "repeat": "Single night"}),
+                "repeat": "Single night", "autoResume": "On"}),
     "target": NodeDef(
         type="target", label="TARGET", cat="SOURCE",
         # ONE BLOCK, ONE OR MANY PANELS (spec 1.2). `next` is the panel loop's
@@ -566,6 +580,30 @@ TARGET_ANGLES: tuple[str, ...] = ("Any angle", "Rotate to PA",
 #: first, then what every new block is created with. `plan.count_mode` is
 #: "attempts" for the first and "accepted" for the second.
 COUNT_MODES: tuple[str, ...] = ("Every sub taken", "Accepted subs")
+
+#: DUSK WINDOW's `autoResume` choices (#195), stored verbatim in saved flows,
+#: so never reworded. "On" is the missing-key default.
+AUTO_RESUME_CHOICES: tuple[str, ...] = ("On", "Off")
+
+
+def dusk_auto_resume(params: dict | None) -> bool:
+    """Whether a DUSK WINDOW with these params resumes on subsequent nights
+    (#195, owner ruling 7 on #189): False only for an explicit "Off".
+
+    ANYTHING ELSE READS ON, and that is the point of how it is written. A
+    missing key, a blank, a value this build does not offer and the `repeat`
+    the flow was saved with are all "the operator never asked for Off", and a
+    flow that says nothing resumes, as every flow did before 0.3.40 and as
+    the owner ruled it must. 0.3.40 broke exactly this: it read `repeat`'s
+    own default, "Single night", as a request to stop, so every flow nobody
+    had touched stopped resuming after its first night. Permissive on
+    purpose, like every other param read here (models.py): a typo cannot
+    silently disarm a flow, whereas it can leave one armed, which the
+    session list shows and CONTINUE and the arm switch fix by hand.
+
+    The one place this is decided, read by `compile_plan` and by Tonight's
+    copy, so the plan and the sentence about it cannot disagree."""
+    return str((params or {}).get("autoResume") or "On") != "Off"
 
 
 def _rotation_deg(value) -> float:

@@ -43,6 +43,28 @@ the one the owner insisted on, because solar astronomy is a legitimate use of
 this software). It never commands a park at a mount that already reports itself
 parked, and it is silent — completely silent — on every tick where the sky is
 somewhere else.
+
+WHEN IT CANNOT SEE THE MOUNT (issue #137). The Sun does not stop closing on a
+tube because the link to it dropped, so a mount that cannot be read is BLIND,
+not safe and not somebody else's problem. A telescope object whose link is down
+and a telescope that is connected but will not answer are one outage on one
+clock (:meth:`SunWatch._blind`), loud on a repetition count rather than latched
+silent. While blind the net:
+
+* makes ONE bounded reopen per tick when nobody else has the mount (a dropped
+  link is the one thing a reopen fixes, and nothing else was going to try);
+* projects the LAST position it read, both as a tube that has since stopped and
+  as one that is still tracking, and parks if either reaches the cone inside
+  the lead window, through the same park block as the live path and under the
+  same hands-off rules;
+* publishes that it is blind (``state()``, on ``/api/safety/state``) as times
+  and booleans only. The last position is NEVER logged or published: a mount's
+  pointing is a latitude oracle (#140), so only separations and ages leave this
+  module.
+
+A telescope object that does not exist at all (``tel is None``) is a rig that
+was never connected, or was deliberately disconnected. That stays a latched info
+hold: it must not page, and it ends a blind streak rather than extending one.
 """
 from __future__ import annotations
 
@@ -95,6 +117,12 @@ PROJECTION_STEP_S = 300.0
 #: wind-down so every park path in the codebase agrees what "wedged" means.
 PARK_TIMEOUT_S = 240.0
 MOUNT_QUERY_TIMEOUT_S = 30.0
+
+#: Bound on the one reopen attempted per tick when the telescope's link is down
+#: (#137). The same figure and the same reasoning as ``dawn_park``'s: a reopen
+#: that takes longer than this is not going to save this tick. Defined here
+#: rather than imported so this net does not depend on dawn_park's internals.
+RECONNECT_TIMEOUT_S = 30.0
 
 #: Escalation for the unreadable-mount hold (issue #137). The Sun does not
 #: stop closing on the tube because the position feed did, so that hold must
@@ -222,6 +250,22 @@ class SunWatch:
         self._blind_reason: str | None = None
         self._blind_count = 0
         self._blind_since = 0.0
+        # THE LAST POSITION THIS NET READ AND CAN TRUST: (RA hours, Dec deg,
+        # read_at). The fallback projects from it while the mount is dark. It is
+        # deliberately NOT cleared by _clear_blind: the whole point is that it
+        # outlives the outage that wants it. None when nothing has been read, or
+        # when the last read was taken while a goto/dome/polar lane had the
+        # mount in motion -- a tube in transit has no pointing to project from,
+        # and the reading the mount gave is not where it will be.
+        self._last_good: tuple[float, float, float] | None = None
+        # When ANY position was last read, trusted or not. Published as
+        # ``last_position_at``, which must stay honest ("a read did happen")
+        # even on the transit read that _last_good refuses.
+        self._last_read_at: float | None = None
+        # Consecutive blind park ATTEMPTS, so a park that fails every tick on a
+        # dead link is logged on a cadence rather than twice a minute (see
+        # _blind_projection). Not a latch: the park is retried every tick.
+        self._blind_park_tries = 0
 
     # ------------------------------------------------------------- lifecycle
 
@@ -240,6 +284,24 @@ class SunWatch:
             self._task.cancel()
             await reap(self._task)
             self._task = None
+
+    def state(self) -> dict:
+        """What ``/api/safety/state`` publishes about this net (#137).
+
+        TIMES AND BOOLEANS ONLY. ``blind`` says the net cannot currently see
+        the mount; ``blind_since`` is when that streak began (None unless blind);
+        ``last_position_at`` is when any position was last read (None if none
+        has been since boot); ``armed`` is whether the task is alive. The
+        position itself is never part of this, and neither is anything derived
+        from it: a mount's pointing is a latitude oracle (#140), and the route
+        this feeds is readable by a viewer."""
+        blind = self._blind_reason is not None
+        return {
+            "blind": blind,
+            "blind_since": self._blind_since if blind else None,
+            "last_position_at": self._last_read_at,
+            "armed": self._task is not None and not self._task.done(),
+        }
 
     async def _run(self) -> None:
         while True:
@@ -271,24 +333,53 @@ class SunWatch:
                        "avoidance is off), so somebody means to be pointing "
                        "at a daytime sky", None)
             self._acted = False
+            # Deliberately not watching is not BLIND: publishing ``blind: true``
+            # for a rig whose owner switched the net off would nag about a
+            # mount nobody asked this net to look at.
+            self._drop_blind()
             return
         cone = float(getattr(safety, "solar_exclusion_deg", 30.0) or 0.0)
         if cone <= 0:
             self._hold("the sun-exclusion cone is set to 0°, which disarms "
                        "every solar guard including this one", None)
             self._acted = False
+            self._drop_blind()
             return
 
         tel = self.hub.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        if tel is None:
             # Not a hazard this can fix, but worth saying once: if that mount is
             # powered and stopped, the Sun is still coming and nothing here can
-            # see it. Info level — a rig that is simply off all day must not
-            # page anybody.
+            # see it. Info level -- a rig that was never connected, or that an
+            # operator deliberately disconnected (hub teardown empties
+            # ``hub.devices``), must not page anybody. THIS is the only branch
+            # that stays quiet; a telescope object that exists but is dark is
+            # BLIND (below), because the hub only holds a device it once opened.
             self._hold("no telescope is connected, so nothing here can see "
                        "where the tube is pointing", None)
             self._acted = False
+            # A deliberate disconnect ends a blind streak; leaving it set would
+            # publish ``blind: true`` for a mount that is gone on purpose.
+            self._drop_blind()
             return
+
+        if not getattr(tel, "connected", False):
+            # PRESENT BUT DROPPED (#137). This used to share the branch above,
+            # so a mount whose link died went quiet after one info line -- the
+            # outage the issue measured at 8h24m. It is blind, and a dropped
+            # link is the one blindness a reopen can end, so try ONE bounded
+            # reopen per tick, but only when nobody else has the mount: a run
+            # or a goto/dome/polar lane owns the port, and a second task
+            # reopening it under them is the race the hands-off rule exists for.
+            if self._hands_off_reason(cfg) is None:
+                await self._reopen(tel)
+            if not getattr(tel, "connected", False):
+                self._blind("the mount's link is down, so this net cannot tell "
+                            "whether the Sun is closing on it")
+                await self._blind_projection(tel, cfg, cone)
+                return
+            # The reopen worked. Carry on and read it in THIS tick: the net was
+            # not blind for a single one, so it counts nothing and says nothing.
 
         pos = await self._position(tel)
         if pos is None:
@@ -299,13 +390,19 @@ class SunWatch:
             # long as the outage lasts, so the hold has to escalate on ITS OWN
             # clock rather than latch silent on the mount's (issue #137 -- an
             # 8h24m outage produced exactly one info line under the old _hold).
+            #
+            # NO reopen here: the link claims to be up, and every real
+            # ``Telescope.connect()`` returns at once when it already reports
+            # ``connected``, so the call would buy nothing.
             self._blind("the mount will not report its position, so this net "
                         "cannot tell whether the Sun is closing on it")
+            await self._blind_projection(tel, cfg, cone)
             return
         self._clear_blind()
         ra_hours, dec_deg = pos
-        tracking = await self._tracking(tel)
         now = self._clock()
+        self._remember(ra_hours, dec_deg, now)
+        tracking = await self._tracking(tel)
         sep, lead = closest_approach(ra_hours, dec_deg, tracking=tracking,
                                      now=now, lead_s=self._lead_s)
 
@@ -358,7 +455,22 @@ class SunWatch:
                        f"the park position is not safe", sep, level="error")
             return
 
-        bus.log("error", f"SUN WATCH: {approach}. Parking now.", "safety")
+        await self._park(tel, approach)
+
+    # --------------------------------------------------------------- the park
+
+    async def _park(self, tel, approach: str, *, loud: bool = True) -> bool:
+        """THE park block, shared by the live path and the blind fallback so
+        there is exactly one implementation of "get the tube out of the way".
+        True when the mount accepted the park.
+
+        ``loud`` False silences the "Parking now" and the FAILURE lines (never
+        the success line): the blind fallback retries every tick against a link
+        that may be dead for hours and passes it on a cadence, so a failing
+        park is a heartbeat there instead of the 417-line flood that flushed
+        the ring on 2026-08-09."""
+        if loud:
+            bus.log("error", f"SUN WATCH: {approach}. Parking now.", "safety")
         try:
             # The same discipline as dawn park and every other park path: bump
             # the motion fence so anything that slipped in behind the checks
@@ -376,16 +488,18 @@ class SunWatch:
                 await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
         except asyncio.TimeoutError:
             # No latch: a park that did not happen must be retried next tick.
-            bus.log("error", f"SUN WATCH PARK FAILED: the mount did not park "
-                             f"within {PARK_TIMEOUT_S:.0f}s and the Sun is "
-                             f"still coming. Retrying every "
-                             f"{self._interval_s:.0f}s", "safety")
-            return
+            if loud:
+                bus.log("error", f"SUN WATCH PARK FAILED: the mount did not "
+                                 f"park within {PARK_TIMEOUT_S:.0f}s and the "
+                                 f"Sun is still coming. Retrying every "
+                                 f"{self._interval_s:.0f}s", "safety")
+            return False
         except Exception as e:      # noqa: BLE001 — a refusal to park is news, not a crash
-            bus.log("error", f"SUN WATCH PARK FAILED: {e} — the Sun is still "
-                             f"coming. Retrying every {self._interval_s:.0f}s",
-                    "safety")
-            return
+            if loud:
+                bus.log("error", f"SUN WATCH PARK FAILED: {e} — the Sun is "
+                                 f"still coming. Retrying every "
+                                 f"{self._interval_s:.0f}s", "safety")
+            return False
         self._acted = True
         self._held = None
         # Logged AFTER the await, so the line means "parked", not "asked to" —
@@ -393,6 +507,124 @@ class SunWatch:
         bus.log("error", "SUN WATCH: mount parked, pointing at the celestial "
                          "pole. Check the optics and the dust cap before the "
                          "next session", "safety")
+        return True
+
+    async def _reopen(self, tel) -> None:
+        """One bounded, QUIET attempt to bring a dropped link back (#137).
+
+        Quiet because the driver rate-limits its own reopens and logs a failed
+        one itself (``zwo_am5._relink``); a second line here per minute for a
+        mount that is simply switched off would be noise, and a success needs no
+        line of its own because the tick carries on and reads the position."""
+        try:
+            await asyncio.wait_for(tel.connect(), RECONNECT_TIMEOUT_S)
+        except Exception:       # noqa: BLE001 — includes the timeout
+            pass
+
+    # -------------------------------------------------------- the blind fallback
+
+    def _remember(self, ra_hours: float, dec_deg: float, now: float) -> None:
+        """Record a successful read for the blind fallback to project from.
+
+        Stored only when no mount-motion lane is busy: a position read while a
+        goto, a dome move or a polar run has the tube in transit is not where
+        the tube will be, and projecting from it would park (or fail to park)
+        on a number that was already wrong. ``capture`` and ``looping`` are NOT
+        excluded -- a frame in flight is exactly when a tube is holding still,
+        and excluding them would disable the fallback for most of every night."""
+        self._last_read_at = now
+        if self._busy_lanes() & HANDS_OFF_LANES:
+            self._last_good = None
+        else:
+            self._last_good = (ra_hours, dec_deg, now)
+
+    async def _blind_projection(self, tel, cfg, cone: float) -> None:
+        """While blind, project the LAST position read and park if the Sun is
+        closing on it (#137).
+
+        BOTH ways a tube moves are projected from that position, because the
+        net cannot know which it was doing when the link went: STOPPED (RA
+        advances at the sidereal rate for the whole time since the read, then
+        over the lead window as usual) and TRACKING (it holds). The smaller
+        separation wins, which is the conservative one. A last position older
+        than a sidereal day is still valid: ``closest_approach`` wraps RA, and
+        age only ever advances the stopped case.
+
+        UNDER THE LIVE PATH'S RULES, not looser ones: ``_acted`` holds it,
+        a run or goto/dome/polar lane makes it a warning hold, and the park is
+        the same ``_park``. What differs is only what it cannot know: it cannot
+        verify a park moved the tube, so after an accepted blind park it stops
+        (the position it holds is stale after it) instead of calling the tube
+        unmoved, and recovery (``_clear_blind``) hands the next live read a
+        fresh decision.
+
+        Logs separations in degrees and ages in minutes. NEVER the position."""
+        good = self._last_good
+        if good is None:
+            # Nothing to project from, and the blind line already says why.
+            return
+        ra_hours, dec_deg, read_at = good
+        now = self._clock()
+        age_s = max(0.0, now - read_at)
+        ra_stopped, _ = project_pointing(ra_hours, dec_deg, tracking=False,
+                                         dt_s=age_s)
+        sep_stopped, lead_stopped = closest_approach(
+            ra_stopped, dec_deg, tracking=False, now=now, lead_s=self._lead_s)
+        sep_tracking, lead_tracking = closest_approach(
+            ra_hours, dec_deg, tracking=True, now=now, lead_s=self._lead_s)
+        if sep_stopped <= sep_tracking:
+            sep, lead, how = sep_stopped, lead_stopped, "stopped"
+        else:
+            sep, lead, how = sep_tracking, lead_tracking, "tracking"
+
+        if sep >= cone:
+            # Clear under both projections: say nothing (the blind escalation
+            # is already speaking) and forget any hold, so a later approach is
+            # announced rather than swallowed by a stale latch.
+            self._held = None
+            self._blind_park_tries = 0
+            return
+
+        when = "already" if lead <= 0 else f"in {lead / 60:.0f} min"
+        drift = (", the sky turning a stopped tube toward it at 15°/h"
+                 if how == "stopped" else "")
+        approach = (f"the mount cannot be read, and its last position, read "
+                    f"{age_s / 60:.0f} min ago, projected as {how}, has the "
+                    f"tube pointing where the Sun will be {when} "
+                    f"({sep:.0f}° at closest, exclusion {cone:.0f}°{drift})")
+
+        if self._acted:
+            # A park was accepted while blind and this net cannot see whether
+            # the tube moved: the position it holds is stale after it. Say so
+            # once; do not command it again, and do not claim it has not moved.
+            self._hold("a park was commanded and accepted while this net was "
+                       "blind, so it cannot check that the tube moved; the "
+                       "last-known position is stale after it", None)
+            return
+
+        held = self._hands_off_reason(cfg)
+        if held is not None:
+            # The reason carries no ages or separations on purpose: _hold
+            # dedupes on the text, and a number that changes every minute would
+            # log this warning once a minute for the whole run.
+            self._hold(f"{held}; the last-known pointing is projected to reach "
+                       f"the {cone:.0f}° exclusion cone", None, level="warning")
+            return
+
+        if await self._is_parked(tel) is True:
+            # The mount can answer that it is parked, so the pointing this net
+            # last read is stale: parking a parked mount is a no-op, and the
+            # live path's "park position is not safe" verdict would be an
+            # accusation made on a position the mount has since left.
+            self._hold("the mount reports itself parked, so the last-known "
+                       "position no longer says where the tube is (it "
+                       "projected into the exclusion cone)", None)
+            return
+
+        tries = self._blind_park_tries
+        self._blind_park_tries = tries + 1
+        if await self._park(tel, approach, loud=tries % BLIND_LOG_EVERY == 0):
+            self._blind_park_tries = 0
 
     # -------------------------------------------------------------- internals
 
@@ -503,11 +735,18 @@ class SunWatch:
         reason string and stays silent for as long as that reason holds,
         which is correct for "nobody needs telling twice that solar avoidance
         is off" but wrong here, because the hazard (the Sun) keeps closing on
-        the tube for the whole outage (#137)."""
-        if reason != self._blind_reason:
-            self._blind_reason = reason
+        the tube for the whole outage (#137).
+
+        ONE CLOCK PER OUTAGE. The streak is keyed on "is there an outage", never
+        on ``reason``: the reason text only says which kind of dark this tick
+        was ("the link is down" or "connected but will not answer"), and a link
+        that flaps between the two is still one outage. Keying on the text
+        restarted the count on every flip, so a flapping link never reached its
+        warning. ``_blind_reason`` holds the LATEST text, for the log line."""
+        if self._blind_reason is None:
             self._blind_count = 0
             self._blind_since = self._clock()
+        self._blind_reason = reason
         self._blind_count += 1
         n = self._blind_count
         if n == 1:
@@ -520,15 +759,45 @@ class SunWatch:
             return
         mins = (self._clock() - self._blind_since) / 60.0
         tail = "" if n == 1 else f" (blind for {mins:.0f} min, tick {n})"
-        bus.log(level, f"sun watch held off: {reason}{tail}", "safety")
+        note = self._fallback_note()
+        bus.log(level, f"sun watch held off: {reason}{note}{tail}", "safety")
+
+    def _fallback_note(self) -> str:
+        """Why the blind fallback has nothing to project from, or "" when it
+        has. Said on every blind line, not just the first: the line an operator
+        reads at warning or error is the one that must not leave them believing
+        a last-known position is covering for the dark mount."""
+        if self._last_read_at is None:
+            return ("; no position has been read since this server started, "
+                    "so there is no last-known pointing to project from")
+        if self._last_good is None:
+            return ("; the last position read was taken while the mount was "
+                    "being moved, so it cannot be projected from")
+        return ""
 
     def _clear_blind(self) -> None:
         """Forget a blindness streak once the position is readable again, so
         an unrelated outage later in the night starts its own count instead of
-        resuming mid-escalation."""
-        if self._blind_reason is not None and self._blind_count > 1:
-            mins = (self._clock() - self._blind_since) / 60.0
-            bus.log("info", f"sun watch: the mount is reporting its position "
-                            f"again after {mins:.0f} min blind", "safety")
+        resuming mid-escalation.
+
+        Coming out of a streak also forgets ``_acted``: a park commanded while
+        blind was accepted but never SEEN to work, so the next live read has to
+        decide afresh rather than read "a park was already commanded" as proof
+        the tube moved. Only on the way out of a streak, never on an ordinary
+        tick: ``_acted`` is also the live path's "the mount accepted a park and
+        did not move" memory (audit #15), and wiping it every tick would
+        disarm that."""
+        if self._blind_reason is not None:
+            if self._blind_count > 1:
+                mins = (self._clock() - self._blind_since) / 60.0
+                bus.log("info", f"sun watch: the mount is reporting its "
+                                f"position again after {mins:.0f} min blind",
+                        "safety")
+            self._acted = False
+        self._drop_blind()
+
+    def _drop_blind(self) -> None:
+        """End a blindness streak without claiming recovery (no log line)."""
         self._blind_reason = None
         self._blind_count = 0
+        self._blind_park_tries = 0

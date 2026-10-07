@@ -435,10 +435,20 @@ class TestWhatTheCampaignTabWillSay:
         assert c["has_pool"] is False and c["is_campaign"] is False
         assert "campaigns need one" in c["note"]
 
-    def test_a_pool_without_repeat_is_told_how_to_become_a_campaign(self):
+    def test_a_pool_without_repeat_is_told_that_automatic_resume_is_on(self):
+        """RE-PINNED FOR BACKLOG WP-85 (#195, wave 14 integration). This case
+        asserted that the note says ``set DUSK WINDOW -> Repeat``, which was
+        the 0.3.40 way to make a flow resume. The editor no longer offers
+        Repeat (DUSK WINDOW's Automatic resume replaced it, default On), so
+        the note says which of the two this flow is, and it must not mention
+        Repeat at all. The Off variant, which names CONTINUE, is graded in
+        test_w14_autoresume_tonight.py."""
         c = _campaign(_ex("example-pool"), None)
         assert c["has_pool"] is True and c["is_campaign"] is False
-        assert "set DUSK WINDOW → Repeat" in c["note"]
+        assert c["note"] == (
+            "Automatic resume is on (DUSK WINDOW): a subsequent night "
+            "resumes this flow where the session log left off."), c["note"]
+        assert "Repeat" not in c["note"], c["note"]
 
     def test_the_members_are_the_pools_own_names_and_quota(self):
         c = _campaign(_ex("example-campaign"), None)

@@ -90,14 +90,37 @@ def _empty_run_diagnostic(e, lines) -> str:
     ring is one process-wide deque shared by the whole suite, so a slice of
     it can carry another test's noise, or none of this run's own lines if an
     xdist worker's ring already holds 200 newer ones from something else.
+
+    WHAT AN EMPTY RUN CAN STILL HIDE (WP-92, #442). ``end_reason`` and the
+    log tail say what the engine decided; they do not say whether the dawn
+    cutoff or a closed window was what it decided on (``_dawn_cutoff`` and
+    ``_window_closed``, both reset at start and set by the scheduler), how many
+    frames the engine counted (``_frames_done``), or what the run's TASK ended
+    on when the exception was not one ``_run`` turned into a state. Each is one
+    named attribute, read with ``getattr`` so a stand-in engine without it
+    still formats. The state dict is read key by key and never printed whole:
+    some of its fields derive from the site (#140). The task's exception is
+    only asked of a task that has ended and was not cancelled (``exception()``
+    raises on the other two), and is the text ``_run``'s own handler already
+    logs on its way out, so it opens no new channel.
     """
     tail = "\n".join(f"  [{level}] {source}: {message}"
                      for level, message, source in lines[-30:]) or "  (none)"
+    hidden = (f" dawn_cutoff={getattr(e, '_dawn_cutoff', '(unset)')!r}"
+              f" window_closed={getattr(e, '_window_closed', '(unset)')!r}"
+              f" frames_done={getattr(e, '_frames_done', '(unset)')!r}")
+    task = getattr(e, "_task", None)
+    if task is not None and task.done() and not task.cancelled():
+        try:
+            hidden += f" task_exception={task.exception()!r}"
+        except Exception as exc:  # noqa: BLE001 - a diagnostic must not raise
+            hidden += f" task_exception=(unreadable: {type(exc).__name__})"
     return (
         "the run finished without entering the frame loop at all, so this "
         "test is asserting nothing about the call site -- "
         f"end_reason={e.state.get('end_reason')!r} "
-        f"state={e.state.get('state')!r} detail={e.state.get('detail')!r}\n"
+        f"state={e.state.get('state')!r} detail={e.state.get('detail')!r}"
+        f"{hidden}\n"
         f"this run's log lines:\n{tail}")
 
 
@@ -340,6 +363,75 @@ class TestTheEmptyRunDiagnosticNamesACause:
         e = types.SimpleNamespace(state={"state": "error"})
         msg = _empty_run_diagnostic(e, [])
         assert "(none)" in msg
+
+    async def test_the_message_carries_what_an_empty_run_can_still_hide(self):
+        """#442 (WP-92): ``end_reason`` and the log tail are not always enough.
+        A run whose window closed, whose dawn cutoff was set, or whose task
+        ended on an exception the engine's own handler did not turn into a
+        state, can read the same from outside. So the message also names the
+        engine's own ``_dawn_cutoff``, ``_window_closed`` and ``_frames_done``
+        and, once its task has ended without being cancelled, the exception it
+        ended on. Each is a named attribute read off the engine: the state
+        dict is never printed whole, because its site-derived fields are not
+        for a test log (#140).
+
+        MUTANT "new fields dropped from the message" (``_empty_run_diagnostic``
+        back to the end_reason / state / detail line, the ``hidden`` part left
+        out of the return) -- RED, observed:
+            AssertionError: the run finished without entering the frame loop
+            at all, so this test is asserting nothing about the call site --
+            end_reason='dawn_cutoff' state='complete' detail=None
+            assert 'dawn_cutoff=True' in "the run finished without entering
+            the frame loop at all, ... end_reason='dawn_cutoff'
+            state='complete' detail=None\nthis run's log lines:\n  (none)"
+        and the second case below red too, on 'task_exception=None'.
+        """
+        async def dies():
+            raise RuntimeError("x")
+
+        task = asyncio.ensure_future(dies())
+        await asyncio.gather(task, return_exceptions=True)
+        e = types.SimpleNamespace(
+            state={"state": "complete", "end_reason": "dawn_cutoff"},
+            _dawn_cutoff=True, _window_closed=False, _frames_done=0,
+            _task=task)
+        msg = _empty_run_diagnostic(e, [])
+        assert "dawn_cutoff=True" in msg, msg
+        assert "window_closed=False" in msg, msg
+        assert "frames_done=0" in msg, msg
+        assert "task_exception=RuntimeError('x')" in msg, msg
+
+    async def test_a_task_that_is_not_done_or_was_cancelled_names_no_exception(
+            self):
+        """The exception is read only off a task that has ended without being
+        cancelled: a running task has none to read (``exception()`` raises on
+        it), and a cancelled one raises ``CancelledError`` where an exception
+        was asked for. Either must still produce a message. A task that ended
+        cleanly says ``None``: the run's own handler took whatever it met."""
+        async def waits():
+            await asyncio.Event().wait()
+
+        async def ends():
+            return None
+
+        running = asyncio.ensure_future(waits())
+        cancelled = asyncio.ensure_future(waits())
+        clean = asyncio.ensure_future(ends())
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        await asyncio.gather(cancelled, clean, return_exceptions=True)
+        try:
+            def message(task) -> str:
+                return _empty_run_diagnostic(
+                    types.SimpleNamespace(state={"state": "complete"},
+                                          _task=task), [])
+
+            assert "task_exception" not in message(running)
+            assert "task_exception" not in message(cancelled)
+            assert "task_exception=None" in message(clean)
+        finally:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
 
 
 class TestTheCampaignFlowNowCarriesIt:

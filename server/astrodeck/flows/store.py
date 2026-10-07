@@ -44,6 +44,7 @@ from ..persist import ensure_dir, list_json, read_json, safe_id_path, write_json
 from .compile import NEXT_PORT, PASS_PORT, is_multi_panel
 from .examples import examples
 from .models import EXAMPLES_FOLDER, MY_FLOWS_FOLDER, FlowGraph, FlowRecord
+from .nodes import dusk_auto_resume
 from .save_rules import (ACCEPTED_SUBS, COUNTED_TYPES, counts_attempts,
                          prepare_save)
 
@@ -55,9 +56,19 @@ from .save_rules import (ACCEPTED_SUBS, COUNTED_TYPES, counts_attempts,
 #: later evidence that somebody saved it on purpose.
 #: 4 -- the mosaic block (#189, spec 3.6): meanings a v3 build would misread
 #: (``schema_for``). The v3 -> v4 read changes nothing in the graph.
+#: 5 -- DUSK WINDOW's ``autoResume`` (#195, owner ruling 7 on #189): the choice
+#: that replaced ``repeat`` as the thing that decides whether a flow resumes on
+#: a later night. 0.3.40 (schema 4) read ``repeat``'s own default, "Single
+#: night", as "do not resume", so a file it wrote cannot say whether that was
+#: a choice. The v4 -> v5 read maps every such DUSK to On and says so on every
+#: read until the operator saves (``_migrate``, ``AUTO_RESUME_NOTE``).
 #: See ``_migrate`` for why the file version is the only thing that can tell
 #: either pair of readings apart.
-FLOW_SCHEMA = 4
+FLOW_SCHEMA = 5
+
+#: What ``save()`` stamps a file whose graph uses a FLOW_SCHEMA 4 meaning and
+#: no FLOW_SCHEMA 5 one (``schema_for``).
+V4_SCHEMA = 4
 
 #: What ``save()`` stamps a file whose graph uses no FLOW_SCHEMA 4 meaning
 #: (``schema_for``). Not 4 regardless: a build from S0 to S2 refuses a v4 file
@@ -84,6 +95,16 @@ _V4_ANGLE = "Camera fixed at PA"
 ROTATION_234_NOTE = (
     'angle 23.4 was the old palette default and commanded a connected rotator '
     'to PA 23.4; it now reads "any angle". Set it again if you meant it.')
+
+#: The note for the v4 -> v5 read (#195, owner ruling 7 on #189, VERBATIM), said
+#: on every read of the file until the operator saves it, like the 23.4 note.
+#: The read maps a DUSK WINDOW whose ``repeat`` says "Single night" and which
+#: has no ``autoResume`` to On, and the flow shows that: nothing in the file
+#: can tell a choice of "Single night" from the field's default, and 0.3.40
+#: read both as "do not resume", which is not what the label ever said.
+AUTO_RESUME_NOTE = (
+    "'Single night' never stopped the next night's automatic resume; this "
+    "flow now shows that as ON. Turn it off if you meant one night only.")
 
 #: Ruling 2's line (#189 Revision 2, verbatim), said on every read while any
 #: TARGET or POOL counts every sub taken. The read never switches it: loading
@@ -203,8 +224,9 @@ def _v4_meanings(graph: FlowGraph) -> list[str]:
       ``counts`` and would count every sub again.
     * ``settings.whenWaiting`` "Wait for the mosaic" (``_V4_SETTINGS``).
 
-    DUSK's ``autoResume`` "Off" is spec 3.6's sixth meaning; it arrives with
-    the key (#195)."""
+    * DUSK's ``autoResume`` "Off" (#195): spec 3.6's sixth meaning. A v3 build
+      has no such key, so it would resume the flow on every later night.
+    """
     found: list[str] = []
     if any(is_multi_panel(n) for n in graph.nodes):
         found.append("multi-panel block")
@@ -221,19 +243,62 @@ def _v4_meanings(graph: FlowGraph) -> list[str]:
     settings = graph.settings or {}
     if any(settings.get(k) == v for k, v in _V4_SETTINGS.items()):
         found.append("wait for the mosaic")
+    if _auto_resume_off(graph):
+        found.append("auto-resume off")
     return found
 
 
+def _auto_resume_off(graph: FlowGraph) -> bool:
+    """A DUSK WINDOW that chose Off (``nodes.dusk_auto_resume``)."""
+    return any(n.type == "dusk" and not dusk_auto_resume(n.params)
+               for n in graph.nodes)
+
+
+def _owes_the_auto_resume_note(node_type, params) -> bool:
+    """A DUSK WINDOW whose STORED ``repeat`` is "Single night" and which
+    carries no ``autoResume``: the one shape 0.3.40 read as "do not resume"
+    and this build reads as On. It is what the v4 -> v5 read says a note about
+    (``AUTO_RESUME_NOTE``), and what ``schema_for`` stamps 5 for, which is how
+    a save retires the note.
+
+    ``repeat`` must be STORED as that word. A DUSK with no ``repeat`` key at
+    all is a file older than the field (hand-written, or from before the
+    palette wrote it); the operator never chose, or was shown, "Single night"
+    for it, and a note quoting it would be about a choice they did not make.
+    An ``autoResume`` of ANY value, a blank one included, means the key exists
+    and was written by a build that knew it, so nothing here is owed."""
+    if node_type != "dusk" or not isinstance(params, dict):
+        return False
+    if "autoResume" in params:
+        return False
+    return params.get("repeat") == "Single night"
+
+
 def schema_for(graph: FlowGraph) -> int:
-    """The version ``save()`` stamps a file holding ``graph``: FLOW_SCHEMA
-    when the graph uses any meaning a v3 build would misread
-    (``_v4_meanings``), otherwise ``V3_SCHEMA``.
+    """The version ``save()`` stamps a file holding ``graph``, in three tiers:
+
+    * FLOW_SCHEMA (5) when DUSK's ``autoResume`` is Off, or when the graph
+      holds a DUSK that owes the v4 -> v5 note (``_owes_the_auto_resume_note``).
+      The second is what makes "shown on every read until the operator saves"
+      true: a save writes the graph as the operator kept it, with no
+      ``autoResume`` in it, so only a file version can say the note has been
+      seen. It is also the right downgrade guard: 0.3.40 would read such a
+      DUSK as "do not resume", so it refuses the file as a future schema
+      instead. A DUSK that states both ``autoResume`` On and a ``repeat`` of
+      "Single night" (every wizard flow) is NOT stamped for that: it is a
+      downgrade-matrix row, not a version (spec 3.6).
+    * V4_SCHEMA (4) when the graph uses any other meaning a v3 build would
+      misread (``_v4_meanings``).
+    * V3_SCHEMA (3) otherwise.
 
     Every save switches ``counts`` to "Accepted subs" (ruling 2), so in
-    practice every flow with a TARGET or POOL saved on this build stamps 4
-    and a build from S0 to S2 refuses it loudly as a future schema. That is
-    the point: such a build would count every sub again."""
-    return FLOW_SCHEMA if _v4_meanings(graph) else V3_SCHEMA
+    practice every flow with a TARGET or POOL saved on this build stamps at
+    least 4, and a build from S0 to S2 refuses it loudly as a future schema.
+    That is the point: such a build would count every sub again."""
+    if _auto_resume_off(graph) or any(
+            _owes_the_auto_resume_note(n.type, n.params) for n in graph.nodes):
+        return FLOW_SCHEMA
+    return V4_SCHEMA if _v4_meanings(graph) else V3_SCHEMA
 
 
 def _migrate(raw: dict) -> dict:
@@ -260,8 +325,20 @@ def _migrate(raw: dict) -> dict:
 
     v3 -> v4: nothing in the graph. v4 adds meanings (``schema_for``), each
     behind a key or a value a v3 file cannot hold, so a v3 graph already
-    means under v4 what it meant. DUSK's ``repeat`` -> ``autoResume`` mapping
-    is #195's, and lands with that key.
+    means under v4 what it meant.
+
+    v4 -> v5 (#195): nothing in the graph either, and a note. DUSK WINDOW's
+    ``repeat`` stopped deciding whether a flow resumes on a later night and
+    ``autoResume`` took over, "On" for a flow that says nothing. 0.3.40
+    (schema 4) read ``repeat``'s default, "Single night", as "do not resume",
+    and nothing inside the file tells a choice of it from the default, so the
+    read cannot repair it and does not try: it maps the flow to On, which is
+    what the missing key means, and says so with ``AUTO_RESUME_NOTE`` for
+    every DUSK that owes it (``_owes_the_auto_resume_note``). A flow whose
+    operator meant one night turns Off, once, on purpose; one whose operator
+    did not is no longer silently stopped. Only files older than 5 say it: a
+    save stamps 5 for exactly that graph (``schema_for``), which is the
+    evidence the operator has seen the note and kept the flow.
 
     THE COUNTS NOTE IS NOT A VERSION STEP (ruling 2). While any TARGET or
     POOL counts every sub taken (``save_rules.counts_attempts``: no
@@ -314,7 +391,11 @@ def _migrate(raw: dict) -> dict:
                 rewrote = True
         if rewrote:
             notes.append({"key": "rotation", "note": ROTATION_234_NOTE})
-    # v3 -> v4 rewrites nothing (see above), so it has no step here.
+    # v3 -> v4 rewrites nothing (see above), so it has no step here. v4 -> v5
+    # rewrites nothing either: it only says what a missing `autoResume` means.
+    if version < 5 and any(_owes_the_auto_resume_note(n.get("type"), n.get("params"))
+                           for n in nodes):
+        notes.append({"key": "autoResume", "note": AUTO_RESUME_NOTE})
     if any(counts_attempts(n.get("type"), n.get("params")) for n in nodes):
         notes.append({"key": "counts", "note": COUNTS_NOTE})
     flow["migrated"] = notes
@@ -602,8 +683,8 @@ class FlowStore:
 
     def _write(self, record: FlowRecord) -> None:
         """``save()``'s serialiser, and ONLY save's: stamped with the version
-        its graph needs (``schema_for``: 4 when it uses a meaning a v3 build
-        would misread, otherwise 3), and WITHOUT ``migrated``. That note is a
+        its graph needs (``schema_for``: 5, 4 or 3), and WITHOUT ``migrated``.
+        That note is a
         message about one read; written into the file it would be a property
         of the flow, and it would stamp a current file with an old one's
         finding.

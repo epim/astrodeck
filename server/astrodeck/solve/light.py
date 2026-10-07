@@ -120,7 +120,12 @@ does it answer the #262 safety review's question, which it makes live on
 every night rather than on the night an operator shoots a master: whether
 thick overcast over a dark site, with no Moon, can sit within the band of a
 cold sensor's pedestal. The band has been held only against a lit overcast
-(``tests/fixtures/star_noise/blank_overcast.npz``).
+(``tests/fixtures/star_noise/blank_overcast.npz``). What the night log can
+say about it now: the "failed solve, light check" line ends its evidence with
+the frame's own readout (exposure, bin, gain, offset, sensor temperature,
+``_readout``), and ``tools/no_light_audit.py`` tabulates every such line of a
+night against its band, so the cold-sensor nights are found in the record
+instead of remembered.
 
 KEPT FOR THE NIGHT. A pedestal does not move between one failed solve and the
 next, and a self-shot on every failure would add an exposure and a download
@@ -967,6 +972,36 @@ async def _self_reference(frame: Any, hub: Any
     return replace(bias, detail=f"{bias.detail}, shot just now"), "", ""
 
 
+def _readout(frame: Any) -> str:
+    """The frame's own readout, as the clause that closes the evidence on the
+    "failed solve, light check" line: ``; frame 12 s bin 2 gain 200 offset 30,
+    sensor -5.0 C`` (#308). ``tools/no_light_audit.py`` reads it back, so a
+    past night's log says which failed solves were a cold sensor's.
+
+    NOT PART OF ``LightVerdict.evidence()``. That string is the line's other
+    half and it is also what a hold's reason is built from, where a number that
+    changes on every retry would restart the hold's clock (the module
+    docstring says why); this clause rides the log line only.
+
+    TOTAL. It runs on the way out of a failed solve, past the ``try`` that
+    guards the level check, so nothing it is handed may raise: a frame it
+    cannot describe gets no clause. The sensor part is left out, and the rest
+    kept, when the temperature is missing or not a number."""
+    try:
+        clause = (f"; frame {float(frame.exposure_s):g} s "
+                  f"bin {int(frame.binning)} gain {int(frame.gain)} "
+                  f"offset {int(frame.offset)}")
+        try:
+            temp = float(getattr(frame, "temperature_c", None))
+        except (TypeError, ValueError):
+            temp = math.nan
+        if math.isfinite(temp):
+            clause += f", sensor {temp:.1f} C"
+        return clause
+    except Exception:                          # noqa: BLE001 - never the solve
+        return ""
+
+
 async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
                              hub: Any,
                              narrowband_filter: str | None = None
@@ -979,8 +1014,10 @@ async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
 
     Judges ``frame`` against the reference in ``hub.master_library`` off the
     event loop (the medians of a frame and up to three masters), logs one info
-    line with the numbers, and returns the exception to raise:
-    ``NoLightError`` for a no-light verdict, ``FailedSolveError`` otherwise.
+    line with the numbers and the frame's own readout (``_readout``, #308; in
+    the line only, never in the failure's words), and returns the exception to
+    raise: ``NoLightError`` for a no-light verdict, ``FailedSolveError``
+    otherwise.
 
     ``narrowband_filter`` is the name of the filter the frame was exposed
     through when that filter is narrowband, else None (#531). The caller
@@ -1025,7 +1062,7 @@ async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
         verdict = replace(verdict, kind=NARROWBAND,
                           why=narrowband_words(str(narrowband_filter)))
     tail = f" (the camera said: {said})" if said else ""
-    bus.log("info", f"failed solve, light check: {verdict.evidence()}{tail}",
-            "solve")
+    bus.log("info", f"failed solve, light check: {verdict.evidence()}"
+                    f"{_readout(frame)}{tail}", "solve")
     return error_for(verdict, str(getattr(result, "message", "") or ""),
                      prefix)

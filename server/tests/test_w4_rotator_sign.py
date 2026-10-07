@@ -37,6 +37,7 @@ import pytest
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 from astrodeck.devices.base import DeviceError
+from astrodeck.hub import Hub
 from astrodeck.rotation import (
     map_sky_target,
     mechanical_to_sky,
@@ -150,10 +151,26 @@ async def test_the_refusal_names_r4_and_never_guesses(sim_hub):
     assert "145" in msg, msg
 
 
-async def test_goto_and_center_degrades_when_the_sign_is_unknown(sim_hub):
+async def test_goto_and_center_degrades_when_the_sign_is_unknown(
+        sim_hub, monkeypatch):
     """``goto_and_center`` already degrades any rotate failure to
     ``rotation_skipped`` (solve_and_sync parity) -- the sign refusal is just
-    another one of those, not a special case that needs its own plumbing."""
+    another one of those, not a special case that needs its own plumbing.
+
+    RE-PINNED FOR WP-88 (#145, wave 14 integration). Before the rotator
+    preflight, an unlearned sign reached ``rotate_to_pa`` and was refused
+    there, so this graded the degrade path by leaving the sign None. The
+    goto now calls ``Hub.ensure_rotator_ready`` first, which LEARNS the sign
+    on the sim and rotates (that is the #145 fix), so a None sign no longer
+    reaches the refusal. To keep grading the refusal's degrade path the
+    preflight is stubbed to an async no-op that learns nothing, the state of
+    a preflight that ran and could not measure (``sign`` None). The
+    assertion is the one this case always made.
+    """
+    async def _no_preflight(self, **kw):
+        return {"sign": None, "trusted": None, "ran": []}
+
+    monkeypatch.setattr(Hub, "ensure_rotator_ready", _no_preflight)
     sim_hub._rotator_sky_sign = None
     sim_hub.sim_rig.ra_hours, sim_hub.sim_rig.dec_deg = 5.0, 10.0
     result = await sim_hub.goto_and_center(5.0, 10.0, rotation_deg=90.0)

@@ -57,7 +57,7 @@ from .compile import (_finite, _grid_of, compile_plan, flow_order, grid_size,
                       is_multi_panel, loop_wires, needs_wire_scoping,
                       owner_of, parse_skip)
 from .models import FlowGraph, _not_a_count
-from .nodes import NODE_DEFS, parse_cycle_plan, target_angle
+from .nodes import NODE_DEFS, dusk_auto_resume, parse_cycle_plan, target_angle
 from .rig import RigFacts
 
 #: Fallback imaging twilight when neither the caller nor the config has one.
@@ -2057,7 +2057,13 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         t = (f"When astronomical night ends, the mount parks and the "
              f"{str(pc.params.get('closure')).lower()} closes")
         t += ", then the camera warms"
-        if str(dusk.params.get("repeat") or "Single night") != "Single night":
+        # A CAMPAIGN (`repeat`) THAT HAS NOT TURNED AUTOMATIC RESUME OFF
+        # (#195): an Off plan is disarmed where its night ends, so a later
+        # dusk resumes nothing, and this sentence would be a claim nothing
+        # keeps. `repeat` still keys the campaign wording until it is retired
+        # (a later change).
+        if (str(dusk.params.get("repeat") or "Single night") != "Single night"
+                and dusk_auto_resume(dusk.params)):
             t += ("; the flow re-arms at the next dusk and resumes mid-cycle "
                   "from the session log")
         seg.append(t + ".")
@@ -2164,6 +2170,24 @@ def banked_hours_by_target_from_reports(reports: Iterable[Any]
 _DAWN = ("Dawn parks the mount and warms the camera - the dome is not driven "
          "and the cooler does not stay cold for day darks. Each dusk resumes "
          "where the session log left off.")
+
+#: What a flow that turned DUSK WINDOW's Automatic resume Off says in place of
+#: the last sentence (#195, owner ruling 7 on #189): the engine disarms such a
+#: session where its night ends (`_finalize_report`), so "each dusk resumes"
+#: would be untrue of it. ONE phrase, said by `_dawn_note` and by the budget
+#: rows, so the CAMPAIGN tab and the STORY tab cannot disagree about the same
+#: flow.
+_NO_LATER_RESUME = ("a subsequent night does not resume by itself; CONTINUE it "
+                    "by hand")
+_DAWN_OFF = ("Dawn parks the mount and warms the camera - the dome is not "
+             "driven and the cooler does not stay cold for day darks. A "
+             "subsequent night does not resume by itself; CONTINUE it by hand.")
+
+
+def _dawn_note(resumes: bool) -> str:
+    """``_DAWN``, or ``_DAWN_OFF`` for a flow whose plan does not resume on
+    subsequent nights."""
+    return _DAWN if resumes else _DAWN_OFF
 
 
 #: The CAMPAIGN note's words for the forecast nobody makes, said once so the
@@ -2299,14 +2323,20 @@ def _campaign(graph: FlowGraph | None,
         dusk is not None
         and str(dusk.params.get("repeat") or "Single night") != "Single night")
     is_campaign = pool is not None and repeats
+    # WHETHER THE FLOW COMES BACK ON A SUBSEQUENT NIGHT is DUSK WINDOW's Automatic
+    # resume (#195), read as the compile reads it (`dusk_auto_resume`), so
+    # the note and the plan cannot disagree. A flow with no DUSK WINDOW
+    # carries no opinion and resumes, as it always has.
+    resumes = dusk is None or dusk_auto_resume(dusk.params)
+    dawn = _dawn_note(resumes)
 
     if pool is None and mosaics:
         rows = _panel_rows(mosaics, progress)
         clause = _panels_clause(rows)
         return {"is_campaign": repeats, "has_pool": False, "has_ledger": False,
                 "quota": 0, "members": [],
-                "note": (f"{clause} {_NOT_FORECAST} {_DAWN}" if rows is not None
-                         else f"{clause} {_DAWN}"),
+                "note": (f"{clause} {_NOT_FORECAST} {dawn}" if rows is not None
+                         else f"{clause} {dawn}"),
                 "panels": rows or [], "has_progress": rows is not None}
     if pool is None:
         return {"is_campaign": False, "has_pool": False, "has_ledger": False,
@@ -2355,23 +2385,34 @@ def _campaign(graph: FlowGraph | None,
         })
 
     if not is_campaign:
-        note = ("Single-night flow - set DUSK WINDOW → Repeat to make this a "
-                "campaign.")
+        # THIS NOTE USED TO SAY "set DUSK WINDOW → Repeat to make this a
+        # campaign" (#195). The editor no longer offers Repeat, and a flow
+        # nobody has touched IS resuming (Automatic resume defaults On), so it
+        # now says which of the two this flow is. It does not promise that
+        # turning the option on makes this a campaign: `is_campaign` is still
+        # keyed on `repeat` until it is retired (a later change), so that
+        # would be a claim nothing keeps.
+        if resumes:
+            note = ("Automatic resume is on (DUSK WINDOW): a subsequent night "
+                    "resumes this flow where the session log left off.")
+        else:
+            note = ("Automatic resume is off (DUSK WINDOW → Automatic "
+                    f"resume): {_NO_LATER_RESUME}, or turn the option on.")
     elif not has_ledger:
         note = ("The session log is unavailable, so captured totals cannot be shown. "
-                f"{_DAWN}")
+                f"{dawn}")
     elif not slots:
         note = ("This campaign's capture stage is not a FILTER CYCLE, so "
-                f"progress is not counted in cycles. {_DAWN}")
+                f"progress is not counted in cycles. {dawn}")
     elif refusals:
         # Nothing is counted, so no work left can be stated.
-        note = _DAWN
+        note = dawn
     else:
         left = sum(max(0, quota - (m["banked"] or 0)) for m in members)
         passes = left * per_pass * len(slots)
         note = (f"{left} cycles left across the pool ({passes} subs). Nights to "
                 f"finish are not forecast - clear-sky prediction that far out is "
-                f"not something this rig models. {_DAWN}")
+                f"not something this rig models. {dawn}")
     if refusals:
         note = f"{' '.join(refusals)} {note}"
 
@@ -2523,6 +2564,15 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     #    banked figure says whose hours it holds, "for these targets" (#536),
     #    because the route counts only this flow's targets' reports
     #    (`flow_target_names`) and the archive's total is a different number.
+    #
+    #    WHAT HAPPENS TO THE REMAINDER is the plan's `resume_across_nights`
+    #    (#195): only an explicit Off writes it False, and such a session is
+    #    disarmed where its night ends, so "the run resumes the remainder
+    #    next clear night" would be untrue of it. It reads the COMPILED plan,
+    #    like every other row of this tab.
+    resumes = plan.get("resume_across_nights") is not False
+    remainder = ("the run resumes the remainder next clear night" if resumes
+                 else _NO_LATER_RESUME)
     for b in out["budget"]:
         panels = hops = ""
         if "panels" in b:
@@ -2546,8 +2596,7 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
             rules.append(row(
                 None,
                 (f"{head}, {b['banked_h']:g} h captured in its filters "
-                 f"{_FOR_THESE} - {owes}; the run resumes the "
-                 f"remainder next clear night") if b["has_ledger"] else
+                 f"{_FOR_THESE} - {owes}; {remainder}") if b["has_ledger"] else
                 (f"{head} - {owes}. The session log was not read, so "
                  f"captured totals are unavailable"),
                 TONE_GOOD, "TIME"))
@@ -2557,8 +2606,7 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
                 None,
                 f"{b['filter']}: {b['banked_h']:g} h captured {_FOR_THESE} / "
                 f"{b['goal_h']:g} h goal{panels} - tonight adds "
-                f"≈{b['tonight_h']:g} h{hops}; the run resumes the "
-                f"remainder next clear night",
+                f"≈{b['tonight_h']:g} h{hops}; {remainder}",
                 TONE_GOOD, "TIME"))
         else:
             rules.append(row(

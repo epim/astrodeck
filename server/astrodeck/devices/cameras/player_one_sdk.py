@@ -3,14 +3,21 @@
 """ctypes bindings for the Player One Camera SDK (Poseidon-M Pro imaging camera).
 
 VERIFIED against the official Player One binding (python/pyPOACamera.py) and
-header (include/PlayerOneCamera.h) from Camera SDK V3.10.1 (Windows), which is
-bundled in ``vendor/playerone/`` under the SDK's MIT-style license (LICENSE
-there; verdict docs/hardware/player-one-sdk-licensing.md). Enum values, struct
+header (include/PlayerOneCamera.h) from Camera SDK V3.10.1 (Windows), whose
+copies sit in ``vendor/playerone/`` WITHOUT a stated right to redistribute
+them. The vendor licence (LICENSE there) grants use for developing products
+and has no distribution verb; whether we may pass the files on is an owner
+ruling that is still pending in #632, and until it lands the frozen, wheel
+and Docker builds carry the files under ``pending`` in
+packaging/distribution-policy.json (analysis:
+docs/hardware/player-one-sdk-licensing.md). Enum values, struct
 layouts, the sensor-mode API, and the POASetConfig/POAGetConfig calling
 convention (value passed per-call as c_int or c_double — NOT a union struct)
 all mirror the vendor binding.
 
-Loader search order: ``ASTRODECK_PLAYERONE_SDK_DIR`` env → vendored
+Loader search order: ``ASTRODECK_PLAYERONE_SDK_DIR`` env
+(``sdk_paths.PLAYERONE_SDK_ENV``, the one name the Credits screen probe reads
+too) → vendored
 ``astrodeck/vendor/playerone/`` → known installs. The module imports + declares
 WITHOUT loading a DLL (load happens in PlayerOneSdk.__init__), so it stays
 importable + unit-testable on a box with no SDK.
@@ -25,6 +32,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 import os
+
+from ..sdk_paths import PLAYERONE_SDK_ENV
 
 _VENDOR_DIR = Path(__file__).resolve().parent.parent.parent / "vendor" / "playerone"
 
@@ -212,7 +221,7 @@ def _find_dll(basename: str):
     alternatives, exports = _DLL_SPECS[basename]
     stem = basename.rsplit(".", 1)[0]
     for c in candidates("playerone", stem,
-                        env_var="ASTRODECK_PLAYERONE_SDK_DIR",
+                        env_var=PLAYERONE_SDK_ENV,
                         extra=alternatives):
         if c.is_file():
             dll = _loads_with_exports(c, exports)
@@ -224,7 +233,7 @@ def _find_dll(basename: str):
 def _find_dll_legacy(basename: str):
     alternatives, exports = _DLL_SPECS[basename]
     candidates: list[Path] = []
-    env = os.environ.get("ASTRODECK_PLAYERONE_SDK_DIR")
+    env = os.environ.get(PLAYERONE_SDK_ENV)
     if env:
         candidates.append(Path(env) / basename)
     candidates.append(_VENDOR_DIR / basename)
