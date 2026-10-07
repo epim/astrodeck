@@ -122,9 +122,71 @@ def test_the_route_answers_exactly_the_fixture(client):
     fx = _fixture()
     r = client.post("/api/framing/mosaic", json=fx["request"])
     assert r.status_code == 200, r.text
-    assert r.json() == fx["response"], (
-        "the fixture is not what POST /api/framing/mosaic answers; rewrite "
-        "it with this file's __main__ (see the docstring)")
+    got = r.json()
+    if got != fx["response"]:
+        drift = _differences(got, fx["response"])
+        assert not drift, (
+            "the fixture is not what POST /api/framing/mosaic answers; rewrite "
+            f"it with this file's __main__ (see the docstring): {drift[:6]}")
+
+
+#: The two keys that are a finite difference of the projection (#832). The
+#: panel centres agree between Windows and Linux to the last digit, but the
+#: meridian convergence is a difference of two nearby angles divided by a
+#: small step, which turns libm's last-bit differences into ~2e-10 deg
+#: (1.3136419413493814 on Windows, 1.3136419415610645 on the Linux runner).
+#: A real change to how convergence is computed moves it by far more than
+#: 1e-6 deg; the panels a label is drawn from stay byte for byte.
+_FINITE_DIFFERENCE_KEYS = frozenset({"convergence_deg", "pa_deg"})
+_FINITE_DIFFERENCE_TOL_DEG = 1e-6
+
+
+def _differences(got, want, path: str = "") -> list[str]:
+    """Every leaf where ``got`` and ``want`` disagree, exact except for the
+    finite-difference keys above."""
+    if isinstance(want, dict) and isinstance(got, dict):
+        if got.keys() != want.keys():
+            return [f"{path or '/'} keys {sorted(got)} != {sorted(want)}"]
+        out: list[str] = []
+        for k in want:
+            out += _differences(got[k], want[k], f"{path}/{k}")
+        return out
+    if isinstance(want, list) and isinstance(got, list):
+        if len(got) != len(want):
+            return [f"{path} length {len(got)} != {len(want)}"]
+        out = []
+        for i, (g, w) in enumerate(zip(got, want)):
+            out += _differences(g, w, f"{path}/{i}")
+        return out
+    key = path.rsplit("/", 1)[-1]
+    if (key in _FINITE_DIFFERENCE_KEYS and isinstance(got, float)
+            and isinstance(want, float)):
+        return ([] if abs(got - want) <= _FINITE_DIFFERENCE_TOL_DEG
+                else [f"{path} {got!r} != {want!r}"])
+    return [] if got == want else [f"{path} {got!r} != {want!r}"]
+
+
+def test_the_finite_difference_allowance_is_only_libm_sized():
+    """The allowance above forgives last-bit noise in two keys and nothing
+    else: a panel centre is still compared exactly, and a convergence that
+    moved by a real amount is still a difference.
+
+    Mutant "allowance for every key" (``key in _FINITE_DIFFERENCE_KEYS``
+    replaced by ``True``) failed:
+        AssertionError: a panel centre nudged in its last digits passed
+    """
+    want = {"panels": [{"ra_hours": 0.578742751340055,
+                        "convergence_deg": 1.3136419413493814}]}
+    noise = {"panels": [{"ra_hours": 0.578742751340055,
+                         "convergence_deg": 1.3136419415610645}]}
+    assert _differences(noise, want) == [], "libm noise was not forgiven"
+    nudged = {"panels": [{"ra_hours": 0.578742751340059,
+                          "convergence_deg": 1.3136419413493814}]}
+    assert _differences(nudged, want), (
+        "a panel centre nudged in its last digits passed")
+    moved = {"panels": [{"ra_hours": 0.578742751340055,
+                         "convergence_deg": 1.3146419413493814}]}
+    assert _differences(moved, want), "a convergence 1e-3 deg off passed"
 
 
 def test_the_request_is_the_reference_layout_and_asks_nothing_of_the_site():
