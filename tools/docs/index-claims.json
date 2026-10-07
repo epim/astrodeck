@@ -1,33 +1,17 @@
 {
   "claims": [
     {
-      "id": "guide-navigation",
-      "page": "docs/guide/README.md",
-      "claim": "Task index links to the preserved guides and new Flow, unattended, appliance, Windows and alternative-interface pages.",
-      "sources": [
-        {
-          "path": "tools/docs/stable-anchors.json",
-          "line": 1
-        },
-        {
-          "path": "tools/docs/check_docs.py",
-          "line": 20
-        }
-      ],
-      "verified_by": "source-trace"
-    },
-    {
       "id": "guide-backends",
       "page": "docs/guide/README.md",
-      "claim": "Standalone, NINA and ASIAIR planning are distinct supported paths bounded by backend capabilities.",
+      "claim": "AstroDeck can run standalone, accompany NINA, or provide planning beside ASIAIR; the available control paths depend on your backend.",
       "sources": [
         {
           "path": "server/astrodeck/devices/backends/nina_backend.py",
-          "line": 1
+          "line": 3
         },
         {
           "path": "server/astrodeck/devices/backends/asiair_backend.py",
-          "line": 191
+          "line": 3
         }
       ],
       "verified_by": "source-trace"
@@ -35,11 +19,11 @@
     {
       "id": "guide-native-runtime",
       "page": "docs/guide/README.md",
-      "claim": "Native autofocus/guiding require the optional native engine; the release packaging gap is tracked separately.",
+      "claim": "Native autofocus and guiding require the optional native engine; its current release packaging gap is tracked in [#630](https://github.com/epim/astrodeck/issues/630).",
       "sources": [
         {
           "path": "server/astrodeck/focus/native.py",
-          "line": 305
+          "line": 307
         },
         {
           "path": "server/astrodeck/providers.py",
@@ -55,7 +39,7 @@
     {
       "id": "guide-astap",
       "page": "docs/guide/README.md",
-      "claim": "Standalone ASTAP requires a separately available executable and star database.",
+      "claim": "Standalone plate solving also needs ASTAP and its star database installed separately.",
       "sources": [
         {
           "path": "server/astrodeck/solve/astap.py",

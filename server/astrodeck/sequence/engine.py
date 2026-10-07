@@ -2380,6 +2380,19 @@ class SequenceEngine:
                 self._finalize_report("aborted")
                 self._set_state(state="aborted", detail="sequence aborted",
                                 end_reason="aborted", schedule=None, session=None)
+                # #668 FOLLOW-UP (backlog wave 13 integration): this is the
+                # SEVENTH terminal path -- a run cancelled before its own
+                # task ever took a turn, so `_run`'s try body (and its own
+                # `_finalize_report`/wind-down arms) never ran at all, and
+                # nothing below this reaches `_wind_down`'s flush either.
+                # Nothing in THIS codebase records a safety/skip/sky-angle
+                # event before a run's own first turn today, but a future
+                # one easily could (a pre-start safety check, say), and
+                # `reporter.flush()` is a no-op write when there is nothing
+                # queued -- cheap insurance against the same race #668 named,
+                # here for the one path that finalizes with no run behind it.
+                if self.reporter is not None:
+                    await self.reporter.flush()
         finally:
             # Cleared only after the TERMINAL state is on the wire, so the window
             # the flag names is exactly the window the clients see "aborting" in.
@@ -3104,12 +3117,34 @@ class SequenceEngine:
                     else "sequence cancelled by a server shutdown", "sequence")
             await self._safe_stop()
             self._finalize_report(reason)
+            # #668 FOLLOW-UP (backlog wave 13 integration): THIS ARM NEVER
+            # CALLS `_wind_down`, so its own end-of-wind-down `await
+            # self.reporter.flush()` never runs for it -- `_finalize_report`'s
+            # own docstring names this arm as one of the two left unflushed
+            # when #668 was fixed. A `record_safety`/`mark_skipped`/
+            # `record_sky_angle` from moments before this cancel landed (an
+            # `_on_unsafe` call, a scheduler skip, a sky-angle note) schedules
+            # a fire-and-forget write (`SessionReporter._schedule_write`) that
+            # can still be in flight when `_finalize_report` above publishes
+            # "report" -- the same race #668 closed for the wind-down path,
+            # here for the one ending that skips wind-down entirely. Awaited
+            # before `raise`, same as `_safe_stop()` just above: re-raising a
+            # CancelledError after further awaits in its own handler is the
+            # same shape this method already relies on.
+            if self.reporter is not None:
+                await self.reporter.flush()
             raise
         except Exception as e:
             bus.log("error", f"sequence failed: {e}", "sequence")
             self._set_state(state="error", detail=str(e), schedule=None, session=None)
             await self._safe_stop()
             self._finalize_report("error")
+            # #668 FOLLOW-UP (backlog wave 13 integration): same reasoning as
+            # the `CancelledError` arm just above -- this is the OTHER
+            # terminal path `_finalize_report`'s docstring names as never
+            # reaching `_wind_down`'s own flush.
+            if self.reporter is not None:
+                await self.reporter.flush()
         finally:
             self._stop_watchdog()
 

@@ -189,20 +189,35 @@ export function runOne(file, timeoutMs = TIMEOUT_MS) {
  *  twice produced the #614 shape — a file printed its own clean tally and
  *  then the child was killed at TIMEOUT_MS anyway — on two DIFFERENT files
  *  (hubBoundary.test.tsx, appHeaderDom.test.tsx) neither of which schedules
- *  requestAnimationFrame anywhere in its own render path. Instrumented from a
- *  byte backup (process._getActiveHandles()/_getActiveRequests(), polled
- *  every 2s into a file, so a SIGTERM-killed child's last reading survives
- *  the kill the way a console.log through a pipe is not guaranteed to): BOTH
- *  hangs carried ZERO live handles or requests for the whole 60s window. A
- *  dangling jsdom rAF timer — or any other lingering async handle — would
- *  show up in that list and would not stop an unrelated interval on the same
- *  event loop from firing; zero dumps for 60s straight rules that out and
- *  points at this box's own CPU scheduling under a full concurrent run
- *  (three other coders' processes plus this run's own 8-way concurrency),
- *  not at anything the file's code is responsible for. 160 isolated runs of
- *  the originally-reported file (capturePreviewMobileOverflow.test.tsx, 40 at
- *  CONCURRENCY 8 and then 120 more) produced zero hangs on its own, which
- *  fits: the trigger is the shared box's load at the moment, not this file.
+ *  requestAnimationFrame anywhere in its own render path. jsdom's native rAF
+ *  is RULED OUT as the carrier: hubBoundary's own render tree calls
+ *  requestAnimationFrame nowhere at all (grepped and read directly).
+ *
+ *  Instrumented from a byte backup (process._getActiveHandles()/
+ *  _getActiveRequests(), polled every 2s by an UNREF'D setInterval armed
+ *  before the child's own `await import()`, writing to a file rather than a
+ *  console.log through a pipe that a SIGTERM might never flush): BOTH caught
+ *  hangs wrote ZERO heartbeat lines for the entire 60s window, start to
+ *  finish. An unref'd `setInterval` fires whenever the event loop turns AT
+ *  ALL — it needs no handle of its own to be tracked, only for libuv to reach
+ *  its timer phase — so CPU/scheduling contention (other processes on the
+ *  shared box taking turns with this one) cannot explain zero fires for a
+ *  full minute: contention slows how OFTEN the loop turns, it does not stop
+ *  it turning, and sixty seconds is enormously more than one turn needs. Zero
+ *  dumps for the whole window means the child's MAIN THREAD stopped running
+ *  entirely after the tally printed — a synchronous stall or a blocked
+ *  (non-async) write are the two shapes that would do that — not that it kept
+ *  running, slowly. An independent reviewer reached the same reading from the
+ *  same evidence. THE ROOT CAUSE IS UNKNOWN: this rules out one specific
+ *  mechanism (a dangling rAF/timer handle) and the CPU-contention
+ *  explanation an earlier pass of this comment drew from the same evidence,
+ *  but does not yet say what blocks the thread. See #664.
+ *
+ *  160 isolated runs of the originally-reported file
+ *  (capturePreviewMobileOverflow.test.tsx, 40 at CONCURRENCY 8 and then 120
+ *  more) produced zero hangs on its own — whatever this is, it needs the
+ *  full-suite run to show up, and has so far appeared on a different file
+ *  each time it has been caught.
  *
  *  shouldRetry names the ONE shape worth a second try: the file's own
  *  assertions already finished (it printed a clean tally or a throw-on-
@@ -221,16 +236,40 @@ export function shouldRetry(result) {
  *  its own animation loop incorrectly, say) is deterministic and will time
  *  out the same way again, so a second timeout is reported as the real
  *  failure it is rather than retried forever waiting for the box to go
- *  quiet. `timeoutMs` threads through to both attempts — see `runOne`. */
+ *  quiet. `timeoutMs` threads through to both attempts — see `runOne`.
+ *
+ *  The returned result carries `retried: true` whenever a second attempt
+ *  ran (whether or not it then passed), so `main`'s final summary can name
+ *  every file this happened to instead of relying on the per-attempt log
+ *  line below, which a concurrent run can bury between other files'
+ *  output. */
 export async function runFileWithRetry(file, timeoutMs = TIMEOUT_MS) {
   const first = await runOne(file, timeoutMs);
   if (!shouldRetry(first)) return first;
   const retry = await runOne(file, timeoutMs);
   if (retry.ok) {
-    console.log(`  (${relative(ROOT, file)} timed out once after its own tally, `
-      + "then passed on retry -- #664, not a hang)");
+    console.log(`  (${relative(ROOT, file)} froze after printing its own clean `
+      + "tally -- cause unknown, see #664 -- then passed on a retry)");
   }
-  return retry;
+  return { ...retry, retried: true };
+}
+
+/** The line the final summary block prints naming every file that froze
+ *  after a clean tally and then passed on its one retry (#664), or `null`
+ *  when none did. A pure function of `results` (each as `runFileWithRetry`
+ *  returns it) so the "appears in the final summary" behaviour this guards
+ *  can be tested directly, without spawning `main`'s own typecheck + process
+ *  exit. Named so CI logs show the FREQUENCY of this shape across a whole
+ *  run (today buried in a per-attempt console.log a concurrent run can print
+ *  between two other files' own output) rather than only the single most
+ *  recent occurrence. */
+export function retriedSummaryLine(results) {
+  const names = results
+    .filter((r) => r.retried && r.ok)
+    .map((r) => relative(ROOT, r.file));
+  if (names.length === 0) return null;
+  return `${names.length} file(s) froze after a clean tally and passed on a `
+    + `retry (#664): ${names.join(", ")}`;
 }
 
 /** Typecheck the whole project before running anything, and fail the run if
@@ -306,6 +345,8 @@ async function main() {
 
   console.log(`\n${"=".repeat(64)}`);
   console.log(`${files.length} files · ${passed} passed · ${failed} failed`);
+  const retriedLine = retriedSummaryLine(results);
+  if (retriedLine) console.log(retriedLine);
   if (broken.length) {
     for (const b of broken) {
       console.error(`\n--- ${b.name}: ${b.why}`);
