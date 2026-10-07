@@ -828,9 +828,24 @@ class SessionReporter:
         Loops rather than a single pass, in case a write scheduled while this
         was waiting (an event recorded concurrently from elsewhere) left a
         new task behind -- cheap when, as in every call this codebase makes,
-        nothing does."""
-        while self._pending:
-            await asyncio.gather(*list(self._pending), return_exceptions=True)
+        nothing does.
+
+        WAITS ONLY FOR WRITES STILL RUNNING. A finished write leaves
+        ``_pending`` through its done callback, and asyncio runs done callbacks
+        on a LATER loop turn (``call_soon``), so a task can be done and still
+        in the set. ``await asyncio.gather(<only done tasks>)`` completes
+        without ever yielding to the loop, so the earlier ``while
+        self._pending:`` form spun synchronously forever on such a task: the
+        discard callback that would have emptied the set never got its turn,
+        and the whole event loop froze inside this method. The wave 13
+        integration's extra flush in the engine's cancel arm hit it at every
+        test teardown that cancelled a run mid-write (24 hung xdist workers on
+        the merged tree)."""
+        while True:
+            running = [t for t in self._pending if not t.done()]
+            if not running:
+                return
+            await asyncio.gather(*running, return_exceptions=True)
 
     def _snapshot(self) -> tuple[int, SessionReport]:
         """Build the report and number it. Called on the loop thread only, so

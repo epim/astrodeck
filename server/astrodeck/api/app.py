@@ -9148,17 +9148,18 @@ def create_app(*, bind_host: str | None = None,
                                                   "flight",
                     "position": await foc.get_position()}
         task.cancel()
-        settled = True
-        try:
-            await asyncio.wait_for(asyncio.shield(task),
-                                   timeout=_LANE_UNWIND_TIMEOUT_S)
-        except Exception:
-            # Shielded, so the timeout abandons the WAIT and not the unwind:
-            # the sweep keeps putting the focuser back even though this
-            # response has stopped waiting for it. ``except Exception`` and not
-            # ``BaseException`` on purpose — a cancel of THIS request must
-            # still propagate.
-            settled = False
+        # ``asyncio.wait`` and not ``wait_for(shield(task))``: since WP-59
+        # (#252) a ``_spawn`` lane honestly ends ``cancelled()`` instead of
+        # swallowing its own cancel, and awaiting it re-raised THAT
+        # CancelledError here, past the old ``except Exception``, so the
+        # route ended with no response at all. ``wait`` never raises the
+        # task's outcome, never cancels the task when the bound passes (the
+        # timeout abandons the WAIT and not the unwind: the sweep keeps
+        # putting the focuser back after this answer), and a cancel of THIS
+        # request still propagates out of it.
+        done, _pending = await asyncio.wait({task},
+                                            timeout=_LANE_UNWIND_TIMEOUT_S)
+        settled = task in done
         await foc.halt()
         return {"cancelled": True, "settled": settled,
                 "position": await foc.get_position()}
