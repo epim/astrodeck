@@ -27,6 +27,12 @@
 //      of wizard.py and compared.
 //   6. THE ROUTE PARAMS round-trip the prefill, and a garbled link reads as
 //      "did not arrive".
+//   7. NIGHT AND RESUME (backlog WP-100, #196): the six answers open on the
+//      DUSK WINDOW node's defaults, `wizardBody` leaves a key out when it
+//      equals that default (so the recorded request stays byte for byte),
+//      a Clock time with no HH:MM and an altitude outside 0 to 90 stop NIGHT in
+//      words, the constants mirrored from wizard.py equal wizard.py's, and the
+//      server's brief is read as its sentence and nothing else.
 //
 // Every mutant below was run in a private scratch copy of ui/
 // (scratchpad/S6-WIZ-UI-mut), never in the shared tree (#254), and the
@@ -43,7 +49,7 @@ import { readFileSync } from "node:fs";
 
 const M = await import("../wizardModel");
 const { FALLBACK_WHEEL, toggleSlot } = await import("../../cyclePlanRows");
-const { TARGET_ANGLES } = await import("../../nodeDefs");
+const { NODE_DEFS, TARGET_ANGLES } = await import("../../nodeDefs");
 type WizardPrefill = import("../wizardModel").WizardPrefill;
 type WizardAnswers = import("../wizardModel").WizardAnswers;
 
@@ -490,6 +496,262 @@ test("a garbled link reads as did not arrive, never as a grid nobody drew", () =
   });
   eq([got.rows, got.cols, got.paDeg, got.angleMode, got.fov, got.overlapPct], [1, 1, null, null, null, null],
     "a garbled param was read as a value");
+});
+
+// ================================================ 7. NIGHT and RESUME (WP-100)
+//
+// Backlog WP-100 (#196, wave 15) built the two steps the S6 sheet left "not
+// built" (#191, #195): NIGHT (when the night starts and stops, the lowest
+// altitude a target is shot at) and RESUME (the owner's automatic resume). The
+// mutants named below were applied from a byte backup inside the worktree, the
+// file restored byte-identically (sha256 compared) and the mutant text grepped
+// gone; the failure each produced is quoted.
+
+const NIGHT_KEYS = ["stop", "stop_clock", "start", "start_clock", "min_alt", "auto_resume"];
+
+test("the steps are the S6 five with NIGHT and RESUME before the review", () => {
+  eq([...M.STEPS], ["target", "framing", "filters", "guiding", "night", "resume", "review"], "STEPS:");
+  eq([M.STEP_TITLE.night, M.STEP_TITLE.resume], ["NIGHT", "RESUME"], "the new steps' titles:");
+});
+
+test("the sheet opens on the DUSK WINDOW node's own defaults", () => {
+  const a = M.initialAnswers(fxPrefill());
+  eq([a.stop, a.stopClock, a.start, a.startClock, a.minAlt, a.autoResume],
+    ["Dawn", "", "Astro dusk", "", "30", true], "the NIGHT and RESUME answers did not open on the node's defaults");
+});
+
+// MUTANT "always send auto_resume" (wizardBody: the `if (a.autoResume !==
+// autoResumeOn(DUSK_DEFAULTS.autoResume))` guard made `if (true)`, so the
+// answer On is sent as "On").
+// Observed ("wizardModel.test: 36/40 passed"):
+//   x the body for the recorded prefill and answers is the recorded request, byte for byte: wizardBody is not the recorded request:
+//     expected {"angle_mode":"Rotate to PA","cols":3,"cycle_plan":"L 60, R 60, G 60, B 60","cycles":10,...,"target":"M31"}
+//     got      {"angle_mode":"Rotate to PA","auto_resume":"On","cols":3,"cycle_plan":"L 60, R 60, G 60, B 60","cycles":10,...,"target":"M31"}
+//   x a door's overlap reaches the body as overlap_pct, and nothing else moves: the overlap control moved another key:
+//   x body leaves default answers out: a sheet nobody changed NIGHT or RESUME in posts none of the six keys: a default answer was sent as auto_resume: "On"
+//   x each changed answer sends its own key, and no other key moves: a Clock time stop is sent with its clock, trimmed
+//     expected {"stop":"Clock time","stop_clock":"22:30"}
+//     got      {"stop":"Clock time","stop_clock":"22:30","auto_resume":"On"}
+// (The DOM half, sendToWizardSheet.test.tsx, is red under the same mutant on
+// the request the sheet posts, "31/34 passed": the recorded walk, "a sheet
+// nobody changed NIGHT or RESUME in posts the recorded request", and "every
+// NIGHT answer reaches the body".)
+//
+// MUTANT "the default is sent too" (wizardBody: the stop's guard `if (a.stop
+// !== DUSK_DEFAULTS.stop) {` made `if (true) {`).
+// Observed ("wizardModel.test: 36/40 passed", "sendToWizardSheet.test: 31/34
+// passed"): the same cases, with "stop":"Dawn" in the body, for example
+//   x body leaves default answers out: a sheet nobody changed NIGHT or RESUME in posts none of the six keys: a default answer was sent as stop: "Dawn"
+
+test("body leaves default answers out: a sheet nobody changed NIGHT or RESUME in posts none of the six keys", () => {
+  const p = fxPrefill();
+  const body: any = M.wizardBody(p, fxAnswers(p));
+  for (const k of NIGHT_KEYS) assert(!(k in body), `a default answer was sent as ${k}: ${JSON.stringify(body[k])}`);
+  eq(JSON.stringify(body), JSON.stringify(FX.request), "the default NIGHT and RESUME answers moved the recorded request:");
+  // An answer typed back to the default is still the default: a minimum
+  // altitude of "30.0" is the node's 30, and Dawn after a clock is Dawn.
+  const same: any = M.wizardBody(p, fxAnswers(p, { minAlt: "30.0", stop: "Dawn", stopClock: "03:30", start: "Astro dusk", startClock: "21:00" }));
+  eq(JSON.stringify(same), JSON.stringify(FX.request), "an answer equal to the default was sent:");
+});
+
+test("each changed answer sends its own key, and no other key moves", () => {
+  const p = fxPrefill();
+  const sent = (over: Partial<WizardAnswers>) => {
+    const body: any = M.wizardBody(p, fxAnswers(p, over));
+    const extra: Record<string, unknown> = {};
+    for (const k of NIGHT_KEYS) if (k in body) extra[k] = body[k];
+    const rest = { ...body };
+    for (const k of NIGHT_KEYS) delete rest[k];
+    eq(JSON.stringify(rest), JSON.stringify(FX.request), `${JSON.stringify(over)} moved a key that is not NIGHT's or RESUME's:`);
+    return extra;
+  };
+  eq(sent({ stop: "Clock time", stopClock: " 22:30 " }), { stop: "Clock time", stop_clock: "22:30" },
+    "a Clock time stop is sent with its clock, trimmed");
+  eq(sent({ start: "Clock time", startClock: "21:15" }), { start: "Clock time", start_clock: "21:15" },
+    "a Clock time start is sent with its clock");
+  eq(sent({ start: "Civil dusk" }), { start: "Civil dusk" }, "a sun-based start is sent alone");
+  eq(sent({ minAlt: "45" }), { min_alt: 45 }, "an altitude is sent as a number");
+  eq(sent({ minAlt: "45.5" }), { min_alt: 45.5 }, "a fractional altitude is sent as a number");
+  eq(sent({ minAlt: "0" }), { min_alt: 0 }, "a floor of 0 is an answer, not a blank");
+  eq(sent({ autoResume: false }), { auto_resume: "Off" }, "Off is sent as the server's own word");
+  eq(sent({
+    stop: "Clock time", stopClock: "03:30", start: "Clock time", startClock: "21:15", minAlt: "42.5", autoResume: false,
+  }), { stop: "Clock time", stop_clock: "03:30", start: "Clock time", start_clock: "21:15", min_alt: 42.5, auto_resume: "Off" },
+  "all six");
+  // The keys are in the server model's order, after `guiding`.
+  const all: any = M.wizardBody(p, fxAnswers(p, {
+    stop: "Clock time", stopClock: "03:30", start: "Clock time", startClock: "21:15", minAlt: "42.5", autoResume: false,
+  }));
+  eq(Object.keys(all).slice(-7), ["guiding", ...NIGHT_KEYS], "the keys are not in FlowWizardBody's order");
+});
+
+test("a clock goes with its Clock time and with nothing else", () => {
+  const p = fxPrefill();
+  // A time typed and then abandoned for Dawn is not sent: the server refuses a
+  // clock beside any other choice.
+  const dawn: any = M.wizardBody(p, fxAnswers(p, { stop: "Dawn", stopClock: "03:30", start: "Nautical dusk", startClock: "21:00" }));
+  assert(!("stop_clock" in dawn) && !("start_clock" in dawn), `an abandoned clock was sent: ${JSON.stringify(dawn)}`);
+  eq(dawn.start, "Nautical dusk", "the start was not sent");
+  // A Clock time whose clock is not a time sends the choice and no clock; the
+  // NIGHT step's lock keeps the body from ever being posted (below).
+  const bad: any = M.wizardBody(p, fxAnswers(p, { stop: "Clock time", stopClock: "25:00" }));
+  eq([bad.stop, "stop_clock" in bad], ["Clock time", false], "an invalid clock was sent");
+  // An altitude that is not a number is not sent.
+  const nan: any = M.wizardBody(p, fxAnswers(p, { minAlt: "abc" }));
+  assert(!("min_alt" in nan), "an altitude that is not a number was sent");
+});
+
+// MUTANT "night step not required" (stepReason's NIGHT case returns null for a
+// Clock time with no HH:MM: the two `clockOf(...) === null` lines deleted).
+// Observed ("wizardModel.test: 38/40 passed"):
+//   x NIGHT refuses a Clock time with no HH:MM, in words, start before stop: a Clock time start with no time was not refused
+//     expected "Type the time the night starts, as HH:MM on the 24-hour clock (21:30): a Clock time start has no other way to say when."
+//     got      null
+//   x RESUME has no gap, and firstGap names NIGHT before the review: firstGap did not name NIGHT
+//     expected {"step":"night","reason":"Type the time the night stops, as HH:MM on the 24-hour clock (03:30): a Clock time stop has no other way to say when."}
+//     got      null
+// (The DOM half, sendToWizardSheet.test.tsx, is red under the same mutant,
+// "33/34 passed": NIGHT opens on DUSK WINDOW's defaults ... and locks NEXT
+// with the reason: NEXT is open on a Clock time start with no time.)
+//
+// MUTANT "an altitude of 0 is not sent" (wizardBody: `if (alt !== null && alt
+// !== ...)` made `if (alt && alt !== ...)`, so a floor of 0 reads as blank).
+// Observed ("wizardModel.test: 39/40 passed"):
+//   x each changed answer sends its own key, and no other key moves: a floor of 0 is an answer, not a blank
+//
+// MUTANT "an abandoned start clock is sent" (wizardBody: `a.start ===
+// CLOCK_TIME && clock !== null` made `clock !== null`, so a time typed and
+// then left for Nautical dusk travels beside it).
+// Observed ("wizardModel.test: 39/40 passed"):
+//   x a clock goes with its Clock time and with nothing else: an abandoned clock was sent: {"kind":"Mosaic",...
+// (The stop's own copy of that guard is redundant: DUSK_STOPS has two
+// choices, so inside the `stop !== default` branch the stop is always
+// "Clock time". It is kept for the day a third is offered, and has no mutant.)
+
+test("NIGHT refuses a Clock time with no HH:MM, in words, start before stop", () => {
+  const p = fxPrefill();
+  const at = (over: Partial<WizardAnswers>) => M.stepReason("night", p, fxAnswers(p, over), FIELD);
+  eq(at({}), null, "the defaults were refused");
+  eq(at({ start: "Clock time" }), M.NEED_START_CLOCK, "a Clock time start with no time was not refused");
+  eq(at({ stop: "Clock time" }), M.NEED_STOP_CLOCK, "a Clock time stop with no time was not refused");
+  eq(at({ start: "Clock time", stop: "Clock time", startClock: "21:00" }), M.NEED_STOP_CLOCK,
+    "the stop's clock was not asked once the start's was given");
+  eq(at({ start: "Clock time", stop: "Clock time" }), M.NEED_START_CLOCK, "the start is asked first");
+  for (const bad of ["25:00", "24:00", "22:60", "7:30", "22:30:00", "2230", "22.30", "noon", "", " ",
+    "\u0662\u0662:\u0663\u0660"]) {
+    eq(at({ stop: "Clock time", stopClock: bad }), M.NEED_STOP_CLOCK, `${JSON.stringify(bad)} was taken as a time`);
+  }
+  for (const good of ["00:00", "03:30", "21:15", "23:59", " 22:30 "]) {
+    eq(at({ stop: "Clock time", stopClock: good }), null, `${JSON.stringify(good)} was refused`);
+  }
+  // A clock beside a choice that does not read it is not asked.
+  eq(at({ start: "Astro dusk", startClock: "garbage", stop: "Dawn", stopClock: "garbage" }), null,
+    "a clock under a choice that does not read it held the step");
+  // The wording names the form and gives an example, as NEED_COORDS does.
+  assert(/HH:MM/.test(M.NEED_START_CLOCK) && /21:30/.test(M.NEED_START_CLOCK), "the start clock reason has no form or example");
+  assert(/HH:MM/.test(M.NEED_STOP_CLOCK) && /03:30/.test(M.NEED_STOP_CLOCK), "the stop clock reason has no form or example");
+});
+
+test("NIGHT refuses a minimum altitude that is not a number from 0 to 90", () => {
+  const p = fxPrefill();
+  const at = (minAlt: string) => M.stepReason("night", p, fxAnswers(p, { minAlt }), FIELD);
+  for (const bad of ["", "  ", "abc", "-1", "-0.5", "90.5", "91", "NaN", "Infinity", "-Infinity", "1e1", "0x1A", "30 deg", "3,5"]) {
+    eq(at(bad), M.NEED_MIN_ALT, `${JSON.stringify(bad)} was taken as an altitude`);
+  }
+  for (const good of ["0", "90", "45", "45.5", ".5", "30.", "+30", " 30 ", "89.99"]) {
+    eq(at(good), null, `${JSON.stringify(good)} was refused`);
+  }
+  assert(/0 to 90/.test(M.NEED_MIN_ALT), "the altitude reason does not say the range");
+});
+
+test("RESUME has no gap, and firstGap names NIGHT before the review", () => {
+  const p = fxPrefill();
+  eq(M.stepReason("resume", p, fxAnswers(p, { autoResume: false }), FIELD), null, "RESUME refused an answer");
+  eq(M.stepReason("resume", p, fxAnswers(p), FIELD), null, "RESUME refused the default");
+  const q = fxAnswers(p, { stop: "Clock time" });
+  eq(M.firstGap(p, q, FIELD), { step: "night", reason: M.NEED_STOP_CLOCK }, "firstGap did not name NIGHT");
+});
+
+test("the words the review prints restate the answers and compute nothing", () => {
+  const p = fxPrefill();
+  eq(M.nightWords(fxAnswers(p)), "from astro dusk to dawn, min altitude 30 deg", "the default night");
+  eq(M.nightWords(fxAnswers(p, { start: "Clock time", startClock: "21:15", stop: "Clock time", stopClock: "03:30", minAlt: "42.5" })),
+    "from 21:15 (clock time) to 03:30 (clock time), min altitude 42.5 deg", "a night between two clocks");
+  eq(M.nightWords(fxAnswers(p, { stop: "Clock time", stopClock: "25:00" })),
+    "from astro dusk to 25:00 (clock time), min altitude 30 deg", "an invalid clock shows as typed, never as a time");
+  assert(/subsequent nights/.test(M.resumeWords(fxAnswers(p))), "On was not worded as resuming");
+  assert(/off/.test(M.resumeWords(fxAnswers(p, { autoResume: false }))) && /CONTINUE/.test(M.resumeWords(fxAnswers(p, { autoResume: false }))),
+    "Off was not worded as one night");
+});
+
+// ------------------------------------------------- the constants, and the node
+//
+// MUTANT "a mirrored NIGHT constant drifts" (wizardModel: DUSK_STOPS gained
+// "None").
+// Observed ("wizardModel.test: 38/40 passed"):
+//   x every NIGHT and RESUME constant mirrored from wizard.py equals wizard.py's: DUSK_STOPS:
+//     expected ["Dawn","Clock time"]
+//     got      ["Dawn","Clock time","None"]
+//   x the wizard's choices are the editor's DUSK WINDOW options, less the stop the server refuses: the stop choices are not the editor's less None:
+//     expected ["Dawn","Clock time"]
+//     got      ["Dawn","Clock time","None"]
+
+/** A Python tuple of string literals, as wizard.py writes them (one line, or a
+ *  parenthesised run that wraps). */
+function pyTuple(name: string): string[] {
+  const m = new RegExp(`^${name}: tuple\\[str, \\.\\.\\.\\] = \\(([^)]*)\\)$`, "m").exec(WIZARD_PY);
+  assert(m, `wizard.py has no string tuple ${name}`);
+  return Array.from(m![1].matchAll(/"([^"]*)"/g)).map((x) => x[1]);
+}
+
+test("every NIGHT and RESUME constant mirrored from wizard.py equals wizard.py's", () => {
+  eq([...M.DUSK_STARTS], pyTuple("DUSK_STARTS"), "DUSK_STARTS:");
+  eq([...M.DUSK_STOPS], pyTuple("DUSK_STOPS"), "DUSK_STOPS:");
+  eq([...M.AUTO_RESUME_CHOICES], pyTuple("AUTO_RESUME_CHOICES"), "AUTO_RESUME_CHOICES:");
+  eq(M.CLOCK_TIME, pyString("CLOCK_TIME"), "CLOCK_TIME:");
+  eq([M.MIN_ALT_MIN_DEG, M.MIN_ALT_MAX_DEG], [pyNumber("MIN_ALT_MIN_DEG"), pyNumber("MIN_ALT_MAX_DEG")], "the altitude range:");
+});
+
+test("the wizard's choices are the editor's DUSK WINDOW options, less the stop the server refuses", () => {
+  const dusk = NODE_DEFS.dusk;
+  const options = (key: string) => [...(dusk.fields.find((f) => f.key === key)?.options ?? [])];
+  eq([...M.DUSK_STARTS], options("start"), "the start choices are not the editor's:");
+  eq([...M.DUSK_STOPS], options("stop").filter((s) => s !== "None"), "the stop choices are not the editor's less None:");
+  assert(options("stop").includes("None"), "premise: the editor no longer offers a stop of None, so the wizard's note about it is stale");
+  eq([...M.AUTO_RESUME_CHOICES], options("autoResume"), "the resume choices are not the editor's:");
+  // The defaults a sheet opens on are choices the wizard offers.
+  assert((M.DUSK_STARTS as readonly string[]).includes(String(dusk.params.start)), "DUSK's default start is not a wizard choice");
+  assert((M.DUSK_STOPS as readonly string[]).includes(String(dusk.params.stop)), "DUSK's default stop is not a wizard choice");
+  assert((M.AUTO_RESUME_CHOICES as readonly string[]).includes(String(dusk.params.autoResume)), "DUSK's default autoResume is not a choice");
+  const alt = Number(dusk.params.minAlt);
+  assert(Number.isFinite(alt) && alt >= M.MIN_ALT_MIN_DEG && alt <= M.MIN_ALT_MAX_DEG, "DUSK's default minAlt is outside the wizard's range");
+});
+
+// ----------------------------------------------------------- the server's brief
+//
+// MUTANT "the brief prints the whole answer" (briefOf: `b.trim()` made
+// `JSON.stringify(answer)`, so everything the Tonight answer derives from the
+// site would be on the review).
+// Observed ("wizardModel.test: 39/40 passed"):
+//   x the brief is the Tonight answer's own sentence, and only that key is read: the brief was not read, or was not trimmed
+//     expected "This flow arms at astro dusk."
+//     got      "{\"brief\":\"  This flow arms at astro dusk.  \",\"windows\":[{\"at\":\"x\"}]}"
+// (sendToWizardSheet.test.tsx is red under it too, "31/34 passed", on the
+// review's first line and on the marker the rest of the answer carries.)
+
+test("the brief is the Tonight answer's own sentence, and only that key is read", () => {
+  eq(M.briefOf({ brief: "  This flow arms at astro dusk.  ", windows: [{ at: "x" }] }), "This flow arms at astro dusk.",
+    "the brief was not read, or was not trimmed");
+  for (const none of [null, undefined, "text", 3, [], {}, { brief: "" }, { brief: "   " }, { brief: 7 }, { brief: null }]) {
+    eq(M.briefOf(none), null, `${JSON.stringify(none)} read as a brief`);
+  }
+});
+
+test("the review's first line is the brief, or why there is none", () => {
+  eq(M.briefLine({ state: "ok", text: "This flow arms at astro dusk." }), "This flow arms at astro dusk.", "an ok read");
+  eq(M.briefLine({ state: "waiting" }), M.BRIEF_WAITING, "a read in flight");
+  eq(M.briefLine({ state: "unavailable" }), M.BRIEF_UNAVAILABLE, "a read that failed");
+  eq(M.BRIEF_UNAVAILABLE, "The brief is unavailable.", "the failure sentence moved");
 });
 
 // ------------------------------------------------------------------ report

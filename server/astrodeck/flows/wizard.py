@@ -65,6 +65,25 @@ answers generates exactly what it did (``test_flows_wizard_door_answers``
 pins that byte for byte), and each one the generator cannot honour is a
 refusal that names it. The camera field, the measured angle and the wheel
 stay rig facts the route injects; a client sends none of them.
+
+WHAT BACKLOG WP-100 ADDED (#196, wave 15): the NIGHT and RESUME questions.
+The stepped sheet shipped without them because DUSK WINDOW had nowhere to put
+either answer (#191, #195); both exist now, so ``generate_answer`` takes six
+more answers, each written to the one DUSK node the lane opens with, and ONLY
+when given (``_door_dusk``):
+
+  * ``stop`` ("Dawn" or "Clock time", ``DUSK_STOPS``) and ``stop_clock``;
+  * ``start`` (the three sun-based dusks or "Clock time", ``DUSK_STARTS``)
+    and ``start_clock``;
+  * ``min_alt``, the lowest altitude a target is shot at, 0 to 90 degrees;
+  * ``auto_resume`` ("On" or "Off", ``AUTO_RESUME_CHOICES``), which is the
+    owner's "automatic resume on subsequent nights" (``autoResume``, #195,
+    ruling 7 on #189).
+
+A stop of "None" is NOT an answer the wizard takes. The compile warns that a
+run with no stop "images into daylight and does not park at dawn", and this
+module's bar is the doctor at note level, so the one answer that makes the
+compile warn is the one not offered; the editor still offers it.
 """
 from __future__ import annotations
 
@@ -187,6 +206,38 @@ _FULL_TURN_DEG = 360.0
 #: target and says this.
 NO_OPTICS_REASON = ("set the camera and focal length in Settings > Optics to "
                     "plan a mosaic")
+
+# ------------------------------------------------- the NIGHT and RESUME answers
+# Backlog WP-100 (#196). The six answers below are written to the DUSK WINDOW
+# the lane opens with, and every choice here is DUSK's own string, stored
+# verbatim in saved flows, so none is ever reworded. The tuples are WRITTEN
+# OUT rather than derived, for the one reason the UI's mirror needs: its
+# parity test (wizardModel.test.ts) reads this file as text, as it reads
+# KIND_*. test_w15_wizard_dusk_answers.py holds each to the compile's own
+# table, so a drift is a failing test and not a quiet second list.
+
+#: DUSK WINDOW's "Clock time", for Start and for Stop alike: the choice that
+#: reads its time from ``startClock`` / ``stopClock`` (``compile._dusk_schedule``).
+CLOCK_TIME = "Clock time"
+#: The Start choices, in the order the editor offers them: the compile's own
+#: three twilights (``compile._DUSK_START_TWILIGHT_DEG``: Sun at -18, -12 and
+#: -6 degrees) and the clock.
+DUSK_STARTS: tuple[str, ...] = (
+    "Astro dusk", "Nautical dusk", "Civil dusk", "Clock time")
+#: The Stop choices the wizard offers. The editor's third, "None", is NOT one:
+#: the compile warns that a run with no stop "images into daylight and does
+#: not park at dawn" (``compile._dusk_schedule``), and this module's bar is
+#: the doctor at note level, so the one answer that makes the compile warn is
+#: refused here with that reason (``checked_stop``).
+DUSK_STOPS: tuple[str, ...] = ("Dawn", "Clock time")
+#: The editor's Stop choice this module will not write.
+NO_STOP = "None"
+#: DUSK WINDOW's ``autoResume`` choices (``nodes.AUTO_RESUME_CHOICES``, #195).
+AUTO_RESUME_CHOICES: tuple[str, ...] = ("On", "Off")
+#: The range of ``min_alt``, degrees: the horizon to the zenith, both ends
+#: answers.
+MIN_ALT_MIN_DEG = 0
+MIN_ALT_MAX_DEG = 90
 
 
 class _Canvas:
@@ -670,6 +721,147 @@ def _door_guiding(kind: str, opts: frozenset[str], guiding) -> frozenset[str]:
     return opts | {OPT_GUIDING}
 
 
+#: A clock time as DUSK WINDOW's card holds it and the schedule reads it
+#: (``schedule._clock_time_near_now``, local time): two digits, a colon, two
+#: digits, on the 24-hour clock. ASCII digits spelled out, since ``\d`` takes
+#: other scripts' digits too, which the card would then store as typed.
+_CLOCK_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+
+
+def checked_choice(what: str, value, choices: tuple[str, ...]) -> str | None:
+    """A choice answer as given, or None when it is not given or blank, or a
+    refusal naming it: a text answer that is one of ``choices`` exactly (case
+    and all, as DUSK stores them), never a bool, a number or a list. PUBLIC for
+    the route's door, which asks before pydantic's coercion."""
+    text = _text_answer(what, value)
+    if text is None:
+        return None
+    if text not in choices:
+        raise ValueError(f"{what} is one of "
+                         f"{', '.join(repr(c) for c in choices)}, not {text!r}")
+    return text
+
+
+def checked_stop(stop) -> str | None:
+    """``stop`` as given (``DUSK_STOPS``), None for none, or a refusal.
+
+    "None" is refused WITH ITS REASON rather than as an unknown word: it is
+    a real choice in the editor, and an operator who typed it should be told
+    what the wizard would be agreeing to. PUBLIC for the route's door."""
+    text = _text_answer("stop", stop)
+    if text == NO_STOP:
+        raise ValueError(f"stop {NO_STOP!r} is not offered here: a run with no "
+                         f"stop images into daylight and does not park at "
+                         f"dawn, and the wizard's night must pass the doctor. "
+                         f"Answer one of "
+                         f"{', '.join(repr(c) for c in DUSK_STOPS)}; the "
+                         f"editor's DUSK WINDOW still offers {NO_STOP!r}")
+    return checked_choice("stop", text, DUSK_STOPS)
+
+
+def checked_start(start) -> str | None:
+    """``start`` as given (``DUSK_STARTS``), None for none, or a refusal.
+    PUBLIC for the route's door."""
+    return checked_choice("start", start, DUSK_STARTS)
+
+
+def checked_auto_resume(auto_resume) -> str | None:
+    """``auto_resume`` as given ("On" or "Off"), None for none, or a refusal:
+    never a bool, which a client that means "true" would send and pydantic
+    would have no way to tell from an answer. PUBLIC for the route's door."""
+    return checked_choice("auto_resume", auto_resume, AUTO_RESUME_CHOICES)
+
+
+def checked_clock(what: str, value) -> str | None:
+    """A clock answer (``stop_clock``, ``start_clock``) as given, trimmed,
+    strict "HH:MM"; None when it is not given or blank; a refusal naming it
+    otherwise. PUBLIC for the route's door."""
+    text = _text_answer(what, value)
+    if text is None:
+        return None
+    if _CLOCK_RE.fullmatch(text) is None:
+        raise ValueError(f"{what} is a time of day as HH:MM on the 24-hour "
+                         f"clock (03:30, 22:15), not {value!r}")
+    return text
+
+
+def checked_min_alt(min_alt) -> int | float | None:
+    """``min_alt`` as the number DUSK's ``minAlt`` holds (an int when whole,
+    as the node's own 30 is), None when not given, or a refusal.
+
+    A bool is not a number here (``true`` would otherwise be a floor of 1
+    degree nobody asked for), nor is a string or a list, and a NaN or an
+    infinity is not one either: every comparison with a NaN is false, so a
+    floor of NaN would pass every target or none. The range is checked on
+    the value itself before ``isfinite`` is asked of an int, which raises
+    OverflowError for one past a float's range (#362's class). PUBLIC for the
+    route's door."""
+    if min_alt is None:
+        return None
+    ok = (not isinstance(min_alt, bool)
+          and isinstance(min_alt, (int, float))
+          and not (isinstance(min_alt, float) and not math.isfinite(min_alt))
+          and MIN_ALT_MIN_DEG <= min_alt <= MIN_ALT_MAX_DEG)
+    if not ok:
+        raise ValueError(f"min_alt is the lowest altitude, in degrees, a "
+                         f"target is shot at: a number from {MIN_ALT_MIN_DEG} "
+                         f"to {MIN_ALT_MAX_DEG}, not {min_alt!r}")
+    return int(min_alt) if float(min_alt).is_integer() else float(min_alt)
+
+
+def _clock_pair(what: str, choice: str | None, clock: str | None) -> None:
+    """Refuse a Start or a Stop and its clock when they disagree.
+
+    A "Clock time" with no time is a boundary that never arrives (the
+    doctor's M9 names the same gap on a stop), and a time beside any other
+    choice is an answer the node would hold and never read; neither is
+    filled in or dropped, since either would be a night nobody asked for."""
+    if choice == CLOCK_TIME and clock is None:
+        raise ValueError(f"{what} is {CLOCK_TIME!r}, and this answer has no "
+                         f"{what}_clock: say the time as HH:MM")
+    if clock is not None and choice != CLOCK_TIME:
+        had = f"is {choice!r}" if choice is not None else "is not given"
+        raise ValueError(f"{what}_clock is the time of a {CLOCK_TIME!r} "
+                         f"{what}, and this answer's {what} {had}")
+
+
+def _door_dusk(stop, stop_clock, start, start_clock, min_alt, auto_resume
+               ) -> dict:
+    """The DUSK WINDOW params the NIGHT and RESUME answers write, and ONLY
+    those given: an empty dict for a body with none of them, which is how a
+    body with only the three original answers stays today's graph (and why
+    nothing here writes a default, not even one that equals the node's own:
+    "absent" and "answered Dawn" are different requests, and a graph built
+    from a client's silence must not depend on what the node's defaults are
+    this month).
+
+    Each answer is read by its public ``checked_`` reader, the one the
+    route's door asks first. A clock is written only beside the "Clock time"
+    it belongs to (``_clock_pair`` refuses the rest), so a flow never holds a
+    stale time under a Dawn stop."""
+    stop, start = checked_stop(stop), checked_start(start)
+    stop_clock = checked_clock("stop_clock", stop_clock)
+    start_clock = checked_clock("start_clock", start_clock)
+    min_alt = checked_min_alt(min_alt)
+    auto_resume = checked_auto_resume(auto_resume)
+    _clock_pair("stop", stop, stop_clock)
+    _clock_pair("start", start, start_clock)
+    params: dict = {}
+    if stop is not None:
+        params["stop"] = stop
+    if stop_clock is not None:
+        params["stopClock"] = stop_clock
+    if start is not None:
+        params["start"] = start
+    if start_clock is not None:
+        params["startClock"] = start_clock
+    if min_alt is not None:
+        params["minAlt"] = min_alt
+    if auto_resume is not None:
+        params["autoResume"] = auto_resume
+    return params
+
+
 #: What each typed coordinate is read with and the range it must fall in:
 #: ``(parse, lowest, highest, highest included, unit, the range in words)``.
 _COORDS = {"ra": (parse_ra, 0.0, 24.0, False, "hours",
@@ -894,11 +1086,13 @@ def generate(kind: str = KIND_DEEP_SKY,
 
 def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
               cycles, coords, safety_abort, rows, cols, overlap_pct,
-              angle_mode, pa_deg, use_measured, skip, rig, measured_pa_deg
-              ) -> tuple[FlowGraph, list[str]]:
+              angle_mode, pa_deg, use_measured, skip, rig, measured_pa_deg,
+              dusk_answers=None) -> tuple[FlowGraph, list[str]]:
     """``generate``'s graph and the notes that go with it: why a mosaic was
     answered as one target, why a TARGET has no coordinates. ``generate``
-    documents every argument."""
+    documents every argument but ``dusk_answers``: the DUSK WINDOW params the
+    NIGHT and RESUME answers write (``_door_dusk``), already checked, only
+    the keys given; None or empty writes nothing."""
     kind, opts = _checked(kind, options)
     if isinstance(skip, str) and not skip.strip():
         skip = None             # a blank skip is no skip, with any kind
@@ -941,6 +1135,16 @@ def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
             for i, t in enumerate(lane_types)]
     for a, b in zip(lane, lane[1:]):
         canvas.chain(a, b)
+
+    if dusk_answers:
+        # THE NIGHT AND RESUME ANSWERS (backlog WP-100, #196), onto the one
+        # DUSK WINDOW: ``lane_types`` opens with "dusk" for every kind, so
+        # ``lane[0]`` is it. Only the keys the caller gave are in the dict,
+        # and nothing is written for the rest, so the node keeps whatever
+        # it was created with.
+        dusk = lane[0]
+        assert dusk.type == "dusk", "the lane no longer opens with DUSK"
+        dusk.params.update(dusk_answers)
 
     for node in lane:
         if node.type == "target":
@@ -1113,6 +1317,12 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
                     cycle_plan: str | None = None,
                     cycles: int | None = None,
                     guiding: bool | None = None,
+                    stop: str | None = None,
+                    stop_clock: str | None = None,
+                    start: str | None = None,
+                    start_clock: str | None = None,
+                    min_alt: float | None = None,
+                    auto_resume: str | None = None,
                     rig: RigFacts | None = None,
                     measured_pa_deg: float | None = None,
                     wheel: Iterable[str] | None = None) -> WizardAnswer:
@@ -1140,6 +1350,17 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
     * ``guiding``: lights the Guiding chip, or confirms it is dark
       (``_door_guiding``).
 
+    THE NIGHT AND RESUME ANSWERS (backlog WP-100, #196), each None when not
+    given, and writing NOTHING then (``_door_dusk``), onto the lane's DUSK
+    WINDOW:
+
+    * ``stop`` (``DUSK_STOPS``, never "None") with ``stop_clock``, and
+      ``start`` (``DUSK_STARTS``) with ``start_clock``: each clock is strict
+      "HH:MM", is required by its "Clock time" and refused beside anything
+      else;
+    * ``min_alt``: the lowest altitude a target is shot at, 0 to 90;
+    * ``auto_resume``: "On" or "Off", DUSK's ``autoResume``.
+
     Each refusal names the answer it refuses.
 
     A mosaic answered as one target says so on its card too: the tagline is
@@ -1151,6 +1372,8 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
     table = _door_rows(kind, cycle_plan, cycles, wheel)
     if table is not None and not _guided(kind, opts):
         _within_the_unguided_cap(table[2], unguided_exposure_s)
+    dusk_answers = _door_dusk(stop, stop_clock, start, start_clock, min_alt,
+                              auto_resume)
     # No door answer, no change: "" and 1 are what ``generate`` defaults
     # the rows to, the inert values the three original answers always met.
     plan, passes = (table[0], table[1]) if table is not None else ("", 1)
@@ -1159,7 +1382,7 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
         cycles=passes, coords=coords, safety_abort=False, rows=rows,
         cols=cols, overlap_pct=overlap_pct, angle_mode=angle_mode,
         pa_deg=pa_deg, use_measured=use_measured, skip=skip, rig=rig,
-        measured_pa_deg=measured_pa_deg)
+        measured_pa_deg=measured_pa_deg, dusk_answers=dusk_answers)
     tagline = f"Generated by the wizard — {kind.lower()}"
     if NO_OPTICS_REASON in notes:
         tagline += f", planned as one target: {NO_OPTICS_REASON}"
@@ -1183,7 +1406,9 @@ def generate_record(kind: str = KIND_DEEP_SKY,
     answers the route has always passed, and, keyword-only, ``rows``,
     ``cols``, ``overlap_pct``, ``angle_mode``, ``pa_deg``, ``use_measured``,
     the door's answers (``skip``, ``ra``, ``dec``, ``cycle_plan``,
-    ``cycles``, ``guiding``) and the rig facts (``rig``, ``measured_pa_deg``,
+    ``cycles``, ``guiding``), the night's (``stop``, ``stop_clock``,
+    ``start``, ``start_clock``, ``min_alt``, ``auto_resume``) and the rig
+    facts (``rig``, ``measured_pa_deg``,
     ``wheel``). A caller with only the three original answers gets exactly
     the graph those answers have always made, less SLEW + CENTER (spec 1.7)
     and with created params. A route that must say why a mosaic came back as
