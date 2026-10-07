@@ -10,7 +10,12 @@
 // zustand compares the selector's result with Object.is, so selecting node B
 // cannot wake node A. The README states the rule for a `flow.node` status
 // tick, and nothing sends one: no topic carries a stage's status and nothing
-// writes `flows.statuses` (#464, `asStatus` below), so every LED reads idle.
+// writes `flows.statuses` (#464, `asStatus` below), so the field alone would
+// read every LED idle, a live run of this flow included, which is false. The
+// card therefore treats an unwritten status as ABSENT while the open flow's
+// run is live and draws no LED (`showStatus = written || !runLive`, the phone
+// stage list's rule), and says idle only where it is true. Both added
+// subscriptions are booleans, so a sequence tick inside the run wakes nobody.
 // The status selector is kept as narrow as the rest so that a status feed,
 // once there is one, still wakes one card. `memo` below then stops the
 // canvas's own re-renders from walking every card.
@@ -35,6 +40,7 @@ import { nodeW, type PortDir } from "./geometry";
 import { nodeLossDetail, nodeLossLevel } from "./flowsTypes";
 import type { FlowNodeRec, FlowNodeStatus } from "./flowsTypes";
 import { progressChip } from "./flowProgress";
+import { flowRunLive, knownSessions } from "./flowRunState";
 import { withLoop, type LaneGraph } from "./panelLane";
 import { fittedFooter, monoChars, targetLoops } from "./targetSummary";
 import FlowPort from "./FlowPort";
@@ -99,11 +105,13 @@ const LED_BY_STATUS: Record<FlowNodeStatus, LedState> = {
  *  (#464): no server topic carries a stage's status, and the published
  *  sequence state names the running target, its index, its group and a line
  *  of detail, never the stage - `to_plan` takes each compiled step's
- *  `node_id` off before the engine sees the plan. So every LED here reads
- *  idle, a live run included, until the engine publishes the stage; #464 is
- *  deferred for that field (S7 orchestrator ruling 10). Anything the
- *  vocabulary does not know reads as idle - an unknown word must not blank
- *  the LED, which would look like "no node here". */
+ *  `node_id` off before the engine sees the plan. So this reader returns idle
+ *  for every stage until the engine publishes the stage (#464 parts B and C,
+ *  deferred for that field, S7 orchestrator ruling 10), and the card must not
+ *  PRINT that idle through a live run of its own flow: `showStatus = written
+ *  || !runLive` draws no LED then (#464 part A), as the phone stage list draws
+ *  no pill. Anything the vocabulary does not know reads as idle - an unknown
+ *  word must not blank the LED, which would look like "no node here". */
 function asStatus(raw: string | undefined): FlowNodeStatus {
   return raw === "busy" || raw === "ok" || raw === "warn" || raw === "bad"
     ? raw : "idle";
@@ -137,6 +145,20 @@ function FlowNodeCard({
   // The two subscriptions this whole file exists to keep narrow. Both return a
   // primitive, so both are exact under Object.is.
   const status = useStore((s) => asStatus(s.flows.statuses[node.id]));
+  // WHAT THE LED MAY SAY (#464 part A). Nothing writes `flows.statuses`, so
+  // `status` above is idle for every stage, and through a live run of THIS
+  // flow that is false. The phone stage list found it first (FlowStagesPhoneSheet
+  // `StageRow`: TARGET, FILTER CYCLE and SESSION REPORT all IDLE while the rig
+  // shot panel 1-1) and treats the field as absent while its flow runs; this is
+  // the same rule, word for word: a stage with no status of its own shows none
+  // while the open flow's run is live, and idle stays whenever nothing of this
+  // flow runs, where it is true. `flowRunLive` asks the session the sequence
+  // state writes against the sessions the slice knows as this flow's, so
+  // another flow's run, or none open, leaves idle standing. Both are booleans
+  // (Object.is), so a sequence tick inside the run wakes nobody.
+  const written = useStore((s) => s.flows.statuses[node.id] !== undefined);
+  const runLive = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
+  const showStatus = written || !runLive;
   const selected = useStore((s) =>
     s.flows.sel?.kind === "node" && s.flows.sel.id === node.id);
   // THE THIRD, and it obeys the same rule: `nodeLossLevel` returns a string or
@@ -291,7 +313,10 @@ function FlowNodeCard({
             !
           </span>
         )}
-        <Led state={LED_BY_STATUS[status]} label={status} />
+        {/* NO LED, NOT AN 'OFF' ONE, while `showStatus` is false: an off LED
+            says idle in its shape and its name, which is the claim a live
+            run of this flow makes false. */}
+        {showStatus && <Led state={LED_BY_STATUS[status]} label={status} />}
         <EditGlyph
           size={auto ? 24 : 20}
           glyph={auto ? 13 : 12}
