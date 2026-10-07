@@ -7,19 +7,31 @@
 // `g.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0)`, with no way
 // for the shim to tell that the file's own root is gone (#652: "The
 // unguarded rAF polyfill #614 suspected is copy-pasted into 14 more UI test
-// files"). #614's mechanism was never confirmed in that file's own render
-// path, but it was confirmed enough to fix (flowInspectorNotes.test.tsx,
-// WP-69): a frame requested AFTER a file's root unmounts can keep firing into
-// whatever the file's import() does next. run-tests.mjs (runOne) waits on
-// the file's default export, not on any timer, so a live setTimeout chain
-// has nothing to race against and can run past the file's own 60s
-// TIMEOUT_MS -- exactly the shape of "7/7 passed, then the export never
-// resolves" seen on a loaded CI runner.
+// files"). #614 suspected that shape of an intermittent "7/7 passed, then the
+// child timed out at 60 s" on a loaded CI runner, and the suspicion is NOT
+// confirmed: rAF was never seen to be called on flowInspectorNotes' render
+// path at all. It also cannot be the mechanism, whatever a file does. Each
+// child in run-tests.mjs (runOne) ends in `process.exit(...)`, and
+// `process.exit` ends the process regardless of any timer, handle or frame
+// still live, so a live setTimeout chain has nothing to hold the child past
+// its tally. #664's instrumentation says the same from the other side: the
+// children that froze wrote no heartbeat for the whole 60 s, which means the
+// main thread was not running, and no pending timer does that. The cause is
+// still unknown; the child now writes phase markers (run-tests.mjs,
+// `timeoutPhase`) so the next freeze names where it stopped.
+//
+// What this guard IS for, so it is not mistaken for that fix: once a file's
+// root has unmounted, a frame requested after that point should not fire a
+// callback into a torn-down tree (a later case in the same file, or the
+// teardown of the fake globals). That is ordinary test hygiene, it costs
+// nothing, and it is pinned by its own late-frame regression test, which is
+// still true. It does not, and is not claimed to, prevent the post-tally
+// timeout.
 //
 // installAutoRaf gives every file that guard for free: once `suppress()` is
 // called (right after that file's own `root.unmount()`), a newly requested
-// frame returns 0 and schedules nothing -- the same fix flowInspectorNotes
-// pinned with its own late-frame regression test, which still lives beside
+// frame returns 0 and schedules nothing. flowInspectorNotes pinned the
+// behaviour with its own late-frame regression test, which still lives beside
 // that file's other cases and now calls into this module instead of rolling
 // its own `framesSuppressed` flag.
 //
@@ -50,9 +62,10 @@ export interface AutoRafOptions {
 
 export interface AutoRafHandle {
   /** Stops scheduling new frames. Call this right after a file's own root
-   *  unmounts (#614): a frame requested AFTER that point must not go on
-   *  firing into whatever the file's import() does next. Once called,
-   *  requestAnimationFrame returns 0 and schedules nothing. */
+   *  unmounts: a frame requested AFTER that point must not go on firing
+   *  into a tree that is gone. (Hygiene, not the cure for #614 or #664: see
+   *  the header.) Once called, requestAnimationFrame returns 0 and schedules
+   *  nothing. */
   suppress(): void;
 }
 
