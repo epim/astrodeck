@@ -165,6 +165,68 @@ in yet** — so there is no `npm test` script. Type checking via `tsc -b` (part 
 `npm run build`) is the standing frontend gate; wiring a proper test runner is a
 good first contribution.
 
+### Mutation and gate runs
+
+Several people and agents can work in one checkout at once, and three times a
+run has graded code that was not the code under review, because someone else
+was rewriting, mutating or deleting files under it (#254). Backlog ruling D-01
+(owner-approved 2026-09-30) is the rule that follows. Four parts:
+
+1. **Run every mutation and every full-suite run in a copy of the tree, never
+   in the shared checkout.** The copy is a linked worktree made by
+   `scripts/wp_worktree.py`, or a byte copy of `server/` in a directory outside
+   any repository. Name it for the task id plus a random suffix, never a
+   generic name at the root of a shared scratch directory.
+2. **Never `rm` or overwrite a scratch path you did not create.** Another
+   agent's copy may be there. `wp_worktree.py add` refuses a path that already
+   exists, and `remove` refuses one outside its `--root` and one with
+   uncommitted work. Before removing a worktree it unlinks every junction in it
+   (the `ui/node_modules` link is one) with `os.rmdir`, because a recursive
+   delete that follows the junction empties the live dependency tree.
+3. **Mutate with `scripts/mutate.py`.** It takes one backup, checks the file's
+   digest before every mutation and retries the restore, and since #254 its
+   `snapshot` refuses the repository's main checkout. A mutant left in a tree
+   leaves `<file>.mutation-state.json` and `<file>.mutation-backup` beside the
+   file.
+4. **Wrap gate runs in `scripts/gate_run.py`**, which records that the tree
+   stayed quiet. It compares git's view of the tree before and after, so a
+   gated run needs a git tree: use a linked worktree, since a byte copy
+   serves mutation runs only and `gate_run.py` refuses one.
+
+```powershell
+# a copy of the tree for one task; --ui links ui/node_modules from the main checkout
+python scripts\wp_worktree.py add --root C:\scratch --name WP-12-k3f9 --base HEAD --ui
+
+# the gate, with a record of whether the tree moved under it
+cd C:\scratch\WP-12-k3f9
+$env:PYTHONPATH = "C:\scratch\WP-12-k3f9\server"
+python scripts\gate_run.py --tree . --cwd server --record C:\scratch\WP-12-k3f9.gate.json -- `
+    <main checkout>\server\.venv\Scripts\python.exe -m pytest -q
+```
+
+`PYTHONPATH` is not optional. The virtualenv's `astrodeck` is an editable
+install of one checkout, so without it a run in a copy imports the original
+and grades code that is not in the copy. Confirm it once with
+`python -c "import astrodeck; print(astrodeck.__file__)"`.
+
+`gate_run.py` refuses to start in the main checkout (pass `--shared-tree` to
+override; the record then says `isolated: false`), and refuses to start while a
+`*.mutation-state.json` or `*.mutation-backup` is in the tree, because a run
+that starts over a mutant grades it from its first test. Around the command it
+snapshots HEAD, `git status --porcelain` and a size-and-mtime stamp of every
+file git lists, and compares them afterwards. The stamp matters: in a
+work-package worktree the owned files are already modified, so a mutant
+applied to one and then restored leaves `git status` identical, and only the
+modification time shows that the file was touched. The last line it prints is
+`gate run: tree QUIET (N files watched)` or `gate run: THIS RUN IS INVALID:
+the tree moved: <paths>`, and a command that exited 0 on a tree that moved
+exits 1. The JSON record names paths and hashes, never contents; write it
+outside the tree. A rewrite that keeps a file's size and lands inside one
+filesystem timestamp tick (up to 15.6 ms on Windows) is not seen.
+
+The suite watches itself too: conftest.py fails a run, once and loudly, if a
+file under `server/astrodeck` or under `server/tests` changes while it runs.
+
 ---
 
 ## Adding a device backend
