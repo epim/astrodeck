@@ -194,8 +194,8 @@ export function PlanRunHeader({ plan, recoverable, onStart, startLockedReason }:
         {pausing && (
           <div className="nx-plan-notice" data-tone="warn" role="alert" data-testid="plan-pausing">
             <Mono size={11}>
-              Pausing - this frame still has {fmtCountdown(sub.remainingS!)} of shutter left,
-              and the run does not stop until it lands. Keep lights off and hands off the
+              Pausing - this frame still has {fmtCountdown(sub.remainingS!)} of exposure left.
+              The run will pause when it finishes. Keep lights off and hands off the
               scope until this reads PAUSED.{canRun ? " Stop ends it now." : ""}
             </Mono>
           </div>

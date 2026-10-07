@@ -284,8 +284,8 @@ export function GeneralScreen(): JSX.Element {
           title="MY FLOWS"
           sub={
             flowCount == null
-              ? "saved flows · quick sessions land here"
-              : `${flowCount} saved · quick sessions land here`
+              ? "saved flows · quick sessions appear here"
+              : `${flowCount} saved · quick sessions appear here`
           }
           right={<Mono>OPEN</Mono>}
           chevron

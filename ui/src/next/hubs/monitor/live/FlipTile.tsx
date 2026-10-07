@@ -95,7 +95,7 @@ export function flipFace(
       return { value: "CROSSING NOW", sub: `flip if armed${pier(pier_side)}`, tone: "warn" };
     }
     return {
-      value: "no flip owed",
+      value: "no flip needed",
       sub: agoS != null
         ? `meridian passed ${fmtDuration(agoS)} ago${pier(pier_side)}`
         : `meridian passed${pier(pier_side)}`,

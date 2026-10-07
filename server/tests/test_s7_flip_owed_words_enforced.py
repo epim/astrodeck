@@ -80,23 +80,22 @@ from test_group_rotation import _golden_as_recorded
 
 GOLDEN = "NGC 7331"
 RETRY = "nothing flipped this time either. "
-HOLD_OPENED = "a meridian flip is owed and the mount is still on the"
+HOLD_OPENED = "a meridian flip is required and the mount is still on the"
 
 #: Each case's sentence, as `_flip_owed_words` words it, and what the
 #: sentence says the next frame gets.
 SENTENCES = {
-    "hold-off": ("The flip-owed hold is off (safety.flip_owed_hold_min is "
+    "hold-off": ("The meridian flip hold is off (safety.flip_owed_hold_min is "
                  "0), so nothing stops the next frame being exposed on this "
                  "side past the meridian", "through"),
-    "unreadable": ("The mount's side cannot be read, so the flip-owed "
-                   "invariant cannot hold the frame", "through"),
+    "unreadable": ("The mount's side cannot be read, so the meridian flip safety check cannot hold the frame", "through"),
     "no-record": ("No pier side was seen for this target before the "
-                  "meridian, so the flip-owed invariant has nothing to "
+                  "meridian, so the meridian flip safety check has nothing to "
                   "compare against and will not hold the frame", "through"),
     "other-side": ("The mount is not on the east side it was seen on before "
-                   "the meridian, so the flip-owed invariant lets the frame "
+                   "the meridian, so the meridian flip safety check lets the frame "
                    "through", "through"),
-    "holds": ("The flip-owed invariant now holds the frame: nothing is "
+    "holds": ("The meridian flip safety check now holds the frame: nothing is "
               "exposed past the meridian while the mount stays on the west "
               "side, for up to 20 min", "held"),
 }
@@ -234,7 +233,7 @@ async def test_the_retry_sentence_is_what_the_invariant_does(
                       if e[1] == "log" and HOLD_OPENED in e[3])
         ended = next(i for i, e in enumerate(night.trace)
                      if e[1] == "log"
-                     and "a meridian flip has been owed for 20 min" in e[3])
+                     and "a meridian flip has been pending for 20 min" in e[3])
         exposed = [e[0] for e in night.trace[opened:ended]
                    if e[1] == "capture"]
         assert exposed == [], f"{case}: exposed while held at {exposed}"

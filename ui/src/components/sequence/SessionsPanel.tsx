@@ -45,7 +45,7 @@ import type { Session, SessionListRow, SessionRow } from "../../types";
 /** A readable session's delete confirm. Not an unreadable row's (#266): see
  *  `unreadableDeleteBody`. */
 const SESSION_DELETE_BODY =
-  "Removes the session ledger and thumbnails. Saved FITS frames are NOT deleted. This cannot be undone.";
+  "Removes the session log and thumbnails. Saved FITS frames are NOT deleted. This cannot be undone.";
 
 function StatusChip({ status }: { status: SessionListRow["status"] }) {
   const cls = status === "active" ? "text-good blink"
@@ -122,7 +122,7 @@ export default function SessionsPanel() {
       title: `Update "${r.name}" from the current plan?`,
       body: `${d.kept} step${d.kept === 1 ? "" : "s"} keep recorded progress · ` +
         `${d.added} new start at zero · ${d.dropped} with recorded frames dropped ` +
-        `(their frames stay in the ledger but stop counting toward any quota).`,
+        `(their frames stay in the session log but stop counting toward any quota).`,
       tone: d.dropped > 0 ? "danger" : "warn",
       mode: "confirm",
       confirmLabel: "Update session",
@@ -147,7 +147,7 @@ export default function SessionsPanel() {
   const onAbandon = async (r: SessionRow) => {
     const ok = await confirmDialog({
       title: `Abandon "${r.name}"?`,
-      body: "Removes it from the panel but keeps its ledger and thumbnails on disk. Delete, by contrast, permanently removes them.",
+      body: "Removes it from the panel but keeps its session log and thumbnails on disk. Delete, by contrast, permanently removes them.",
       tone: "warn",
       mode: "confirm",
       confirmLabel: "Abandon",
@@ -252,7 +252,7 @@ export default function SessionsPanel() {
                   <button
                     className="tap min-h-[44px] inline-flex items-center gap-1 !px-3 !text-[11px]
                       border border-line2 text-dim hover:text-warn hover:border-warn/50"
-                    title={`Abandon ${r.name} — soft-retire, keeps ledger and thumbnails on disk`}
+                    title={`Abandon ${r.name}: keeps the session log and thumbnails on disk`}
                     onClick={() => void onAbandon(r)}>
                     <Icon name="x" size={12} /> abandon
                   </button>

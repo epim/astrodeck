@@ -485,6 +485,25 @@ class TestTheExamplesCompile:
               Skipping 1420 identical leading characters in diff, use -v to show
               - old": 40}]}
               + old": 40}], "resume_across_nights": false}
+
+        RE-PINNED FOR BACKLOG WP-85 (#195, wave 14 integration), IN REVERSE
+        OF THE ONE ABOVE: DUSK WINDOW's Repeat row is replaced by Automatic
+        resume (default On) and the compile writes ``resume_across_nights``
+        only when it is False, so NO Example writes the key any more: a
+        Single-night DUSK WINDOW no longer means do-not-resume. The case now
+        asserts the key is absent for every Example, and that no Example's
+        DUSK WINDOW has Automatic resume Off (the one shape that would write
+        it), so a compile that began writing the key for these seven fails
+        here, not in a digest.
+
+        Mutant "an Example compiles the old Single-night reading" (the
+        0.3.40 reading restored in ``nodes.dusk_auto_resume``: ``and
+        str(params.get("repeat") or "Single night") != "Single night"``):
+        RED for the five Examples that have a DUSK WINDOW with no explicit
+        repeat, observed -
+            AssertionError: example-cycle compiles resume_across_nights:
+            False (a Single-night DUSK WINDOW with Automatic resume On
+            resumes, so the key, written only for Off, must be absent)
         """
         ex = next((e for e in examples() if e.id == ex_id), None)
         assert ex is not None, f"{ex_id} is no longer an Example"
@@ -512,19 +531,14 @@ class TestTheExamplesCompile:
             assert not dusk_nodes or dusk_nodes[0].params.get(
                 "start") == "Clock time", (
                 f"{ex_id} has a sun-based DUSK WINDOW with no twilight_deg")
-        if "resume_across_nights" in compiled:
-            resume = compiled.pop("resume_across_nights")
-            repeat = str((dusk_nodes[0].params.get("repeat") if dusk_nodes
-                         else None) or "Single night")
-            assert resume is False and dusk_nodes and repeat == "Single night", (
-                f"{ex_id} compiles resume_across_nights although its DUSK "
-                f"WINDOW is not Single night: {resume}, {repeat}")
-        else:
-            repeat = str((dusk_nodes[0].params.get("repeat") if dusk_nodes
-                         else None) or "Single night")
-            assert not dusk_nodes or repeat != "Single night", (
-                f"{ex_id} has a Single-night DUSK WINDOW with no "
-                f"resume_across_nights")
+        assert all(str(n.params.get("autoResume") or "On") != "Off"
+                   for n in dusk_nodes), (
+            f"{ex_id} has Automatic resume Off; no Example does")
+        assert "resume_across_nights" not in compiled, (
+            f"{ex_id} compiles resume_across_nights: "
+            f"{compiled.get('resume_across_nights')!r} (a Single-night "
+            f"DUSK WINDOW with Automatic resume On resumes, so the key, "
+            f"written only for Off, must be absent)")
         got = json.dumps(compiled, ensure_ascii=False)
         want = json.dumps(LEGACY_EXAMPLES[ex_id], ensure_ascii=False)
         assert got == want, f"{ex_id} changed its compile beyond the S3 keys"

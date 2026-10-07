@@ -168,7 +168,7 @@ def _ha_row(got: dict) -> dict:
 
 
 def _budget_lines(got: dict) -> list[str]:
-    return [s["msg"] for s in got["story"] if s["label"] == "BUDGET"]
+    return [s["msg"] for s in got["story"] if s["label"] == 'TIME']
 
 
 # ================================================================ the route
@@ -192,7 +192,7 @@ class TestTheRouteCountsThisFlowsTargets:
         got = await _tonight(api, fid)
         assert _ha_row(got)["banked_h"] == 0.0, "M16's hour filled M31's bar"
         (line,) = _budget_lines(got)
-        assert "Ha: 0 h banked for these targets / 2 h goal" in line, line
+        assert "Ha: 0 h captured for these targets / 2 h goal" in line, line
         await _four_ha("M31", 1_790_100_000.0)
         got = await _tonight(api, fid)
         assert _ha_row(got)["banked_h"] == 1.0, (
@@ -409,7 +409,7 @@ def _fixture_answer() -> dict:
             ledger, targets=flow_target_names(g, "budget for these targets")))
     out = json.loads(json.dumps(out))
     return {"ok": out["ok"], "brief": out["brief"], "budget": out["budget"],
-            "story": [s for s in out["story"] if s["label"] == "BUDGET"]}
+            "story": [s for s in out["story"] if s["label"] == 'TIME']}
 
 
 ABOUT = ("The sky-free parts (ok, brief, budget, the BUDGET story rows) of "
@@ -446,9 +446,9 @@ class TestTheRowSaysForTheseTargets:
         for line in lines:
             assert "for these targets" in line, (
                 f"a BUDGET row that does not say whose hours: {line!r}")
-        assert lines[0].startswith("Ha: 1 h banked for these targets / 2 h "
+        assert lines[0].startswith("Ha: 1 h captured for these targets / 2 h "
                                    "goal"), lines[0]
-        assert "0.2 h banked in its filters for these targets" in lines[1], (
+        assert "0.2 h captured in its filters for these targets" in lines[1], (
             lines[1])
 
     def test_the_ui_fixture_is_this_answer(self):

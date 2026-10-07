@@ -107,10 +107,10 @@ LIMITS_WORDS = ("re-centering after restart refused: the target is outside "
 #: #283 widened it to (a closed window or a floor never cleared tonight
 #: rules a target out as a set-aside record does). A copy, not an import, so
 #: a change to the words is a change this file sees.
-NOTHING_TONIGHT = ("nothing this session still owes can be shot tonight: "
-                   "what it owes is set aside for tonight, past its observing "
-                   "window or never above its start floor; not slewing until "
-                   "the next night")
+NOTHING_TONIGHT = ("none of this session's remaining frames can be captured "
+                   "tonight: the remaining targets are set aside for tonight, "
+                   "past their observing windows, or never above their minimum "
+                   "start altitude; waiting until the next night before slewing")
 
 #: What the recorded goto answers in place of a real re-centre.
 _CANNED = {"centered": True, "error_arcmin": 0.2, "attempts": 1,

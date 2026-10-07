@@ -164,7 +164,7 @@ class TestItRefusesTheFrame:
         await _never_flips(e, monkeypatch)
         with pytest.raises(StopTarget):
             await e._enforce_flip_owed(t)
-        assert any(lvl == "error" and "flip is owed" in msg
+        assert any(lvl == "error" and 'flip is required' in msg
                    for lvl, msg in lines), lines
 
     async def test_flip_owed_is_published_while_it_holds(self, sim_hub,

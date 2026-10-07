@@ -185,9 +185,9 @@ await test("each re-anchored block gets its own warn line, named, with the move 
   await h.a.flowsSave();
   eq(lines(h.flows).join(" | "),
     "[warn] TARGET \"M31\" starts counting from zero: its framing moved 14.8', and its grid carries "
-    + "counts over only for a move under 10.0'. The subs it banked stay on disk."
+    + "counts over only for a move under 10.0'. The subs it captured stay on disk."
     + " | [warn] a TARGET with no name starts counting from zero: its framing moved 3.0', and with "
-    + "no camera field recorded no move carries counts over. The subs it banked stay on disk.",
+    + "no camera field recorded no move carries counts over. The subs it captured stay on disk.",
     "a re-anchored block never reached the log");
 });
 
@@ -295,7 +295,7 @@ await test("the switch and the re-anchors together: the switch first, then each 
   await h.a.flowsSave();
   eq(lines(h.flows).join(" | "),
     `[info] ${COUNTS_SWITCHED_LINE} | [warn] TARGET "M31" starts counting from zero: `
-    + "its rows or columns changed. The subs it banked stay on disk.",
+    + "its rows or columns changed. The subs it captured stay on disk.",
     "the two notes were not both said, in order");
 });
 

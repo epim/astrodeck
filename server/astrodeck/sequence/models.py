@@ -480,28 +480,36 @@ class SequencePlan(BaseModel):
     # wind-down
     park_when_done: bool = False
     warm_cooler_when_done: bool = False
-    # --- single night vs multi-night auto-resume (#195; ADDITIVE - True
+    # --- automatic resume on subsequent nights (#195; ADDITIVE - True
     # reproduces every existing plan BYTE-IDENTICALLY, which is what "every
-    # flow has always done" actually means today: see the note below) -------
+    # flow has always done" actually means: see the note below) ------------
     #
-    # THE BUG THIS FIELD CLOSES. DUSK WINDOW's "Single night" `repeat` value
-    # changed nothing about resuming: `engine.start` arms `auto_resume`
+    # THE BUG THIS FIELD CLOSES. `engine.start` arms `auto_resume`
     # unconditionally on every run, and `ResumeArm.tick` asked only whether
     # tonight's window was open, never how many nights this session had
-    # already run. So a flow built as "Single night" compiled to a session
-    # that came back and finished itself on the next clear night exactly like
-    # a campaign would, silently — the "a claim nothing keeps" class.
+    # already run. So a flow whose operator did not want it back on later
+    # nights compiled to a session that came back and finished itself on the
+    # next clear night, silently — the "a claim nothing keeps" class. The
+    # operator now says which they want with DUSK WINDOW's "Automatic resume
+    # on subsequent nights until capture quota is fulfilled" option (default
+    # On), and this field is what an explicit Off compiles to.
     #
     # True (the default) is today's actual behaviour and reaches every plan
     # compiled before this field existed, every flow with no DUSK WINDOW, and
-    # every DUSK WINDOW whose `repeat` asks to come back across nights.
+    # every DUSK WINDOW that does not say Off. A missing option, a blank, a
+    # value this build does not offer and the `repeat` a flow was saved with
+    # (including "Single night", which 0.3.40 wrongly read as Off) all read
+    # On (`flows.nodes.dusk_auto_resume`, the one place that is decided).
     #
-    # False scopes `ResumeArm.tick` to the session's FIRST observing night
-    # only (`Session.observing_nights`): a crash or a reboot on THAT SAME
-    # night still resumes it - continuity within a night is a separate
-    # promise, never withdrawn here - but the window opening again on a
-    # LATER night is refused and the session is disarmed, because the
-    # operator asked for one night, not the next clear one.
+    # False is an explicit Off. It scopes `ResumeArm.tick` to the session's
+    # FIRST observing night only (`Session.observing_nights`): a crash or a
+    # reboot on THAT SAME night still resumes it - continuity within a night
+    # is a separate promise, never withdrawn here - but the window opening
+    # again on a LATER night is refused and the session is disarmed. The
+    # engine disarms it where its night ends (`_finalize_report`, at a dawn
+    # cut or an incomplete ending) and says CONTINUE it by hand; the tick's
+    # night check is the net for a crash before dawn followed by a restart
+    # after it.
     resume_across_nights: bool = True
     # --- cloud-hold calibration (ADDITIVE; default off = every existing plan
     # behaves byte-identically) ---------------------------------------------

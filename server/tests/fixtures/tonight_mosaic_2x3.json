@@ -677,7 +677,7 @@
      "pct": null
     }
    ],
-   "note": "Single-night flow - set DUSK WINDOW \u2192 Repeat to make this a campaign. 4 of 6 mosaic panels done, 9 of 12 subs banked.",
+   "note": "Automatic resume is on (DUSK WINDOW): a subsequent night resumes this flow where the session log left off. 4 of 6 mosaic panels done, 9 of 12 subs captured.",
    "panels": [
     {
      "block": "t",

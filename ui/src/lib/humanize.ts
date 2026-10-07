@@ -64,7 +64,7 @@ const LANE_CONFLICT: Record<string, string> = {
   "system.update": "An update is already installing. Leave the controller alone and watch its progress in Settings.",
   // Not a `_spawn` lane — app.py's _spawn_connect writes this one by hand for
   // the connect-by-profile task it keeps outside hub._busy.
-  profile: "A profile is already being activated. Connecting the rig takes a few seconds - wait for it to land.",
+  profile: "A profile is already being activated. Connecting the rig takes a few seconds - wait for it to finish.",
 };
 
 // Anchored: only the server's exact refusal shape, so nothing else in a detail

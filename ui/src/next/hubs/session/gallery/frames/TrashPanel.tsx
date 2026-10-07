@@ -182,7 +182,7 @@ export function TrashPanel({ onChanged }: {
         {items.length === 0 && !err ? (
           <EmptyCard
             title="THE TRASH IS EMPTY"
-            hint={`Frames you delete from the library land here and stay recoverable for ${ttl} days.`}
+            hint={`Frames you delete from the library move here and stay recoverable for ${ttl} days.`}
           />
         ) : (
           <>

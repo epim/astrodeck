@@ -10,10 +10,13 @@
 
 ## Licensing — READ THIS BEFORE SHIPPING ANY OF THESE FILES
 
-**We do not have a stated right to redistribute these binaries.** Corrected
-2026-08-09; the previous version of this paragraph asserted that the licence
-"permits redistribution", which is an interpretation and was read as a fact for
-weeks while six binaries shipped on it.
+**We do not have a stated right to redistribute these binaries, and the owner
+has not yet ruled whether we may. The ruling is pending in #632.** This
+paragraph has been corrected twice. On 2026-08-09 it stopped asserting that the
+licence "permits redistribution", an interpretation that was read as a fact for
+weeks while six binaries shipped on it. On 2026-10-07 it stopped telling
+readers that releases ship without any Player One file, because the build
+contradicts that.
 
 What the licence actually says, in its own words:
 
@@ -21,24 +24,36 @@ What the licence actually says, in its own words:
 > or other equipment. You can use our company's products and this SDK to
 > develop any products without any restrictions.
 
-That is the whole grant, and it contains **no distribution verb** — not copy,
-publish, distribute, sublicense or sell. The document is MIT-*shaped*: it closes
-with MIT's notice-retention clause and MIT's warranty disclaimer word for word,
-which is where the earlier reading came from. The middle paragraph is Player
-One's own prose and is not MIT.
+That is the whole grant. It covers use of the SDK for development, and it
+contains **no distribution verb** — not copy, publish, distribute, sublicense
+or sell. The document is MIT-*shaped*: it closes with MIT's notice-retention
+clause and MIT's warranty disclaimer word for word, which is where the earlier
+reading came from. The middle paragraph is Player One's own prose and is not
+MIT.
 
 A reasonable person may well conclude redistribution is intended — a runtime
 library is useless unless it ships, and a retained-notice clause presupposes
 copies. Intended is not granted.
 
-**So:** releases carry no Player One binary. A machine that needs one fetches
-the SDK from the vendor (`server/astrodeck/licensing.py`, remedy `fetch`), which
-is squarely inside the grant above. The copies in this directory are for
-development on this checkout.
+**What the builds do while the ruling is pending.** The files in this
+directory travel in three of our artifacts:
 
-Written confirmation has been requested from support@player-one-astronomy.com.
-When it arrives, record it here beside the quote — not instead of it. Full
-analysis: `docs/hardware/player-one-sdk-licensing.md`; audit:
+- The frozen (PyInstaller) executables and the server wheel carry them.
+  `packaging/distribution-policy.json` records both under `pending`
+  (`pending_by_artifact`), and the release audit reports OWNER_PENDING for any
+  of them that contains a Player One library.
+- The Docker image runs `pip install ./server`, so it carries them too. No gate
+  covers the image yet (#655).
+- The source tarball does not: its `pending_by_artifact` entry is `false`.
+
+A machine can instead fetch the SDK from the vendor
+(`server/astrodeck/licensing.py`, remedy `fetch`) and point
+`ASTRODECK_PLAYERONE_SDK_DIR` at it; using the SDK is what the grant covers.
+
+Written confirmation from support@player-one-astronomy.com would settle the
+question, and none is recorded. When it arrives, record it here beside the
+quote — not instead of it. Full analysis:
+`docs/hardware/player-one-sdk-licensing.md`; audit:
 `docs/superpowers/backlog/2026-08-08-third-party-licences.md` §1.3.
 
 ## Bindings + verification

@@ -184,8 +184,17 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #: "Single night" means auto-resume does not arm across nights) rides along
 #: unchanged the same way, so the two files' same-named constants still
 #: agree.
+#:
+#: RE-PINNED AGAIN FOR BACKLOG WP-85 (#195, wave 14 integration), IN REVERSE
+#: OF THE ONE ABOVE: DUSK WINDOW's Repeat row is replaced by Automatic resume
+#: (default On), so the quick flow's golden carries ``resume_across_nights:
+#: true`` again and rides along unchanged the same way. PROVEN, not assumed:
+#: with the golden's ``resume_across_nights`` set back to false this hash is
+#: the previous pin, a167e74c..., byte for byte; and it is the same value as
+#: ``GOLDEN_SHA256_BEFORE_S2`` in ``test_a_clean_flow_is_not_ten_warnings.py``,
+#: so the two files' same-named constants still agree.
 GOLDEN_SHA256_BEFORE_S2 = \
-    "a167e74ca39cf15f18c7930431e6685f9dfc87d0c23771622285e4d3513bd03c"
+    "fa4f7f53e4ebacc0ee716f6d16f53a5795fe7162562d35508dc6d7fb43d7d6db"
 
 #: The keys S2 adds to the dump, and the defaults the golden carries them at.
 S2_PLAN_KEYS = {"groups": []}

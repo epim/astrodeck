@@ -63,7 +63,7 @@ export const STANDARDS_NUMBER_FIELDS: StandardsNumberField[] = [
     // two other surfaces, SequenceView.tsx's tooltip and the new UI's
     // automationModel.ts hint; scanned by test_set_aside_promises.py.
     hint: "Consecutive rejects before the step is set aside for tonight and "
-        + "the run moves on. Its frames stay owed in the session ledger: a "
+        + "the run moves on. Its remaining frames stay pending in the session log: a "
         + "restart tonight does not retry it, the next night does. 0 turns "
         + "it off." },
   { key: "max_consecutive_rejects_night", label: "End the night after",

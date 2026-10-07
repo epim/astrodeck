@@ -7,7 +7,10 @@ claim references, style (including a ban on money metaphors in prose) and
 the repository's external privacy needles. A quoted UI label is matched by
 its text anywhere in the cited source file; the recorded line is a hint for
 resolving more than one hit and for diagnostics, never the label's identity,
-so an unrelated edit above the label does not fail this check (#660).
+so an unrelated edit above the label does not fail this check (#660). A
+claim's quoted text is matched the same way against its own page, so a page
+rewrite that drops or reworks a sentence leaves its claim row provably stale
+instead of silently citing text nobody can read any more (#673).
 Diagnostics name files and error categories, never document text or link values.
 """
 from __future__ import annotations
@@ -155,10 +158,17 @@ def locate_label(lines, label):
     The file is read as one normalized stream, the same join already used
     to confirm a bold label's presence in the Markdown, so a label split
     across a line break (JSX can do this) is still found as one occurrence.
-    This locates the label by its content, not a recorded coordinate, so an
-    unrelated edit elsewhere in the file does not break the citation (#660).
+    Each line's own whitespace is also collapsed to single spaces before the
+    join (and `label` gets the same treatment), so a Markdown paragraph's
+    hanging continuation indent, or a claim stored with the page's own line
+    breaks spelled out, lines up with the page's text instead of picking up
+    incidental extra spaces that neither the ledger nor the sentence itself
+    put there. This locates the label by its content, not a recorded
+    coordinate, so an unrelated edit elsewhere in the file does not break
+    the citation (#660).
     """
-    unescaped = [html.unescape(entry) for entry in lines]
+    label = " ".join(label.split())
+    unescaped = [" ".join(html.unescape(entry).split()) for entry in lines]
     starts, offset = [], 0
     for entry in unescaped:
         starts.append(offset)
@@ -290,11 +300,17 @@ def check(repo, pages, labels=(), claims=(), privacy_scan=None, enforce_coverage
 
     claim_pages = set()
     for row in claims:
-        page = row.get("page", "")
-        if page not in bodies or not row.get("claim"):
+        page, claim = row.get("page", ""), row.get("claim", "")
+        if page not in bodies or not claim:
             errors.append("Claim ledger: missing page or claim")
             continue
         claim_pages.add(page)
+        # Same content matching as a UI label (#660): found anywhere in the
+        # page's own text, never at a recorded coordinate, so a rewrite that
+        # drops or rewords the sentence is what fails this, not a line shift
+        # elsewhere on the page (#673).
+        if not locate_label(bodies[page].splitlines(), claim):
+            errors.append(f"{page}: claim {row.get('id', '?')} text is not on the page")
         sources = row.get("sources") or [{"path": row.get("source", ""), "line": row.get("line")}]
         if not sources:
             errors.append(f"{page}: claim has no source evidence")

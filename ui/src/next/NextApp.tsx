@@ -194,12 +194,20 @@ export default function NextApp(): JSX.Element {
       // August that turned out clear. Cloud holds are measured
       // IN-RUN, from the rig's own frames. Telling an operator the forecast
       // will hold the night is how a clear night gets given away.
+      //
+      // The sentence after the numbers is the same one App.tsx's dialog and
+      // SkyConditionsPanel's chip carry (#687). This surface was never graded
+      // before; src/__tests__/weatherHoldClaim.test.ts now reads it. It does
+      // NOT say the run follows "parameters defined in your astroflow": the
+      // CLOUD WATCH threshold never reaches the engine.
       body:
         `Forecast peak ${a.peak_pct}% total cloud (${a.dominant_layer} layer ` +
         `dominant) between ${fmtHm(a.start_iso)} and ${fmtHm(a.end_iso)} - ` +
-        `at or above your ${w.threshold_pct}% threshold. The forecast does not ` +
-        `hold a run: a running session holds on what its own frames show, and ` +
-        `only forecast rain inside the hour blocks an auto-resume.`,
+        `at or above your ${w.threshold_pct}% threshold. A cloud forecast does ` +
+        `not hold a run. While it images, the rig checks the sky in its own ` +
+        `frames and pauses when they show cloud. Only forecast rain within ` +
+        `the next hour holds anything: it blocks an automatic restart and ` +
+        `dusk preparation.`,
       tone: "warn",
       mode: "ok",
     });

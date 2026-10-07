@@ -277,14 +277,14 @@ await testAsync("a running campaign prints night n of ~total and the banked hour
   await settle();
 
   const line = seen.strip?.line ?? "";
-  assert(/^CAMPAIGN · M31 LRGB · night 2 of ~\d+ · \d+\.\d of 12 h banked$/.test(line),
+  assert(/^CAMPAIGN · M31 LRGB · night 2 of ~\d+ · \d+\.\d of 12 h captured$/.test(line),
     `the running form, got "${line}"`);
   assert(line.includes("of ~"),
     "the denominator is a projection and the tilde is what says so (deviation D2)");
   assert(!/parked/.test(line), "a running campaign is not parked");
   // The `banked_h: null` row contributes NOTHING - "not counted" is not zero,
   // and 2.5 of 12 rather than some larger number is the evidence.
-  assert(/ 2\.5\d? of 12 h banked$/.test(line),
+  assert(/ 2\.5\d? of 12 h captured$/.test(line),
     `a null ledger row must not be folded in as a real zero-or-more, got "${line}"`);
 });
 

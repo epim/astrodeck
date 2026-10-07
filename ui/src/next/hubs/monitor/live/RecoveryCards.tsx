@@ -129,7 +129,7 @@ export function RunArmedCard(): JSX.Element | null {
     title: "RUN ARMED",
     sinceMs: !recovering && hold?.since != null ? hold.since * 1000 : null,
     resolvesItself: true,
-    engine: `${armed.name} · ${armed.owed} frames owed of ${armed.total} · ${armed.accepted} accepted`,
+    engine: `${armed.name} · ${armed.owed} frames remaining of ${armed.total} · ${armed.accepted} accepted`,
     next: recovering
       // site_detail carries the numbers behind a words-only reason (#258,
       // #233); absent for a principal without view.site_derived, the normal

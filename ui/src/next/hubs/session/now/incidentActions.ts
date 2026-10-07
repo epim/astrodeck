@@ -374,7 +374,7 @@ export function refineIncident(inc: Incident, ctx: RefineContext): Incident {
         : "Capture paused at the frame boundary. Guiding parked, mount tracking, "
           + "cooler holding at setpoint - nothing to redo when it clears.";
       const sky = ctx.seq.sky?.text ? ` (${ctx.seq.sky.text})` : "";
-      out.next = `Watching the star count and the cloud score${sky}; the ledger `
+      out.next = `Watching the star count and the cloud score${sky}; the session log `
         + "keeps the sub count, so the plan picks up mid-pass.";
       out.resolvesItself = true;
       break;

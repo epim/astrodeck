@@ -489,7 +489,7 @@ test("the reframe question asks only with banked subs, in the server's numbers",
   const view = viewOf(moved, M31, answerFor(moved, M31, { reframe: MOVE_14_8 }));
   eq(reframeDecision({ stored: M31, draft: moved, progress: { banked: 212 }, view }), {
     ask: true,
-    question: "Re-framing moves the panels 14.8', more than the 10.0' this grid allows, so all 6 panels start from zero: 212 banked subs belong to the old layout and stay on disk.",
+    question: "Re-framing moves the panels 14.8', more than the 10.0' this grid allows, so all 6 panels start from zero: 212 captured frames belong to the old layout and stay on disk.",
   }, "212 banked, moved 14.8'");
   eq(reframeDecision({ stored: M31, draft: moved, progress: { banked: 0 }, view }), { ask: false, question: null }, "nothing banked");
   eq(reframeDecision({ stored: M31, draft: moved, progress: null, view }), { ask: false, question: null }, "no progress answer");
@@ -541,7 +541,7 @@ test("every reframe reason reads as its own line, and an unmeasured restart stil
   eq(moveLine(unmeasured), SERVER_DECIDES, "a move with no measured distance");
   eq(reframeDecision({ stored: M31, draft: moved, progress: { banked: 212 }, view: unmeasured }), {
     ask: true,
-    question: "The server will restart the counts at save: all 6 panels start from zero: 212 banked subs belong to the old layout and stay on disk.",
+    question: "The server will restart the counts at save: all 6 panels start from zero: 212 captured frames belong to the old layout and stay on disk.",
   }, "an unmeasured restart");
 });
 
@@ -573,7 +573,7 @@ test("a new camera field with banked subs asks when the server says no carry", (
   const reframe: ReframeAnswer = { carry: false, max_move_deg: 12.1 / 60, threshold_deg: 9.98 / 60, reason: "move" };
   const view = viewOf(rematched, M31, answerFor(rematched, M31, { reframe }));
   eq(reframeDecision({ stored: M31, draft: rematched, progress: { banked: 212 }, view }).question,
-    "Re-framing moves the panels 12.1', more than the 10.0' this grid allows, so all 6 panels start from zero: 212 banked subs belong to the old layout and stay on disk.",
+    "Re-framing moves the panels 12.1', more than the 10.0' this grid allows, so all 6 panels start from zero: 212 captured frames belong to the old layout and stay on disk.",
     "a new field");
 });
 
@@ -636,7 +636,7 @@ test("changing rows or cols always asks, offline too; offline a move is the save
   const off = viewOf(wider, M31, null, { offline: true });
   eq(reframeDecision({ stored: M31, draft: wider, progress: { banked: 212 }, view: off }), {
     ask: true,
-    question: "Changing the grid from 3x2 to 4x2 means all 8 panels start from zero: 212 banked subs belong to the old layout and stay on disk.",
+    question: "Changing the grid from 3x2 to 4x2 means all 8 panels start from zero: 212 captured frames belong to the old layout and stay on disk.",
   }, "grid offline");
   const moved = draftOf(M31, { ra: "00h 43m 44s" });
   eq(reframeDecision({ stored: M31, draft: moved, progress: { banked: 212 }, view: viewOf(moved, M31, null, { offline: true }) }),
@@ -680,13 +680,13 @@ test("the banked count includes what skipped panels hold, and the other reasons 
   const stored1: Params = { ...M31, rows: 1, cols: 1 };
   const angleView = viewOf(one, stored1, answerFor(one, stored1, { reframe: { carry: false, max_move_deg: null, threshold_deg: 0.16, reason: "angle" } }));
   eq(reframeDecision({ stored: stored1, draft: one, progress: { banked: 1 }, view: angleView }).question,
-    "Changing between any angle and a set angle means the panel starts from zero: 1 banked sub belongs to the old layout and stays on disk.", "angle, one panel, one sub");
+    "Changing between any angle and a set angle means the panel starts from zero: 1 captured frame belongs to the old layout and stays on disk.", "angle, one panel, one sub");
   eq(moveLine(angleView), "any angle against a set angle: counts restart", "angle move line");
   const renamed = draftOf(M31, { ra: "", dec: "", name: "M33" });
   const idView = viewOf(draftOf(M31, { ra: "01h 33m 51s" }), M31, null);
   const idAnswer = { ...idView, answer: answerFor(draftOf(M31, { ra: "01h 33m 51s" }), M31, { reframe: { carry: false, max_move_deg: null, threshold_deg: 0.16, reason: "identity" as const } }) };
   eq(reframeDecision({ stored: M31, draft: draftOf(M31, { ra: "01h 33m 51s" }), progress: { banked: 212 }, view: idAnswer }).question,
-    "Framing another object means all 6 panels start from zero: 212 banked subs belong to the old layout and stay on disk.", "identity");
+    "Framing another object means all 6 panels start from zero: 212 captured frames belong to the old layout and stay on disk.", "identity");
   assert(layoutKey(renamed) !== layoutKey(draftOf(M31)), "a block placed by name is keyed on its name");
   const same = draftOf(M31);
   eq(moveLine(viewOf(same, M31, answerFor(same, M31, { reframe: { carry: true, max_move_deg: 0, threshold_deg: 0.16, reason: "unchanged" } }))),

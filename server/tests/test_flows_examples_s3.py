@@ -77,19 +77,30 @@ MOSAIC_ID = "example-m31-mosaic"
 #: Diffed against the pre-change dump for each of the seven and confirmed
 #: this one key is the only thing that moved. Regenerated from the same
 #: ``_plan_digest`` against the fixed code, with no other change.
+#:
+#: RE-PINNED AGAIN FOR BACKLOG WP-85 (#195, wave 14, 2026-10-07), IN REVERSE
+#: OF THAT FOR FIVE OF THE SEVEN: DUSK WINDOW's Repeat row is replaced by
+#: Automatic resume (default On), so a Single-night DUSK WINDOW no longer
+#: compiles ``resume_across_nights: false`` and the flag is True for all
+#: seven. example-campaign and example-eaa were already True and keep their
+#: hashes; the other five move. PROVEN, not assumed: with the dump's
+#: ``resume_across_nights`` set back to False each of the five reproduces
+#: the pin it replaces (a3d327a3..., ad6365b7..., e91f2e1e..., cd874f8c...
+#: and 2e178320...), byte for byte. Regenerated from the same
+#: ``_plan_digest`` against the fixed code, with no other change.
 HEAD_PLAN_SHA256 = {
     "example-campaign":
         "712f21bc36fc88d0a52addba55d2f2b80852d087081d9636559863f1cb0cfede",
     "example-m31":
-        "a3d327a352ee887fc00b058ede3ae0c73fbe4467c6708da66d0051442a373bad",
+        "110e846886c4a804cc5b377fd3f51cdfef9bc79b58e38571638bba5dcc3bf65f",
     "example-m16":
-        "ad6365b76d02fc7a9fd55239b36a2bd9f00df1b48d47998a74a7fa100f66e0fd",
+        "fcd8d6e0aaec61d8f49a14376932e9bcd01acfbf158c319dd83f027d7d1097d3",
     "example-cycle":
-        "e91f2e1e86e1f1565f213b1cb029ee76a10fb92afd8e45243bb1d1fe8fcf6031",
+        "a4fbfc3d6c4ff4665378efe7acc6fbc4600d6c7c59b5d9304ff9021c07094e38",
     "example-pool":
-        "cd874f8c7eedb6b169dab1c42f07e96d1d6c2aed1cfc6fbb303e948f3c27985c",
+        "bc04dfecb214fa76cd57f4e92cd2a3447728b7d501fcca0b55d5dd576ac5181a",
     "example-nb":
-        "2e178320e071762d3d2d06b31758343b1b93c47119fe37c89d6649b68f520ea3",
+        "3c2c473ade210771d4c31cae2f782882b9fbc96d620609564b62400f3fbb4cce",
     "example-eaa":
         "fe4981cb80d1fe65d33bffa6333c2f99881713523cfe2c4424f313e7d70c9e47",
 }

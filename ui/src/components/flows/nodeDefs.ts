@@ -80,20 +80,28 @@ export interface FieldDef {
   unit?: string;
   /** The value to SHOW when the node carries no value of its own for this key
    *  (absent or ""). Never written: the node keeps no key until the operator
-   *  picks one. Only TARGET's `angle` has one, because the server derives it
+   *  picks one. TARGET's `angle` has one, because the server derives it
    *  from `rotation` rather than defaulting it (nodes.py `target_angle`), so
    *  a stored block with a real PA must read "Rotate to PA", not a blank
-   *  select or the first option. Read it through `fieldValue`. */
+   *  select or the first option. DUSK's `autoResume` has one too (#195): a
+   *  flow saved before the key existed means On (nodes.py `dusk_auto_resume`)
+   *  and must read On, not an empty option. Read it through `fieldValue`. */
   derive?: (p: Record<string, string | number>) => string | number;
-  /** Hover/tap help for the field, read by whatever renders the row as an
-   *  info icon beside the label (#195: DUSK WINDOW's `repeat` is the first
-   *  to carry one, because "Single night" used to promise something the
-   *  compile did not keep). WORDED TO PROMISE ONLY WHAT THE CODE DOES - the
-   *  same discipline `desc` is held to below - never copied from a design
-   *  doc without checking it against the compile and the engine first.
-   *  Rendering the icon itself (the hover/tap/aria-describedby wiring) is a
-   *  separate change to the inspector component; this is only the field's
-   *  own copy. */
+  /** Hover/tap help for the field, drawn as an info icon beside the label by
+   *  BOTH inspectors' `FlowFieldRow` (the classic one's `InfoDot`, the #/next
+   *  one's own `InfoButton`: hover on a fine pointer, tap on a coarse one with
+   *  a 44 px target, and the text reachable from the control through
+   *  `aria-describedby`). #195: DUSK WINDOW's `autoResume` is the first to
+   *  carry one, because the control's plain label cannot say what a flow that
+   *  is off does on a subsequent night. No new control type: the field is
+   *  still a `select`.
+   *
+   *  WORDED TO PROMISE ONLY WHAT THE CODE DOES - the same discipline `desc`
+   *  is held to below - never copied from a design doc without checking it
+   *  against the compile and the engine first. Each sentence of a help text
+   *  is a row of a claims table that names the test of the behaviour it
+   *  describes (`server/tests/test_w14_autoresume_claims.py`), so a sentence
+   *  cannot ship without one. */
   help?: string;
 }
 
@@ -226,6 +234,51 @@ export function targetAngle(p: Record<string, string | number>): string {
   return rotationDeg(p.rotation) < 0 ? "Any angle" : "Rotate to PA";
 }
 
+/** DUSK WINDOW's `autoResume` choices. Mirrors nodes.py `AUTO_RESUME_CHOICES`.
+ *  Stored verbatim in saved flows, so never reworded; "On" is the missing-key
+ *  default (nodes.py `dusk_auto_resume`). */
+export const AUTO_RESUME_CHOICES = ["On", "Off"] as const;
+
+/** The owner's label for DUSK WINDOW's `autoResume`, EXACTLY (ruling 7 on
+ *  #189, quoted in #195). Not to be reworded: the wizard's auto-resume step
+ *  (#196) asks the same question with the same words. */
+export const AUTO_RESUME_LABEL =
+  "Automatic resume on subsequent nights until capture quota is fulfilled";
+
+/** The INTERIM hover text for `autoResume`, flagged for the owner to approve
+ *  (spec Revision 2, ruling 7: "What ships"). The owner's own text, below,
+ *  promises four things the code does not all do today, and a tooltip must be
+ *  true before it ships:
+ *
+ *    "When true, AstroDeck will attempt to automatically resume the imaging
+ *    session on subsequent nights until it's fulfilled the number of frames
+ *    specified in the flow config. It automatically parks at dawn and resumes
+ *    at sunset. It holds during cloudy weather. Flat panel, dome control, etc
+ *    all work and respond to the day/night cycle as well as weather events."
+ *
+ *  Sentence by sentence against the code: resuming on subsequent nights is true;
+ *  "parks at dawn" is true when the DUSK Stop is Dawn (#191 closed); "resumes
+ *  at sunset" is "resumes when its window opens" (#191: the window is the
+ *  DUSK Start choice, a clock time included, and it opens at the rig's
+ *  twilight angle plus the offset, never at sunset); "holds during cloudy
+ *  weather" is true with every monitor now (#193 closed) and is worded as
+ *  the three sources it has; the last sentence is NOT true (#192, #601 to
+ *  #603 are open), so it is replaced by the one that is. The owner's wording
+ *  returns clause by clause as #192's items close. The sentences that say
+ *  what OFF does are the new behaviour (`_finalize_report`, `ResumeArm.tick`).
+ *
+ *  No non-ASCII, and each sentence ends with a full stop followed by a space:
+ *  the claims table splits it on exactly that. */
+export const AUTO_RESUME_HELP =
+  "When on, AstroDeck resumes this flow automatically on subsequent nights, when its " +
+  "window opens, until every frame the flow asks for is taken. " +
+  "With a Dawn stop it parks at dawn. " +
+  "While it runs it holds for cloud when something reports cloud: a monitor that reads " +
+  "cloud, a CLOUD WATCH rule, or, when no monitor reads cloud, its own frames. " +
+  "When off, a crash or restart the same night still resumes, but a subsequent night " +
+  "does not: CONTINUE it by hand. " +
+  "It does not yet open the dome or the flat panel's cover for the night.";
+
 /** The whole vocabulary. Grouped and ordered as nodes.py declares them
  *  (SOURCES → EQUIPMENT → RIG OPS → LOGIC → ACTIONS + SINKS); note this is a
  *  declaration order for reading, NOT the palette's item order, which is
@@ -246,6 +299,11 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     params: {
       start: "Astro dusk", offset: -30, startClock: "",
       stop: "Dawn", stopClock: "", minAlt: 30, repeat: "Single night",
+      // #195: nodes.py carries the same key, in the same place. `repeat` stays
+      // so a stored file still loads and the campaign block keeps its key, but
+      // it has no row any more (ROWLESS_PARAMS) and no longer decides whether
+      // the flow resumes: that is `autoResume`, "On" when a flow says nothing.
+      autoResume: "On",
     },
     fields: [
       { key: "start", label: "Start", control: "select", options: ["Astro dusk", "Nautical dusk", "Civil dusk", "Clock time"] },
@@ -254,16 +312,27 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "stop", label: "Stop", control: "select", options: ["Dawn", "Clock time", "None"] },
       { key: "stopClock", label: "Stop clock time", control: "text" },
       { key: "minAlt", label: "Min target altitude", control: "text", unit: "°" },
-      { key: "repeat", label: "Repeat", control: "select", options: ["Single night", "Nightly until pool complete", "Nightly ×30"],
-        help: "Single night: if the window closes before every target has its quota, this session stays dormant and does not start itself again - CONTINUE it by hand. The other two choices come back at the next dusk and pick up the frame count where last night left off, until the pool is complete or 30 nights have run." },
+      // `derive`: a flow saved before the key existed (every file 0.3.40 or
+      // earlier wrote) has no `autoResume`, and the server reads that as On
+      // (nodes.py `dusk_auto_resume`). The row shows On for it, as the
+      // migration note says it does, and not a blank select; nothing is written
+      // until the operator picks. Mirrors the server's missing-key default.
+      { key: "autoResume", label: AUTO_RESUME_LABEL, control: "select",
+        options: AUTO_RESUME_CHOICES, help: AUTO_RESUME_HELP,
+        derive: () => AUTO_RESUME_CHOICES[0] },
     ],
-    desc: "Autorun window from the scheduler: sun-altitude dusk/dawn events at the configured site, with a per-target altitude gate. 'Night ends' fires before dawn; with Repeat set, dawn is a scheduled hold - the capture cursor persists and the flow re-arms at the next dusk, mid-cycle.",
+    desc: "Autorun window from the scheduler: sun-altitude dusk/dawn events at the configured site, with a per-target altitude gate. 'Night ends' fires before dawn; with Automatic resume on, dawn is a scheduled hold - the capture cursor persists and the flow re-arms at the next dusk, mid-cycle.",
     // The "+" is printed only for a non-negative offset, so the default -30
-    // reads "Astro dusk -30m → dawn" rather than "+-30m". The "· nightly" tail
-    // appears only for a repeat, because on a single night it would be noise on
-    // every card in the library.
+    // reads "Astro dusk -30m → dawn" rather than "+-30m". The tail names the
+    // UNUSUAL case only, because the usual one would be noise on every card in
+    // the library: "· one night" for a flow whose Automatic resume is Off (a
+    // subsequent night does not resume it), and "· nightly" for a stored
+    // `repeat` campaign that still resumes. Off wins: it is what the run does.
+    // `repeat` is read here because it still keys the campaign block
+    // (nodes.py).
     sum: (p) => txt(p.start) + " " + (num(p.offset) >= 0 ? "+" : "") + txt(p.offset) + "m → " + low(p.stop)
-      + (p.repeat && txt(p.repeat) !== "Single night" ? " · nightly" : ""),
+      + (txt(p.autoResume) === "Off" ? " · one night"
+        : p.repeat && txt(p.repeat) !== "Single night" ? " · nightly" : ""),
   },
   target: {
     type: "target",
@@ -326,7 +395,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "centerTries", label: "Centring tries", control: "text" },
       { key: "ifNotCentred", label: "If a panel will not centre or reach its angle", control: "select", options: ["Auto", "Skip it this pass", "Shoot anyway"] },
     ],
-    desc: "One target, or a mosaic of panels at one camera angle: coordinates, grid, centring, and identity for the multi-night session ledger. The stages wired to 'each panel' run on every panel; wire the last stage's 'pass done' to 'next panel' to rotate panels every pass.",
+    desc: "One target, or a mosaic of panels at one camera angle: coordinates, grid, centring, and identity for the multi-night session log. The stages wired to 'each panel' run on every panel; wire the last stage's 'pass done' to 'next panel' to rotate panels every pass.",
     sum: (p) => txt(p.name),
   },
   safety: {
@@ -794,7 +863,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "format", label: "Format", control: "select", options: ["JSON + FITS index", "JSON only"] },
       { key: "dest", label: "Destination", control: "text" },
     ],
-    desc: "Append-only session ledger: per-filter integration, accepted/rejected counts, median HFR, safety events, end reason. 'Target done' fires when the active target's quota is met - wire it back to a pool's 'advance' to run a campaign.",
+    desc: "Append-only session log: per-filter integration, accepted/rejected counts, median HFR, safety events, end reason. 'Target done' fires when the active target's quota is met - wire it back to a pool's 'advance' to run a campaign.",
     sum: (p) => txt(p.dest),
   },
 };
@@ -820,6 +889,11 @@ export const LEGACY_TYPES: readonly LegacyNodeType[] = ["slew"];
  *  param without a row is a value the operator can never change, which the
  *  parity test refuses. */
 export const ROWLESS_PARAMS: Partial<Record<FlowNodeType, readonly string[]>> = {
+  // `repeat` is retired from the editor (#195): `autoResume` replaced its row.
+  // It stays a stored param so a saved file loads and the compile's campaign
+  // block keeps its key, which is why it is declared here rather than dropped
+  // from `params` (the parity test holds both tables to nodes.py's).
+  dusk: ["repeat"],
   // `counts` is withdrawn from the editor (Revision 2, ruling 2): every new
   // block counts accepted subs, and a save switches an old one. `frameAnchor`
   // is written by the server at every save (ruling 3), never typed.
@@ -828,9 +902,11 @@ export const ROWLESS_PARAMS: Partial<Record<FlowNodeType, readonly string[]>> = 
 };
 
 /** The value an inspector row shows: the node's own param, or, when it has
- *  none (absent or ""), the field's derived value. Only TARGET's `angle`
- *  derives, from `rotation`, so a stored block with a real PA reads "Rotate
- *  to PA" and not a blank select. Nothing is written: this is display. */
+ *  none (absent or ""), the field's derived value. TARGET's `angle` derives,
+ *  from `rotation`, so a stored block with a real PA reads "Rotate to PA" and
+ *  not a blank select, and DUSK's `autoResume` derives "On", so a flow saved
+ *  before the key existed reads as the resuming flow it is. Nothing is
+ *  written: this is display. */
 export function fieldValue(
   field: FieldDef, params: Record<string, string | number>,
 ): string | number | undefined {

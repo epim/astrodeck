@@ -526,7 +526,7 @@ SERVICES: list[dict] = [
         "notes": (
             "Optional sign-in with a Google account. Contacted only if you "
             "configure Google as an authentication method; the default LAN "
-            "posture never calls it. No attribution required — listed for "
+            "setup never contacts it. No attribution required; listed for "
             "completeness."),
     },
     {

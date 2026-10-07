@@ -1239,7 +1239,7 @@ export function escalationRows(esc: EscalationConfig | null): string[] {
     rows.push(`At most ${esc.hfr_retake_limit_per_target} replacement frames per target`);
   }
   rows.push(esc.no_progress_watchdog_s > 0
-    ? `Treat the run as unsafe if no frame lands for ${Math.round(esc.no_progress_watchdog_s / 60)} min`
+    ? `Treat the run as unsafe if no frame arrives for ${Math.round(esc.no_progress_watchdog_s / 60)} min`
     : "No no-progress watchdog");
   rows.push(esc.reconnect_resume
     ? `Reconnect and resume after a dropout - ${esc.reconnect_retries} attempts`

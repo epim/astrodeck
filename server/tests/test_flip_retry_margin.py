@@ -140,8 +140,8 @@ async def test_the_crossing_night_flips_at_its_first_retry(group_store,
     complete = night.said("meridian flip complete (pier side")
     assert complete == [f"{GOLDEN}: meridian flip complete (pier side west "
                         f"-> east)"], complete
-    assert not night.said("a meridian flip is owed"), (
-        night.said("a meridian flip is owed"))
+    assert not night.said("a meridian flip is required"), (
+        night.said("a meridian flip is required"))
     assert not night.said("nothing flipped this time either")
 
 
@@ -182,11 +182,11 @@ async def test_a_retry_that_flips_nothing_is_not_logged_complete(
     assert level == "warning", (level, line)
     assert _past_s(t_retry) >= MERIDIAN_SIDE_MARGIN_S, (
         f"premise: the retry waited out the band: {_past_s(t_retry):.1f} s")
-    assert ("The flip-owed invariant now holds the frame: nothing is "
+    assert ("The meridian flip safety check now holds the frame: nothing is "
             "exposed past the meridian while the mount stays on the west "
             "side, for up to 20 min") in line, line
     after = [m for t, _lvl, m in night.lines if t >= t_retry]
-    owed = [m for m in after if "a meridian flip is owed" in m]
+    owed = [m for m in after if "a meridian flip is required" in m]
     assert owed and "still on the west side -- refusing to expose" in owed[0], (
         f"the line said the invariant holds the frame, and it did not: "
         f"{after[:6]}")
@@ -405,19 +405,18 @@ async def test_the_retry_line_says_what_the_invariant_will_do(
         e._pre_flip_side["k"] = "east" if case == "other-side" else "west"
     words = e._flip_owed_words("k", None if case == "unreadable" else "west")
     want = {
-        "holds": ("The flip-owed invariant now holds the frame: nothing is "
+        "holds": ("The meridian flip safety check now holds the frame: nothing is "
                   "exposed past the meridian while the mount stays on the "
                   "west side, for up to 20 min"),
-        "hold-off": ("The flip-owed hold is off (safety.flip_owed_hold_min "
+        "hold-off": ("The meridian flip hold is off (safety.flip_owed_hold_min "
                      "is 0), so nothing stops the next frame being exposed "
                      "on this side past the meridian"),
         "no-record": ("No pier side was seen for this target before the "
-                      "meridian, so the flip-owed invariant has nothing to "
+                      "meridian, so the meridian flip safety check has nothing to "
                       "compare against and will not hold the frame"),
         "other-side": ("The mount is not on the east side it was seen on "
-                       "before the meridian, so the flip-owed invariant "
+                       "before the meridian, so the meridian flip safety check "
                        "lets the frame through"),
-        "unreadable": ("The mount's side cannot be read, so the flip-owed "
-                       "invariant cannot hold the frame"),
+        "unreadable": ("The mount's side cannot be read, so the meridian flip safety check cannot hold the frame"),
     }[case]
     assert words == want, f"{case}: {words!r}"

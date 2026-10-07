@@ -29,8 +29,8 @@ import astrodeck.config as config_mod
 from astrodeck.config import ConfigStore
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode, FlowRecord
 from astrodeck.flows.store import (
-    COUNTS_NOTE, FLOW_SCHEMA, ROTATION_234_NOTE, V3_SCHEMA, FlowStore,
-    NewerSchemaFlow, schema_for)
+    COUNTS_NOTE, FLOW_SCHEMA, ROTATION_234_NOTE, V3_SCHEMA, V4_SCHEMA,
+    FlowStore, NewerSchemaFlow, schema_for)
 from astrodeck.persist import ensure_dir
 
 COUNTS = {"key": "counts", "note": COUNTS_NOTE}
@@ -95,36 +95,53 @@ class TestTheVersion:
     def test_the_schema_is_4(self):
         """Moved from test_flows_schema_v3's ``test_the_schema_is_3``.
 
+        RE-PINNED FOR BACKLOG WP-85 (#195, wave 14 integration): the file
+        version is 5 now (DUSK's Automatic resume Off, and the v4 -> v5
+        note), so ``FLOW_SCHEMA`` is 5 and the version the FLOW_SCHEMA 4
+        meanings stamp is the new ``V4_SCHEMA``, still 4. The name stays
+        because the stamp this file grades is still 4. The v5 stamp is
+        graded in test_w14_autoresume_store.py.
+
         RED under mutant "FLOW_SCHEMA left at 3", observed:
 
             >       assert FLOW_SCHEMA == 4
             E       assert 3 == 4
+
+        and under mutant "the v4 stamp is 5" (``V4_SCHEMA = 5``):
+
+            >       assert V4_SCHEMA == 4
+            E       assert 5 == 4
         """
-        assert FLOW_SCHEMA == 4
+        assert FLOW_SCHEMA == 5
+        assert V4_SCHEMA == 4
         assert V3_SCHEMA == 3
 
-    def test_a_v5_file_is_a_row_and_never_a_record(self, store):
+    def test_a_v6_file_is_a_row_and_never_a_record(self, store):
         """A newer build's file is listed, refused by ``get`` and never
         overwritten (#153), one version up from this build.
 
-        RED under mutant "the future starts at 6" (``_migrate`` refuses
+        RE-PINNED FOR BACKLOG WP-85 (#195, wave 14 integration): this was
+        ``test_a_v5_file_is_a_row_and_never_a_record``, and schema 5 is this
+        build's own version now, so the first version from the future is 6.
+
+        RED under mutant "the future starts at 7" (``_migrate`` refuses
         ``version > FLOW_SCHEMA + 1``), observed:
 
-            >       assert [r.id for r in store.load_all() if r.id == "f5"] == []
-            E       AssertionError: assert ['f5'] == []
-            E         Left contains one more item: 'f5'
+            >       assert [r.id for r in store.load_all() if r.id == "f6"] == []
+            E       AssertionError: assert ['f6'] == []
+            E         Left contains one more item: 'f6'
         """
-        path = _put_file(store.dir, "f5", 5, _graph(counts="Accepted subs"))
+        path = _put_file(store.dir, "f6", 6, _graph(counts="Accepted subs"))
         before = path.read_bytes()
-        assert [r.id for r in store.load_all() if r.id == "f5"] == []
+        assert [r.id for r in store.load_all() if r.id == "f6"] == []
         (row,) = store.unreadable()
-        assert row["id"] == "f5"
-        assert row["unreadable"] == ("saved by a newer AstroDeck (schema 5); "
+        assert row["id"] == "f6"
+        assert row["unreadable"] == ("saved by a newer AstroDeck (schema 6); "
                                      "update to open it")
         with pytest.raises(KeyError):
-            store.get("f5")
+            store.get("f6")
         with pytest.raises(NewerSchemaFlow):
-            store.save(FlowRecord(id="f5", name="over it"))
+            store.save(FlowRecord(id="f6", name="over it"))
         assert path.read_bytes() == before
 
     def test_control_a_v4_file_opens(self, store):

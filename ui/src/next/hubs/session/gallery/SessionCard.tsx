@@ -171,7 +171,7 @@ export function SessionCard({
                 none": the ledger read that finds the newest kept frame is
                 queued behind the other cards. */}
             <Mono size={10} tone="dim">
-              {thumb === undefined && !live ? "reading the ledger"
+              {thumb === undefined && !live ? "reading the session log"
                 : url && !broken ? "loading"
                   : "no preview yet"}
             </Mono>

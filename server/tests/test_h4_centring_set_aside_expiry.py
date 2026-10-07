@@ -587,8 +587,7 @@ async def test_a_floor_or_a_reject_set_aside_never_expires(
     # every-filter-set-aside's own text) after a colon.
     assert sorted(_skips(night)) == [
         f"skipped {_name('1-2')}: 1-2 sank below its own altitude floor",
-        f"skipped {_name('2-1')}: every filter 2-1 still owes is set "
-        f"aside"]
+        f"skipped {_name('2-1')}: every filter 2-1 still needs is set aside"]
     assert stored.owed() > 0 and stored.status == "dormant"
 
 

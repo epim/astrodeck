@@ -82,14 +82,98 @@ test("health verdict: queue > verified > untested; disabled dims", () => {
 });
 
 // ---------------------------------------------------------------- deadmanVerdict
+// WP-95 (#125): `healthy` is "no failure has been warned about", which is also
+// true before the first request leaves, so it cannot say the monitor has ever
+// answered. `last_ok_age_s` (seconds since a ping was ACCEPTED, null if never)
+// is what "Pinging" has to rest on.
+//
+// MUTATIONS RUN (byte backup inside the worktree, restored by sha256):
+//   m3, deadmanVerdict returns Pinging on healthy alone (the age defaulted to
+//   0 when absent). 12/16 passed; failing: "configured and healthy but no ping
+//   accepted yet is Waiting, not Pinging: expected Waiting, got Pinging", "a
+//   ping attempted but never accepted is still Waiting: expected Waiting, got
+//   Pinging", "a server that does not report accepted pings is Waiting, never
+//   Pinging: expected Waiting, got Pinging" and "an unusable age is never
+//   Pinging: age NaN: expected Waiting, got Stale".
+//   m3b, drop the stale limit. 15/16 passed; failing: "Pinging only while the
+//   accepted ping is recent, with its age: expected Stale, got Pinging".
+const dmHealth = (dm: { configured: boolean; healthy: boolean; last_ping_age_s: number | null;
+                        last_ok_age_s?: number | null }): AlertHealth =>
+  ({ undelivered: 0, undelivered_by_sink: {}, deadman: dm });
+
 test("deadman verdict maps configured/healthy", () => {
   eq(deadmanVerdict(null).tone, "dim");
-  eq(deadmanVerdict({ undelivered: 0, undelivered_by_sink: {},
-     deadman: { configured: true, healthy: true, last_ping_age_s: 5 } }).tone, "good");
-  eq(deadmanVerdict({ undelivered: 0, undelivered_by_sink: {},
-     deadman: { configured: true, healthy: false, last_ping_age_s: null } }).tone, "bad");
-  eq(deadmanVerdict({ undelivered: 0, undelivered_by_sink: {},
-     deadman: { configured: false, healthy: false, last_ping_age_s: null } }).tone, "dim");
+  // DELIBERATE PIN CHANGE (WP-95): this case used to be green on healthy alone
+  // (`last_ping_age_s: 5`, no accepted-ping age). It now carries the accepted
+  // ping it is supposed to be showing.
+  eq(deadmanVerdict(dmHealth({ configured: true, healthy: true, last_ping_age_s: 5,
+                               last_ok_age_s: 5 })).tone, "good");
+  eq(deadmanVerdict(dmHealth({ configured: true, healthy: false, last_ping_age_s: null,
+                               last_ok_age_s: null })).tone, "bad");
+  eq(deadmanVerdict(dmHealth({ configured: false, healthy: false, last_ping_age_s: null,
+                               last_ok_age_s: null })).tone, "dim");
+});
+
+test("deadman: configured and healthy but no ping accepted yet is Waiting, not Pinging", () => {
+  const v = deadmanVerdict(dmHealth({ configured: true, healthy: true, last_ping_age_s: null,
+                                      last_ok_age_s: null }));
+  eq(v.label, "Waiting");
+  eq(v.tone, "dim");
+  eq(v.detail, "No ping accepted yet");
+});
+
+test("deadman: a ping attempted but never accepted is still Waiting", () => {
+  // `last_ping_age_s` is the last ATTEMPT. Healthy stays true until a failure is
+  // WARNED about, so an attempt whose answer has not come back reads healthy.
+  const v = deadmanVerdict(dmHealth({ configured: true, healthy: true, last_ping_age_s: 3,
+                                      last_ok_age_s: null }));
+  eq(v.label, "Waiting");
+});
+
+test("deadman: a server that does not report accepted pings is Waiting, never Pinging", () => {
+  // An older server sends no last_ok_age_s at all. Not knowing is not a green.
+  const v = deadmanVerdict(dmHealth({ configured: true, healthy: true, last_ping_age_s: 5 }));
+  eq(v.label, "Waiting");
+});
+
+test("deadman: Pinging only while the accepted ping is recent, with its age", () => {
+  const fresh = deadmanVerdict(dmHealth({ configured: true, healthy: true, last_ping_age_s: 5,
+                                          last_ok_age_s: 42.4 }));
+  eq(fresh.label, "Pinging");
+  eq(fresh.tone, "good");
+  eq(fresh.detail, "Last ping accepted 42s ago");
+  const edge = deadmanVerdict(dmHealth({ configured: true, healthy: true, last_ping_age_s: 5,
+                                         last_ok_age_s: 179 }));
+  eq(edge.label, "Pinging");
+  const stale = deadmanVerdict(dmHealth({ configured: true, healthy: true, last_ping_age_s: 5,
+                                          last_ok_age_s: 181 }));
+  eq(stale.label, "Stale");
+  eq(stale.tone, "warn");
+  eq(stale.detail, "Last ping accepted 181s ago");
+});
+
+test("deadman: an unusable age is never Pinging", () => {
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    const v = deadmanVerdict(dmHealth({ configured: true, healthy: true, last_ping_age_s: 5,
+                                        last_ok_age_s: bad }));
+    eq(v.label, "Waiting", `age ${bad}:`);
+  }
+});
+
+test("deadman: Unreachable wins over everything when healthy is false", () => {
+  for (const age of [null, 5, 900]) {
+    const v = deadmanVerdict(dmHealth({ configured: true, healthy: false, last_ping_age_s: 5,
+                                        last_ok_age_s: age }));
+    eq(v.label, "Unreachable", `age ${String(age)}:`);
+    eq(v.tone, "bad");
+  }
+});
+
+test("deadman: not configured stays Not set whatever the age says", () => {
+  const v = deadmanVerdict(dmHealth({ configured: false, healthy: true, last_ping_age_s: null,
+                                      last_ok_age_s: 5 }));
+  eq(v.label, "Not set");
+  eq(v.tone, "dim");
 });
 
 // ---------------------------------------------------------------- defaultDraft

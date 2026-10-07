@@ -44,7 +44,7 @@ This rule also applies when only one live panel remains. It counts passes, not m
 
 A flow-derived plan requests park and camera warm-up when its observing window ends, including dawn. The wind-down closes the dust cover; roof or dome closure depends on the configured policy. If a wired shutdown calibration lane requests day darks, a normal night can take them between park and warm-up. An abort or unsafe trip does not run that day-darks lane.
 
-For a continuing campaign, remaining work stays in the session ledger and a later window can resume it. Before that restart, forecast rain can veto it; cloud advice alone cannot. Missing forecast data gives no rain veto. Review the armed state after the night, and disarm it if the rig is no longer ready.
+For a continuing campaign, remaining work stays in the session log and a later window can resume it. Before that restart, forecast rain can veto it; cloud advice alone cannot. Missing forecast data gives no rain veto. Review the armed state after the night, and disarm it if the rig is no longer ready.
 
 ## Related
 

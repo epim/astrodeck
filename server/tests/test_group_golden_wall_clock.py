@@ -206,7 +206,7 @@ async def test_a_night_across_the_meridian_is_the_same_at_every_hour(
     assert "meridian flip complete (pier side west -> east)" in traces[0], (
         "premise: the night flips")
     assert (traces[0].count("meridian flip complete (pier side") == 1
-            and "a meridian flip is owed" not in traces[0]), (
+            and "a meridian flip is required" not in traces[0]), (
         "premise: the night flips at its first retry, with no flip-owed hold")
     # D-04 (#595, backlog ruling, owner-approved 2026-09-30): engine.start
     # now logs a WARNING naming every session its singleton silently

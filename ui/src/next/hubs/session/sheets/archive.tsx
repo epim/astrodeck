@@ -409,7 +409,7 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
           through it.
         </Mono>
         <Mono size={10} tone="dim">
-          A night runs noon to noon, so everything from one session lands under one key
+          A night runs noon to noon, so all frames from one session are grouped together
           even across midnight. Filenames carry the calendar date instead, which is why a
           00:10 frame&apos;s name and its night disagree.
         </Mono>

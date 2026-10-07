@@ -29,13 +29,13 @@ WITHOUT changing any existing ETA/resume bookkeeping:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import math
 import time
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable, NamedTuple
 
+from ..aio import reap
 from ..config import config_store, frames_payload
 from .. import capture_geometry, naming
 from ..devices.base import DeviceError, DomeShutterState, PierSide
@@ -262,7 +262,39 @@ GOTO_TIMEOUT_S = 420.0          # slew + iterated solve→sync→re-slew centeri
 #: rotate loop's slew, solves and moves, run before the centring. Every bound
 #: that wraps a goto commanding an angle adds it: a target's setup, and the
 #: meridian flip, whose re-centre commands the angle too (ruling 9).
-ROTATION_ALLOWANCE_S = 300.0
+#:
+#: 360, RAISED FROM 300 FOR D-05's NIGHTLY SELF-TEST (backlog ruling D-05,
+#: owner-approved 2026-09-30; #648). The self-test leaves the rotator 20
+#: degrees from where it found it (`Hub.rotator_self_test`), so the first
+#: rotating hop of a night cannot lean on the rotate shortcut (U-06), which
+#: leaves a rotator alone that already reads the angle: that hop runs the
+#: whole rotate loop. Priced at its worst, that is four solves and about 22
+#: degrees of net travel (the 20 degree step undone, and a residual), plus
+#: the 10 degrees of the one-sided approach's overshoot and return
+#: (``rotation.ROTATOR_BACKLASH_DEG``, 5 out and 5 back).
+#:   * a solve is 3 s of exposure (the default of the rotate loop and of the
+#:     self-test), ASTAP's own 60 s cap (solve/astap.py) and about 20 s for
+#:     the wheel borrow, the download and the frame write: 83 s, so four
+#:     are 332 s;
+#:   * travel is priced at the device layer's own bound, a full revolution
+#:     inside ``Rotator.MOVE_TIMEOUT_S`` (180 s, so 0.5 s a degree): 32
+#:     degrees are 16 s;
+#:   * 332 + 16 = 348 s, rounded up to the next whole minute: 360.
+#: At 300 a loop with the shortcut gone could outrun the bound, and the bound
+#: that fires is a safety abort of the whole night.
+ROTATION_ALLOWANCE_S = 360.0
+#: D-05 (#648): how many times a night the engine asks ``Hub.rotator_self_test``
+#: before it leaves the rotator's coupling unmeasured. A self-test that could
+#: not run (a solve that failed, a rotator that did not move) says nothing
+#: about the coupling, so it is asked once more at the next hop. Two caps the
+#: cost at four exposures and 40 degrees of rotator travel a night, on a rig
+#: whose sky or rotator will not cooperate.
+ROTATOR_SELF_TEST_ATTEMPTS = 2
+#: The bound on that one call: two solves (83 s each, by the arithmetic above)
+#: and the 20 degree step (10 s) are 176 s, and 240 leaves a minute over. It is
+#: a device await like every other, so an expiry is a safety abort (`_bounded`)
+#: and not a warning the night carries on from.
+ROTATOR_SELF_TEST_TIMEOUT_S = 240.0
 PARK_TIMEOUT_S = 240.0          # park / unpark
 # (the meridian flip's bounds are below, because they are built out of the
 #  guide-start bounds that follow.)
@@ -683,6 +715,15 @@ def _frame_altitude(target, site: dict, when: float) -> float | None:
 #: star on a passing cloud recovers routinely and did so on NGC 7331 for six
 #: hours the same night.
 _MAX_GUIDING_RECOVERIES = 2
+
+#: The longest exposure of the sky reading taken before a guiding recovery
+#: (#621, `_sky_closed_before_recovery`), seconds. The interrupted step's own
+#: exposure, capped here: a narrowband science exposure is three minutes or
+#: more and the reading is one unsaved frame the recovery waits behind. Not
+#: shorter, because `cloud_score`'s star-density thresholds were tuned on
+#: science-length frames, and a frame of a few seconds reads clear or cloudy
+#: on how many stars it could reach rather than on the sky.
+SKY_PRECHECK_MAX_S = 60.0
 
 
 class SafetyAbort(DeviceError):
@@ -2350,10 +2391,7 @@ class SequenceEngine:
                                "answering can hold this for a few minutes.",
                         **self._hold_cleared())
                 self._task.cancel()
-                try:
-                    await self._task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await reap(self._task)
             # the main run is now fully stopped, so no NEW thumb can be spawned
             # concurrently -- this always drains exactly the pending set (Task 6
             # review, Important #1: no orphaned renders / "destroyed but pending"
@@ -2386,6 +2424,19 @@ class SequenceEngine:
                 self._finalize_report("aborted")
                 self._set_state(state="aborted", detail="sequence aborted",
                                 end_reason="aborted", schedule=None, session=None)
+                # #668 FOLLOW-UP (backlog wave 13 integration): this is the
+                # SEVENTH terminal path -- a run cancelled before its own
+                # task ever took a turn, so `_run`'s try body (and its own
+                # `_finalize_report`/wind-down arms) never ran at all, and
+                # nothing below this reaches `_wind_down`'s flush either.
+                # Nothing in THIS codebase records a safety/skip/sky-angle
+                # event before a run's own first turn today, but a future
+                # one easily could (a pre-start safety check, say), and
+                # `reporter.flush()` is a no-op write when there is nothing
+                # queued -- cheap insurance against the same race #668 named,
+                # here for the one path that finalizes with no run behind it.
+                if self.reporter is not None:
+                    await self.reporter.flush()
         finally:
             # Cleared only after the TERMINAL state is on the wire, so the window
             # the flag names is exactly the window the clients see "aborting" in.
@@ -3021,7 +3072,7 @@ class SequenceEngine:
                 # in a smaller font — the session is dormant either way, and the
                 # two would disagree.
                 self._set_state(state="complete",
-                                detail="targets set aside — frames still owed",
+                                detail="targets set aside — frames remaining",
                                 end_reason="incomplete", schedule=None, session=None)
                 bus.log("info", f"sequence '{plan.name}' ended with targets set "
                                 f"aside: {self._shortfall_phrase(owed)}", "sequence")
@@ -3110,12 +3161,34 @@ class SequenceEngine:
                     else "sequence cancelled by a server shutdown", "sequence")
             await self._safe_stop()
             self._finalize_report(reason)
+            # #668 FOLLOW-UP (backlog wave 13 integration): THIS ARM NEVER
+            # CALLS `_wind_down`, so its own end-of-wind-down `await
+            # self.reporter.flush()` never runs for it -- `_finalize_report`'s
+            # own docstring names this arm as one of the two left unflushed
+            # when #668 was fixed. A `record_safety`/`mark_skipped`/
+            # `record_sky_angle` from moments before this cancel landed (an
+            # `_on_unsafe` call, a scheduler skip, a sky-angle note) schedules
+            # a fire-and-forget write (`SessionReporter._schedule_write`) that
+            # can still be in flight when `_finalize_report` above publishes
+            # "report" -- the same race #668 closed for the wind-down path,
+            # here for the one ending that skips wind-down entirely. Awaited
+            # before `raise`, same as `_safe_stop()` just above: re-raising a
+            # CancelledError after further awaits in its own handler is the
+            # same shape this method already relies on.
+            if self.reporter is not None:
+                await self.reporter.flush()
             raise
         except Exception as e:
             bus.log("error", f"sequence failed: {e}", "sequence")
             self._set_state(state="error", detail=str(e), schedule=None, session=None)
             await self._safe_stop()
             self._finalize_report("error")
+            # #668 FOLLOW-UP (backlog wave 13 integration): same reasoning as
+            # the `CancelledError` arm just above -- this is the OTHER
+            # terminal path `_finalize_report`'s docstring names as never
+            # reaching `_wind_down`'s own flush.
+            if self.reporter is not None:
+                await self.reporter.flush()
         finally:
             self._stop_watchdog()
 
@@ -3163,7 +3236,29 @@ class SequenceEngine:
         finalize on the complete/dawn path, the outer ``except Exception`` would
         otherwise re-finalize with end_reason='error' — overwriting 'complete' and
         publishing a contradictory second ``report`` event. The first finalize
-        wins; later calls are no-ops."""
+        wins; later calls are no-ops.
+
+        KEPT SYNCHRONOUS (#668). An EARLIER version of this fix also awaited
+        ``self.reporter.flush()`` here, which would have been redundant with
+        the ``finalize()`` call two lines up (itself synchronous and already
+        on disk when it returns) for THIS call's own write -- the only gap
+        flush closes is a PRIOR ``record_frame``/``record_safety``/
+        ``mark_skipped``/``record_sky_angle``'s fire-and-forget write still in
+        flight when this runs. But making this method ``async`` broke two
+        callers outside this work package's files (test doubles that stand in
+        for the engine: ``test_flows_continue.py:165`` and
+        ``test_flows_progress_route.py:1104``, both calling
+        ``self.engine._finalize_report(...)`` un-awaited -- a silent
+        "coroutine was never awaited", not even a loud failure) and left two
+        of ``_wind_down``'s own three call sites unflushed anyway (the
+        "aborted"/"shutdown" and "error" arms finalize WITHOUT a following
+        ``_wind_down`` -- see ``_run``'s ``except asyncio.CancelledError`` /
+        ``except Exception`` arms -- so their prior-event races, if real,
+        would need their OWN flush, not this one). ``_wind_down``'s own
+        ``await self.reporter.flush()``, at its very end, closes the one race
+        #668 was filed for (the wind-down's OWN roof-close event, recorded
+        AFTER this call already ran) for every caller of ``_wind_down`` at
+        once, with no signature change and no caller to update."""
         if self._report_finalized:
             return
         self._report_finalized = True
@@ -3233,6 +3328,36 @@ class SequenceEngine:
                         f"'{self._session.name}': stopped by hand, so "
                         f"auto-resume is disarmed for it. Arm it from the "
                         f"session list to pick it up again.", "sequence")
+            # A FLOW THAT ASKED FOR NO AUTOMATIC RESUME ON LATER NIGHTS IS
+            # DISARMED WHERE ITS NIGHT ENDS (#195, owner ruling 7 on #189).
+            # `start()` arms every run, and keeps arming an Off plan's, so a
+            # crash or a reboot the same night still resumes: that is a
+            # separate promise, and the label says "subsequent nights". What
+            # an Off plan must not do is come back for the NEXT one, so the
+            # arming ends at the boundary the sky set: `dawn_cutoff` (the
+            # window closed, or a stop hit with frames owed) and `incomplete`
+            # (the run did everything it could and the plan is still short).
+            # The session stays dormant, so CONTINUE can shoot the rest.
+            #
+            # THE REASON FILTER IS THE CONTINUITY PROMISE. An `error`, a
+            # `shutdown` (the process went away: nobody chose that), an
+            # `unsafe` stop, a `quality` stop and a `cooling_skip` end a night
+            # something OTHER than the sky ended, and a restart that same
+            # night must still find the session armed. `ResumeArm.tick`'s
+            # night check stays as the net for the one that slips through: a
+            # crash before dawn followed by a restart after it.
+            #
+            # The line is said only when frames are owed. A session that owes
+            # nothing has no rest to continue by hand, and a log line telling
+            # the operator to do so would be one more thing that is not true.
+            if (reason in ("dawn_cutoff", "incomplete")
+                    and not self._session.plan.resume_across_nights):
+                self._session.auto_resume = False
+                if unmet:
+                    bus.log("info",
+                            f"'{self._session.name}': automatic resume on "
+                            f"later nights is off for this flow; CONTINUE it "
+                            f"by hand to shoot the rest.", "sequence")
             # COUNT THE CRASHES, AND ONLY THE CRASHES. `dormant` is the right
             # status for a crash - it is what lets auto-resume pick the night
             # back up, which is the behaviour we want - but a run that keeps
@@ -3300,10 +3425,28 @@ class SequenceEngine:
         Counts are CAMPAIGN-wide, not tonight's: ``_frames_done`` is seeded from
         the ledger on a resume, so night two of a 175-frame plan honestly reads
         "150 of 175" rather than starting over at zero.
+
+        THE LAST CLAUSE READS THE PLAN (#195, WP-85, wave 14 integration). A
+        flow whose DUSK WINDOW has Automatic resume Off is disarmed by
+        `_finalize_report` at exactly the two endings this phrase ends
+        (`dawn_cutoff` and `incomplete`), and that method logs "CONTINUE it
+        by hand" a moment later, so a phrase that always said "stays armed
+        and resumes when the window opens" told the operator the opposite
+        of what the next line did. It reads the same plan `_finalize_report`
+        reads (the session's frozen one, else the engine's), so the two
+        cannot disagree. With nothing owed an Off flow has nothing to
+        continue by hand, so the clause is left out rather than said falsely.
         """
         total = self.plan.total_frames() if self.plan else 0
-        return (f"{self._frames_done} of {total} frames, {owed} still owed — "
-                f"the session stays armed and resumes when the window opens")
+        head = f"{self._frames_done} of {total} frames, {owed} remaining"
+        plan = getattr(self._session, "plan", None) or self.plan
+        if plan is not None and not plan.resume_across_nights:
+            if not owed:
+                return head
+            return (f"{head} — the session will not resume on a later "
+                    f"night (automatic resume is off for this flow); "
+                    f"CONTINUE it by hand to shoot the rest")
+        return f"{head} — the session stays armed and resumes when the window opens"
 
     async def _run_scheduled(self, plan: SequencePlan) -> None:
         """Window-sorted skip-ahead scheduler (§1.9-C).
@@ -5143,7 +5286,7 @@ class SequenceEngine:
             reason = self._set_aside_targets.get(t.id)
             if reason is None and not t.calibration and \
                     self._every_owed_step_set_aside(t):
-                reason = "every filter it still owes is set aside tonight"
+                reason = "every filter with remaining frames is set aside tonight"
             if reason is None:
                 continue
             g = self._group_of(t)
@@ -5943,7 +6086,7 @@ class SequenceEngine:
             # "A panel whose remaining steps are all set aside is set aside"
             # (spec 5.3): its visits would shoot nothing tonight.
             self._set_panel_aside(group, target,
-                                  f"every filter {label} still owes is set "
+                                  f"every filter {label} still needs is set "
                                   f"aside", decided=True, kind="steps")
             return False
         if deferred is not None or (exposures and not accepted):
@@ -6867,7 +7010,7 @@ class SequenceEngine:
         bus.log("warn",
                 f"{target.name}: sank below its own altitude floor — setting "
                 f"it aside for the rest of this run and the rest of tonight "
-                f"(its frames stay owed in the ledger; a restart tonight does "
+                f"(its remaining frames stay pending in the session log; a restart tonight does "
                 f"not retry it; the next night does, once it is back above its "
                 f"floor)", "sequence")
         if self.plan and self.plan.instructions:
@@ -7212,14 +7355,195 @@ class SequenceEngine:
         the hub warn on every acquisition that a rotation was asked for,
         about a target nobody asked to rotate. A planned angle is commanded
         whatever the rig, as it always was: the hub says when no rotator
-        answered, and that is the operator's own request going unmet."""
+        answered, and that is the operator's own request going unmet.
+
+        NOTHING IS COMMANDED ONCE ROTATION IS OFF FOR THE NIGHT (D-05, #648):
+        when the self-test has measured the camera not following the rotator
+        (`_rotation_off_tonight`) the hub refuses every rotate, so asking
+        would only be refused, at the setup, the flip, and every re-centre
+        a recovery makes. This is the one choke point every acquisition and
+        every re-centre reads, so the angle is withheld here and not in
+        each caller; the first time one is withheld the night says so
+        (`_say_rotation_off`). A target that asked for no angle has nothing
+        to withhold and says nothing."""
         planned = getattr(target, "rotation_deg", None)
-        if planned is not None:
-            return planned
-        lock = self._lock_in_force(target)
-        if lock is None or not self._rotator_connected():
+        if planned is None:
+            lock = self._lock_in_force(target)
+            if lock is not None and self._rotator_connected():
+                planned = float(lock["pa_deg"])
+        if planned is not None and self._rotation_off_tonight():
+            self._say_rotation_off()
             return None
-        return float(lock["pa_deg"])
+        return planned
+
+    # ---- D-05, the engine half (#648): the nightly rotator self-test, and a
+    # fixed angle once rotation is off -------------------------------------
+    #
+    # WP-32b built the primitives in hub.py: ``Hub.rotator_self_test`` and the
+    # ``_rotation_trusted`` gate that makes ``rotate_to_pa`` refuse once a
+    # self-test has failed. The engine owed the other two halves of D-05
+    # (backlog ruling, owner-approved 2026-09-30): run the self-test once a
+    # night, before the first rotating group's first hop, and shoot at a
+    # fixed angle when it fails. Without the second, a failed trust made
+    # every rotate raise, `_group_hop_checks` turned each into a deferral,
+    # and a rotating mosaic shot nothing for the rest of the night.
+    #
+    # Class-level defaults, not ``__init__``/``start`` state: each is KEYED
+    # by what makes it stale (the observing night, the run's report), so no
+    # reset has to remember it, and a new night or a new run reads it fresh.
+
+    #: The observing night (`night_key`) on which ``Hub.rotator_self_test``
+    #: last ANSWERED, a PASS or a FAIL. One answer a night: a reconnect that
+    #: clears the hub's verdict mid-night does not buy a second self-test.
+    _rotator_tested_night: str | None = None
+    #: ``(night, asks)``: how many times the engine asked tonight, answered
+    #: or not, against ``ROTATOR_SELF_TEST_ATTEMPTS``. A different night
+    #: starts again from none.
+    _rotator_test_tries: tuple[str, int] = ("", 0)
+    #: The id of the report "rotation is off" was last said into. A new run
+    #: has a report of its own and says it there once; the same run never
+    #: says it twice.
+    _rotation_off_said_in: str | None = None
+
+    def _rotation_off_tonight(self) -> bool:
+        """Whether the self-test has MEASURED the camera not following the
+        rotator, so rotation is off for the night. None (never measured) is
+        not off: only a measured failure gates anything, as in hub.py, and
+        a hub double that has no verdict has measured nothing. Tolerant of
+        an engine with no hub at all, which the tests that grade the
+        angle methods on a bare engine build (``__new__``)."""
+        hub = getattr(self, "hub", None)
+        return getattr(hub, "_rotation_trusted", None) is False
+
+    def _say_rotation_off(self) -> None:
+        """Say once per run that rotation is off for the night: one night-log
+        warning and one report entry (``rotation_off``, which the morning
+        report shows as it does ``focus_carry_on``).
+
+        THE LIMIT IS IN THE SENTENCE. With nothing to turn the camera, a
+        mosaic laid out at an angle is judged as a fixed camera is
+        (`_group_angle_check`): shot only where the camera already sits
+        within its tolerance of that angle, and set aside once, with the
+        turn-the-camera wording, where it does not. A reader who sees only
+        "panels are shot at a fixed angle" would expect every panel shot.
+        Words only: nothing in it comes from the site (#19, #140)."""
+        key = getattr(self.reporter, "id", "")
+        if self._rotation_off_said_in == key:
+            return
+        self._rotation_off_said_in = key
+        msg = ("rotation is off for the night: the rotator self-test found "
+               "the camera does not follow the rotator, so no turn is "
+               "requested and panels are shot at a fixed angle. A mosaic "
+               "laid out at an angle is shot only where the camera already "
+               "sits within its tolerance of that angle; where it does "
+               "not, the mosaic is set aside once: turn the camera or "
+               "re-frame at the measured angle")
+        bus.log("warning", msg, "sequence")
+        self._record_safety(msg, "rotation_off")
+
+    async def _ensure_rotator_self_test(self, target) -> None:
+        """D-05 (backlog ruling, owner-approved 2026-09-30; #648): before the
+        first rotating group's first hop of an observing night, ask the hub
+        to measure whether the camera follows the rotator
+        (``Hub.rotator_self_test``: a 20 degree step, two solves, 90%).
+
+        WHEN. A member of a group that rotates, which will command its
+        angle, centred, on a rig with a connected rotator, whose coupling
+        the hub has not measured yet (None: WP-88's first-use goto can
+        measure it too, and a value already there is not measured again),
+        not already answered tonight, and at most ``ROTATOR_SELF_TEST_
+        ATTEMPTS`` times a night. A flow with no rotating group, a fixed
+        group, a single framed target (not a mosaic: it keeps today's
+        behaviour, the hub's refusal degrading its rotate) and a rig with no
+        rotator never reach the hub.
+
+        FIRST PUT THE MOUNT ON THE PANEL'S FIELD, WITHOUT TURNING IT. The
+        self-test solves wherever the mount points now, which at the first
+        hop is wherever the last night left it, and a solve there may find
+        no field to measure. One centring attempt, no angle: only a
+        solvable field is wanted, the hop's own goto centres. The guider is
+        stood down first and the last spell's stop retry ended, as the hop
+        does before ITS slew (#148): this one runs ahead of them.
+
+        BEFORE THE HOP'S CLOCK. Called ahead of ``hop_t0`` and
+        ``hop_wall0``, so the minutes it takes are not charged to the first
+        hop's measured cost (`_record_event_cost`), and the sky angles its
+        own solves record (the rotator 20 degrees round) are stale for the
+        hop's angle check, which reads only what was exposed since the hop
+        began.
+
+        OUTCOMES. A PASS or a FAIL stamps the night (the hub has set its
+        verdict; `_setup_target` and `_group_angle_check` read it through
+        `_rotation_off_tonight`). A call that could not RUN (a solve that
+        failed, a rotator that did not move, a goto that raised) leaves the
+        trust unknown, spends one attempt, says so once, and the night
+        carries on exactly as it did before D-05: the hub's per-move follow
+        check is the backstop. A cancel and a `SafetyAbort`, a bound that
+        fired included, propagate: nothing may carry on past a timeout as if
+        the coupling had been measured."""
+        member = self._group_of(target)
+        if (member is None or not member.rotate
+                or getattr(target, "rotation_deg", None) is None
+                or not getattr(target, "center", False)
+                or "telescope" not in self.hub.devices
+                or not self._rotator_connected()):
+            return
+        if getattr(self.hub, "_rotation_trusted", None) is not None:
+            return
+        self_test = getattr(self.hub, "rotator_self_test", None)
+        if self_test is None:
+            return
+        night = night_key(time.time())
+        if self._rotator_tested_night == night:
+            return
+        tried_on, tried = self._rotator_test_tries
+        if tried_on != night:
+            tried = 0
+        if tried >= ROTATOR_SELF_TEST_ATTEMPTS:
+            return
+        self._rotator_test_tries = (night, tried + 1)
+        mosaic = member.name or member.id
+        await self._cancel_idle_stop_retry()
+        if self.plan.guide:
+            await self._stand_down_guider()
+        # THE MOMENT OF THIS LINE CAN BE THE CROSSING (spec 6.9, #166). The
+        # first hop of a night can be the one that ENDS a mosaic's meridian
+        # wait, and this line is said at the start of that hop, a moment
+        # after the flagged "target N/M" line, so unflagged its timestamp is
+        # the transit of a known RA, which is the longitude, for anyone who
+        # can read /api/logs. Flagged exactly while `_site_timed` says the
+        # run's publishes are, so a night with no such wait says it as it
+        # always said a line. The lines after it (a solve's, the verdict's)
+        # come a goto and a solve later: the coarse residual the spec
+        # accepts for the first frame, not a moment of the crossing.
+        bus.log("info",
+                f"{mosaic}: testing that the camera follows the rotator "
+                f"before the first rotated panel (D-05; attempt "
+                f"{tried + 1} of {ROTATOR_SELF_TEST_ATTEMPTS})", "sequence",
+                site_derived=self._site_timed())
+        try:
+            # ``max_attempts`` is the target's own when it sets one
+            # (`_centring_kwargs`), and passing both is a TypeError.
+            await _bounded(
+                self.hub.goto_and_center(
+                    target.ra_hours, target.dec_deg, rotation_deg=None,
+                    **{**self._centring_kwargs(target), "max_attempts": 1}),
+                GOTO_TIMEOUT_S,
+                f"goto+center {target.name} for the rotator self-test")
+            await _bounded(self_test(), ROTATOR_SELF_TEST_TIMEOUT_S,
+                           "rotator self-test")
+        except (SafetyAbort, asyncio.CancelledError):
+            raise
+        except Exception as e:      # noqa: BLE001 - it said nothing either way
+            bus.log("warning",
+                    f"{mosaic}: the rotator self-test could not run ({e}); "
+                    f"the coupling stays unmeasured and the night carries "
+                    f"on as it was, asking for the mosaic's angle"
+                    + ("" if tried + 1 < ROTATOR_SELF_TEST_ATTEMPTS
+                       else "; it is not asked again tonight"),
+                    "sequence")
+            return
+        self._rotator_tested_night = night
 
     def _settle_locked_angle(self, target, hop_angle: dict | None,
                              since: float) -> None:
@@ -7387,8 +7711,14 @@ class SequenceEngine:
             if run is not None:
                 run.angle_verified = True
             self._group_angle_read[group.id] = (verdict.measured_deg, label)
+        # D-05 (#648): a rotator the self-test found not following is no
+        # rotator for tonight, so the group is judged as a fixed camera is: a
+        # camera off its angle sets the group aside once, with the
+        # turn-the-camera wording, where a rotator's ``off`` defers the
+        # panel pass after pass for an angle nothing will bring it to.
+        rotates = group.rotate and not self._rotation_off_tonight()
         reads = None
-        if group.rotate and verdict.kind == "no_measurement":
+        if rotates and verdict.kind == "no_measurement":
             reads = await self._rotator_evidence(pa, centring)
         # The layout's panels: the members the plan carries, and the ones the
         # operator skipped, which are still tiles of the same layout.
@@ -7396,7 +7726,7 @@ class SequenceEngine:
             1 for t in (self.plan.targets if self.plan else [])
             if self._group_of(t) is group)
         decision = angle_decision(
-            verdict.kind, rotate=group.rotate,
+            verdict.kind, rotate=rotates,
             angle_verified=bool(run is not None and run.angle_verified),
             rotator_evidence=reads is not None,
             shoot_anyway=not group.require_centred,
@@ -7766,6 +8096,13 @@ class SequenceEngine:
         # wait is the sky's, not this acquisition's.
         await self._await_target_window(target)
 
+        # D-05 (#648): the first rotating group's first hop of a night
+        # measures whether the camera follows the rotator BEFORE anything
+        # asks it to turn. After the gates above, since it moves the mount,
+        # and before the hop's clock below, since it is a once-a-night
+        # preflight and not this acquisition's cost. See the helper.
+        await self._ensure_rotator_self_test(target)
+
         # THE HOP'S CLOCK STARTS HERE, after the gates (#189 U-07). The safety
         # gate can hold for weather, and a rain hold charged to the hop would
         # price every later hop at the length of a shower. The initial sweep
@@ -7787,6 +8124,17 @@ class SequenceEngine:
         # unframed target locked on its first shot (ruling 9). None when
         # there is neither, which is exactly the call every earlier plan made.
         rotation = self._commanded_rotation(target)
+        # D-05 (#648): ROTATION OFF FOR THE NIGHT is decided by
+        # `_commanded_rotation` above, the one choke point: once the
+        # self-test has measured the camera not following the rotator it
+        # returns None (and says so once), so no angle is requested. Asking
+        # would be refused at every hop, and `_group_hop_checks` would turn
+        # each refusal into a deferral of every panel for the rest of the
+        # night, which is the opposite of D-05's "panels are shot at a fixed
+        # angle". The group is then judged by the fixed-camera rules in
+        # `_group_angle_check`. Every spelling of the angle below (the
+        # centred goto, the no-light hold's retries, the uncentred slew's
+        # "asked for" line) reads this one local.
         # A new acquisition: whatever the last one was still waiting to lock
         # belongs to it, not to this one.
         self._angle_lock_pending = None
@@ -8311,7 +8659,7 @@ class SequenceEngine:
                 self._flip_armed = False
                 bus.log("warning",
                         f"{target.name}: could not work out whether a meridian "
-                        f"flip is owed ({e}) — the flip is DISARMED for this "
+                        f"flip is required ({e}); the flip is DISARMED for this "
                         f"target, so nothing will move it off its limit",
                         "sequence")
 
@@ -8692,8 +9040,8 @@ class SequenceEngine:
         tonight did take them up again."""
         names = ", ".join(s.filter or "no filter" for _, s in owed)
         bus.log("warning",
-                f"{target.name}: every step still owed is set aside for tonight "
-                f"({names}) — moving on; the ledger keeps them owed; a restart "
+                f"{target.name}: every step with remaining frames is set aside for tonight "
+                f"({names}) — moving on; their frames remain pending; a restart "
                 f"tonight does not retry them; the next night does", "sequence")
 
     async def _run_visit(self, ti: int, target: Target, visit: VisitBound) -> None:
@@ -9167,7 +9515,7 @@ class SequenceEngine:
             owed = max(0, step.count - self._session.accepted(step.id))
         line = (f"{target.name}: {step.filter or 'no filter'} set aside for "
                 f"tonight after {rejects} consecutive rejects — its {owed} "
-                f"frame(s) stay owed in the ledger; a restart tonight does not "
+                f"frame(s) remain pending in the session log; a restart tonight does not "
                 f"retry it; the next night does")
         self._set_aside[key] = line
         self._persist_set_aside(target.id, line, step_id=step.id,
@@ -9519,6 +9867,20 @@ class SequenceEngine:
                 needed.append("filterwheel")
             if plan.guide:
                 needed.append("guider")
+                # The dedicated guide camera is the device issue #16 was
+                # actually about (the 2026-09-12 strand), and the gate never
+                # looked at it. Absent when the guider shares the imaging
+                # sensor (native_backend.py's OAG fallback), so there is
+                # nothing to reconnect then.
+                #
+                # The reopen is the same NativeCamera object closing and
+                # opening itself, so the guider's held reference stays valid.
+                # It can lose a race with a guide loop that is mid-exposure on
+                # the handle being closed: that one exposure fails
+                # (CAMERA_CLOSED) and re-marks `connected` false, and the next
+                # frame boundary's pass through this gate reopens it again.
+                if "guide_camera" in self.hub.devices:
+                    needed.append("guide_camera")
             if plan.autofocus_every or any(t.autofocus_first for t in plan.targets):
                 needed.append("focuser")
             if any(not t.calibration for t in plan.targets):
@@ -9528,9 +9890,23 @@ class SequenceEngine:
             if dev is None:
                 continue
             # A camera that claims to be connected and is producing nothing is
-            # the case `connected` cannot express (issue #16).
+            # the case `connected` cannot express (issue #16). Imaging camera
+            # ONLY: the silent rule reads the imaging frame clock, which the
+            # guide camera never ticks.
             if getattr(dev, "connected", False) and not (
                     role == "camera" and self._camera_is_silent()):
+                if role == "guide_camera":
+                    # It is back (reopened here, or by a profile activate),
+                    # so an earlier give-up is over: a fresh outage is
+                    # retried at once, not held off by the old cool-off.
+                    self._guide_camera_retry_at = 0.0
+                continue
+            if role == "guide_camera" and (
+                    time.monotonic() < getattr(self, "_guide_camera_retry_at", 0.0)):
+                # Gave up on it a moment ago and nothing has changed. Each
+                # attempt publishes a `reconnect` event that alerting never
+                # dedupes, so retrying at every frame boundary would page once
+                # per frame for a camera that is not coming back.
                 continue
             tries = max(1, cfg.escalation.reconnect_retries)
             bus.log("warning", f"{role} has dropped out — reconnecting "
@@ -9548,6 +9924,20 @@ class SequenceEngine:
                 if attempt < tries:
                     await asyncio.sleep(RECONNECT_BACKOFF_S)
             else:
+                if role == "guide_camera":
+                    # SOFT-FAIL (#16): the run CAN shoot without a guide camera,
+                    # so one that will not reopen must never end an imaging
+                    # night. What guiding does without it is the owner's
+                    # existing policy for a guider that fails,
+                    # `escalation.guiding_action`, so say so and carry on.
+                    bus.log("warning",
+                            f"guide_camera dropped out and did not come back "
+                            f"after {tries} reconnect attempt"
+                            f"{'s' if tries > 1 else ''}; imaging continues and "
+                            f"guiding now falls to escalation.guiding_action "
+                            f"({cfg.escalation.guiding_action})", "sequence")
+                    self._guide_camera_retry_at = time.monotonic() + 60.0
+                    continue
                 # Out of attempts. Fall through to the ordinary teardown rather
                 # than inventing a second abort path: the run cannot shoot
                 # without this device, and SafetyAbort is what parks and warms.
@@ -11154,7 +11544,7 @@ class SequenceEngine:
             else:
                 bus.log("info", f"cloud hold: building {want} darks at "
                                 f"{step.exposure_s:g}s g{step.gain} one at a "
-                                f"time ({have} of {quota} already banked)",
+                                f"time ({have} of {quota} already captured)",
                         "sequence")
 
         if self._hold_darks_taken >= (self._hold_darks_want or 0):
@@ -11258,7 +11648,7 @@ class SequenceEngine:
                 continue
             bus.log("info",
                     f"day darks: {want} at {step.exposure_s:g}s g{step.gain} "
-                    f"({have} already banked)", "sequence")
+                    f"({have} already captured)", "sequence")
             for _ in range(want):
                 if taken >= quota:
                     break
@@ -11302,7 +11692,7 @@ class SequenceEngine:
                             "sequence")
                     return
         if taken:
-            bus.log("info", f"day darks: {taken} frame(s) banked before the "
+            bus.log("info", f"day darks: {taken} frame(s) captured before the "
                             f"warm ramp", "sequence")
 
     async def _stand_down_guider(self) -> None:
@@ -12408,7 +12798,7 @@ class SequenceEngine:
             # start() and the operator may have changed it since.
             session_store.save_run_state(self._session)
         except Exception as e:
-            bus.log("warning", f"session ledger write failed: {e}", "sequence")
+            bus.log("warning", f"session log write failed: {e}", "sequence")
         self._spawn_thumb(sf)
         return sf
 
@@ -13529,7 +13919,7 @@ class SequenceEngine:
             self._flip_no_op.add(key)
             self._flip_armed = True
             bus.log("info",
-                    f"{target.name}: the flip-owed hold's re-slew "
+                    f"{target.name}: the meridian flip hold's re-slew "
                     f"{owed_attempt} changed nothing — the mount still reports "
                     f"pier side {side_after}; still holding, and nothing is "
                     f"exposed while it stays on that side", "sequence")
@@ -14079,7 +14469,7 @@ class SequenceEngine:
             # The target's own tolerance and attempts: this is the centring
             # the first frame is shot at (`_centring_kwargs`, #170).
             await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                           rotation_deg=target.rotation_deg,
+                                           rotation_deg=self._commanded_rotation(target),
                                            **self._centring_kwargs(target))
         except Exception as e:          # noqa: BLE001
             # Non-fatal by design (same as the recovery and re-lock re-centres):
@@ -14088,6 +14478,134 @@ class SequenceEngine:
                     f"{target.name}: re-centring after the autofocus failed "
                     f"({e}); starting guiding at the current pointing",
                     "sequence")
+
+    async def _sky_closed_before_recovery(self, target, *, why: str,
+                                          after_failure: bool = False) -> bool:
+        """Read the sky before a guiding recovery spends anything on a guider
+        that may simply have lost its star to cloud (#621). True only when it
+        judged the sky cloudy and has already held for it, to the hold's
+        release; the caller then returns without recovering.
+
+        MEASURED, astrotown 2026-10-01 (night 2026-09-30, NGC 7331, 0.3.38).
+        Cloud closed in and for eighteen minutes the guiding-loss
+        ladder never asked whether the sky had: it diagnosed "the field is
+        walking", re-centred, recalibrated ("the last 14 frame(s) found no
+        star"), spent both recovery attempts and a calibration walk against
+        cloud, and kept shooting narrowband subs, until an L frame's verdict
+        entered the cloud hold. A guide camera that held a star
+        minutes ago and now finds none is cloud far more often than a walking
+        field.
+
+        THE READING is one UNSAVED frame at the interrupted step's gain,
+        offset and binning, for at most ``SKY_PRECHECK_MAX_S``, through the
+        plate-solve slot: the hub's own borrow and return, symmetric, so the
+        engine's focuser-offset bookkeeping sees no change. Not through the
+        interrupted filter: narrowband subs are star-poor, which is why only
+        an L frame raised the verdict that night. It is
+        never fed to ``_observe_clouds``: a different filter pollutes the
+        debounced vote the science frames build (`_probe_step`).
+
+        UNKNOWN IS NOT A REASON TO BLOCK RECOVERY, so a frame that fails, or
+        that nobody could judge (a stretched frame, a blackout slot), or that
+        could only be shot through a narrowband filter because the wheel has
+        no broadband slot to borrow, returns False. A capture that TIMES OUT
+        is the exception, as it is everywhere else: a wedged camera leaves as
+        the SafetyAbort it always was.
+
+        IT STANDS ASIDE, returning False at once, as the two existing
+        frame-verdict fallbacks do (`_no_safety_source`,
+        `_monitor_lacks_cloud_source`): with no target or a calibration
+        target (nothing to hold for), while a hold is already running (one
+        hold owns the sky at a time), on a simulator (a simulated frame
+        carries no stars and always reads cloudy), when the operator turned
+        ``safety.sky_fallback_hold`` off, and with no step to copy a probe
+        from.
+
+        THE GAP. At most one reading per ``CLOUD_PROBE_EVERY_S``, so a loss
+        and recovery cycle cannot spend a minute of exposure on every frame
+        boundary (an attempts-spent stand-down asks again on each). The two
+        failure tails pass ``after_failure``: a recalibration that has just
+        found no star IS new evidence about the sky, and the attempts that
+        lead to it bound how often that happens, so those re-asks are not
+        held to the gap.
+
+        Sets ``_pre_recovery_blind`` for the caller's wording: True only when
+        a reading was ATTEMPTED and found no stars to measure, so
+        `_hold_recentre_recalibrate` does not call a field "walking" on a
+        frame that could not show one. False when no reading was asked of the
+        sky (nothing contradicts the detector's own claim) or the frame found
+        stars."""
+        self._pre_recovery_blind = False
+        cfg = self._cfg
+        if (target is None or getattr(target, "calibration", False)
+                or self._holding_for_clear
+                or getattr(self.hub, "mode", "") == "sim"
+                or cfg is None
+                or not getattr(cfg.safety, "sky_fallback_hold", False)):
+            return False
+        step = self._hold_step
+        if step is None:
+            return False
+        last = getattr(self, "_sky_precheck_at", None)
+        if (not after_failure and last is not None
+                and time.monotonic() - last < CLOUD_PROBE_EVERY_S):
+            return False
+        probe_step = step.model_copy(update={
+            "filter": None, "frame_type": "Light",
+            "exposure_s": min(float(step.exposure_s), SKY_PRECHECK_MAX_S)})
+        slot = await self.hub._borrow_wheel_for_solve()
+        try:
+            through = await self.hub._narrowband_filter_loaded()
+            if through is not None:
+                bus.log("info",
+                        f"{why}: the sky was not read, because the wheel has "
+                        f"no broadband slot to borrow and a frame through "
+                        f"{through!r} is blind; recovering without it",
+                        "sequence")
+                self._pre_recovery_blind = True
+                return False
+            info = await self._capture(probe_step, target, save=False)
+        except SafetyAbort:
+            raise
+        except Exception as e:                    # noqa: BLE001 - reported
+            bus.log("warning",
+                    f"{why}: the sky could not be read ({e}); recovering "
+                    f"without it", "sequence")
+            self._pre_recovery_blind = True
+            return False
+        finally:
+            await self.hub._return_wheel_after_solve(slot)
+            # Stamped when the reading ENDS, success or not: the gap is idle
+            # time between readings, and a camera that keeps failing is not
+            # asked again on every frame boundary.
+            self._sky_precheck_at = time.monotonic()
+        info = info if isinstance(info, dict) else {}
+        got = verdict_from_info(info)
+        if got is None:
+            bus.log("warning",
+                    f"{why}: the frame taken to read the sky could not be "
+                    f"judged; recovering without it", "sequence")
+            self._pre_recovery_blind = True
+            return False
+        cloudy, _score, reason = got
+        if not cloudy:
+            stars = info.get("stars")
+            self._pre_recovery_blind = not (
+                isinstance(stars, (int, float)) and stars > 0)
+            # The detector's reason already opens with its own verdict
+            # ("clear (200 bright stars, 17x noise)"), so it is not wrapped
+            # in a second "clear (...)".
+            said = (reason if reason.lower().startswith("clear")
+                    else f"clear ({reason})" if reason else "clear")
+            bus.log("info",
+                    f"{why}: the sky reads {said}; recovering guiding",
+                    "sequence")
+            return False
+        await self._hold_for_clear(
+            f"{why}, and a fresh frame through a broadband filter says the "
+            f"sky has closed in" + (f" ({reason})" if reason else "")
+            + ", so no recovery attempt is spent on cloud", target)
+        return True
 
     async def _maybe_recover_guiding(self, target=None) -> None:
         if not (self.plan.guide and self._policy.recover_guiding):
@@ -14099,6 +14617,16 @@ class SequenceEngine:
             if await g.is_active():
                 return
         except Exception:
+            return
+        # THE SKY BEFORE ANYTHING IS SPENT (#621), and before the bound below
+        # as well as before the attempt is charged: a lost star under cloud
+        # is not an attempt, and with the attempts already spent the bound's
+        # answer is the operator's `guiding_action`, which under abort ends
+        # the NIGHT over weather. A cloudy reading holds for clear sky
+        # instead, whose release re-acquires the target and restarts the
+        # guider.
+        if await self._sky_closed_before_recovery(
+                target, why="guiding was lost"):
             return
         # BOUNDED (#72). Unbounded, this re-centred and recalibrated once per
         # frame loop for as long as the star stayed lost: on 2026-09-19 that
@@ -14197,7 +14725,7 @@ class SequenceEngine:
             try:
                 self._set_state(detail="re-centring after guiding loss")
                 await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=target.rotation_deg,
+                                               rotation_deg=self._commanded_rotation(target),
                                                **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design: a failed re-centre leaves the mount where
@@ -14211,6 +14739,18 @@ class SequenceEngine:
             await g.start_guiding()
         except Exception as e:
             bus.log("warning", f"guiding recovery failed: {e}", "sequence")
+            # A CALIBRATION THAT FOUND NO STAR is the one thing the reading
+            # above could not have seen: the sky may have closed since (#621:
+            # "the last 14 frame(s) found no star" was cloud). Asked again,
+            # so recovery 2/2 is not spent against it, and when it HAS closed
+            # the attempt this one spent against cloud is given back: a
+            # cloudy sky charges no attempt, before or after the fact. The
+            # hold is bounded and ends on a clear streak, so this cannot
+            # re-arm the #72 bound on a sky that is not shut.
+            if await self._sky_closed_before_recovery(
+                    target, why="guiding recovery failed",
+                    after_failure=True):
+                self._guiding_recoveries = max(0, self._guiding_recoveries - 1)
             return
         # ...and do not hand control back until the guider has stopped pulsing.
         await self._await_guider_quiet("the next frame")
@@ -14315,14 +14855,39 @@ class SequenceEngine:
         step is best-effort and non-fatal in the same way recovery is: a failed
         re-centre leaves the mount where it already was, which is strictly
         better than abandoning the run over it.
+
+        The sky is read first (`_sky_closed_before_recovery`, #621): neither
+        detector can tell a walking field from a closed sky, so under cloud
+        this is the cloud hold and nothing below runs, and a calibration that
+        then finds no star asks the sky once more before giving up.
         """
         g = self.hub.guider
         if not g or not g.connected:
             return
-        bus.log("warning",
-                f"{why}: the field is walking; holding to re-centre and "
-                f"recalibrate", "sequence")
-        self._set_state(detail="holding: the guided field is walking")
+        # THE SKY BEFORE THE FIELD (#621). Both detectors are blind to cloud:
+        # a guide loop that cannot see its star fails its settles and re-locks
+        # exactly as a walking field's does, and a recalibration against a
+        # closed sky finds no star and throws a good calibration away. A
+        # cloudy reading holds for clear sky instead and returns here before
+        # anything below is touched.
+        if await self._sky_closed_before_recovery(target, why=why):
+            return
+        # "WALKING" IS A DIAGNOSIS OF DISPLACED STARS, so it is not said on a
+        # reading that found none to measure (#621: a field the guide camera
+        # could not see a star in was called walking for eighteen minutes). The
+        # hold goes ahead either way, as the detector asked; only the claim
+        # changes. With no reading asked of the sky (a simulator, the switch
+        # off) the detector's own claim stands.
+        if getattr(self, "_pre_recovery_blind", False):
+            bus.log("warning",
+                    f"{why}: guiding is not holding and the sky could not say "
+                    f"why; holding to re-centre and recalibrate", "sequence")
+            self._set_state(detail="holding: guiding is not holding")
+        else:
+            bus.log("warning",
+                    f"{why}: the field is walking; holding to re-centre and "
+                    f"recalibrate", "sequence")
+            self._set_state(detail="holding: the guided field is walking")
 
         try:
             await g.stop_guiding()
@@ -14352,7 +14917,7 @@ class SequenceEngine:
             try:
                 self._set_state(detail="re-centring: the guided field walked")
                 await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=target.rotation_deg,
+                                               rotation_deg=self._commanded_rotation(target),
                                                **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design (same as recovery): a failed re-centre
@@ -14366,6 +14931,12 @@ class SequenceEngine:
             bus.log("warning",
                     f"guiding restart after the hold failed: {e}",
                     "sequence")
+            # The calibration found no star: ask the sky once more, as
+            # `_maybe_recover_guiding`'s tail does, so the next attempt is
+            # not spent against cloud that closed while this one ran (#621).
+            await self._sky_closed_before_recovery(
+                target, why="guiding restart after the hold failed",
+                after_failure=True)
             return
         # The hold is what those failures bought, so the counter starts again
         # from here; leaving it set would hold on every frame afterwards.
@@ -14719,7 +15290,7 @@ class SequenceEngine:
                 # degrade to a warning and normal scheduling (never a hang).
                 if self._jumps_spent >= MAX_JUMPS:
                     bus.log("warning",
-                            f"target-jump budget exhausted ({MAX_JUMPS}) — "
+                            f"target-jump limit reached ({MAX_JUMPS}) — "
                             f"ignoring '{fa.action}' to {fa.target_arg!r}; "
                             "continuing with normal scheduling", "sequence")
                     continue
@@ -15025,21 +15596,21 @@ class SequenceEngine:
         hold_min = self._flip_owed_hold_min()
         pre = self._pre_flip_side.get(key)
         if hold_min <= 0:
-            return ("The flip-owed hold is off (safety.flip_owed_hold_min is "
+            return ("The meridian flip hold is off (safety.flip_owed_hold_min is "
                     "0), so nothing stops the next frame being exposed on "
                     "this side past the meridian")
         if side not in ("east", "west"):
-            return ("The mount's side cannot be read, so the flip-owed "
-                    "invariant cannot hold the frame")
+            return ("The mount's side cannot be read, so the meridian flip "
+                    "safety check cannot hold the frame")
         if pre is None:
             return ("No pier side was seen for this target before the "
-                    "meridian, so the flip-owed invariant has nothing to "
+                    "meridian, so the meridian flip safety check has nothing to "
                     "compare against and will not hold the frame")
         if side != pre:
             return (f"The mount is not on the {pre} side it was seen on "
-                    f"before the meridian, so the flip-owed invariant lets "
+                    f"before the meridian, so the meridian flip safety check lets "
                     f"the frame through")
-        return (f"The flip-owed invariant now holds the frame: nothing is "
+        return (f"The meridian flip safety check now holds the frame: nothing is "
                 f"exposed past the meridian while the mount stays on the "
                 f"{side} side, for up to {hold_min:.0f} min")
 
@@ -15062,11 +15633,11 @@ class SequenceEngine:
         """
         deadline = time.time() + hold_min * 60.0
         bus.log("error",
-                f"{target.name}: a meridian flip is owed and the mount is "
+                f"{target.name}: a meridian flip is required and the mount is "
                 f"still on the {side} side -- refusing to expose. Holding up "
                 f"to {hold_min:.0f} min for the flip.", "sequence")
         self._flip_owed = True
-        self._set_state(detail="holding: a meridian flip is owed and the "
+        self._set_state(detail="holding: a meridian flip is required and the "
                                "mount has not flipped")
         attempt = 0
         try:
@@ -15117,7 +15688,7 @@ class SequenceEngine:
         finally:
             self._flip_owed = False
         raise StopTarget(
-            f"{target.name}: a meridian flip has been owed for "
+            f"{target.name}: a meridian flip has been pending for "
             f"{hold_min:.0f} min and the mount is still on the {side} side; "
             f"moving on rather than exposing across the pier")
 
@@ -15698,8 +16269,7 @@ class SequenceEngine:
             # this has to be done by hand, on every exit that is not a return.
             if not task.done():
                 task.cancel()
-                with contextlib.suppress(BaseException):
-                    await task
+                await reap(task)
 
     def _guide_rms(self) -> float | None:
         """Current total guide RMS in ARCSEC, or None when unguided/unreadable
@@ -16452,7 +17022,7 @@ class SequenceEngine:
             msg = (f"{label} failed on a sparse field again, at both "
                    f"exposures: the run carries on at {where}, {started} "
                    f"({since}). No further "
-                   f"sweep is owed for the sparse field; the next is the "
+                   f"sweep is scheduled for the sparse field; the next is the "
                    f"plan's own (autofocus_every, the temperature trigger or "
                    f"the next target)")
             bus.log("warning", msg, "sequence")
@@ -16491,8 +17061,8 @@ class SequenceEngine:
         bus.log("info",
                 f"{target.name}: this frame found {int(stars)} stars, at or "
                 f"over the sparse-field line of {SPARSE_FIELD_WARN}: the "
-                f"autofocus owed since the sparse-field failures sweeps at "
-                f"the next frame boundary", "sequence")
+                f"autofocus scheduled after the sparse-field failures will "
+                f"run at the next frame boundary", "sequence")
 
     async def _panel_off_safe(self) -> None:
         """Best-effort flat-panel-off (PRO-5): an aborted/failed run must NEVER
@@ -16623,6 +17193,20 @@ class SequenceEngine:
         if day_darks:
             await self._day_darks()
         await self._wind_down_warm(warm)
+        # #668: THE REPORT IS FINAL BY NOW, BUT ITS LAST EVENT MAY NOT BE ON
+        # DISK YET. `_wind_down_park_and_close` (above, inside
+        # `_wind_down_park_and_close`'s own call) records the roof-close
+        # safety event AFTER every terminal path's own `_finalize_report`
+        # call has already run and published "report" -- the dome is closed
+        # as part of winding down, not before the run is declared ended. That
+        # `record_safety` schedules a fire-and-forget snapshot write
+        # (`SessionReporter._schedule_write`), so a reader fetching the
+        # report the instant this wind-down returns could still race it to
+        # disk. Awaiting it here, once, after every wind-down step including
+        # the warm ramp's own kick-off, closes that window for every caller
+        # of `_wind_down` at once rather than each terminal path separately.
+        if self.reporter is not None:
+            await self.reporter.flush()
 
     async def _stop_guiding_quietly(self) -> None:
         """The wind-down's guider stop, and the auto-reopen roof close's

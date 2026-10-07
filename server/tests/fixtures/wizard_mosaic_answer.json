@@ -36,7 +36,8 @@
       "stop": "Dawn",
       "stopClock": "",
       "minAlt": 30,
-      "repeat": "Single night"
+      "repeat": "Single night",
+      "autoResume": "On"
      }
     },
     {

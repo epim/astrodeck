@@ -96,7 +96,7 @@ export const UNANSWERED_HINT =
 
 export const UNANSWERED_START_REASON =
   "The rig has not said yet whether the stack is already running. "
-  + "This clears when the first status lands.";
+  + "This clears when the first status update arrives.";
 
 /** The sentence under a channel that fell back to the composite.
  *

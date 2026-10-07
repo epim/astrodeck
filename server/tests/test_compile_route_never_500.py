@@ -537,9 +537,11 @@ UI_SRC = Path(__file__).resolve().parents[2] / "ui" / "src"
 SLICE_TS = UI_SRC / "components" / "flows" / "flowsSlice.ts"
 
 #: The store actions that refresh ``flows.compiled``, which is what the
-#: comment names: a flow opened, a save, and DONE or LOOP PANELS, which
-#: write through ``flowsApplyFraming``.
-COMPILING_ACTIONS = {"flowsOpen", "flowsSave", "flowsApplyFraming"}
+#: comment names: a flow opened, a save, DONE or LOOP PANELS, which write
+#: through ``flowsApplyFraming``, and (WP-86, #688) Tonight read over a graph
+#: the compile in hand was not made from, ``flowsFetchTonight``.
+COMPILING_ACTIONS = {"flowsOpen", "flowsSave", "flowsApplyFraming",
+                     "flowsFetchTonight"}
 
 
 def _compile_payload_text() -> str:
@@ -588,21 +590,48 @@ class TestTheCommentSaysWhenTheEditorCompiles:
             E   assert 'every edit' not in 'async def _...eadout(rig)}'
             E     'every edit' is contained here:
             E       ompile on every edit. the refusal is reported in the same list as every other loss. unmapped = [{"key": "plan", ...
+
+        WAVE 14 INTEGRATION (WP-86, #688): the comment also names Tonight's
+        compile, "when Tonight is read over a graph the compile in hand was
+        not made from (#688)", because ``flowsFetchTonight`` is now a moment
+        the editor compiles.
+
+        RED under mutant "the comment lacks the Tonight moment" (those lines
+        taken out of the refusal's comment), observed:
+
+            E   AssertionError: when tonight is read over a graph the compile in hand was not made from (#688)
         """
         text = _compile_payload_text().lower()
         assert "every edit" not in text, (
             "_compile_payload still claims a compile on every edit")
         for words in ("when a flow opens", "after each save", "done",
-                      "#356"):
+                      "#356", "when tonight is read over a graph the "
+                      "compile in hand was not made from (#688)"):
             assert words in text, words
 
     def test_the_moments_it_names_are_the_ones_the_editor_has(self):
         """The UI half of the same claim, so it cannot go stale: the store
         actions that call ``flowsCompile`` are exactly a flow opened, a
-        save and ``flowsApplyFraming`` (DONE, LOOP PANELS), and outside the
-        slice only the Target modal's DONE (``commit``) calls it, for a
-        DONE that changed only the flow setting. A compile added to any
-        other action, a param edit say, makes the comment false again.
+        save, ``flowsApplyFraming`` (DONE, LOOP PANELS) and, since WP-86
+        (#688), ``flowsFetchTonight`` (Tonight read over a graph the compile
+        in hand was not made from), and outside the slice only the Target
+        modal's DONE (``commit``) calls it, for a DONE that changed only the
+        flow setting. A compile added to any other action, a param edit say,
+        makes the comment false again.
+
+        RE-PINNED FOR BACKLOG WP-86 (#688, wave 14 integration): Tonight now
+        awaits a compile when the one in hand is not current, which is a
+        deliberate moment, so ``flowsFetchTonight`` joins the set and the
+        ``_compile_payload`` comment names it.
+
+        RED under mutant "Tonight does not compile" (the ``if (!compiledIsCurrent
+        (...)) await get().flowsCompile();`` line of ``flowsFetchTonight``
+        replaced by ``void 0;``, which would make the comment's new clause
+        false), observed:
+
+            E   AssertionError: assert {'flowsApplyF..., 'flowsSave'} == {'flowsApplyF..., 'flowsSave'}
+            E     Extra items in the right set:
+            E     'flowsFetchTonight'
 
         RED under mutant "a compile on every param edit" (``void
         get().flowsCompile();`` added to ``flowsSetParam`` in a copy of

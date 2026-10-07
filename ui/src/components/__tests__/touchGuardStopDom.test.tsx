@@ -173,7 +173,7 @@ async function scenario(): Promise<void> {
 
   test("a refused stop is REPORTED, not swallowed", () => {
     const t = overlayText();
-    assert(/DID NOT LAND|not land/i.test(t),
+    assert(/NOT CONFIRMED|not confirmed/i.test(t),
       `a 403 left the lock screen saying: ${t.slice(0, 200)} — the user believes the ` +
       "mount was told to stop and it was not");
     assert(!/Motion stopped/i.test(t),
@@ -189,7 +189,7 @@ async function scenario(): Promise<void> {
 
   test("the refusal is INSIDE the lock overlay, where it can be seen", () => {
     // The whole point: a toast would be behind this element.
-    assert(/DID NOT LAND/i.test(overlayText()),
+    assert(/NOT CONFIRMED/i.test(overlayText()),
       "the failure is not inside the lock overlay's own DOM — anywhere else on this " +
       "screen is underneath a z-50 pointer-blocking layer");
   });
@@ -242,7 +242,7 @@ async function teardownScenario(): Promise<void> {
 
   test("an abort that outlives the request budget is not a stop that did not land", () => {
     const t = overlayText();
-    assert(/DID NOT LAND/i.test(t) === false,
+    assert(/NOT CONFIRMED/i.test(t) === false,
       `the lock screen reports a failure over an abort that is running exactly as ` +
       `asked: ${t.slice(0, 200)}`);
     assert(/stopped/i.test(t),

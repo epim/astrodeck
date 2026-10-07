@@ -276,6 +276,9 @@ class SafetyConfig(BaseModel):
     # unlike close_dome_on_unsafe above, this is not a surprise ESCALATION
     # mid-night, only what already happens at the dawn wind-down anyway.
     # Harmless on a rig with no dome (the comment above: enacting needs one).
+    # A default only reaches a NEW config: `_save` writes every field out, so a
+    # file already on disk carries a literal False. CONFIG_SCHEMA 3 raises that
+    # once (`_apply_migrations`, WP-95); from schema 3 a False is the operator's.
     close_dome_when_done: bool = True
     # reopen_dome_when_safe (PRO-4 D3): OPT-IN advanced flag that ONLY matters when
     # close_dome_on_unsafe is also set. OFF (default) ⇒ close_dome_on_unsafe is
@@ -1350,7 +1353,13 @@ class PlanningConfig(BaseModel):
 #: from a 0 the operator typed, which is the exact distinction the note above
 #: says a version number cannot usually recover -- it works here only because
 #: the raise happens ONCE, on the way past 1, and never again.
-CONFIG_SCHEMA = 2
+#:
+#: 3 (2026-10-07, WP-95, #657): `safety.close_dome_when_done` was raised to
+#: True once (backlog ruling D-16, owner-approved 2026-09-30). The field
+#: default had already flipped in W7 with no migration behind it, so every
+#: config on disk still said False. Same shape as 1 -> 2: the raise happens
+#: once, on the way past 2, and a False written at 3 is the operator's.
+CONFIG_SCHEMA = 3
 
 
 def _stored_schema(raw: dict) -> int:
@@ -1968,6 +1977,72 @@ def _unknown_keys(raw: dict) -> dict:
     return {k: v for k, v in raw.items() if k not in known}
 
 
+def _apply_migrations(cfg: AppConfig, stored: int) -> None:
+    """Run every one-shot migration the file on disk still owes, in order.
+
+    Each step is keyed off ``stored`` -- the stamp read off disk before the
+    model was built -- never off ``cfg.schema_version``, which pydantic would
+    have invented for an unstamped file. There was no 0->1 change worth making
+    (everything before the marker was additive); the stamp existed so the
+    first of these would have a floor.
+
+    ONE FUNCTION FOR EVERY LOAD PATH. It used to be inline in
+    ``ConfigStore._load``, and ``_restore_from_bak`` -- the other way a config
+    comes off disk -- returned before any of it, keeping the old stamp. A
+    config rebuilt from its backup then ran un-migrated for the whole process,
+    and every save in that process re-wrote the old stamp, so a choice the
+    operator made meanwhile was exactly the one the step would overwrite on
+    the next boot. Both paths call this; neither carries its own copy.
+
+    1 -> 2 (GN-04, 2026-09-06). `standards.max_eccentricity` shipped at 0
+    = no eccentricity gate at all, and on the night of 2026-09-06 every
+    staircase-trailed sub was accepted at HFR 3.10 and stacked in because
+    of it. The default is now 0.65 (measured; see StandardsConfig), but a
+    rig that already has a config on disk would go on running with the
+    gate off for ever -- the fix shipped to nobody. A 0 written under
+    schema 1 was the built-in, not a decision, because there was no UI
+    state and no default that could mean anything else, so it is raised
+    ONCE here. From schema 2 on, a 0 is the operator turning the gate off
+    and is left alone.
+
+    2 -> 3 (WP-95, #657; backlog ruling D-16, owner-approved 2026-09-30).
+    D-16 made `safety.close_dome_when_done` default True and shipped no
+    migration, and `_save` writes `model_dump()` with no `exclude_defaults`,
+    so every config already on disk carries a literal False and never meets
+    the new default. The switch has been in Settings since the roof work, so
+    that False is usually the old default written out, but an operator who
+    switched the close OFF is byte-identical to one who never touched it (see
+    CONFIG_SCHEMA: no version number recovers that). D-16 ruled for the raise,
+    so it happens ONCE here and the line below tells the few who chose False
+    how to put it back. From schema 3 on, a False is the operator turning the
+    end-of-night close off and is left alone. `close_dome_on_unsafe` is NOT
+    part of this step: whether a rain trip should close a connected roof by default is the
+    owner's open question (b) on #657, and nothing here may decide it. Both
+    flags are inert on a rig with no dome.
+    """
+    if stored < 2 and cfg.standards.max_eccentricity == 0:
+        cfg.standards.max_eccentricity = DEFAULT_MAX_ECCENTRICITY
+        bus.log("info",
+                "frame eccentricity rejection is now on by default at "
+                + f"{DEFAULT_MAX_ECCENTRICITY:.2f}"
+                + " - this config had it off, which was the old built-in "
+                  "rather than a setting anyone chose. Trailed subs will "
+                  "now be rejected; set it back to 0 in Settings to shoot "
+                  "without the gate.",
+                "config")
+
+    if stored < 3 and not cfg.safety.close_dome_when_done:
+        cfg.safety.close_dome_when_done = True
+        bus.log("info",
+                "close_dome_when_done is now on by default and this config "
+                "had it off. The file cannot tell the old default from a "
+                "deliberate off, so it was raised once. A connected roof or "
+                "dome will now close at a normal end of night; turn 'Close "
+                "roof at end-of-night' off in Settings > Safety to leave it "
+                "open.",
+                "config")
+
+
 class ConfigStore:
     """Module singleton (like ``hub``) owning the persisted ``AppConfig``.
 
@@ -2046,6 +2121,12 @@ class ConfigStore:
         except Exception as exc:
             raise RuntimeError("configuration backup is invalid") from exc
         bus.log("warning", "config restored from backup (.bak)", "config")
+        # The backup owes the same migrations a primary does, and stamping it
+        # current is what stops the next boot owing them again. A newer
+        # file's stamp is never lowered (the `<` below).
+        _apply_migrations(cfg, stored)
+        if cfg.schema_version < CONFIG_SCHEMA:
+            cfg.schema_version = CONFIG_SCHEMA
         self._cfg = cfg
         # The backup came from a newer build too, if the primary did. Recovering
         # from corruption is not licence to also delete the settings this build
@@ -2123,32 +2204,9 @@ class ConfigStore:
                     "preserved untouched",
                     "config")
 
-        # MIGRATIONS. Each is keyed off `stored` -- the stamp read off disk
-        # before the model was built -- never off `cfg.schema_version`, which
-        # pydantic would have invented for an unstamped file. There was no 0->1
-        # change worth making (everything before the marker was additive); the
-        # stamp existed so this one would have a floor.
-        #
-        # 1 -> 2 (GN-04, 2026-09-06). `standards.max_eccentricity` shipped at 0
-        # = no eccentricity gate at all, and on the night of 2026-09-06 every
-        # staircase-trailed sub was accepted at HFR 3.10 and stacked in because
-        # of it. The default is now 0.65 (measured; see StandardsConfig), but a
-        # rig that already has a config on disk would go on running with the
-        # gate off for ever -- the fix shipped to nobody. A 0 written under
-        # schema 1 was the built-in, not a decision, because there was no UI
-        # state and no default that could mean anything else, so it is raised
-        # ONCE here. From schema 2 on, a 0 is the operator turning the gate off
-        # and is left alone.
-        if stored < 2 and cfg.standards.max_eccentricity == 0:
-            cfg.standards.max_eccentricity = DEFAULT_MAX_ECCENTRICITY
-            bus.log("info",
-                    "frame eccentricity rejection is now on by default at "
-                    + f"{DEFAULT_MAX_ECCENTRICITY:.2f}"
-                    + " - this config had it off, which was the old built-in "
-                      "rather than a setting anyone chose. Trailed subs will "
-                      "now be rejected; set it back to 0 in Settings to shoot "
-                      "without the gate.",
-                    "config")
+        # MIGRATIONS: one function, shared with `_restore_from_bak` -- see
+        # `_apply_migrations` for each step and for why it is not inline here.
+        _apply_migrations(cfg, stored)
 
         if cfg.schema_version < CONFIG_SCHEMA:
             cfg.schema_version = CONFIG_SCHEMA

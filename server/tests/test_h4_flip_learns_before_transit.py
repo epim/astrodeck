@@ -147,7 +147,7 @@ async def test_the_flip_owed_hold_teaches_nothing_about_flipping_early(
     assert night.said("A: meridian flip complete (pier side unreadable -> "
                       "unreadable)"), (
         f"premise: the blind attempt was taken as a flip: {night.said('A: ')}")
-    assert night.said("A: a meridian flip is owed"), (
+    assert night.said("A: a meridian flip is required"), (
         f"premise: the flip-owed hold held A: {night.said('A: ')}")
     assert night.said("the flip happened, resuming"), (
         f"premise: a re-slew of the hold flipped the mount: "

@@ -8,7 +8,7 @@ report. It runs on a mini-PC or a Pi at the scope. You open a page.
 
 [**Overview and documentation →**](https://epim.github.io/astrodeck/)
 
-![version](https://img.shields.io/badge/version-0.3.39-4DD9E8)
+![version](https://img.shields.io/badge/version-0.3.41-4DD9E8)
 ![python](https://img.shields.io/badge/python-3.11%2B-4DD9E8)
 ![platforms](https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20Pi-4DD9E8)
 ![licence](https://img.shields.io/badge/licence-Apache--2.0-8A97AE)
@@ -133,7 +133,7 @@ AstroDeck at it and keep everything where it is.
 | Route | What drives the hardware | What AstroDeck adds |
 |---|---|---|
 | **Standalone** | AstroDeck, via native drivers or ASCOM Alpaca | Imaging, planning and automation with available devices and task providers |
-| **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session ledger, Sky Atlas, weather model, remote access, phone dashboard |
+| **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session logs, Sky Atlas, weather model, remote access, phone dashboard |
 | **Alongside ASIAIR** | The ASIAIR app retains capture and guiding | Atlas planning and weather; optional experimental backend described below |
 
 Use AstroDeck for the parts where it helps and keep whatever already works.

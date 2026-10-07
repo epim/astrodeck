@@ -139,7 +139,7 @@ export function useCampaignStrip(): CampaignStripData | null {
     ? `CAMPAIGN · ${camp.name} · parked · resumes at dusk${
       camp.duskMs != null ? ` ${fmtClock(camp.duskMs)}` : ""}`
     : `CAMPAIGN · ${camp.name}${nightClause}`
-      + ` · ${camp.bankedH.toFixed(1)} of ${camp.goalH} h banked`;
+      + ` · ${camp.bankedH.toFixed(1)} of ${camp.goalH} h captured`;
 
   return { line, tone: "accent2", onPress };
 }
@@ -263,7 +263,7 @@ export function useSessionBanners(nowMs: number = Date.now()): BannerSpec[] {
     out.push({
       id,
       tone: "good",
-      text: `Night report ready. ${fmtIntegration(report.integration_s)} banked,`
+      text: `Night report ready. ${fmtIntegration(report.integration_s)} captured,`
         + ` ${report.frames_rejected} rejected.`,
       cta: { label: "open", onPress: () => nav.sheet("report", { id: report.id }) },
       onDismiss: () => dismiss(id),

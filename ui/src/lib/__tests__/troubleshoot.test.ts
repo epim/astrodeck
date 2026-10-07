@@ -116,7 +116,7 @@ test("copy: the reworded fixes still say what to DO", () => {
     "Re-seat the camera USB cable (a powered hub helps), then reconnect the camera.");
   const black = getTroubleshootEntry("black-frame");
   assert(!!black?.steps.some((s) =>
-    s === "Confirm the camera is actually taking frames, not just connected - start a loop and watch one land."),
+    s === "Confirm the camera is actually taking frames, not just connected - start a loop and check the preview."),
     `the black-frame capture step lost its instruction: ${JSON.stringify(black?.steps)}`);
   const trails = getTroubleshootEntry("star-trails");
   assert(!!trails?.steps.some((s) =>

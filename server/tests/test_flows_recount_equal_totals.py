@@ -50,7 +50,7 @@ L4R3 = _graph(_capture("c1", "L", count=4), _capture("c2", "R", count=3))
 
 #: The one line a quiet recount logs, less the flow's name and the count.
 QUIET = ("continues counting accepted subs where its session counted every "
-         "sub taken: nothing banked recounts differently")
+         "sub taken: the captured frame count is unchanged")
 
 
 @pytest.fixture

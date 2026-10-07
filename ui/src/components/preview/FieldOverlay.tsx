@@ -44,7 +44,7 @@ const MIN_R = 7;
  *  says so better than a dashed ellipse. */
 const MAX_R_FRAC = 0.42;
 
-/** How many objects get TEXT. Markers are not budgeted: losing a label is a
+/** How many objects get TEXT. Markers are not limited: losing a label is a
  *  readability decision, losing the mark is losing the information. */
 export function frameLabelBudget(stageW: number): number {
   return Math.max(4, Math.min(12, Math.round(stageW / 80)));

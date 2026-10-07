@@ -17,12 +17,17 @@ D-12 keeps the proactor loop (the server uses ``asyncio.create_subprocess_exec``
 in ``astrodeck/solve/astap.py``, which the selector loop cannot run on
 Windows) and asks for this ONE fault shape to be caught narrowly, logged
 once with its traceback, and turned into a deliberate non-zero exit so the
-rig's supervisor (scripts/lib/RigRestart.ps1) restarts the server. Any OTHER
+rig's supervisor (supervisor/supervisor.py; scripts/lib/RigRestart.ps1 is the
+deploy restart helper, not the supervisor) restarts the server. Any OTHER
 exception out of running the server -- including an OSError that merely
 looks similar -- must keep today's behaviour: propagate unchanged.
 
 These tests drive the matcher and the run-wrapper directly with a fake
 server/fake loop (per WP-54's instructions: never by killing a real server).
+The hand-built exception below is only what someone typed from the issue;
+test_w14_event_loop_fault_real.py (WP-96) runs the matcher against the fault
+CPython's own loop raises, adds the night-log line and the exit-code contract
+with the supervisor.
 
 MUTATIONS RUN, 2026-10-02, each in a byte backup of this worktree's
 server/astrodeck/__main__.py, restored and sha256-verified afterwards (grepped

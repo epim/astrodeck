@@ -1912,268 +1912,252 @@
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "The repository contains an Orange Pi 5 Wi-Fi provisioning component and an AstroDeck application. The provisioning installer copies portal and recovery services into an existing root filesystem; it does not flash an OS or install the complete astronomy application.",
-    "source": "orangepi5/README.md",
-    "line": 24,
+    "claim": "This repository does not provide a ready-to-flash appliance image you can download and write to a card. It provides the onboarding tool (`orangepi5/`) that someone installs onto a board after they have put an OS on it and installed AstroDeck.",
+    "source": "orangepi5/provision/install-to-rootfs.sh",
+    "line": 4,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 24
+        "path": "orangepi5/provision/install-to-rootfs.sh",
+        "line": 4
       },
       {
         "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
-      },
-      {
-        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
-        "line": 39
+        "line": 13
       }
     ],
     "id": "SETUP-086"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "The recorded board check used an Orange Pi 5 Pro with Armbian Trixie. It is evidence for that board and software combination, not a claim that every Orange Pi or Wi-Fi adapter has passed the same checks. The test substituted software reboots for physical power cuts.",
-    "source": "orangepi5/README.md",
-    "line": 24,
+    "claim": "Only one board and OS combination has actually been checked end to end: an Orange Pi 5 Pro running Armbian Trixie (community build `26.8.0-trunk.7`), checked on 2026-09-03 with software restarts standing in for real power cuts.",
+    "source": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
+    "line": 1,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 24
-      },
-      {
-        "path": "tools/site/claims-ledger.md",
-        "line": 54
-      },
-      {
-        "path": "server/astrodeck/devices/cameras/zwo_asi.py",
-        "line": 30
-      },
-      {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
+        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
+        "line": 1
       },
       {
         "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
-        "line": 39
+        "line": 10
+      },
+      {
+        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
+        "line": 28
       }
     ],
     "id": "SETUP-087"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "1. Find the appliance's printed setup network name and per-device password. There is no universal setup password.",
-    "source": "orangepi5/README.md",
-    "line": 24,
+    "claim": "A \"commissioned\" appliance already has AstroDeck installed and the onboarding tool enabled, and has a setup password printed for it (on a label on the case, or handed to you separately).",
+    "source": "orangepi5/provision/astrodeck-provision-broker.py",
+    "line": 529,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 24
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 529
+      },
+      {
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 369
       }
     ],
     "id": "SETUP-088"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "2. During its authorized setup window, join that Wi-Fi network from your phone or computer.",
-    "source": "orangepi5/README.md",
-    "line": 24,
+    "claim": "If it does not, open a browser and go to `http://10.42.0.1/`.",
+    "source": "orangepi5/provision/astrodeck-provision.py",
+    "line": 28,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 24
+        "path": "orangepi5/provision/astrodeck-provision.py",
+        "line": 28
       },
       {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
-      },
-      {
-        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
-        "line": 39
+        "path": "orangepi5/provision/astrodeck-provision.py",
+        "line": 379
       }
     ],
     "id": "SETUP-089"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "3. Open the captive portal, or browse to `http://10.42.0.1`, and select your home Wi-Fi network. Enter its password locally.",
-    "source": "orangepi5/README.md",
-    "line": 24,
+    "claim": "The password is 12 characters in three groups of four, for example `ab12-cd34-ef56`. There is no shared or fallback password; each board's is different.",
+    "source": "orangepi5/provision/astrodeck-provision-broker.py",
+    "line": 58,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 24
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 58
       },
       {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
-      },
-      {
-        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
-        "line": 39
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 373
       }
     ],
     "id": "SETUP-090"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "4. After joining, reconnect your phone to the home network. Reach AstroDeck through the application address configured for that appliance and sign in with an application account.",
-    "source": "orangepi5/README.md",
-    "line": 24,
+    "claim": "The page will tell you it is joining your network and that this setup network is about to switch off. That message confirms the appliance received your request, not that the join itself succeeded; the next step confirms that.",
+    "source": "orangepi5/provision/astrodeck-provision.py",
+    "line": 442,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 24
+        "path": "orangepi5/provision/astrodeck-provision.py",
+        "line": 442
       },
       {
-        "path": "ui/src/components/settings/ProfileList.tsx",
-        "line": 552
+        "path": "orangepi5/provision/astrodeck-provision.py",
+        "line": 452
       }
     ],
     "id": "SETUP-091"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "The Wi-Fi credential and the AstroDeck administrator account are different. Provisioning the network does not create an application account. A setup window expires after 15 minutes and does not reopen simply because home Wi-Fi is absent.",
-    "source": "orangepi5/README.md",
-    "line": 24,
+    "claim": "The setup network only opens for one 15-minute window per authorization. If this is not the board's first boot since it was commissioned, or someone already used that window, it will not reopen by itself.",
+    "source": "orangepi5/provision/astrodeck-provision-broker.py",
+    "line": 51,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 24
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 51
       },
       {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
-      },
-      {
-        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
-        "line": 39
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 573
       }
     ],
     "id": "SETUP-092"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "1. Install and boot a suitable 64-bit OS. Confirm storage, networking and the board's power supply before installing AstroDeck.",
-    "source": "orangepi5/provision/install-to-rootfs.sh",
-    "line": 2,
+    "claim": "If you mistyped your home Wi-Fi password, reconnect to the same `AstroDeck-XXXX` network before the 15-minute window ends; the setup page shows the error and lets you try again.",
+    "source": "orangepi5/provision/astrodeck-provision-broker.py",
+    "line": 1234,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 1234
+      },
+      {
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 1251
       }
     ],
     "id": "SETUP-093"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "2. Install the application through the [Linux ARM64 binary](install-binary.md), [source setup](getting-started.md), or [Docker path](install-docker.md). These are alternatives; none is silently installed by the portal script.",
-    "source": "orangepi5/provision/install-to-rootfs.sh",
-    "line": 2,
+    "claim": "If three short power cycles do not bring the network back, the appliance was probably never commissioned, or its onboarding services are not running. Recovering from that needs local or console access to the board;",
+    "source": "orangepi5/provision/astrodeck-provision-broker.py",
+    "line": 52,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 52
       },
       {
-        "path": "docker-compose.yml",
-        "line": 16
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 53
       },
       {
-        "path": "Dockerfile",
-        "line": 87
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 630
       }
     ],
     "id": "SETUP-094"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "3. Create an administrator and configure authenticated access. Test the simulator locally before attaching hardware.",
-    "source": "orangepi5/provision/install-to-rootfs.sh",
-    "line": 2,
+    "claim": "This restarts Wi-Fi onboarding only. It does not touch AstroDeck accounts, captures, plans or any other configuration.",
+    "source": "orangepi5/README.md",
+    "line": 25,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
+        "path": "orangepi5/README.md",
+        "line": 25
+      },
+      {
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 35
       }
     ],
     "id": "SETUP-095"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "4. If you are building a provisioning appliance, follow the [provisioner installation and commissioning instructions](../../orangepi5/README.md). Its services require a durable `/data` mount and local commissioning. Keep the one-time credential handoff private and put the credential on the enclosure.",
-    "source": "orangepi5/provision/install-to-rootfs.sh",
-    "line": 2,
+    "claim": "The appliance also runs a Wi-Fi watchdog that reloads a crashed radio driver on its own, usually within about 30 seconds, so a brief drop is not necessarily a failure.",
+    "source": "orangepi5/provision/astrodeck-provision-broker.py",
+    "line": 338,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 338
       },
       {
-        "path": "orangepi5/README.md",
-        "line": 24
-      },
-      {
-        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
-        "line": 39
+        "path": "orangepi5/provision/astrodeck-radio-watchdog.timer",
+        "line": 9
       }
     ],
     "id": "SETUP-096"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "5. Validate the target board's USB/serial discovery, hotplug, storage and restart behavior with the intended equipment. Host tests do not replace that hardware check.",
-    "source": "orangepi5/provision/install-to-rootfs.sh",
-    "line": 2,
+    "claim": "It logs Wi-Fi state, signal and relevant system messages to a file every minute so they can be read later without a live connection to the board. This is a console-level tool for whoever has the board in hand, not something you can run from a phone.",
+    "source": "orangepi5/diag/collect.sh",
+    "line": 22,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
+        "path": "orangepi5/diag/collect.sh",
+        "line": 22
       },
       {
-        "path": "docker-compose.usb.yml",
-        "line": 8
+        "path": "orangepi5/diag/collect.sh",
+        "line": 104
+      },
+      {
+        "path": "orangepi5/diag/install-diag.sh",
+        "line": 12
       }
     ],
     "id": "SETUP-097"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "Native guiding and native autofocus still need a separately built `astrodeck_native` extension; current release packaging does not supply it (#630). ASTAP and its star database are separate. An ARM64 OS or executable alone does not establish that all vendor SDKs are usable on that board.",
-    "source": "orangepi5/provision/install-to-rootfs.sh",
-    "line": 2,
+    "claim": "Native guiding and native autofocus require `astrodeck_native`, which published releases do not include yet ([#630](https://github.com/epim/astrodeck/issues/630)). ASTAP and its star database are a separate installation. An Orange Pi running AstroDeck is not, by itself, evidence that either is present.",
+    "source": "packaging/astrodeck.spec",
+    "line": 74,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
-      {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
-      },
       {
         "path": "packaging/astrodeck.spec",
         "line": 74
@@ -2199,54 +2183,38 @@
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "Three distinct short boots within the recovery window can authorize a new setup window and restore the printed factory Wi-Fi password. The implemented thresholds are boots shorter than 60 seconds within 180 seconds. This is Wi-Fi recovery; it does not reset AstroDeck accounts, captures or plans. Follow the appliance's commissioning instructions before relying on it.",
-    "source": "orangepi5/README.md",
-    "line": 22,
+    "claim": "Install AstroDeck through the [Linux ARM64 binary](install-binary.md), [source setup](getting-started.md) or [Docker path](install-docker.md). These are three separate alternatives; none of them is installed by the onboarding tool below.",
+    "source": "orangepi5/provision/install-to-rootfs.sh",
+    "line": 21,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 22
-      },
-      {
-        "path": "orangepi5/README.md",
-        "line": 24
+        "path": "orangepi5/provision/install-to-rootfs.sh",
+        "line": 21
       },
       {
         "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
-      },
-      {
-        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
-        "line": 39
+        "line": 29
       }
     ],
     "id": "SETUP-099"
   },
   {
     "page": "docs/guide/orange-pi-appliance.md",
-    "claim": "If a commissioned appliance fails to rejoin, use its local console to inspect the provisioning services. Do not factory-reset the application to repair a Wi-Fi problem. The [recorded hardware gate](../hardware/orange-pi-5-hardware-gate-2026-09-03.md) lists what was tested and what remained unverified.",
-    "source": "orangepi5/README.md",
-    "line": 22,
+    "claim": "If you also want the phone-based Wi-Fi onboarding this guide describes, install the tooling in `orangepi5/` onto the board's root filesystem, make sure `/data` is mounted as its own durable filesystem rather than a plain directory on the OS disk (its services refuse to run otherwise), then commission the board once from its local console.",
+    "source": "orangepi5/provision/astrodeck-provision-broker.py",
+    "line": 78,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Re-derived 2026-10-02 against the rewritten page (#673); read current orangepi5/ source, no hardware run by this author.",
     "sources": [
       {
-        "path": "orangepi5/README.md",
-        "line": 22
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 78
       },
       {
-        "path": "orangepi5/README.md",
-        "line": 24
-      },
-      {
-        "path": "orangepi5/provision/install-to-rootfs.sh",
-        "line": 2
-      },
-      {
-        "path": "docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md",
-        "line": 39
+        "path": "orangepi5/provision/astrodeck-provision-broker.py",
+        "line": 49
       }
     ],
     "id": "SETUP-100"
@@ -6196,7 +6164,7 @@
   },
   {
     "page": "README.md",
-    "claim": "![version](https://img.shields.io/badge/version-0.3.39-4DD9E8)\n![python](https://img.shields.io/badge/python-3.11%2B-4DD9E8)\n![platforms](https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20Pi-4DD9E8)\n![licence](https://img.shields.io/badge/licence-Apache--2.0-8A97AE)",
+    "claim": "![version](https://img.shields.io/badge/version-0.3.41-4DD9E8)\n![python](https://img.shields.io/badge/python-3.11%2B-4DD9E8)\n![platforms](https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20Pi-4DD9E8)\n![licence](https://img.shields.io/badge/licence-Apache--2.0-8A97AE)",
     "source": "server/astrodeck/devices/base.py",
     "line": 1,
     "verified_by": "source-trace",
@@ -6825,7 +6793,7 @@
   },
   {
     "page": "README.md",
-    "claim": "| **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session ledger, Sky Atlas, weather model, remote access, phone dashboard |",
+    "claim": "| **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session logs, Sky Atlas, weather model, remote access, phone dashboard |",
     "source": "server/astrodeck/devices/base.py",
     "line": 1,
     "verified_by": "source-trace",

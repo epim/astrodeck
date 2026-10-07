@@ -736,7 +736,7 @@ async def test_control_when_every_panel_rejects_none_is_set_aside_by_the_rule(
     assert all(len(_gotos(night, lb)) == 5 for lb in SNAKE), night.gotos
     panels = [r for r in night.stored.set_aside if r["step_id"] is None]
     assert len(panels) == 4 and all(
-        "still owes is set aside" in r["reason"] for r in panels), panels
+        "still needs is set aside" in r["reason"] for r in panels), panels
 
 
 async def test_accepted_mode_with_a_rejecting_grader_terminates(

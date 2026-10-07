@@ -91,10 +91,29 @@ export function deriveSinkHealth(sink: AlertSink, health: AlertHealth | null): H
   return { tone: "warn", label: "Untested", detail: "Send a test to verify delivery" };
 }
 
+/** Three missed pings. The server pings every 60 s (alerting.py
+ *  DEADMAN_INTERVAL_S); past this an external monitor's grace would have run
+ *  out and paged, so a "Pinging" badge would be a claim nothing keeps. */
+const DEADMAN_STALE_S = 180;
+
+/** The dead-man badge. `AlertHealth.deadman.last_ok_age_s` (#125) is the
+ *  seconds since the monitor last ACCEPTED a ping, null if it never has; it is
+ *  optional because a server older than the field does not send it, and an
+ *  absent value reads as "no accepted ping known", the safe side of a green
+ *  badge. */
 export function deadmanVerdict(health: AlertHealth | null): HealthVerdict {
   const dm = health?.deadman;
   if (!dm?.configured) return { tone: "dim", label: "Not set", detail: "No external monitor configured" };
-  return dm.healthy
-    ? { tone: "good", label: "Pinging", detail: "External monitor is being pinged" }
-    : { tone: "bad", label: "Unreachable", detail: "Monitor URL is not being reached - check it" };
+  if (!dm.healthy) return { tone: "bad", label: "Unreachable", detail: "Monitor URL is not being reached - check it" };
+  // `healthy` only means no failure has been WARNED about, which is also true
+  // before the first request leaves: a pasted typo reads healthy until the
+  // first attempt fails. Only an accepted ping makes this a fact (#125).
+  const age = dm.last_ok_age_s;
+  if (typeof age !== "number" || !Number.isFinite(age) || age < 0) {
+    return { tone: "dim", label: "Waiting", detail: "No ping accepted yet" };
+  }
+  const detail = `Last ping accepted ${Math.round(age)}s ago`;
+  return age < DEADMAN_STALE_S
+    ? { tone: "good", label: "Pinging", detail }
+    : { tone: "warn", label: "Stale", detail };
 }

@@ -136,8 +136,8 @@ class CloudState:
                 return ("no cloud reading yet"
                         if age is None else
                         f"cloud reading undecided ({self._votes} frame(s) so far)")
-            return (f"cloud reading is {age:.0f}s old — too stale to act on "
-                    f"(budget {self.max_age_s:.0f}s)")
+            return (f"cloud reading is {age:.0f}s old; too old to use "
+                    f"(maximum age {self.max_age_s:.0f}s)")
         word = "cloudy" if v else "clear"
         # THE VERDICT AND THE LAST FRAME CAN DISAGREE, and saying so is the
         # whole job of this line.

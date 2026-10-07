@@ -56,11 +56,11 @@ function Brief({ text }: { text: string }): JSX.Element | null {
   return (
     <section
       className="border border-line rounded-[10px] p-3 flex flex-col gap-2"
-      aria-label="Brief generated from the graph"
+      aria-label="Plan summary"
       data-tonight-brief=""
     >
       <h3 className="font-display font-semibold text-[9.5px] tracking-[0.22em] text-faint">
-        BRIEF - GENERATED FROM THE GRAPH
+        PLAN SUMMARY
       </h3>
       <p className="text-[12.5px] leading-[1.65] [text-wrap:pretty]">{text}</p>
     </section>
@@ -78,7 +78,7 @@ export function TonightStory({ story, brief = "" }: {
       <div className="flex flex-col gap-4">
         <Brief text={brief} />
         <p className="text-[12px] leading-[1.5] text-dim [text-wrap:pretty]">
-          The server resolved this night and had nothing to say about it.
+          No night summary is available.
         </p>
       </div>
     );

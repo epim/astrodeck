@@ -202,7 +202,7 @@ def order_panels(
         # one object for the pass, and a NaN in it is the caller's bug under
         # any policy.
         fraction = _number(snap.fraction_banked.get(p.id, 0.0),
-                           "fraction banked", p, none_ok=False)
+                           "completion fraction", p, none_ok=False)
         visited = _number(snap.last_visit_ts.get(p.id),
                           "last visit time", p, none_ok=True)
         floor = _number(snap.time_to_floor_s.get(p.id),

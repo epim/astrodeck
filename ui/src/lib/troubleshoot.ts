@@ -204,7 +204,7 @@ export const TROUBLESHOOTING: readonly TroubleshootEntry[] = [
       "Take the lens/dust cap off and open the flat panel or focuser cover.",
       "Turn on Auto-stretch in the preview - a faint sky often looks black un-stretched.",
       "Raise the exposure (try 2-5s for framing) and set gain to a mid value.",
-      "Confirm the camera is actually taking frames, not just connected - start a loop and watch one land.",
+      "Confirm the camera is actually taking frames, not just connected - start a loop and check the preview.",
     ], seeAlso: ["gain", "exposure"] },
   { topic: "star-trails", symptom: "Stars are streaks or short lines",
     cause: "The sky moved during the exposure - the mount wasn't tracking, wasn't guiding, or was bumped.",

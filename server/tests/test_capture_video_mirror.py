@@ -201,6 +201,17 @@ _CAMERA_ROUTES = (
     ("/api/align/guide-offset/measure", None),
     ("/api/rotator/sync-to-sky", {"exposure_s": 1.0}),
     ("/api/rotator/rotate-to-pa", {"target_pa_deg": 90.0, "exposure_s": 1.0}),
+    # WP-88 (#145, #594): TEST ROTATOR turns the rotator 22 degrees and takes
+    # four plate solves, so it takes the camera as the two routes above do.
+    # Added at the wave 14 integration. The route's own busy test (a
+    # sequence or an exposure) also refuses a recording, because a recording
+    # holds the exposure guard, so the guard is only the first answer if it
+    # is called first: it now is, and the recording is named, not mislabelled.
+    # MUTANTS, each RED on this route's case alone, observed:
+    #   "the call deleted" and "the busy test first (the old order)" -
+    #     TypeError: string indices must be integers, not 'str'
+    #   (the busy test answers a bare string 409, not video_owns_camera)
+    ("/api/rotator/preflight", None),
 )
 
 

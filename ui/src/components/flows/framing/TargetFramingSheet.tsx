@@ -471,7 +471,11 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   useEffect(() => {
     if (tonightAsked.current || !canSite || !ownsStage || !recordId || tonight !== null || tonightLoading) return;
     tonightAsked.current = true;
-    void fetchTonight();
+    // A PURE READ (WP-86 ruling): the modal wants one line from the flow as
+    // stored, and a READ must not save. The default flush would PUT an
+    // edited flow just because this sheet opened over it, and raise the
+    // re-anchor toast outside any Tonight or RUN action.
+    void fetchTonight({ flush: false });
   }, [canSite, ownsStage, recordId, tonight, tonightLoading, fetchTonight]);
 
   // ---- the re-frame question (spec 2.5, Revision 2 ruling 3)

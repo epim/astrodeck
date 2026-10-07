@@ -328,7 +328,7 @@ class TestTheStepGuardSpansVisits:
                    and "3 consecutive rejects" in m]
         assert len(tripped) == 1, (
             f"the set-aside was not logged in words, once: {tripped}")
-        ended = [m for m in seq if "every step still owed is set aside" in m]
+        ended = [m for m in seq if "every step with remaining frames is set aside" in m]
         spun = [m for m in seq if "took no frames" in m]
         assert ended and not spun, (
             f"the visit loop did not end on 'every step still owed is set "

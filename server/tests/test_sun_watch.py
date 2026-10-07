@@ -58,6 +58,27 @@ class FakeTel:
         self.tracking_error: Exception | None = None
         self.locked_during_park: list[bool] = []
         self._hub = hub
+        # The reopen the net attempts on a dropped link (WP-87, #137). By
+        # default a reopen FAILS, like a mount that is still switched off: a
+        # double whose connect() quietly succeeded while leaving
+        # ``connected`` False would model no driver that exists. A case that
+        # wants the link back sets ``reconnects``.
+        self.connect_calls = 0
+        self.connect_error: Exception | None = RuntimeError(
+            "the mount did not answer")
+        self.reconnects = False
+        #: Every connect/park the net issued, in order, so a case can assert
+        #: the reopen came BEFORE the park in the same tick.
+        self.calls: list[str] = []
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        self.calls.append("connect")
+        if self.reconnects:
+            self.connected = True
+            return
+        if self.connect_error is not None:
+            raise self.connect_error
 
     async def get_position(self) -> tuple[float, float]:
         if self.position_error is not None:
@@ -74,6 +95,7 @@ class FakeTel:
 
     async def park(self) -> None:
         self.park_calls += 1
+        self.calls.append("park")
         if self._hub is not None:
             self.locked_during_park.append(self._hub._motion_lock.locked())
         if self.park_error is not None:
@@ -417,11 +439,20 @@ async def test_no_telescope_is_reported_not_swallowed(cfg, pinned_sun, bus_lines
 
 async def test_a_disconnected_telescope_is_not_treated_as_safe(cfg, pinned_sun,
                                                                bus_lines):
+    """A telescope OBJECT whose link is down is a mount that was opened once
+    and has dropped, which is the BLIND state (WP-87, #137), not the "nothing
+    is plugged in" state: the Sun is still closing on a tube this net can no
+    longer see. It used to read "no telescope is connected" and latch silent
+    (that wording now belongs only to a rig with no telescope object at all,
+    see ``test_no_telescope_is_reported_not_swallowed``). Nothing was ever read
+    here, so there is no last-known pointing to project and nothing parks."""
     hub, tel = _rig(ra_hours=SUN_RA_H, dec_deg=SUN_DEC)
     tel.connected = False
     await _watch(hub).tick()
     assert tel.park_calls == 0
-    assert _said(bus_lines, "no telescope is connected")
+    assert _said(bus_lines, "link is down")
+    assert not _said(bus_lines, "no telescope is connected"), (
+        "a dropped link must not be reported as an absent mount")
 
 
 async def test_a_mount_that_will_not_report_its_position_does_not_park(

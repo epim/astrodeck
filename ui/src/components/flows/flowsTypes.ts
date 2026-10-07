@@ -283,3 +283,54 @@ export function nodeLossDetail(
   }
   return hits.join(" · ");
 }
+
+// ------------------------------------- an edited flow: what RUN and Tonight say
+//
+// The canvas and the stored flow are two graphs from the first edit until a
+// save, and the rig reads only the stored one: `POST /api/flows/{id}/run` runs
+// it, `GET /api/flows/{id}/tonight` describes it (#688). Three sentences say
+// so, and live here, in the pure module both editors may import, so the
+// classic header, the #/next toolbar and the two Tonight surfaces cannot word
+// one fact two ways.
+
+/** The #/next toolbar's lock on RUN while the graph on screen is not the
+ *  graph on the rig. A refusal there, not a silent save: a save can fail (an
+ *  example flow refuses one outright, and a PUT can 409), and a save-then-run
+ *  that swallowed that would start the OLD graph while the operator watched
+ *  their edit on screen and believed it went with it. The store's own RUN
+ *  (`flowsRun`) is the same guard for every door the toolbar's lock does not
+ *  cover: it saves first and refuses when the save did not keep the edit. */
+export const RUN_UNSAVED_REASON = "This flow has unsaved changes - save it first.";
+
+/** The example-flow case, which has no SAVE to send the operator to. It names
+ *  the blocker AND the way out; a lock with neither is a dead end. */
+export const RUN_UNSAVED_EXAMPLE_REASON =
+  "This example flow cannot be saved, so RUN would start the stored version, not the one "
+  + "drawn here. Leave the flow and open it again to drop these edits.";
+
+export function unsavedRunReason(dirty: boolean, readonly: boolean): string | null {
+  if (!dirty) return null;
+  return readonly ? RUN_UNSAVED_EXAMPLE_REASON : RUN_UNSAVED_REASON;
+}
+
+/** What Tonight's STORY, TIMELINE and CAMPAIGN say when the flow they
+ *  describe is not the one drawn: an example, whose edits are never saved. */
+export const TONIGHT_EXAMPLE_EDITS_NOTE =
+  "Edits to an example are not saved, so this describes the stored example, not the graph drawn here.";
+
+/** The same, for a flow whose save did not keep the latest edits: Tonight
+ *  saved the canvas before it read, and the PUT failed or an edit landed
+ *  while it was out. */
+export const TONIGHT_UNSAVED_NOTE =
+  "The latest edits did not save, so this describes the last saved version of the flow, not the graph drawn here.";
+
+/** The sentence a Tonight tab that reads the STORED flow owes the operator
+ *  once Tonight has done what it can to save the canvas, or null when the two
+ *  are the same graph. `dirty` after the flush is the one test, as it is for
+ *  `flowsCloseEditor`'s and `flowsOpen`'s refusals: whatever the reason, the
+ *  graph on screen is not the one the rig described. PLAN is not asked: it
+ *  renders a compile of the canvas itself. */
+export function tonightStoredNote(readonly: boolean, dirty: boolean): string | null {
+  if (!dirty) return null;
+  return readonly ? TONIGHT_EXAMPLE_EDITS_NOTE : TONIGHT_UNSAVED_NOTE;
+}

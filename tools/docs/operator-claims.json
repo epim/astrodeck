@@ -467,7 +467,7 @@
     {
       "id": "OP-027",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "After a completed flow, the toolbar can still show **STOP**. Verify that the run is idle in [Monitor](monitor.md), then reload the page before starting again. Do not press the stale **STOP** to clear it: it can start another run.",
+      "claim": "After a completed flow, the toolbar can still show **STOP** ([#647](https://github.com/epim/astrodeck/issues/647)). Verify that the run is idle in [Monitor](monitor.md), then reload the page before starting again. Do not press the stale **STOP** to clear it: it can start another run.",
       "sources": [
         {
           "path": "ui/src/components/flows/flowRunControls.tsx",
@@ -2667,7 +2667,7 @@
     {
       "id": "OP-131",
       "page": "docs/guide/sessions-multi-night.md",
-      "claim": "Load and edit the intended plan first. On its dormant session, choose **UPDATE FROM PLAN** and read the merge preview: matched steps keep progress, new steps start at zero, and dropped steps stop counting toward quotas while their frames remain in the ledger.",
+      "claim": "Load and edit the intended plan first. On its dormant session, choose **UPDATE FROM PLAN** and read the merge preview: matched steps keep progress, new steps start at zero, and dropped steps stop counting toward quotas while their frames remain in the session log.",
       "sources": [
         {
           "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
@@ -2767,7 +2767,7 @@
     {
       "id": "OP-137",
       "page": "docs/guide/sessions-multi-night.md",
-      "claim": "Session ledgers and saved files survive a server restart on persistent storage. Check the recovered session and equipment before resuming; an interrupted run is not proof that the hardware returned to a safe position.",
+      "claim": "Session logs and saved files survive a server restart on persistent storage. Check the recovered session and equipment before resuming; an interrupted run is not proof that the hardware returned to a safe position.",
       "sources": [
         {
           "path": "ui/src/next/hubs/session/gallery/GalleryScreen.tsx",
@@ -2783,7 +2783,7 @@
     {
       "id": "OP-138",
       "page": "docs/guide/sessions-multi-night.md",
-      "claim": "**ABANDON** removes a session from the active panel but keeps its ledger and thumbnails. **DELETE** removes the session ledger and thumbnails; saved FITS frames are not deleted by that action. Read the confirmation before using either.",
+      "claim": "**ABANDON** removes a session from the active panel but keeps its log and thumbnails. **DELETE** removes the session log and thumbnails; saved FITS frames are not deleted by that action. Read the confirmation before using either.",
       "sources": [
         {
           "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
@@ -3171,7 +3171,7 @@
     {
       "id": "OP-156",
       "page": "docs/guide/unattended-nights.md",
-      "claim": "For a continuing campaign, remaining work stays in the session ledger and a later window can resume it. Before that restart, forecast rain can veto it; cloud advice alone cannot. Missing forecast data gives no rain veto. Review the armed state after the night, and disarm it if the rig is no longer ready.",
+      "claim": "For a continuing campaign, remaining work stays in the session log and a later window can resume it. Before that restart, forecast rain can veto it; cloud advice alone cannot. Missing forecast data gives no rain veto. Review the armed state after the night, and disarm it if the rig is no longer ready.",
       "sources": [
         {
           "path": "server/astrodeck/flows/to_plan.py",

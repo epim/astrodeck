@@ -117,7 +117,7 @@ REDUNDANT_PORTS: dict[tuple[str, str], str] = {
     # `test_a_campaign_advances_across_nights` is the evidence.
     ("pool", "advance"): (
         "the scheduler advances the pool itself: a target whose frames are all "
-        "in the ledger is skipped and the next member gets the night, on this "
+        "in the session log is skipped and the next member gets the night, on this "
         "night and on every night after - so this wire is not needed, and it "
         "is kept in the graph and does no harm"),
     # THE NIGHT ENDS PARKED AND SHUT WITHOUT BEING ASKED. `plan_extras` sets
@@ -719,8 +719,8 @@ def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
             # change the frame count the operator typed.
             out.append(_note(
                 f"targets[{target_name}].steps[{i}].integration_goal_h",
-                f"the {goal} h integration goal is a Tonight budget, not a run "
-                f"quota - this run stops at {count} frames regardless"))
+                f"Tonight shows the {goal} h integration goal as an estimate. "
+                f"This run stops at {count} frames regardless"))
         steps.append(clean)
     return steps
 
@@ -969,7 +969,7 @@ def _automation(compiled: dict, out: list[dict], *,
         until = str(camp.get("until") or "")
         runs = ("It images until its window closes, goes dormant with "
                 "auto-resume armed, and comes back the next night picking up "
-                "from the frame ledger - targets already finished are skipped "
+                "from the session log - targets already finished are skipped "
                 "rather than reshot")
         if until == "nights_30":
             out.append(_note(
@@ -981,9 +981,9 @@ def _automation(compiled: dict, out: list[dict], *,
         else:
             out.append(_note(
                 "campaign",
-                f"{runs}. It ends when every target has the FRAME COUNT it asked "
-                f"for - the integration-goal hours are a Tonight budget, not the "
-                f"thing that closes the campaign"))
+                f"{runs}. The campaign ends when every target reaches its "
+                f"requested frame count. Tonight shows the integration-goal "
+                f"hours as estimates"))
 
     auto = compiled.get("automation") or {}
     if "dome" in auto:
@@ -1199,11 +1199,12 @@ def plan_extras(compiled: dict) -> dict:
     # `test_the_preview_cannot_promise_what_the_plan_drops` binds the two
     # together, so the next edit to either has to move both.
     out: dict = {"park_when_done": True, "warm_cooler_when_done": True}
-    # #195: DUSK WINDOW's "Single night" vs the other `repeat` choices,
-    # carried through to `SequencePlan.resume_across_nights` - but ONLY when
-    # `compile_plan` wrote it, which it does only for "Single night"
-    # (compile.py keeps the key absent when True, the same convention as
-    # `campaign`). Writing `True` here unconditionally would add a key to
+    # #195: DUSK WINDOW's Automatic resume option, carried through to
+    # `SequencePlan.resume_across_nights` - but ONLY when `compile_plan`
+    # wrote it, which it does only for an explicit Off (compile.py keeps the
+    # key absent when True, the same convention as `campaign`; `repeat`'s
+    # own default, "Single night", is NOT an Off). Writing `True` here
+    # unconditionally would add a key to
     # EVERY plan this function has ever built, breaking every byte-identical
     # and exact-key-set fixture that pins `plan_extras` or a compiled plan's
     # shape; the model's own default (True) already covers every caller that
@@ -1406,7 +1407,7 @@ def _block_key(entry: dict, ra_hours: float, dec_deg: float,
         raise GraphNotRunnable(
             f"{_block_label(entry)}: its stored frame anchor cannot be read "
             f"({e}), so its panels cannot be matched to the frames already "
-            f"banked. The server writes it at save, so the file is damaged") \
+            f"captured. The server writes it at save, so the file is damaged") \
             from None
 
 
