@@ -7512,7 +7512,10 @@ def create_app(*, bind_host: str | None = None,
         # store's reason for every file it cannot read (#242), which DELETE
         # removes. No ledger field on those: see ``_unreadable_row``. Such a
         # row says ``backup: true`` when a ``.bak`` sits beside the file,
-        # which DELETE keeps (#266).
+        # which DELETE keeps (#266), and POST .../restore brings back (#280).
+        # A ``.bak`` with no file beside it is a row of its own, ``orphan:
+        # true`` as well (``_orphan_row``): its restore brings the session
+        # back and its DELETE removes the backup and the thumbnails.
         return {"sessions": await asyncio.to_thread(session_store.list)}
 
     @app.get("/api/sessions/{session_id}")
@@ -7794,10 +7797,19 @@ def create_app(*, bind_host: str | None = None,
         # with only ``KeyError`` caught, the delete never ran. It has no
         # status to refuse on, so ``s`` is None and the file's word is
         # silent; the engine's word below still decides whether it runs.
+        #
+        # AND SO IS A BACKUP WITH NO FILE BESIDE IT (#280). ``load`` calls
+        # that ``KeyError`` too, and the delete used to answer 404 for the one
+        # id the list showed: the backup #266 keeps could not be removed
+        # without a shell. It is a hint here, as the status above is; the
+        # locked re-read below decides.
         try:
             s = await asyncio.to_thread(session_store.load, session_id)
         except KeyError:
-            raise HTTPException(404, "session not found")
+            if not await asyncio.to_thread(session_store.has_orphan_backup,
+                                           session_id):
+                raise HTTPException(404, "session not found")
+            s = None
         except SessionUnreadable:
             s = None
         if s is not None and s.status == "active":
@@ -7823,11 +7835,16 @@ def create_app(*, bind_host: str | None = None,
         # (2026-09-24), removing a thumbs directory costs 17 ms at 170
         # frames and 53 ms at 600, once, on a delete the operator asked for.
         with session_store.write_locked():
+            orphan = False
             try:
                 s = session_store.load(session_id)
             except KeyError:
-                # Another delete landed during the drain.
-                raise HTTPException(404, "session not found")
+                # Another delete landed during the drain, unless a backup is
+                # all that is left (#280): then it is that backup's delete.
+                orphan = session_store.has_orphan_backup(session_id)
+                if not orphan:
+                    raise HTTPException(404, "session not found")
+                s = None
             except SessionUnreadable:
                 s = None                # unreadable (#242): see the top
             # THE ENGINE'S WORD AS WELL AS THE FILE'S. They agree unless a
@@ -7867,23 +7884,104 @@ def create_app(*, bind_host: str | None = None,
             # file, not that. ``s is None`` is exactly "unreadable" here: a
             # missing file answered 404 above. A readable session's backup
             # still goes with it, as ``delete`` documents.
-            kept = session_store.delete(session_id, keep_backup=s is None)
+            #
+            # AN ORPHANED BACKUP IS NOT KEPT (#280): ``s is None`` there
+            # means "no file", and the backup is the one thing this delete was
+            # pressed on. Kept again, it would answer 200 and leave the row,
+            # with nothing left to press.
+            kept = session_store.delete(
+                session_id, keep_backup=s is None and not orphan)
         if kept is None:
             return {"deleted": session_id}
-        # In words as well as a key, and naming the file, because nothing
-        # lists a ``.bak``: once the row is gone, this answer is the last
-        # thing that says the backup is there and what it is called. File
-        # names only, never the path: the captures directory is the rig's
-        # filesystem. "If ... intact", because nothing read the backup: the
-        # delete keeps whatever ``.bak`` it finds.
+        # In words as well as a key, and naming the file, because the row
+        # the operator pressed is gone: this answer says what stays and what
+        # it is called. The list then shows the backup as a row of its own
+        # (``orphan``, #280), and the sentence says what that row offers.
+        # File names only, never the path: the captures directory is the
+        # rig's filesystem. "If ... intact", because nothing read the backup:
+        # the delete keeps whatever ``.bak`` it finds.
         return {"deleted": session_id, "backup_kept": kept.name,
                 "detail": (
                     f"Removed {kept.stem}, which could not be read. Its "
                     f"backup {kept.name} remains in the sessions folder, "
-                    f"and so do the session's thumbnails: renaming the "
-                    f"backup to {kept.stem} brings the session log back as it "
-                    f"was when the backup was taken, if the backup itself "
-                    f"is intact.")}
+                    f"and so do the session's thumbnails. The backup is "
+                    f"listed as a session whose file is gone: RESTORE brings "
+                    f"the session log back as it was when the backup was "
+                    f"taken, if the backup itself is intact, and DELETE "
+                    f"removes it.")}
+
+    @app.post("/api/sessions/{session_id}/restore",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def restore_session(session_id: str):
+        # THE RESTORE HALF OF #266 (#280). DELETE of an unreadable file keeps
+        # ``<id>.json.bak``, the copy taken before an ADOPT, because it can be
+        # the last good record of the session log; this puts it back. It
+        # replaces a file that is MISSING or that nothing can read, and never a
+        # readable one (409 ``live_session_readable``): that is the current log,
+        # and a restore is a way back from damage, not an undo. What it
+        # restores is judged first by the store's own judgment, and the answers
+        # are in its words, never pydantic's, which quote what they refused.
+        #
+        # THE ENGINE'S WORD, AS THE DELETE'S. The run's next ledger write puts
+        # its own copy of the session back over whatever was restored, so
+        # while the engine runs THIS session the file is not ours to touch.
+        # Checked once before the drain as a hint and once in the section
+        # that decides.
+        #
+        # The one name only this route needs, imported where it is used.
+        from ..sequence.session import LiveSessionReadable
+
+        def _running_it() -> bool:
+            ours = getattr(engine, "_session", None)
+            return bool(engine.running and ours is not None
+                        and ours.id == session_id)
+
+        if _running_it():
+            raise HTTPException(409, "cannot restore a running session")
+        # A render left from a finished run ends in ``session_store.save`` of
+        # the engine's in-memory copy, which would put a stale session over
+        # the restored file (the delete's drain, #212, restore-shaped).
+        await engine.drain_thumbs_for_session(session_id)
+        # Judged and written in one synchronous section under the store's
+        # write lock, with no await in it: nothing on the loop can start the
+        # session in between, and no worker-thread write can land in the
+        # middle (#212). On the loop, then, for the same reason as the
+        # delete's unlink; it is a restore the operator asked for, once.
+        with session_store.write_locked():
+            if _running_it():
+                raise HTTPException(409, "cannot restore a running session")
+            try:
+                s = session_store.restore_backup(session_id)
+            except KeyError:
+                raise HTTPException(404, "no backup")
+            except SessionUnreadable as e:
+                # The BACKUP's reason (the live file is not judged for
+                # damage, only for being readable). 422: the request names a
+                # file that is there and cannot be used, as a plan's does.
+                raise HTTPException(422, detail={
+                    "detail": f"the backup cannot be read: {e.reason}",
+                    "code": "backup_unreadable"})
+            except LiveSessionReadable:
+                raise HTTPException(409, detail={
+                    "detail": (f"{session_id}.json can be read, so it is "
+                               "not replaced: restoring is for a session "
+                               "file that is missing or unreadable"),
+                    "code": "live_session_readable"})
+        # File names and counts only, never a path. What the backup cannot
+        # say is said: frames accepted after it was taken are in no copy of
+        # it, and the FITS files, which this never touches, are the record of
+        # them. The status is the one the session now has, not "dormant" by
+        # rule: only an ``active`` backup is demoted, so a backup of a complete
+        # session comes back complete. "Session log", not ledger (the wording
+        # pass, #689).
+        return {"restored": session_id, "accepted": s.total_accepted(),
+                "backup_ts": session_store.backup_mtime(session_id),
+                "detail": (
+                    f"Restored {session_id}.json from its backup. Frames "
+                    f"accepted after the backup was taken are not in it; the "
+                    f"FITS files are untouched. The session is {s.status} "
+                    f"and auto-resume is off.")}
 
     @app.get("/api/sessions/{session_id}/frames/{frame_id}/thumb",
              dependencies=[Depends(require(CAP_VIEW_PREVIEW))])

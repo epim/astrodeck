@@ -26,6 +26,15 @@
 // `backup_kept`/`detail` rather than the generic FITS sentence when a backup
 // survived.
 //
+// RESTORE (#280). The same row says `backup: true` while a `<id>.json.bak`
+// sits beside the file, or is all that is left of it (then `orphan: true`
+// too: the session file is gone). Such a card offers RESTORE beside DELETE,
+// gated as DELETE is, and only such a card: with no backup the server could
+// only answer 404. The press confirms first (the body names the backup and
+// says what is lost), then POSTs `/api/sessions/{id}/restore`; the toast is
+// the server's own sentence on success and its own reason on a refusal. An
+// orphan's DELETE confirm says the backup is what goes.
+//
 // NAMED MUTANTS, each run from a byte copy of the file it mutates and restored
 // byte-identical (sha256 checked); the observed failure is quoted at the test.
 //   G1 "render it as a normal session"   sessionsIndex.ts: buildCards keeps the
@@ -38,6 +47,18 @@
 //                                        `CONFIRM_DELETE` unconditionally
 //   G4 "toast ignores backup_kept"       cardActions.ts: `deleteToastDetail`
 //                                        always returns the FITS sentence
+//   G5 "button not gated on card.backup" UnreadableSessionCard.tsx: RESTORE is
+//                                        rendered for every unreadable card
+//   G6 "restore never asks"              cardActions.ts: `runRestore` takes
+//                                        `go = true` without the confirm
+//   G7 "restore toast ignores the server"  cardActions.ts: `runRestore`'s
+//                                        success toast carries no `detail`
+//   G8 "restore refusal unsaid"          cardActions.ts: `runRestore`'s error
+//                                        toast carries no `say(e)`
+//   G9 "ungate RESTORE"                  UnreadableSessionCard.tsx: RESTORE's
+//                                        lockedReason is null for every principal
+//   G10 "the mapper drops backup and orphan"  sessionsIndex.ts:
+//                                        `unreadableCards` sends false for both
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -91,10 +112,19 @@ const BAD_NAME = "NGC 7000 Ha";
 /** `backup` starts false (no `.bak` beside the file) and a later test flips it
  *  to true, re-mounting fresh each time: one row stands in for both of #266's
  *  cases rather than two fixtures that could drift apart. */
-const BAD: { id: string; name: string; status: "unreadable"; unreadable: string; updated_ts: number; backup?: boolean } = {
+const BAD: {
+  id: string; name: string; status: "unreadable"; unreadable: string; updated_ts: number;
+  backup?: boolean; orphan?: boolean;
+} = {
   id: "s-bad", name: BAD_NAME, status: "unreadable", unreadable: REASON,
   updated_ts: 1_757_000_200,
 };
+/** The server's sentence for a restore (#280) - invented for this fixture, as
+ *  `BACKUP_DETAIL` is: the toast must carry WHATEVER `detail` says. */
+const RESTORE_DETAIL = "Restored s-bad.json from its backup. The session is dormant and auto-resume is off.";
+/** The server's reason for a backup it cannot use (#280), in its nested shape. */
+const RESTORE_REFUSAL = "the backup cannot be read: not valid JSON";
+const restore: { fails: boolean } = { fails: false };
 /** The server's words for a kept backup (#266) - invented for this fixture,
  *  not the production sentence verbatim, since the test pins only that the
  *  toast carries WHATEVER the response's `detail` says, not its exact words. */
@@ -123,6 +153,11 @@ g.fetch = async (url: string, init?: { method?: string }) => {
       ? { deleted: "s-bad", backup_kept: "s-bad.json.bak", detail: BACKUP_DETAIL }
       : { deleted: "s-bad" });
   }
+  if (url === "/api/sessions/s-bad/restore" && method === "POST") {
+    return restore.fails
+      ? json({ detail: { detail: RESTORE_REFUSAL, code: "backup_unreadable" } }, 422)
+      : json({ restored: "s-bad", accepted: 3, backup_ts: 1_757_000_000, detail: RESTORE_DETAIL });
+  }
   if (url === "/api/sessions/s-bad") return json({ detail: "unreadable", code: "session_unreadable" }, 500);
   if (url === "/api/sessions/s1") return json(SESSION);
   if (url.startsWith("/api/reports")) return json([]);
@@ -138,8 +173,8 @@ const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { CONFIRM_DELETE } = await import("../cardActions");
 const { GalleryScreen } = await import("../GalleryScreen");
-const { galleryCountFrom, resetSessionsIndex } = await import("../sessionsIndex");
-const { unreadableDeleteBody } = await import("../../../../../api/sessions");
+const { galleryCountFrom, resetSessionsIndex, unreadableCards } = await import("../sessionsIndex");
+const { restoreBody, unreadableDeleteBody } = await import("../../../../../api/sessions");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -336,6 +371,192 @@ await testAsync("a viewer sees the card with DELETE honest-disabled, carrying th
     `the locked DELETE did not explain itself with the session delete's reason "${sessionReason}": `
     + JSON.stringify(toasts.map((t) => t.title)));
   eq(asked.filter((a) => a.method === "DELETE").length, before, "a viewer's press reached the network");
+});
+
+// ------------------------------------------------------------ RESTORE (#280)
+
+const ADMIN_CAPS = ["view.status", "view.preview", "view.media", "control.mount", "control.capture"];
+const posts = () => asked.filter((a) => a.method === "POST");
+const toastsNow = () => (useStore.getState() as any).toasts as { level?: string; title?: string; detail?: string }[];
+
+/** Run `fn` with the shared row in the given state, and put it back as it was
+ *  found even when an assertion throws: a test that fails must not leave
+ *  `backup` or `orphan` set for the ones after it, which would report the
+ *  cascade as failures of their own and hide which mutant did what. */
+async function withRow(
+  state: { backup?: boolean; orphan?: boolean; refused?: boolean },
+  fn: () => Promise<void>,
+): Promise<void> {
+  BAD.backup = state.backup ?? false;
+  if (state.orphan) BAD.orphan = true; else delete BAD.orphan;
+  restore.fails = state.refused ?? false;
+  try { await fn(); } finally {
+    BAD.backup = false;
+    delete BAD.orphan;
+    restore.fails = false;
+  }
+}
+
+await testAsync("RESTORE is on a card with a backup and on no other", async () => {
+  // G5 "button not gated on card.backup" (the `{card.backup && (` made `{true && (`),
+  // observed (13/16 passed; the no-backup card grew a RESTORE the server could
+  // only 404, so the whole-text and only-control tests of #242 failed with it):
+  //   x RESTORE is on a card with a backup and on no other: a card with no
+  //   backup offers RESTORE:
+  //     expected null
+  //     got      [object HTMLButtonElement]
+  // G10 "the mapper drops backup and orphan", observed (9/16 passed; card.backup
+  // false for a row that says true, so every RESTORE test failed):
+  //   x RESTORE is on a card with a backup and on no other: a card with a
+  //   backup has no RESTORE:
+  await withRow({ backup: false }, async () => {
+    await mount("admin", ADMIN_CAPS);
+    eq(tid("session-unreadable-restore-s-bad"), null, "a card with no backup offers RESTORE:");
+    eq(tid("session-unreadable-s-bad").textContent, `${BAD_NAME}s-badUNREADABLE${REASON}DELETE`,
+      "the no-backup card's whole text:");
+  });
+  await withRow({ backup: true }, async () => {
+    await mount("admin", ADMIN_CAPS);
+    const r = tid("session-unreadable-restore-s-bad");
+    assert(r != null, "a card with a backup has no RESTORE:");
+    eq(r.textContent, "RESTORE", "the button's label:");
+    eq(r.getAttribute("aria-disabled"), null, "an admin's RESTORE must be live:");
+    eq(tid("session-unreadable-s-bad").textContent, `${BAD_NAME}s-badUNREADABLE${REASON}RESTOREDELETE`,
+      "the backed-up card's whole text:");
+  });
+});
+
+await testAsync("RESTORE asks first, names the backup, and sends nothing until it is confirmed", async () => {
+  // G6 "restore never asks" (`go` made `true`), observed (14/16 passed; the
+  // orphan test's restore confirm failed the same way):
+  //   x RESTORE asks first, names the backup, and sends nothing until it is
+  //   confirmed: no confirm was raised - a restore must never be one tap
+  await withRow({ backup: true }, async () => {
+    await mount("admin", ADMIN_CAPS);
+    const before = posts().length;
+    await click(tid("session-unreadable-restore-s-bad"));
+    const req = (useStore.getState() as any).confirm;
+    assert(req != null, "no confirm was raised - a restore must never be one tap");
+    eq(req?.body as string, restoreBody({ id: "s-bad" }), "the confirm body:");
+    assert(String(req?.body).includes("s-bad.json.bak"), `the confirm does not name the backup: ${req?.body}`);
+    assert(/Frames accepted after the backup was taken are not in it/.test(String(req?.body)),
+      `the confirm does not say what the backup lacks: ${req?.body}`);
+    assert(String(req?.title).includes(BAD_NAME), `the confirm does not name the session: ${req?.title}`);
+    eq(posts().length, before, "a POST was sent before the confirm was answered:");
+    await act(async () => { (useStore.getState() as any).resolveConfirm(false); });
+    await settle();
+    eq(posts().length, before, "a cancelled confirm sent a POST:");
+  });
+});
+
+await testAsync("confirming RESTORE posts once to the session's restore route and the toast is the server's sentence", async () => {
+  // G7 "restore toast ignores the server" (`r.detail` dropped), observed:
+  //   x confirming RESTORE posts once to the session's restore route and the
+  //   toast is the server's sentence: the toast dropped the server's detail:
+  //     expected "Restored s-bad.json from its backup. The session is dormant and auto-resume is off."
+  //     got      undefined
+  await withRow({ backup: true }, async () => {
+    await mount("admin", ADMIN_CAPS);
+    const before = posts().length;
+    const listsBefore = asked.filter((a) => a.method === "GET" && a.url === "/api/sessions").length;
+    await click(tid("session-unreadable-restore-s-bad"));
+    await act(async () => { (useStore.getState() as any).resolveConfirm(true); });
+    await settle();
+    const sent = posts();
+    eq(sent.length, before + 1, "confirming must issue exactly one request:");
+    eq(sent[sent.length - 1].url, "/api/sessions/s-bad/restore", "against this session's restore route:");
+    const t = toastsNow()[toastsNow().length - 1];
+    eq(t?.level, "success", "the toast's level:");
+    eq(t?.detail, RESTORE_DETAIL, "the toast dropped the server's detail:");
+    assert(asked.filter((a) => a.method === "GET" && a.url === "/api/sessions").length > listsBefore,
+      "the shelf was not re-read after the restore");
+  });
+});
+
+await testAsync("a refused restore says the server's reason and no success", async () => {
+  // G8 "restore refusal unsaid" (`say(e)` dropped from the error toast), observed:
+  //   x a refused restore says the server's reason and no success: the error
+  //   toast does not carry the server's reason:
+  //     expected "the backup cannot be read: not valid JSON"
+  //     got      undefined
+  await withRow({ backup: true, refused: true }, async () => {
+    await mount("admin", ADMIN_CAPS);
+    await click(tid("session-unreadable-restore-s-bad"));
+    await act(async () => { (useStore.getState() as any).resolveConfirm(true); });
+    await settle();
+    const ts = toastsNow();
+    assert(!ts.some((t) => t.level === "success"), `a success toast over a refused restore: ${JSON.stringify(ts)}`);
+    const t = ts[ts.length - 1];
+    eq(t?.level, "error", "the toast's level:");
+    eq(t?.detail, RESTORE_REFUSAL, "the error toast does not carry the server's reason:");
+  });
+});
+
+await testAsync("an orphaned backup's card words its DELETE and RESTORE for a file that is gone", async () => {
+  await withRow({ backup: true, orphan: true }, async () => {
+    await mount("admin", ADMIN_CAPS);
+    assert(tid("session-unreadable-restore-s-bad") != null, "an orphan has a backup, so it has RESTORE:");
+
+    await click(tid("session-unreadable-delete-s-bad"));
+    const del = (useStore.getState() as any).confirm;
+    assert(del != null, "no delete confirm was raised");
+    eq(del?.body as string, unreadableDeleteBody({ id: "s-bad", backup: true, orphan: true }),
+      "the orphan's delete confirm:");
+    assert(/Removes the backup file s-bad\.json\.bak/.test(String(del?.body)),
+      `the delete confirm does not say the backup is what goes: ${del?.body}`);
+    assert(!/stays/.test(String(del?.body)), `the delete confirm says the backup stays: ${del?.body}`);
+    await act(async () => { (useStore.getState() as any).resolveConfirm(false); });
+    await settle();
+
+    await click(tid("session-unreadable-restore-s-bad"));
+    const res = (useStore.getState() as any).confirm;
+    assert(res != null, "no restore confirm was raised");
+    eq(res?.body as string, restoreBody({ id: "s-bad", orphan: true }), "the orphan's restore confirm:");
+    assert(!/damaged/i.test(String(res?.body)),
+      `the restore confirm talks of a damaged file that is not there: ${res?.body}`);
+    await act(async () => { (useStore.getState() as any).resolveConfirm(false); });
+    await settle();
+  });
+});
+
+await testAsync("a viewer sees RESTORE honest-disabled with DELETE's own reason, and a press sends nothing", async () => {
+  // G9 "ungate RESTORE" (RESTORE's lockedReason made null), observed:
+  //   x a viewer sees RESTORE honest-disabled with DELETE's own reason, and a
+  //   press sends nothing: the viewer's RESTORE is not locked:
+  //     expected true
+  //     got      null
+  await withRow({ backup: true }, async () => {
+    await mount("viewer", ["view.status", "view.preview"]);
+    const r = tid("session-unreadable-restore-s-bad");
+    assert(r != null, "RESTORE must still be rendered for a viewer, locked");
+    eq(r.getAttribute("aria-disabled"), "true", "the viewer's RESTORE is not locked:");
+    eq(r.getAttribute("title"), tid("session-unreadable-delete-s-bad").getAttribute("title"),
+      "RESTORE's reason is not DELETE's:");
+    const before = posts().length;
+    await click(r);
+    assert(toastsNow().some((t) => t.title === r.getAttribute("title")),
+      `the locked RESTORE did not explain itself: ${JSON.stringify(toastsNow().map((t) => t.title))}`);
+    eq(posts().length, before, "a viewer's press reached the network:");
+    eq((useStore.getState() as any).confirm, null, "a viewer's press raised a confirm:");
+  });
+});
+
+await testAsync("unreadableCards carries backup and orphan as strict booleans", async () => {
+  // G10 "the mapper drops backup and orphan" (both sent as false), observed:
+  //   x unreadableCards carries backup and orphan as strict booleans: a
+  //   backed-up row:
+  //     expected true
+  //     got      false
+  const row = { id: "s-x", name: "x", status: "unreadable", unreadable: REASON, updated_ts: 1 };
+  const [plain] = unreadableCards([row as any]);
+  eq(plain.backup, false, "a #242 row's backup:");
+  eq(plain.orphan, false, "a #242 row's orphan:");
+  const [backed] = unreadableCards([{ ...row, backup: true } as any]);
+  eq(backed.backup, true, "a backed-up row:");
+  eq(backed.orphan, false, "a backed-up row's orphan:");
+  const [orphan] = unreadableCards([{ ...row, backup: true, orphan: true } as any]);
+  eq(orphan.backup, true, "an orphan's backup:");
+  eq(orphan.orphan, true, "an orphan:");
 });
 
 await act(async () => { root.unmount(); });

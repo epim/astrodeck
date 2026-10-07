@@ -743,6 +743,106 @@ def _raw_name(path: Path, raw) -> str:
             if isinstance(name, str) and name.strip() else path.stem)
 
 
+#: What a backup's name ends in, and so how its session id is read back off
+#: it: ``backup`` writes ``<id>.json.bak`` and nothing else (#280).
+_BACKUP_SUFFIX = ".json.bak"
+
+#: The ``reason`` of the row ``list`` gives a backup whose session file is
+#: gone (#280). The UI shows it as sent.
+ORPHAN_REASON = "the session file is gone; only its backup remains"
+
+#: Why ``restore_backup`` refuses a backup that is another session's: the id
+#: inside it is not the id of the file it sits beside (#280). The other id is
+#: not quoted: it comes from a file nothing validated.
+OTHER_SESSION = "it holds a different session id"
+
+
+class LiveSessionReadable(Exception):
+    """``restore_backup`` found a READABLE ``<id>.json`` and left it alone
+    (#280).
+
+    A restore is for a file that is missing or that nothing can read. A
+    readable file is the current ledger, usually with frames the backup does
+    not hold, and replacing it would be an undo nobody asked for: distinct
+    from ``SessionUnreadable``, which is about the BACKUP, so the route can
+    answer each in its own words."""
+
+    def __init__(self, session_id: str):
+        super().__init__(f"session file is readable: {session_id}")
+        self.session_id = session_id
+
+
+def _backup_id(bak: Path) -> str:
+    """The session id a backup file is named for: ``<id>`` of
+    ``<id>.json.bak`` (``Path.stem`` would say ``<id>.json``)."""
+    return bak.name[:-len(_BACKUP_SUFFIX)]
+
+
+def _orphan_backups() -> list[Path]:
+    """Every ``<id>.json.bak`` in the sessions directory with no
+    ``<id>.json`` beside it, by name (#280).
+
+    WHAT #266 LEFT UNREACHABLE. ``DELETE`` of an unreadable file keeps its
+    backup, and once the file was gone nothing listed the ``.bak``, so
+    getting the session log back, or getting rid of the copy and its
+    thumbnails, took a shell on the rig. ``list`` shows each of these as a row
+    of its own, ``has_orphan_backup`` lets ``DELETE`` find one, and
+    ``restore_backup`` brings one back.
+
+    A backup beside a ``.json``, readable or not, is not an orphan: that
+    session is listed already (an unreadable one says ``backup: true``).
+
+    A stem the store's id guard refuses is skipped (``safe_id_path`` is the
+    guard ``SessionStore._path`` is): no route could address it, and one
+    stray file must not cost the list. So is a file whose stat the OS will
+    not answer, the rule ``_has_backup`` keeps: nothing is claimed that was
+    not seen."""
+    directory = _sessions_dir()
+    if not directory.is_dir():
+        return []
+    found: list[Path] = []
+    for bak in sorted(directory.glob(f"*{_BACKUP_SUFFIX}")):
+        try:
+            live = safe_id_path(directory, _backup_id(bak))
+            if bak.is_file() and not live.is_file():
+                found.append(bak)
+        except (KeyError, OSError):
+            continue
+    return found
+
+
+def _orphan_row(bak: Path) -> dict | None:
+    """The ``GET /api/sessions`` row for an orphaned backup (#280), or None
+    when the file has gone, or the OS will not open it, since it was found.
+
+    ``status`` is ``"unreadable"`` ON PURPOSE, though the row says nothing is
+    wrong with the backup: that is the one word every reader that cannot take
+    a session without a ledger already filters on (``isUnreadableRow``,
+    ``listSessions``), so a row with no counts and no dates can never be drawn
+    as a session with 0 of 0 frames or offered RESUME. ``orphan`` is what
+    tells the two apart, for the UI that words its delete differently.
+
+    The id is the backup's stem and the name the one inside it, read so the
+    operator can tell which session this was, else the id. A backup that does
+    not parse is listed all the same (so it can be deleted), and ``restore``
+    is what says whether it would load. ``updated_ts`` is the BACKUP's mtime:
+    the moment its ledger was copied, which is the date a restore brings back."""
+    try:
+        mtime = bak.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        raw = _parsed(bak)
+    except SessionUnreadable:
+        raw = None
+    except OSError:
+        return None
+    sid = _backup_id(bak)
+    return {"id": sid, "name": _raw_name(Path(f"{sid}.json"), raw),
+            "status": "unreadable", "unreadable": ORPHAN_REASON,
+            "updated_ts": mtime, "backup": True, "orphan": True}
+
+
 def _unreadable_row(path: Path, raw, reason: str | None) -> dict | None:
     """The ``GET /api/sessions`` row for a file the store cannot read (#242),
     or None when the file has gone since it was read.
@@ -1154,6 +1254,88 @@ class SessionStore:
             harden_private_file(bak)
         return bak
 
+    def has_orphan_backup(self, session_id: str) -> bool:
+        """Whether ``<id>.json.bak`` is there with no ``<id>.json`` beside it
+        (#280): the one question ``DELETE`` asks of an id that ``load`` calls
+        missing, to tell a backup it can remove from a session that is not
+        there. False for an id the store's guard refuses, and when the OS will
+        not say (as ``_has_backup``): nothing is claimed that was not seen."""
+        try:
+            path = self._path(session_id)
+            return _backup_path(path).is_file() and not path.is_file()
+        except (KeyError, OSError):
+            return False
+
+    def backup_mtime(self, session_id: str) -> float | None:
+        """When ``<id>.json.bak`` was written, or None when there is none or
+        the OS will not say (#280): the date a restore brings the session log
+        back to, which the restore's answer reports."""
+        try:
+            return _backup_path(self._path(session_id)).stat().st_mtime
+        except (KeyError, OSError):
+            return None
+
+    def restore_backup(self, session_id: str) -> Session:
+        """Replace a MISSING or UNREADABLE ``<id>.json`` with ``<id>.json.bak``
+        and return the session it holds (#280).
+
+        THE REST OF #266. ``DELETE`` of an unreadable file keeps the backup
+        because it can be the last good copy of the ledger, and nothing could
+        bring it back short of a shell and a rename.
+
+        THE BACKUP IS JUDGED BY THE JUDGMENT EVERY READER MAKES, ``_parsed``
+        and ``_session_from_file``, so a restore can never put in place a file
+        the store would then refuse: ``KeyError`` when there is no backup,
+        ``SessionUnreadable`` (the store's own reason, naming the session) when
+        it is damaged, and the same when the id inside it is not ``session_id``,
+        because ``save`` writes the file named by the id inside, so a
+        hand-edited backup would otherwise write a DIFFERENT session's file and
+        leave this one missing.
+
+        NEVER OVER A READABLE FILE (``LiveSessionReadable``). That file is the
+        current ledger and usually holds frames the backup does not; a restore
+        is a way back from damage, not an undo. The live file is judged here
+        and not through ``load``, which calls a file the OS will not open
+        MISSING: an ``OSError`` that is not "no such file" reaches the caller
+        instead (a locked ledger is not a gone one, the rule ``_parsed`` keeps).
+
+        THE RESTORED SESSION IS NEVER ARMED, AND NEVER ``active``. A backup
+        taken mid-run says both, and a restored copy that kept them would join
+        the auto-resume singleton unasked (#595) or read as a run the engine
+        is not making. ``dormant`` and ``auto_resume`` False are what the
+        operator can arm again deliberately. Any other status stays.
+
+        The write is ``save``'s (atomic, replacing a damaged file whole: its
+        bytes are gone afterwards). The ``.bak`` STAYS, byte for byte, as it
+        does beside any readable session until its DELETE, and so do the
+        thumbnails, which belong to the ledger it holds. All of it under the
+        write lock, so no worker-thread write lands between the judgment and
+        the write; the route holds ``write_locked`` around the call for the
+        same reason as the delete's (#212), and the lock is re-entrant."""
+        path = self._path(session_id)          # validates the id (KeyError)
+        bak = _backup_path(path)
+        with self._write_lock:
+            try:
+                raw = _parsed(bak)
+            except FileNotFoundError:
+                raise KeyError(session_id) from None
+            except SessionUnreadable as e:
+                raise SessionUnreadable(session_id, e.reason) from e
+            session = _session_from_file(raw, session_id)
+            if session.id != session_id:
+                raise SessionUnreadable(session_id, OTHER_SESSION)
+            try:
+                _session_from_file(_parsed(path), session_id)
+            except (FileNotFoundError, SessionUnreadable):
+                pass                            # missing or damaged: restorable
+            else:
+                raise LiveSessionReadable(session_id)
+            session.auto_resume = False
+            if session.status == "active":
+                session.status = "dormant"
+            self.save(session)
+            return session
+
     def delete(self, session_id: str, *,
                keep_backup: bool = False) -> Path | None:
         """Remove the session file, its ADOPT backup and its thumbs directory.
@@ -1214,7 +1396,11 @@ class SessionStore:
         ``engine.start``, so a session restarted the same night read "2
         nights" in the Sessions panel beside "night 1" on its flow card.
         Display only: nothing that decides what runs reads these rows, the
-        list route is their one reader."""
+        list route is their one reader.
+
+        A BACKUP WHOSE FILE IS GONE GETS A ROW TOO (``_orphan_row``, #280),
+        after the walk: it is not one of ``_entries``, so ``load_all`` and
+        every scan still pass it by, and only this list says it is there."""
         rows: list[dict] = []
         for path, raw, s, why in self._entries():
             if s is None:
@@ -1230,6 +1416,14 @@ class SessionStore:
                 "total": s.plan.total_frames(), "auto_resume": s.auto_resume,
                 "owed": s.owed(), "origin": s.origin, "origin_id": s.origin_id,
             })
+        # An id that already has a row is not an orphan: a DELETE of its
+        # unreadable file can land between the walk above and the scan here,
+        # and the backup it kept would then be listed twice in one answer.
+        seen = {row["id"] for row in rows}
+        for bak in _orphan_backups():
+            orphan = _orphan_row(bak) if _backup_id(bak) not in seen else None
+            if orphan is not None:
+                rows.append(orphan)
         rows.sort(key=lambda r: r["updated_ts"], reverse=True)
         return rows
 
