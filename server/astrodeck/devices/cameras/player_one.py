@@ -14,15 +14,23 @@ Vendor-specific logic lives here only; the engine owns the exposure/cooling loop
 from __future__ import annotations
 
 from ..base import DeviceError
-from .adapter import ROI, CameraAdapter, CameraCapabilities
+from .adapter import ROI, CameraAdapter, CameraCapabilities, CameraGone
 from . import registry
 from .player_one_sdk import (
-    PoaProperty, make_player_one, POA_EXPOSURE, POA_GAIN, POA_OFFSET,
-    POA_TARGET_TEMP, POA_COOLER, POA_COOLER_POWER, POA_TEMPERATURE,
+    PoaProperty, PlayerOneSdkError, make_player_one, POA_EXPOSURE, POA_GAIN,
+    POA_OFFSET, POA_TARGET_TEMP, POA_COOLER, POA_COOLER_POWER, POA_TEMPERATURE,
     POA_HEATER_POWER, POA_FAN_POWER, POA_RAW16,
 )
 
 __all__ = ["PlayerOneAdapter", "PoaProperty"]
+
+#: POAErrors values that mean the device is not usable any more, as opposed to
+#: "this config cannot be read": 5 NOT_OPENED and 6 DEVICE_NOT_FOUND
+#: (player_one_sdk.ERROR_NAMES, and the vendored DLL's own ``5 NOT_OPENED`` is
+#: cited at PlayerOneSdk.ALIGN_W). 3 INVALID_CONFIG and 14 CONF_CANNOT_READ are
+#: NOT here: they are a camera that has no such sensor, and must keep reading
+#: None.
+_CAMERA_GONE_CODES = frozenset({5, 6})
 
 #: gain at/above which the IMX571 conversion gain lowers read noise (HCG).
 HCG_THRESHOLD_GAIN = 125
@@ -185,8 +193,18 @@ class PlayerOneAdapter(CameraAdapter):
         self._sdk.set_config(self._cam_id, POA_COOLER, bool(on))
 
     def get_temperature(self) -> float | None:
+        # The idle-camera probe (issue #16): the one read the status poll makes
+        # while nothing is exposing, so the only way an unplugged camera is
+        # noticed. Only the "device is gone" codes are news; every other
+        # failure stays an unknown temperature.
         try:
             return float(self._sdk.get_config(self._cam_id, POA_TEMPERATURE))
+        except PlayerOneSdkError as e:
+            if e.code in _CAMERA_GONE_CODES:
+                raise CameraGone(
+                    f"Player One camera is gone: {e.code_name} (code {e.code}) "
+                    f"from {e.fn}") from e
+            return None
         except Exception:  # noqa: BLE001
             return None
 
