@@ -33,7 +33,8 @@ import math
 import time
 from pathlib import Path
 from statistics import median
-from typing import Any, Callable, NamedTuple
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, NamedTuple
 
 from ..aio import reap
 from ..config import config_store, frames_payload
@@ -1171,8 +1172,9 @@ class SequenceEngine:
         #: None until the first, so the first says it and the rest at most
         #: every ``SPARSE_RESWEEP_LOG_EVERY_S``. Reset when a debt is made.
         self._sparse_gated_logged_at: float | None = None
-        #: ``(session, frames seen, accepted map)`` for `_accepted_now`, or
-        #: None until it is first asked.
+        #: ``(session, frames seen, accepted map)``: the memo behind
+        #: `_ledger_counts` (#516), or None until it is first asked, and
+        #: again after `start` and once the run's session is let go.
         self._accepted_seen: tuple | None = None
         #: The focus groups acquired this run (#189 U-05, spec 5.6 step 6),
         #: keyed by `_focus_group_key`: a target's ``mosaic_group``, or its
@@ -2230,13 +2232,15 @@ class SequenceEngine:
         would move every single-target finish clock for the moments before
         its setup begins.
 
-        THE LEDGER IS WALKED ONCE PER CALL (#189 A9). In accepted mode each
-        `_step_complete` asks ``Session.accepted``, which walks every frame of
-        the session; asked per step, one ETA was targets x steps walks of a
+        THE LEDGER IS NOT WALKED PER CALL (#189 A9, #516). In accepted mode
+        each `_step_complete` asks the ledger's accepted count; asked per
+        step against the session, one ETA was targets x steps walks of a
         ledger that grows all night, and `compute_eta` runs on every status
-        publish. The map is taken once here and every step is answered from
-        it, through the same `_step_complete`, so the definition of done stays
-        one definition. Attempts mode reads ``_done`` and takes no map.
+        publish. The map is taken once here, from the memo
+        (`_accepted_now`, extended from the frames banked since it was last
+        asked), and every step is answered from it, through the same
+        `_step_complete`, so the definition of done stays one definition.
+        Attempts mode reads ``_done`` and takes no map.
 
         A ROTATING GROUP'S MEMBER OWES A HOP PER VISIT (#189 S2, spec 5.10):
         "the hops still to make become the visits still to make". Each visit
@@ -2249,9 +2253,7 @@ class SequenceEngine:
         if not self.plan:
             return 0
         cur = self._acquiring_ti
-        accepted = (self._session.accepted_by_step()
-                    if self.plan.count_mode == "accepted"
-                    and self._session is not None else None)
+        accepted = self._accepted_now()
         owing = 0
         for ti, target in enumerate(self.plan.targets):
             if target.calibration:
@@ -2268,7 +2270,7 @@ class SequenceEngine:
         return max(0, owing - 1) if cur is None else owing
 
     def _visits_owed(self, target: Target, group: TargetGroup,
-                     accepted: dict[str, int] | None) -> int:
+                     accepted: Mapping[str, int] | None) -> int:
         """The visits a group member still owes tonight, each one a hop.
 
         A round is one pass over the member's short steps, ``per_visit``
@@ -2718,7 +2720,9 @@ class SequenceEngine:
                 "id": self._session.id,
                 "name": self._session.name,
                 "count_mode": getattr(self.plan, "count_mode", "attempts"),
-                "accepted": self._session.total_accepted(),
+                # `Session.total_accepted()`, from the memo and in either
+                # count mode (#516): a publish is made several times a frame.
+                "accepted": sum(self._ledger_counts().values()),
                 "target": kw.get("target", self.state.get("target")),
             })
         # schedule=None is an explicit CLEAR (wave-3 §2): the waiting sub-state
@@ -3456,6 +3460,10 @@ class SequenceEngine:
                 bus.log("warning", f"session save failed: {e}", "sequence")
             self._record_flow_result(self._session, reason)
             self._session = None
+            # The memo is the finished session's: let it go with it, so the
+            # engine does not pin a project's whole ledger map until the
+            # next run starts.
+            self._accepted_seen = None
 
     #: How a night's ending reads on a flow card. The card renders "" | ok |
     #: warn | bad, and the distinction that matters to somebody scanning a
@@ -5455,35 +5463,68 @@ class SequenceEngine:
                 run.note_complete(t.id)
             self._drop_from(remaining, t)
 
-    def _accepted_now(self) -> dict[str, int] | None:
+    def _accepted_now(self) -> Mapping[str, int] | None:
         """The ledger's accepted frames per step, as
         ``Session.accepted_by_step`` answers, in accepted mode; None in
         attempts mode, where `_step_complete` reads ``_done`` and takes no
-        map.
-
-        KEPT UP TO DATE FROM THE TAIL (#537, the #516 budget). Within a run
-        the engine's session only grows: a frame is appended once with its
-        verdict (`_record_session_frame`), and a regrade is refused while
-        the session is active and works on the store's copy besides. So the
-        map taken once is extended by the frames banked since, and
-        `_drop_complete` asks it at every selection without a full walk of
-        the ledger each time (0.6 walks a banked frame on test_s7_ledger_
-        cost's 2000-frame night, over its budget). Walked afresh for a new
-        session object or a ledger that is somehow shorter than last seen."""
-        s, plan = self._session, self.plan
-        if s is None or plan is None or plan.count_mode != "accepted":
+        map. It is `_ledger_counts` in the one mode that counts the ledger,
+        so a caller that takes a map to hand down (`_drop_complete`,
+        `_remaining_hops`, `_order_snapshot`) gets the memo's view and never
+        walks."""
+        plan = self.plan
+        if (self._session is None or plan is None
+                or plan.count_mode != "accepted"):
             return None
+        return self._ledger_counts()
+
+    def _ledger_counts(self) -> Mapping[str, int]:
+        """The ledger's accepted frames per step, as
+        ``Session.accepted_by_step`` answers, for ANY count mode, as a
+        READ-ONLY view: the one memo behind every accepted-count read the
+        engine makes (#516, spec 10 risk 8: counts are taken once, not at
+        every check).
+
+        Mode-free because the published session sub-state reports
+        ``accepted`` in attempts mode too. The readers that must not count
+        the ledger in attempts mode, where ``_done`` is the count
+        (`_remaining_hops`, `_order_snapshot`, `_drop_complete`), ask
+        `_accepted_now`, which is None there.
+
+        KEPT UP TO DATE FROM THE TAIL (#537, #516). Within a run the
+        engine's session only grows: a frame is appended once with its
+        verdict (`_record_session_frame`); the one route that sets an
+        override (``PATCH /api/sessions/{id}/frames/{frame_id}``) answers 409
+        for an active session and edits the store's copy besides; and
+        ``save_run_state`` takes the operator-owned fields from the file and
+        never the frames. So the map taken once is extended by the frames
+        banked since, and a frame costs one count instead of a walk of the
+        project's whole ledger, a dozen times (about 0.84 ms each at 10 000
+        frames). Walked afresh for a new session object (the key is the
+        object, not its length: a second session of as many frames is not
+        the first) and for a ledger that is somehow shorter than last seen.
+        A verdict changed in place on a frame already counted is NOT seen,
+        which is the premise above: a regrade is made between runs, on the
+        store's copy, and `start` drops the memo.
+
+        THE DICT UNDER THE VIEW IS EXTENDED IN PLACE, so the view is for a
+        synchronous expression: take the counts, read them, let go. Held
+        across an await it would answer for frames banked since, and a
+        caller must never write to it, which the view refuses."""
+        s = self._session
+        if s is None:
+            return MappingProxyType({})
         frames = s.frames
+        n = len(frames)
         seen = self._accepted_seen
-        if seen is None or seen[0] is not s or seen[1] > len(frames):
+        if seen is None or seen[0] is not s or seen[1] > n:
             acc = s.accepted_by_step()
         else:
             acc = seen[2]
-            for f in frames[seen[1]:]:
+            for f in frames[seen[1]:n]:
                 if f.effective():
                     acc[f.step_id] = acc.get(f.step_id, 0) + 1
-        self._accepted_seen = (s, len(frames), acc)
-        return acc
+        self._accepted_seen = (s, n, acc)
+        return MappingProxyType(acc)
 
     def _group_cols(self, group: TargetGroup) -> int:
         """The layout's column count (`panel_order`: the layout's, never one
@@ -5503,10 +5544,10 @@ class SequenceEngine:
         """The pass's one snapshot for the order (spec 5.2): the fraction of
         each member's frames banked, counted as `_step_complete` counts them,
         and when each was last visited, from the ledger's frame times and
-        this run's visits. One ledger walk for the whole group."""
-        accepted = (self._session.accepted_by_step()
-                    if self.plan is not None and self.plan.count_mode == "accepted"
-                    and self._session is not None else None)
+        this run's visits. The counts are the memo's (`_accepted_now`); the
+        one walk of the ledger is the last-visit scan below, for the whole
+        group."""
+        accepted = self._accepted_now()
         fraction: dict[str, float] = {}
         for t in members:
             total = sum(s.count for s in t.steps)
@@ -7167,7 +7208,7 @@ class SequenceEngine:
         return cancelled
 
     def _target_complete(self, ti: int, target: Target, *,
-                         accepted: dict[str, int] | None = None) -> bool:
+                         accepted: Mapping[str, int] | None = None) -> bool:
         """Has this target got everything it asked for? ONE definition of done
         (#158): every step answers `_step_complete`, the question the cycle
         driver asks.
@@ -9239,7 +9280,7 @@ class SequenceEngine:
                     await self._panel_off_safe()
 
     def _step_complete(self, target: Target, step, *,
-                       accepted: dict[str, int] | None = None) -> bool:
+                       accepted: Mapping[str, int] | None = None) -> bool:
         """Has this step got everything it asked for?
 
         The two count modes disagree about what "everything" means, and the
@@ -9247,18 +9288,18 @@ class SequenceEngine:
         counts the ledger's accepted frames, ``attempts`` counts frames taken.
         Asking the wrong one is how a night either stops early or never stops.
 
-        ``accepted`` is the session's ``accepted_by_step()`` map, taken once by
-        a caller that asks about many steps (`_remaining_hops`), so the ledger
-        is not walked again for every step. It changes where the accepted
-        count is read from, never which count is read: attempts mode and a
-        calibration target ignore it.
+        ``accepted`` is the ledger's accepted map (`_accepted_now`), taken once
+        by a caller that asks about many steps (`_remaining_hops`), so it is
+        not looked up again for every step. Without one the same memo is
+        asked (`_ledger_counts`), so no caller walks the ledger. It changes
+        where the accepted count is read from, never which count is read:
+        attempts mode and a calibration target ignore it.
         """
         plan = self.plan
         if plan is not None and plan.count_mode == "accepted" \
                 and not target.calibration and self._session is not None:
-            got = (accepted.get(step.id, 0) if accepted is not None
-                   else self._session.accepted(step.id))
-            return got >= step.count
+            counts = accepted if accepted is not None else self._ledger_counts()
+            return counts.get(step.id, 0) >= step.count
         return self._done.get(f"{target.id}:{step.id}", 0) >= step.count
 
     async def _run_steps(self, ti: int, target: Target,
@@ -9518,8 +9559,10 @@ class SequenceEngine:
         quota = plan.count_mode == "accepted" and not target.calibration
 
         def _quota_met() -> bool:
+            # The memo's count (#516): asked twice a frame, and it used to
+            # walk the whole ledger each time.
             return (self._session is not None
-                    and self._session.accepted(step.id) >= step.count)
+                    and self._ledger_counts().get(step.id, 0) >= step.count)
 
         if quota:
             if _quota_met():
@@ -9648,7 +9691,7 @@ class SequenceEngine:
             await self._await_guider_quiet("this frame")
 
             self._begin_frame(ti, si, step.exposure_s)
-            shown = (self._session.accepted(step.id) + 1
+            shown = (self._ledger_counts().get(step.id, 0) + 1
                      if quota and self._session is not None else i + 1)
             self._set_state(state="running",
                             detail=f"{target.name}: {step.filter or 'no filter'} "
@@ -9835,7 +9878,7 @@ class SequenceEngine:
         """
         owed = step.count
         if self._session is not None:
-            owed = max(0, step.count - self._session.accepted(step.id))
+            owed = max(0, step.count - self._ledger_counts().get(step.id, 0))
         line = (f"{target.name}: {step.filter or 'no filter'} set aside for "
                 f"tonight after {rejects} consecutive rejects — its {owed} "
                 f"frame(s) remain pending in the session log; a restart tonight does not "
