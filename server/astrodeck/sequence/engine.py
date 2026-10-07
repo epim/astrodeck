@@ -1633,6 +1633,14 @@ class SequenceEngine:
         # up, instead of unwinding the frame loop. A set => idempotent, so a rule
         # that re-fires every frame can never queue work or loop.
         self._pending_skips: set[str] = set()
+        # Target ids of set-aside panels the operator asked to bring back
+        # (``retry_set_aside``, #600), in the order asked. The route only
+        # QUEUES them here, on the event loop, and the scheduler drains the
+        # list at the top of its next selection (``_drain_set_aside_retries``):
+        # the engine's own loop is the one writer of its run state and of the
+        # session file while a run is live, so nothing outside it mutates
+        # either mid-visit.
+        self._pending_retries: list[str] = []
         # Target ids COMPLETED BY THE FRAME THAT FIRED A NO-OP JUMP (#373, S5
         # orchestrator ruling 3). That frame is banked before the jump acts,
         # so it can be the target's last owed frame; the no-op leaves the
@@ -2029,6 +2037,9 @@ class SequenceEngine:
         self._hold_deferred_said = False
         self._jumps_spent = 0
         self._pending_skips = set()
+        # A retry asked of an earlier run is that run's: it names panels of
+        # that run's plan and records of that run's session.
+        self._pending_retries = []
         self._completion_owed = set()
         self._completion_fired = set()
         self._dawn_cutoff = False
@@ -3565,8 +3576,19 @@ class SequenceEngine:
         this pass, no unvisited member is eligible and the pass ends
         (`_close_group_pass`). Every other target runs exactly as it always
         has."""
-        while remaining:
+        # ``or self._pending_retries``: a retry asked during the visit that
+        # emptied the list (every panel set aside or done but the one in
+        # hand) must still be drained, or the operator is told it is queued
+        # and the run ends without it (#600).
+        while remaining or self._pending_retries:
             await self._checkpoint()
+            # THE OPERATOR'S RETRIES (#600), first, so a skip queued for the
+            # same panel still lands on it. A panel brought back rejoins
+            # ``remaining`` here and is judged by this very selection.
+            if self._pending_retries:
+                self._drain_set_aside_retries(remaining, index_of)
+                if not remaining:
+                    break
             # Drain skips queued by a skip_target aimed at a FUTURE target (the
             # current target was left running on purpose). Pure list surgery, no
             # device I/O. Names are matched against what is still remaining, so
@@ -4024,7 +4046,11 @@ class SequenceEngine:
                 if wait_ts - now > WAIT_TEARDOWN_S and not deferral:
                     await self._idle_park_hold(
                         "the next target is a long wait away")
-                await self._wait_until(wait_ts)
+                # THE WAIT ENDS EARLY FOR THE OPERATOR'S RETRY (#600): it
+                # can be 45 minutes long (a set-aside waiting for its
+                # expiry), and a panel brought back meanwhile is to be
+                # taken up now.
+                await self._wait_until_or_retry(wait_ts)
             else:
                 # waiting but no resolvable start_ts (e.g. below-alt with unknown
                 # ETA): a short bounded, cancel-responsive sleep then re-evaluate.
@@ -5803,6 +5829,183 @@ class SequenceEngine:
         if at is not None and first_visited is not None and first_visited < at:
             del remaining[at]
             remaining.insert(first_visited, target)
+
+    def retry_set_aside(self, group: str | None) -> dict:
+        """THE OPERATOR BRINGS TONIGHT'S SET-ASIDE PANELS BACK, the live half
+        (#600; backlog ruling D-07, owner-approved 2026-09-30): QUEUE them,
+        and return what was queued. ``group`` is a group's id
+        (``state.group.id``) or None for every group of the plan.
+
+        A panel set aside for the night stayed out of it until tomorrow even
+        once its cause was fixed: dew, a loose rotator, a solver setting. A
+        restart does not bring it back (``start`` reads the record back) and
+        neither does CONTINUE. This does, for panels of a mosaic, of ANY
+        kind of set-aside, those set aside for now (a centring one waiting on
+        its expiry) included, which come back at once instead of at 45
+        minutes.
+
+        SYNC, ON THE EVENT LOOP, AND IT ONLY QUEUES (backlog ruling for
+        #600). It never mutates a run mid-visit and never writes the session
+        file: the engine's own copy is the writer while a run is live
+        (``save_run_state`` preserves only ``_OPERATOR_OWNED``), so a record
+        cleared by a route would be written back by the next frame. The
+        scheduler drains ``_pending_retries`` at the top of its next
+        selection (`_drain_set_aside_retries`): within
+        ``SCHEDULE_WAIT_STEP_S`` when it is idle, and when the visit in hand
+        ends otherwise. A retried panel is JUDGED, never forced: it is put
+        back in the scheduler's list and the next selection asks its gating,
+        window, horizon and meridian rule as it asks every panel's, so one
+        that is still unfit is set aside again and the retry slews nowhere.
+
+        Returns ``{"live": False, "queued": []}`` when there is no live run
+        to hand it to (none, or one past its scheduler, whose session was
+        already finalized and saved dormant): the caller then takes the
+        dormant path, on the stored session. Otherwise ``{"live": True,
+        "queued": [labels]}``, the labels of the panels this call queued or
+        found queued already (a second press is not a second retry), in each
+        group's order. Complete panels are not touched, and a panel is
+        counted only while its group's run state holds it set aside, which
+        is what the sheet shows (before the scheduler has built the groups,
+        while the engine's records of tonight hold it). Raises ``KeyError``
+        for a group the plan does not carry.
+
+        ONE WINDOW IT DOES NOT CLOSE: a retry asked after the scheduler has
+        returned but before ``_finalize_report`` has cleared the session (the
+        idle-stop's wait, seconds) is queued and never drained, and the next
+        ``start`` discards it. The session is dormant with the record
+        standing, and a second press, now on the dormant path, brings it
+        back."""
+        plan = self.plan
+        if not self.running or self._session is None or plan is None:
+            return {"live": False, "queued": []}
+        if group is not None and group not in self._groups:
+            raise KeyError(group)
+        by_id = {t.id: (i, t) for i, t in enumerate(plan.targets)}
+        labels: list[str] = []
+        for gid in self._groups:
+            if group is not None and gid != group:
+                continue
+            run = self._group_runs.get(gid)
+            if run is not None:
+                aside = {pid: label for pid, label in run.members.items()
+                         if pid in run.set_aside}
+            else:
+                # THE SCHEDULER HAS NOT BUILT ITS GROUPS YET (the cooling
+                # wait, the camera-lane wait of a run just started), which is
+                # exactly where a restart tonight stands: what tonight already
+                # set aside is in the engine's records, which `start` seeded
+                # from the session, and `_start_groups` will make the same
+                # panels set aside in their group, so the drain finds them.
+                aside = {t.id: self._panel_name(t) for t in plan.targets
+                         if t.mosaic_group == gid and not t.calibration
+                         and t.id in self._set_aside_targets}
+            for pid, label in aside.items():
+                if pid not in by_id:
+                    continue
+                i, t = by_id[pid]
+                if self._target_complete(i, t):
+                    continue
+                if pid not in self._pending_retries:
+                    self._pending_retries.append(pid)
+                labels.append(label)
+        return {"live": True, "queued": labels}
+
+    def _drain_set_aside_retries(self, remaining: list[Target],
+                                 index_of: dict) -> None:
+        """The scheduler's half of `retry_set_aside` (#600): bring every
+        queued panel back, at the top of a selection, where nothing is in
+        flight and every list it touches is the scheduler's own.
+
+        For each panel still held set aside in its group's run state (one the
+        clock expired, or an earlier drain brought back, since the request is
+        no longer set aside, and nothing is done for it): its engine records
+        go (the whole-panel record, its meta, tonight's expiry count, every
+        step-level key), the group's run state takes it live with a clean
+        slate and D-03's held-pass counter at 0 (`GroupRun.retry_set_aside`),
+        and the session's records are marked cleared and saved AT ONCE, as
+        every set-aside write is (`_persist_set_aside`), so a crash in the
+        next minute restarts with the panel in play.
+
+        A FINAL set-aside was dropped from ``remaining`` (`_drop_from`), so
+        `_resort_group` alone cannot place it: it goes back by plan index,
+        as `_place_followers` reads it, then the group is re-sorted and its
+        followers placed behind it again. A panel set aside for now never
+        left the list, and is not added a second time. NOTHING IS SLEWED
+        HERE: the next selection judges the panel, by gating, as any other.
+
+        The report names the retry (`mark_retried`) so it does not show the
+        panel only as skipped, and each group says so once in the night log,
+        in words and nothing site-derived (6.9)."""
+        ids, self._pending_retries = self._pending_retries, []
+        plan = self.plan
+        if plan is None:
+            return
+        by_id = {t.id: t for t in plan.targets}
+        brought: dict[str, list[Target]] = {}
+        for tid in ids:
+            t = by_id.get(tid)
+            group = self._group_of(t) if t is not None else None
+            run = self._group_runs.get(group.id) if group is not None else None
+            if run is None or tid not in run.set_aside:
+                continue
+            self._set_aside_targets.pop(tid, None)
+            self._set_aside_meta.pop(tid, None)
+            self._expiries_tonight.pop(tid, None)
+            for s in t.steps:
+                self._set_aside.pop(f"{tid}:{s.id}", None)
+            run.retry_set_aside(tid)
+            brought.setdefault(group.id, []).append(t)
+        if not brought:
+            return
+        if self._session is not None:
+            self._session.note_set_aside_cleared(
+                [t.id for ts in brought.values() for t in ts],
+                night=night_key(time.time()))
+            try:
+                session_store.save_run_state(self._session)
+            except Exception as e:  # noqa: BLE001 - bookkeeping never ends a run
+                bus.log("warning", f"session save failed: {e}", "sequence")
+        for gid, targets in brought.items():
+            group, run = self._groups[gid], self._group_runs[gid]
+            for t in targets:
+                if not any(cur is t for cur in remaining):
+                    at = next((k for k, cur in enumerate(remaining)
+                               if index_of[id(cur)] > index_of[id(t)]),
+                              len(remaining))
+                    remaining.insert(at, t)
+                if self.reporter:
+                    self.reporter.mark_retried(t)
+            self._resort_group(group, remaining)
+            self._place_followers(group, remaining)
+            labels = ", ".join(run.members.get(t.id, t.name) for t in targets)
+            bus.log("info", f"{group.name or group.id}: set-aside panels "
+                            f"retried by the operator: {labels}", "sequence")
+
+    async def _wait_until_or_retry(self, deadline_ts: float) -> None:
+        """`_wait_until`, ended early by a retry the operator queued (#600).
+
+        The scheduler's idle wait is ONE `_wait_until` to its soonest waiter's
+        wake, which for a panel set aside for now is its 45 minute expiry, for
+        a deferral or a centring hold five or ten minutes, and for a window or
+        a meridian crossing longer still; `_wait_until` ticks every
+        ``SCHEDULE_WAIT_STEP_S``, but for its safety gate and the idle clock,
+        and returns only at the deadline. A retry queued meanwhile sat in
+        ``_pending_retries`` until then, and the operator who had just fixed the
+        cause and pressed RETRY watched the run wait out the clock it was meant
+        to cut short.
+
+        So the same wait is taken one step at a time, and ends at the first
+        step after a retry is queued, where the selection drains it
+        (`_drain_set_aside_retries`). Every step is a whole `_wait_until` pass:
+        the checkpoint, the safety gate and the idle clock, as before, and the
+        first step is taken whatever the deadline, so the guaranteed pass that
+        makes a past deadline impossible to spin on is kept. A deadline already
+        past is one such pass, as it always was."""
+        await self._wait_until(min(deadline_ts,
+                                   time.time() + SCHEDULE_WAIT_STEP_S))
+        while time.time() < deadline_ts and not self._pending_retries:
+            await self._wait_until(min(deadline_ts,
+                                       time.time() + SCHEDULE_WAIT_STEP_S))
 
     def _set_group_aside(self, group: TargetGroup, target: Target, reason: str,
                          remaining: list[Target]) -> None:

@@ -49,8 +49,22 @@
 // failed on 2-2 ...") is not prefixed with the label again (#509). The
 // state is framingModel `runPanelsOf`'s, handed in; nothing here reads the
 // run, and no time is shown (a meridian wait's end is the site's).
+//
+// RETRY SET-ASIDE PANELS (#600; backlog ruling D-07, owner-approved
+// 2026-09-30). A panel set aside for the night stayed out of it until
+// tomorrow even once the operator had fixed the cause, so while any row says
+// "set aside" a button under the rows asks the run to take them back
+// (`onRetry`, which the sheet points at `POST /api/sequence/retry-set-aside`
+// with the live group's id). It is a RUN control, not an edit of the draft,
+// and the sheet is read-only exactly while a run is live, so it stands
+// OUTSIDE the fieldset that freezes the ORDER select and the SHOOT toggles
+// (`frozen`): a button inside a disabled fieldset is natively disabled and
+// would never fire in the one mode that shows it. A HonestButton, so a
+// viewer reads why it is locked, in a line of its own as well as the tooltip
+// (the sheet's "explained" banner is not drawn read-only).
 
 import type { JSX, ReactNode } from "react";
+import { HonestButton } from "../../../ui";
 import type { FlowProgressBlock } from "../../../../lib/flowsApi";
 import type { MosaicPanel } from "../../../../types";
 import type { PanelRunState } from "../../flowRunState";
@@ -81,6 +95,8 @@ export const CURRENT_PAUSED = "current panel, run paused";
 export const CURRENT_HOLDING_FOR_CLOUD = "current panel, holding for cloud";
 export const CURRENT_HOLDING = "current panel, run holding";
 export const CURRENT_STOPPING = "current panel, run stopping";
+/** The retry button's label (#600). */
+export const RETRY_SET_ASIDE = "RETRY SET-ASIDE PANELS";
 
 /** A run-mode row's line, or null for a panel the run is doing nothing to.
  *
@@ -252,72 +268,106 @@ export interface PanelsSectionProps {
   onOrder: (v: string) => void;
   /** 1-based row and col. */
   onToggle: (row: number, col: number) => void;
+  /** Freeze the ORDER select and the SHOOT toggles (the sheet's `frozen`:
+   *  read-only, a run live, or DONE writing). Their own fieldset, so the
+   *  retry button below stays pressable while they are frozen. Absent is
+   *  live, as every caller before #600 had it. */
+  frozen?: boolean;
+  /** RETRY SET-ASIDE PANELS (#600): the button is drawn when this is given
+   *  AND some row says it is set aside, and not otherwise. */
+  onRetry?: () => void;
+  /** Why the button is locked, or null/absent for live: a viewer, or a retry
+   *  already on its way. Said in a line of its own beside the tooltip. */
+  retryLocked?: string | null;
+  /** What the last press did, in words: the panels queued, or the server's
+   *  refusal. */
+  retryNote?: string | null;
+  /** How a locked press explains itself (HonestButton's channel). The reason
+   *  is already on screen below the button, so absent is a no-op. */
+  explain?: (reason: string) => void;
 }
 
 export function PanelsSection(p: PanelsSectionProps): JSX.Element {
+  const retryShown = p.onRetry !== undefined && p.rows.some((r) => r.run?.kind === "set_aside");
   return (
     <section className="tfs-section" aria-labelledby="tfs-panels-h" data-testid="framing-panels">
       <h3 id="tfs-panels-h" className="tfs-section-h">PANELS</h3>
-      <div className="tfs-row">
-        <label className="tfs-label" htmlFor="tfs-order">ORDER</label>
-        <select id="tfs-order" className="field tfs-input" value={p.order}
-          onChange={(e) => p.onOrder(e.target.value)}>
-          {ORDERS.map((o) => <option key={o} value={o}>{o}</option>)}
-        </select>
-      </div>
-      {p.order === "Setting first" && <div className="tfs-row tfs-note" data-testid="framing-order-note">{SETTING_FIRST_NOTE}</div>}
-      {p.order === "Grid order" && <div className="tfs-row tfs-note" data-testid="framing-order-note">{GRID_ORDER_NOTE}</div>}
-      <div className="tfs-panel-table" role="table" aria-label="Panels in run order">
-        <div className="tfs-row tfs-panel tfs-panel-head" role="row">
-          <span role="columnheader" className="tfs-c-order">#</span>
-          <span role="columnheader" className="tfs-c-label">PANEL</span>
-          <span role="columnheader" className="tfs-c-on">SHOOT</span>
-          <span role="columnheader" className="tfs-c-bar">CAPTURED</span>
-          {p.showAltitude && <span role="columnheader" className="tfs-c-alt" data-testid="framing-alt-head">PEAK</span>}
+      <fieldset className="tfs-fieldset" disabled={p.frozen === true}>
+        <div className="tfs-row">
+          <label className="tfs-label" htmlFor="tfs-order">ORDER</label>
+          <select id="tfs-order" className="field tfs-input" value={p.order}
+            onChange={(e) => p.onOrder(e.target.value)}>
+            {ORDERS.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
         </div>
-        {p.rows.map((r) => [
-          <div key={r.label} className={`tfs-row tfs-panel ${r.skipped ? "tfs-off" : ""}`}
-            role="row" data-panel={r.label}>
-            <span role="cell" className="tfs-c-order tfs-mono">{r.order ?? ""}</span>
-            <span role="cell" className="tfs-c-label tfs-mono">{r.label}</span>
-            <span role="cell" className="tfs-c-on">
-              <button type="button" className="tfs-btn" aria-pressed={!r.skipped}
-                aria-label={`${r.skipped ? "Shoot" : "Skip"} panel ${r.label}`}
-                onClick={() => p.onToggle(r.row, r.col)}>
-                {r.skipped ? "OFF" : "ON"}
-              </button>
-            </span>
-            <span role="cell" className="tfs-c-bar">
-              {r.total > 0 ? (
-                <span className="tfs-bar" role="progressbar" aria-valuemin={0}
-                  aria-valuemax={r.total} aria-valuenow={Math.min(r.banked, r.total)}
-                  aria-label={`${r.label}: ${r.banked} of ${r.total} frames captured`}>
-                  <span className="tfs-bar-fill" style={{ width: `${Math.round(100 * Math.min(1, r.banked / r.total))}%` }} />
-                  <span className="tfs-bar-text tfs-mono">{`${r.banked}/${r.total}`}</span>
-                </span>
-              ) : r.banked > 0 ? (
-                // A skipped panel owes nothing, but what it banked comes back
-                // when it is shot again (spec 2.5).
-                <span className="tfs-mono tfs-note">{`${r.banked} kept`}</span>
-              ) : null}
-            </span>
-            {p.showAltitude && (
-              <span role="cell" className="tfs-c-alt tfs-mono" data-testid="framing-alt-cell"
-                title={r.altError ?? undefined}>
-                {r.peakAlt !== null ? `${Math.round(r.peakAlt)}\u00b0` : r.altError ? "no peak" : ""}
+        {p.order === "Setting first" && <div className="tfs-row tfs-note" data-testid="framing-order-note">{SETTING_FIRST_NOTE}</div>}
+        {p.order === "Grid order" && <div className="tfs-row tfs-note" data-testid="framing-order-note">{GRID_ORDER_NOTE}</div>}
+        <div className="tfs-panel-table" role="table" aria-label="Panels in run order">
+          <div className="tfs-row tfs-panel tfs-panel-head" role="row">
+            <span role="columnheader" className="tfs-c-order">#</span>
+            <span role="columnheader" className="tfs-c-label">PANEL</span>
+            <span role="columnheader" className="tfs-c-on">SHOOT</span>
+            <span role="columnheader" className="tfs-c-bar">CAPTURED</span>
+            {p.showAltitude && <span role="columnheader" className="tfs-c-alt" data-testid="framing-alt-head">PEAK</span>}
+          </div>
+          {p.rows.map((r) => [
+            <div key={r.label} className={`tfs-row tfs-panel ${r.skipped ? "tfs-off" : ""}`}
+              role="row" data-panel={r.label}>
+              <span role="cell" className="tfs-c-order tfs-mono">{r.order ?? ""}</span>
+              <span role="cell" className="tfs-c-label tfs-mono">{r.label}</span>
+              <span role="cell" className="tfs-c-on">
+                <button type="button" className="tfs-btn" aria-pressed={!r.skipped}
+                  aria-label={`${r.skipped ? "Shoot" : "Skip"} panel ${r.label}`}
+                  onClick={() => p.onToggle(r.row, r.col)}>
+                  {r.skipped ? "OFF" : "ON"}
+                </button>
               </span>
-            )}
-          </div>,
-          // The run's line for this panel, a row of its own under it so a
-          // long reason wraps rather than squeezing the bar.
-          runRowText(r.label, r.run) !== null && (
-            <div key={`${r.label}-run`} className="tfs-row tfs-note" role="row"
-              data-testid="framing-panel-run" data-panel-run={r.label}>
-              <span role="cell">{runRowText(r.label, r.run)}</span>
-            </div>
-          ),
-        ])}
-      </div>
+              <span role="cell" className="tfs-c-bar">
+                {r.total > 0 ? (
+                  <span className="tfs-bar" role="progressbar" aria-valuemin={0}
+                    aria-valuemax={r.total} aria-valuenow={Math.min(r.banked, r.total)}
+                    aria-label={`${r.label}: ${r.banked} of ${r.total} frames captured`}>
+                    <span className="tfs-bar-fill" style={{ width: `${Math.round(100 * Math.min(1, r.banked / r.total))}%` }} />
+                    <span className="tfs-bar-text tfs-mono">{`${r.banked}/${r.total}`}</span>
+                  </span>
+                ) : r.banked > 0 ? (
+                  // A skipped panel owes nothing, but what it banked comes back
+                  // when it is shot again (spec 2.5).
+                  <span className="tfs-mono tfs-note">{`${r.banked} kept`}</span>
+                ) : null}
+              </span>
+              {p.showAltitude && (
+                <span role="cell" className="tfs-c-alt tfs-mono" data-testid="framing-alt-cell"
+                  title={r.altError ?? undefined}>
+                  {r.peakAlt !== null ? `${Math.round(r.peakAlt)}\u00b0` : r.altError ? "no peak" : ""}
+                </span>
+              )}
+            </div>,
+            // The run's line for this panel, a row of its own under it so a
+            // long reason wraps rather than squeezing the bar.
+            runRowText(r.label, r.run) !== null && (
+              <div key={`${r.label}-run`} className="tfs-row tfs-note" role="row"
+                data-testid="framing-panel-run" data-panel-run={r.label}>
+                <span role="cell">{runRowText(r.label, r.run)}</span>
+              </div>
+            ),
+          ])}
+        </div>
+      </fieldset>
+      {retryShown && (
+        <div className="tfs-row" data-testid="framing-retry">
+          <HonestButton className="tfs-btn" reason={p.retryLocked ?? null}
+            onClick={() => p.onRetry?.()} onExplain={(why) => p.explain?.(why)}>
+            {RETRY_SET_ASIDE}
+          </HonestButton>
+        </div>
+      )}
+      {retryShown && p.retryLocked && (
+        <div className="tfs-row tfs-note" data-testid="framing-retry-why">{p.retryLocked}</div>
+      )}
+      {retryShown && p.retryNote && (
+        <div className="tfs-row tfs-note" role="status" data-testid="framing-retry-note">{p.retryNote}</div>
+      )}
       {p.showAltitude && p.nightCard}
     </section>
   );

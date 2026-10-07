@@ -2667,6 +2667,15 @@ class SessionPatchBody(BaseModel):
     plan: SequencePlan | None = None     # dormant-only full replacement (spec §4)
 
 
+class RetrySetAsideBody(BaseModel):
+    """Body of ``POST /api/sequence/retry-set-aside`` (#600). ``group`` is a
+    group's id (``state.group.id``), or null for every group of the plan.
+    ``session_id`` names the stored session on the DORMANT path, when no run
+    is live; a live run needs none."""
+    group: str | None = None
+    session_id: str | None = None
+
+
 class FramePatchBody(BaseModel):
     override: str | None = None          # "accept" | "reject" | null (clear)
     metrics: dict[str, float] | None = None
@@ -9909,6 +9918,112 @@ def create_app(*, bind_host: str | None = None,
             disarm=True)
         await engine.abort()
         return {"aborted": True}
+
+    @app.post("/api/sequence/retry-set-aside",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def sequence_retry_set_aside(body: RetrySetAsideBody | None = None):
+        """RETRY SET-ASIDE PANELS (#600; backlog ruling D-07, owner-approved
+        2026-09-30): bring tonight's set-aside panels of a mosaic back, for
+        one group (``group``, a ``state.group.id``) or all (null).
+
+        A panel set aside for the night used to stay out of it until
+        tomorrow even once the operator had fixed the cause. ``control.mount``,
+        like pause, resume and abort: the run slews to a panel it takes up
+        again, so a retry can move the mount, though this route moves
+        nothing itself. The relay forwards it by capability.
+
+        LIVE (a run is going): the engine QUEUES the panels and the route
+        answers ``{"queued": [labels], "live": true}``. The engine drains
+        its queue in its own scheduler loop, so nothing here mutates a run
+        mid-visit or writes the session file, which the engine's copy owns
+        while live (`SequenceEngine.retry_set_aside`). A retried panel is
+        judged by the selection, never force-slewed.
+
+        DORMANT (no run, one that has ended, or a stored session named by
+        ``session_id`` that is not the live run's): the stored session's
+        records for tonight are marked cleared and saved, in one locked
+        section on a worker thread (as PATCH /api/sessions/{id} does,
+        #167), so the same night's CONTINUE, restart or auto-resume takes
+        the panel up. ``session_id`` names it, else the armed one. 409 when
+        it is not dormant or when nothing is set aside tonight (complete
+        panels are not touched); 404 for no such session or group. The
+        answer is ``{"cleared": [labels], "live": false}``.
+
+        Either way the night log says so, in words and no numbers (6.9)."""
+        group = body.group if body is not None else None
+        session_id = body.session_id if body is not None else None
+        # A STORED SESSION NAMED BY ID IS THAT SESSION'S, even while another
+        # run is live: the request is about the one it names, and the live
+        # run's panels are none of its business.
+        live_id = None
+        if engine.running:
+            live_id = (engine.state.get("session") or {}).get("id")
+        other = (session_id is not None and live_id is not None
+                 and session_id != live_id)
+        try:
+            out = {"live": False} if other else engine.retry_set_aside(group)
+        except KeyError:
+            raise HTTPException(404, "no such group")
+        if out["live"]:
+            if not out["queued"]:
+                raise HTTPException(409, "nothing is set aside")
+            return {"queued": out["queued"], "live": True}
+
+        def _locked() -> tuple[list[str], list[str]]:
+            with session_store.write_locked():
+                if session_id is not None:
+                    try:
+                        s = session_store.load(session_id)
+                    except KeyError:
+                        raise HTTPException(404, "session not found")
+                else:
+                    s = session_store.armed()
+                    if s is None:
+                        raise HTTPException(
+                            404, "no run is live and no session is armed: "
+                                 "name the stored session with session_id")
+                # Read fresh, under the lock: a start that landed since the
+                # route began (ResumeArm's tick) is the status this sees.
+                if s.status != "dormant":
+                    raise HTTPException(
+                        409, f"session is {s.status}, not dormant")
+                groups = {g.id: g for g in s.plan.groups}
+                if group is not None and group not in groups:
+                    raise HTTPException(404, "no such group")
+                # What a complete panel still owes is nothing: its record, if
+                # it has one, is left alone.
+                owed = s.remaining()
+                members: dict[str, list] = {}
+                for t in s.plan.targets:
+                    if (t.mosaic_group in groups and not t.calibration
+                            and (group is None or t.mosaic_group == group)
+                            and (sum(x.count for x in t.steps) == 0
+                                 or any(owed.get(x.id, 0) for x in t.steps))):
+                        members.setdefault(t.mosaic_group, []).append(t)
+                wanted = [t.id for ts in members.values() for t in ts]
+                standing = {r["target_id"] for r in s.note_set_aside_cleared(
+                    wanted, night=night_key(time.time()))}
+                if not standing:
+                    raise HTTPException(409, "nothing is set aside")
+                session_store.save(s)
+                labels: list[str] = []
+                lines: list[str] = []
+                for gid, ts in members.items():
+                    names = [SequenceEngine._panel_name(t) for t in ts
+                             if t.id in standing]
+                    if names:
+                        labels.extend(names)
+                        lines.append(
+                            f"{groups[gid].name or gid}: set-aside panels "
+                            f"retried by the operator: {', '.join(names)}; "
+                            f"the next start tonight takes them up")
+                return labels, lines
+
+        labels, lines = await asyncio.to_thread(_locked)
+        for line in lines:
+            bus.log("info", line, "sequence")
+        return {"cleared": labels, "live": False}
 
     @app.get("/api/sequence/state")
     @declare(CAP_VIEW_STATUS)

@@ -782,6 +782,23 @@ class SessionReporter:
                              "action": "skip"})
         self._schedule_write()
 
+    def mark_retried(self, target: Any) -> None:
+        """Record that the operator brought ``target``'s set-aside panel back
+        (#600, backlog ruling D-07, owner-approved 2026-09-30), beside the
+        skip that set it aside, so the night's report does not show the panel
+        only as skipped when it was shot after all.
+
+        Its own action, ``retry``, and a line that says whose act it was. A
+        panel retried and set aside again (it is judged afresh at its next
+        selection) reads as three lines: skipped, retried, skipped."""
+        name = getattr(target, "name", str(target))
+        self._safety.append({
+            "ts": time.time(),
+            "reason": f"retried {name}: its set-aside was cleared by the "
+                      f"operator",
+            "action": "retry"})
+        self._schedule_write()
+
     def _schedule_write(self) -> None:
         try:
             loop = asyncio.get_running_loop()
