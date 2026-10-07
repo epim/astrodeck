@@ -12,6 +12,24 @@ from typing import Mapping
 
 from ..base import DeviceError
 
+
+class CameraGone(DeviceError):
+    """The SDK says this camera's handle is closed or the device is gone.
+
+    Raised by an adapter's idle status read (``get_temperature``) for the
+    vendor's own "closed / removed / not found" error codes, and ONLY those.
+    Every other failure of that read keeps returning ``None``, because a
+    camera with no temperature sensor answers a status read with an error too
+    (ZWO's INVALID_CONTROL_TYPE) and is perfectly present.
+
+    A ``DeviceError`` subclass on purpose: callers that already guard a camera
+    call with ``except DeviceError`` or ``except Exception`` are unchanged. The
+    engine (``NativeCamera.get_temperature``) is what turns it into
+    ``connected = False`` and one warning, which is the only way an IDLE camera
+    that was unplugged ever reads disconnected (issue #16): the hooks an
+    exposure drives measure ``connected`` only while something is exposing."""
+
+
 #: Appended to camera-unavailable errors + logged. USB cameras allow exactly one
 #: owner, so the usual cause of "attached but not found/openable" is another app
 #: holding the device. Seen at-scope 2026-07-21: the ASCOM Remote/Alpaca server

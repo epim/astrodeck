@@ -949,6 +949,11 @@ class Hub:
         #: re-coupled since the last self-test (#594's own hardware fix),
         #: and nothing before this process started may be trusted either way.
         self._rotation_trusted: bool | None = None
+        #: Serialises ``ensure_rotator_ready`` (WP-88, #145, #594). A goto's
+        #: rotation branch and the TEST ROTATOR button can both ask at once;
+        #: without this each sees "unmeasured" before the other finishes and
+        #: the rotator is turned through the whole preflight twice.
+        self._rotator_preflight_lock: asyncio.Lock = asyncio.Lock()
         #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
         #: ``from_mount_frame``. One entry, because a mount points at one place.
         self._precess_memo: tuple[tuple[float, float], float,
@@ -1565,7 +1570,13 @@ class Hub:
                 role, {"backend": getattr(dev, "backend", primary)})
         self._seed_filter_config()  # UX-05: user slot names over hardware letters
         self._seed_egain_config()   # learned e-/ADU (driver value still wins)
-        # dedicated guide camera (sim only; None for nina/native/phd2).
+        # A dedicated guide camera ASSIGNED TO THE `guide_camera` ROLE (a native,
+        # Alpaca or sim rig alike: the role is in ``devices.backend.ROLES``) is
+        # connected, kept in ``self.devices`` and recorded in ``_last_connect``
+        # by the loop above, so ``reconnect_role`` can replay it. This is the
+        # OTHER path: the backend's own pseudo-device, which no role assignment
+        # names (``BackendSession.guide_camera()``: the sim exposes one,
+        # nina/native/phd2 return None). Only that one is sim-only.
         if result.guide_camera is not None:
             await result.guide_camera.connect()
             self.devices["guide_camera"] = result.guide_camera
@@ -6701,7 +6712,8 @@ class Hub:
 
     async def _approach_rotator_mechanical(self, rot, target_mech: float,
                                            mech_now: float, rcfg,
-                                           epoch: int) -> bool:
+                                           epoch: int, *,
+                                           direct: bool = False) -> bool:
         """The one-sided move itself (#526, H4 orchestrator ruling 3), given
         an ALREADY-RESOLVED mechanical target: plan it from ``mech_now`` with
         ``rotation.one_sided_moves`` and send each leg, re-checking the
@@ -6716,17 +6728,33 @@ class Hub:
         ``mech_now`` (a manual move has no fresh solve of its own to anchor
         on; see ``_rotator_sync_anchor``) -- does not have that conversion
         repeated here on a DIFFERENT anchor, silently answering a different
-        question than the one it already resolved."""
-        plan = _rotation.one_sided_moves(mech_now, target_mech,
-                                         rcfg.range_type, rcfg.range_start_deg)
-        if plan.skipped:
-            bus.log("info", f"rotator: {plan.skipped}", "rotator")
-        elif len(plan.moves) > 1:
+        question than the one it already resolved.
+
+        ``direct`` (#594, WP-88) plans the move as the single mechanical
+        target and says in the log it is a calibration move. It is for a
+        MEASUREMENT of whether the camera follows the rotator
+        (``scripts/rig_rotator_follow.py``, through ``POST /api/rotator/move``):
+        a move against the approach direction would otherwise go
+        ``ROTATOR_BACKLASH_DEG`` past its target and return, adding 10
+        degrees of travel to the very thing under test. The single leg still
+        goes through the per-leg motion fence below."""
+        if direct:
+            plan = _rotation.RotatorMoves((_rotation.mod360(target_mech),))
             bus.log("info",
-                    f"rotator: the move to mechanical {target_mech:.2f}° "
-                    f"runs against the approach direction, so it goes "
-                    f"{_rotation.ROTATOR_BACKLASH_DEG:g}° past, to "
-                    f"{plan.moves[0]:.2f}°, and comes back", "rotator")
+                    f"rotator: calibration move to mechanical "
+                    f"{plan.moves[0]:.2f}°, direct (no one-sided approach)",
+                    "rotator")
+        else:
+            plan = _rotation.one_sided_moves(
+                mech_now, target_mech, rcfg.range_type, rcfg.range_start_deg)
+            if plan.skipped:
+                bus.log("info", f"rotator: {plan.skipped}", "rotator")
+            elif len(plan.moves) > 1:
+                bus.log("info",
+                        f"rotator: the move to mechanical {target_mech:.2f}° "
+                        f"runs against the approach direction, so it goes "
+                        f"{_rotation.ROTATOR_BACKLASH_DEG:g}° past, to "
+                        f"{plan.moves[0]:.2f}°, and comes back", "rotator")
         for mech in plan.moves:
             if not self._motion_committed_clean(epoch):
                 bus.log("warning", "rotate abandoned: aborted", "rotator")
@@ -7240,9 +7268,12 @@ class Hub:
         nightly self-test (D-05, WP-32b), not to this one-shot measurement.
 
         Leaves the rotator wherever the second solve found it (``step_deg``
-        past where it started) — this is a calibration, not a framing
-        command; a caller wanting a particular angle next calls
-        ``rotate_to_pa`` or ``sync_rotator_to_sky`` once the sign is known.
+        from where it started, turned the other way when that way would leave
+        the allowed arc, see ``_preflight_step_deg``) — this is a
+        calibration, not a framing command; a caller wanting a particular
+        angle next calls ``rotate_to_pa`` or ``sync_rotator_to_sky`` once the
+        sign is known. ``ensure_rotator_ready`` is what calls this on a real
+        rig (WP-88).
 
         Raises DeviceError when either solve fails, or when the move was too
         small to read a sign from safely — mechanically (``step_deg`` did
@@ -7252,6 +7283,9 @@ class Hub:
         """
         rot = self.require("rotator")
         cam: Camera = self.require("camera")
+        # The motion fence, read before the first await (WP-88): a STOP that
+        # lands during either solve must not be followed by the step below.
+        epoch = self._motion_epoch
         from . import providers as _providers
         solver = _providers.pick_solver(self)
         await self.yield_camera_for("rotator sign calibration")
@@ -7303,7 +7337,8 @@ class Hub:
             return rec["pa_deg"], float(await rot.get_mechanical_position())
 
         sky0, mech0 = await _solve_once()
-        await rot.move_mechanical(_rotation.mod360(mech0 + step_deg))
+        step_deg = await self._rotator_calibration_move(
+            rot, mech0, step_deg, epoch, "rotator sign")
         sky1, mech1 = await _solve_once()
 
         mech_travel = _rotation.mechanical_travel(mech0, mech1)
@@ -7369,9 +7404,11 @@ class Hub:
         different thresholds for different questions.
 
         Leaves the rotator wherever the second solve found it (``step_deg``
-        past where it started) -- like ``learn_rotator_sign``, this is a
-        calibration, not a framing command; the first real ``rotate_to_pa``
-        of the night moves it to wherever a panel needs anyway.
+        from where it started, turned the other way at the end of a limited
+        range) -- like ``learn_rotator_sign``, this is a calibration, not a
+        framing command; the first real ``rotate_to_pa`` of the night moves
+        it to wherever a panel needs anyway. ``ensure_rotator_ready`` is what
+        calls this on a real rig (WP-88).
 
         Raises DeviceError when either solve fails, or the rotator did not
         move far enough to measure safely (the floor is
@@ -7383,6 +7420,9 @@ class Hub:
         FAIL back to trusted."""
         rot = self.require("rotator")
         cam: Camera = self.require("camera")
+        # The motion fence, read before the first await (WP-88): see
+        # ``learn_rotator_sign``.
+        epoch = self._motion_epoch
         from . import providers as _providers
         solver = _providers.pick_solver(self)
         await self.yield_camera_for("rotator self-test")
@@ -7433,7 +7473,8 @@ class Hub:
             return rec["pa_deg"], float(await rot.get_mechanical_position())
 
         sky0, mech0 = await _solve_once()
-        await rot.move_mechanical(_rotation.mod360(mech0 + step_deg))
+        step_deg = await self._rotator_calibration_move(
+            rot, mech0, step_deg, epoch, "rotator self-test")
         sky1, mech1 = await _solve_once()
 
         mech_travel = _rotation.mechanical_travel(mech0, mech1)
@@ -7471,6 +7512,104 @@ class Hub:
         return {"passed": passed, "fraction": round(fraction, 3),
                 "mechanical_travel_deg": round(mech_travel, 2),
                 "sky_travel_deg": round(sky_travel, 2)}
+
+    @staticmethod
+    def _preflight_step_deg(mech0: float, step_deg: float, rcfg) -> float:
+        """The signed step a rotator calibration commands from ``mech0``:
+        ``step_deg`` as asked, or ``-step_deg`` when ``+step_deg`` would leave
+        the allowed arc and ``-step_deg`` would not (WP-88, #145).
+
+        A half or quarter range exists to keep a cable-limited rotator off
+        its stop, and a driver with travel limits ignores (or clamps) a
+        command outside them. A calibration started within a step of the
+        sweep's end would then see the rotator not move, and report 'moved
+        too little' about a perfectly healthy train. Both measurements read
+        a SIGNED travel off the solves, so turning the step round changes
+        nothing they conclude. ``target_mechanical_position`` is the range
+        arithmetic the rotate loop already folds its targets through; a
+        point it leaves alone is inside the arc.
+
+        When neither direction is inside (the rotator is already outside its
+        configured range, or the step is wider than the sweep) the step is
+        left as asked: there is no better answer, and the calibration's own
+        'moved too little' refusal still says so if the move does not land."""
+        def inside(angle: float) -> bool:
+            p = _rotation.mod360(angle)
+            return _rotation.angle_equals(
+                _rotation.target_mechanical_position(
+                    p, rcfg.range_type, rcfg.range_start_deg), p, 1e-6)
+
+        if inside(mech0 + step_deg) or not inside(mech0 - step_deg):
+            return step_deg
+        return -step_deg
+
+    async def _rotator_calibration_move(self, rot, mech0: float,
+                                        step_deg: float, epoch: int,
+                                        what: str) -> float:
+        """The one known mechanical step ``learn_rotator_sign`` and
+        ``rotator_self_test`` command between their two solves. Returns the
+        signed step actually sent.
+
+        THE MOTION FENCE, READ IMMEDIATELY BEFORE THE COMMAND (WP-88), as
+        ``_approach_rotator_mechanical`` reads it before every leg: both
+        calibrations spend one solve before this step, seconds in which a STOP
+        can land, and a rotator that then turns anyway has been moved by a
+        calibration the operator had already cancelled. An abort raises, so
+        nothing is learned and nothing is recorded as tested."""
+        step = self._preflight_step_deg(mech0, step_deg,
+                                        config_store.cfg().rotator)
+        if not self._motion_committed_clean(epoch):
+            bus.log("warning", f"{what} abandoned: aborted", "rotator")
+            raise DeviceError(
+                f"{what}: aborted before the rotator was moved; nothing was "
+                f"measured")
+        await rot.move_mechanical(_rotation.mod360(mech0 + step))
+        return step
+
+    async def ensure_rotator_ready(
+            self, *, sign_step_deg: float = 2.0,
+            test_step_deg: float = ROTATOR_SELF_TEST_STEP_DEG) -> dict:
+        """The rotator preflight (WP-88; #145, #594): measure what this
+        connect has not measured, and nothing else. Returns ``{"sign",
+        "trusted", "ran"}``: the hub's two values afterwards and which of
+        ``"sign"`` / ``"self_test"`` were run THIS call.
+
+        WHY IT EXISTS. ``learn_rotator_sign`` (R-4) and ``rotator_self_test``
+        (D-05) were built, tested, and called by nothing outside the tests.
+        ``connect`` leaves the sign unmeasured and ``rotate_to_pa`` refuses a
+        rotation while it is, so on a real rig every automated rotation was
+        refused as 'sign not learned' until somebody ran the calibration by
+        hand, which the product had no way to do. ``goto_and_center`` calls
+        this in its rotation branch (only when the rotator has to move) and
+        ``POST /api/rotator/preflight`` calls it from the TEST ROTATOR button.
+
+        IDEMPOTENT PER CONNECT. Each half runs only while its value is None,
+        so a second call, or the second hop of a rotating mosaic, exposes
+        nothing. ``_teardown`` resets both, so the next connect measures
+        again; a reconnect may bring back a different or re-coupled rotator.
+        A prior FAIL is not None, so it stays failed until the rig
+        reconnects: re-testing a coupling that already failed would let the
+        next hop quietly clear a verdict the operator has not acted on.
+
+        UNDER ONE LOCK, so a goto and the button asking together measure
+        once: the second caller waits, then finds both values known.
+
+        ERRORS. A ``DeviceError`` from either measurement (a solve that
+        failed, a rotator that did not move, an abort) propagates: rotation
+        stays refused and the caller degrades, as it does for any rotate
+        failure. A FAILED self-test is not an error. It is an answer, so it
+        returns normally with ``trusted`` False and the caller can word it;
+        ``rotate_to_pa`` then refuses with the D-05 line."""
+        ran: list[str] = []
+        async with self._rotator_preflight_lock:
+            if self._rotator_sky_sign is None:
+                await self.learn_rotator_sign(sign_step_deg)
+                ran.append("sign")
+            if self._rotation_trusted is None:
+                await self.rotator_self_test(test_step_deg)
+                ran.append("self_test")
+            return {"sign": self._rotator_sky_sign,
+                    "trusted": self._rotation_trusted, "ran": ran}
 
     async def rotate_to_pa(self, target_pa_deg: float,
                            exposure_s: float = 3.0,
@@ -8002,6 +8141,13 @@ class Hub:
                     await tel.slew(slew_ra, slew_dec)
                     self.goto_settled_at = time.time()
                 try:
+                    # THE ROTATOR PREFLIGHT (WP-88; #145, #594), here and not
+                    # above the shortcut: the branch that moves nothing must
+                    # not buy a 22 degree calibration. It runs after the slew,
+                    # with the target's field on the sensor, measures only
+                    # what this connect has not measured, and a failure of it
+                    # degrades below like any other rotate failure.
+                    await self.ensure_rotator_ready()
                     rotation_result = await self.rotate_to_pa(
                         rotation_deg, exposure_s=solve_exposure_s)
                 except asyncio.CancelledError:
@@ -8985,6 +9131,14 @@ class Hub:
                     "synced": rot.synced,
                     "can_reverse": rot.can_reverse,
                     "reverse": await rot.get_reverse(),
+                    # WP-88 (#145, #594): what the rig KNOWS about this
+                    # rotator, for the TEST ROTATOR line. ``sky_sign`` is
+                    # 1 / -1 once measured, null before; ``trusted`` is true
+                    # once the self-test passed, false once it failed, null
+                    # before. Null is not False: 'not measured' and
+                    # 'measured, and failed' are different sentences.
+                    "sky_sign": self._rotator_sky_sign,
+                    "trusted": self._rotation_trusted,
                 }
             except Exception:
                 pass

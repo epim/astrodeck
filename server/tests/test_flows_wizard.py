@@ -561,8 +561,16 @@ _S3_POOL_KEYS = {"counts"}
 #: every dusk node it creates, so they appear in the dump here for the
 #: first time. Checked: regenerated from the SAME transform against the
 #: fixed code, with no other change to the generator or ``_s3_normal``.
+#:
+#: RE-PINNED AGAIN IN WP-85 (#195, 2026-10-07), deliberately, for one change
+#: and nothing else: DUSK WINDOW gained its `autoResume` param, "On" by
+#: default (`flows.nodes`), which ``generate()`` writes onto every dusk node
+#: it creates, so every one of the 576 dumped graphs carries it. Checked, not
+#: assumed: with ``autoResume`` popped from each dusk node (asserting it is
+#: "On" on every one) the same dump hashes to the PREVIOUS pin,
+#: ``a1c99c1bf839...``, byte for byte.
 THREE_ANSWER_GRAPHS_SHA256 = \
-    "a1c99c1bf8390127472af2f53480429c6d115049e7b2daec062c6275797cb68b"
+    "78de26ba0b8efabf1f916d2c9f3a27c31b40624a40094c3d34d161d45d77f0a7"
 
 #: The pre-S3 generator's PLAN for every three-answer body with target "M31"
 #: (THREE_KINDS x all 64 chip subsets), ids blanked, hashed the same way.
@@ -585,8 +593,17 @@ THREE_ANSWER_GRAPHS_SHA256 = \
 #: explicit ``repeat``, which defaults to "Single night" (#195: "Single
 #: night" means auto-resume does not arm across nights). Checked:
 #: regenerated with the SAME ``count_mode`` reset and no other change.
+#:
+#: RE-PINNED AGAIN IN WP-85 (#195, 2026-10-07), deliberately, for one change
+#: and nothing else, and it undoes the line above, which was the P0:
+#: "Single night" does not mean "do not resume" (owner ruling 7 on #189), so
+#: every one of the 192 plans now carries ``resume_across_nights`` TRUE, the
+#: value of every plan before 0.3.40. Checked against every one of them (the
+#: set of values is ``{True}``) and against the history: with the key popped,
+#: the same dump hashes to the pin from before WP-34, ``122ff5c79e4f...``,
+#: byte for byte. The key's presence is the only difference from that pin.
 WIZARD_PLANS_SHA256 = \
-    "fc0f81225f71d4c263299ba40c3cd8367b13b37c7cfd349db522e9ed21828037"
+    "d6b9797dcca8b4075f4cb684c313ce50d55c0cd11ac059c424ccb6eb676ed1ae"
 
 #: The pre-S3 TARGET's missing-key coordinates: M31's, verbatim.
 _OLD_M31 = ("00h 42m 44s", "+41° 16′ 09″")

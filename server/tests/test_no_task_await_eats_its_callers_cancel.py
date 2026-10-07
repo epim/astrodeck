@@ -38,7 +38,14 @@ shielded flip-wait ``finally`` in ``SequenceEngine._flip_bounded``,
 ``ResumeArm.stop`` -- see ``server/tests/test_w13_*cancel_safe*.py``), and
 taught the scan to tell apart the one shape that LOOKS like #235/#252 but
 isn't (a loop that re-awaits the same shielded future until it is actually
-done -- ``_loop_rewait_exempt_line``, below), so ``_ALLOWLIST`` is now empty.
+done -- ``_loop_rewait_exempt_line``, below), so ``_ALLOWLIST`` was empty.
+
+#681 found the guard blind in two more places: it never looked at an await of
+``asyncio.gather(<tasks>)`` (``SessionReporter.flush`` is written that way), and
+its ``try`` spelling named only ``CancelledError``, not ``BaseException``. It
+now reads both, and the widened scan found one real swallow that the narrow one
+could not see (``Prefetch.settle``, which was the one ``_ALLOWLIST`` entry until
+#710 fixed it; ``_ALLOWLIST`` is empty again).
 
 Each test names the mutation it was shown RED under, run from a byte-for-byte
 backup of ``hub.py`` and restored byte-identical afterwards, with the observed
@@ -321,14 +328,48 @@ def _walk_body(body):
                 stack.append(child)
 
 
+#: Calls that only re-wrap a collection of tasks (``*list(self._pending)``,
+#: the shape ``SessionReporter.flush`` was written in), so the scan looks
+#: through them at the one argument instead of mistaking them for a fresh call.
+_COLLECTION_WRAPPERS = {"list", "tuple", "set", "frozenset", "sorted",
+                        "reversed"}
+
+
+def _task_like(arg) -> bool:
+    """An argument to ``gather`` that names tasks that already exist: a bare
+    name, attribute or subscript (``self._a``, ``tasks[0]``), the same
+    behind a star (``*pending``), a collection wrapper around one
+    (``*list(self._pending)``), or a comprehension whose ELEMENT is one
+    (``*[t for t in self._pending]``). A fresh call (``fresh()``) or a
+    comprehension of fresh calls (``*[_night(o) for o in CATALOG]``) is not
+    this shape, for the reason a fresh ``sleep()`` is not: nothing there has a
+    cancel of its own to be mistaken for the caller's."""
+    if isinstance(arg, ast.Starred):
+        arg = arg.value
+    if isinstance(arg, (ast.Name, ast.Attribute, ast.Subscript)):
+        return True
+    if isinstance(arg, ast.Call):
+        return (_name(arg.func) in _COLLECTION_WRAPPERS and len(arg.args) == 1
+                and _task_like(arg.args[0]))
+    if isinstance(arg, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+        return isinstance(arg.elt, (ast.Name, ast.Attribute, ast.Subscript))
+    return False
+
+
 def _awaits_a_task(node: ast.Await) -> bool:
     """An await of an existing task or future: a bare name, attribute or
-    subscript (``await task``, ``await self._task``), or one handed to
-    ``wait_for``/``shield`` (``await asyncio.wait_for(task, 5)``). Awaiting
-    a fresh call (``await asyncio.sleep(1)``) is not this shape."""
+    subscript (``await task``, ``await self._task``), one handed to
+    ``wait_for``/``shield`` (``await asyncio.wait_for(task, 5)``), or several
+    handed to ``gather`` (``await asyncio.gather(*pending,
+    return_exceptions=True)``, #681; ``fut = gather(...)`` then ``await fut``
+    is already the bare-name arm). Awaiting a fresh call (``await
+    asyncio.sleep(1)``, ``await asyncio.gather(fresh(), fresh())``) is not
+    this shape."""
     v = node.value
     if not isinstance(v, ast.Call):
         return True
+    if _name(v.func) == "gather":
+        return any(_task_like(a) for a in v.args)
     return (_name(v.func) in ("wait_for", "shield") and bool(v.args)
             and not isinstance(v.args[0], ast.Call))
 
@@ -351,13 +392,15 @@ def _eaten_cancels(source: str, filename: str) -> list[str]:
 
 def _handler_catches_cancel(h: ast.ExceptHandler) -> bool:
     """``except CancelledError:`` or ``except (CancelledError, ...):``,
-    bare or ``asyncio.``-qualified either way."""
+    bare or ``asyncio.``-qualified either way -- and ``BaseException`` in
+    either place, which catches it too (the ``suppress`` spelling above already
+    counts it; #681 found the ``try`` spelling did not)."""
     t = h.type
     if t is None:          # a bare `except:` catches it too, but is its own,
         return False        # much louder, code smell -- not this scan's job.
     if isinstance(t, ast.Tuple):
-        return any(_name(e) == "CancelledError" for e in t.elts)
-    return _name(t) == "CancelledError"
+        return any(_name(e) in _EATS_CANCEL for e in t.elts)
+    return _name(t) in _EATS_CANCEL
 
 
 def _handler_swallows(h: ast.ExceptHandler) -> bool:
@@ -490,7 +533,35 @@ def _qualname_at(tree: ast.AST, lineno: int) -> str | None:
 #: instance appearing anywhere else still fails loudly. Keyed by (path
 #: relative to the package, the enclosing function's qualified name).
 #:
-#: EMPTY (WP-59). It held two kinds of entry until now:
+#: EMPTY AGAIN (wave 14 integration, #710). It held one entry from WP-92 (#681)
+#: until the production fix: ``Prefetch.settle`` now waits through
+#: ``astrodeck.aio.reap`` (``test_w14_prefetch_settle_keeps_the_cancel.py``
+#: grades it), so its entry is removed, and the stale-entry check below would
+#: fail if it stayed. MUTANT "settle restored to the old ``except
+#: BaseException`` form" turns the scan red on the site itself, observed:
+#:
+#:     AssertionError: these await a task under suppress(CancelledError) or a
+#:     try/except that swallows it (#235, widened by #252), which eats a
+#:     cancel of their caller too; wait through astrodeck.aio.reap instead:
+#:     ['focus/pipeline.py:244']
+#:
+#: What the entry said:
+#:
+#: ONE ENTRY (WP-92, #681): ``Prefetch.settle`` in ``focus/pipeline.py``, which
+#: widening the scan to the ``BaseException`` spelling of the handler turned up.
+#: It is ``try: return await self.task / except BaseException: return None``, a
+#: real swallow, not a false positive: a caller cancelled while it waits in
+#: ``settle`` has its cancel delivered to the speculative exposure it awaits,
+#: and the ``CancelledError`` that comes back is eaten with the task's own, so
+#: the focus sweep runs on past a halt the operator asked for. (Shown by a
+#: scratch run: a caller cancelled mid-``settle`` while the exposure took 0.2 s
+#: to die ended un-cancelled and ran its next line.) WP-92 is test-only by
+#: ruling, so the site is not converted here; it is reported as a separate
+#: defect. The fix is to wait through ``astrodeck.aio.reap`` (or ``gather(...,
+#: return_exceptions=True)``) and read the task's result afterwards; delete
+#: this entry then (the stale-entry check below fails until it is).
+#:
+#: Before that it was EMPTY (WP-59), and had held two kinds of entry:
 #:
 #: * The three "hot" files WP-35's plan explicitly deferred (``engine.py``,
 #:   ``app.py``, ``resume_arm.py``) -- ``SequenceEngine.abort``, the shielded
@@ -546,6 +617,10 @@ async def teardown(self):
     self._task.cancel()
     with contextlib.suppress(BaseException):
         await self._task
+
+async def teardown_many(self):
+    with suppress(CancelledError):
+        await asyncio.gather(self._a, self._b)
 '''
 
 #: #252's second spelling: the same two shapes written as a plain
@@ -587,6 +662,39 @@ async def near_miss_loop(self, step, other):
             await asyncio.shield(other)
         except asyncio.CancelledError:
             pass
+
+async def flush(self):
+    pending = list(self._pending)
+    try:
+        await asyncio.gather(*pending, return_exceptions=True)
+    except BaseException:
+        pass
+
+async def flush_inline(self):
+    try:
+        await asyncio.gather(*list(self._pending), return_exceptions=True)
+    except BaseException:
+        pass
+
+async def stop_base(self):
+    self._task.cancel()
+    try:
+        await self._task
+    except BaseException:
+        pass
+
+async def stop_tuple_base(self):
+    self._task.cancel()
+    try:
+        await self._task
+    except (OSError, BaseException):
+        pass
+
+async def flush_filtered(self):
+    try:
+        await asyncio.gather(*[t for t in self._pending if not t.done()])
+    except BaseException:
+        pass
 '''
 
 #: What it must not flag: the fix, a suppress/except that cannot catch a
@@ -630,16 +738,91 @@ async def rewaits_until_done(self, step):
         except asyncio.CancelledError:
             pass
     return step.exception()
+
+async def flush(self):
+    pending = list(self._pending)
+    await asyncio.gather(*pending, return_exceptions=True)
+
+async def base_exception_propagates(self):
+    try:
+        await self._task
+    except BaseException:
+        raise
+
+async def gather_of_fresh_calls(self):
+    try:
+        await asyncio.gather(fresh(), fresh())
+    except BaseException:
+        pass
+    with contextlib.suppress(BaseException):
+        await asyncio.gather(fresh(), fresh())
+
+async def gather_of_a_comprehension_of_fresh_calls(self, items):
+    try:
+        await asyncio.gather(*[work(i) for i in items])
+    except BaseException:
+        pass
 '''
+
+
+def _by_line(hits: list[str]) -> list[str]:
+    """``hits`` ordered by line number (their ``file:line`` strings do not
+    sort numerically as text)."""
+    return sorted(hits, key=lambda h: int(h.rsplit(":", 1)[1]))
 
 
 def test_the_scan_fires_on_the_known_shapes_and_only_them():
     """The scan's own known positives and negative. A scan that cannot fire
-    would pass the package whatever it held."""
-    assert _eaten_cancels(_KNOWN_POSITIVE, "known.py") == [
-        "known.py:10", "known.py:15", "known.py:20"]
-    assert _eaten_cancels_tryexcept(_KNOWN_POSITIVE_TRYEXCEPT, "known.py") == [
-        "known.py:6", "known.py:13", "known.py:27"]
+    would pass the package whatever it held.
+
+    #681: the positives now include a swallow around ``asyncio.gather`` of
+    existing tasks (under ``suppress`` and under ``try``, in the three spellings
+    the issue's ``flush`` can take), and an ``except BaseException`` (alone and
+    in a tuple); the negatives include the real ``flush`` (a plain gather, no
+    ``try``), a ``BaseException`` handler that re-raises, and a swallowed gather
+    of FRESH calls (the ``wait_for``/``shield`` negative's twin).
+
+    MUTANT "the gather arm of ``_awaits_a_task`` returns False" (the scan is
+    back to not seeing ``gather``) -- RED, observed verbatim:
+
+        AssertionError: the suppress scan's known positives: ['known.py:10',
+        'known.py:15', 'known.py:20'], expected ['known.py:10', 'known.py:15',
+        'known.py:20', 'known.py:24']
+
+    MUTANT "``_handler_catches_cancel`` back to ``_name(t) ==
+    "CancelledError"``" (the ``try`` spelling stops reading ``BaseException``)
+    -- RED, observed verbatim:
+
+        AssertionError: the try/except scan's known positives:
+        ['known.py:6', 'known.py:13', 'known.py:27'], expected ['known.py:6',
+        'known.py:13', 'known.py:27', 'known.py:34', 'known.py:40',
+        'known.py:47', 'known.py:54', 'known.py:60']
+
+    The same message, minus 'known.py:60' (a comprehension whose element is a
+    name), under "``_task_like`` calls a comprehension not task-like", and
+    minus 'known.py:40' (``*list(self._pending)``) under "``_task_like`` looks
+    through no collection wrapper". The two controls run the other way: "a
+    comprehension of fresh calls counts as tasks" and "a fresh call counts as
+    a task" each flag one of the negatives, and are RED, observed verbatim, as
+
+        AssertionError: assert ['known.py:54'] == []
+
+    and ``['known.py:50'] == []``.
+    """
+    # The line numbers are counted off the fixture text above. The tryexcept
+    # list is sorted by line because ``ast.walk`` is breadth first, so the
+    # near-miss loop's nested ``try`` comes out after the later top-level ones.
+    suppressed = _by_line(_eaten_cancels(_KNOWN_POSITIVE, "known.py"))
+    expected = ["known.py:10", "known.py:15", "known.py:20", "known.py:24"]
+    assert suppressed == expected, (
+        f"the suppress scan's known positives: {suppressed}, expected "
+        f"{expected}")
+    tried = _by_line(
+        _eaten_cancels_tryexcept(_KNOWN_POSITIVE_TRYEXCEPT, "known.py"))
+    expected = ["known.py:6", "known.py:13", "known.py:27", "known.py:34",
+                "known.py:40", "known.py:47", "known.py:54", "known.py:60"]
+    assert tried == expected, (
+        f"the try/except scan's known positives: {tried}, expected {expected}")
     assert _eaten_cancels(_KNOWN_NEGATIVE, "known.py") == []
     assert _eaten_cancels_tryexcept(_KNOWN_NEGATIVE, "known.py") == []
 
@@ -699,6 +882,18 @@ def test_no_await_of_a_task_under_astrodeck_suppresses_a_cancel():
         a try/except that swallows it (#235, widened by #252), which eats a
         cancel of their caller too; wait through astrodeck.aio.reap instead:
         ['hub.py:735', 'sequence/engine.py:3064']
+
+    MUTANT "``SessionReporter.flush`` swallows the cancel around its gather"
+    (#681; ``sequence/report.py``'s ``await asyncio.gather(*running,
+    return_exceptions=True)`` wrapped in ``try: ... except BaseException:
+    pass``) -- RED, observed verbatim (it was GREEN before #681 widened the
+    scan, because the gather was never looked at and the handler was never
+    read; the real flush, with no ``try``, is a negative and stays so):
+
+        AssertionError: these await a task under suppress(CancelledError) or
+        a try/except that swallows it (#235, widened by #252), which eats a
+        cancel of their caller too; wait through astrodeck.aio.reap instead:
+        ['sequence/report.py:848']
     """
     files = [p for p in _PACKAGE.rglob("*.py") if "__pycache__" not in p.parts]
     rel = {p.relative_to(_PACKAGE).as_posix() for p in files}

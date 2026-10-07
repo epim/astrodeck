@@ -46,16 +46,18 @@ for (const k of [
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
 }
 // Issue #614: this used to be a bare `setTimeout(() => cb(0), 0)` with no way
-// to tell the file's own root is gone. That is suspect, not proven -- nothing
-// under test here actually calls requestAnimationFrame on the render path
-// `setUnmapped` exercises -- but a stray frame requested after `root.unmount()`
-// below (by a future row this file comes to cover, or by React itself under
-// some build) would otherwise go on firing into whatever this file's
-// `process.exit()`-less import() does next, which is exactly the shape of "7/7
-// passed, then the export never resolves" seen on a loaded CI runner. #652
-// moved the guard (and the other 26 copies of this same shim) into one shared
-// module; `rafHandle.suppress()` below is what used to be this file's own
-// `framesSuppressed` flag.
+// to tell the file's own root is gone. Nothing under test here calls
+// requestAnimationFrame on the render path `setUnmapped` exercises, and a
+// pending frame could not have caused the "7/7 passed, then timed out at 60 s"
+// seen on a loaded CI runner anyway: run-tests.mjs ends every child with
+// `process.exit(...)`, which ends the process whatever timers are still live.
+// That freeze is #664, its cause is unknown, and the runner's child markers
+// now say which phase it stops in. What this guard does is plain hygiene: a
+// frame requested after `root.unmount()` below (by a future row this file
+// comes to cover, or by React itself under some build) must not fire into a
+// tree that is gone. #652 moved the guard (and the other 26 copies of this
+// same shim) into one shared module; `rafHandle.suppress()` below is what used
+// to be this file's own `framesSuppressed` flag.
 const rafHandle = installAutoRaf(g);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -244,9 +246,10 @@ test("the rAF polyfill drops a frame requested after this file's own root unmoun
   // lateFrameFired is true here and this assertion throws "a frame scheduled
   // after unmount still fired".
   assert.ok(!lateFrameFired,
-    "a frame scheduled after root.unmount() still fired -- a leftover rAF "
-    + "loop kept going exactly like this would keep this file's own "
-    + "process.exit() waiting on a loaded CI runner (#614)");
+    "a frame scheduled after root.unmount() still fired -- the rAF polyfill "
+    + "must drop frames once this file's root is unmounted, or a leftover "
+    + "loop would run its callback against a tree that no longer exists "
+    + "(#614)");
 });
 
 // ------------------------------------------------------------------- report

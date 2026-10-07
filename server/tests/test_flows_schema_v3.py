@@ -37,7 +37,7 @@ from astrodeck.flows.compile import compile_plan
 from astrodeck.flows.models import FlowGraph, FlowNode, FlowRecord
 from astrodeck.flows.nodes import default_params
 from astrodeck.flows.store import (
-    FLOW_SCHEMA, ROTATION_234_NOTE, FlowStore, NewerSchemaFlow)
+    FLOW_SCHEMA, ROTATION_234_NOTE, V4_SCHEMA, FlowStore, NewerSchemaFlow)
 from astrodeck.flows.to_plan import to_sequence_plan
 from astrodeck.persist import ensure_dir
 
@@ -242,6 +242,15 @@ class TestTheNoteIsNeverPersisted:
         was 3 when this test was written; any version of 3 or more is what
         marks the -1 as the operator's.
 
+        RE-PINNED FOR BACKLOG WP-85 (#195, wave 14 integration):
+        ``FLOW_SCHEMA`` is 5 now, but the file this save writes is still 4.
+        ``schema_for`` stamps 5 only for a graph with DUSK Automatic resume
+        Off or a DUSK that owes the v4 -> v5 note, and stamps 4
+        (``V4_SCHEMA``) for any other graph that uses a v4 meaning, as this
+        TARGET's accepted-sub count does. The assertion therefore pins
+        ``V4_SCHEMA``, not ``FLOW_SCHEMA``; what it grades (the note is not
+        persisted, the angle is -1 and current) is unchanged.
+
         RED under mutant "persist migrated" (the writer dumps the field):
 
             AssertionError: the note is a message about a read, not a property
@@ -263,7 +272,7 @@ class TestTheNoteIsNeverPersisted:
         assert put.status_code == 200, put.text
 
         on_disk = json.loads(path.read_text(encoding="utf-8"))
-        assert on_disk["schema_version"] == FLOW_SCHEMA == 4
+        assert on_disk["schema_version"] == V4_SCHEMA == 4 < FLOW_SCHEMA
         target = next(n for n in on_disk["flow"]["graph"]["nodes"]
                       if n["type"] == "target")
         assert target["params"]["rotation"] == -1

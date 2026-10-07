@@ -10,6 +10,17 @@
 //   weather/SkyConditionsPanel  "high cloud tonight - auto-resume will hold
 //                                unless overridden"
 //
+// A third carries the same sentence and was never graded: the #/next shell's
+// high-cloud dialog (next/NextApp.tsx). #687 (WP-94) added it here and reworded
+// all three to one plain sentence, because the first correction ("the forecast
+// does not hold a run: a running session holds on what its own frames show, and
+// only forecast rain inside the hour blocks an auto-resume") read as clunky to an
+// operator. The reporter's own rewrite said the run "will proceed as long as the
+// sky quality meets parameters defined in your astroflow". That is a claim
+// nothing keeps: the CLOUD WATCH node's threshold never reaches the engine
+// (flows/to_plan.py's note, "does not reach the engine: this trigger fires on the
+// detector's own verdict"), so it is graded ABSENT below.
+//
 // The engine does not do that and has deliberately not done it since 2026-08-19.
 // `WeatherService.veto_reason` (server/astrodeck/weather.py) is rain-only and
 // fail-open, and its own docstring says why: "RAIN VETOES. CLOUD DOES NOT ...
@@ -60,14 +71,28 @@ function test(name: string, fn: () => void): void {
 }
 function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
 
-// The sentence both surfaces now carry. Graded literally: a reword that keeps
-// the shape but drops "only forecast rain" would put the claim back.
+// The sentence all three surfaces carry. Graded literally: a reword that keeps
+// the shape but drops "only forecast rain" would put the claim back. Each clause
+// is a fact about the server, pinned against its source further down:
+//
+//   1. "A cloud forecast does not hold a run."  WeatherService.veto_reason is
+//      rain-only and fail-open (weather.py).
+//   2. "While it images, the rig checks the sky in its own frames and pauses
+//      when they show cloud."  SequenceEngine._safety_gate falls back to the
+//      frames' own cloud verdict (`safety.sky_fallback_hold`, on by default).
+//   3. "Only forecast rain within the next hour holds anything: it blocks an
+//      automatic restart and dusk preparation."  The two callers of
+//      veto_reason are resume_arm.py (an automatic restart) and dusk_arm.py
+//      (dusk preparation); `_rain_veto` looks one hour ahead.
 const TRUE_CLAIM =
-  "the forecast does not hold a run: a running session holds on what its own "
-  + "frames show, and only forecast rain inside the hour blocks an auto-resume";
+  "A cloud forecast does not hold a run. While it images, the rig checks the "
+  + "sky in its own frames and pauses when they show cloud. Only forecast rain "
+  + "within the next hour holds anything: it blocks an automatic restart and "
+  + "dusk preparation.";
 
 const SURFACES: [string, string][] = [
   ["App.tsx high-cloud dialog", "../App.tsx"],
+  ["NextApp.tsx high-cloud dialog", "../next/NextApp.tsx"],
   ["SkyConditionsPanel chips row", "../components/weather/SkyConditionsPanel.tsx"],
 ];
 
@@ -80,7 +105,7 @@ const CLOUD_CONTEXT_WINDOW = 250;
 
 for (const [what, rel] of SURFACES) {
   const text = renderedText(rel);
-  const claimIndex = text.toLowerCase().indexOf(TRUE_CLAIM);
+  const claimIndex = text.toLowerCase().indexOf(TRUE_CLAIM.toLowerCase());
 
   test(`${what}: does not claim a cloud forecast holds an auto-resume`, () => {
     assert(!/auto-resume will hold/i.test(text),
@@ -90,7 +115,23 @@ for (const [what, rel] of SURFACES) {
       "the copy still offers an override for a block that never happens");
   });
 
+  test(`${what}: does not promise parameters from the astroflow`, () => {
+    // Mutant (insert "parameters defined in your astroflow" into App.tsx): RED
+    // - the reporter's #687 wording is on this surface: the CLOUD WATCH
+    // threshold never reaches the engine, so no astroflow parameter keeps a run
+    // going or stops it
+    assert(!/defined in your astroflow/i.test(text),
+      "the reporter's #687 wording is on this surface: the CLOUD WATCH threshold "
+      + "never reaches the engine, so no astroflow parameter keeps a run going "
+      + "or stops it");
+  });
+
   test(`${what}: says what actually decides, in the shipped wording`, () => {
+    // Mutant (NextApp.tsx reverted to the old "The forecast does not hold a run:
+    // a running session holds on what its own frames show ..." sentence): RED -
+    // "NextApp.tsx high-cloud dialog: says what actually decides, in the shipped
+    // wording: the corrected sentence is not on this surface." That surface was
+    // never graded before this file listed it.
     assert(claimIndex >= 0,
       `the corrected sentence is not on this surface. Expected to find:\n  ${TRUE_CLAIM}`);
   });
@@ -111,6 +152,38 @@ for (const [what, rel] of SURFACES) {
       + `${CLOUD_CONTEXT_WINDOW} characters before it: ${JSON.stringify(surroundingText)}`);
   });
 }
+
+// ------------------------------------------- the clauses, against the server
+// The sentence above is three facts about the server. Read as text (a UI test
+// cannot import Python), so a change that makes any of them untrue breaks THIS
+// test, rather than leaving a sentence that nothing keeps.
+const serverText = (rel: string): string => fs.readFileSync(pathOf(rel), "utf8");
+
+test("clause 1 and 3: veto_reason is rain-only, and only an automatic restart and dusk preparation ask it", () => {
+  const weather = serverText("../../../server/astrodeck/weather.py");
+  const veto = /def veto_reason\(self, now: float\)[\s\S]*?\n    def /.exec(weather);
+  assert(veto != null, "weather.py no longer defines WeatherService.veto_reason");
+  // Every value veto_reason can return: the fail-open `None`s and the rain veto.
+  // Anything else (a cloud outlook, a wind figure) is a forecast that holds.
+  const returns = [...veto![0].matchAll(/^[ \t]+return[ \t]+(\S.*?)[ \t]*\r?$/gm)]
+    .map((m) => m[1].replace(/\s+#.*$/, ""));    // a trailing Python comment
+  assert(returns.includes("self._rain_veto(now)"),
+    "veto_reason no longer returns the rain veto: nothing is held by forecast rain");
+  const others = returns.filter((r) => r !== "None" && r !== "self._rain_veto(now)");
+  assert(others.length === 0,
+    `veto_reason now returns something besides the rain veto (${JSON.stringify(others)}): `
+    + "a cloud forecast may hold a run again, and the sentence on all three surfaces says it does not");
+  assert(/self\._weather\.veto_reason\(/.test(serverText("../../../server/astrodeck/sequence/resume_arm.py")),
+    "the automatic restart no longer asks veto_reason: 'it blocks an automatic restart' is untrue");
+  assert(/self\.weather\.veto_reason\(/.test(serverText("../../../server/astrodeck/dusk_arm.py")),
+    "dusk preparation no longer asks veto_reason: 'and dusk preparation' is untrue");
+});
+
+test("clause 2: a run's own frames hold it, by default", () => {
+  assert(/sky_fallback_hold:\s*bool\s*=\s*True/.test(serverText("../../../server/astrodeck/config.py")),
+    "safety.sky_fallback_hold is no longer on by default: 'the rig checks the sky in "
+    + "its own frames and pauses when they show cloud' is untrue on a default install");
+});
 
 // ---------------------------------------------------------------- summary
 const total = passed + failed;

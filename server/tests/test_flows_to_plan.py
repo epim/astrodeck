@@ -650,21 +650,32 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
     nights). Diffed against the pre-change dump for each of the seven and
     confirmed this one key is the only thing that moved. Regenerated from
     the SAME ``_dump`` below, against the fixed code, with no other change.
+
+    RE-PINNED AGAIN FOR BACKLOG WP-85 (#195, wave 14, 2026-10-07), IN
+    REVERSE OF THAT FOR FIVE OF THE SEVEN: DUSK WINDOW's Repeat row is
+    replaced by Automatic resume (default On), so a Single-night DUSK WINDOW
+    no longer compiles ``resume_across_nights: false`` and the flag is True
+    for all seven. example-campaign and example-eaa were already True and
+    keep their hashes; the other five move. PROVEN, not assumed: with the
+    dump's ``resume_across_nights`` set back to False each of the five
+    reproduces the pin it replaces (e8c80245..., e2c5f6ca..., 209ed15c...,
+    6e9f8d1c... and 35cb51dd...), byte for byte. Regenerated from the SAME
+    ``_dump`` below, against the fixed code, with no other change.
     """
 
     BEFORE = {
         "example-campaign":
             "dc0a0db5532cc3330f71da63dc7319e99c0f27d1ab0a92558d0e6cbb1d9b16f5",
         "example-m31":
-            "e8c802454880bea53e7fe9d26674fd3ba2fb6aa8b8f1169b9cadbe89d421c66d",
+            "1ec44305b89e06739a2d6cbec2175f70858aabd700247e16c511b5c6f93e8561",
         "example-m16":
-            "e2c5f6ca44a99380183d839c3559678e120c2d5da6e82c326c30fe6cc3e906c6",
+            "a3350c974a434c6258f2e0fc93689399245a0803eaaf5565b5d9c3157bad7d84",
         "example-cycle":
-            "209ed15c4dc3d14bbd5c9ad33f5899b05a3843e0d9b5b14f49525e9fde09fe07",
+            "33a8207074ea272bd551d4c981eae9cd8560880279501598cfda2438c10dda84",
         "example-pool":
-            "6e9f8d1c78c7f36bd13cdd0d13f6563b10ae3d4afbe63d7f53d55c4b219d97a1",
+            "98d251f0dcd789f489ffb4c76c2d8a2d6a5ce13fc2690bb43647ee64daee1256",
         "example-nb":
-            "35cb51dd58cb87dd9fb0e8a52835a2bf00469344e0c4ae0562deaec4fbabee89",
+            "bba41530f083ae289bbd353bdfeecb89928a58f67603a197e056a6f6a97d9dd9",
         "example-eaa":
             "4b05df067fcbb2baa4f627f98d946936faa73cb6dd6d1361ccad5d29cfa25ab0",
     }

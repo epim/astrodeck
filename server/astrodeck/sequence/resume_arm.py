@@ -695,7 +695,20 @@ def commanded_rotation(session: Session, target: Target,
     A LOCK THAT IS NOT A FINITE NUMBER COMMANDS NOTHING. ``lock_angle``
     refuses one, but the session is a JSON file and Python's JSON reads NaN
     and Infinity: handed on, a NaN would reach the rotate loop, where every
-    comparison it makes is false."""
+    comparison it makes is false.
+
+    NO ANGLE ONCE ROTATION IS OFF FOR THE NIGHT (D-05, backlog ruling,
+    owner-approved 2026-09-30; #648). When the hub has MEASURED the camera
+    not following the rotator (``_rotation_trusted`` False, from the nightly
+    self-test) it refuses every ``rotate_to_pa``, so the engine commands no
+    angle (`SequenceEngine._rotation_off_tonight`) and this answers None for
+    the same reason: asked, the re-centre would provoke a refused rotate
+    and a warning in a recovery that is racing the dawn, and the frames are
+    shot at a fixed angle either way. Planned angle and lock alike. Only a
+    measured failure counts (None, never measured, commands as before), and
+    a caller with no hub has no verdict to read."""
+    if hub is not None and getattr(hub, "_rotation_trusted", None) is False:
+        return None
     if target.rotation_deg is not None:
         return target.rotation_deg
     lock = session.locked_angle(target.id)
@@ -1433,17 +1446,21 @@ class ResumeArm:
                             f"every frame it asked for.", "sequence")
             return
         self._gave_up_for = None            # window open (again): fresh night
-        # "SINGLE NIGHT" MEANS ONE NIGHT (#195). `SequencePlan.resume_across_
-        # nights` is False for exactly the flows DUSK WINDOW compiled with
-        # `repeat == "Single night"`. A crash or a reboot on the SAME night
+        # AUTOMATIC RESUME OFF MEANS ONE NIGHT (#195). `SequencePlan.resume_
+        # across_nights` is False for exactly the flows whose DUSK WINDOW has
+        # Automatic resume Off (an explicit choice: `repeat`'s own default,
+        # "Single night", is not one). A crash or a reboot on the SAME night
         # still resumes here - continuity within a night is a separate
         # promise, and the window reopening because this tick is merely a
         # minute later than the last one is not "a later night". But the
         # window reopening because DAWN CAME AND WENT, and now it is open
         # again, means a night this session never agreed to has arrived, and
-        # arming it anyway is the exact bug the owner's ruling closed: a
-        # "Single night" flow that quietly finished itself on the next clear
-        # night like a campaign would.
+        # arming it anyway is the bug the owner's ruling closed: an Off flow
+        # that quietly finished itself on the next clear night like a
+        # campaign would. This is the NET: the engine already disarms such a
+        # session where its night ends (`_finalize_report`), and this check
+        # catches the one that slips through, a crash before dawn followed by
+        # a restart after it.
         #
         # CHECKED HERE, AHEAD OF EVERY OTHER REFUSAL BELOW, because every
         # refusal below is a RETRY ("try again in 10 minutes") and this one

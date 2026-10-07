@@ -24,13 +24,15 @@ each produced is quoted in the test that caught it.
 """
 from __future__ import annotations
 
+import asyncio
 import time
+from typing import NamedTuple
 
 import pytest
 
 from _flow_night import (FlowRig, assert_the_three_agree, flow_rig,  # noqa: F401
                          mosaic_flow, panel_label, shot_counts, steps_by_panel)
-from _group_harness import group_store, ra_at  # noqa: F401
+from _group_harness import group_store, ra_at, watchdog_timeline  # noqa: F401
 from astrodeck.sequence.panel_order import order_panels
 
 FLOW = mosaic_flow(ra_hours=ra_at(-2.0), plan="L 10, R 10", cycles=3)
@@ -171,6 +173,105 @@ async def test_a_rotating_2x2_visits_one_pass_at_a_time_and_every_reader_agrees(
     assert end.reports[rid]["end_reason"] == "complete", at
 
 
+class SpinRun(NamedTuple):
+    """What `_spin_scenario` saw, for a case that grades more of it."""
+    #: The watchdog's failure text, as `Night.settle` raised it.
+    report: str
+    #: The real seconds the watchdog itself measured the loop away, and the
+    #: bound it reported, both read out of ``report``.
+    away_s: float
+    bound_s: float
+    #: This test's own wall clock, real seconds from the spin's start to the
+    #: failure being read (and whatever ``after_report_delay_s`` added).
+    wall_s: float
+
+
+async def _spin_scenario(flow_rig, monkeypatch,
+                         after_report_delay_s: float = 0.0) -> SpinRun:
+    """The route-started spin, graded: a spin inside the engine's own
+    ``_record_session_frame`` as the night banks its third frame, a ``POST
+    /api/flows/{id}/run`` that starts it, and every assertion the case makes.
+
+    ``after_report_delay_s`` stands in for what a loaded box adds AFTER the
+    watchdog has fired and written its report (the raise reaching the
+    spinning thread, the harness's teardown, the scheduler handing the
+    thread back): `Night.settle` is wrapped so that, once it has raised the
+    report, it sleeps that many real seconds before the test sees it. The
+    watchdog's own timeline is then untouched and the test's wall clock is
+    not, which is the shape #683 (and #620 before it) failed on."""
+    rig: FlowRig = flow_rig
+    night = await rig.night(spin_bound_s=BOUND_S)
+    fid = await rig.save_flow(FLOW)
+    real = night.engine._record_session_frame
+    spins: list[float] = []
+    spun_out: list[float] = []
+
+    def spin_at_the_third_frame(*a, **kw):
+        if not spins and len(night.engine._session.frames) == 2:
+            started = time.monotonic()
+            spins.append(started)
+            while time.monotonic() - started < SPIN_LIMIT_S:
+                pass                   # no await: the loop never comes back
+            spun_out.append(time.monotonic() - started)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(night.engine, "_record_session_frame",
+                        spin_at_the_third_frame)
+    if after_report_delay_s:
+        real_settle = night.settle
+
+        async def settle_then_dawdle(*a, **kw):
+            try:
+                return await real_settle(*a, **kw)
+            except pytest.fail.Exception:
+                await asyncio.sleep(after_report_delay_s)
+                raise
+
+        monkeypatch.setattr(night, "settle", settle_then_dawdle)
+    r = await rig.run(fid)
+    assert r.status_code == 200, f"at +0.0 s of night 1: {r.text}"
+    report: str | None = None
+    ended = None
+    try:
+        ended = await night.settle()
+    except pytest.fail.Exception as e:
+        report = str(e)
+    at = rig.at(night)
+    assert spins, f"premise, {at}: the night never banked a third frame"
+    assert not spun_out, (
+        f"{at}: the spin ran its full {spun_out[0]:.1f} s: nothing broke it")
+    assert report is not None, (
+        f"{at}: the night was not failed; settle answered {ended!r}")
+    wall_s = time.monotonic() - spins[0]
+    # #683 (the #620 shape, which WP-68 fixed in test_group_harness_watchdog.py
+    # and whose sweep missed this file): the bound is read from the
+    # WATCHDOG'S OWN timeline, the real seconds it measured the loop away when
+    # it fired, and not from this test's wall clock around `settle`. The wall
+    # clock spans the raise reaching the spinning thread and everything the
+    # test then does before it looks, which a loaded box stretches by seconds
+    # (4.4 s and 4.6 s against a bound of 1 s, three runs in three) while the
+    # watchdog still fired on time. WP-68 measured it beside 40 CPU burners on
+    # 24 cores: `away_s` stayed 1.0-1.1 s while the wall clock ranged 1.17 to
+    # 3.02 s, and the watcher polls every 0.125 s at this bound, so a tick of
+    # overshoot is normal; the rest of the margin is for a starved watcher
+    # THREAD.
+    away_s, reported_bound_s = watchdog_timeline(report)
+    assert reported_bound_s == BOUND_S, (
+        f"{at}: the report's own bound ({reported_bound_s:g} s) is not this "
+        f"case's BOUND_S ({BOUND_S:g} s): {report}")
+    assert away_s < BOUND_S + 1.0, (
+        f"{at}: the watchdog's OWN timeline measured {away_s:.2f} s away for "
+        f"a bound of {BOUND_S:g} s, not this test's wall clock ({wall_s:.1f} "
+        f"s from the spin's start to the failure being read): {report}")
+    assert "Night (route-started run): the event loop did not come back" \
+        in report and "#319" in report, f"{at}: the failure was {report}"
+    spinning = next((ln for ln in report.splitlines()
+                     if "spinning in " in ln), "")
+    assert "spin_at_the_third_frame (" in spinning, (
+        f"{at}: the report does not name the frame that spun:\n{report}")
+    return SpinRun(report, away_s, reported_bound_s, wall_s)
+
+
 async def test_a_spin_in_a_route_started_run_fails_with_the_watchdog_report(
         flow_rig, monkeypatch):
     """The watchdog a ROUTE-STARTED run has (`Night.arm`). ``POST
@@ -202,46 +303,14 @@ async def test_a_spin_in_a_route_started_run_fails_with_the_watchdog_report(
 
         AssertionError: at +30.0 s of night 1: the night was not failed;
         settle answered False
+
+    #683: "within a few bounds" is read off the WATCHDOG's own report
+    (``watchdog_timeline``: the real seconds it measured the loop away, against
+    its bound), not off this test's wall clock, which a loaded box stretches
+    with nothing wrong (it read ``took < BOUND_S + 3.0`` before, and failed
+    "the night failed 4.4 s after the spin began, for a bound of 1 s", three
+    runs in three). test_w14_route_started_watchdog_timeline.py runs
+    `_spin_scenario` with a slow wait after the report and shows the old bound
+    RED under it.
     """
-    rig: FlowRig = flow_rig
-    night = await rig.night(spin_bound_s=BOUND_S)
-    fid = await rig.save_flow(FLOW)
-    real = night.engine._record_session_frame
-    spins: list[float] = []
-    spun_out: list[float] = []
-
-    def spin_at_the_third_frame(*a, **kw):
-        if not spins and len(night.engine._session.frames) == 2:
-            started = time.monotonic()
-            spins.append(started)
-            while time.monotonic() - started < SPIN_LIMIT_S:
-                pass                   # no await: the loop never comes back
-            spun_out.append(time.monotonic() - started)
-        return real(*a, **kw)
-
-    monkeypatch.setattr(night.engine, "_record_session_frame",
-                        spin_at_the_third_frame)
-    r = await rig.run(fid)
-    assert r.status_code == 200, f"at +0.0 s of night 1: {r.text}"
-    report: str | None = None
-    ended = None
-    try:
-        ended = await night.settle()
-    except pytest.fail.Exception as e:
-        report = str(e)
-    at = rig.at(night)
-    assert spins, f"premise, {at}: the night never banked a third frame"
-    assert not spun_out, (
-        f"{at}: the spin ran its full {spun_out[0]:.1f} s: nothing broke it")
-    assert report is not None, (
-        f"{at}: the night was not failed; settle answered {ended!r}")
-    took = time.monotonic() - spins[0]
-    assert took < BOUND_S + 3.0, (
-        f"{at}: the night failed {took:.1f} s after the spin began, for a "
-        f"bound of {BOUND_S:g} s")
-    assert "Night (route-started run): the event loop did not come back" \
-        in report and "#319" in report, f"{at}: the failure was {report}"
-    spinning = next((ln for ln in report.splitlines()
-                     if "spinning in " in ln), "")
-    assert "spin_at_the_third_frame (" in spinning, (
-        f"{at}: the report does not name the frame that spun:\n{report}")
+    await _spin_scenario(flow_rig, monkeypatch)
