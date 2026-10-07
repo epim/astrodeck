@@ -293,13 +293,19 @@ export function nodeLossDetail(
 // classic header, the #/next toolbar and the two Tonight surfaces cannot word
 // one fact two ways.
 
-/** The #/next toolbar's lock on RUN while the graph on screen is not the
+/** The #/next toolbar's lock on RUN while the graph on screen was not the
  *  graph on the rig. A refusal there, not a silent save: a save can fail (an
  *  example flow refuses one outright, and a PUT can 409), and a save-then-run
  *  that swallowed that would start the OLD graph while the operator watched
- *  their edit on screen and believed it went with it. The store's own RUN
- *  (`flowsRun`) is the same guard for every door the toolbar's lock does not
- *  cover: it saves first and refuses when the save did not keep the edit. */
+ *  their edit on screen and believed it went with it.
+ *
+ *  NO SURFACE LOCKS ON IT ANY MORE (#688 part 2, WP-99): the store's own RUN
+ *  (`flowsRun`) saves first and refuses, in its own words
+ *  (`RUN_NOT_SAVED_REFUSAL`), when the save did not keep the edit, and the
+ *  flow saves itself two seconds after the last edit, so the toolbar and the
+ *  phone stage list let an edited ordinary flow RUN. The sentence and
+ *  `unsavedRunReason(dirty, false)` stay, as the words for that state, because
+ *  the tests that pin the two editors' shared vocabulary read them. */
 export const RUN_UNSAVED_REASON = "This flow has unsaved changes - save it first.";
 
 /** The example-flow case, which has no SAVE to send the operator to. It names
@@ -334,3 +340,45 @@ export function tonightStoredNote(readonly: boolean, dirty: boolean): string | n
   if (!dirty) return null;
   return readonly ? TONIGHT_EXAMPLE_EDITS_NOTE : TONIGHT_UNSAVED_NOTE;
 }
+
+// ------------------------------------------------------------ the save state
+//
+// Both editors say whether the rig holds the graph on screen, in the same
+// words (#688 part 2, WP-99): the #/next toolbar always did, and the classic
+// header gained its pill with the autosave. Here, in the pure module both may
+// import, so the two cannot word one fact two ways; `canvasModel.ts`
+// re-exports them under the names its own importers already use.
+
+/** The state word beside SAVE and in the classic header. Four states, four
+ *  WORDS: an absence cannot say "your edits are stored", and a colour cannot
+ *  say it either. SAVING is a PUT out now, the autosave's or a press's. */
+export const SAVE_STATE_DIRTY = "UNSAVED EDITS";
+export const SAVE_STATE_CLEAN = "SAVED";
+export const SAVE_STATE_READONLY = "READ ONLY";
+export const SAVE_STATE_SAVING = "SAVING";
+
+/** The word for the flow open now. READ ONLY first: an Example is never
+ *  sent, so it is neither saving nor pending. SAVING outranks UNSAVED EDITS
+ *  because the edit is on its way; if the PUT fails the word falls back to
+ *  UNSAVED EDITS, which is then true again. */
+export function saveStateWord(dirty: boolean, readonly: boolean, saving = false): string {
+  if (readonly) return SAVE_STATE_READONLY;
+  if (saving) return SAVE_STATE_SAVING;
+  return dirty ? SAVE_STATE_DIRTY : SAVE_STATE_CLEAN;
+}
+
+/** Why SAVE cannot act on an example flow. `flowsSave` declines a `readonly`
+ *  record before it reaches the network, and the server refuses it too, so the
+ *  control has to say that rather than look pressable and do nothing. Also the
+ *  title of the classic header's READ ONLY pill. */
+export const SAVE_READONLY_REASON =
+  "This is an example flow - the rig will not store changes to it, so there is nothing to save.";
+
+/** Said beside UNSAVED EDITS while a run of this flow is live: the autosave
+ *  is holding the edit on purpose, and a pill that only said UNSAVED EDITS
+ *  would read as an autosave that had broken. The save re-anchors the counts
+ *  of banked blocks, so it waits for the run to end; the edit is saved a
+ *  moment after that, or by a way out of the editor, or by TONIGHT. */
+export const AUTOSAVE_PAUSED_NOTE =
+  "Autosave is paused while this flow's run is live, because a save re-anchors the counts "
+  + "of blocks that have banked subs. The edit is saved a moment after the run ends.";

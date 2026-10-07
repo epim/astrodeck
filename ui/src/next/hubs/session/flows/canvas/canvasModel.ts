@@ -27,6 +27,7 @@
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
 import { portPos, type FlowTier, type Point, type PortDir } from "../../../../../components/flows/geometry";
 import { laneMismatchRefusal } from "../../../../../components/flows/flowLoop";
+import { SAVE_READONLY_REASON } from "../../../../../components/flows/flowsTypes";
 import type {
   FlowEdgeRec, FlowLogLine, FlowLogTone, FlowNodeRec, FlowNodeStatus,
   FlowRunPhase, PortKind,
@@ -378,8 +379,11 @@ export function checksLabel(openChecks: number, losses = 0): string {
  *  `flowsCompile` posts the DRAFT (`flowsApi.compileDraft(graph, name)`), while
  *  `POST /api/flows/{id}/run` compiles the STORED record. With unsaved edits
  *  those are two different graphs, so a bare GRAPH VALID would be a claim about
- *  a flow nobody can start. The prefix says which one was graded; RUN is locked
- *  meanwhile (see {@link unsavedRunReason}), so the two controls agree. */
+ *  a flow nobody can start. The prefix says which one was graded. It is a
+ *  short window for an ordinary flow now (the autosave stores the edit two
+ *  seconds after the last one, and RUN saves first, #688), and a standing one
+ *  for an Example, whose RUN is locked meanwhile (see
+ *  {@link unsavedRunReason}), so the two controls agree. */
 export const CHECKS_DRAFT_PREFIX = "DRAFT: ";
 
 /** The pill's whole text: unknown, the draft's verdict, or the stored flow's. */
@@ -406,40 +410,65 @@ export function checksTone(
   return dirty ? "dim" : "good";
 }
 
-/** The popover's sentence while the checks describe the draft. */
+/** The popover's sentence while the checks describe the draft. RUN starts the
+ *  SAVED flow, and now saves the canvas first (#688), so the sentence no
+ *  longer sends the operator to a SAVE: the flow saves itself a moment after
+ *  the last edit, and RUN and TONIGHT do not wait for that moment. */
 export const CHECKS_DRAFT_WHY =
-  "These checks are on the graph as drawn. RUN starts the SAVED flow, so save first "
-  + "and they describe what the rig will do.";
+  "These checks are on the graph as drawn, which the rig does not hold yet. The flow saves "
+  + "itself a moment after your last edit, and RUN and TONIGHT save it first.";
+
+/** The same, for an Example: its edits are never saved, so nothing will make
+ *  these checks describe what RUN starts, and RUN says so (`unsavedRunReason`). */
+export const CHECKS_DRAFT_EXAMPLE_WHY =
+  "These checks are on the graph as drawn. This example flow cannot be saved, so RUN would "
+  + "start the stored version, not the one drawn here.";
+
+export function checksDraftWhy(readonly: boolean): string {
+  return readonly ? CHECKS_DRAFT_EXAMPLE_WHY : CHECKS_DRAFT_WHY;
+}
 
 // --------------------------------------------------------- saving and running
 
-/** The state word beside SAVE. Three states, three WORDS: an absence cannot say
- *  "your edits are stored", and a colour cannot say it either. */
-export const SAVE_STATE_DIRTY = "UNSAVED EDITS";
-export const SAVE_STATE_CLEAN = "SAVED";
-export const SAVE_STATE_READONLY = "READ ONLY";
+// The state word beside SAVE (UNSAVED EDITS, SAVED, READ ONLY and, since the
+// autosave, SAVING) lives in `components/flows/flowsTypes` since #688 part 2
+// (WP-99): the classic header's new pill says the same words, and a copy of
+// them is how two editors come to word one fact two ways. Re-exported here,
+// under their own names, so every importer of them from this module (the
+// canvas index, the toolbar, the phone stage list, the tests) is unchanged.
+//
+// SAVE's own reason for an Example moved with them (the classic header's READ
+// ONLY pill says it too). It is imported at the top for `saveLockReason` and
+// re-exported here with the rest, the one `export ... from` form: a bare
+// `export { X };` ahead of a later `export ... from` is read by the parity
+// scan (r7Parity.test.ts) as one re-export of everything between them.
+export {
+  SAVE_STATE_DIRTY, SAVE_STATE_CLEAN, SAVE_STATE_READONLY, SAVE_STATE_SAVING,
+  SAVE_READONLY_REASON, saveStateWord,
+} from "../../../../../components/flows/flowsTypes";
 
-export function saveStateWord(dirty: boolean, readonly: boolean): string {
-  if (readonly) return SAVE_STATE_READONLY;
-  return dirty ? SAVE_STATE_DIRTY : SAVE_STATE_CLEAN;
+/** The pill's tone. WARN is for edits the rig does not hold and nothing is
+ *  sending: a PUT already out (`saving`) is on its way, so it is dim like
+ *  SAVED, and falls back to warn if the PUT fails and the edits are still
+ *  unsaved. */
+export function saveStateTone(dirty: boolean, readonly: boolean, saving = false): Tone {
+  return !readonly && !saving && dirty ? "warn" : "dim";
 }
-
-export function saveStateTone(dirty: boolean, readonly: boolean): Tone {
-  return !readonly && dirty ? "warn" : "dim";
-}
-
-/** Why SAVE cannot act on an example flow. `flowsSave` declines a `readonly`
- *  record before it reaches the network, and the server refuses it too, so the
- *  control has to say that rather than look pressable and do nothing. */
-export const SAVE_READONLY_REASON =
-  "This is an example flow - the rig will not store changes to it, so there is nothing to save.";
 
 /** Why SAVE cannot act with nothing changed. Not hidden: a SAVE that came and
  *  went would leave the operator unsure whether the last press landed. */
 export const SAVE_CLEAN_REASON = "Nothing has changed since this flow was last saved.";
 
-export function saveLockReason(dirty: boolean, readonly: boolean): string | null {
+/** Why SAVE cannot act while a PUT is already out. The autosave makes that
+ *  likely (it fires two seconds after the last edit, and over the relay a PUT
+ *  takes a second or more), and a press then would send the same graph beside
+ *  the one in flight: two PUTs can answer out of order. An edit made during the
+ *  PUT is saved after it, by the autosave. */
+export const SAVE_SAVING_REASON = "This flow is saving now.";
+
+export function saveLockReason(dirty: boolean, readonly: boolean, saving = false): string | null {
   if (readonly) return SAVE_READONLY_REASON;
+  if (saving) return SAVE_SAVING_REASON;
   return dirty ? null : SAVE_CLEAN_REASON;
 }
 
