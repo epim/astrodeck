@@ -181,6 +181,9 @@ from ..flows.tonight import (banked_hours_by_target_from_reports,
 from ..rotation import angle_equals, map_sky_target, mod360, sky_to_mechanical
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
+# The module, not its names: the routes call ``sequence_coverage.<fn>`` so a
+# test (or a mutant) that replaces one is seen here (the coverage check, #177).
+from ..sequence import coverage as sequence_coverage
 from ..sequence.models import (FrameType, TargetGroup,
                                duplicate_name_warning, plan_identity_errors,
                                quota_unbounded, replan_cooling)
@@ -7089,6 +7092,67 @@ def create_app(*, bind_host: str | None = None,
         except GraphNotRunnable as e:
             raise HTTPException(422, detail={"detail": str(e), "code": e.code})
 
+    def _coverage_payload(session: Session | None) -> dict:
+        """The coverage answer for one session (or none): ``coverage_report``'s
+        groups, the session's id and status, whether lights are being
+        plate-solved at all (``solve_saved_lights``) and, when a mosaic runs
+        with that off, the sentence that says its coverage cannot be checked.
+        Synchronous, so both routes run all of it on a worker thread.
+
+        READ-ONLY, AND ADVISORY (#177): the verifier reads headers and
+        arithmetic and writes nothing, and the ledger is never an output of
+        it (the session lock and the background stamping task make a write
+        from here a race). Nothing here turns stamping on: that costs an ASTAP
+        run per frame, and on the Pi it is the operator's call.
+
+        CAP_VIEW_STATUS, so a viewer can read it and NOTHING HERE MAY BE
+        DERIVED FROM THE SITE (spec 6.9, #19): fractions, counts, an offset
+        in arcminutes and an angle in degrees, and no RA or Dec of a frame.
+        The keys are the verifier's own, and held to an allow-list at the
+        wire by tests/test_w16_coverage_route.py."""
+        stamping = bool(config_store.cfg().solve_saved_lights)
+        if session is None:
+            return {"session": None, "stamping": stamping, "note": None,
+                    "groups": []}
+        report = sequence_coverage.coverage_report(session)
+        return {"session": {"id": session.id, "status": session.status},
+                "stamping": stamping,
+                "note": sequence_coverage.stamping_note(session.plan,
+                                                        stamping),
+                "groups": report["groups"]}
+
+    def _flow_coverage_payload(flow_id: str) -> dict:
+        """The coverage of the session ``run_flow`` would pick for this flow
+        (``current_for_flow``: the flow's newest by ``created_ts``, none when
+        that newest was abandoned), so the map and the progress chip can
+        never name different ledgers."""
+        return _coverage_payload(session_store.current_for_flow(flow_id))
+
+    # ORDERING: with the other static-before-parameterised flow routes, above
+    # GET /api/flows/{flow_id} (see the progress route's note).
+    @app.get("/api/flows/{flow_id}/coverage",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def get_flow_coverage(flow_id: str):
+        """Per mosaic panel of the flow's newest session: how many banked
+        lights are plate-solved ("stamped"), how many of those cover less of
+        their panel than the pointing budget allows ("flagged"), and the worst
+        overlap, offset and angle (#177; ``sequence/coverage.py``). The
+        modal's coverage map reads it in run mode. ADVISORY: it changes no
+        panel's completion, and a light with no WCS is ``unstamped``, never
+        covered.
+
+        OFF THE EVENT LOOP: a FITS header read per frame (memoised per path
+        and mtime), for every poll of a modal that is open. 404 for an id
+        ``flow_store.get`` does not answer, as the progress route does; the
+        ``KeyError`` is caught around that call alone, so a ``KeyError`` out
+        of the report is a 500 and not a flow that "was not found"."""
+        try:
+            await asyncio.to_thread(flow_store.get, flow_id)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+        return await asyncio.to_thread(_flow_coverage_payload, flow_id)
+
     @app.get("/api/flows/{flow_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def get_flow(flow_id: str):
@@ -10446,6 +10510,20 @@ def create_app(*, bind_host: str | None = None,
         longitude. `_redact_sequence_for` decides it, the same helper the WS
         `sequence` event and the monitor snapshot use."""
         return _redact_sequence_for(_sequence_envelope(engine), principal)
+
+    @app.get("/api/sequence/coverage",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def sequence_coverage_live():
+        """``GET /api/flows/{id}/coverage`` for the session a run is writing to
+        right now (``active_session``): the run-mode modal's poll while a night
+        is under way. No run is an empty answer (``session`` null), not an
+        error. Same payload, same privacy (nothing from the site, no sky
+        coordinate of a frame), same read-only, off-the-loop rules; see
+        ``_coverage_payload``."""
+        def live() -> dict:
+            return _coverage_payload(active_session())
+        return await asyncio.to_thread(live)
 
     # ----------------------------------------------------------------- monitor
 

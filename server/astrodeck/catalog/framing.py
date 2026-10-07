@@ -496,14 +496,43 @@ def _overlap_width_deg(frame: dict) -> float:
     return min(widths) if widths else overlap * min(fov_x, fov_y)
 
 
+def panel_footprint(ra_hours: float, dec_deg: float, pa_deg: float,
+                    fov_x: float, fov_y: float) -> list[tuple[float, float]]:
+    """One panel's four corners, ``[(ra_hours, dec_deg) x 4]``, laid out in
+    THAT PANEL's own tangent plane about ``(ra_hours, dec_deg)`` with
+    ``deproject``: the rectangle ``fov_x`` wide and ``fov_y`` tall, turned to
+    ``pa_deg`` by the turn ``compute_mosaic`` gives the grid, so a corner sits
+    where the camera frame's corner is.
+
+    The corner math ``_corners`` ran inline, public so that a second caller
+    measures the same geometry and not a copy (the coverage check,
+    ``sequence/coverage.py``, #177; the re-frame carry, #172). The order is
+    ``_CORNERS``': ``(-x, -y)``, ``(-x, +y)``, ``(+x, -y)``, ``(+x, +y)``,
+    which is a Z and not a ring; a caller that walks the outline takes
+    0, 1, 3, 2. ``pa_deg`` is a number: "any angle" is the caller's to lay out
+    (``_corners`` lays it at 0)."""
+    theta = math.radians(pa_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    points = []
+    for sx, sy in _CORNERS:
+        gx, gy = sx * fov_x / 2.0, sy * fov_y / 2.0
+        # The same turn ``compute_mosaic`` gives the grid, so a corner
+        # sits where the camera frame's corner is.
+        xi = gx * cos_t - gy * sin_t
+        eta = gx * sin_t + gy * cos_t
+        points.append(deproject(xi, eta, ra_hours, dec_deg))
+    return points
+
+
 def _corners(frame: dict, at: tuple[float, float] | None) -> dict:
     """Every panel's four corners, ``{(row, col): [(ra_hours, dec_deg) x 4]}``.
 
     The panels come from ``compute_mosaic``, the one projection, and each
     corner is placed at its panel's angle in THAT PANEL's own tangent plane
-    with ``deproject``, where the camera frame actually lies. "Any angle" is
-    laid out at 0: no angle is recorded, so none can have moved, and two
-    any-angle frames compare their positions and fields alone.
+    with ``deproject`` (``panel_footprint``), where the camera frame actually
+    lies. "Any angle" is laid out at 0: no angle is recorded, so none can
+    have moved, and two any-angle frames compare their positions and fields
+    alone.
 
     A frame that holds a name and no coordinates (a name-keyed block's
     anchor) is laid out at ``at``, where the catalogue puts the object now;
@@ -532,17 +561,8 @@ def _corners(frame: dict, at: tuple[float, float] | None) -> dict:
         fov_x_deg=fov_x, fov_y_deg=fov_y)
     corners: dict = {}
     for p in compute_mosaic(spec)["panels"]:
-        theta = math.radians(p["rotation_deg"])
-        cos_t, sin_t = math.cos(theta), math.sin(theta)
-        points = []
-        for sx, sy in _CORNERS:
-            gx, gy = sx * fov_x / 2.0, sy * fov_y / 2.0
-            # The same turn ``compute_mosaic`` gives the grid, so a corner
-            # sits where the camera frame's corner is.
-            xi = gx * cos_t - gy * sin_t
-            eta = gx * sin_t + gy * cos_t
-            points.append(deproject(xi, eta, p["ra_hours"], p["dec_deg"]))
-        corners[(p["row"], p["col"])] = points
+        corners[(p["row"], p["col"])] = panel_footprint(
+            p["ra_hours"], p["dec_deg"], p["rotation_deg"], fov_x, fov_y)
     return corners
 
 
