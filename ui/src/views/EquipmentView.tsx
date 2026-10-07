@@ -70,7 +70,8 @@ import BackendLinkGrid from "../components/settings/BackendLinkGrid";
 // for).
 import { waitForProfileActive } from "../components/settings/ProfileList";
 import { ROLE_LABEL } from "../components/settings/backendMeta";
-import { sentenceFrom } from "../next/hubs/rig/profiles/profilesModel";
+import { forceNeedsLan, sentenceFrom } from "../next/hubs/rig/profiles/profilesModel";
+import { onRelay } from "../next/lib/relay";
 import { EmptyState, Field, HonestButton, InfoDot, Led, Panel } from "../components/ui";
 import { Icon } from "../components/icons";
 import { useExperience } from "../guided/experience";
@@ -177,15 +178,24 @@ export function compareRoleIdentity(
 }
 
 /** The toast for a profile-activate failure on this screen, which has no force
- *  control of its own (Settings → Profiles does, and asks first) — so it
- *  always points there. Worded from the server's own coded-409 detail (#256):
+ *  control of its own (Settings → Profiles does, and asks first) — so on the LAN
+ *  it points there. Worded from the server's own coded-409 detail (#256):
  *  auto-resume's recovery ladder counts as "running" too (#238), and while it
  *  re-centres the mount after a restart the engine is idle, so a fixed "a
  *  sequence ... is running" sent the operator looking for a run the Monitor
- *  does not show. */
-export function activateErrorMessage(e: unknown): string {
+ *  does not show.
+ *
+ *  OVER THE RELAY THERE IS NOTHING TO POINT AT (#762, #685). `force` is the one
+ *  option of the activate the rig refuses 403 `local_only` there, so the pointer
+ *  to Settings -> Profiles would send the operator to a force that cannot be
+ *  sent. The message is `forceNeedsLan`, the sentence the #/next surfaces say
+ *  (`rigConnect.ts`, `ProfilesEditor.tsx`), so no surface tells the operator
+ *  something different. `viaRelay` is read at call time; a test passes it. */
+export function activateErrorMessage(e: unknown, viaRelay: boolean = onRelay()): string {
   return e instanceof ApiError && e.code === "running"
-    ? `${sentenceFrom(e.message)} Stop it first, or force-activate from Settings → Profiles.`
+    ? (viaRelay
+      ? forceNeedsLan(e.message)
+      : `${sentenceFrom(e.message)} Stop it first, or force-activate from Settings → Profiles.`)
     : e instanceof ApiError && e.status === 409
       ? "Another profile is still connecting — wait for it to finish before switching again."
       : e instanceof Error

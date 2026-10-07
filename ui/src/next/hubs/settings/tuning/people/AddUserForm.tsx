@@ -15,12 +15,16 @@
 // a LOGIC module (plan section 2.1), shared rather than re-derived: two copies
 // of an email rule is two chances to disagree about what an address is.
 //
-// OVER THE RELAY (#734, #731). The rig accepts a viewer or an operator over the
-// relay and refuses an admin or a syncer, so those two role options are locked
-// with the LAN sentence (`lanOnlyReason`, null on the LAN) while every other
-// control stays armed. When the rig asks for a recent sign-in instead
-// (`step_up_required`), the form hands its caller a way to press CREATE again
-// (`onStepUp`) once the person has signed in; the fields are still filled in.
+// OVER THE RELAY (#734, #731, #761). The rig accepts a viewer or an operator over
+// the relay and refuses an admin or a syncer, so those two role options are
+// locked with the LAN sentence (`lanOnlyReason`, null on the LAN). It also
+// refuses a create that carries a password, so the PASSWORD method is locked with
+// the same sentence and the form is born on GOOGLE ONLY (`shownMethod`), which
+// leaves no password field to type into: a password typed here would cross the
+// relay on its way to being refused. Every other control stays armed. When the
+// rig asks for a recent sign-in instead (`step_up_required`), the form hands its
+// caller a way to press CREATE again (`onStepUp`) once the person has signed in;
+// the fields are still filled in.
 //
 // Two behaviours worth naming because they are easy to lose in a re-skin:
 //
@@ -47,8 +51,8 @@ import { Note, ScrollRow, Verdict } from "./PeopleSection";
 import {
   ADD_EMAIL, ADD_METHOD, ADD_PASSWORD, ADD_ROLE, ADD_SUBMIT, ADD_SUBMIT_BUSY, ADD_USERNAME,
   EMAIL_INVALID, EMAIL_REQUIRED, GOOGLE_ONLY_PASSWORD_NOTE, METHOD_GOOGLE, METHOD_PASSWORD,
-  PASSWORD_TOO_LONG, PEOPLE_RELAY_ROLES, PRINCIPAL_ROLES, USERS_CREATE_FAILED, createdLine,
-  errText, isStepUpRequired, roleWord,
+  PASSWORD_TOO_LONG, PEOPLE_RELAY_NO_GOOGLE, PEOPLE_RELAY_ROLES, PRINCIPAL_ROLES,
+  USERS_CREATE_FAILED, createdLine, errText, isStepUpRequired, roleWord,
 } from "./peopleModel";
 
 export function AddUserForm({
@@ -62,7 +66,8 @@ export function AddUserForm({
   lockedReason?: string | null;
   onExplain?: (reason: string) => void;
   /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
-   *  It locks the role options the relay may not hand out and nothing else. */
+   *  It locks the role options the relay may not hand out and the PASSWORD
+   *  method, and nothing else. */
   lanOnlyReason?: string | null;
   /** The rig refused the create for want of a recent sign-in. `retry` presses
    *  CREATE again on whatever the form holds by then, and does nothing if the
@@ -84,8 +89,18 @@ export function AddUserForm({
   // never sign in, and nothing would say so until somebody tried.
   const authMethods = useAuthMethods();
   const googleEnabled = !!authMethods?.methods?.includes("google");
-  const draft = { username, email, password, method };
-  const blocker = newUserBlocker(draft, googleEnabled);
+  // The method the form is ON. Over the relay the rig accepts one kind of new
+  // account, a Google-only one, so that is the method shown and sent whatever
+  // `method` holds (an earlier PASSWORD choice, made before the origin was known
+  // to be the relay); the classic form derives it the same way. `method` itself
+  // is left alone, so the choice is back where it was on the LAN.
+  const shownMethod: SignInMethod = lanOnlyReason ? "google" : method;
+  const draft = { username, email, password, method: shownMethod };
+  // With Google off there is nothing the relay can create, and the generic
+  // blocker's "set a password instead" is advice the relay cannot follow.
+  const blocker = lanOnlyReason && !googleEnabled
+    ? PEOPLE_RELAY_NO_GOOGLE
+    : newUserBlocker(draft, googleEnabled);
   const tooLong = passwordTooLong(password);
 
   const emailTrimmed = email.trim();
@@ -179,13 +194,15 @@ export function AddUserForm({
           <ScrollRow>
             <Segmented<SignInMethod>
               label="Sign-in method for the new account"
-              value={method}
+              value={shownMethod}
               onChange={setMethod}
               lockedReason={lockedReason}
               onExplain={onExplain}
               data-testid="users-add-method"
               options={[
-                { value: "password", label: METHOD_PASSWORD },
+                // The rig refuses a create with a password over the relay (403
+                // `local_only`), so the option says so before the press.
+                { value: "password", label: METHOD_PASSWORD, lockedReason: lanOnlyReason },
                 {
                   value: "google",
                   label: METHOD_GOOGLE,
@@ -197,7 +214,7 @@ export function AddUserForm({
           </ScrollRow>
         </Field>
 
-        {method === "password" ? (
+        {shownMethod === "password" ? (
           <Field label={ADD_PASSWORD} hint={tooLong ? PASSWORD_TOO_LONG : undefined}>
             <TextInput
               type="password"
@@ -236,7 +253,7 @@ export function AddUserForm({
       </form>
 
       {/* The consequence of the method choice, said where it is made. */}
-      <Note data-testid="users-add-summary">{signInSummary(method, email)}</Note>
+      <Note data-testid="users-add-summary">{signInSummary(shownMethod, email)}</Note>
 
       {err && <Verdict tone="bad" data-testid="users-add-error">{err}</Verdict>}
       {created && !err && <Verdict tone="good" data-testid="users-add-created">{created}</Verdict>}
