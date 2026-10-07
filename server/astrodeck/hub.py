@@ -3500,6 +3500,14 @@ class Hub:
                 # unmeasured -- what every rotator before R-4 assumed).
                 mech_now = _rotation.mod360(
                     float(await rot.get_mechanical_position()))
+                # #176: the metal's own angle, recorded as ROTMECH. Set
+                # BEFORE the sky conversion below, because that one needs a
+                # sync anchor and a learned sign and may raise, while the
+                # reading is a fact about the frame whatever the conversion
+                # says. This is what a flat is keyed and matched by: the
+                # sky angle above moves whenever the rotator is re-synced,
+                # and a dust shadow follows the metal, not the sky.
+                meta.rotator_mech_deg = mech_now
                 anchor_mech, anchor_offset = self._rotator_sync_anchor(
                     rot, mech_now)
                 meta.rotator_angle_deg = _rotation.mechanical_to_sky(

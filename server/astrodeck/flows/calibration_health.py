@@ -81,7 +81,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable, Sequence
 
-from ..calibration.keys import CAL_FRAME_TYPES, CalKey, key_from_header
+from ..calibration.keys import (CAL_FRAME_TYPES, CalKey, key_from_header,
+                                mech_angle_from_header)
 # PRIVATE IMPORTS, ON PURPOSE, both of them rules rather than helpers.
 # ``_rejected_by_dark_check`` is the one reading of the DARKOK card in this
 # codebase and ``_temp_ok`` is the one reading of "temperature is not a
@@ -89,10 +90,9 @@ from ..calibration.keys import CAL_FRAME_TYPES, CalKey, key_from_header
 # would create a second copy that drifts silently — and both of them fail in the
 # direction of a library that looks healthier than it is.
 from ..calibration.library import DARK_OK_CARD, _rejected_by_dark_check
-from ..calibration.matcher import (LightNeed, MasterRecord, MatchTolerance,
-                                   _temp_ok, best_master, dark_matches,
-                                   flat_matches)
-from ..rotation import angle_equals
+from ..calibration.matcher import (ROTATION_TOL_DEG, LightNeed, MasterRecord,
+                                   MatchTolerance, _temp_ok, best_master,
+                                   dark_matches, flat_matches)
 
 #: The three kinds, in the order the queue shoots them. NOT a fresh opinion:
 #: ``compile.compile_plan`` emits ``"order": ["dark", "bias", "flat"]`` into
@@ -119,21 +119,14 @@ REASON_AGE = "age"
 #: The queue node's ``quota`` default ("Sufficient quantity", frames each).
 DEFAULT_QUOTA = 20
 
-#: How far the camera may have turned before a flat stops being this flat.
-#:
-#: Derived, not picked. A flat corrects dust shadows, and a mote sitting r from
-#: the optical axis moves r·Δθ across the sensor when the rotator turns. At the
-#: edge of an APS-C sensor (r ≈ 14 mm) 1° drags a shadow 0.24 mm — about 65 px
-#: at 3.76 µm, which is already the diameter of a mote's own out-of-focus
-#: shadow. Past roughly one degree, then, a flat stops dividing out the mote
-#: that is there and starts dividing out one that is not: a dark ring beside a
-#: bright one, in every frame, permanently. Under a degree the shadow still
-#: overlaps itself and the correction degrades smoothly rather than inverting.
-#:
-#: Not a constraint at all when either side's angle is unknown — a rig with no
-#: rotator writes no ``ROTATANG``, and the same "unknown is not a constraint"
-#: reading ``matcher._temp_ok`` applies to temperature applies here.
-ROTATION_TOL_DEG = 1.0
+#: ``ROTATION_TOL_DEG`` — how far the camera may have turned before a flat stops
+#: being this flat — lives in ``calibration.matcher`` with the dust-mote
+#: derivation (#176), where ``flat_matches`` applies it, and is re-exported here
+#: by the import above. One number: a copy kept in this module would be a second
+#: reading of "the same angle", and the panel and the pipeline would part company
+#: the first time either moved. The angle it compares is the rotator's
+#: MECHANICAL one (the ROTMECH card), and unknown on either side is no
+#: constraint.
 
 #: When a set stops being trusted on age alone, per kind, in days.
 #:
@@ -190,12 +183,25 @@ class CalNeed:
 
     ``light`` is the matcher's own :class:`LightNeed`, unwrapped and handed
     straight to its predicates, so there is exactly one description in this
-    server of what a light needs. ``rotation_deg`` is the single axis
-    ``LightNeed`` does not carry and the handoff's row key does: the camera
-    angle, which flats depend on and darks do not.
+    server of what a light needs. ``rotation_deg`` is the axis the handoff's
+    row key carries and a flat depends on and a dark does not: the rotator's
+    MECHANICAL angle the light is shot at (#176), since a dust shadow follows
+    the metal and not the sky. It is the same demand as
+    ``light.rotator_mech_deg``: when both are set this one wins, and when only
+    the light's is set the row takes that (``_light_with_angle``).
     """
     light: LightNeed
     rotation_deg: float | None = None
+
+
+def _light_with_angle(need: CalNeed) -> LightNeed:
+    """The matcher's own ``LightNeed`` carrying the row's angle, so every
+    verdict below is the matcher's predicate over the angle the row is FOR.
+    Handing the matcher the bare ``need.light`` would let it credit a master
+    at another angle, which the pipeline would then refuse to apply."""
+    if need.rotation_deg is None:
+        return need.light
+    return replace(need.light, rotator_mech_deg=need.rotation_deg)
 
 
 @dataclass(frozen=True)
@@ -213,6 +219,9 @@ class CalFrame:
     """
     key: CalKey
     ts: float
+    #: The frame's rotator MECHANICAL angle (ROTMECH; #176), None when unknown.
+    #: A flat's key carries the same number; this one rides beside it so a
+    #: supply row built by hand, or for a dark, can still say it.
     rotation_deg: float | None = None
     dark_ok: bool | None = None
     why: str = ""
@@ -320,9 +329,15 @@ def frame_from_header(header: Mapping, *, ts: float, path: str = "") -> CalFrame
     the master builder makes — so a frame lands in the row it will be stacked
     into. Two things are read on top of it, because ``CalKey`` carries neither:
 
-    * ``ROTATANG`` — written by ``imaging.fitsio`` as "Rotator sky PA (deg)". A
-      rig with no rotator writes no card and the angle stays unknown, which the
-      matching treats as no constraint rather than as a mismatch.
+    * ``ROTMECH`` (#176) — written by ``imaging.fitsio`` as "Rotator mechanical
+      angle (deg)", read through ``keys.mech_angle_from_header``, the one
+      reading the key uses too. NOT ``ROTATANG``, which is the SKY position
+      angle: it moves when the rotator is re-synced and a dust shadow does
+      not, and a frame written before ROTMECH existed has only that card, so
+      it reads as unknown here and is never compared as if it were
+      mechanical. A rig with no rotator writes no card and the angle stays
+      unknown, which the matching treats as no constraint rather than as a
+      mismatch.
     * the dark check's verdict, through ``library._rejected_by_dark_check``.
 
     TODO(flows-handoff): the route needs a walk to feed this, and there are
@@ -330,18 +345,14 @@ def frame_from_header(header: Mapping, *, ts: float, path: str = "") -> CalFrame
     component, hands back stat data, but reads no gain/offset/temp) and
     ``CalibrationLibrary._bucket_raw`` (right exclusions, reads exactly these
     headers, but DROPS contradicted frames into a side list and buckets by
-    ``key_index_id``, which is temp-binned and rotation-blind, so it cannot
-    produce a per-rotation row or a contradicted count). Neither fits as-is;
+    ``key_index_id``, which is temp-binned and bins a flat's angle (#176), so
+    it cannot produce a per-angle row or a contradicted count). Neither fits as-is;
     please extend one rather than adding a third rglob over the capture root.
     """
     key = key_from_header(header)
     if key is None or key.frame_type not in CAL_FRAME_TYPES:
         return None
-    raw_rot = header.get("ROTATANG", None)
-    try:
-        rotation = None if raw_rot is None else float(raw_rot)
-    except (TypeError, ValueError):
-        rotation = None
+    rotation = mech_angle_from_header(header)
     if _rejected_by_dark_check(header):
         dark_ok: bool | None = False
     elif header.get(DARK_OK_CARD, None) is None:
@@ -361,19 +372,15 @@ def _as_master(frame: CalFrame) -> MasterRecord:
     which is upstream of the master and is what the builder will consume.
     """
     k = frame.key
+    # The frame's own angle wins over its key's: a supply row built by hand
+    # may carry one and not the other, and both are the ROTMECH card.
+    angle = frame.rotation_deg if frame.rotation_deg is not None \
+        else k.rotator_mech_deg
     return MasterRecord(id=frame.path, frame_type=k.frame_type,
                         exposure_s=k.exposure_s, gain=k.gain, offset=k.offset,
                         temp_c=k.temp_c, binning=k.binning, filter=k.filter,
-                        frame_count=1, path=frame.path, built_ts=frame.ts)
-
-
-def _rotation_ok(need_deg: float | None, frame_deg: float | None,
-                 tol_deg: float) -> bool:
-    """Wrap-aware angle equality, via ``rotation.angle_equals`` — 359.5° and 0.5°
-    are one degree apart, and a naive subtraction says 359."""
-    if need_deg is None or frame_deg is None:
-        return True         # unknown on either side — see ROTATION_TOL_DEG
-    return angle_equals(need_deg, frame_deg, tol_deg)
+                        frame_count=1, path=frame.path, built_ts=frame.ts,
+                        rotator_mech_deg=angle)
 
 
 def _in_family(kind: str, need: LightNeed, rec: MasterRecord,
@@ -384,29 +391,31 @@ def _in_family(kind: str, need: LightNeed, rec: MasterRecord,
     sensor temperature and camera angle. That split is what separates the two
     verdicts. Change the exposure of a dark, or its gain, and you have never
     shot the thing you now want (MISSING); change the setpoint you shot it at,
-    and you have the set, drifted (STALE). Temperature is lifted by passing
-    ``temp_c=None``, which is the matcher's own escape hatch — ``_temp_ok``
-    treats an unknown temperature as no constraint — so the family test remains
-    literally the matcher's predicate rather than a re-derivation of it.
+    or the angle you shot a flat at, and you have the set, drifted (STALE).
+    Each is lifted by passing it as None, which is the matcher's own escape
+    hatch — ``_temp_ok`` and ``_rotator_ok`` treat an unknown value as no
+    constraint — so the family test remains literally the matcher's predicate
+    rather than a re-derivation of it.
     """
-    loose = replace(need, temp_c=None)
+    loose = replace(need, temp_c=None, rotator_mech_deg=None)
     if kind == "DARK":
         return dark_matches(loose, rec, tol)
     if kind == "BIAS":
         return bias_matches(loose, rec, tol)
-    return flat_matches(loose, rec, tol)    # rotation is not in flat_matches
+    return flat_matches(loose, rec, tol)
 
 
-def _is_usable(kind: str, need: CalNeed, rec: MasterRecord, frame_rot: float | None,
-               tol: MatchTolerance, rot_tol_deg: float) -> bool:
+def _is_usable(kind: str, need: LightNeed, rec: MasterRecord,
+               tol: MatchTolerance) -> bool:
     """Would the pipeline actually apply this record tonight? The matcher's
-    predicate, unmodified, plus the rotation axis it does not carry."""
+    predicate, unmodified. ``need`` carries the row's angle (see
+    ``_light_with_angle``), so a flat at another angle is refused by the same
+    ``flat_matches`` the pipeline calls and not by a second rule here."""
     if kind == "DARK":
-        return dark_matches(need.light, rec, tol)
+        return dark_matches(need, rec, tol)
     if kind == "BIAS":
-        return bias_matches(need.light, rec, tol)
-    return (flat_matches(need.light, rec, tol)
-            and _rotation_ok(need.rotation_deg, frame_rot, rot_tol_deg))
+        return bias_matches(need, rec, tol)
+    return flat_matches(need, rec, tol)
 
 
 def _row_key(kind: str, need: CalNeed) -> tuple:
@@ -424,11 +433,12 @@ def _row_key(kind: str, need: CalNeed) -> tuple:
                 lt.binning, "", None)
     if kind == "BIAS":
         return (kind, None, lt.gain, lt.offset, lt.temp_c, lt.binning, "", None)
-    rot = None if need.rotation_deg is None else round(need.rotation_deg, 3)
+    angle = _light_with_angle(need).rotator_mech_deg
+    rot = None if angle is None else round(angle, 3)
     return (kind, None, lt.gain, None, None, lt.binning, lt.filter, rot)
 
 
-def _pick_master(kind: str, need: CalNeed, masters: Sequence[MasterRecord],
+def _pick_master(kind: str, need: LightNeed, masters: Sequence[MasterRecord],
                  tol: MatchTolerance) -> MasterRecord | None:
     """The master the row credits — which must be the master the PIPELINE would
     apply, so ``best_master`` picks it (closest exposure, then closest temp,
@@ -441,33 +451,40 @@ def _pick_master(kind: str, need: CalNeed, masters: Sequence[MasterRecord],
     healthy" failure this matrix exists to prevent.
     """
     if kind == "BIAS":
-        cands = [m for m in masters if bias_matches(need.light, m, tol)]
+        cands = [m for m in masters if bias_matches(need, m, tol)]
         return max(cands, key=lambda m: m.frame_count, default=None)
-    return best_master(need.light, list(masters), tol, kind)
+    return best_master(need, list(masters), tol, kind)
 
 
 def _drift_reason(kind: str, need: CalNeed, drifted: list[CalFrame],
-                  tol: MatchTolerance, rot_tol_deg: float) -> Reason:
+                  tol: MatchTolerance) -> Reason:
     """The sentence for frames that ARE this set but were shot under conditions
     the matcher will not accept. It names the measured value, tonight's value
     and the tolerance that separates them, because "STALE" alone leaves the
     operator to guess whether to reshoot or to change the setpoint back."""
     n = len(drifted)
     if kind == "FLAT":
+        want_deg = _light_with_angle(need).rotator_mech_deg or 0.0
+
+        def _angle(f: CalFrame) -> float:
+            # The same number the matcher compared (the frame's own angle,
+            # else its key's), so the sentence names what refused the frame.
+            return _as_master(f).rotator_mech_deg or 0.0
+
         def _apart(f: CalFrame) -> float:
             # Wrapped, like the test that made the frame drift in the first
             # place: 359° and 1° are two degrees apart, and picking the
             # "closest" with a plain subtraction would name the wrong frame in
             # the sentence the operator reads.
-            d = abs((f.rotation_deg or 0.0) - (need.rotation_deg or 0.0)) % 360.0
+            d = abs(_angle(f) - want_deg) % 360.0
             return min(d, 360.0 - d)
 
         closest = min(drifted, key=_apart)
         return Reason(REASON_DRIFT,
                       f"{n} flat(s) at these settings but at PA "
-                      f"{(closest.rotation_deg or 0.0):g}° — tonight is PA "
-                      f"{(need.rotation_deg or 0.0):g}°, past the "
-                      f"±{rot_tol_deg:g}° a dust shadow survives")
+                      f"{_angle(closest):g}° — tonight is PA "
+                      f"{want_deg:g}°, past the "
+                      f"±{tol.rotator_tol_deg:g}° a dust shadow survives")
     want = need.light.temp_c
 
     def _delta(f: CalFrame) -> float:
@@ -485,9 +502,11 @@ def _drift_reason(kind: str, need: CalNeed, drifted: list[CalFrame],
 
 def _build_row(kind: str, need: CalNeed, frames: Sequence[CalFrame],
                masters: Sequence[MasterRecord], *, quota: int,
-               tol: MatchTolerance, rot_tol_deg: float, horizon_days: float,
+               tol: MatchTolerance, horizon_days: float,
                now: float) -> HealthRow:
-    lt = need.light
+    # The row's LightNeed WITH its angle: every predicate below is the
+    # matcher's own, over the angle this row is for (#176).
+    lt = _light_with_angle(need)
     have = family = contradicted = measured = 0
     newest: float | None = None
     evidence = ""
@@ -505,14 +524,14 @@ def _build_row(kind: str, need: CalNeed, frames: Sequence[CalFrame],
             contradicted += 1
             evidence = evidence or f.why
             continue
-        if _is_usable(kind, need, rec, f.rotation_deg, tol, rot_tol_deg):
+        if _is_usable(kind, lt, rec, tol):
             have += 1
             measured += 1 if f.dark_ok is True else 0
             newest = f.ts if newest is None else max(newest, f.ts)
         else:
             drifted.append(f)
 
-    master = _pick_master(kind, need, masters, tol)
+    master = _pick_master(kind, lt, masters, tol)
     from_master = 0
     if master is not None:
         # A built master IS n frames, banked — `frame_count` is the builder's own
@@ -539,7 +558,7 @@ def _build_row(kind: str, need: CalNeed, frames: Sequence[CalFrame],
         # Only when the row is short. A covered set is not made worse by older
         # frames sitting beside it, and saying so anyway is how a panel trains
         # people to ignore it.
-        reasons.append(_drift_reason(kind, need, drifted, tol, rot_tol_deg))
+        reasons.append(_drift_reason(kind, need, drifted, tol))
     if have < quota:
         reasons.append(Reason(
             REASON_SHORT,
@@ -568,7 +587,7 @@ def _build_row(kind: str, need: CalNeed, frames: Sequence[CalFrame],
         gain=lt.gain, offset=lt.offset,
         temp_c=lt.temp_c if kind in ("DARK", "BIAS") else None,
         binning=lt.binning, filter=lt.filter if kind == "FLAT" else "",
-        rotation_deg=need.rotation_deg if kind == "FLAT" else None,
+        rotation_deg=lt.rotator_mech_deg if kind == "FLAT" else None,
         have=have, need=quota, verdict=verdict, reasons=tuple(reasons),
         family=family, contradicted=contradicted, measured=measured,
         newest_ts=newest, age_days=age_days,
@@ -583,7 +602,7 @@ def health_matrix(
     quota: int | Mapping[str, int] = DEFAULT_QUOTA,
     kinds: Sequence[str] = KIND_ORDER,
     tol: MatchTolerance = MatchTolerance(),
-    rotation_tol_deg: float = ROTATION_TOL_DEG,
+    rotation_tol_deg: float | None = None,
     stale_after_days: Mapping[str, float] = STALE_AFTER_DAYS,
     now: float | None = None,
 ) -> list[HealthRow]:
@@ -602,6 +621,11 @@ def health_matrix(
     inside, on the worker thread). ``masters`` is
     ``CalibrationLibrary.list_masters()``.
 
+    ``rotation_tol_deg`` overrides how far a flat's mechanical angle may be from
+    a light's (#176); left None it is ``tol.rotator_tol_deg``, whose default is
+    ``ROTATION_TOL_DEG``, the matcher's one number, so the matrix and the
+    pipeline agree unless a caller says otherwise on purpose.
+
     ``quota`` is the queue node's "Sufficient quantity", either one number or a
     per-kind mapping — the prototype's own matrix shows bias banked 40 deep
     against 20 for darks, because a zero-second frame is nearly free. A kind the
@@ -615,6 +639,8 @@ def health_matrix(
     """
     supply = list(frames() if callable(frames) else frames)
     master_list = list(masters)
+    if rotation_tol_deg is not None:
+        tol = replace(tol, rotator_tol_deg=float(rotation_tol_deg))
     at = time.time() if now is None else now
     wanted = [k for k in KIND_ORDER if k in set(kinds)]
 
@@ -632,6 +658,5 @@ def health_matrix(
                 continue
             seen.add(key)
             rows.append(_build_row(kind, need, supply, master_list, quota=want,
-                                   tol=tol, rot_tol_deg=rotation_tol_deg,
-                                   horizon_days=horizon, now=at))
+                                   tol=tol, horizon_days=horizon, now=at))
     return rows
