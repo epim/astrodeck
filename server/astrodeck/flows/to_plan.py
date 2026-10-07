@@ -931,6 +931,22 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
     return rules
 
 
+#: WHETHER THE ENGINE RUNS A DUSK FLATS BLOCK - the one switch (#192's copy
+#: sweep, #603 job A). It is False because there is no dusk-flats stage:
+#: ``_run_calibration`` is reached only from a cloud hold's darks and the
+#: wind-down's day darks, so a flow with DUSK FLATS compiles and takes no flats.
+#:
+#: TWO THINGS READ IT, and they must never disagree about one fact. This
+#: module's unmapped note below is present exactly when it is False, and every
+#: sentence ``tonight.py`` says about the block (the brief's clause, the STORY
+#: row) is worded from it (``tonight._dusk_flats_wired``). The UI's two static
+#: strings (``nodeDefs.ts`` duskflats ``desc`` and ``quickCopy.ts`` ``flats``)
+#: cannot read a Python constant, so ``test_w15_dusk_flats_claim.py`` reads
+#: them as text and fails the day this moves without them. #603 job B flips
+#: this ONE constant, with the stage that justifies it.
+DUSK_FLATS_WIRED = False
+
+
 def _automation(compiled: dict, out: list[dict], *,
                 closes_on_unsafe: bool = False) -> None:
     """Report the automation blocks, none of which ``SequencePlan`` can hold.
@@ -1012,7 +1028,7 @@ def _automation(compiled: dict, out: list[dict], *,
                 "the dome policy compiled correctly but the engine cannot act "
                 "on it yet, so nothing will bind the dome or close it on an "
                 "unsafe reading during this run", "danger"))
-    if "dusk_flats" in auto:
+    if "dusk_flats" in auto and not DUSK_FLATS_WIRED:
         out.append(_note("automation.dusk_flats",
                          "the dusk-flats stage is not wired into the engine "
                          "yet - this run will not take flats"))

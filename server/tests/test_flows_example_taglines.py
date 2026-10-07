@@ -96,12 +96,19 @@ class TestTheMosaicExamplesTagline:
     def test_control_the_other_seven_are_untouched(self):
         """Control: the seven transcribed Examples keep their taglines; only
         the mosaic's words changed. Green on the code and under both
-        mutants above."""
+        mutants above.
+
+        WP-112 RE-PIN (#192's copy sweep, #603 job A): the M16 Example's
+        tagline no longer opens "Dome opens at dusk, lens-cap flats in the
+        twilight window" (nothing opens the dome and no engine stage runs
+        DUSK FLATS), so its pinned opening is the new one, "Full-service
+        night:". The words are held by test_w15_dusk_flats_claim.py. Every
+        other Example keeps its opening."""
         before = {
             "example-campaign": "The pool hands out targets until every quota "
                                 "is met;",
             "example-m31": "Dusk-gated deep-sky run:",
-            "example-m16": "Dome opens at dusk,",
+            "example-m16": "Full-service night:",
             "example-cycle": "One sub per filter per pass",
             "example-pool": "One lane, four candidates",
             "example-nb": "Moon-tolerant Ha:",
