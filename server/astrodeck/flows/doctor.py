@@ -37,8 +37,9 @@ from dataclasses import dataclass
 # compile's notes disagree about the same wire.
 from .compile import (
     LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, PASS_TYPES, _grid_dim,
-    _lane_index, _stage_label, compile_plan, is_multi_panel, lane_branched,
-    lane_tail, loop_wires, one_panel_pass_wires, owner_of, panel_lane)
+    _lane_index, _stage_label, campaign_block, compile_plan, is_multi_panel,
+    lane_branched, lane_tail, loop_wires, one_panel_pass_wires, owner_of,
+    panel_lane)
 from .identity import typed_coordinates
 from .models import FlowGraph
 from .nodes import NODE_DEFS, parse_cycle_plan, port_kind, target_angle
@@ -144,27 +145,25 @@ def _longest_sub_s(node) -> float:
 
 
 def _is_campaign(graph: FlowGraph):
-    """The DUSK WINDOW whose stored `repeat` makes this a campaign, or None.
+    """The DUSK WINDOW of a campaign, or None.
 
     A campaign is not a longer night, it is a night that comes back: the cursor
     survives dawn and the flow re-arms. Rules 11 and 12 exist because the two
-    things a single night never needs — something to advance the pool, and a
-    shutdown lane — are exactly the two a campaign cannot run without.
+    things a single night never needs - something to advance the pool, and a
+    shutdown lane - are exactly the two a campaign cannot run without.
 
-    STILL KEYED ON `repeat`, WHICH NO EDITOR OFFERS ANY MORE (#195, WP-85).
-    DUSK WINDOW's Automatic resume option replaced the Repeat row and decides
-    only whether the session comes back on later nights
-    (`SequencePlan.resume_across_nights`), not whether the flow is a campaign:
-    a "Single night" flow (the default) resumes by default and is not one. So
-    a campaign is reachable only from a stored flow and the campaign Example,
-    until a later change re-keys campaigns on the option.
+    KEYED ON THE COMPILED CAMPAIGN BLOCK, NOT ON `repeat` (#195, WP-118). It
+    asks ``compile.campaign_block``, the one function ``compile_plan`` writes
+    the plan's ``campaign`` key from, so this answers "campaign" exactly when
+    the plan says so: a POOL in a flow whose DUSK WINDOW has Automatic resume
+    On (``SequencePlan.resume_across_nights`` is the other half of the same
+    option). It read `repeat` until then, which no editor offered any more, so
+    the one flow that was a campaign by that test was a stored file or the
+    campaign Example, and the default pool flow was not.
     """
-    for n in graph.nodes:
-        if n.type == "dusk":
-            repeat = str(n.params.get("repeat") or "Single night")
-            if repeat != "Single night":
-                return n
-    return None
+    if campaign_block(graph.with_defaults()) is None:
+        return None
+    return next((n for n in graph.nodes if n.type == "dusk"), None)
 
 
 # ------------------------------------------------------------ the mosaic rules
@@ -925,9 +924,10 @@ def check(graph: FlowGraph, *, standards=None, mount=None,
     # them was redundant. The ROOF, which is the one part that does depend on
     # something outside the graph, is rule 9's job and still fires.
     #
-    # `_is_campaign` is kept: it is the only place that reads `repeat` and says
-    # what a campaign IS, and the next rule that needs the distinction should
-    # not have to rediscover it.
+    # `_is_campaign` is kept: it is where the doctor asks what a campaign IS
+    # (``compile.campaign_block``, a pool in a flow whose Automatic resume is
+    # On, WP-118), and the next rule that needs the distinction should not
+    # have to rediscover it.
     #
     # `test_flows_doctor_agrees_with_the_engine` asserts both stay gone, and
     # asserts structurally that no REDUNDANT_PORTS entry can be demanded here.
