@@ -53,9 +53,9 @@ from typing import Any
 
 from ..sequence.schedule import (_clock_time_near_now, hours_to_meridian_flip,
                                  observing_night, prev_sun_event)
-from .compile import (_finite, _grid_of, compile_plan, flow_order, grid_size,
-                      is_multi_panel, loop_wires, needs_wire_scoping,
-                      owner_of, parse_skip)
+from .compile import (CAMPAIGN_UNTIL, _finite, _grid_of, campaign_block,
+                      compile_plan, flow_order, grid_size, is_multi_panel,
+                      loop_wires, needs_wire_scoping, owner_of, parse_skip)
 from .models import FlowGraph, _not_a_count
 from .nodes import NODE_DEFS, dusk_auto_resume, parse_cycle_plan, target_angle
 from .rig import RigFacts
@@ -1924,6 +1924,11 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     # this brief.
     saf, df = n("safety"), n("duskflats")
     guide, af = n("guide"), n("autofocus")
+    # WHETHER THIS FLOW IS A CAMPAIGN is the compile's own block, read through
+    # the one function that writes it (`compile.campaign_block`, #195, WP-118):
+    # a POOL in a flow whose Automatic resume is On. The two campaign sentences
+    # below keyed on DUSK's `repeat` until then.
+    campaign = campaign_block(g)
     seg: list[str] = []
 
     if dusk is not None:
@@ -2111,13 +2116,11 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         t = (f"When astronomical night ends, the mount parks and the "
              f"{str(pc.params.get('closure')).lower()} closes")
         t += ", then the camera warms"
-        # A CAMPAIGN (`repeat`) THAT HAS NOT TURNED AUTOMATIC RESUME OFF
-        # (#195): an Off plan is disarmed where its night ends, so a later
-        # dusk resumes nothing, and this sentence would be a claim nothing
-        # keeps. `repeat` still keys the campaign wording until it is retired
-        # (a later change).
-        if (str(dusk.params.get("repeat") or "Single night") != "Single night"
-                and dusk_auto_resume(dusk.params)):
+        # A CAMPAIGN, WHICH IS NEVER AN OFF FLOW (#195): an Off plan is
+        # disarmed where its night ends, so a later dusk resumes nothing, and
+        # this sentence would be a claim nothing keeps. `campaign_block` is
+        # None for it, so the clause is not said.
+        if campaign is not None:
             t += ("; the flow re-arms at the next dusk and resumes mid-cycle "
                   "from the session log")
         seg.append(t + ".")
@@ -2126,12 +2129,26 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         seg.append("Rain, wind, or power failure aborts and parks "
                    "unconditionally - a stale reading counts as unsafe.")
 
-    if (dusk is not None and pool is not None
-            and dusk.params.get("repeat") == "Nightly until pool complete"):
+    if (campaign is not None and pool is not None
+            and campaign.get("until") == CAMPAIGN_UNTIL):
         members = [m for m in str(pool.params.get("members") or "").split(",")
                    if m.strip()]
-        seg.append(f"Once all {len(members)} targets hold their "
-                   f"{pool.params.get('quota')}-cycle quota, the rig stays parked.")
+        # THE QUOTA IS NAMED ONLY WHERE IT GOVERNS (WP-118). The pool's
+        # `quota` is a count of CYCLES and reaches the run through a FILTER
+        # CYCLE stage alone (`to_plan._quota_cycles`); a CAPTURE LOOP under a
+        # pool ends each member at its own frame count and never reads it.
+        # This sentence was said only for a stored `repeat` flow, in practice
+        # the campaign Example's cycle, so "the 45-cycle quota" was true where
+        # it appeared. Keyed on the campaign block it reaches every pool flow
+        # with Automatic resume On, a capture-loop pool included, and quoting
+        # the dial there would promise a finish line the run does not keep.
+        if any(x.type == "cycle" for x in g.nodes):
+            seg.append(f"Once all {len(members)} targets hold their "
+                       f"{pool.params.get('quota')}-cycle quota, the rig "
+                       f"stays parked.")
+        else:
+            seg.append(f"Once all {len(members)} targets have the frames "
+                       f"they ask for, the rig stays parked.")
 
     return " ".join(seg)
 
@@ -2373,10 +2390,13 @@ def _campaign(graph: FlowGraph | None,
     dusk = _first(g, "dusk")
     cyc = _first(g, "cycle")
     mosaics = [n for n in g.nodes if is_multi_panel(n)] if g is not None else []
-    repeats = bool(
-        dusk is not None
-        and str(dusk.params.get("repeat") or "Single night") != "Single night")
-    is_campaign = pool is not None and repeats
+    # A CAMPAIGN IS THE COMPILE'S OWN BLOCK (#195, WP-118): `campaign_block`
+    # is the one function that writes the plan's `campaign` key, so the row
+    # says "campaign" exactly when the plan does, and never from `repeat`,
+    # which no editor offers any more. That is a POOL in a flow whose
+    # Automatic resume is On; a mosaic with no pool is not one, whatever the
+    # DUSK WINDOW holds.
+    is_campaign = g is not None and campaign_block(g) is not None
     # WHETHER THE FLOW COMES BACK ON A SUBSEQUENT NIGHT is DUSK WINDOW's Automatic
     # resume (#195), read as the compile reads it (`dusk_auto_resume`), so
     # the note and the plan cannot disagree. A flow with no DUSK WINDOW
@@ -2387,7 +2407,7 @@ def _campaign(graph: FlowGraph | None,
     if pool is None and mosaics:
         rows = _panel_rows(mosaics, progress)
         clause = _panels_clause(rows)
-        return {"is_campaign": repeats, "has_pool": False, "has_ledger": False,
+        return {"is_campaign": False, "has_pool": False, "has_ledger": False,
                 "quota": 0, "members": [],
                 "note": (f"{clause} {_NOT_FORECAST} {dawn}" if rows is not None
                          else f"{clause} {dawn}"),
@@ -2442,10 +2462,11 @@ def _campaign(graph: FlowGraph | None,
         # THIS NOTE USED TO SAY "set DUSK WINDOW → Repeat to make this a
         # campaign" (#195). The editor no longer offers Repeat, and a flow
         # nobody has touched IS resuming (Automatic resume defaults On), so it
-        # now says which of the two this flow is. It does not promise that
-        # turning the option on makes this a campaign: `is_campaign` is still
-        # keyed on `repeat` until it is retired (a later change), so that
-        # would be a claim nothing keeps.
+        # says which of the two this flow is. A pool in a flow whose Automatic
+        # resume is On is a campaign (`campaign_block`, WP-118), so the only
+        # pool flows that reach this branch are the Off ones, and one with no
+        # DUSK WINDOW at all, which carries no opinion and resumes as it
+        # always has.
         if resumes:
             note = ("Automatic resume is on (DUSK WINDOW): a subsequent night "
                     "resumes this flow where the session log left off.")

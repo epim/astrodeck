@@ -184,9 +184,9 @@ NODE_DEFS: dict[str, NodeDef] = {
         type="dusk", label="DUSK WINDOW", cat="SOURCE",
         # `nightend` is what makes a CAMPAIGN differ from a night: it fires
         # BEFORE dawn so a shutdown lane can run while there is still time to
-        # run it. With `repeat` set, dawn stops being the end of the run and
-        # becomes a scheduled hold — the capture cursor survives it and the flow
-        # re-arms at the next dusk, mid-cycle.
+        # run it. With Automatic resume on, dawn stops being the end of the run
+        # and becomes a scheduled hold - the capture cursor survives it and the
+        # flow re-arms at the next dusk, mid-cycle.
         outs=(_f("window", "window opens"), _e("nightend", "night ends")),
         # `startClock`/`stopClock` are "HH:MM" text, read only when `start` or
         # `stop` is "Clock time" (#191): before these existed the choice had
@@ -203,14 +203,19 @@ NODE_DEFS: dict[str, NodeDef] = {
         # resuming. Read it through `dusk_auto_resume`, never
         # `params.get(...) == "On"`.
         #
-        # `repeat` is kept in the table so a stored file still loads, and it
-        # still keys the `campaign` block (compile.py), but it no longer
-        # decides whether a session resumes: 0.3.40 read its default "Single
-        # night" as "do not resume", the opposite of ruling 7, which is what
-        # `autoResume` undoes. The editor no longer offers it (`nodeDefs.ts`).
+        # THERE IS NO `repeat` HERE (#195, WP-118). It was DUSK WINDOW's
+        # first answer to "does this flow come back", a select of "Single
+        # night" / "Nightly until pool complete" / "Nightly x30" whose default,
+        # "Single night", 0.3.40 read as "do not resume": the opposite of
+        # ruling 7, which `autoResume` undoes. The editor stopped offering it
+        # in 0.3.41 and nothing reads it now: the `campaign` block, the
+        # doctor and Tonight key on `autoResume` and the flow's own shape
+        # (`compile.campaign_block`). A stored one is inert: `with_defaults`
+        # merges the defaults UNDER the stored params, so it is kept verbatim
+        # through a load and a save, and it reads as Automatic resume On.
         params={"start": "Astro dusk", "offset": -30, "startClock": "",
                 "stop": "Dawn", "stopClock": "", "minAlt": 30,
-                "repeat": "Single night", "autoResume": "On"}),
+                "autoResume": "On"}),
     "target": NodeDef(
         type="target", label="TARGET", cat="SOURCE",
         # ONE BLOCK, ONE OR MANY PANELS (spec 1.2). `next` is the panel loop's

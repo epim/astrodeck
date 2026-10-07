@@ -658,7 +658,7 @@
   "budget": [],
   "resume_across_nights": true,
   "campaign": {
-   "is_campaign": false,
+   "is_campaign": true,
    "has_pool": true,
    "has_ledger": false,
    "quota": 45,
@@ -678,7 +678,7 @@
      "pct": null
     }
    ],
-   "note": "Automatic resume is on (DUSK WINDOW): a subsequent night resumes this flow where the session log left off. 4 of 6 mosaic panels done, 9 of 12 subs captured.",
+   "note": "The session log is unavailable, so captured totals cannot be shown. Dawn parks the mount and warms the camera - the dome is not driven and the cooler does not stay cold for day darks. Each dusk resumes where the session log left off. 4 of 6 mosaic panels done, 9 of 12 subs captured.",
    "panels": [
     {
      "block": "t",
@@ -755,7 +755,7 @@
    ],
    "has_progress": true
   },
-  "brief": "This flow arms at astronomical dusk (\u221230 min). It then arms M16. M16 is a 3x2 mosaic of 6 panels at 25% overlap, laid out at PA 30\u00b0 with the rotator turned to it at every panel. After 1 pass of its filters on a panel it moves on to the next (least complete first), and comes back until every panel has its subs. A hop between panels takes about 2 m 40 s, as measured on this rig. For M16 it captures Ha 300 s \u00d7 2 (gain 100, bin 1). It then arms M31. For M31 it captures L 60 s \u00d7 5 (gain 100, bin 1). It then selects the best of M13, M92 - above 30\u00b0, at least 40\u00b0 from the moon (if up), within 4 h of the meridian. For every member of the pool it captures L 60 s \u00d7 5 (gain 100, bin 1). If the active target sinks to the 30\u00b0 floor, it is set aside for tonight - a restart tonight does not retry it, the next night does - and the next best takes over.",
+  "brief": "This flow arms at astronomical dusk (\u221230 min). It then arms M16. M16 is a 3x2 mosaic of 6 panels at 25% overlap, laid out at PA 30\u00b0 with the rotator turned to it at every panel. After 1 pass of its filters on a panel it moves on to the next (least complete first), and comes back until every panel has its subs. A hop between panels takes about 2 m 40 s, as measured on this rig. For M16 it captures Ha 300 s \u00d7 2 (gain 100, bin 1). It then arms M31. For M31 it captures L 60 s \u00d7 5 (gain 100, bin 1). It then selects the best of M13, M92 - above 30\u00b0, at least 40\u00b0 from the moon (if up), within 4 h of the meridian. For every member of the pool it captures L 60 s \u00d7 5 (gain 100, bin 1). If the active target sinks to the 30\u00b0 floor, it is set aside for tonight - a restart tonight does not retry it, the next night does - and the next best takes over. Once all 2 targets have the frames they ask for, the rig stays parked.",
   "story": [
    {
     "t_unix": 1781582625.402832,
