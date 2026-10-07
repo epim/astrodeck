@@ -29,6 +29,7 @@ MUTANTS = [
     ("CLAIM-LINE", "check_docs.py", 'errors.append(f"{page}: claim source line is invalid")', 'pass', 'DocsChecks.test_claim_line_valid', 'claim source line is invalid'),
     ("CLAIM-METHOD", "check_docs.py", 'errors.append(f"{page}: claim verification method is missing")', 'pass', 'DocsChecks.test_claim_method', 'claim verification method is missing'),
     ("CLAIM-COVERAGE", "check_docs.py", 'errors.append(f"{page}: no claim/procedure evidence ledger")', 'pass', 'DocsChecks.test_claim_coverage', 'no claim/procedure evidence ledger'),
+    ("CLAIM-TEXT-ON-PAGE", "check_docs.py", 'if not locate_label(bodies[page].splitlines(), claim):', 'if False:', 'DocsChecks.test_claim_text_must_be_on_page', 'text is not on the page'),
     ("STABLE-ANCHOR", "check_docs.py", 'elif not set(expected).issubset(anchors(path.read_text(encoding="utf-8"))):', 'elif False:', 'DocsChecks.test_stable_anchor', 'stable guide anchor is missing'),
     ("STABLE-URL", "check_docs.py", 'errors.append(f"{relative}: stable guide URL is missing")', 'pass', 'DocsChecks.test_stable_url', 'stable guide URL is missing'),
     ("FENCED-ANCHOR", "check_docs.py", 'parser.feed(prose(text))', 'parser.feed(text)', 'DocsChecks.test_fenced_anchor_does_not_exist', 'old'),

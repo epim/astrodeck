@@ -69,13 +69,53 @@ def _night_midpoint() -> float:
 
 
 DAY_TS = _REF_NOON
-NIGHT_TS = _night_midpoint()
 
-# Self-check: fail here, loudly, rather than have an unrelated assertion below
-# fail for an opaque reason if the ephemeris ever disagrees with this file's
-# assumptions about SITE and these two timestamps.
-assert _alt(DAY_TS) >= _threshold(), "DAY_TS is not actually daylight at SITE"
-assert _alt(NIGHT_TS) < _threshold(), "NIGHT_TS is not actually dark at SITE"
+#: Cache for ``_night_ts()`` below -- never read directly.
+_NIGHT_TS_CACHE: float | None = None
+
+
+def _night_ts() -> float:
+    """``NIGHT_TS``, computed and cached on first use by a test rather than
+    as a module-level statement (#675).
+
+    The module-level form this replaced -- ``NIGHT_TS = _night_midpoint()``
+    -- ran at COLLECTION, before any fixture (even a session-scoped one) had
+    a chance to run: ``_night_midpoint()`` calls ``schedule.observing_night``,
+    which calls ``config_store.cfg()``, and on a fresh worktree
+    (``server/config/`` is gitignored) that reached ``ConfigStore._load``'s
+    ``FileNotFoundError`` branch and fell through to ``_save()``, writing the
+    default config to the developer's real ``server/config/astrodeck.json``.
+    Several xdist workers importing this module at once raced to do that at
+    the same path and intermittently collided (traced to ground in
+    conftest.py's ``_arm_real_config_guard_before_collection``, WP-H2,
+    #675). Calling this from inside a test instead means the shared
+    ``_never_touch_the_real_config`` fixture has already redirected
+    ``config_store`` by the time anything here reaches it."""
+    global _NIGHT_TS_CACHE
+    if _NIGHT_TS_CACHE is None:
+        _NIGHT_TS_CACHE = _night_midpoint()
+    return _NIGHT_TS_CACHE
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _self_check_site_times():
+    """Fail here, loudly, rather than have an unrelated assertion below fail
+    for an opaque reason if the ephemeris ever disagrees with this file's
+    assumptions about SITE and these two timestamps.
+
+    Deliberately a lazily-materialised fixture, not a module-level
+    statement (#675): ``_threshold()`` and ``_night_ts()`` both reach
+    ``config_store.cfg()``, and a module-level assert that called either
+    would reach it at collection, before ``_never_touch_the_real_config``
+    (session-scoped, autouse) gets to run. A module-scoped autouse fixture
+    only materialises at the first test's setup in this file, by which
+    point that session fixture -- broader-scoped, so pytest sets it up
+    first -- has already redirected the store. This still runs exactly
+    once per test module, same as the old module-level asserts, just
+    later."""
+    assert _alt(DAY_TS) >= _threshold(), "DAY_TS is not actually daylight at SITE"
+    assert _alt(_night_ts()) < _threshold(), "NIGHT_TS is not actually dark at SITE"
+    yield
 
 
 class _Cam(Camera):
@@ -183,7 +223,7 @@ async def test_darkness_restores_the_cooler(rig, bus_lines):
     """The night-time control #557 asks for: the same connect, in the dark,
     restores exactly as it always has."""
     cam = rig.devices["camera"]
-    assert await rig.restore_cooling(NIGHT_TS) is True
+    assert await rig.restore_cooling(_night_ts()) is True
     assert cam.calls == [(True, -10.0)]
     assert any("cooling restored to -10" in m for _lv, m, _s in bus_lines)
 
@@ -234,7 +274,7 @@ async def test_a_mismatched_readback_is_not_claimed_restored(rig, bus_lines):
     restored" and returned True even though the camera's own get_cooler()
     readback disagreed)."""
     rig.devices["camera"] = _Cam(mute=True)   # accepts the call, does nothing
-    assert await rig.restore_cooling(NIGHT_TS) is False
+    assert await rig.restore_cooling(_night_ts()) is False
     errs = [m for lv, m, _s in bus_lines if lv == "error"]
     assert errs, "a restore that the camera did not actually perform said nothing"
     assert "NOT confirmed restored" in errs[0], errs[0]
@@ -250,5 +290,5 @@ async def test_a_camera_with_no_readback_still_trusts_the_write(rig, bus_lines):
         get_cooler = None   # not callable -- getattr(cam, "get_cooler", None)
 
     rig.devices["camera"] = _NoReadback()
-    assert await rig.restore_cooling(NIGHT_TS) is True
+    assert await rig.restore_cooling(_night_ts()) is True
     assert any("cooling restored to -10" in m for _lv, m, _s in bus_lines)
