@@ -44,6 +44,12 @@ export type UnreadableListRow = UnreadableSessionRow & {
    *  OUT when there is none, so absent is the normal case, not an error. It
    *  says the file exists, not that it would load. */
   backup?: boolean;
+  /** True when the `.bak` has NO session file beside it any more (#280): the
+   *  list shows such a backup as a row of its own, with `backup` true as well.
+   *  Its DELETE removes the backup and the thumbnails (there is no file left
+   *  to remove), and its RESTORE brings the session back. Absent for a damaged
+   *  file that still sits there. */
+  orphan?: boolean;
 };
 
 /** Is this list entry a file the store could not read (#242)? */
@@ -52,9 +58,9 @@ export const isUnreadableRow = (r: SessionListRow): r is UnreadableSessionRow =>
 
 /** What `DELETE /api/sessions/{id}` answers. `backup_kept` and `detail` come
  *  only from deleting an unreadable file with a backup beside it (#266): the
- *  backup's file name, and the server's words saying it remains and how it
- *  brings the ledger back. A readable session's delete answers
- *  `{deleted}` alone. */
+ *  backup's file name, and the server's words saying it remains and that the
+ *  list now offers it for RESTORE (#280). A readable session's delete, and an
+ *  orphaned backup's, answer `{deleted}` alone. */
 export interface DeleteSessionResult {
   deleted: string;
   backup_kept?: string;
@@ -72,10 +78,22 @@ export interface DeleteSessionResult {
  *  backup the thumbnails go too, and it says so: a confirm that names less
  *  than the delete removes is the defect #266 was.
  *
+ *  A BACKUP WITH NO FILE BESIDE IT (`orphan`, #280) IS THE THIRD SENTENCE: the
+ *  file is already gone, so the press removes the backup and the thumbnails,
+ *  and it says so.
+ *
  *  The FITS sentence stays word for word: it is the answer to the question
  *  every delete raises. */
-export function unreadableDeleteBody(row: Pick<UnreadableListRow, "id" | "backup">): string {
+export function unreadableDeleteBody(row: Pick<UnreadableListRow, "id" | "backup" | "orphan">): string {
   const file = `${row.id}.json`;
+  // An orphaned backup (#280) is the one row whose DELETE removes the backup:
+  // the session file is already gone, so the backup is what the press is on.
+  // Kept as the first branch, because such a row says `backup: true` too and
+  // would otherwise be told its backup stays.
+  if (row.orphan) {
+    return `Removes the backup file ${file}.bak and the thumbnails. The session file is already gone. `
+      + "Saved FITS frames are NOT deleted. This cannot be undone.";
+  }
   if (row.backup) {
     return `Removes only the file ${file}, which cannot be read. Its backup ${file}.bak stays, `
       + "and so do the thumbnails, because the backup may be the last good copy of this session log. "
@@ -83,6 +101,44 @@ export function unreadableDeleteBody(row: Pick<UnreadableListRow, "id" | "backup
   }
   return `Removes the file ${file}, which cannot be read, and its thumbnails. `
     + "Saved FITS frames are NOT deleted. This cannot be undone.";
+}
+
+/** What `POST /api/sessions/{id}/restore` answers (#280): the session it
+ *  brought back, how many frames the backup holds as accepted, when the backup
+ *  was taken, and the server's own sentence for the toast. */
+export interface RestoreSessionResult {
+  restored: string;
+  accepted: number;
+  /** The backup file's mtime (unix seconds), or null when the OS would not say. */
+  backup_ts: number | null;
+  detail: string;
+}
+
+/** The RESTORE confirm's body (#280), for an unreadable row's `backup`.
+ *
+ *  WHAT THE PRESS DOES, SAID BEFORE IT. The server puts `<id>.json.bak` in the
+ *  place of `<id>.json` and leaves the backup where it is. Two things the
+ *  operator cannot see from the row are said: the backup is the session log as
+ *  it stood when the copy was taken, so frames accepted after that are not in
+ *  it (the FITS files are the record of them, and are not touched); and the
+ *  session never comes back running or armed: one saved as running comes back
+ *  dormant, and auto-resume is off.
+ *
+ *  OVER A DAMAGED FILE, ITS BYTES ARE GONE AFTERWARDS: the replace is atomic
+ *  and whole, so the damaged file cannot be inspected or repaired by hand
+ *  later. That is said, because it is the one irreversible part. Over a file
+ *  that is already gone (`orphan`) there is nothing to lose and nothing is
+ *  claimed about a damaged file. "Session log", not ledger (#689). */
+export function restoreBody(row: Pick<UnreadableListRow, "id" | "orphan">): string {
+  const file = `${row.id}.json`;
+  const tail = "Frames accepted after the backup was taken are not in it and drop out of the session log; "
+    + "saved FITS frames are NOT deleted. A session saved as running comes back dormant, "
+    + "and auto-resume is off; the backup stays.";
+  if (row.orphan) {
+    return `Brings back ${file} from its backup ${file}.bak. ${tail}`;
+  }
+  return `Replaces ${file}, which cannot be read, with its backup ${file}.bak. ${tail} `
+    + "The damaged file cannot be brought back afterwards.";
 }
 
 /** Every entry `GET /api/sessions` sends, unreadable files included (#242).
@@ -130,6 +186,13 @@ export const patchFrame = (
 
 export const deleteSession = (id: string): Promise<DeleteSessionResult> =>
   api.del<DeleteSessionResult>(`/api/sessions/${id}`);
+
+/** Put a kept backup (`<id>.json.bak`) in the place of a session file that is
+ *  missing or unreadable (#280). `control.mount`, and the server refuses a
+ *  readable file (409), a backup it cannot read or that is another session's
+ *  (422), and a session the engine is running (409). */
+export const restoreSession = (id: string): Promise<RestoreSessionResult> =>
+  api.post<RestoreSessionResult>(`/api/sessions/${id}/restore`);
 
 /** What is armed and waiting, and what is holding it.
  *

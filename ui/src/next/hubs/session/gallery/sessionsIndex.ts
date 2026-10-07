@@ -28,7 +28,7 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { listReports } from "../../../../api/reports";
-import { isUnreadableRow, listSessionRows } from "../../../../api/sessions";
+import { isUnreadableRow, listSessionRows, type UnreadableListRow } from "../../../../api/sessions";
 import type { SessionListRow, SessionReportSummary, SessionRow } from "../../../../types";
 
 // ------------------------------------------------------------- what a card is
@@ -82,7 +82,8 @@ export function reportMatchesSession(row: SessionRow, r: SessionReportSummary): 
  *  broken; built as one, it would say "0 SUBS" about a ledger nobody can count
  *  and offer RESUME on it. So it is its own type with its own card
  *  (`UnreadableSessionCard`): the name the file carries, its id, the reason as
- *  the server sent it, and DELETE. It is not folded with the reports either:
+ *  the server sent it, DELETE, and RESTORE when a backup sits beside it
+ *  (#280). It is not folded with the reports either:
  *  a name read out of a damaged file is not evidence enough to claim a night's
  *  report belongs to it. */
 export interface UnreadableCardData {
@@ -91,13 +92,29 @@ export interface UnreadableCardData {
   /** The name inside the file when it has one, else the stem (the server's). */
   name: string;
   reason: string;
+  /** A `<id>.json.bak` sits beside the file (or is all that is left of it):
+   *  the card offers RESTORE only then (#280). A strict boolean, so a row from
+   *  a server that never sends the key reads as no backup. */
+  backup: boolean;
+  /** The backup is ALL that is left: the session file is gone (#280). Only the
+   *  words differ (the delete removes the backup, the restore replaces
+   *  nothing), and the rows `runDelete` and `runRestore` look up say so. */
+  orphan: boolean;
 }
 
-/** The unreadable rows, in the order the server listed them. */
+/** The unreadable rows, in the order the server listed them.
+ *
+ *  `backup` and `orphan` are read off the row as `UnreadableListRow`, the type
+ *  the guard deliberately does not narrow to (see `api/sessions.ts`): the
+ *  mapper used to drop them, so no card could know whether it had a backup. */
 export function unreadableCards(rows: readonly SessionListRow[]): UnreadableCardData[] {
-  return rows.filter(isUnreadableRow).map((r) => ({
-    key: `unreadable:${r.id}`, id: r.id, name: r.name, reason: r.unreadable,
-  }));
+  return rows.filter(isUnreadableRow).map((r) => {
+    const row: UnreadableListRow = r;
+    return {
+      key: `unreadable:${r.id}`, id: r.id, name: r.name, reason: r.unreadable,
+      backup: row.backup === true, orphan: row.orphan === true,
+    };
+  });
 }
 
 /** The session cards. Unreadable rows are skipped here - they are
