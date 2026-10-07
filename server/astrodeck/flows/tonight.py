@@ -2075,7 +2075,20 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         if cq is not None:
             t += (" and the calibration queue takes darks for whatever the "
                   "library lacks (its bias and flat legs are not run yet)")
-        t += (f"; once the sky holds clear for {cw.params.get('clearFor')} min it")
+        # NO MINUTES, THE SAME CLASS ONE CLAUSE LATER (#743). The sentence
+        # used to read "once the sky holds clear for {clearFor} min", quoting
+        # the CLOUD WATCH node's "Clear must hold" dial. Nothing reads that
+        # dial: `_hold_for_clear` releases a hold after
+        # `CLOUD_RESUME_CLEAR_PROBES` consecutive clear check frames, and
+        # `to_plan` carries no `clearFor` into the plan, so an operator who
+        # read "4 min" and moved the dial to 15 changed the brief and not the
+        # night. The clause now says what the engine does, in the engine's
+        # own terms (a streak of check frames, which the probe loop takes
+        # every `CLOUD_PROBE_EVERY_S`), with no number to go stale.
+        # `test_the_clear_for_dial_reaches_no_plan_field` holds the premise: the
+        # day the dial is carried to the engine, it goes red and the number
+        # can come back.
+        t += "; once consecutive check frames read clear it"
         steps: list[str] = []
         if hold is not None:
             hp = hold.params

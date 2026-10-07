@@ -205,17 +205,28 @@ def _campaign() -> FlowRecord:
       because it is an event wire and the flow lane stays acyclic.
     * ``n1 nightend -> n21 do`` — the shutdown lane. PARK + CLOSE is not an
       abort; it parks, closes, and leaves the cursor where it was.
-    * ``n21 closed -> n15 do`` — the day shift. The closure is shut and the
-      cooler is held cold, so the calibration queue can spend daylight on darks
-      that actually match the night's frames.
+    * ``n21 closed -> n15 do`` — the day-darks wire. It funds the wind-down's
+      day-darks lane: the queue takes darks matched to the night's lights
+      between the park and the warm ramp, while the sensor is still at
+      setpoint (``to_plan.HOLD_HONOURED``). The cooler is not a held setting:
+      nothing keeps it cold past those darks, and the camera warms as soon as
+      they are done.
+
+    THE LIBRARY CARD SAYS LESS THAN THIS (#746). Its tagline used to promise
+    "Dawn parks + closes with the cooler held cold for day darks", while the
+    CAMPAIGN tab (`tonight._DAWN`) said the dome is not driven and the cooler
+    does not stay cold. It now says only what both surfaces and the compiled
+    plan agree on: the mount parks, the camera warms, each dusk resumes.
+    ``test_flows_example_taglines`` pins the words and the plan flags behind
+    them.
     """
     return FlowRecord(
         id="example-campaign", readonly=True, folder=EXAMPLES_FOLDER,
         name="Campaign - best of 4, month-scale",
         tagline="The pool hands out targets until every quota is met; 'target "
-                "done' loops back to advance it. Dawn parks + closes with the "
-                "cooler held cold for day darks, and each dusk resumes "
-                "mid-cycle from the session log.",
+                "done' loops back to advance it. Dawn parks the mount and "
+                "warms the camera, and each dusk resumes mid-cycle from the "
+                "session log.",
         graph=_graph(
             [("n1", "dusk", 30, 60), ("n16", "dome", 270, 60),
              ("n20", "pool", 510, 40),
