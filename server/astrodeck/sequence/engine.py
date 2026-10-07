@@ -166,6 +166,17 @@ SLEW_PROJECT_S = 180.0          # pre-slew floor projection margin (slew+solve)
 SCHEDULE_WAIT_STEP_S = 5.0      # cancel-responsive sleep while waiting on a window
 WATCHDOG_TICK_S = 10.0          # no-progress watchdog wake cadence
 RECONNECT_BACKOFF_S = 5.0       # between reconnect_resume attempts on one role
+#: How many FAILED reopen attempts the frame-boundary gate makes of the guide
+#: camera in one run, the night's (#703). #16 made a guide camera that will not
+#: reopen a warning and not an abort, held off for a minute and then tried
+#: again: bounded in rate and not in count, so a camera that is gone for good
+#: was reopened, warned about and paged (each attempt publishes a `reconnect`
+#: event alerting never dedupes) once a minute until dawn. Past the cap the
+#: gate says so once and `escalation.guiding_action` decides what guiding does
+#: without it. Five is a chosen number, not a measured one: a few passes at the
+#: usual `reconnect_retries`, spaced by the minute's cool-off, which is more
+#: than a replugged camera needs.
+GUIDE_CAMERA_REOPEN_CAP = 5
 # --- target-jump budget (control-flow expansion) ---------------------------
 # Hard per-run ceiling on EXECUTED run_target/skip_target jumps. This is the
 # real backstop against a mutual-jump cycle (A -> run B, B -> run A, neither
@@ -531,6 +542,15 @@ IDLE_STOP_FINISH_S = GUIDE_OP_TIMEOUT_S + 2 * MOUNT_QUERY_TIMEOUT_S
 #: task making the stop (see `_finish_idle_stop`); a quarter second is the
 #: camera-lane wait's own cadence and nothing against a 180 s bound.
 IDLE_STOP_FINISH_POLL_S = 0.25
+#: How often `SequenceEngine._reap_by` looks at a task it is reaping. Not the
+#: poll above: that wait spans up to `IDLE_STOP_FINISH_S` and a quarter second
+#: is nothing against it, but a reap is what a run's end waits behind, and a
+#: guider stop that finished a moment after the reap began held "running"
+#: True for up to a whole poll after the guider had stopped (#289). A look is
+#: a sleep, not an await on the task, for the clocked simulator's sake (see
+#: `_reap_by`); twenty milliseconds is the cost of the wake, and a hung stop
+#: is looked at that often for no longer than `GUIDE_OP_TIMEOUT_S`.
+REAP_LOOK_S = 0.02
 
 # --- "if missed: skip" grace (Schedule.on_missed, C1-25) -------------------
 # How far a target's frozen start may already be in the past before "skip if
@@ -2036,6 +2056,11 @@ class SequenceEngine:
         self._fire_state = {}
         self._clouds = CloudState()
         self._holding_for_clear = False
+        # The step a probe copies is this run's own, once its first frame has
+        # set it, and nothing before then (#711): it was set per frame and never
+        # cleared, so a run on an engine that had run before probed in its first
+        # frames through the previous run's exposure, gain and binning.
+        self._hold_step = None
         self._hold_deferred = None
         self._hold_deferred_said = False
         self._jumps_spent = 0
@@ -10146,8 +10171,11 @@ class SequenceEngine:
                 if role == "guide_camera":
                     # It is back (reopened here, or by a profile activate),
                     # so an earlier give-up is over: a fresh outage is
-                    # retried at once, not held off by the old cool-off.
+                    # retried at once, not held off by the old cool-off, and
+                    # its failed reopens are forgotten (#703): the cap is
+                    # for a camera that does not come back.
                     self._guide_camera_retry_at = 0.0
+                    self._guide_camera_failed_reopens = (self._started_at, 0)
                 continue
             if role == "guide_camera" and (
                     time.monotonic() < getattr(self, "_guide_camera_retry_at", 0.0)):
@@ -10157,6 +10185,24 @@ class SequenceEngine:
                 # per frame for a camera that is not coming back.
                 continue
             tries = max(1, cfg.escalation.reconnect_retries)
+            failed = 0
+            if role == "guide_camera":
+                # THE CAP (#703): this run's count of failed reopens in a row,
+                # kept as ``(the run's start, count)`` so a new run begins at
+                # none and no run-start block has to know it. A camera that
+                # comes back starts it again (here, and in the healthy branch
+                # above), so the cap bounds a camera that does not come back
+                # and never one that has proved it can. The pass is trimmed to
+                # what the cap leaves: the bound is on attempts, and the pass
+                # that reaches it says so below.
+                counted_for, failed = getattr(
+                    self, "_guide_camera_failed_reopens", (None, 0))
+                if counted_for != self._started_at:
+                    failed = 0
+                if failed >= GUIDE_CAMERA_REOPEN_CAP:
+                    # The stop was said when the cap was reached, once.
+                    continue
+                tries = min(tries, GUIDE_CAMERA_REOPEN_CAP - failed)
             bus.log("warning", f"{role} has dropped out — reconnecting "
                                f"(up to {tries} attempt{'s' if tries > 1 else ''})",
                     "sequence")
@@ -10168,7 +10214,13 @@ class SequenceEngine:
                     bus.log("info", f"{role} is back after {attempt} "
                                     f"attempt{'s' if attempt > 1 else ''} — "
                                     f"the run continues", "sequence")
+                    if role == "guide_camera":
+                        self._guide_camera_failed_reopens = (self._started_at, 0)
                     break
+                if role == "guide_camera":
+                    failed += 1
+                    self._guide_camera_failed_reopens = (self._started_at,
+                                                         failed)
                 if attempt < tries:
                     await asyncio.sleep(RECONNECT_BACKOFF_S)
             else:
@@ -10178,12 +10230,26 @@ class SequenceEngine:
                     # night. What guiding does without it is the owner's
                     # existing policy for a guider that fails,
                     # `escalation.guiding_action`, so say so and carry on.
-                    bus.log("warning",
-                            f"guide_camera dropped out and did not come back "
-                            f"after {tries} reconnect attempt"
-                            f"{'s' if tries > 1 else ''}; imaging continues and "
-                            f"guiding now falls to escalation.guiding_action "
-                            f"({cfg.escalation.guiding_action})", "sequence")
+                    if failed >= GUIDE_CAMERA_REOPEN_CAP:
+                        # THE LAST OF THEM (#703), said once: the gate has
+                        # stopped, and the policy is what is left to decide.
+                        bus.log("warning",
+                                f"guide_camera dropped out and did not come "
+                                f"back after {failed} reopen attempts this "
+                                f"night; it will not be reopened again, "
+                                f"imaging continues and guiding now falls to "
+                                f"escalation.guiding_action "
+                                f"({cfg.escalation.guiding_action})",
+                                "sequence")
+                    else:
+                        bus.log("warning",
+                                f"guide_camera dropped out and did not come "
+                                f"back after {tries} reconnect attempt"
+                                f"{'s' if tries > 1 else ''}; imaging "
+                                f"continues and guiding now falls to "
+                                f"escalation.guiding_action "
+                                f"({cfg.escalation.guiding_action})",
+                                "sequence")
                     self._guide_camera_retry_at = time.monotonic() + 60.0
                     continue
                 # Out of attempts. Fall through to the ordinary teardown rather
@@ -14712,13 +14778,16 @@ class SequenceEngine:
                 f"min unguided — re-centring before guiding starts, because "
                 f"this rig was measured drifting about 15 arcsec/min with "
                 f"nothing holding the field", "sequence")
+        t0 = time.time()
+        commanded = None
         try:
             self._set_state(detail="re-centring after the unguided sweep")
+            commanded = self._commanded_rotation(target)
             # The target's own tolerance and attempts: this is the centring
             # the first frame is shot at (`_centring_kwargs`, #170).
-            await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                           rotation_deg=self._commanded_rotation(target),
-                                           **self._centring_kwargs(target))
+            res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                                 rotation_deg=commanded,
+                                                 **self._centring_kwargs(target))
         except Exception as e:          # noqa: BLE001
             # Non-fatal by design (same as the recovery and re-lock re-centres):
             # a failed re-centre leaves the mount where it already was.
@@ -14726,6 +14795,14 @@ class SequenceEngine:
                     f"{target.name}: re-centring after the autofocus failed "
                     f"({e}); starting guiding at the current pointing",
                     "sequence")
+        else:
+            # THE SKY ANGLE THIS RE-CENTRE'S SOLVE MEASURED (#526 part a),
+            # recorded when it left the rotator untouched. In the `else`, not
+            # the `try`: a recording error is not a failed re-centre and must
+            # not be logged as one, and a re-centre that failed, whose answer
+            # is unknown, records nothing.
+            self._record_sky_angle(target, since=t0, commanded=commanded,
+                                   result=res, rec=self._sky_angle_now())
 
     async def _sky_closed_before_recovery(self, target, *, why: str,
                                           after_failure: bool = False) -> bool:
@@ -14873,9 +14950,31 @@ class SequenceEngine:
         # the NIGHT over weather. A cloudy reading holds for clear sky
         # instead, whose release re-acquires the target and restarts the
         # guider.
-        if await self._sky_closed_before_recovery(
-                target, why="guiding was lost"):
-            return
+        #
+        # ONCE AT THE SPENT BOUND, NOT AT EVERY BOUNDARY AFTER IT (#704).
+        # Under ``guiding_action = warn`` the bound's answer is to stand down
+        # and shoot on unguided, the guider stays inactive, and this point is
+        # reached again at every frame boundary past the probe gap: a minute
+        # of exposure and two wheel moves per frame for the rest of the
+        # night, for a recovery that will not run. So the sky is read on
+        # arriving at the spent bound (it protects the abort, skip and defer
+        # answers below, which is why the read is before them) and not again
+        # for this target, in this run, while the bound stays spent. The mark
+        # is made only after a read that did not hold: a cloudy one is no
+        # stand-down, and the boundary after its hold reads again. It is
+        # forgotten whenever the attempts are not spent, so the next spell,
+        # the next target (the key has the target in it) and the next run
+        # (it has the run's start) each read once.
+        spent = self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES
+        here = (self._started_at, id(target))
+        if not spent:
+            self._sky_read_at_bound = None
+        if not (spent and getattr(self, "_sky_read_at_bound", None) == here):
+            if await self._sky_closed_before_recovery(
+                    target, why="guiding was lost"):
+                return
+            if spent:
+                self._sky_read_at_bound = here
         # BOUNDED (#72). Unbounded, this re-centred and recalibrated once per
         # frame loop for as long as the star stayed lost: on 2026-09-19 that
         # was 2.5 hours, 18 losses and 4 calibration timeouts, and on
@@ -14970,11 +15069,14 @@ class SequenceEngine:
         # a slew would tear down guiding we had just paid to restart.
         if target is not None and getattr(target, "center", False) \
                 and not getattr(target, "calibration", False):
+            t0 = time.time()
+            commanded = None
             try:
                 self._set_state(detail="re-centring after guiding loss")
-                await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=self._commanded_rotation(target),
-                                               **self._centring_kwargs(target))
+                commanded = self._commanded_rotation(target)
+                res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                                     rotation_deg=commanded,
+                                                     **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design: a failed re-centre leaves the mount where
                 # it was, which is exactly where it would have been without this
@@ -14982,6 +15084,12 @@ class SequenceEngine:
                 bus.log("warning",
                         f"re-centring after guiding loss failed ({e}); "
                         f"resuming guiding at the current pointing", "sequence")
+            else:
+                # The sky angle this re-centre's solve measured (#526 part a),
+                # outside the `try` so a recording error is not logged as a
+                # failed re-centre.
+                self._record_sky_angle(target, since=t0, commanded=commanded,
+                                       result=res, rec=self._sky_angle_now())
 
         try:
             await g.start_guiding()
@@ -15162,17 +15270,26 @@ class SequenceEngine:
         # existing statement of intent, honoured here exactly as there.
         if target is not None and getattr(target, "center", False) \
                 and not getattr(target, "calibration", False):
+            t0 = time.time()
+            commanded = None
             try:
                 self._set_state(detail="re-centring: the guided field walked")
-                await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=self._commanded_rotation(target),
-                                               **self._centring_kwargs(target))
+                commanded = self._commanded_rotation(target)
+                res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                                     rotation_deg=commanded,
+                                                     **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design (same as recovery): a failed re-centre
                 # leaves the mount where it already was.
                 bus.log("warning",
                         f"re-centring after the re-lock hold failed ({e}); "
                         f"recalibrating at the current pointing", "sequence")
+            else:
+                # The sky angle this re-centre's solve measured (#526 part a),
+                # outside the `try` so a recording error is not logged as a
+                # failed re-centre.
+                self._record_sky_angle(target, since=t0, commanded=commanded,
+                                       result=res, rec=self._sky_angle_now())
         try:
             await g.start_guiding()
         except Exception as e:
@@ -16292,6 +16409,7 @@ class SequenceEngine:
         # target left the rotator, with nothing checking it, because the lock
         # is checked only on a rig with no rotator (`_settle_locked_angle`).
         rotation = self._commanded_rotation(target)
+        t0 = time.time()
         result = await _bounded(
             self.hub.goto_and_center(target.ra_hours, target.dec_deg,
                                      rotation_deg=rotation,
@@ -16302,6 +16420,21 @@ class SequenceEngine:
         # THE RE-SLEW IS A FRESH POINTING (#248), centred or not: the goto
         # has put the mount on this target and tracking.
         self._mount_stopped_since = None
+        # THE SKY ANGLE THIS RE-CENTRE'S SOLVE MEASURED (#526 part a), read
+        # with no await since the goto returned, and recorded when it left the
+        # rotator untouched. NOT WHEN THE CALLER TAKES THE RESULT: target setup
+        # passes `centring` (``report_centring`` is False) and records the
+        # hop's own row from this very solve, so a row here would be a second
+        # one for it. The flip and the tracking enforcement pass none and
+        # record nothing else, so the flip's recovery, which returns before the
+        # flip's own row, is recorded here. KNOWN: setup's uncentred branch
+        # passes none either and records the hop's row after the recovery, so
+        # a refused track recovered there, on a target with centring off, is
+        # two identical rows for one solve; that call is not this method's
+        # to change.
+        if report_centring:
+            self._record_sky_angle(target, since=t0, commanded=rotation,
+                                   result=result, rec=self._sky_angle_now())
         # KEPT, AS MEASURED, for the caller that has to act on it (#171). A
         # copy, so nothing downstream can edit the hub's own answer, and
         # `centered` made explicit: target setup indexes it.
@@ -17550,14 +17683,21 @@ class SequenceEngine:
         is a sleep the clocked simulator can advance, and a task past its
         bound (a guider stop that eats its cancel) is left cancelled rather
         than waited for. Never raises but for a cancel of the caller, which
-        cancels the task too."""
+        cancels the task too.
+
+        Each look is ``REAP_LOOK_S``, not the idle-stop poll, so a task that
+        finishes during the look ends the wait within 20 ms and not within a
+        quarter second (#289). It is still a sleep and never a wait on the
+        task: the clocked night parks only engine tasks and advances the fake
+        clock only when every one is parked, so an engine task waiting on
+        the stop itself would never let a hung stop reach its deadline."""
         if task is None:
             return
         try:
             while not task.done():
                 if time.time() >= deadline:
                     break
-                await asyncio.sleep(IDLE_STOP_FINISH_POLL_S)
+                await asyncio.sleep(min(REAP_LOOK_S, IDLE_STOP_FINISH_POLL_S))
         finally:
             if not task.done():
                 task.cancel()
