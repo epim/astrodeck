@@ -34,7 +34,9 @@ import {
   NEXT_PORT, PASS_PORT, isMultiPanel, laneTail, ownerOf, panelLane, withLoop,
 } from "./panelLane";
 import { acceptCounts } from "./countsNotice";
-import { COUNTS_MIGRATION_KEY, FLOW_SETTINGS } from "./flowsTypes";
+import {
+  COUNTS_MIGRATION_KEY, FLOW_SETTINGS, RUN_UNSAVED_EXAMPLE_REASON,
+} from "./flowsTypes";
 import type {
   FlowCalHealth, FlowCompileResult, FlowEdgeRec, FlowGraphRec, FlowLogLine,
   FlowNodeRec, FlowNodeType, FlowPhoneTab, FlowReanchored, FlowRecordRec,
@@ -68,6 +70,19 @@ export const FLOW_NOT_OPENED = "That flow did not open";
  *  rule moved into the store, every door says it. */
 export const FLOW_OPEN_OVER_UNSAVED =
   "The flow open in the editor has edits that did not save, and opening this one would drop them. Save or close that flow first.";
+
+/** Why `flowsRun` refused when the save it made first did not keep the edit
+ *  (#688): the PUT failed, or an edit landed while it was out. It follows
+ *  `could not start: ` on the flow log, like every other refusal of a start.
+ *  An example flow, whose save is never sent, is refused with
+ *  `RUN_UNSAVED_EXAMPLE_REASON` instead. */
+export const RUN_NOT_SAVED_REFUSAL = "this flow has unsaved changes that did not save";
+
+/** The toast title for a RUN that sent nothing because of what came first
+ *  (#688): the save that did not keep the edit, or a flow that was closed
+ *  while it was being saved. A refusal on the flow log alone reads as a press
+ *  that missed, as `FLOW_NOT_OPENED` says of an open. */
+export const RUN_NOT_STARTED = "Run not started";
 
 /** No session known: one shared empty list, so writing it twice is no
  *  change of identity. */
@@ -141,8 +156,9 @@ export interface FlowsState {
    *  STALE: an edit made since that compile started is not in it, so a
    *  reader that must not draw last round's verdict as this one's asks
    *  `compiledIsCurrent`. Written by `flowsCompile`, which runs when a flow
-   *  opens, after the modal's DONE or LOOP PANELS, and after a successful
-   *  save (#356). */
+   *  opens, after the modal's DONE or LOOP PANELS, after a successful save
+   *  (#356), and when Tonight is read over a graph it was not made from
+   *  (#688). */
   compiled: FlowCompiled | null;
   compiling: boolean;
   tonight: Record<string, unknown> | null;
@@ -309,12 +325,23 @@ export interface FlowsActions {
    *  that graph (`FlowCompiled.from`). Kept only while newer than the answer
    *  in hand and while its flow is still the one open. Never rejects. */
   flowsCompile: () => Promise<void>;
+  /** Reads Tonight for the open flow into `tonight`, AFTER saving the canvas
+   *  and waiting for a compile of it (#688): `GET /tonight` describes the
+   *  STORED flow, so the edit has to be stored first, and PLAN is the compile,
+   *  which must be of the graph on screen. The answer in hand is cleared first
+   *  when the flush is about to replace the flow it describes. An answer for
+   *  a flow that is no longer open, or that a newer read has superseded, is
+   *  dropped. Never rejects. */
   flowsFetchTonight: () => Promise<void>;
   flowsFetchCalHealth: () => Promise<void>;
-  /** Post the run with `flags` (none by default). Null when the run started,
-   *  or when the refusal has already been written to the flow log; otherwise
-   *  the server's QUESTION, carrying the flags this request sent so the
-   *  answer can be re-posted with `nextRunFlags`. */
+  /** Post the run with `flags` (none by default), AFTER saving the canvas:
+   *  the run route runs the STORED flow, and a start that read it before the
+   *  edit was stored would run a graph the operator had just replaced (#688).
+   *  Null when the run started, or when the refusal has already been written
+   *  to the flow log (the edit did not save, or the flow was closed while it
+   *  was saving: nothing was posted); otherwise the server's QUESTION,
+   *  carrying the flags this request sent so the answer can be re-posted with
+   *  `nextRunFlags`. */
   flowsRun: (flags?: FlowRunFlags) => Promise<FlowRunAnswer | null>;
 
   flowsAppendLog: (msg: string, tone?: FlowLogLine["tone"]) => void;
@@ -851,6 +878,50 @@ export function createFlowsActions(
    *  the same `finally` as `saving`, and only when the two still agree -- a
    *  newer save's promise must never be dropped by an older one settling. */
   let savingPromise: Promise<void> | null = null;
+
+  /** THE NEWEST TONIGHT READ WINS (#688), like the progress and compile
+   *  tickets above. The flush before a read makes the window in which the
+   *  flow can be closed or replaced as long as a PUT, and two doors ask
+   *  (the Tonight surface and the Target modal's campaign line), so an
+   *  answer is written only by the read that is still the newest. */
+  let tonightTicket = 0;
+
+  /** SAVE THE CANVAS BEFORE ANYTHING READS THE STORED FLOW (#688).
+   *
+   *  The canvas and the stored flow are two graphs from the first edit until a
+   *  save, and the editor has no autosave. `GET /tonight` (STORY, TIMELINE and
+   *  CAMPAIGN) describes the stored one, `POST /run` runs it, and PLAN renders
+   *  `compiled`, which is refreshed on open, on DONE and after a save - so
+   *  after deleting a block and adding two others, all three still described
+   *  the flow as it was last stored, and leaving the flow and opening it
+   *  again was the only way to see the new one.
+   *
+   *  PRIVATE, not a store action, as `fetchProgress` is: its two callers are
+   *  inside this closure, and a public action is one more store member the
+   *  sign-out gate (lib/authGate.ts) would have to be told about.
+   *
+   *  A SAVE ALREADY OUT IS WAITED FOR, THEN ASKED AGAIN. `flowsSave` is
+   *  race-safe for the edit that lands inside its PUT (#215), but two PUTs in
+   *  flight at once can answer out of order. Waiting on `savingPromise`
+   *  (which never rejects) first serialises them, and the `flowsSave` after
+   *  it sends only if the graph is still dirty: the edit made during the
+   *  first PUT, or the PUT that failed, which is tried once more because the
+   *  operator asked for a read just now, not because a timer did.
+   *
+   *  IT DOES NOT COMPILE. `flowsSave`'s own compile is deliberately not
+   *  awaited (a close saves first and must not wait on it), so PLAN needs a
+   *  wait of its own, and that is Tonight's alone (`flowsFetchTonight`): the
+   *  run route compiles the STORED record on the server, so a client compile
+   *  of the canvas would give RUN nothing but a round trip on the press.
+   *
+   *  It does not say whether the save kept the edit: the caller reads `dirty`,
+   *  the one test `flowsOpen` and `flowsCloseEditor` read too. A read-only
+   *  Example is never sent (`flowsSave` returns at once), so it stays dirty
+   *  and the caller must not run or describe it as the canvas. */
+  const saveBeforeRead = async (): Promise<void> => {
+    if (savingPromise) await savingPromise;
+    await get().flowsSave();
+  };
 
   /** Re-read the open flow's progress into `flows.progress` (#189 S1 item 9).
    *  Never rejects, and every caller starts it without awaiting it.
@@ -1562,13 +1633,48 @@ export function createFlowsActions(
     },
 
     flowsFetchTonight: async () => {
-      const id = get().flows.record?.id;
+      const start = get().flows;
+      const id = start.record?.id;
       if (!id) return;
-      set((s) => patch(s, { tonightLoading: true, tonightError: null }));
+      const ticket = ++tonightTicket;
+      set((s) => patch(s, {
+        tonightLoading: true, tonightError: null,
+        // THE ANSWER IN HAND IS ABOUT THE FLOW AS LAST SAVED, and an edited
+        // flow is about to replace that flow (#688). Left on screen while the
+        // PUT is out it is last round's story under this round's title: the
+        // very symptom this flush exists for, for as long as a round trip
+        // takes. An example's edits are never saved, so nothing replaces its
+        // flow and its answer stays.
+        ...(start.dirty && !start.record?.readonly ? { tonight: null } : {}),
+      }));
+      // STILL THIS READ'S TO WRITE? A newer read owns the flag and the answer;
+      // a flow that was closed or replaced during the flush has no use for
+      // one, and nobody else would clear the flag it left set.
+      const superseded = (): boolean => {
+        if (ticket !== tonightTicket) return true;
+        if (get().flows.record?.id === id) return false;
+        set((s) => patch(s, { tonightLoading: false }));
+        return true;
+      };
       try {
+        // SAVE THE CANVAS BEFORE THE ROUTE READS THE FLOW (#688): see
+        // `saveBeforeRead`. It never rejects.
+        await saveBeforeRead();
+        if (superseded()) return;
+        // AND PLAN IS A COMPILE OF THE CANVAS. `flowsSave`'s own compile is not
+        // awaited and has not landed when its PUT returns; a flow whose edit
+        // could not be saved (an Example, a refused PUT) never had one. So when
+        // the compile in hand is not for the graph on screen, ask for one and
+        // wait: the PLAN tab draws `compiled`, and last round's plan under this
+        // round's title is the report this fixes. A clean flow that is already
+        // compiled asks for nothing.
+        if (!compiledIsCurrent(get().flows)) await get().flowsCompile();
+        if (superseded()) return;
         const tonight = await flowsApi.tonight(id);
+        if (superseded()) return;
         set((s) => patch(s, { tonight, tonightLoading: false }));
       } catch (e) {
+        if (superseded()) return;
         set((s) => patch(s, { tonightLoading: false, tonightError: errText(e) }));
       }
     },
@@ -1589,6 +1695,40 @@ export function createFlowsActions(
     flowsRun: async (flags = {}) => {
       const id = get().flows.record?.id;
       if (!id) return null;
+      // RUN RUNS THE STORED FLOW, so the canvas is stored first (#688). The
+      // classic editor posted the run with whatever the last save left, and an
+      // edit made since - the block the operator had just swapped - was not in
+      // it: the night started on the graph that had been replaced, with the
+      // edit on screen to say otherwise. Every door passes through here
+      // (`useFlowRunControls`, the Sky flow sheet, Send-to-Wizard), so none
+      // can forget. No compile is waited for: see `saveBeforeRead`.
+      await saveBeforeRead();
+      const after = get().flows;
+      if (after.record?.id !== id) {
+        // The operator left the flow while its save was out. Starting a night
+        // from a screen that is gone is the wrong default, and the flow log
+        // now belongs to whichever flow is open, so this one says it as a toast.
+        get().enqueueToast?.({
+          level: "warning", title: RUN_NOT_STARTED, source: "flows",
+          detail: "That flow was closed while it was saving, so nothing was started.",
+        });
+        return null;
+      }
+      if (after.dirty) {
+        // THE EDIT IS STILL NOT STORED, whatever the reason: the PUT failed
+        // (its catch wrote `libraryError`), an edit landed inside its round
+        // trip (`flowsSave` keeps `dirty` for that, #215), or the flow is an
+        // Example, which the server refuses to save at all and `flowsSave`
+        // therefore never sends. The same single test `flowsOpen` and
+        // `flowsCloseEditor` refuse on. Posting now would run the stored flow
+        // beside an edit on screen that the operator believes went with it.
+        const detail = after.record?.readonly ? RUN_UNSAVED_EXAMPLE_REASON : RUN_NOT_SAVED_REFUSAL;
+        get().flowsAppendLog(`could not start: ${detail}`, "bad");
+        get().enqueueToast?.({
+          level: "error", title: RUN_NOT_STARTED, detail, source: "flows",
+        });
+        return null;
+      }
       try {
         const res = await flowsApi.run(id, flags);
         set((s) => patch(s, {
