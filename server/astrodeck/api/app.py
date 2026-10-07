@@ -9251,10 +9251,40 @@ def create_app(*, bind_host: str | None = None,
 
     # ---------------------------------------------------------- rotator
 
+    def _refuse_while_sequence_runs(refused: str, why: str, *,
+                                    lane: str) -> None:
+        """Raise 409 ``sequence_running`` while a run is going, or return
+        (#698, backlog ruling for WP-114). The ONE refusal the rotator's move
+        and solving routes share, so a fourth route that turns or calibrates
+        the camera takes the guard by calling it.
+
+        THE ROUTES, NOT THE HUB. ``hub.rotate_to_pa`` is what the engine
+        itself calls for every rotating panel, so a refusal in the hub would
+        stop the run it exists to protect; only the operator's buttons come
+        through here. STOP (``/api/rotator/halt``) is deliberately not one of
+        them.
+
+        A RUN IS NOT AN EXPOSURE. Between two frames the capture lock is free,
+        which is exactly when ROTATE TO PA used to be accepted and turned the
+        camera under the run: a mosaic panel shot at the wrong angle, a
+        rotating group's angle check failing mid-run, flats and lights at
+        different angles. ``lane`` is the lane the refused route would have
+        spawned on, and ``blocked_by`` names what holds it, the
+        ``lane_blocked`` shape (``_lane_409``); the sentence is at
+        ``detail.detail`` where the panels already read it."""
+        if engine.running:
+            raise _lane_409(
+                f"a sequence is running; {refused} refused, because {why}. "
+                f"Stop the run first",
+                code="sequence_running", lane=lane, blocked_by="sequence")
+
     @app.post("/api/rotator/move",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def rotator_move(body: RotatorMoveBody):
+        _refuse_while_sequence_runs(
+            "rotator move", "it would turn the camera under the run's frames",
+            lane="rotator")
         try:
             rot = hub.require("rotator")
         except DeviceError as e:
@@ -9336,8 +9366,16 @@ def create_app(*, bind_host: str | None = None,
     async def rotator_sync_to_sky(body: RotatorSyncBody):
         """Measure the sky position angle and tell the rotator where it is.
         MOVES NOTHING. Before this the only way to establish the sky↔mechanical
-        offset was to command a rotation (2026-08-07)."""
+        offset was to command a rotation (2026-08-07).
+
+        Refused while a sequence runs (#698): it exposes and re-calibrates the
+        rotator's sky offset, which the run's angle checks and its next
+        rotation read."""
         _refuse_if_camera_owned()
+        _refuse_while_sequence_runs(
+            "sync to sky",
+            "it would re-calibrate the rotator's sky angle under the run",
+            lane="rotate_to_pa")
         try:
             hub.require("rotator")
             hub.require("camera")
@@ -9370,24 +9408,47 @@ def create_app(*, bind_host: str | None = None,
         file, so the busy test below would refuse it too, but with a
         sentence about a sequence or an exposure that is not what is
         running. ``_refuse_if_camera_owned`` answers with the recording's own
-        code, as it does on every other route that takes the camera."""
+        code, as it does on every other route that takes the camera.
+
+        THE REFUSALS ARE CODED (#713, #698): ``sequence_running`` while a run
+        is going, ``camera_busy`` for an exposure with no run (the live loop's
+        frame, a capture), both in the ``_lane_409`` shape, so a client can
+        tell them from any other 409. A run is named first: it holds the
+        exposure guard for most of its night, and stopping it is what frees
+        the camera.
+
+        THE BUTTON IS THE OPERATOR'S RETEST (#697, backlog ruling for
+        WP-114): ``retest_failed=True`` runs the follow test again when the
+        last one FAILED, keeping the learned sign, so a coupling the owner has
+        re-seated is tested without reconnecting the whole rig. The automatic
+        callers (a goto, the engine) leave a failure standing."""
         _refuse_if_camera_owned()
-        if engine.running or hub._capture_lock.locked():
-            raise HTTPException(
-                409, "camera is busy (a sequence or an exposure is running); "
-                     "rotator preflight refused")
+        _refuse_while_sequence_runs(
+            "rotator preflight",
+            "it turns the rotator about 22 degrees and takes four plate "
+            "solves, which would ruin the run's frames",
+            lane="rotate_to_pa")
+        if hub._capture_lock.locked():
+            raise _lane_409(
+                "camera is busy (an exposure is running); rotator preflight "
+                "refused",
+                code="camera_busy", lane="rotate_to_pa")
         try:
             hub.require("rotator")
             hub.require("camera")
         except DeviceError as e:
             raise _err(e)
-        return _spawn("rotate_to_pa", hub.ensure_rotator_ready())
+        return _spawn("rotate_to_pa",
+                      hub.ensure_rotator_ready(retest_failed=True))
 
     @app.post("/api/rotator/rotate-to-pa",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def rotator_rotate_to_pa(body: RotateToPaBody):
         _refuse_if_camera_owned()
+        _refuse_while_sequence_runs(
+            "rotate to PA", "it would turn the camera under the run's frames",
+            lane="rotate_to_pa")
         try:
             hub.require("rotator")
             hub.require("camera")

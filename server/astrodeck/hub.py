@@ -7423,10 +7423,14 @@ class Hub:
 
         PASS sets ``self._rotation_trusted = True`` and changes nothing else.
         FAIL sets it ``False``, and every ``rotate_to_pa`` call after this
-        refuses outright (D-05: "rotation is off for the night") until the
-        next self-test passes -- a caller that still wants frames shoots them
-        at whatever fixed angle the camera already sits, by simply not asking
-        for a rotation, the same as any other target with no rotator.
+        refuses outright (D-05: "rotation is off for the night") until a
+        self-test passes again. WHAT RUNS IT AGAIN: the operator's TEST ROTATOR
+        button (``POST /api/rotator/preflight``, which re-runs this after a
+        FAIL, #697), or the first rotating group of the next observing night
+        (the verdict is stamped with its night, #709). Nothing automatic
+        re-runs it within the night. A caller that still wants frames shoots
+        them at whatever fixed angle the camera already sits, by simply not
+        asking for a rotation, the same as any other target with no rotator.
 
         A SEPARATE MEASUREMENT FROM THE PER-MOVE FOLLOW CHECK
         (``_rotate_to_pa_attempts``'s own ``ROTATE_FOLLOW_FRACTION``, a
@@ -7607,9 +7611,60 @@ class Hub:
         await rot.move_mechanical(_rotation.mod360(mech0 + step))
         return step
 
+    #: The follow-test verdict and the observing night it was measured on,
+    #: ``(trusted, events.night_key)``, or None when none is held. Reached only
+    #: through ``_rotation_trusted`` below, which is what every reader and
+    #: writer (the engine, the status block, ``rotate_to_pa``, the resume arm,
+    #: ``rotator_self_test``, ``_teardown``) already uses. A class-level None
+    #: so a hub built without ``__init__`` (a double) reads "not measured".
+    _rotation_verdict: tuple[bool, str] | None = None
+
+    @staticmethod
+    def _observing_night() -> str:
+        """The observing night (``events.night_key``, local noon to noon) the
+        rotator verdict is stamped with and read against. The import is made at
+        call time so ``events.night_key`` stays the ONE definition a test can
+        pin; a name bound at import would be a second clock (#682)."""
+        from .events import night_key
+        return night_key(time.time())
+
+    @property
+    def _rotation_trusted(self) -> bool | None:
+        """Whether ``rotator_self_test`` found the camera follows the rotator
+        ON THE CURRENT OBSERVING NIGHT: True (passed), False (failed), or None
+        (no verdict held for tonight). A verdict from another night reads as
+        None (#709).
+
+        WHY THE NIGHT. This was cleared only by ``_teardown``, so "rotation is
+        off for the night" really meant "off until the rig reconnects", and a
+        PASS from night 1 stood as night 2's in a process that outlived the
+        night, because the engine asks for a self-test only while the verdict
+        is None. A coupling re-seated or re-loosened between nights was neither
+        re-measured nor re-trusted. Stamped when SET (the setter below), judged
+        when READ, so every reader sees the same answer and none has to
+        remember to compare nights; the first rotating group of each night
+        then asks again.
+
+        THE LEARNED SIGN IS NOT STAMPED. It is which way the camera turns
+        against the motor, a fact about the train's geometry that re-seating a
+        coupling does not change, and the simulator's declared +1 would
+        otherwise be forgotten at every noon and cost every night a 2 degree
+        turn and two solves for nothing."""
+        verdict = self._rotation_verdict
+        if verdict is None:
+            return None
+        trusted, night = verdict
+        return trusted if night == self._observing_night() else None
+
+    @_rotation_trusted.setter
+    def _rotation_trusted(self, trusted: bool | None) -> None:
+        self._rotation_verdict = (
+            None if trusted is None else (trusted, self._observing_night()))
+
     async def ensure_rotator_ready(
             self, *, sign_step_deg: float = 2.0,
-            test_step_deg: float = ROTATOR_SELF_TEST_STEP_DEG) -> dict:
+            test_step_deg: float = ROTATOR_SELF_TEST_STEP_DEG,
+            retest_failed: bool = False) -> dict:
         """The rotator preflight (WP-88; #145, #594): measure what this
         connect has not measured, and nothing else. Returns ``{"sign",
         "trusted", "ran"}``: the hub's two values afterwards and which of
@@ -7628,9 +7683,21 @@ class Hub:
         so a second call, or the second hop of a rotating mosaic, exposes
         nothing. ``_teardown`` resets both, so the next connect measures
         again; a reconnect may bring back a different or re-coupled rotator.
-        A prior FAIL is not None, so it stays failed until the rig
-        reconnects: re-testing a coupling that already failed would let the
-        next hop quietly clear a verdict the operator has not acted on.
+        The follow-test verdict also has an observing night (#709): one
+        measured on another night reads as None, so the first call of each
+        night measures it again; the sign has none (see ``_rotation_trusted``).
+
+        A PRIOR FAIL STAYS FAILED FOR EVERY AUTOMATIC CALLER. It is not None,
+        so ``goto_and_center`` and the engine leave it alone: re-testing a
+        coupling that already failed would let the next hop quietly clear a
+        verdict the operator has not acted on. ONLY AN EXPLICIT OPERATOR
+        RETEST CLEARS IT (#697, backlog ruling for WP-114): ``retest_failed``
+        True, which ``POST /api/rotator/preflight`` (the TEST ROTATOR button)
+        passes, runs the follow test again when the last one FAILED, keeping
+        the learned sign. Before this the only way back, after the owner
+        re-seated the coupling (#594), was a whole-rig reconnect. A retest of
+        a rotator that is not failed measures nothing, as before, and a
+        retest that cannot run (a DeviceError) leaves the FAIL standing.
 
         UNDER ONE LOCK, so a goto and the button asking together measure
         once: the second caller waits, then finds both values known.
@@ -7646,7 +7713,8 @@ class Hub:
             if self._rotator_sky_sign is None:
                 await self.learn_rotator_sign(sign_step_deg)
                 ran.append("sign")
-            if self._rotation_trusted is None:
+            trusted = self._rotation_trusted
+            if trusted is None or (retest_failed and trusted is False):
                 await self.rotator_self_test(test_step_deg)
                 ran.append("self_test")
             return {"sign": self._rotator_sky_sign,
@@ -7691,7 +7759,8 @@ class Hub:
                 "rotator: the nightly self-test found the camera does not "
                 "reliably follow the rotator (D-05, #594), so rotation is "
                 "refused for the rest of the night; panels should be shot "
-                "at a fixed angle until rotator_self_test passes again")
+                "at a fixed angle until TEST ROTATOR (on the rotator panel) "
+                "passes again")
         from . import providers as _providers
         solver = _providers.pick_solver(self)
         rcfg = config_store.cfg().rotator

@@ -78,19 +78,26 @@ const SYNC_NOTE =
 /** What TEST ROTATOR does, said where it is pressed (#145, #594). It turns the
  *  rotator and exposes, so the cost is in the sentence: about 22 degrees of
  *  travel (a 2 degree step to learn the sign, a 20 degree step to check the
- *  camera follows) and four plate solves, two for each. Pressing it again
- *  changes nothing until the rig reconnects, so it says that too. */
+ *  camera follows) and four plate solves, two for each. It measures only what
+ *  is unmeasured, EXCEPT that a follow test that FAILED is run again on its
+ *  own (#697): that is the press that follows re-seating the coupling, and it
+ *  is cheaper than the first (two solves, the 20 degree step, the sign kept),
+ *  so the sentence says so. */
 const PREFLIGHT_NOTE =
   "TEST ROTATOR turns the rotator about 22 degrees and takes four plate solves: "
   + "two to learn which way the sky angle runs against the mechanical angle, two "
   + "to check the camera follows a 20 degree step. It measures only what this "
-  + "connection has not measured yet.";
+  + "connection has not measured yet. After a FAILED follow test it runs that "
+  + "test again on its own (two solves and the 20 degree step, the sign kept), "
+  + "so press it once the coupling has been re-seated.";
 
-/** Why TEST ROTATOR has nothing to do. Both halves are known, and a failed
- *  follow test stays failed on purpose until the rig reconnects. */
+/** Why TEST ROTATOR has nothing to do: the sign is measured and the follow test
+ *  PASSED tonight. A FAILED test does not lock it (#697): that is the one state
+ *  in which a press has something to measure. The follow test has an observing
+ *  night (#709), so the lock lifts by itself when the night turns over. */
 const PREFLIGHT_DONE_NOTE =
-  "this connection has already measured the rotator; it measures again after "
-  + "the rig reconnects.";
+  "this connection has already measured the rotator tonight; it measures again "
+  + "on the next observing night or after the rig reconnects.";
 
 /** The one line of what the rig knows about this rotator: whether the sky
  *  angle's sign has been measured, and whether the camera was seen to follow a
@@ -105,7 +112,7 @@ export function rotatorPreflightLine(
   if (rot.trusted === false) {
     return {
       text: "FAILED: the camera did not follow a 20 degree step, so rotation "
-        + "is off until the rig reconnects",
+        + "is off. Press TEST ROTATOR to measure it again",
       failed: true,
     };
   }
@@ -225,11 +232,14 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
   const goReason = moveReason ?? (paOk ? null : NO_TARGET_NOTE);
   // TEST ROTATOR exposes and turns, on the same lane and the same camera as the
   // two solving buttons, so it takes their lock; and it is locked, with the
-  // reason, once both halves are known - a press would change nothing.
+  // reason, once the sign is measured and the follow test PASSED - a press
+  // would change nothing. A FAILED follow test leaves it live (#697): the
+  // server runs that test again, which is the only way back short of
+  // reconnecting the whole rig.
   const preflight = rotatorPreflightLine(rot);
-  const preflightKnown = (rot.sky_sign === 1 || rot.sky_sign === -1)
-    && (rot.trusted === true || rot.trusted === false);
-  const preflightReason = solveReason ?? (preflightKnown ? PREFLIGHT_DONE_NOTE : null);
+  const preflightPassed = (rot.sky_sign === 1 || rot.sky_sign === -1)
+    && rot.trusted === true;
+  const preflightReason = solveReason ?? (preflightPassed ? PREFLIGHT_DONE_NOTE : null);
   const romReason = configNote ?? inFlight;
   const startReason = romReason ?? (draft.range_type === "full" ? FULL_RANGE_NOTE : null);
 
