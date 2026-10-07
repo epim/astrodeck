@@ -768,6 +768,47 @@ class SolveFrameTransient(DeviceError):
     (H4 contract 1), which the engine does not count as a centring strike."""
 
 
+# THE RIG-SIDE REASONS A FAILED SOLVE CAN NAME (#618). D-03 (backlog ruling
+# D-03, owner-approved 2026-09-30) sets a mosaic aside after two held passes
+# in a row that blame the identical rig-side reason, but every failed solve
+# used to reach the engine as one generic sentence, which the rule has to
+# read as no reason at all (the sky may be to blame for it). These two are
+# the causes the rig itself owns and that do not clear by themselves.
+#
+# FIXED WORDS, NO NUMBERS, NO PATHS, NO SITE DATA. The sentence becomes a
+# deferral's ``last_error``, a hold's clock key and the set-aside alert,
+# which quotes it with ``!r``: a figure that changes between tries would
+# restart the clock and defeat the match, and a path or a coordinate has no
+# business in any of those places.
+SOLVE_REASON_SOLVER_MISSING = (
+    "plate solve failed: no plate solver is available on this rig")
+SOLVE_REASON_FILE_LOCKED = (
+    "plate solve failed: another program held the solve frame's file open")
+
+
+def solve_failure_reason(exc: BaseException) -> str | None:
+    """The stable rig-side reason a failed solve names, or ``None`` (#618).
+
+    A PURE function of the exception's TYPE, never its words: a
+    ``SolveFrameTransient`` is ``SOLVE_REASON_FILE_LOCKED`` and a
+    ``providers.SolverUnavailable`` is ``SOLVE_REASON_SOLVER_MISSING``.
+    EVERYTHING ELSE is ``None``, and the engine keeps the generic text for
+    it: a cloud verdict (``FailedSolveError``), an ASTAP timeout, an
+    unrecognised error, a bare ``Exception``, and every ``NoLightError``
+    whatever it was judged against, since the no-light classifier is not
+    yet validated (#308) and a mosaic must not be set aside on its guess.
+    Once #308 closes, a ``NoLightError`` whose ``reference_kind`` is
+    ``DARK_MASTER`` is the one to map here."""
+    # In-function, as every other use of providers in this file: that module
+    # reaches back into the hub, so a module-level import is a cycle.
+    from .providers import SolverUnavailable
+    if isinstance(exc, SolveFrameTransient):
+        return SOLVE_REASON_FILE_LOCKED
+    if isinstance(exc, SolverUnavailable):
+        return SOLVE_REASON_SOLVER_MISSING
+    return None
+
+
 def _sharing_violation(e: BaseException) -> bool:
     """True for a Windows sharing violation, the transient this retries."""
     return (isinstance(e, PermissionError)
@@ -8048,7 +8089,16 @@ class Hub:
         when either is), so a caller that reads only the old key -- and
         ``_group_hop_checks`` until WP-21 adds the fallback -- keeps working
         unchanged. Both halves can be true in the same call (the rotate loop
-        degrades transiently and the centring solve that follows also does)."""
+        degrades transiently and the centring solve that follows also does).
+
+        ``solve_reason`` (#618), beside ``solve_failed``, is a fixed sentence
+        (``SOLVE_REASON_SOLVER_MISSING``, ``SOLVE_REASON_FILE_LOCKED``) when
+        the centring solve failed for a cause the rig owns, named by the
+        exception's type (`solve_failure_reason`). It is additive and appears
+        only then: a cloud verdict, a no-light verdict, a timeout or an
+        unknown error leave it out, and the engine reads its absence as the
+        generic failure. It is the centring solve's alone, not the rotate
+        loop's, and it never carries a number, a path or a site datum."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -8227,11 +8277,20 @@ class Hub:
                 # by ``_rot_keys`` from a rotate-phase hold earlier in this
                 # same call -- the ``|`` merge is what makes it a union, not
                 # a replacement.
+                #
+                # ``solve_reason`` (#618) names the cause when it is one the
+                # rig owns and the type says so (`solve_failure_reason`):
+                # it is what lets the engine's deferral carry a reason D-03
+                # can match across passes. Absent for every cause the
+                # system cannot name, so the engine's generic text stands.
+                reason = solve_failure_reason(e)
                 return ({"centered": False, "error_arcmin": None,
                          "attempts": attempt, "solve_failed": True} | _rot_keys
                         | ({"centring_solve_transient": True,
                             "solve_transient": True}
-                           if isinstance(e, SolveFrameTransient) else {}))
+                           if isinstance(e, SolveFrameTransient) else {})
+                        | ({"solve_reason": reason}
+                           if reason is not None else {}))
             from .catalog.coords import angular_sep_deg
             try:
                 err = angular_sep_deg(solved["ra_hours"], solved["dec_deg"],

@@ -8238,8 +8238,17 @@ class SequenceEngine:
                     # formatting None with :.1f would raise TypeError and kill the
                     # whole run at its first target. Only format a real number.
                     err = result.get("error_arcmin")
+                    # A solve failure the hub could NAME (#618: the rig has
+                    # no plate solver, or another program held the solve
+                    # frame's file) carries its fixed sentence here, which
+                    # is what the deferral's ``last_error`` becomes and so
+                    # what D-03's "the same rig-side reason in two held
+                    # passes in a row" matches on. Every other failure has
+                    # no ``solve_reason`` and keeps the generic text, which
+                    # that rule reads as no code at all.
                     detail = (f"converged to {err:.1f}'" if err is not None
-                              else GENERIC_SOLVE_FAILURE)
+                              else (result.get("solve_reason")
+                                    or GENERIC_SOLVE_FAILURE))
                     member = self._group_of(target)
                     if member is not None and member.require_centred:
                         # Not "continuing": a panel that does not centre is
