@@ -246,6 +246,48 @@ def _is_windows_proactor_overlapped_fault(exc: BaseException) -> bool:
     return isinstance(exc.__context__, KeyError)
 
 
+#: How much of the fault's traceback text the night-log line carries, counted
+#: from the END: the chain's last frames and the OSError itself are the part a
+#: person reading the night needs, and one line must stay a line.
+_FAULT_TRACEBACK_CHARS = 3000
+
+
+def _record_fault_in_the_night_log(exc: BaseException) -> None:
+    """Put the #496 fault in the durable night log, ``captures/logs/<night>.jsonl``.
+
+    The ``astrodeck`` logger line goes to stderr, and the rig's supervisor is
+    started detached, so stderr can be gone with the process. The night file is
+    what outlives it, and ``bus.log`` writes it synchronously on this thread
+    (a subscriber whose loop has closed is skipped, which the faulted loop's
+    subscribers now are), so the line is on disk before the process exits.
+
+    NEVER RAISES. This runs on the way to ``EXIT_EVENT_LOOP_FAULT``; a logging
+    failure that escaped here would replace that exit code with a traceback of
+    its own and the supervisor would see the wrong thing. The ``bus`` import
+    is inside the function so ``create-admin`` stays free of it.
+
+    The line holds file paths from the traceback and nothing about the site."""
+    try:
+        import traceback
+
+        from .events import bus
+
+        trace = "".join(traceback.format_exception(exc))
+        if len(trace) > _FAULT_TRACEBACK_CHARS:
+            trace = "..." + trace[-_FAULT_TRACEBACK_CHARS:]
+        bus.log(
+            "error",
+            "Windows event-loop fault (#496): the proactor lost an overlapped-"
+            "cache entry and OSError [WinError 6] ended run_forever. Exiting "
+            f"with exit code {EXIT_EVENT_LOOP_FAULT}; the supervisor relaunches "
+            f"the server. Traceback, last {_FAULT_TRACEBACK_CHARS} characters:\n"
+            + trace,
+            "server",
+        )
+    except Exception:  # noqa: BLE001 - a logging failure must not mask the exit
+        pass
+
+
 def _run_server_with_fault_handling(server: "uvicorn.Server") -> int:
     """Run ``server`` to completion, turning the narrow Windows proactor
     fault (#496, backlog ruling D-12) into a LOGGED, deliberate non-zero exit
@@ -254,10 +296,12 @@ def _run_server_with_fault_handling(server: "uvicorn.Server") -> int:
     in ``solve/astap.py``, which the selector loop cannot do on Windows), so
     the fix is this narrow catch-log-exit, not a different event loop.
 
-    The rig's supervisor only restarts a process that has actually exited, so
-    this still lets the process die -- it just makes sure the durable log
-    says why before it does, instead of whatever ad hoc traceback uvicorn's
-    own shutdown path would otherwise produce.
+    The supervisor (``supervisor/supervisor.py``) only restarts a process that
+    has actually exited, so this still lets the process die -- it just makes
+    sure the log says why before it does. The DURABLE record is the night file,
+    ``captures/logs/<night>.jsonl`` (``_record_fault_in_the_night_log``); the
+    ``astrodeck`` logger line goes to stderr, which the rig's detached
+    supervisor may not keep.
 
     Any OTHER exception out of ``server.run()`` -- including an OSError that
     only superficially resembles #496 -- is reraised unchanged. That keeps
@@ -277,6 +321,7 @@ def _run_server_with_fault_handling(server: "uvicorn.Server") -> int:
             "server.",
             exc_info=exc,
         )
+        _record_fault_in_the_night_log(exc)
         return EXIT_EVENT_LOOP_FAULT
     return 0
 

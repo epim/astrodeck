@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import math
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +37,13 @@ from astrodeck.calibration.matcher import MasterRecord
 from astrodeck.devices.base import CameraFrame, DeviceError
 from astrodeck.solve import light
 from astrodeck.solve.base import SolveResult
+
+# APPENDED, not inserted at position 0, as test_credits.py does: a script in
+# tools/ named like a stdlib module must never win the import.
+_TOOLS = Path(__file__).resolve().parents[2] / "tools"
+if str(_TOOLS) not in sys.path:
+    sys.path.append(str(_TOOLS))
+import no_light_audit  # noqa: E402
 
 FIXTURE = (Path(__file__).parent / "fixtures" / "star_noise"
            / "blank_overcast.npz")
@@ -1261,3 +1269,268 @@ def test_the_scan_still_sees_the_known_solve_paths():
     unclassified = sorted(k for k in KNOWN_CLASSIFIED
                           if not found[k]["classified"])
     assert not unclassified, f"known paths stopped classifying: {unclassified}"
+
+
+# ====================================== THE LINE CARRIES THE FRAME'S READOUT
+#
+# #308: the no-light band has never been held against a real moonless thick
+# overcast at the solve's readout, and the durable night log could not say
+# which nights to look at, because the "failed solve, light check" line held
+# the verdict's numbers and nothing of the frame that made them: not its
+# exposure, binning, gain, offset or the sensor's temperature, which is the
+# whole question (a COLD sensor under dark overcast). The line now ends its
+# evidence with the frame's own readout, and ``tools/no_light_audit.py`` reads
+# it back. The readout is NEVER part of ``LightVerdict.evidence()``, which
+# rides the failure's message into a hold's reason: a number that changes on
+# every retry would restart the hold's clock (``ResumeArm._set_hold``).
+
+def _light_lines(bus_lines) -> list[str]:
+    return [m for lv, m, src in bus_lines
+            if src == "solve" and m.startswith("failed solve, light check:")]
+
+
+async def _fail_cold(hub, frame) -> light.FailedSolveError:
+    return await light.failed_solve_error(
+        frame, SolveResult(False, message="Not enough stars."),
+        prefix="plate solve failed", hub=hub)
+
+
+async def test_the_light_check_line_ends_with_the_frames_readout(
+        tmp_path, bus_lines):
+    """A capped frame at the rig's solve readout on a cold sensor, judged
+    against a dark master at those settings: the line says what the frame
+    was, after the evidence, and the failure's words and the verdict's
+    evidence say nothing of it.
+
+    RED under mutant "the readout is dropped" (``_readout(frame)`` removed
+    from the f-string of the ``bus.log`` call in ``failed_solve_error``),
+    observed verbatim:
+
+        E   AssertionError: failed solve, light check: median 251.0 ADU, robust sigma 8.9 ADU per pixel; reference 250.0 ADU from the dark master for these settings (dark master dark_250); band +/-3.00 ADU; no_light
+        E   assert False
+        E    +  where False = <built-in method endswith of str object at 0x...>('; no_light; frame 12 s bin 2 gain 200 offset 30, sensor -5.0 C')
+
+    (12 cases of this file go red under it: this one, the next two and the
+    eight round trips.)
+
+    RED under mutant "the readout rides the hold's reason" (the call's
+    ``error_for`` handed ``... + _readout(frame)`` as the solver's message,
+    so the number is in the exception that becomes a hold's reason),
+    observed verbatim:
+
+        E   AssertionError: a per-retry number in the failure restarts the hold's clock: plate solve failed: no light: the optic is capped, covered or obstructed (the frame reads at the level this camera reads with no light on it; the solver said: Not enough stars.; frame 12 s bin 2 gain 200 offset 30, sensor -5.0 C)
+        E   assert ('sensor' not in 'plate solve...nsor -5.0 C)'
+
+    (and seven older cases that pin the failure's exact words, 8 in all.)
+    """
+    hub = type("H", (), {"master_library": _Library([_write_master(
+        tmp_path, "DARK", 250.0, temp=-5.0)])})()
+    e = await _fail_cold(hub, _frame(_no_light_frame(), temp=-5.0))
+    assert isinstance(e, light.NoLightError), "premise: a no-light verdict"
+
+    (line,) = _light_lines(bus_lines)
+    assert line.endswith(
+        "; no_light; frame 12 s bin 2 gain 200 offset 30, sensor -5.0 C"), line
+    assert "frame 12 s" not in e.verdict.evidence(), (
+        "the readout is outside evidence(): that string rides the hold's reason")
+    assert "sensor" not in str(e) and _no_digits(str(e)), (
+        f"a per-retry number in the failure restarts the hold's clock: {e}")
+
+
+async def test_the_readout_comes_before_what_the_camera_said(
+        tmp_path, bus_lines):
+    """The camera's own words are free text, so they close the line and the
+    readout stays where a parser can find it. A self-shot that raises is the
+    case that has them.
+
+    RED under mutant "the readout after the camera's words" (``{tail}`` and
+    ``_readout(frame)`` swapped in the f-string), observed verbatim:
+
+        E   AssertionError: failed solve, light check: median 251.0 ADU, ...; the shortest-exposure frame that stands in for a bias failed (the camera said: imageready timeout); frame 12 s bin 2 gain 200 offset 30, sensor -5.0 C
+        E   assert False
+        E    +  where False = <built-in method endswith of str object at 0x...>('sensor -5.0 C (the camera said: imageready timeout)')
+    """
+    from test_no_light_self_reference import _Hub, _Sensor, _elsewhere
+    light._SELF_REFERENCES.clear()
+    try:
+        hub = _Hub(_elsewhere(tmp_path), _Sensor(fault="raises"))
+        await _fail_cold(hub, _frame(_no_light_frame(), temp=-5.0))
+    finally:
+        light._SELF_REFERENCES.clear()
+
+    (line,) = _light_lines(bus_lines)
+    assert line.endswith("sensor -5.0 C (the camera said: imageready timeout)"), \
+        line
+
+
+@pytest.mark.parametrize("temp", [None, math.nan], ids=["none", "nan"])
+async def test_a_temperature_that_is_not_a_reading_prints_no_sensor_clause(
+        bus_lines, temp):
+    """No sensor temperature, or one that reads NaN, is no reading: the line
+    keeps the rest of the readout, says nothing about the sensor (never
+    "sensor nan C"), and the solve path gets its failure, not a crash.
+
+    RED under mutant "the sensor clause is always printed" (``if
+    math.isfinite(temp)`` in ``_readout`` made ``if True``), observed
+    verbatim:
+
+        E   AssertionError: failed solve, light check: median 251.0 ADU, ...; frame 12 s bin 2 gain 200 offset 30, sensor nan C
+        E   assert 'sensor' not in 'failed solv...sensor nan C'
+
+    (both ids: a missing temperature reads as NaN, and prints as one.)
+
+    RED under mutant "a missing temperature takes the whole readout with
+    it" (the ``except (TypeError, ValueError)`` around ``float(...)`` in
+    ``_readout`` narrowed to ``except ValueError``, so ``float(None)``
+    escapes to the outer guard), the ``none`` id only, observed verbatim:
+
+        E   AssertionError: failed solve, light check: median 251.0 ADU, ...; there is no connected camera to shoot the shortest-exposure frame that stands in for a bias
+        E   assert '; frame 12 s bin 2 gain 200 offset 30' in 'failed solve, light check: median 251.0 ADU, ...'
+    """
+    hub = type("H", (), {"master_library": _Library([])})()
+    e = await _fail_cold(hub, _frame(_no_light_frame(), temp=temp))
+    assert isinstance(e, light.FailedSolveError), e
+
+    (line,) = _light_lines(bus_lines)
+    assert "; frame 12 s bin 2 gain 200 offset 30" in line, line
+    assert "sensor" not in line, line
+    assert not [m for lv, m, src in bus_lines if lv == "warning"], bus_lines
+
+
+async def test_a_frame_the_readout_cannot_describe_still_gets_its_line(
+        bus_lines):
+    """A frame with no exposure to print. The level check fails on it first
+    (no verdict, as ``test_a_level_check_that_crashes_is_no_verdict`` holds),
+    and the line that explains the failure is written anyway, without a
+    readout: building it must never fail the solve path it explains.
+
+    RED under mutant "the readout can raise" (the ``try``/``except`` of
+    ``_readout`` removed), observed verbatim:
+
+        astrodeck/solve/light.py:1066: in failed_solve_error
+        E   TypeError: float() argument must be a string or a real number, not 'NoneType'
+    """
+    hub = type("H", (), {"master_library": _Library([])})()
+    frame = _frame(_no_light_frame(), seconds=None)
+    e = await _fail_cold(hub, frame)
+    assert isinstance(e, light.FailedSolveError), e
+    assert e.verdict.kind == light.UNKNOWN, e.verdict
+
+    (line,) = _light_lines(bus_lines)
+    assert "; frame" not in line, line
+
+
+# What each scenario must come out as, so that one that drifts into another
+# path (a master that stops matching, a band that moves) goes red here and not
+# quietly into a table that no longer covers the case it is named for.
+_ROUNDTRIP = {
+    "dark_master_no_light": (light.NO_LIGHT, light.DARK_MASTER),
+    "dark_master_cloud": (light.CLOUD, light.DARK_MASTER),
+    "bias_master_no_light": (light.NO_LIGHT, light.BIAS_MASTER),
+    "self_shot_no_light": (light.NO_LIGHT, light.SELF_SHOT),
+    "buffer_against_a_dark_master": (light.UNKNOWN, light.DARK_MASTER),
+    "narrowband_filter": (light.NARROWBAND, light.DARK_MASTER),
+    "no_reference": (light.UNKNOWN, None),
+    "self_shot_that_failed": (light.UNKNOWN, None),
+}
+
+
+def _close(a, b, tol: float) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    return abs(a - b) <= tol
+
+
+@pytest.mark.parametrize("scenario", list(_ROUNDTRIP))
+async def test_the_audit_reads_back_the_line_the_server_really_logs(
+        scenario, tmp_path, bus_lines):
+    """The audit's parser is handed the text ``failed_solve_error`` really
+    logged (never one typed by hand), for every verdict and every reference
+    the check can stand on, and must read back what the verdict object holds:
+    the kind, the median, the reference's level, ceiling and KIND (which the
+    line carries only as words), the band, and the frame's readout. So a
+    reworded evidence line, a reordered clause or a new reference's words
+    turns this red, not a night's audit into a column of dashes.
+
+    RED under mutant "the readout is dropped" (see the first case above),
+    for every scenario, observed verbatim:
+
+        E   AssertionError: Reading(kind='no_light', median=251.0, sigma=8.9, reference=250.0, ceiling=None, source='the dark master for these set...d=3.0, why='', exposure_s=None, binning=None, gain=None, offset=None, sensor_c=None, night='', ts=None, moonless=False)
+        E   assert (None, None, None, None) == (12.0, 2, 200, 30)
+
+    RED under mutant "the readout comes before the evidence" (the f-string's
+    ``_readout(frame)`` moved ahead of ``verdict.evidence()``), for every
+    scenario, observed verbatim:
+
+        E   AssertionError: the audit cannot read the logged line: 'failed solve, light check: ; frame 12 s bin 2 gain 200 offset 30, sensor -5.0 Cmedian 251.0 ADU, robust sigma 8.9 ADU per pixel; reference 250.0 ADU from the dark master for these settings (dark master dark_250); band +/-3.00 ADU; no_light'
+        E   assert None is not None
+
+    RED under mutant "the audit reads a dark master as a bias master" (the
+    ``("dark master", "dark_master")`` row of the audit's ``_SOURCE_KINDS``
+    changed to ``"bias_master"``), the four scenarios that stand on a dark
+    master, observed verbatim:
+
+        E   AssertionError: ('the dark master for these settings (dark master dark_250)', 'dark_master')
+        E   assert 'bias_master' == 'dark_master'
+    """
+    from test_no_light_self_reference import _Hub, _Sensor, _elsewhere
+    light._SELF_REFERENCES.clear()
+    temp = -5.0
+    data, nb = _no_light_frame(), None
+
+    def dark_master_hub():
+        return type("H", (), {"master_library": _Library([_write_master(
+            tmp_path, "DARK", 250.0, temp=temp)])})()
+
+    if scenario == "dark_master_no_light":
+        hub = dark_master_hub()
+    elif scenario == "dark_master_cloud":
+        hub, data = dark_master_hub(), _flat_sky_frame()
+    elif scenario == "bias_master_no_light":
+        hub = type("H", (), {"master_library": _Library([_write_master(
+            tmp_path, "BIAS", 240.0, temp=temp)])})()
+        data = _no_light_frame(level=240.0)
+    elif scenario == "self_shot_no_light":
+        hub = _Hub(_elsewhere(tmp_path), _Sensor(bias=240.0))
+        data = _no_light_frame(level=240.0)
+    elif scenario == "buffer_against_a_dark_master":
+        hub, data = dark_master_hub(), np.full(SHAPE, 250, np.uint16)
+    elif scenario == "narrowband_filter":
+        hub, nb = dark_master_hub(), "S"
+    elif scenario == "no_reference":
+        hub = type("H", (), {"master_library": _Library([])})()
+    else:
+        hub = _Hub(_elsewhere(tmp_path), _Sensor(fault="raises"))
+    frame = _frame(data, temp=temp)
+    try:
+        e = await light.failed_solve_error(
+            frame, SolveResult(False, message="Not enough stars."),
+            prefix="plate solve failed", hub=hub, narrowband_filter=nb)
+    finally:
+        light._SELF_REFERENCES.clear()
+
+    v = e.verdict
+    ref = v.reference
+    assert (v.kind, None if ref is None else ref.kind) == _ROUNDTRIP[scenario], \
+        f"the scenario no longer makes what it is named for: {v}"
+
+    (line,) = _light_lines(bus_lines)
+    got = no_light_audit.parse_line(line)
+    assert got is not None, f"the audit cannot read the logged line: {line!r}"
+    assert got.kind == v.kind
+    assert _close(got.median, v.median, 0.05), (got, v)
+    assert _close(got.sigma, v.pixel_sigma, 0.05), (got, v)
+    assert _close(got.band, v.band, 0.005), (got, v)
+    assert got.why == v.why, (got.why, v.why)
+    if ref is None:
+        assert got.reference is None and got.ref_kind is None, got
+    else:
+        assert _close(got.reference, ref.level, 0.05), (got, ref)
+        assert got.ref_kind == ref.kind, (got.source, ref.kind)
+        if ref.ceiling is None or math.isinf(ref.ceiling):
+            assert got.ceiling == ref.ceiling, (got.ceiling, ref.ceiling)
+        else:
+            assert _close(got.ceiling, ref.ceiling, 0.05), (got, ref)
+    assert (got.exposure_s, got.binning, got.gain, got.offset) == (
+        frame.exposure_s, frame.binning, frame.gain, frame.offset), got
+    assert got.sensor_c == temp, got
