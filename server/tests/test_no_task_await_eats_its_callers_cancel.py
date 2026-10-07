@@ -44,8 +44,8 @@ done -- ``_loop_rewait_exempt_line``, below), so ``_ALLOWLIST`` was empty.
 ``asyncio.gather(<tasks>)`` (``SessionReporter.flush`` is written that way), and
 its ``try`` spelling named only ``CancelledError``, not ``BaseException``. It
 now reads both, and the widened scan found one real swallow that the narrow one
-could not see (``Prefetch.settle``, now the one ``_ALLOWLIST`` entry, with its
-reason beside it).
+could not see (``Prefetch.settle``, which was the one ``_ALLOWLIST`` entry until
+#710 fixed it; ``_ALLOWLIST`` is empty again).
 
 Each test names the mutation it was shown RED under, run from a byte-for-byte
 backup of ``hub.py`` and restored byte-identical afterwards, with the observed
@@ -533,6 +533,20 @@ def _qualname_at(tree: ast.AST, lineno: int) -> str | None:
 #: instance appearing anywhere else still fails loudly. Keyed by (path
 #: relative to the package, the enclosing function's qualified name).
 #:
+#: EMPTY AGAIN (wave 14 integration, #710). It held one entry from WP-92 (#681)
+#: until the production fix: ``Prefetch.settle`` now waits through
+#: ``astrodeck.aio.reap`` (``test_w14_prefetch_settle_keeps_the_cancel.py``
+#: grades it), so its entry is removed, and the stale-entry check below would
+#: fail if it stayed. MUTANT "settle restored to the old ``except
+#: BaseException`` form" turns the scan red on the site itself, observed:
+#:
+#:     AssertionError: these await a task under suppress(CancelledError) or a
+#:     try/except that swallows it (#235, widened by #252), which eats a
+#:     cancel of their caller too; wait through astrodeck.aio.reap instead:
+#:     ['focus/pipeline.py:244']
+#:
+#: What the entry said:
+#:
 #: ONE ENTRY (WP-92, #681): ``Prefetch.settle`` in ``focus/pipeline.py``, which
 #: widening the scan to the ``BaseException`` spelling of the handler turned up.
 #: It is ``try: return await self.task / except BaseException: return None``, a
@@ -575,9 +589,7 @@ def _qualname_at(tree: ast.AST, lineno: int) -> str | None:
 #:   by switching to ``aio.reap``, so its entry here is removed rather than
 #:   kept -- it no longer matches anything, and the stale-entry check below
 #:   would fail if it stayed.
-_ALLOWLIST: set[tuple[str, str]] = {
-    ("focus/pipeline.py", "Prefetch.settle"),
-}
+_ALLOWLIST: set[tuple[str, str]] = set()
 
 
 #: The #235 shape as ``stop_guiding`` had it, the same with a bare

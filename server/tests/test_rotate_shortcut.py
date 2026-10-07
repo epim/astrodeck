@@ -73,9 +73,17 @@ RA, DEC = 5.0, 10.0
 def _mount_on_the_target(sim_hub):
     """Start the sim mount on the goto target, as test_rotation_unavailable.py
     does: every slew still happens, and nothing graded here depends on how far
-    the mount travelled."""
+    the mount travelled.
+
+    RE-PINNED FOR WP-88 (#145, wave 14 integration): the sim rotator's
+    coupling is declared known-good (``_rotation_trusted = True``, as
+    ``connect_sim`` already declares the sign), so the rotator preflight is a
+    no-op here. These cases grade the shortcut's three conditions, and the
+    first-hop self-test would leave the camera 20 degrees off and make every
+    one of them solve twice."""
     sim_hub.sim_rig.ra_hours = RA
     sim_hub.sim_rig.dec_deg = DEC
+    sim_hub._rotation_trusted = True
 
 
 #: A solve frame's name since #532: ``<kind>-<12 hex digits>.fits``.

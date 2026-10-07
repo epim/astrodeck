@@ -331,8 +331,16 @@ export interface FlowsActions {
    *  which must be of the graph on screen. The answer in hand is cleared first
    *  when the flush is about to replace the flow it describes. An answer for
    *  a flow that is no longer open, or that a newer read has superseded, is
-   *  dropped. Never rejects. */
-  flowsFetchTonight: () => Promise<void>;
+   *  dropped. Never rejects.
+   *
+   *  `{ flush: false }` is a PURE READ: it saves nothing and waits for no
+   *  compile, and it keeps the answer in hand, so it describes the flow as
+   *  last STORED. For a caller that wants one line from the stored flow and
+   *  is not Tonight (the Target modal's campaign line): a READ must not save
+   *  (WP-86 ruling), or opening a modal over an edited flow would PUT it and
+   *  raise the re-anchor toast outside any Tonight or RUN action. Defaults to
+   *  true, which is what Tonight and RUN's doors want. */
+  flowsFetchTonight: (options?: { flush?: boolean }) => Promise<void>;
   flowsFetchCalHealth: () => Promise<void>;
   /** Post the run with `flags` (none by default), AFTER saving the canvas:
    *  the run route runs the STORED flow, and a start that read it before the
@@ -1632,7 +1640,11 @@ export function createFlowsActions(
       }
     },
 
-    flowsFetchTonight: async () => {
+    flowsFetchTonight: async (options) => {
+      // `!== false`, not truthiness: a caller that hands this action straight
+      // to an event handler passes an event as `options`, and that must read
+      // as the default (flush), not as a request for a pure read.
+      const flush = options?.flush !== false;
       const start = get().flows;
       const id = start.record?.id;
       if (!id) return;
@@ -1644,8 +1656,9 @@ export function createFlowsActions(
         // PUT is out it is last round's story under this round's title: the
         // very symptom this flush exists for, for as long as a round trip
         // takes. An example's edits are never saved, so nothing replaces its
-        // flow and its answer stays.
-        ...(start.dirty && !start.record?.readonly ? { tonight: null } : {}),
+        // flow and its answer stays. A read that does not flush replaces
+        // nothing, so it keeps the answer too.
+        ...(flush && start.dirty && !start.record?.readonly ? { tonight: null } : {}),
       }));
       // STILL THIS READ'S TO WRITE? A newer read owns the flag and the answer;
       // a flow that was closed or replaced during the flush has no use for
@@ -1657,19 +1670,21 @@ export function createFlowsActions(
         return true;
       };
       try {
-        // SAVE THE CANVAS BEFORE THE ROUTE READS THE FLOW (#688): see
-        // `saveBeforeRead`. It never rejects.
-        await saveBeforeRead();
-        if (superseded()) return;
-        // AND PLAN IS A COMPILE OF THE CANVAS. `flowsSave`'s own compile is not
-        // awaited and has not landed when its PUT returns; a flow whose edit
-        // could not be saved (an Example, a refused PUT) never had one. So when
-        // the compile in hand is not for the graph on screen, ask for one and
-        // wait: the PLAN tab draws `compiled`, and last round's plan under this
-        // round's title is the report this fixes. A clean flow that is already
-        // compiled asks for nothing.
-        if (!compiledIsCurrent(get().flows)) await get().flowsCompile();
-        if (superseded()) return;
+        if (flush) {
+          // SAVE THE CANVAS BEFORE THE ROUTE READS THE FLOW (#688): see
+          // `saveBeforeRead`. It never rejects.
+          await saveBeforeRead();
+          if (superseded()) return;
+          // AND PLAN IS A COMPILE OF THE CANVAS. `flowsSave`'s own compile is
+          // not awaited and has not landed when its PUT returns; a flow whose
+          // edit could not be saved (an Example, a refused PUT) never had one.
+          // So when the compile in hand is not for the graph on screen, ask
+          // for one and wait: the PLAN tab draws `compiled`, and last round's
+          // plan under this round's title is the report this fixes. A clean
+          // flow that is already compiled asks for nothing.
+          if (!compiledIsCurrent(get().flows)) await get().flowsCompile();
+          if (superseded()) return;
+        }
         const tonight = await flowsApi.tonight(id);
         if (superseded()) return;
         set((s) => patch(s, { tonight, tonightLoading: false }));

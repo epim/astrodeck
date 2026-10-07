@@ -246,9 +246,10 @@ test("the rAF polyfill drops a frame requested after this file's own root unmoun
   // lateFrameFired is true here and this assertion throws "a frame scheduled
   // after unmount still fired".
   assert.ok(!lateFrameFired,
-    "a frame scheduled after root.unmount() still fired -- a leftover rAF "
-    + "loop kept going exactly like this would keep this file's own "
-    + "process.exit() waiting on a loaded CI runner (#614)");
+    "a frame scheduled after root.unmount() still fired -- the rAF polyfill "
+    + "must drop frames once this file's root is unmounted, or a leftover "
+    + "loop would run its callback against a tree that no longer exists "
+    + "(#614)");
 });
 
 // ------------------------------------------------------------------- report

@@ -452,7 +452,14 @@ async def test_a_move_the_camera_did_not_follow_is_named_before_the_abort(
         >       assert len(said) == 1, [m for _, m, _ in bus_lines]
         E       AssertionError: ['sky angle PA 90.8° from the rotate to PA solve (pier east); rotator calibrated: it read 137.5°, now 90.8° (offset 46...arget, error, commanded): [(1, 90.8, 85.1, 5.7, -5.7), (2, 90.8, 85.1, 5.7, -5.7)]); continuing without rotation', ...]
         E       assert 0 == 1
+
+    RE-PINNED FOR WP-88 (#145, wave 14 integration): the coupling is declared
+    known-good (``_rotation_trusted = True``; the sign is already declared by
+    ``connect_sim``), so the rotator preflight is a no-op. Without it the
+    preflight's four solves consume the scripted PAs this case sets, and the
+    loop under test sees a different sky than the one the case describes.
     """
+    sim_hub._rotation_trusted = True
     _rig_at(sim_hub, play=30.0, slack=15.0)
     sim_hub.sim_rig.ra_hours, sim_hub.sim_rig.dec_deg = 5.0, 10.0
 

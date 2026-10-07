@@ -239,7 +239,13 @@ def test_a_stored_zero_from_before_the_default_is_raised_once(tmp_path):
     assert cfg.standards.max_eccentricity == 0.65
     assert cfg.standards.min_stars == 40, "the migration touched a neighbour"
     on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["schema_version"] == CONFIG_SCHEMA == 2
+    # DELIBERATE PIN CHANGE (WP-95, #657, wave 14 integration): the stamp this
+    # migration persists is 3 now, not 2. WP-95 added a 2 -> 3 step
+    # (close_dome_when_done), so a file migrated from 1 passes through both
+    # and is written at the current schema. What this case grades is
+    # unchanged: the 1 -> 2 raise of the eccentricity ceiling still happens,
+    # once, and is persisted.
+    assert on_disk["schema_version"] == CONFIG_SCHEMA == 3
     assert on_disk["standards"]["max_eccentricity"] == 0.65, (
         "the raise has to be persisted, or every boot re-migrates for ever")
 

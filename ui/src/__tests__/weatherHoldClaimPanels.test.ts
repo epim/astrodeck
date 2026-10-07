@@ -1,11 +1,24 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
-// A FALSE CLAIM guard for the two remaining surfaces, sibling to
-// weatherHoldClaim.test.ts (App.tsx + SkyConditionsPanel.tsx).
+// A FALSE CLAIM guard for the surfaces weatherHoldClaim.test.ts does not read,
+// sibling to it (App.tsx + SkyConditionsPanel.tsx's high-cloud sentence).
 //
 // `ui/src/next/hubs/session/now/NowBanners.tsx` (WEATHER_VETO/WEATHER_OVERRIDE)
 // and `ui/src/components/sequence/SessionsPanel.tsx` (the matching per-session
-// warning spans) told the user two false things about auto-resume:
+// warning spans) told the user two false things about auto-resume, and
+// `ui/src/components/weather/SkyConditionsPanel.tsx`'s OVERRIDE CHIP said the
+// second one after the other two were fixed (#708, wave 14 integration; the
+// panel's high-cloud sentence was already graded by the sibling test, its chip
+// was graded by nothing):
+//
+// MUTANT "the override chip says ignore clouds" (SkyConditionsPanel.tsx's chip
+// put back to "weather override active - resume will ignore clouds tonight",
+// run from a byte backup and restored byte-identical), observed, 10/12 passed:
+//   x SkyConditionsPanel.tsx: does not claim the override lifts a cloud hold:
+//     the override never touched cloud - cloud was never vetoing, so "ignore
+//     weather tonight" cannot be described as lifting a cloud hold
+//   x SkyConditionsPanel.tsx: says what actually decides, in the shipped
+//     wording: the corrected sentence is not on this surface.
 //
 //   1. that a high-cloud FORECAST holds the resume ("auto-resume will hold
 //      unless overridden")
@@ -59,12 +72,21 @@ const VETO_CLAIM =
 const OVERRIDE_CLAIM =
   "forecast rain will not hold auto-resume until the next dusk (cloud forecasts never do)";
 
-const SURFACES: [string, string][] = [
-  ["NowBanners.tsx", "../next/hubs/session/now/NowBanners.tsx"],
-  ["SessionsPanel.tsx", "../components/sequence/SessionsPanel.tsx"],
+/** [name, path, the shipped sentences this surface must carry]. The veto
+ *  sentence is NowBanners's and SessionsPanel's; SkyConditionsPanel's own
+ *  high-cloud sentence is the one App.tsx carries, which
+ *  weatherHoldClaim.test.ts grades, so only its override chip is graded for
+ *  the shipped wording here. */
+const SURFACES: [string, string, string[]][] = [
+  ["NowBanners.tsx", "../next/hubs/session/now/NowBanners.tsx",
+    [VETO_CLAIM, OVERRIDE_CLAIM]],
+  ["SessionsPanel.tsx", "../components/sequence/SessionsPanel.tsx",
+    [VETO_CLAIM, OVERRIDE_CLAIM]],
+  ["SkyConditionsPanel.tsx", "../components/weather/SkyConditionsPanel.tsx",
+    [OVERRIDE_CLAIM]],
 ];
 
-for (const [what, rel] of SURFACES) {
+for (const [what, rel, claims] of SURFACES) {
   const text = renderedText(rel);
 
   test(`${what}: does not claim a cloud forecast holds an auto-resume`, () => {
@@ -82,10 +104,10 @@ for (const [what, rel] of SURFACES) {
   });
 
   test(`${what}: says what actually decides, in the shipped wording`, () => {
-    assert(text.toLowerCase().includes(VETO_CLAIM),
-      `the corrected veto sentence is not on this surface. Expected to find:\n  ${VETO_CLAIM}`);
-    assert(text.toLowerCase().includes(OVERRIDE_CLAIM),
-      `the corrected override sentence is not on this surface. Expected to find:\n  ${OVERRIDE_CLAIM}`);
+    for (const claim of claims) {
+      assert(text.toLowerCase().includes(claim),
+        `the corrected sentence is not on this surface. Expected to find:\n  ${claim}`);
+    }
   });
 
   test(`${what}: still names the forecast it is reporting`, () => {

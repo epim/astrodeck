@@ -1199,11 +1199,12 @@ def plan_extras(compiled: dict) -> dict:
     # `test_the_preview_cannot_promise_what_the_plan_drops` binds the two
     # together, so the next edit to either has to move both.
     out: dict = {"park_when_done": True, "warm_cooler_when_done": True}
-    # #195: DUSK WINDOW's "Single night" vs the other `repeat` choices,
-    # carried through to `SequencePlan.resume_across_nights` - but ONLY when
-    # `compile_plan` wrote it, which it does only for "Single night"
-    # (compile.py keeps the key absent when True, the same convention as
-    # `campaign`). Writing `True` here unconditionally would add a key to
+    # #195: DUSK WINDOW's Automatic resume option, carried through to
+    # `SequencePlan.resume_across_nights` - but ONLY when `compile_plan`
+    # wrote it, which it does only for an explicit Off (compile.py keeps the
+    # key absent when True, the same convention as `campaign`; `repeat`'s
+    # own default, "Single night", is NOT an Off). Writing `True` here
+    # unconditionally would add a key to
     # EVERY plan this function has ever built, breaking every byte-identical
     # and exact-key-set fixture that pins `plan_extras` or a compiled plan's
     # shape; the model's own default (True) already covers every caller that

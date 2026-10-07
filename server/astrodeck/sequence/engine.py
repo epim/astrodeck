@@ -3422,10 +3422,28 @@ class SequenceEngine:
         Counts are CAMPAIGN-wide, not tonight's: ``_frames_done`` is seeded from
         the ledger on a resume, so night two of a 175-frame plan honestly reads
         "150 of 175" rather than starting over at zero.
+
+        THE LAST CLAUSE READS THE PLAN (#195, WP-85, wave 14 integration). A
+        flow whose DUSK WINDOW has Automatic resume Off is disarmed by
+        `_finalize_report` at exactly the two endings this phrase ends
+        (`dawn_cutoff` and `incomplete`), and that method logs "CONTINUE it
+        by hand" a moment later, so a phrase that always said "stays armed
+        and resumes when the window opens" told the operator the opposite
+        of what the next line did. It reads the same plan `_finalize_report`
+        reads (the session's frozen one, else the engine's), so the two
+        cannot disagree. With nothing owed an Off flow has nothing to
+        continue by hand, so the clause is left out rather than said falsely.
         """
         total = self.plan.total_frames() if self.plan else 0
-        return (f"{self._frames_done} of {total} frames, {owed} remaining — "
-                f"the session stays armed and resumes when the window opens")
+        head = f"{self._frames_done} of {total} frames, {owed} remaining"
+        plan = getattr(self._session, "plan", None) or self.plan
+        if plan is not None and not plan.resume_across_nights:
+            if not owed:
+                return head
+            return (f"{head} — the session will not resume on a later "
+                    f"night (automatic resume is off for this flow); "
+                    f"CONTINUE it by hand to shoot the rest")
+        return f"{head} — the session stays armed and resumes when the window opens"
 
     async def _run_scheduled(self, plan: SequencePlan) -> None:
         """Window-sorted skip-ahead scheduler (§1.9-C).
@@ -7334,14 +7352,26 @@ class SequenceEngine:
         the hub warn on every acquisition that a rotation was asked for,
         about a target nobody asked to rotate. A planned angle is commanded
         whatever the rig, as it always was: the hub says when no rotator
-        answered, and that is the operator's own request going unmet."""
+        answered, and that is the operator's own request going unmet.
+
+        NOTHING IS COMMANDED ONCE ROTATION IS OFF FOR THE NIGHT (D-05, #648):
+        when the self-test has measured the camera not following the rotator
+        (`_rotation_off_tonight`) the hub refuses every rotate, so asking
+        would only be refused, at the setup, the flip, and every re-centre
+        a recovery makes. This is the one choke point every acquisition and
+        every re-centre reads, so the angle is withheld here and not in
+        each caller; the first time one is withheld the night says so
+        (`_say_rotation_off`). A target that asked for no angle has nothing
+        to withhold and says nothing."""
         planned = getattr(target, "rotation_deg", None)
-        if planned is not None:
-            return planned
-        lock = self._lock_in_force(target)
-        if lock is None or not self._rotator_connected():
+        if planned is None:
+            lock = self._lock_in_force(target)
+            if lock is not None and self._rotator_connected():
+                planned = float(lock["pa_deg"])
+        if planned is not None and self._rotation_off_tonight():
+            self._say_rotation_off()
             return None
-        return float(lock["pa_deg"])
+        return planned
 
     # ---- D-05, the engine half (#648): the nightly rotator self-test, and a
     # fixed angle once rotation is off -------------------------------------
@@ -8090,19 +8120,17 @@ class SequenceEngine:
         # unframed target locked on its first shot (ruling 9). None when
         # there is neither, which is exactly the call every earlier plan made.
         rotation = self._commanded_rotation(target)
-        # D-05 (#648): ROTATION OFF FOR THE NIGHT. Once the self-test has
-        # measured the camera not following the rotator, the hub refuses
-        # every rotate, so no angle is requested: asking would be refused
-        # at every hop, and `_group_hop_checks` would turn each refusal into
-        # a deferral of every panel for the rest of the night, which is the
-        # opposite of D-05's "panels are shot at a fixed angle". The group
-        # is then judged by the fixed-camera rules in `_group_angle_check`.
-        # Every spelling of the angle below (the centred goto, the no-light
-        # hold's retries, the uncentred slew's "asked for" line) reads this
-        # one local, so it is withheld here and nowhere else.
-        if rotation is not None and self._rotation_off_tonight():
-            self._say_rotation_off()
-            rotation = None
+        # D-05 (#648): ROTATION OFF FOR THE NIGHT is decided by
+        # `_commanded_rotation` above, the one choke point: once the
+        # self-test has measured the camera not following the rotator it
+        # returns None (and says so once), so no angle is requested. Asking
+        # would be refused at every hop, and `_group_hop_checks` would turn
+        # each refusal into a deferral of every panel for the rest of the
+        # night, which is the opposite of D-05's "panels are shot at a fixed
+        # angle". The group is then judged by the fixed-camera rules in
+        # `_group_angle_check`. Every spelling of the angle below (the
+        # centred goto, the no-light hold's retries, the uncentred slew's
+        # "asked for" line) reads this one local.
         # A new acquisition: whatever the last one was still waiting to lock
         # belongs to it, not to this one.
         self._angle_lock_pending = None
@@ -14435,7 +14463,7 @@ class SequenceEngine:
             # The target's own tolerance and attempts: this is the centring
             # the first frame is shot at (`_centring_kwargs`, #170).
             await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                           rotation_deg=target.rotation_deg,
+                                           rotation_deg=self._commanded_rotation(target),
                                            **self._centring_kwargs(target))
         except Exception as e:          # noqa: BLE001
             # Non-fatal by design (same as the recovery and re-lock re-centres):
@@ -14691,7 +14719,7 @@ class SequenceEngine:
             try:
                 self._set_state(detail="re-centring after guiding loss")
                 await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=target.rotation_deg,
+                                               rotation_deg=self._commanded_rotation(target),
                                                **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design: a failed re-centre leaves the mount where
@@ -14883,7 +14911,7 @@ class SequenceEngine:
             try:
                 self._set_state(detail="re-centring: the guided field walked")
                 await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=target.rotation_deg,
+                                               rotation_deg=self._commanded_rotation(target),
                                                **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design (same as recovery): a failed re-centre

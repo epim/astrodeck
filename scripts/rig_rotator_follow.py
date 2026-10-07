@@ -412,7 +412,11 @@ def run(out_path: str) -> int:
         print("interrupted: the rotator was halted")
         return 2
     except (Unmeasured, TimeoutError, OSError, urllib.error.HTTPError,
-            ValueError, KeyError) as exc:
+            ValueError, KeyError, TypeError) as exc:
+        # TypeError: a status poll that dropped the rotator block (the hub's
+        # poll_status swallows its own errors) leaves ``float(None)`` for the
+        # mechanical angle. That is a measurement that did not happen, the
+        # same as a failed solve, not a crash with a traceback.
         rig.halt()
         print(f"could not measure: {type(exc).__name__}: {exc}")
         return 2
