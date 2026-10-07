@@ -619,7 +619,12 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "adu", label: "ADU target", control: "text" },
       { key: "count", label: "Count per filter", control: "text" },
     ],
-    desc: "Holds the flow until the twilight window (sun altitude band), then shoots the flat set - translucent lens cap, panel, or twilight sky - solving exposure to the ADU target per filter before darkness is wasted on it.",
+    // LEADS WITH WHAT THE ENGINE DOES TODAY (#192, #603 job A): no stage runs
+    // this block, so the first sentence says so and the intended behaviour
+    // follows in the conditional. The server's `to_plan.DUSK_FLATS_WIRED` is the
+    // one switch; this string cannot read it, so `test_w15_dusk_flats_claim.py`
+    // reads this text and fails the day the switch is flipped without it.
+    desc: "Not run yet: the engine has no dusk-flats stage, so this block takes no flats. When wired it will hold the flow until the twilight window (sun altitude band), then shoot the flat set - translucent lens cap, panel, or twilight sky - solving exposure to the ADU target per filter before darkness is wasted on it.",
     // `window` is NOT lowercased: it starts with "Sun", a proper noun here.
     sum: (p) => low(p.method) + " · " + txt(p.window) + " · ×" + txt(p.count),
   },
