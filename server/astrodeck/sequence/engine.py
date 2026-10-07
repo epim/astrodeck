@@ -713,6 +713,15 @@ def _frame_altitude(target, site: dict, when: float) -> float | None:
 #: hours the same night.
 _MAX_GUIDING_RECOVERIES = 2
 
+#: The longest exposure of the sky reading taken before a guiding recovery
+#: (#621, `_sky_closed_before_recovery`), seconds. The interrupted step's own
+#: exposure, capped here: a narrowband science exposure is three minutes or
+#: more and the reading is one unsaved frame the recovery waits behind. Not
+#: shorter, because `cloud_score`'s star-density thresholds were tuned on
+#: science-length frames, and a frame of a few seconds reads clear or cloudy
+#: on how many stars it could reach rather than on the sky.
+SKY_PRECHECK_MAX_S = 60.0
+
 
 class SafetyAbort(DeviceError):
     """Raised by the safety gate / mount-floor guard to tear the run down through
@@ -14436,6 +14445,134 @@ class SequenceEngine:
                     f"({e}); starting guiding at the current pointing",
                     "sequence")
 
+    async def _sky_closed_before_recovery(self, target, *, why: str,
+                                          after_failure: bool = False) -> bool:
+        """Read the sky before a guiding recovery spends anything on a guider
+        that may simply have lost its star to cloud (#621). True only when it
+        judged the sky cloudy and has already held for it, to the hold's
+        release; the caller then returns without recovering.
+
+        MEASURED, astrotown 2026-10-01 (night 2026-09-30, NGC 7331, 0.3.38).
+        Cloud closed in at 03:35 and for eighteen minutes the guiding-loss
+        ladder never asked whether the sky had: it diagnosed "the field is
+        walking", re-centred, recalibrated ("the last 14 frame(s) found no
+        star"), spent both recovery attempts and a calibration walk against
+        cloud, and kept shooting narrowband subs, until an L frame's verdict
+        entered the cloud hold at 03:53. A guide camera that held a star
+        minutes ago and now finds none is cloud far more often than a walking
+        field.
+
+        THE READING is one UNSAVED frame at the interrupted step's gain,
+        offset and binning, for at most ``SKY_PRECHECK_MAX_S``, through the
+        plate-solve slot: the hub's own borrow and return, symmetric, so the
+        engine's focuser-offset bookkeeping sees no change. Not through the
+        interrupted filter: narrowband subs are star-poor, which is why only
+        an L frame raised the verdict that night. It is
+        never fed to ``_observe_clouds``: a different filter pollutes the
+        debounced vote the science frames build (`_probe_step`).
+
+        UNKNOWN IS NOT A REASON TO BLOCK RECOVERY, so a frame that fails, or
+        that nobody could judge (a stretched frame, a blackout slot), or that
+        could only be shot through a narrowband filter because the wheel has
+        no broadband slot to borrow, returns False. A capture that TIMES OUT
+        is the exception, as it is everywhere else: a wedged camera leaves as
+        the SafetyAbort it always was.
+
+        IT STANDS ASIDE, returning False at once, as the two existing
+        frame-verdict fallbacks do (`_no_safety_source`,
+        `_monitor_lacks_cloud_source`): with no target or a calibration
+        target (nothing to hold for), while a hold is already running (one
+        hold owns the sky at a time), on a simulator (a simulated frame
+        carries no stars and always reads cloudy), when the operator turned
+        ``safety.sky_fallback_hold`` off, and with no step to copy a probe
+        from.
+
+        THE GAP. At most one reading per ``CLOUD_PROBE_EVERY_S``, so a loss
+        and recovery cycle cannot spend a minute of exposure on every frame
+        boundary (an attempts-spent stand-down asks again on each). The two
+        failure tails pass ``after_failure``: a recalibration that has just
+        found no star IS new evidence about the sky, and the attempts that
+        lead to it bound how often that happens, so those re-asks are not
+        held to the gap.
+
+        Sets ``_pre_recovery_blind`` for the caller's wording: True only when
+        a reading was ATTEMPTED and found no stars to measure, so
+        `_hold_recentre_recalibrate` does not call a field "walking" on a
+        frame that could not show one. False when no reading was asked of the
+        sky (nothing contradicts the detector's own claim) or the frame found
+        stars."""
+        self._pre_recovery_blind = False
+        cfg = self._cfg
+        if (target is None or getattr(target, "calibration", False)
+                or self._holding_for_clear
+                or getattr(self.hub, "mode", "") == "sim"
+                or cfg is None
+                or not getattr(cfg.safety, "sky_fallback_hold", False)):
+            return False
+        step = self._hold_step
+        if step is None:
+            return False
+        last = getattr(self, "_sky_precheck_at", None)
+        if (not after_failure and last is not None
+                and time.monotonic() - last < CLOUD_PROBE_EVERY_S):
+            return False
+        probe_step = step.model_copy(update={
+            "filter": None, "frame_type": "Light",
+            "exposure_s": min(float(step.exposure_s), SKY_PRECHECK_MAX_S)})
+        slot = await self.hub._borrow_wheel_for_solve()
+        try:
+            through = await self.hub._narrowband_filter_loaded()
+            if through is not None:
+                bus.log("info",
+                        f"{why}: the sky was not read, because the wheel has "
+                        f"no broadband slot to borrow and a frame through "
+                        f"{through!r} is blind; recovering without it",
+                        "sequence")
+                self._pre_recovery_blind = True
+                return False
+            info = await self._capture(probe_step, target, save=False)
+        except SafetyAbort:
+            raise
+        except Exception as e:                    # noqa: BLE001 - reported
+            bus.log("warning",
+                    f"{why}: the sky could not be read ({e}); recovering "
+                    f"without it", "sequence")
+            self._pre_recovery_blind = True
+            return False
+        finally:
+            await self.hub._return_wheel_after_solve(slot)
+            # Stamped when the reading ENDS, success or not: the gap is idle
+            # time between readings, and a camera that keeps failing is not
+            # asked again on every frame boundary.
+            self._sky_precheck_at = time.monotonic()
+        info = info if isinstance(info, dict) else {}
+        got = verdict_from_info(info)
+        if got is None:
+            bus.log("warning",
+                    f"{why}: the frame taken to read the sky could not be "
+                    f"judged; recovering without it", "sequence")
+            self._pre_recovery_blind = True
+            return False
+        cloudy, _score, reason = got
+        if not cloudy:
+            stars = info.get("stars")
+            self._pre_recovery_blind = not (
+                isinstance(stars, (int, float)) and stars > 0)
+            # The detector's reason already opens with its own verdict
+            # ("clear (200 bright stars, 17x noise)"), so it is not wrapped
+            # in a second "clear (...)".
+            said = (reason if reason.lower().startswith("clear")
+                    else f"clear ({reason})" if reason else "clear")
+            bus.log("info",
+                    f"{why}: the sky reads {said}; recovering guiding",
+                    "sequence")
+            return False
+        await self._hold_for_clear(
+            f"{why}, and a fresh frame through a broadband filter says the "
+            f"sky has closed in" + (f" ({reason})" if reason else "")
+            + ", so no recovery attempt is spent on cloud", target)
+        return True
+
     async def _maybe_recover_guiding(self, target=None) -> None:
         if not (self.plan.guide and self._policy.recover_guiding):
             return
@@ -14446,6 +14583,16 @@ class SequenceEngine:
             if await g.is_active():
                 return
         except Exception:
+            return
+        # THE SKY BEFORE ANYTHING IS SPENT (#621), and before the bound below
+        # as well as before the attempt is charged: a lost star under cloud
+        # is not an attempt, and with the attempts already spent the bound's
+        # answer is the operator's `guiding_action`, which under abort ends
+        # the NIGHT over weather. A cloudy reading holds for clear sky
+        # instead, whose release re-acquires the target and restarts the
+        # guider.
+        if await self._sky_closed_before_recovery(
+                target, why="guiding was lost"):
             return
         # BOUNDED (#72). Unbounded, this re-centred and recalibrated once per
         # frame loop for as long as the star stayed lost: on 2026-09-19 that
@@ -14558,6 +14705,18 @@ class SequenceEngine:
             await g.start_guiding()
         except Exception as e:
             bus.log("warning", f"guiding recovery failed: {e}", "sequence")
+            # A CALIBRATION THAT FOUND NO STAR is the one thing the reading
+            # above could not have seen: the sky may have closed since (#621:
+            # "the last 14 frame(s) found no star" was cloud). Asked again,
+            # so recovery 2/2 is not spent against it, and when it HAS closed
+            # the attempt this one spent against cloud is given back: a
+            # cloudy sky charges no attempt, before or after the fact. The
+            # hold is bounded and ends on a clear streak, so this cannot
+            # re-arm the #72 bound on a sky that is not shut.
+            if await self._sky_closed_before_recovery(
+                    target, why="guiding recovery failed",
+                    after_failure=True):
+                self._guiding_recoveries = max(0, self._guiding_recoveries - 1)
             return
         # ...and do not hand control back until the guider has stopped pulsing.
         await self._await_guider_quiet("the next frame")
@@ -14662,14 +14821,39 @@ class SequenceEngine:
         step is best-effort and non-fatal in the same way recovery is: a failed
         re-centre leaves the mount where it already was, which is strictly
         better than abandoning the run over it.
+
+        The sky is read first (`_sky_closed_before_recovery`, #621): neither
+        detector can tell a walking field from a closed sky, so under cloud
+        this is the cloud hold and nothing below runs, and a calibration that
+        then finds no star asks the sky once more before giving up.
         """
         g = self.hub.guider
         if not g or not g.connected:
             return
-        bus.log("warning",
-                f"{why}: the field is walking; holding to re-centre and "
-                f"recalibrate", "sequence")
-        self._set_state(detail="holding: the guided field is walking")
+        # THE SKY BEFORE THE FIELD (#621). Both detectors are blind to cloud:
+        # a guide loop that cannot see its star fails its settles and re-locks
+        # exactly as a walking field's does, and a recalibration against a
+        # closed sky finds no star and throws a good calibration away. A
+        # cloudy reading holds for clear sky instead and returns here before
+        # anything below is touched.
+        if await self._sky_closed_before_recovery(target, why=why):
+            return
+        # "WALKING" IS A DIAGNOSIS OF DISPLACED STARS, so it is not said on a
+        # reading that found none to measure (#621: a field the guide camera
+        # could not see a star in was called walking for eighteen minutes). The
+        # hold goes ahead either way, as the detector asked; only the claim
+        # changes. With no reading asked of the sky (a simulator, the switch
+        # off) the detector's own claim stands.
+        if getattr(self, "_pre_recovery_blind", False):
+            bus.log("warning",
+                    f"{why}: guiding is not holding and the sky could not say "
+                    f"why; holding to re-centre and recalibrate", "sequence")
+            self._set_state(detail="holding: guiding is not holding")
+        else:
+            bus.log("warning",
+                    f"{why}: the field is walking; holding to re-centre and "
+                    f"recalibrate", "sequence")
+            self._set_state(detail="holding: the guided field is walking")
 
         try:
             await g.stop_guiding()
@@ -14713,6 +14897,12 @@ class SequenceEngine:
             bus.log("warning",
                     f"guiding restart after the hold failed: {e}",
                     "sequence")
+            # The calibration found no star: ask the sky once more, as
+            # `_maybe_recover_guiding`'s tail does, so the next attempt is
+            # not spent against cloud that closed while this one ran (#621).
+            await self._sky_closed_before_recovery(
+                target, why="guiding restart after the hold failed",
+                after_failure=True)
             return
         # The hold is what those failures bought, so the counter starts again
         # from here; leaving it set would hold on every frame afterwards.
