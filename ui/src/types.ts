@@ -455,6 +455,15 @@ export interface RotatorStatus {
   synced: boolean;
   can_reverse: boolean;
   reverse: boolean;
+  /** d(sky PA)/d(mechanical) as MEASURED on this rig this connect: 1 together,
+   *  -1 opposite, null when nothing has measured it yet (#145). Optional so an
+   *  older server, which never sent it, reads as "not measured". */
+  sky_sign?: 1 | -1 | null;
+  /** Whether the rotator's self-test found the camera follows it: true passed,
+   *  false failed (rotation is off until the rig reconnects), null not run yet
+   *  (#594). Null is not false: not measured and measured-and-failed are
+   *  different sentences. */
+  trusted?: boolean | null;
 }
 
 export interface DiskInfo {

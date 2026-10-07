@@ -33,6 +33,43 @@ export const DEFAULT_ROTATOR_CFG: RotatorConfig = {
 
 const RANGE_OPTIONS = ["full", "half", "quarter"] as const;
 
+// TEST ROTATOR (#145, #594). The copy is the next-UI panel's own
+// (`next/hubs/rig/rotator/RotatorPanel.tsx`), kept as a second copy rather
+// than imported: this card serves `#/classic`, and importing across the
+// legacy/next line drags one bundle into the other. The sentences are the same
+// bar the button's name, which is in this card's sentence case; each side has a
+// test that pins its own.
+const PREFLIGHT_NOTE =
+  "Test rotator turns the rotator about 22 degrees and takes four plate solves: "
+  + "two to learn which way the sky angle runs against the mechanical angle, two "
+  + "to check the camera follows a 20 degree step. It measures only what this "
+  + "connection has not measured yet.";
+
+const PREFLIGHT_DONE_NOTE =
+  "this connection has already measured the rotator; it measures again after "
+  + "the rig reconnects.";
+
+// What the rig knows about this rotator, in one line. null/undefined (an older
+// server) read as "not measured", which is not "failed".
+function preflightLine(
+  rot: { sky_sign?: 1 | -1 | null; trusted?: boolean | null },
+): { text: string; failed: boolean } {
+  if (rot.trusted === false) {
+    return {
+      text: "FAILED: the camera did not follow a 20 degree step, so rotation "
+        + "is off until the rig reconnects",
+      failed: true,
+    };
+  }
+  const sign = rot.sky_sign === 1 || rot.sky_sign === -1
+    ? `sign ${rot.sky_sign === 1 ? "+1" : "-1"} measured`
+    : "sign not measured";
+  const follow = rot.trusted === true
+    ? "follow test passed: the camera turned with a 20 degree step"
+    : "follow test not run";
+  return { text: `${sign}, ${follow}`, failed: false };
+}
+
 // Number("") is 0 (finite), which would silently read a blank field as a real
 // 0° — route every raw-text->number conversion through this instead (SitePanel
 // toNum precedent) so a blank field parses to NaN and is rejected at submit.
@@ -103,6 +140,9 @@ export default function RotatorCard(): JSX.Element | null {
   const parsedAngle = Number(angle);
   const angleOk = angle.trim() !== "" && Number.isFinite(parsedAngle);
   const hint = angleOk ? adjustedPa(parsedAngle, rot, draft) : null;
+  const preflight = preflightLine(rot);
+  const preflightKnown = (rot.sky_sign === 1 || rot.sky_sign === -1)
+    && (rot.trusted === true || rot.trusted === false);
 
   // --- dial geometry ---
   const size = 120, cx = 60, cy = 60, R = 48;
@@ -203,6 +243,17 @@ export default function RotatorCard(): JSX.Element | null {
                     onClick={() => void run(() => api.post("/api/rotator/sync-to-sky", {}))}>
               Sync to sky (no movement)
             </button>
+            {/* Measures the sign and checks the camera follows the rotator
+                (#145, #594). Nothing in the product called those two
+                measurements, so every automated rotation was refused as "sign
+                not learned" until someone ran them by hand. Locked once both
+                are known: a second press would change nothing. */}
+            <button className="btn min-h-9" data-rotator-preflight
+                    disabled={busy || !canMove || preflightKnown}
+                    title={preflightKnown ? PREFLIGHT_DONE_NOTE : PREFLIGHT_NOTE}
+                    onClick={() => void run(() => api.post("/api/rotator/preflight", {}))}>
+              Test rotator
+            </button>
             {rot.can_reverse && (
               <label className="flex items-center gap-1.5 text-[11px] text-dim">
                 <input type="checkbox" checked={rot.reverse} disabled={busy || !canMove}
@@ -212,6 +263,11 @@ export default function RotatorCard(): JSX.Element | null {
               </label>
             )}
           </div>
+          <p className={`text-[11px] leading-snug ${preflight.failed ? "text-bad" : "text-dim"}`}
+             data-rotator-preflight-line>
+            {preflight.text}
+          </p>
+          <p className="text-[11px] text-faint leading-snug">{PREFLIGHT_NOTE}</p>
           {!canMove && (
             <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
               <Icon name="lock" size={11} />

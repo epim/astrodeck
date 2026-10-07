@@ -75,6 +75,49 @@ const SYNC_NOTE =
   "SYNC TO SKY plate-solves and tells the rotator its sky angle. It does not "
   + "turn the camera; ROTATE TO PA does, and then solves again to check.";
 
+/** What TEST ROTATOR does, said where it is pressed (#145, #594). It turns the
+ *  rotator and exposes, so the cost is in the sentence: about 22 degrees of
+ *  travel (a 2 degree step to learn the sign, a 20 degree step to check the
+ *  camera follows) and four plate solves, two for each. Pressing it again
+ *  changes nothing until the rig reconnects, so it says that too. */
+const PREFLIGHT_NOTE =
+  "TEST ROTATOR turns the rotator about 22 degrees and takes four plate solves: "
+  + "two to learn which way the sky angle runs against the mechanical angle, two "
+  + "to check the camera follows a 20 degree step. It measures only what this "
+  + "connection has not measured yet.";
+
+/** Why TEST ROTATOR has nothing to do. Both halves are known, and a failed
+ *  follow test stays failed on purpose until the rig reconnects. */
+const PREFLIGHT_DONE_NOTE =
+  "this connection has already measured the rotator; it measures again after "
+  + "the rig reconnects.";
+
+/** The one line of what the rig knows about this rotator: whether the sky
+ *  angle's sign has been measured, and whether the camera was seen to follow a
+ *  step. `null` and `undefined` (an older server) both read as "not measured",
+ *  and neither is "failed": a rotator nobody has tested is not a rotator that
+ *  failed. The legacy `RotatorCard.tsx` carries its own copy of this function
+ *  (importing across the legacy/next line drags one bundle into the other),
+ *  and both tests pin the same sentences. */
+export function rotatorPreflightLine(
+  rot: Pick<RotatorStatus, "sky_sign" | "trusted">,
+): { text: string; failed: boolean } {
+  if (rot.trusted === false) {
+    return {
+      text: "FAILED: the camera did not follow a 20 degree step, so rotation "
+        + "is off until the rig reconnects",
+      failed: true,
+    };
+  }
+  const sign = rot.sky_sign === 1 || rot.sky_sign === -1
+    ? `sign ${rot.sky_sign === 1 ? "+1" : "-1"} measured`
+    : "sign not measured";
+  const follow = rot.trusted === true
+    ? "follow test passed: the camera turned with a 20 degree step"
+    : "follow test not run";
+  return { text: `${sign}, ${follow}`, failed: false };
+}
+
 /** Which readout tile the one dial is pointed at (hub-rig.md 0.3). Local
  *  React state, never persisted - it is a view, not rig data. */
 type DialTile = "pa" | "tolerance";
@@ -180,6 +223,13 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
     ?? lockNote(solveLane.lockedReason, MOTION_LOCK_NOTE)
     ?? inFlight;
   const goReason = moveReason ?? (paOk ? null : NO_TARGET_NOTE);
+  // TEST ROTATOR exposes and turns, on the same lane and the same camera as the
+  // two solving buttons, so it takes their lock; and it is locked, with the
+  // reason, once both halves are known - a press would change nothing.
+  const preflight = rotatorPreflightLine(rot);
+  const preflightKnown = (rot.sky_sign === 1 || rot.sky_sign === -1)
+    && (rot.trusted === true || rot.trusted === false);
+  const preflightReason = solveReason ?? (preflightKnown ? PREFLIGHT_DONE_NOTE : null);
   const romReason = configNote ?? inFlight;
   const startReason = romReason ?? (draft.range_type === "full" ? FULL_RANGE_NOTE : null);
 
@@ -358,8 +408,25 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
           >
             SYNC TO SKY (NO MOVEMENT)
           </ActionButton>
+          <ActionButton
+            kind="secondary"
+            onPress={() => void run("preflight", () => api.post("/api/rotator/preflight", {}))}
+            busy={pending === "preflight"}
+            lockedReason={preflightReason}
+            onExplain={explain}
+            data-testid="rotator-preflight"
+          >
+            TEST ROTATOR
+          </ActionButton>
         </div>
         <p className="nx-rot-note" data-testid="rotator-sync-note">{SYNC_NOTE}</p>
+        <p
+          className={preflight.failed ? "nx-rot-err" : "nx-rot-note"}
+          data-testid="rotator-preflight-line"
+        >
+          {preflight.text}
+        </p>
+        <p className="nx-rot-note" data-testid="rotator-preflight-note">{PREFLIGHT_NOTE}</p>
 
         {/* Only when the device says it can. A reverse switch on a rotator that
             cannot reverse is a control with a promise nothing keeps. */}
