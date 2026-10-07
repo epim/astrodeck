@@ -169,7 +169,7 @@ export const FILTER_OFFSET_NOTE =
 export const FOCUS_FRAME_NOTE =
   "Single and Loop shoot at the exposure, gain and binning in AUTOFOCUS "
   + "SETTINGS below - the same three numbers the sweep copies. Focus frames are "
-  + "not saved to the library; they land on the live stage on Rig - Capture, "
+  + "not saved to the library; they appear in the live preview on Rig - Capture, "
   + "where a tap opens the frame for a closer look.";
 
 export const LOOP_RUNNING_REASON = "A capture loop is running - press STOP first";

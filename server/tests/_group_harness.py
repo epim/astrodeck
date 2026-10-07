@@ -136,6 +136,7 @@ import heapq
 import itertools
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -363,6 +364,12 @@ async def night_hub(monkeypatch) -> tuple[Hub, list]:
     monkeypatch.setattr(SimTelescope, "SLEW_RATE_DEG_S", 1.0e6)
     h = Hub()
     await h.connect_sim()
+    # The sim rotator's coupling is known-good, as connect_sim already
+    # declares the sign. Without this the engine's nightly rotator
+    # self-test (#648) would run at the first rotating hop, add a goto
+    # the harness counts as a visit, and stamp real-clock sky records the
+    # fake clock reads as fresh. Tests of the self-test itself unset it.
+    h._rotation_trusted = True
     popped = [d for d in (h.devices.pop("focuser", None),
                           h.devices.pop("filterwheel", None)) if d is not None]
     if h.guider is not None:
@@ -710,6 +717,42 @@ class _SpinWatchdog:
             os.write(2, text.encode("utf-8", "replace"))
         finally:
             os._exit(3)
+
+
+#: The two numbers `_SpinWatchdog._describe` opens its report with, as a
+#: regex: the real seconds the loop had been away when the watchdog fired, and
+#: the bound it was held to. What comes before them (``what``: "Night.run",
+#: "Night (route-started run)") is deliberately not in it, so one pattern reads
+#: both kinds of night; what comes after the bound is not either.
+_WATCHDOG_TIMELINE = re.compile(
+    r"did not come back for ([0-9.]+) s of real time, against a bound of "
+    r"([0-9.]+) s")
+
+
+def watchdog_timeline(report: str) -> tuple[float, float]:
+    """``(away_s, bound_s)`` read out of a spin watchdog's failure text: how
+    long the watchdog itself measured the loop away when it fired, and the
+    bound it was given.
+
+    A test that asserts the watchdog reacted in time reads THIS and not its
+    own wall clock around the wait (#620, #683). The wall clock spans the raise
+    reaching the spinning thread and the harness's teardown, which a loaded box
+    stretches by seconds while the watchdog still fired on time; ``away_s`` is
+    measured on the watcher thread at the instant it fired, so it moves by the
+    watcher's tick and not by the load.
+
+    The pattern lives here, beside the sentence it reads, so the three tests
+    that read it (test_group_harness_watchdog.py,
+    test_w5_group_harness_watchdog_timeline.py and test_s7_sim_rotating_2x2.py)
+    cannot drift from the report text one at a time;
+    test_w14_route_started_watchdog_timeline.py builds a report through
+    `_SpinWatchdog` and fails when this stops reading it. When the text does
+    not carry a timeline the test fails with the whole report."""
+    found = _WATCHDOG_TIMELINE.search(report)
+    if found is None:
+        pytest.fail(f"the failure text carries no watchdog timeline:\n{report}",
+                    pytrace=False)
+    return float(found.group(1)), float(found.group(2))
 
 
 def _tell_the_xdist_controller(cfg, text: str) -> None:

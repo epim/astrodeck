@@ -248,6 +248,8 @@ _NON_SERVICE_HOSTS = {
     "irsa.ipac.caltech.edu", "www.cosmos.esa.int", "gea.esac.esa.int",
     "cds.unistra.fr", "leda.univ-lyon1.fr", "www.pas.rochester.edu",
     "example.com", "www.example.com", "hc-ping.com",
+    # RFC 2606 reserved test name: the relay landing tests' fake Host (#686).
+    "relay.test",
     "open-meteo.com", "www.astrospheric.com", "www.open-meteo.com",
     "eccc-msc.github.io", "core.telegram.org", "developers.google.com",
     "mesonet.agron.iastate.edu.", "doi.org",

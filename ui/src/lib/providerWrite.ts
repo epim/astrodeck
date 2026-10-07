@@ -89,7 +89,7 @@ export function providerWriteNote(
   const who = target.profileName ?? "the active profile";
   return (
     `Saving changes the profile “${who}”, not the global setting — that pin is ` +
-    `what this rig runs, so the edit lands where it takes effect.`
+    `what this rig runs, so the edit applies to the active backend.`
   );
 }
 

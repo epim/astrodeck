@@ -568,7 +568,7 @@ export default function EquipmentView(): JSX.Element {
             "error",
             `Added ${added} of ${toAdd.length} driver${toAdd.length === 1 ? "" : "s"}, then ` +
               `${e instanceof Error ? e.message : "the next one failed"} — the ones that ` +
-              `landed are listed above; re-run the scan to add the rest.`,
+              `found are listed above; re-run the scan to add the rest.`,
           );
           return;
         }

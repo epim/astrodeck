@@ -48,10 +48,14 @@ import {
   type GuideAlgorithmParamDefaults,
   type DecGuideMode,
 } from "../lib/guideSettings";
+import {
+  settleIgnoredByGuider, ditherSettleBody, SETTLE_DEFAULTS, NATIVE_SETTLE_REASON,
+} from "../next/hubs/rig/lib/guideSettle";
 
 export default function GuideView() {
   const status = useStatus();
   const guide = useGuide();
+  const providers = useProviders();
   const showToast = useStore((s) => s.showToast);
   const canGuide = useCanControlGuide(); // viewer => graph visible, controls read-only
   const [ditherPx, setDitherPx] = useState("3");
@@ -59,6 +63,13 @@ export default function GuideView() {
   const [settlePixels, setSettlePixels] = useState("");
   const [settleTime, setSettleTime] = useState("");
   const [settleTimeout, setSettleTimeout] = useState("");
+  // #679: the native guider ignores the settle distance and time (only the
+  // timeout reaches its dither), so those two boxes lock with the reason once
+  // the provider is KNOWN native. `kind` is undefined until the first status
+  // frame with `providers` lands, and that must never lock a PHD2 rig's boxes.
+  // Same rule, same module as Rig > Guider; whatever was typed stays in the box.
+  const nativeSettle = settleIgnoredByGuider(providers?.guide?.kind);
+  const settleDefaults = SETTLE_DEFAULTS[nativeSettle ? "native" : "phd2"];
   // Number(ditherPx) || 3 coerced a deliberately-entered "0" to 3 (0 is
   // falsy). Parse explicitly so 0 is honored; only fall back to the 3px
   // default for genuinely invalid (blank/non-numeric) input.
@@ -372,16 +383,12 @@ export default function GuideView() {
                 onExplain={explain}
                 onClick={() => act(() => {
                   // UX-24: send only the settle fields the user set; blanks keep
-                  // the guider's default. (Bridge honors all; native → timeout.)
-                  const opt = (v: string) => {
-                    const n = Number(v);
-                    return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
-                  };
+                  // the guider's default. (Bridge honors all; native → timeout,
+                  // so on native the other two are not sent at all, #679.)
                   return api.post("/api/guide/dither", {
                     pixels: Number.isFinite(ditherNum) ? ditherNum : 3,
-                    settle_pixels: opt(settlePixels),
-                    settle_time_s: opt(settleTime),
-                    settle_timeout_s: opt(settleTimeout),
+                    ...ditherSettleBody(nativeSettle,
+                      { px: settlePixels, s: settleTime, timeoutS: settleTimeout }),
                   });
                 })}>
                 Dither
@@ -389,25 +396,41 @@ export default function GuideView() {
             </div>
             {distinct(ditherReason) && <LockedNote reason={distinct(ditherReason)!} />}
             <div className="grid grid-cols-3 gap-2 mt-1">
-              <label className="flex flex-col gap-1">
+              <label className={`flex flex-col gap-1 ${nativeSettle ? LOCKED_CLASS : ""}`}>
                 <span className="label !text-[9px]">settle px</span>
-                <input className="field !py-1" placeholder="1.5" value={settlePixels}
-                  readOnly={!canGuide} aria-readonly={!canGuide || undefined} inputMode="decimal"
-                  onChange={(e) => setSettlePixels(e.target.value)} />
+                <input className="field !py-1" placeholder={String(settleDefaults.px)}
+                  value={settlePixels} data-testid="guide-settle-px"
+                  readOnly={!canGuide || nativeSettle}
+                  aria-readonly={!canGuide || undefined}
+                  aria-disabled={nativeSettle || undefined}
+                  title={nativeSettle ? NATIVE_SETTLE_REASON : undefined}
+                  inputMode="decimal"
+                  onChange={(e) => { if (!nativeSettle) setSettlePixels(e.target.value); }} />
               </label>
-              <label className="flex flex-col gap-1">
+              <label className={`flex flex-col gap-1 ${nativeSettle ? LOCKED_CLASS : ""}`}>
                 <span className="label !text-[9px]">settle s</span>
-                <input className="field !py-1" placeholder="8" value={settleTime}
-                  readOnly={!canGuide} aria-readonly={!canGuide || undefined} inputMode="decimal"
-                  onChange={(e) => setSettleTime(e.target.value)} />
+                <input className="field !py-1" placeholder={String(settleDefaults.s)}
+                  value={settleTime} data-testid="guide-settle-s"
+                  readOnly={!canGuide || nativeSettle}
+                  aria-readonly={!canGuide || undefined}
+                  aria-disabled={nativeSettle || undefined}
+                  title={nativeSettle ? NATIVE_SETTLE_REASON : undefined}
+                  inputMode="decimal"
+                  onChange={(e) => { if (!nativeSettle) setSettleTime(e.target.value); }} />
               </label>
               <label className="flex flex-col gap-1">
                 <span className="label !text-[9px]">timeout s</span>
-                <input className="field !py-1" placeholder="60" value={settleTimeout}
+                <input className="field !py-1" placeholder={String(settleDefaults.timeoutS)}
+                  value={settleTimeout} data-testid="guide-settle-timeout"
                   readOnly={!canGuide} aria-readonly={!canGuide || undefined} inputMode="decimal"
                   onChange={(e) => setSettleTimeout(e.target.value)} />
               </label>
             </div>
+            {/* The dimming marks the lock and the title names it for a screen
+                reader; the reason is also plain text, because a title never
+                fires on touch. Outside the dimmed labels, like every other
+                LockedNote, so it stays at full contrast. */}
+            {nativeSettle && <LockedNote reason={NATIVE_SETTLE_REASON} />}
           </div>
         </Panel>
 

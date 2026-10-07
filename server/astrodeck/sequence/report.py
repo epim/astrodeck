@@ -693,6 +693,12 @@ class SessionReporter:
         #: The thread retrying a failed final write off the loop (#477), or
         #: None when no retry was handed off.
         self._final_retry: threading.Thread | None = None
+        #: Every ``_write_async`` task ``_schedule_write`` has fired and not
+        #: yet finished (#668): a snapshot write is fire-and-forget, so
+        #: nothing otherwise stops the engine from declaring the run wound
+        #: down before the LAST one of these has actually reached disk. See
+        #: :meth:`flush`.
+        self._pending: set[asyncio.Task] = set()
 
     # -- ids / paths -----------------------------------------------------------
 
@@ -783,7 +789,63 @@ class SessionReporter:
             # no loop (unit test / sync context) — write inline.
             self._write_sync()
             return
-        loop.create_task(self._write_async())
+        task = loop.create_task(self._write_async())
+        # Tracked so `flush()` (#668) can wait for exactly the writes that
+        # were still in flight when it was called. The done callback (not a
+        # try/finally in `_write_async`) is what keeps this accurate even for
+        # a task whose OWN cancellation `flush` never asked for.
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def flush(self) -> None:
+        """Wait for every snapshot write `_schedule_write` has fired and not
+        yet finished (#668).
+
+        Why this exists: a wind-down's last safety event (the dome-close
+        record ``_wind_down_park_and_close`` makes, engine.py) is recorded
+        with ``record_safety``, which only ever SCHEDULES its write --
+        ``_schedule_write``'s ``loop.create_task(self._write_async())`` is
+        fire-and-forget by design, so per-frame recording never blocks the
+        capture loop on disk I/O. Nothing before this method made the engine
+        wait for that write before it let the run be considered wound down,
+        so a reader fetching the report in the window between the record and
+        the write landing got the report without it -- intermittently, since
+        it depends on how the asyncio scheduler happened to interleave the
+        wind-down's remaining ``await``s against that task.
+
+        CANCEL-SAFE (#235/#252 class -- the guard in
+        ``test_no_task_await_eats_its_callers_cancel.py`` scans for exactly
+        this). This is plain ``asyncio.gather``, not a ``try``/``except`` or a
+        ``suppress`` around the await: a cancel of OUR caller cancels the
+        gather, which cancels every pending write in turn and only raises the
+        caller's ``CancelledError`` once each of them has actually finished
+        dying -- the same postcondition ``astrodeck.aio.reap`` promises for
+        one task, generalised to however many are in flight. A write's own
+        failure is likewise never raised here (``return_exceptions=True``):
+        ``_persist`` already logs and retries it on its own terms, and a
+        flush exists to wait for the attempt, not to grade it.
+
+        Loops rather than a single pass, in case a write scheduled while this
+        was waiting (an event recorded concurrently from elsewhere) left a
+        new task behind -- cheap when, as in every call this codebase makes,
+        nothing does.
+
+        WAITS ONLY FOR WRITES STILL RUNNING. A finished write leaves
+        ``_pending`` through its done callback, and asyncio runs done callbacks
+        on a LATER loop turn (``call_soon``), so a task can be done and still
+        in the set. ``await asyncio.gather(<only done tasks>)`` completes
+        without ever yielding to the loop, so the earlier ``while
+        self._pending:`` form spun synchronously forever on such a task: the
+        discard callback that would have emptied the set never got its turn,
+        and the whole event loop froze inside this method. The wave 13
+        integration's extra flush in the engine's cancel arm hit it at every
+        test teardown that cancelled a run mid-write (24 hung xdist workers on
+        the merged tree)."""
+        while True:
+            running = [t for t in self._pending if not t.done()]
+            if not running:
+                return
+            await asyncio.gather(*running, return_exceptions=True)
 
     def _snapshot(self) -> tuple[int, SessionReport]:
         """Build the report and number it. Called on the loop thread only, so
@@ -1219,10 +1281,11 @@ class SessionReporter:
         if unsummarised:
             # Once per report, not per request: its summary is written above,
             # so the next call finds it. Not a warning; nothing is wrong.
-            bus.log("info", f"{unsummarised} session report"
-                            f"{'' if unsummarised == 1 else 's'} had no ledger "
-                            f"summary, so each was read in full once and "
-                            f"summarised for the next Tonight read", "report")
+            bus.log("info",
+                    f"{unsummarised} session report"
+                    f"{('' if unsummarised == 1 else 's')} had no session "
+                    f"summary, so each was read in full once and summarised "
+                    f"for the next Tonight read", "report")
         return out
 
     @staticmethod

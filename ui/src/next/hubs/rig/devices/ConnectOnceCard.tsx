@@ -59,7 +59,7 @@ const VIEWER_BODY = (
 function body(profileName: string | null): string {
   return profileName
     ? `Power the rig, then connect. The ${profileName} profile remembers every device, `
-      + "so next time this step is a receipt, not a task. No hardware yet? The "
+      + "so you can connect them again with one tap. No hardware yet? The "
       + "simulator runs the whole app."
     : "Power the rig, then connect. Saving this rig as a profile afterwards makes "
       + "next time one tap. No hardware yet? The simulator runs the whole app.";

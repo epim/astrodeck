@@ -26,6 +26,10 @@ server/, never in the shared tree (#254).
 """
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Iterator
+
 import pytest
 
 import astrodeck.focus.native as native_mod
@@ -46,6 +50,52 @@ from _deadline import wait_until
 SWEEP_TEMP_C = 7.125
 #: Where the ladder's fake sweep leaves the drawtube.
 SWEEP_POSITION = 11022
+
+
+def _numbers(obj) -> Iterator[int | float]:
+    """Every number in a parsed JSON document, whatever it is nested in. A
+    string is not one, and neither is a boolean (``True`` is an ``int`` to
+    Python and a literal to JSON)."""
+    if isinstance(obj, bool):
+        return
+    if isinstance(obj, (int, float)):
+        yield obj
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            yield from _numbers(value)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            yield from _numbers(value)
+
+
+def _holds_the_sweep_temperature(text: str) -> bool:
+    """Whether the JSON ``text`` carries the sweep's temperature as a NUMBER
+    (#615). Not as digits: the session file is full of timestamps, floats of
+    ten digits and a fraction, and one of them contains the digits of
+    ``SWEEP_TEMP_C`` about one run in a few thousand. ``session_text`` writes a
+    float as its shortest round-trip spelling, so the sweep's own value reads
+    back equal, and ``json.loads`` reads the ``NaN`` and ``Infinity`` constants
+    it writes for the rest."""
+    return SWEEP_TEMP_C in list(_numbers(json.loads(text)))
+
+
+#: The reused line's age, ", 0 min ago,", for the age to be set aside.
+_AGE = re.compile(r", \d+ min ago,")
+
+
+def _ageless(line: str) -> str:
+    """``line`` with its age in minutes replaced by ``N``, so two lines that
+    differ only in how long the run took to reach them compare equal (#615).
+    ``_reused_line("N")`` is the text it compares to."""
+    return _AGE.sub(", N min ago,", line)
+
+
+def _reused_line(age: str, since: str = "0.0 C since") -> str:
+    """The engine's "focus reused" line for the ladder's sweep after the
+    restart, with ``age`` as the minutes it says the sweep is old."""
+    return (f"M42: focus reused: the recovery ladder's sweep after the restart "
+            f"(at bin 2, {SWEEP_TEMP_C:.1f} C, left at {SWEEP_POSITION}), "
+            f"{age} min ago, {since}")
 
 
 @pytest.fixture
@@ -189,6 +239,14 @@ async def test_an_auto_resume_after_a_restart_sweeps_once_not_twice(
     the resume leaves on disk holds nothing of the sweep: it lived in
     memory.
 
+    #615: the two checks in this case that depended on chance or load no longer
+    do. The reused line's age in minutes is set aside (``_ageless``: a loaded
+    box reaches the first acquisition more than 30 s after the sweep and the
+    line then says 1), and the session file is searched for the sweep's
+    temperature as a NUMBER (``_holds_the_sweep_temperature``), not as digits
+    that a timestamp can contain. Each has its own forced-input case at the end
+    of the file.
+
     MUTANT "the run ignores the recovery sweep" (`SequenceEngine.start`
     dropping ``focus_sweep``, as before #402): RED (observed):
         AssertionError: the run swept again after the ladder's sweep:
@@ -220,13 +278,10 @@ async def test_an_auto_resume_after_a_restart_sweeps_once_not_twice(
         f"the run swept again after the ladder's sweep: {sweeps.labels}")
     assert sweeps.run == [], "premise: no sweep outside a labelled one"
     reused = [m for _lv, m, _s in bus_lines if "focus reused" in m]
-    assert reused == [
-        f"M42: focus reused: the recovery ladder's sweep after the restart "
-        f"(at bin 2, {SWEEP_TEMP_C:.1f} C, left at {SWEEP_POSITION}), 0 min "
-        f"ago, 0.0 C since"], reused
+    assert [_ageless(m) for m in reused] == [_reused_line("N")], reused
     text = (hub_module.CAPTURE_DIR / "sessions" / f"{s.id}.json").read_text(
         encoding="utf-8")
-    assert str(SWEEP_TEMP_C) not in text, (
+    assert not _holds_the_sweep_temperature(text), (
         "the sweep's temperature reached the session file")
 
 
@@ -329,3 +384,72 @@ async def test_a_temperature_moved_past_the_delta_sweeps_again(
                for _lv, m, _s in bus_lines), (
         "premise: the temperature trigger fired")
     assert not [m for _lv, m, _s in bus_lines if "focus reused" in m]
+
+
+# ------------------------------------------------ the two helpers' own cases
+
+
+def test_the_leak_check_reads_numbers_not_digits():
+    """#615: the session file holds the run's timestamps as floats, and a
+    timestamp such as 1790000007.1253 CONTAINS the digits of the sweep's
+    temperature, so a check for ``str(SWEEP_TEMP_C)`` as text would call the
+    file a leak about one run in a few thousand, by the clock alone. The check
+    reads the file as JSON and compares the NUMBERS in it.
+
+    Forced inputs, not reruns: the timestamp below is the one that matches.
+
+    MUTANT "the leak check is a substring again" (``_holds_the_sweep_
+    temperature`` back to ``str(SWEEP_TEMP_C) in text``) -- RED, observed:
+        AssertionError: a timestamp that merely contains the digits is not the
+        sweep's temperature: {"updated_ts": 1790000007.1253, "metrics": {}}
+    """
+    stamp = 1790000007.1253
+    assert str(SWEEP_TEMP_C) in str(stamp), (
+        "premise: the old substring check WOULD match this timestamp")
+    stamped = json.dumps({"updated_ts": stamp, "metrics": {}})
+    assert not _holds_the_sweep_temperature(stamped), (
+        f"a timestamp that merely contains the digits is not the sweep's "
+        f"temperature: {stamped}")
+    assert _holds_the_sweep_temperature(json.dumps({"focus_temp": 7.125}))
+    # Wherever the number is nested, and beside the constants
+    # `session_text` writes for a NaN or an infinity, which `json.loads`
+    # reads.
+    assert _holds_the_sweep_temperature(
+        '{"frames": [{"metrics": {"hfr": NaN, "t": 7.125}}], "x": Infinity}')
+    assert not _holds_the_sweep_temperature(
+        '{"frames": [{"metrics": {"hfr": NaN}}], "x": Infinity, "n": 7}')
+    assert not _holds_the_sweep_temperature(
+        '{"note": "7.125", "ok": true, "none": null}'), (
+        "a string is not a number, and neither is a boolean")
+
+
+def test_the_reused_line_compares_whatever_its_age():
+    """#615: the line's "N min ago" is the sweep's age rounded to a minute
+    (``age_s / 60:.0f``), so it reads 0 only while the run reaches its first
+    acquisition inside 30 s of the ladder's sweep; a loaded box takes longer,
+    and the line then says 1. The age is not what the case is about, so the
+    comparison treats it as a number of minutes and nothing more. The
+    temperature half stays exact: the simulated focuser is frozen, so "0.0 C
+    since" is the sweep's own and a different figure is a real difference.
+
+    Forced inputs: a line aged 0 minutes and one aged 1 (a sweep 45 s old
+    prints 1), each compared with the expected text.
+
+    MUTANT "the age is pinned again" (``_ageless`` returning the line
+    unchanged, so the comparison holds only for the one age it was written
+    for) -- RED, observed (this case, and the first case's own comparison):
+        AssertionError: a line aged 0 min does not compare equal to the
+        expected text: "M42: focus reused: the recovery ladder's sweep after
+        the restart (at bin 2, 7.1 C, left at 11022), 0 min ago, 0.0 C since"
+    A mutant that pinned the age to 0 in the EXPECTED text instead (the
+    comparison before #615) would pass the 0 line and fail the 1 and 12 ones,
+    which is the loaded run's line.
+    """
+    for age in ("0", "1", "12"):
+        line = _reused_line(age)
+        assert _ageless(line) == _reused_line("N"), (
+            f"a line aged {age} min does not compare equal to the expected "
+            f"text: {_ageless(line)!r}")
+    assert (_ageless(_reused_line("1", since="0.3 C since"))
+            != _reused_line("N")), (
+        "the temperature half is exact: a focuser that moved is a difference")

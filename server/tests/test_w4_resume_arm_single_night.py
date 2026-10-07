@@ -1,12 +1,30 @@
 # Copyright (c) 2026 James Penick
 # SPDX-License-Identifier: Apache-2.0
-"""#195: DUSK WINDOW's "Single night" used to change nothing about resuming -
-`engine.start` arms `auto_resume` unconditionally, and `ResumeArm.tick` asked
-only whether tonight's window was open, never how many nights the session had
-already run. `SequencePlan.resume_across_nights` (models.py) closes that: when
-False, `ResumeArm.tick` (resume_arm.py) still resumes a crash or a reboot on
-the SAME night (continuity within a night is a separate promise) but refuses
-and disarms a dormant session whose window has reopened on a LATER night.
+"""#195: a flow whose DUSK WINDOW says "Automatic resume on subsequent nights
+until capture quota is fulfilled: Off" must not resume on a later night, and
+the engine must keep resuming a crash or a reboot on the SAME night.
+
+THE OPTION'S HISTORY. In 0.3.40 DUSK WINDOW's default `repeat`, "Single
+night", compiled to ``resume_across_nights = False``, so every untouched flow
+stopped resuming after its first night; WP-85 (wave 14) undid that and made
+the choice an explicit `autoResume` Off (default On). What `ResumeArm.tick`
+does with the plan's field did not change, and this file still holds it:
+`engine.start` arms `auto_resume` unconditionally, and `ResumeArm.tick` used
+to ask only whether tonight's window was open, never how many nights the
+session had already run. `SequencePlan.resume_across_nights` (models.py)
+closes that: when False, `ResumeArm.tick` (resume_arm.py) still resumes a
+crash or a reboot on the SAME night (continuity within a night is a separate
+promise) but refuses and disarms a dormant session whose window has reopened
+on a LATER night. This is the NET under the engine's own dawn-boundary
+disarm (`_finalize_report`, graded in ``test_w14_autoresume_option.py``): it
+covers a crash before dawn followed by a restart after it, which no
+finalize ever saw.
+
+The tests here are also the rows of the auto-resume tooltip's claims table
+(``test_w14_autoresume_claims.py``): "resumes on later nights" is held by
+`test_default_plan_still_resumes_across_nights`, and "a crash or restart the
+same night still resumes" by
+`test_single_night_plan_still_resumes_the_same_night`.
 
 Same harness and precedent as `test_resume_arm.py`
 (`test_tick_resumes_when_window_open`, `test_give_up_when_window_closes_mid_
@@ -86,9 +104,9 @@ async def _dormant_armed(engine, *, resume_across_nights: bool) -> str:
 
 async def test_single_night_plan_still_resumes_the_same_night(sim_hub,
                                                                monkeypatch):
-    """Continuity within a night is a SEPARATE promise from "Single night",
-    and this fix must not withdraw it: a crash or a reboot minutes later, on
-    the night the session already ran, still resumes."""
+    """Continuity within a night is a SEPARATE promise from "Automatic resume
+    on subsequent nights", and Off must not withdraw it: a crash or a reboot
+    minutes later, on the night the session already ran, still resumes."""
     engine = SequenceEngine(sim_hub)
     sid = await _dormant_armed(engine, resume_across_nights=False)
     now = {"t": time.time()}               # same real night as the run above
@@ -102,8 +120,9 @@ async def test_single_night_plan_still_resumes_the_same_night(sim_hub,
 
 async def test_single_night_plan_refuses_a_later_night(sim_hub, monkeypatch,
                                                         bus_lines):
-    """The window reopens two real days later: a 'Single night' session must
-    not quietly finish itself like a campaign would.
+    """The window reopens two real days later: a session whose plan asked for
+    no automatic resume on later nights (Off) must not quietly finish itself
+    like a campaign would.
 
     MUTANT "no night check" (`if False and not armed.plan.resume_across_
     nights:`, disabling the whole block this fix adds) turned this red, run
@@ -120,8 +139,8 @@ async def test_single_night_plan_refuses_a_later_night(sim_hub, monkeypatch,
 
     The tick ran the full recovery ladder - autofocus, plate solve,
     re-centre - and resumed the plan exactly as a cross-night campaign
-    should, which is precisely the bug: a 'Single night' session has no
-    gate left to stop it."""
+    should, which is precisely the bug: an Off session has no gate left to
+    stop it."""
     engine = SequenceEngine(sim_hub)
     sid = await _dormant_armed(engine, resume_across_nights=False)
     first_night = session_store.load(sid).observing_nights()[0]
@@ -146,9 +165,10 @@ async def test_single_night_plan_refuses_a_later_night(sim_hub, monkeypatch,
 
 
 async def test_default_plan_still_resumes_across_nights(sim_hub, monkeypatch):
-    """The missing-key default, and an explicit True, must reproduce TODAY's
-    behaviour byte-identically: a plan that never opted out of cross-night
-    resume still comes back two real days later. (`test_campaign_across_
+    """The missing-key default, and an explicit True, must reproduce the
+    behaviour every flow had before 0.3.40 byte-identically: a plan that
+    never opted out of cross-night resume still comes back two real days
+    later. (`test_campaign_across_
     nights.py` already covers this end to end for a campaign; this is the
     same guarantee from `ResumeArm.tick`'s own new branch, which must not
     fire at all when the flag is True.)"""
@@ -160,5 +180,4 @@ async def test_default_plan_still_resumes_across_nights(sim_hub, monkeypatch):
     await arm.tick()
     assert await wait_for(lambda: engine.state.get("state") == "complete")
     assert session_store.load(sid).status == "complete", (
-        "a plan that did not ask for 'Single night' must still resume on a "
-        "later night")
+        "a plan that did not ask for Off must still resume on a later night")

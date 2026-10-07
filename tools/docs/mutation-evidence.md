@@ -1,32 +1,32 @@
 # Documentation gate mutation evidence
 
-Run 2026-10-02T15:56:01.928588+00:00.
+Run 2026-10-03T02:07:50.614722+00:00.
 
 Behavioral fixtures use synthetic text and temporary files; procedure lifecycle tests mock processes, sockets and privacy inputs. No application server or device is contacted. Every changed source is restored from exact bytes in a finally block and SHA-256 checked.
 
 - LOCAL-TARGET: `DocsChecks.test_missing_link`
-  `AssertionError: 'missing local link target' not found in ''`
+  `AssertionError: 'missing local link target' not found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page'`
 
 - LINK-ANCHOR: `DocsChecks.test_missing_anchor`
-  `AssertionError: 'missing local link anchor' not found in ''`
+  `AssertionError: 'missing local link anchor' not found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page'`
 
 - REPOSITORY-CONTAINMENT: `DocsChecks.test_encoded_escape`
-  `AssertionError: 'local link escapes repository' not found in 'docs/guide/demo.md: missing local link target'`
+  `AssertionError: 'local link escapes repository' not found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page\ndocs/guide/demo.md: missing local link target'`
 
 - ENCODED-STYLE: `DocsChecks.test_encoded_dash`
-  `AssertionError: 'em/en dash is not permitted' not found in ''`
+  `AssertionError: 'em/en dash is not permitted' not found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page'`
 
 - ENCODED-PRIVACY: `DocsChecks.test_encoded_private_value`
-  `AssertionError: 'forbidden observing-site value' not found in ''`
+  `AssertionError: 'forbidden observing-site value' not found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page'`
 
 - URL-PRIVACY: `DocsChecks.test_percent_encoded_private_link`
-  `AssertionError: 'forbidden observing-site value' not found in 'docs/guide/demo.md: missing local link target'`
+  `AssertionError: 'forbidden observing-site value' not found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page\ndocs/guide/demo.md: missing local link target'`
 
 - DIAGNOSTIC-PRIVACY: `DocsChecks.test_diagnostics_do_not_echo_reference`
-  `AssertionError: 'private-canary' unexpectedly found in 'docs/guide/demo.md: missing local link target private-canary'`
+  `AssertionError: 'private-canary' unexpectedly found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page\ndocs/guide/demo.md: missing local link target private-canary'`
 
 - LABEL-QUOTED: `DocsChecks.test_label_must_be_quoted`
-  `AssertionError: 'registered UI label is absent from bold text' not found in ''`
+  `AssertionError: 'registered UI label is absent from bold text' not found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page'`
 
 - LABEL-SOURCE: `DocsChecks.test_label_requires_ui_source`
   `AssertionError: 'UI label lacks a UI source file' not found in ''`
@@ -44,7 +44,7 @@ Behavioral fixtures use synthetic text and temporary files; procedure lifecycle 
   `AssertionError: '' != 'docs/guide/demo.md: quoted UI label is absent at its source'`
 
 - MONEY-METAPHOR: `DocsChecks.test_money_metaphor`
-  `AssertionError: 'money metaphor is not permitted' not found in ''`
+  `AssertionError: 'money metaphor is not permitted' not found in 'docs/guide/demo.md: claim DEMO-001 text is not on the page'`
 
 - CLAIM-SOURCE: `DocsChecks.test_claim_source_exists`
   `AssertionError: 'claim source file is missing' not found in ''`
@@ -57,6 +57,9 @@ Behavioral fixtures use synthetic text and temporary files; procedure lifecycle 
 
 - CLAIM-COVERAGE: `DocsChecks.test_claim_coverage`
   `AssertionError: 'no claim/procedure evidence ledger' not found in ''`
+
+- CLAIM-TEXT-ON-PAGE: `DocsChecks.test_claim_text_must_be_on_page`
+  `AssertionError: 'docs/guide/demo.md: claim DEMO-001 text is not on the page' not found in ''`
 
 - STABLE-ANCHOR: `DocsChecks.test_stable_anchor`
   `AssertionError: 'stable guide anchor is missing' not found in ''`
@@ -88,9 +91,9 @@ Behavioral fixtures use synthetic text and temporary files; procedure lifecycle 
 ## Restored suite
 
 ```text
-.................................................
+........................................................
 ----------------------------------------------------------------------
-Ran 49 tests in 0.170s
+Ran 56 tests in 0.183s
 
 OK
 ```

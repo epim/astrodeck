@@ -55,7 +55,7 @@ export function Filmstrip({ previews, shownId, liveId, hfrGood, hfrWarn, onSelec
     return (
       <EmptyCard
         title="NO FRAMES YET"
-        hint="Each exposure joins this strip as it lands; tap one to hold it on the stage."
+        hint="Each new exposure appears in this strip. Tap one to keep it in the preview."
         data-testid="frame-filmstrip"
       />
     );

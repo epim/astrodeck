@@ -33,7 +33,7 @@
 //       remainder next clear night"
 // The control stays green under it: the rows are still drawn, with their
 // numbers. It can fail: MUTANT "BUDGET rows not drawn" (TonightStoryList.tsx
-// mapping `story.filter((r) => r.label !== "BUDGET")`), same copy. Observed:
+// mapping `story.filter((r) => r.label !== "TIME")`), same copy. Observed:
 //   budgetForTheseTargets.test: 0/2 passed
 //     x control: the sheet drew the server's two BUDGET rows, stamped BUDGET,
 //       numbers and all: STORY drew 0 BUDGET rows, not the server's 2
@@ -91,7 +91,7 @@ function readAnswer(): Record<string, unknown> {
   return fx.response!;
 }
 const ANSWER = readAnswer();
-const BUDGET_ROWS = (ANSWER.story as BudgetRow[]).filter((r) => r.label === "BUDGET");
+const BUDGET_ROWS = (ANSWER.story as BudgetRow[]).filter((r) => r.label === "TIME");
 
 const FLOW_RECORD = {
   id: "budget-m31", name: "M31 Ha and LR", folder: "My flows",
@@ -181,16 +181,16 @@ function drawnRows(): [string, string][] {
 
 test("control: the sheet drew the server's two BUDGET rows, stamped BUDGET, numbers and all", () => {
   assert(BUDGET_ROWS.length === 2, `precondition: the answer holds two BUDGET rows, got ${BUDGET_ROWS.length}`);
-  const budget = drawnRows().filter(([stamp]) => stamp === "BUDGET");
+  const budget = drawnRows().filter(([stamp]) => stamp === "TIME");
   assert(budget.length === 2, `STORY drew ${budget.length} BUDGET rows, not the server's 2`);
-  assert(budget[0][1].startsWith("Ha: 1 h banked"), `the capture row's figure: "${budget[0][1]}"`);
-  assert(budget[1][1].includes("0.2 h banked in its filters"), `the cycle row's figure: "${budget[1][1]}"`);
+  assert(budget[0][1].startsWith("Ha: 1 h captured"), `the capture row's figure: "${budget[0][1]}"`);
+  assert(budget[1][1].includes("0.2 h captured in its filters"), `the cycle row's figure: "${budget[1][1]}"`);
 });
 
 test("every BUDGET row says its banked hours are for these targets", () => {
-  const budget = drawnRows().filter(([stamp]) => stamp === "BUDGET");
+  const budget = drawnRows().filter(([stamp]) => stamp === "TIME");
   for (const [, sentence] of budget) {
-    assert(/ h banked (in its filters )?for these targets/.test(sentence),
+    assert(/ h captured (in its filters )?for these targets/.test(sentence),
       `a BUDGET row on the #/next sheet does not say whose hours it banks: "${sentence}"`);
   }
   for (const row of BUDGET_ROWS) {

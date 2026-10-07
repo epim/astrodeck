@@ -105,7 +105,7 @@ export function NamingEditor(): JSX.Element {
             />
           </Field>
 
-          <Label size={11}>WHERE THE NEXT FRAME WOULD LAND</Label>
+          <Label size={11}>NEXT FRAME SAVE LOCATION</Label>
           <Mono size={11.5} className="nx-files-preview" data-testid="naming-preview">
             {namingPreview(draft)}
           </Mono>

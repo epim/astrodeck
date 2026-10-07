@@ -97,6 +97,10 @@ import {
   calibrationLine, calibrationTone, savedCalClearedNote, previewNote,
   exposureSub, starValue, BOTH_AXES_NOTE, MIN_MOVE_UNIT,
 } from "../lib/guiderModel";
+import {
+  settleIgnoredByGuider, ditherSettleBody, optNum, SETTLE_DEFAULTS,
+  NATIVE_SETTLE_REASON, NATIVE_SETTLE_NOTE,
+} from "../lib/guideSettle";
 
 // ------------------------------------------------------------------ constants
 
@@ -459,10 +463,13 @@ export function GuiderSheet(): JSX.Element {
     setSettleTime(text(cfg.raw.dither_settle_time_s));
     setSettleTimeout(text(cfg.raw.dither_settle_timeout_s));
   }, [cfg.raw]);
-  const optNum = (v: string): number | undefined => {
-    const n = Number(v);
-    return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
-  };
+  // #679: the native engine settles on its own rule and reads only the timeout
+  // (lib/guideSettle.ts). Locked ONLY when the resolved guider is KNOWN native:
+  // `kind` is undefined until the first status frame with `providers` lands, and
+  // locking on unknown would freeze the boxes of a PHD2 rig for that window.
+  const nativeSettle = settleIgnoredByGuider(providers?.guide?.kind);
+  const settleDefaults = SETTLE_DEFAULTS[nativeSettle ? "native" : "phd2"];
+  const settleBoxLock = ditherPx.lockedReason ?? (nativeSettle ? NATIVE_SETTLE_REASON : null);
   // Commits ONE settle box to the persisted block on blur/Enter (the house
   // draft-commit idiom; see CaptureReadouts.tsx's DraftBox). A blank box
   // commits `null` - EXPLICITLY, not by omitting the key - because `cfg.put`
@@ -473,11 +480,13 @@ export function GuiderSheet(): JSX.Element {
     const n = optNum(text);
     void act(() => cfg.put({ [key]: n === undefined ? null : n }));
   };
+  // On the native guider only the timeout is sent: a saved settle distance or
+  // time (an earlier PHD2 night's) must not ride a request nothing reads them
+  // from. The saved values themselves are left alone, for the next PHD2 night.
   const dither = () => act(() => api.post("/api/guide/dither", {
     pixels: ditherPixels,
-    settle_pixels: optNum(settlePixels),
-    settle_time_s: optNum(settleTime),
-    settle_timeout_s: optNum(settleTimeout),
+    ...ditherSettleBody(nativeSettle,
+      { px: settlePixels, s: settleTime, timeoutS: settleTimeout }),
   }));
 
   // ------------------------------------------------------------ the RMS compare
@@ -669,22 +678,40 @@ export function GuiderSheet(): JSX.Element {
                 readiness gate) and NOT like DITHER NOW (`ditherNow`, which also
                 needs guiding to be live): these three now SAVE to the rig's
                 config, same as the stepper, so an operator can set them before
-                guiding has even started for the night. */}
-            <SettleField label="SETTLE PX" placeholder="1.5" value={settlePixels}
+                guiding has even started for the night.
+
+                SETTLE PX and SETTLE S take a SECOND lock on the native guider
+                (#679): it ignores both, so a box that accepted a number would
+                save it and change nothing. A saved value stays in the box,
+                dimmed, with the reason as its title: the rig may switch to PHD2
+                by profile, and PHD2 reads it. TIMEOUT S is the one the native
+                dither honours, so it is never locked by the provider, and its
+                placeholder is the native 60 because the engine ends a settle
+                there itself. */}
+            <SettleField label="SETTLE PX" value={settlePixels}
+              placeholder={String(settleDefaults.px)}
               onChange={setSettlePixels}
               onCommit={() => commitSettle("dither_settle_pixels", settlePixels)}
-              lockedReason={ditherPx.lockedReason} testId="guider-settle-px" />
-            <SettleField label="SETTLE S" placeholder="8" value={settleTime}
+              lockedReason={settleBoxLock}
+              testId="guider-settle-px" />
+            <SettleField label="SETTLE S" value={settleTime}
+              placeholder={String(settleDefaults.s)}
               onChange={setSettleTime}
               onCommit={() => commitSettle("dither_settle_time_s", settleTime)}
-              lockedReason={ditherPx.lockedReason} testId="guider-settle-s" />
-            <SettleField label="TIMEOUT S" placeholder="60" value={settleTimeout}
+              lockedReason={settleBoxLock}
+              testId="guider-settle-s" />
+            <SettleField label="TIMEOUT S" value={settleTimeout}
+              placeholder={String(settleDefaults.timeoutS)}
               onChange={setSettleTimeout}
               onCommit={() => commitSettle("dither_settle_timeout_s", settleTimeout)}
               lockedReason={ditherPx.lockedReason} testId="guider-settle-timeout" />
           </Row>
-          <Note>Saved for every run - DITHER NOW uses these three too. Leave a
-            field empty to use the guider&rsquo;s own default.</Note>
+          <Note data-testid="guider-settle-note">
+            {nativeSettle
+              ? NATIVE_SETTLE_NOTE
+              : <>Saved for every run - DITHER NOW uses these three too. Leave a
+                field empty to use the guider&rsquo;s own default.</>}
+          </Note>
           {/* The CADENCE is per-night (SequencePlan.dither_every) while the
               DISTANCE above is rig-level (config.guide.dither_pixels), so this
               row reads and does not write (plan E14). */}

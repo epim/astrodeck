@@ -145,7 +145,7 @@ class TestWhatGetsOffered:
 
         ``push_once``'s default source is ``walk_facts``, which is the PULL
         AGENT's tool and sweeps every file under the root. On a rig that root
-        also holds the trash bin, the thumbnail cache, session records and
+        also holds the trash bin, the thumbnail cache, session logs and
         logs. The runner has to offer the gallery's rows instead — which is
         also what keeps the two sync directions agreeing about what a night is.
         """

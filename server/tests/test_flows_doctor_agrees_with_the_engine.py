@@ -197,7 +197,7 @@ class TestTheDoctorStillHasTeeth:
 
     def test_a_night_with_no_report_sink_is_still_noted(self):
         g = FlowGraph(nodes=[_n("c", "capture")], edges=[])
-        assert [t for t in _texts(g) if "ledger" in t], _texts(g)
+        assert [t for t in _texts(g) if "will not have a saved report" in t], _texts(g)
 
     def test_the_shipped_examples_stay_quiet(self):
         """The end-to-end control: the carefully built examples must not have
@@ -252,7 +252,7 @@ class TestTheExamplesUnderTheMosaicRules:
         every Example carries exactly one SLEW today; the S3 file's unchanged
         corpus is what catches that one."""
         from astrodeck.flows import examples as ex
-        ledger = "\u25b8 no session report sink - the night leaves no ledger"
+        ledger = '▸ no session report stage - the night will not have a saved report'
         for rec in ex.examples():
             notes = [i.text for i in check(rec.graph) if i.level == "note"]
             l1 = [t for t in notes if "part of the TARGET block now" in t]

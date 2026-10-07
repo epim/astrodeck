@@ -58,13 +58,13 @@ export const CLEAR_HOURS_PER_NIGHT = 3.5;
 
 /** `flows/tonight.py:914`, verbatim first sentence. */
 export const NO_LEDGER_NOTE =
-  "No session ledger available, so nothing here claims a banked figure.";
+  "The session log is unavailable, so captured totals cannot be shown.";
 
 /** The prototype's footer (logic.js `a_campNote`), minus its fabricated finish
  *  date - the rig forecasts no such thing. */
 export const LEDGER_NOTE =
-  "The ledger is the program counter: each dusk the engine re-reads what is "
-  + "banked per filter and shoots the shortfall first. Tonight's share is the "
+  "At dusk, the run checks the captured frames "
+  + "for each filter and captures the remaining frames first. Tonight's progress is the "
   + "lighter band.";
 
 export interface BudgetRow {

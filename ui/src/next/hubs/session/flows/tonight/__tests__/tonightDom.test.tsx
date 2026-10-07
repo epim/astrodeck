@@ -109,7 +109,7 @@ const TONIGHT_OK = {
   ],
   story: [
     { t_unix: DUSK, label: "", msg: "Dusk. The dome opens and the flats window starts.", tone: "text" },
-    { t_unix: null, label: "BUDGET", msg: "3.1 h of the 12 h L goal is already banked.", tone: "dim" },
+    { t_unix: null, label: "TIME", msg: "3.1 h of the 12 h L goal is already captured.", tone: "dim" },
     // The em-dash is SERVER-SHAPED, not invented for this test (#561):
     // `tonight.py`'s `_target_rows` still writes one into its "above X deg"
     // sentence (`_story`'s own BUDGET/moon/meridian/dusk-flats/no-dusk/ANY
@@ -119,7 +119,7 @@ const TONIGHT_OK = {
   ],
   campaign: {
     is_campaign: true, has_pool: true, has_ledger: true, quota: 45,
-    note: "Shortfall first: the engine re-reads the ledger at each dusk.",
+    note: "Shortfall first: the engine re-reads the session log at each dusk.",
     members: [
       { name: "NGC 7331", banked: 23, quota: 45, done: false, pct: 51 },
       { name: "NGC 604", banked: null, quota: 45, done: false, pct: null },
@@ -332,7 +332,7 @@ test("STORY renders the server's rows, labels and all, with no em-dash", () => {
   click(tabButton("STORY"));
   const story = tid("tonight-story");
   assert(/Waits for dusk/.test(story.textContent), "the server's brief is missing");
-  assert(/BUDGET/.test(story.textContent), "an untimed BUDGET row must keep its label");
+  assert(/TIME/.test(story.textContent), "an untimed BUDGET row must keep its label");
   assert(/No horizon polyline/.test(story.textContent), "the warn row never rendered");
   // #561: this used to pass only because no hand-written `msg` above carried
   // a dash - the warn row's `msg` now does, server-shaped, so this actually
@@ -343,7 +343,7 @@ test("STORY renders the server's rows, labels and all, with no em-dash", () => {
 });
 
 test("storyStamp keeps a label, formats a time, and never invents one", () => {
-  eq(storyStamp({ t_unix: null, label: "BUDGET" }), "BUDGET", "a label wins");
+  eq(storyStamp({ t_unix: null, label: "TIME" }), "TIME", "a label wins");
   eq(storyStamp({ t_unix: null, label: "" }), "-", "an untimed unlabelled row is a hyphen");
   eq(/^\d\d:\d\d$/.test(storyStamp({ t_unix: DUSK, label: "" })), true,
     "a timed row is a clock time");

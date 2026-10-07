@@ -1430,7 +1430,7 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          "▸ CAPTURE LOOP - 'run' input unwired"),
         ('warn', OLD_RULE_4),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'long-capture-alone': [
         ('warn',
@@ -1443,7 +1443,7 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          'uncorrected all night'),
         ('warn', OLD_RULE_4),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'dusk-capture': [
         ('warn',
@@ -1451,14 +1451,14 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          'uncorrected all night'),
         ('warn', OLD_RULE_4),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'target-capture': [
         ('warn',
          "▸ TARGET - 'arm' input unwired"),
         ('warn', OLD_RULE_4),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'pool-cycle': [
         ('warn',
@@ -1471,7 +1471,7 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          'uncorrected all night'),
         ('warn', OLD_RULE_4),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'queue-hold': [
         ('warn',
@@ -1481,7 +1481,7 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          '▸ queue runs but nothing HOLDS the light loop - wire HOLD '
          '/ RESUME from the same trigger'),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'watchdog': [
         ('warn',
@@ -1491,7 +1491,7 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          "▸ watchdog threshold 4.0″ sits above the grader's reject "
          '3.0″ - frames get rejected before the rule can ever fire'),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'dome': [
         ('warn',
@@ -1500,7 +1500,7 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          '▸ DOME with no SAFETY MONITOR - nothing closes the shutter'
          ' on rain. Add one; it fails closed.'),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'race': [
         ('warn',
@@ -1508,7 +1508,7 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          'race, and safety aborts before the hold can ride it out. '
          'Set SAFETY → Watch for → rain + wind + power.'),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
     'm31-lane-no-slew': [
         ('warn', OLD_RULE_4),
@@ -1521,7 +1521,7 @@ GOLDEN_BEFORE_S3: dict[str, list[tuple[str, str]]] = {
          "▸ TARGET - 'arm' input unwired"),
         ('warn', OLD_RULE_4),
         ('note',
-         '▸ no session report sink - the night leaves no ledger'),
+         '▸ no session report stage - the night will not have a saved report'),
     ],
 }
 

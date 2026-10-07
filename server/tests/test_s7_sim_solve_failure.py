@@ -214,6 +214,23 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
     and the "N of 3 consecutive" counted lines appear only twice, from the
     first streak -- never a second time, since the three-strike path is
     not reached again once 2-2 is alone.
+
+    RESTORED EXACT FOR WP-59 (#668): the ``close_roof`` safety event is now
+    asserted exactly rather than tolerated either way (see the comment above
+    the assertion). MUTANT "flush removed" (``SequenceEngine._wind_down``'s
+    ``await self.reporter.flush()`` deleted, restoring the race
+    c8635a27 worked around) -- RED every one of 8 runs at ``-n0``, observed
+    verbatim:
+
+        AssertionError: at +5880.0 s of night 1: the report records
+        [{'ts': 1788319569.0, 'reason': "skipped M31 2-2: 2-2 (the mosaic's
+        last live panel) has been held for 6 passes in a row with no panel
+        struck and no progress made; set aside for tonight", 'action':
+        'skip'}]
+        assert [{'action': '...1788319569.0}] == [{'action':
+        '...1788319569.0}]
+        Right contains one more item: {'action': 'close_roof', 'reason':
+        'roof closed over parked gear (wind-down)', 'ts': 1788319569.0}
     """
     rig: FlowRig = flow_rig
     fid = await rig.save_flow(FLOW)
@@ -321,33 +338,32 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
     # held-pass escalation's own line, so the reason is that line's text
     # (`second_rec["reason"]` below pins the same text).
     #
-    # W7 INTEGRATION FINDING (WP-50, D-16, owner-approved 2026-09-30), NOT
-    # pinned either way here: close_dome_when_done now defaults True, so
-    # this incomplete night's wind-down also closes the simulated rig's
-    # connected dome and calls `_record_safety("roof closed over parked
-    # gear (wind-down)", "close_roof")`. That call lands through
-    # `SessionReporter.record_safety`'s `_schedule_write` -- a bare
-    # `loop.create_task`, never awaited -- while `FlowRig._report`'s poll
-    # only waits for the ledger's FRAME COUNT to match (already true the
-    # instant wind-down starts: no more frames are shot), so it returns on
-    # its first read and the scheduled write may or may not have landed
-    # yet. Observed both ways, back to back, same code, same `-n0`: with
-    # the close_roof event present, and without it. A new, pre-existing
-    # defect this default newly exercises, not a wave-7 logic bug; left
-    # unpinned (`skip` only) rather than asserted either way, so this test
-    # does not itself become the flake. See the integration report for the
-    # fuller trace (SessionReporter._schedule_write, report.py; the
-    # dome-close call, engine.py's `_wind_down_park_and_close`).
-    assert report["safety_events"][:1] == [
+    # THE close_roof EVENT, EXACTLY (#668, fixed; WP-50/D-16, owner-approved
+    # 2026-09-30, made this reachable by defaulting close_dome_when_done
+    # True). This incomplete night's wind-down closes the simulated rig's
+    # connected dome and calls `_record_safety("roof closed over parked gear
+    # (wind-down)", "close_roof")`, AFTER the run's own terminal state and
+    # `_finalize_report` -- the dome close is part of winding down, not
+    # before the run is declared ended. That call only SCHEDULES its write
+    # (`SessionReporter.record_safety` -> `_schedule_write`'s
+    # `loop.create_task`), so wave-7's integration found the window between
+    # that schedule and the write landing on disk open: `FlowRig._report`'s
+    # poll only waits for the ledger's FRAME COUNT to match, already true
+    # the instant wind-down starts, so a read could land either side of the
+    # race and this assertion was loosened to tolerate both (c8635a27).
+    # `SequenceEngine._wind_down` now awaits `SessionReporter.flush()` once,
+    # after every wind-down step, so every reader past that await sees this
+    # event -- the race is closed, and the exact assertion holds.
+    assert report["safety_events"] == [
         {"ts": T0 + FOR_THE_NIGHT,
          "reason": f"skipped {MISSES}: 2-2 (the mosaic's last live panel) "
                    f"has been held for 6 passes in a row with no panel "
                    f"struck and no progress made; set aside for tonight",
-         "action": "skip"}], (
+         "action": "skip"},
+        {"ts": T0 + FOR_THE_NIGHT,
+         "reason": "roof closed over parked gear (wind-down)",
+         "action": "close_roof"}], (
         f"{at}: the report records {report['safety_events']}")
-    assert all(e["action"] in ("skip", "close_roof")
-              for e in report["safety_events"]), (
-        f"{at}: an unexpected safety event rode along: {report['safety_events']}")
     first_rec, second_rec = end.session.set_aside
     assert (first_rec["target_id"], first_rec["step_id"], first_rec["night"],
             first_rec["kind"], first_rec["ts"]) == (

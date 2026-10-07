@@ -126,7 +126,7 @@ export const VIDEO_RECORDING_REASON =
 export const VIDEO_LIVE_LOOP_REASON =
   "The live loop owns the camera - press Stop first.";
 export const VIDEO_CAMERA_BUSY_REASON =
-  "The camera is busy with another exposure - wait for that frame to land.";
+  "The camera is busy with another exposure - wait for that exposure to finish.";
 export const VIDEO_STARTING_REASON =
   "The recorder is arming - it answers in a second or two.";
 

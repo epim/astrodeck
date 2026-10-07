@@ -107,7 +107,7 @@ export function syncCadenceLine(s: SyncPushStatus | null): string | null {
   if (!s?.enabled || !s.configured) return null;
   const debounce = Math.round(s.debounce_s ?? 20);
   const sweep = Math.round((s.sweep_interval_s ?? 900) / 60);
-  return `Otherwise a pass runs ${debounce}s after a frame lands, and a sweep runs `
+  return `Otherwise a pass runs ${debounce}s after a frame is saved, and a sweep runs `
     + `every ${sweep} min so a missed frame or an offline hour catches up on its own.`;
 }
 

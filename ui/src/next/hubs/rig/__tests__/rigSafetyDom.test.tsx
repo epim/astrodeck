@@ -567,7 +567,7 @@ await testAsync("the escalation policy is a read-only list on a phone, in human 
     "the autofocus rule does not use the server's own action vocabulary");
   assert(rows.some((r) => /1\.5x the reference - shoot a replacement/.test(r)),
     "the quality gate does not name the factor and what happens to the frame");
-  assert(rows.some((r) => /no frame lands for 15 min/.test(r)),
+  assert(rows.some((r) => /no frame arrives for 15 min/.test(r)),
     "the no-progress watchdog is not shown in minutes");
   // require_safety_monitor is the one escalation field that decides what an
   // ABSENT monitor means, and this rig's seed leaves it off. OFF is not silence:

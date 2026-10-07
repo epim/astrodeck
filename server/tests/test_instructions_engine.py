@@ -279,7 +279,7 @@ async def test_mutual_jumps_terminate_via_budget(sim_hub, temp_store, monkeypatc
     eng.start(plan)
     await _wait_done(eng, timeout=60.0)
     assert eng._jumps_spent == 6                       # budget spent, then capped
-    assert any(lvl == "warning" and "jump budget exhausted" in msg
+    assert any(lvl == "warning" and "jump limit reached" in msg
                for lvl, msg in logs)
     assert eng.state["state"] not in ("aborted",)      # degraded, never aborted
 

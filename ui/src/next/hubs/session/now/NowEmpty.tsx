@@ -528,8 +528,8 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
     void resumeSession(sessionId).then(
       (r) => {
         enqueueToast(r.resumed
-          ? { level: "success", title: "Session resumed", detail: `${r.remaining} frames still owed` }
-          : { level: "warning", title: "Nothing to resume", detail: "The session owes no frames." });
+          ? { level: "success", title: "Session resumed", detail: `${r.remaining} frames remaining` }
+          : { level: "warning", title: "Nothing to resume", detail: "The session has no remaining frames." });
         // See "disarmed, named (D-04)" above: `r`'s declared type carries no
         // `disarmed` field, but the parsed response does when the resume's
         // own singleton armed this session over another.
@@ -543,7 +543,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
         }
       },
       (e: Error) => enqueueToast({
-        level: "error", title: "Resume did not land", detail: e.message,
+        level: "error", title: "Resume not confirmed", detail: e.message,
       }),
     );
   };
@@ -675,7 +675,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             {hint && <span>{hint}</span>}
             {armed && (
               <Mono size={10} tone="dim">
-                {armed.name} - {armed.owed} frames owed ({armed.accepted}/{armed.total})
+                {armed.name} - {armed.owed} frames remaining ({armed.accepted}/{armed.total})
               </Mono>
             )}
             {armed && hold && !recovering && (
@@ -699,7 +699,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             )}
             {last && (
               <Mono size={10} tone="dim">
-                Last night: {last.plan_name} - {fmtIntegration(last.integration_s)} banked,{" "}
+                Last night: {last.plan_name} - {fmtIntegration(last.integration_s)} captured,{" "}
                 {endReasonMeta(last.end_reason).word.toLowerCase()}.
               </Mono>
             )}

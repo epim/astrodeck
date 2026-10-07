@@ -54,7 +54,7 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 // ------------------------------------------------------------- the fake rig
 /** The session delete's sentence as it stood before #266, verbatim. */
 const SESSION_BODY =
-  "Removes the session ledger and thumbnails. Saved FITS frames are NOT deleted. This cannot be undone.";
+  "Removes the session log and thumbnails. Saved FITS frames are NOT deleted. This cannot be undone.";
 
 const READABLE = {
   id: "s-ok", name: "M31 LRGB", status: "dormant",

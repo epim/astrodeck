@@ -473,7 +473,7 @@ await test("the stored anchor goes with the request, and the server's reframe de
     await flush();
     if (asks) {
       eq(q("framing-question")?.textContent.includes(
-        "Re-framing moves the panels 14.8', more than the 10.0' this grid allows, so all 6 panels start from zero: 212 banked subs"),
+        "Re-framing moves the panels 14.8', more than the 10.0' this grid allows, so all 6 panels start from zero: 212 captured frames"),
       true, `${what}: the question, got ${JSON.stringify(q("framing-question")?.textContent)}`);
       eq(applyCalls.length, 0, `${what}: applied before the question was answered`);
     } else {
@@ -555,7 +555,7 @@ await test("the re-frame question appears only with banked subs, and a skip neve
   click(doneBtn());
   await flush();
   eq(q("framing-question")?.textContent.includes(
-    "Changing the grid from 3x2 to 4x2 means all 8 panels start from zero: 212 banked subs belong to the old layout and stay on disk."),
+    "Changing the grid from 3x2 to 4x2 means all 8 panels start from zero: 212 captured frames belong to the old layout and stay on disk."),
   true, `the grid question, got ${JSON.stringify(q("framing-question")?.textContent)}`);
   eq(applyCalls.length, 0, "DONE applied before the question was answered");
   click(buttonByText("RE-FRAME"));

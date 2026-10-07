@@ -341,29 +341,7 @@ class TestEveryBlockWhereItsLaneRuns:
 #: every other Example's text is unchanged. Deliberate, not a regression.
 EXAMPLE_BRIEFS = {
     "example-campaign": (
-        "This flow arms at astronomical dusk (−30 min). It then selects the "
-        "best of M33, NGC 7331, IC "
-        "1396, M45 - above 30°, at least 40° from the moon (if up), within 4 "
-        "h of the meridian. For each target it autofocuses (v-curve sweep), "
-        "guides with PHD2 (settle below 1.5″, dither every 3 frames). Capture "
-        "interleaves one sub per filter per pass - L 60 s × 45, R 60 s × 45, "
-        "G 60 s × 45, B 60 s × 45, Ha 180 s × 45, OIII 180 s × 45, SII 180 s "
-        "× 45 - so every channel grows evenly. When a target's quota is met, "
-        "a session report is cut and the pool advances to the next best - "
-        "finished targets are never re-selected. If the active target sinks "
-        "to the 30° floor, it is set aside for tonight - a restart tonight "
-        "does not retry it, the next night does - and the next best takes "
-        "over. If cloud cover above 40% is detected, imaging pauses at the "
-        "frame boundary and the calibration queue banks whatever the library "
-        "lacks (darks → bias → flats-if-panel); once the sky holds clear for "
-        "4 min it re-cools the sensor to setpoint and waits for it to "
-        "stabilize, restores the filter, re-centers, refocuses if drifted, "
-        "and resumes at the same slot. When astronomical night ends, the "
-        "mount parks and the dust flap + dome closes, then the camera warms; "
-        "the flow re-arms at the next dusk and resumes mid-cycle from the "
-        "ledger. Rain, wind, or power failure aborts and parks "
-        "unconditionally - a stale reading counts as unsafe. Once all 4 "
-        "targets hold their 45-cycle quota, the rig stays parked."),
+        "This flow arms at astronomical dusk (−30 min). It then selects the best of M33, NGC 7331, IC 1396, M45 - above 30°, at least 40° from the moon (if up), within 4 h of the meridian. For each target it autofocuses (v-curve sweep), guides with PHD2 (settle below 1.5″, dither every 3 frames). Capture interleaves one sub per filter per pass - L 60 s × 45, R 60 s × 45, G 60 s × 45, B 60 s × 45, Ha 180 s × 45, OIII 180 s × 45, SII 180 s × 45 - so every channel grows evenly. When a target's quota is met, a session report is cut and the pool advances to the next best - finished targets are never re-selected. If the active target sinks to the 30° floor, it is set aside for tonight - a restart tonight does not retry it, the next night does - and the next best takes over. If cloud cover above 40% is detected, imaging pauses at the frame boundary and the calibration queue banks whatever the library lacks (darks → bias → flats-if-panel); once the sky holds clear for 4 min it re-cools the sensor to setpoint and waits for it to stabilize, restores the filter, re-centers, refocuses if drifted, and resumes at the same slot. When astronomical night ends, the mount parks and the dust flap + dome closes, then the camera warms; the flow re-arms at the next dusk and resumes mid-cycle from the session log. Rain, wind, or power failure aborts and parks unconditionally - a stale reading counts as unsafe. Once all 4 targets hold their 45-cycle quota, the rig stays parked."),
     "example-m31": (
         "This flow arms at astronomical dusk (−30 min). It then arms M31 - "
         "Andromeda. For each target it autofocuses (v-curve sweep), guides "

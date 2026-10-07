@@ -101,7 +101,7 @@ export function IncidentStack({ compact = false }: { compact?: boolean }): JSX.E
       // The server's own message, not a generic one: "no guider connected" and
       // "a capture is already running" are different nights.
       const detail = e instanceof ApiError || e instanceof Error ? e.message : String(e);
-      useStore.getState().enqueueToast({ level: "error", title: "That did not land", detail });
+      useStore.getState().enqueueToast({ level: "error", title: "Action not confirmed", detail });
     });
   };
 

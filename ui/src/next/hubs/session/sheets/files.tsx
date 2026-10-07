@@ -111,7 +111,7 @@ const MATERIALIZE_DANGER =
   "capture. Stack from this folder; don't tidy up inside it.";
 
 const EMPTY_NOTE =
-  "The list fills as subs land; each one is downloadable the moment its HFR check passes.";
+  "The list fills as frames are captured; each one is downloadable the moment its HFR check passes.";
 
 /** A checkbox whose label is a picture still needs a NAME. `display: none`
  *  would take it out of the accessibility tree with the pixels; this keeps it
@@ -263,7 +263,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
       } catch (e) {
         if (!alive) return;
         setSession(null);
-        setGradeNote(`The session ledger could not be read: ${e instanceof Error ? e.message : "unknown error"}.`);
+        setGradeNote(`The session log could not be read: ${e instanceof Error ? e.message : "unknown error"}.`);
       }
       if (!alive) return;
       setSession(s);
@@ -408,7 +408,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
     : totals.subs > 0
       ? `${subsPhrase(totals.subs)} · ${fmtIntegration(totals.integrationS)} · ${fmtBytes(totals.bytes)} on the rig`
       : live
-        ? `${phaseWord(seq)} · nothing banked yet`
+        ? `${phaseWord(seq)} · no frames captured yet`
         : "nothing on the rig for this target";
 
   // ------------------------------------------------------------- the picker
@@ -462,7 +462,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
       : `Raw frames need ${accessPhrase("view.media")}, so this hands you JPEG previews instead`
         + " - open a filter and use SAVE JPG on the frames you want, or save the stack above.";
   const dlReason = jpegReason
-    ?? (totals.subs === 0 ? "Nothing has been banked for this source yet."
+    ?? (totals.subs === 0 ? "No frames have been captured for this source yet."
       : cost.count === 0 ? "Tick at least one filter."
         : emptyPick
           ? "The library index has no files for these filters, so a partial pick cannot be sent. Tick every filter to send the whole night instead."
@@ -708,7 +708,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
           )}
           {manual && (
             <p style={{ margin: "6px 0 0", fontSize: 11, color: "var(--text-faint)" }}>
-              These frames are not in a session ledger, so there are no grades to show.
+              These frames are not in a session log, so there are no grades to show.
             </p>
           )}
 
@@ -878,7 +878,7 @@ function FilterRow({ row, checked, expanded, onToggleCheck, onExpand, children }
         <Checkbox22
           checked={checked && !dead}
           onChange={onToggleCheck}
-          lockedReason={dead ? "No subs of this filter have been banked yet." : null}
+          lockedReason={dead ? "No frames have been captured with this filter yet." : null}
           onExplain={explainLock}
           data-testid={`files-tick-${row.filter || "none"}`}
           label={<span style={SR_ONLY}>{`include ${filterLabel(row.filter)}`}</span>}
@@ -948,8 +948,8 @@ function FrameList({
       <div style={{ padding: "8px 0 10px" }}>
         <Mono size={10} tone="dim">
           {row.subs > 0
-            ? "No ledger rows for this filter, so there is nothing to grade here."
-            : "Nothing banked yet."}
+            ? "No frames are recorded for this filter, so there is nothing to grade here."
+            : "No frames captured yet."}
         </Mono>
       </div>
     );

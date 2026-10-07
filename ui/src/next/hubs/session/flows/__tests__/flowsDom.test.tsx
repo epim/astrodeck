@@ -427,7 +427,7 @@ test("precondition: the list rendered with rows from the stubbed library", () =>
 test("the header counts what the library actually returned", () => {
   const s = tid("flows-summary");
   assert(s != null, "no summary line");
-  assert(/2 saved · quick sessions land here/.test(s.textContent),
+  assert(/2 saved · quick sessions appear here/.test(s.textContent),
     `the proto's line, got "${s.textContent}"`);
 });
 

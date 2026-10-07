@@ -81,11 +81,14 @@ def _dss2_present() -> bool:
 
 
 def _player_one_present() -> bool:
+    # The SAME variable the loader reads (``sdk_paths.PLAYERONE_SDK_ENV``): the
+    # probe used to ask for ``PLAYERONE_SDK_DIR`` and so disagreed with the
+    # loader in both directions (#632).
     try:
         from .devices import sdk_paths
         return any(p.exists() for p in
                    sdk_paths.candidates("playerone", "PlayerOneCamera",
-                                        env_var="PLAYERONE_SDK_DIR"))
+                                        env_var=sdk_paths.PLAYERONE_SDK_ENV))
     except Exception:
         return False
 
@@ -125,7 +128,7 @@ REGISTRY: tuple[RestrictedAsset, ...] = (
             "products and this SDK to develop any products without any "
             "restrictions. — Player One Astronomy, SDK license.txt"),
         reading=(
-            'The vendor text preserves MIT-like notice and disclaimer language but uses a different grant. Redistribution is plausible, but written confirmation remains needed. The inspected source tarball excludes Player One binaries. The fresh Windows PyInstaller artifact and examined published archives contain all six SDK libraries, so the claim that releases carry none is incorrect. The owner must obtain redistribution confirmation or correct each packaging path; fetching on one installation does not fix shipped copies.'),
+            'The vendor text preserves MIT-like notice and disclaimer language but uses a different grant. Redistribution is plausible, but written confirmation remains needed. The inspected source tarball excludes Player One binaries. The fresh Windows PyInstaller artifact and examined published archives contain all six SDK libraries, so the claim that releases carry none is incorrect. The owner must obtain redistribution confirmation or correct each packaging path; fetching on one installation does not fix shipped copies. The ruling is pending in #632, and until then the frozen, wheel and Docker builds carry the files under `pending` in packaging/distribution-policy.json.'),
         remedy="fetch",
         source="https://player-one-astronomy.com/service/software/",
         without="Player One cameras cannot be opened natively",

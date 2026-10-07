@@ -41,7 +41,7 @@ export default function GuidedHome({ onOpen, onStart }: { onOpen: (view: ViewNam
       <div className="guided-heading">
         <div><span className="guided-eyebrow">Your observatory</span><p>Set up for tonight</p></div>
         <Segmented options={[{ value: "first", label: "First light" }, { value: "returning", label: "Another night" }]}
-          value={journey} onChange={setJourney} ariaLabel="Your observing journey" />
+          value={journey} onChange={setJourney} ariaLabel="Your observing experience" />
       </div>
       <section className="guided-hero" aria-labelledby="guided-title">
         <div className="guided-hero-copy">

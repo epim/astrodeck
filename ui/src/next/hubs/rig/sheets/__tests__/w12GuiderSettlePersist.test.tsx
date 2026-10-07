@@ -19,6 +19,13 @@
 // Reuses rigGuiderDom.test.tsx's jsdom + fetch-recorder shape rather than
 // importing it (that file is not this WP's to edit, and a shared harness
 // module would be a third file this WP would need to touch).
+//
+// THE GUIDER IS PHD2 HERE. This file seeded the native guider until #679
+// (WP-94): SETTLE PX and SETTLE S are locked on the native guider, which
+// ignores both (guide/native.py::dither reads only the timeout), so the
+// commit-on-blur cases below could not type into them. They run against PHD2,
+// the guider that applies all three; the native lock has its own file,
+// w14GuiderSettleNative.test.tsx.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -144,9 +151,12 @@ function seed(principal: Record<string, unknown> = OPERATOR): void {
         connected: { guider: { name: "ZWO ASI120MM", connected: true } },
         backend_links: [{ role: "guider", connected: true, error: null }],
         busy_lanes: [],
-        guider: { ...guideStats(), name: "AstroDeck native" },
+        guider: { ...guideStats(), name: "PHD2" },
         guide_camera: { name: "ZWO ASI120MM", connected: true, preview_ok: true, preview_source: "ZWO ASI120MM" },
-        providers: { guide: { kind: "astrodeck", label: "AstroDeck native", reason: "native guider", options: [], eligible: [] } },
+        // PHD2, not the native guider: SETTLE PX and SETTLE S are only
+        // editable where the guider applies them (#679, WP-94). The native
+        // guider locks both, and w14GuiderSettleNative.test.tsx owns that case.
+        providers: { guide: { kind: "backend", label: "PHD2", reason: "PHD2 bridge", options: [], eligible: [] } },
       },
     } as never);
   });

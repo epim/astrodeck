@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
                       field_validator)
 
+from ..aio import reap
 from ..alerting import AlertDispatcher
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_VIEW_SITE_DERIVED,
@@ -565,15 +566,9 @@ async def _lifespan(app: "FastAPI"):
         await sync_push_runner.stop()
         await dispatcher.stop()
         task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+        await reap(task)
         boot_cause_task.cancel()
-        try:
-            await boot_cause_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        await reap(boot_cause_task)
         # Stop the relay dial-out (best-effort; never raises out of shutdown).
         if relay_client is not None:
             try:
@@ -590,10 +585,7 @@ async def _lifespan(app: "FastAPI"):
         bt = getattr(hub, "_boot_connect_task", None)
         if bt is not None and not bt.done():
             bt.cancel()
-            try:
-                await bt
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(bt)
         # Clean teardown of an auto-connected rig (best-effort; never raises).
         try:
             await hub.disconnect_all()
@@ -1057,7 +1049,7 @@ def _asks_adopt(session: Session, report) -> bool:
 
 
 #: How a step is listed when its frames outran ADOPT's catalogue lookup (#249).
-_ADOPT_AGAIN = ("frames were banked on this step after ADOPT looked it up in "
+_ADOPT_AGAIN = ("frames were captured on this step after ADOPT looked it up in "
                 "the catalogue, so it was not matched; press ADOPT again to "
                 "include them")
 
@@ -1340,8 +1332,8 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
         bus.log("info",
                 f"'{s.name}' continues counting "
                 f"{_MODE_WORDS.get(now, now)} where its session counted "
-                f"{_MODE_WORDS.get(was, was)}: nothing banked recounts "
-                f"differently ({banked} sub{'' if banked == 1 else 's'} "
+                f"{_MODE_WORDS.get(was, was)}: the captured frame count is unchanged "
+                f"({banked} sub{'' if banked == 1 else 's'} "
                 f"either way), so nothing was asked.", "sequence")
     out = {"id": s.id, "night": night, "continued": True,
            "kept": len(report.kept), "new": len(report.new),
@@ -1476,6 +1468,14 @@ def _spawn(name: str, coro, *, replace: bool = False) -> dict:
             await coro
         except asyncio.CancelledError:
             bus.log("warning", f"{name} cancelled", name)
+            # RE-RAISE (#252): this coroutine runs as the task's own top
+            # level, so swallowing its cancellation here would leave the task
+            # reporting a normal, uncancelled completion -- a claim nothing
+            # behind it keeps, the same broken promise #235/#252 names
+            # elsewhere. Nothing today awaits this task directly, but the
+            # guard that scans for the shape cannot know that, and a future
+            # caller that DOES await it deserves an honest `cancelled()`.
+            raise
         except (DeviceError, Exception) as e:
             bus.log("error", f"{name} failed: {e}", name)
 
@@ -1535,6 +1535,7 @@ def _spawn_connect(coro) -> dict:
             await coro
         except asyncio.CancelledError:
             bus.log("warning", "profile cancelled", "profile")
+            raise  # #252: see _spawn.wrapped -- the task must report cancelled.
         except (DeviceError, Exception) as e:
             bus.log("error", f"profile failed: {e}", "profile")
 
@@ -1823,6 +1824,15 @@ class FocuserSetPositionBody(BaseModel):
 
 class RotatorMoveBody(BaseModel):
     position_deg: float
+    #: Send the single mechanical move to the target, with none of the
+    #: one-sided approach's overshoot (#526), and log it as a calibration move
+    #: (#594, WP-88). For a measurement that asks whether the camera follows
+    #: the rotator (``scripts/rig_rotator_follow.py``): a move against the
+    #: approach direction otherwise goes ``ROTATOR_BACKLASH_DEG`` past its
+    #: target and comes back, which adds 10 degrees of travel to the thing
+    #: under test. False by default, so Go and the nudge buttons, which post
+    #: here too, keep the approach.
+    direct: bool = False
 
 
 class RotatorReverseBody(BaseModel):
@@ -5409,11 +5419,19 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/safety/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def safety_state():
-        """``{connected, reading|null, streak, stale}`` for the Monitor/Settings
-        safety widget. ``reading`` is the hub's CACHED own-cadence read (never an
-        inline ``is_safe()`` — C1-12); ``streak`` is the engine's consecutive
-        same-verdict count (the gate's hysteresis), read defensively so this lane
-        stays decoupled from the engine lane landing its counters."""
+        """``{connected, reading|null, streak, stale, sun_watch}`` for the
+        Monitor/Settings safety widget. ``reading`` is the hub's CACHED
+        own-cadence read (never an inline ``is_safe()`` — C1-12); ``streak`` is
+        the engine's consecutive same-verdict count (the gate's hysteresis), read
+        defensively so this lane stays decoupled from the engine lane landing its
+        counters.
+
+        ``sun_watch`` is ``{blind, blind_since, last_position_at, armed}`` (#137):
+        whether the sun-exclusion net can currently see the mount, since when,
+        when it last read a position, and whether its task is alive. TIMES AND
+        BOOLEANS ONLY, which is what lets this stay readable at ``view.status``
+        for a viewer: the position the net last read, and anything derived from
+        it, is a latitude oracle (#140) and is never part of this."""
         reading = await hub.safety_reading()
         reading_dict = hub._safety_reading_dict(reading) if reading else None
         stale = bool(reading.stale) if reading else False
@@ -5430,6 +5448,7 @@ def create_app(*, bind_host: str | None = None,
             "reading": reading_dict,
             "streak": streak,
             "stale": stale,
+            "sun_watch": sun_watch.state(),
         }
 
     @app.post("/api/safety/simulate", dependencies=[Depends(require(CAP_CONFIG_SAFETY))])
@@ -6403,8 +6422,11 @@ def create_app(*, bind_host: str | None = None,
             # an editor. The canvas's compile (``flowsCompile``) runs when a
             # flow opens, after each save and on the Target modal's DONE or
             # LOOP PANELS, which write through ``flowsApplyFraming``; an edit
-            # between them compiles nothing (#356). The modal also posts its
-            # own draft here once a framing edit settles, for its RUN numbers.
+            # between them compiles nothing (#356), and Tonight asks for one
+            # more: when Tonight is read over a graph the compile in hand was
+            # not made from (#688), so its PLAN is never a stale graph's.
+            # The modal also posts its own draft here once a framing edit
+            # settles, for its RUN numbers.
             # The refusal is reported in the same list as every other loss.
             unmapped = [{"key": "plan", "detail": str(e), "level": "danger"}]
         run_readouts: dict = {}
@@ -7723,7 +7745,7 @@ def create_app(*, bind_host: str | None = None,
                     f"Removed {kept.stem}, which could not be read. Its "
                     f"backup {kept.name} remains in the sessions folder, "
                     f"and so do the session's thumbnails: renaming the "
-                    f"backup to {kept.stem} brings the ledger back as it "
+                    f"backup to {kept.stem} brings the session log back as it "
                     f"was when the backup was taken, if the backup itself "
                     f"is intact.")}
 
@@ -8999,9 +9021,16 @@ def create_app(*, bind_host: str | None = None,
         # route's own gap): every caller that moves the rotator now arrives
         # from the one side, exactly as the rotate loop does. Go and the ±1
         # degree nudges both post here (RotatorCard.tsx, RotatorPanel.tsx),
-        # so both inherit it.
-        return _spawn("rotator", hub._approach_rotator_mechanical(
-            rot, mech_target, mech, rcfg, epoch)) | {
+        # so both inherit it. ``direct`` (#594, WP-88) is the one caller that
+        # must not: a measurement of whether the camera follows the rotator
+        # sends the single mechanical move, through the same epoch-checked leg
+        # loop. Passed only when set, so the default call is the one it was.
+        moves = (hub._approach_rotator_mechanical(
+                     rot, mech_target, mech, rcfg, epoch, direct=True)
+                 if body.direct else
+                 hub._approach_rotator_mechanical(
+                     rot, mech_target, mech, rcfg, epoch))
+        return _spawn("rotator", moves) | {
             "target_deg": round(target, 2), "adjusted": adjusted}
 
     @app.post("/api/rotator/halt",
@@ -9046,6 +9075,44 @@ def create_app(*, bind_host: str | None = None,
         except DeviceError as e:
             raise _err(e)
         return _spawn("rotate_to_pa", hub.sync_rotator_to_sky(body.exposure_s))
+
+    @app.post("/api/rotator/preflight",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def rotator_preflight():
+        """TEST ROTATOR (WP-88; #145, #594): learn the sky/mechanical sign and
+        check the camera follows the rotator, measuring only what this connect
+        has not measured (``Hub.ensure_rotator_ready``).
+
+        TURNS THE ROTATOR about 22 degrees and takes four plate solves, so it
+        is refused up front, with nothing done, while a sequence or an
+        exposure holds the camera: a run's frames would be ruined and its
+        field mis-registered. A live loop is not refused, as for the other
+        two solving routes: the calibrations yield the camera themselves.
+        ``goto_and_center`` runs the same preflight by
+        itself on the first rotating hop of a connect; this is the operator's
+        way to run it ahead of time, at dusk, with the answer on the status
+        block (``rotator.sky_sign``, ``rotator.trusted``). Runs on the
+        ``rotate_to_pa`` lane, like the other two solving routes, so a second
+        press while one runs is the lane's own 409. A failure is a log line;
+        the result is the status block.
+
+        A RECORDING IS NAMED FIRST. It holds the exposure guard for the whole
+        file, so the busy test below would refuse it too, but with a
+        sentence about a sequence or an exposure that is not what is
+        running. ``_refuse_if_camera_owned`` answers with the recording's own
+        code, as it does on every other route that takes the camera."""
+        _refuse_if_camera_owned()
+        if engine.running or hub._capture_lock.locked():
+            raise HTTPException(
+                409, "camera is busy (a sequence or an exposure is running); "
+                     "rotator preflight refused")
+        try:
+            hub.require("rotator")
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        return _spawn("rotate_to_pa", hub.ensure_rotator_ready())
 
     @app.post("/api/rotator/rotate-to-pa",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
@@ -9147,17 +9214,18 @@ def create_app(*, bind_host: str | None = None,
                                                   "flight",
                     "position": await foc.get_position()}
         task.cancel()
-        settled = True
-        try:
-            await asyncio.wait_for(asyncio.shield(task),
-                                   timeout=_LANE_UNWIND_TIMEOUT_S)
-        except Exception:
-            # Shielded, so the timeout abandons the WAIT and not the unwind:
-            # the sweep keeps putting the focuser back even though this
-            # response has stopped waiting for it. ``except Exception`` and not
-            # ``BaseException`` on purpose — a cancel of THIS request must
-            # still propagate.
-            settled = False
+        # ``asyncio.wait`` and not ``wait_for(shield(task))``: since WP-59
+        # (#252) a ``_spawn`` lane honestly ends ``cancelled()`` instead of
+        # swallowing its own cancel, and awaiting it re-raised THAT
+        # CancelledError here, past the old ``except Exception``, so the
+        # route ended with no response at all. ``wait`` never raises the
+        # task's outcome, never cancels the task when the bound passes (the
+        # timeout abandons the WAIT and not the unwind: the sweep keeps
+        # putting the focuser back after this answer), and a cancel of THIS
+        # request still propagates out of it.
+        done, _pending = await asyncio.wait({task},
+                                            timeout=_LANE_UNWIND_TIMEOUT_S)
+        settled = task in done
         await foc.halt()
         return {"cancelled": True, "settled": settled,
                 "position": await foc.get_position()}

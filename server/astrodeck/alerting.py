@@ -306,6 +306,14 @@ class AlertDispatcher:
         # so the user is not lulled into a false sense of monitoring. Keyed by the
         # url so a *changed* url re-warns; reset when a ping succeeds.
         self._deadman_warned: str | None = None
+        # When the monitor last ACCEPTED a ping (2xx/3xx), and which url it
+        # accepted it for (#125). ``_last_deadman`` above is the last
+        # ATTEMPT, and ``_deadman_warned`` is only 'no failure said yet', so
+        # neither can tell a monitor that answers from one nothing has been
+        # sent to. The url is held as a hash, not text: it carries a per-ping
+        # secret and nothing that prints this object may be able to leak it.
+        self._last_deadman_ok: float | None = None
+        self._last_deadman_ok_for: int | None = None
         # The outbox (#538): alerts the reader built, oldest first, for the
         # sender task. ``_outbox_ready`` wakes the sender; it is made by run()
         # on the loop that runs it, since an asyncio.Event binds to the first
@@ -908,6 +916,13 @@ class AlertDispatcher:
         dm_url = getattr(self.get_config(), "deadman_url", "") or ""
         last_age = (time.monotonic() - self._last_deadman
                     if self._last_deadman else None)
+        # Only for the url configured NOW: a ping accepted for a previous url
+        # says nothing about this one, and a freshly pasted typo must not
+        # read as answering because the old check was.
+        ok_age = (time.monotonic() - self._last_deadman_ok
+                  if (self._last_deadman_ok is not None and dm_url
+                      and self._last_deadman_ok_for == hash(dm_url))
+                  else None)
         return {
             "undelivered": len(self._undelivered),
             "undelivered_by_sink": by_sink,
@@ -915,6 +930,12 @@ class AlertDispatcher:
                 "configured": bool(dm_url),
                 "healthy": bool(dm_url) and self._deadman_warned is None,
                 "last_ping_age_s": last_age,
+                # Seconds since the monitor last ACCEPTED a ping, None if it
+                # never has. ``healthy`` is "nothing has failed yet", which is
+                # also true before the first request leaves, so only this says
+                # the rig is actually being watched (#125). Ages and booleans
+                # only: never the url.
+                "last_ok_age_s": ok_age,
             },
         }
 
@@ -1003,6 +1024,11 @@ class AlertDispatcher:
             return
         # Healthy ping: clear the warn latch so a later failure re-warns.
         self._deadman_warned = None
+        # Stamped HERE and nowhere earlier: a transport error, a blocked url
+        # and a 4xx/5xx all returned above, and none of them is a ping the
+        # monitor accepted (#125).
+        self._last_deadman_ok = time.monotonic()
+        self._last_deadman_ok_for = hash(url)
 
     @staticmethod
     def _scrub_url(url: str) -> str:

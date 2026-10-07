@@ -72,7 +72,7 @@ class TestThePoolAdvancesWithoutARule:
         to name the mechanism, because that is what an operator checks."""
         _plan, unmapped = to_sequence_plan(_campaign())
         detail = _notes_for(unmapped, "on_target_complete")[0]["detail"]
-        assert "ledger" in detail and "next member" in detail, detail
+        assert "session log" in detail and "next member" in detail, detail
 
 
 class TestNotesDoNotHoldTheStart:
