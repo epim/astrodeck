@@ -30,6 +30,7 @@ import {
 } from "../../../../lib/equipment";
 import { useStore } from "../../../../store";
 import { sentenceFrom } from "../profiles/profilesModel";
+import { onRelay } from "../../../lib/relay";
 import type {
   ConnectRigResult, DriverInfo, Profile, ProfileRow, RoleResult,
 } from "../../../../types";
@@ -204,14 +205,22 @@ export async function activateProfileRow(
 }
 
 /** The toast for an activate failure here, where there is no force control of
- *  its own - this surface always points at the one that has it. Worded from
- *  the server's own coded-409 detail (#256): auto-resume's recovery ladder
- *  counts as "running" too (#238), and while it re-centres the mount after a
- *  restart the engine is idle, so a fixed "a sequence ... is running" sent the
- *  operator looking for a run the Monitor does not show. */
-export function activateErrorMessage(e: unknown): string {
+ *  its own - this surface points at the one that has it. Worded from the
+ *  server's own coded-409 detail (#256): auto-resume's recovery ladder counts as
+ *  "running" too (#238), and while it re-centres the mount after a restart the
+ *  engine is idle, so a fixed "a sequence ... is running" sent the operator
+ *  looking for a run the Monitor does not show.
+ *
+ *  OVER THE RELAY THERE IS NOTHING TO POINT AT (#685). `force` is the one option
+ *  of the activate the rig refuses 403 `local_only` there, and the profiles
+ *  sheet does not offer it on that origin, so the pointer would send the
+ *  operator to a path that is closed. The message says to stop the run and that
+ *  forcing needs the LAN. `viaRelay` is read at call time; a test passes it. */
+export function activateErrorMessage(e: unknown, viaRelay: boolean = onRelay()): string {
   return e instanceof ApiError && e.code === "running"
-    ? `${sentenceFrom(e.message)} Stop it first, or force-activate from the profiles sheet.`
+    ? (viaRelay
+      ? `${sentenceFrom(e.message)} Stop it first: forcing the switch needs the LAN, and you are connected through the relay.`
+      : `${sentenceFrom(e.message)} Stop it first, or force-activate from the profiles sheet.`)
     : e instanceof ApiError && e.status === 409
       ? "Another profile is still connecting - wait for it to finish before switching again."
       : e instanceof Error ? e.message : "activate failed";

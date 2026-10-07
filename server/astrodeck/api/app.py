@@ -123,6 +123,7 @@ from .. import factory_reset as factory_reset_module
 from .. import gallery as gallery_module
 from .. import capture_geometry
 from .. import gallery_listing
+from .. import rig_beacon
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
@@ -187,7 +188,7 @@ from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                manifest_json, readme_text, weights_csv)
 from ..sequence.resume_arm import ResumeArm
 from ..plans import migrate_plan_policy_fields
-from ..sequence.session import (Session, SessionUnreadable,
+from ..sequence.session import (LiveSessionReadable, Session, SessionUnreadable,
                                 migrate_legacy_resume, session_store)
 from ..sequence.session_files import active_session, files_index
 from ..weather import NoNightError, weather_service
@@ -213,6 +214,13 @@ dispatcher = AlertDispatcher(bus, lambda: config_store.cfg())
 # external dead-man's-switch + emit progress heartbeats (§1.8/§1.9-F). Done by
 # injection (not an import inside the engine) to avoid a circular import.
 engine.dispatcher = dispatcher
+# The dead-man ping carries the rig's status beacon (#606 part A): six words from
+# a closed vocabulary, no site, no coordinates, no label. The source is read at
+# each ping, so it reports the engine and the night log as they are THEN. Set
+# here, beside the engine it describes, because the dispatcher is built above
+# before the engine exists; a beacon that is built and never handed to the
+# dispatcher is a claim nothing keeps (test_w15_rig_beacon.py pins this line).
+dispatcher.beacon_source = rig_beacon.make_source(engine, bus)
 
 # Auto-resume-at-dusk service (sessions spec §5). Started in the lifespan, like
 # the AlertDispatcher; a disarm or any manual start stops its interest (it
@@ -3256,6 +3264,30 @@ def _remote_fence_denies(method: str, path: str) -> bool:
     unsafe_method = method not in {"GET", "HEAD", "OPTIONS"}
     return unsafe_method and any(
         _under(path, prefix) for prefix in _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES)
+
+
+def _tell_sun_watch_the_mount_parked() -> None:
+    """Tell the sun watch a park this route made has been CONFIRMED (#747, the
+    #696 class).
+
+    The sun watch's blind fallback projects from the last position IT read, and a
+    park it did not see leaves that position stale: if the link then drops before
+    its next tick it logs a false "SUN WATCH: ... Parking now." error, which pages
+    the owner, and sends a park to a mount that is already parked. The engine's
+    wind-down and ``dawn_park`` already tell it (#696); the operator's PARK and the
+    roof close's park-for-the-roof did not.
+
+    Reached through the hub (``SunWatch`` sets ``hub.sun_watch`` itself), the way
+    the engine and dawn park reach it, so a hub without one (every test double, a
+    build without the net) is a no-op. Called only AFTER ``tel.park()`` has
+    returned: a park that raised was not confirmed and tells nobody. Never raises:
+    bookkeeping must not turn a park that worked into a failed route."""
+    try:
+        watch = getattr(hub, "sun_watch", None)
+        if watch is not None:
+            watch.note_parked()
+    except Exception:       # noqa: BLE001 - see the docstring
+        pass
 
 
 def create_app(*, bind_host: str | None = None,
@@ -7928,10 +7960,6 @@ def create_app(*, bind_host: str | None = None,
         # while the engine runs THIS session the file is not ours to touch.
         # Checked once before the drain as a hint and once in the section
         # that decides.
-        #
-        # The one name only this route needs, imported where it is used.
-        from ..sequence.session import LiveSessionReadable
-
         def _running_it() -> bool:
             ours = getattr(engine, "_session", None)
             return bool(engine.running and ours is not None
@@ -8974,6 +9002,9 @@ def create_app(*, bind_host: str | None = None,
                 hub.invalidate_field_solve("the mount is parking")
                 hub.note_pointing_moved()
                 await tel.park()
+            # The sun watch's blind fallback must not project from the pre-park
+            # pointing (#747); after the await, so only a park that returned.
+            _tell_sun_watch_the_mount_parked()
             # PARK IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE TO PROVE.
             #
             # Until 2026-08-02 this path wrote nothing anywhere. The morning
@@ -9014,11 +9045,22 @@ def create_app(*, bind_host: str | None = None,
 
         async def _home():
             t = hub.require("telescope")
+            # READ BEFORE THE HOME IS SENT (#725, #133's second finding). After
+            # an AM5 reset the mount believes it is already at home, so ``:hP#``
+            # moves nothing and "homed" would be a success line written by the
+            # caller regardless of what the callee proved. A mount whose
+            # position is unknown gets NO line here: the driver has already
+            # warned that the tube may not have moved, and a quiet log is more
+            # honest than that warning followed by this claim. Read first so a
+            # driver that clears the flag as it homes cannot turn the answer
+            # into "known" after the fact.
+            known = getattr(t, "position_known", True)
             async with hub._motion_lock:
                 hub.invalidate_field_solve("the mount is homing")
                 hub.note_pointing_moved()
                 await t.find_home()
-            bus.log("info", "mount homed", "mount")   # see park, above
+            if known:
+                bus.log("info", "mount homed", "mount")   # see park, above
         return _spawn("goto", _home(), replace=True)
 
     @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
@@ -9093,6 +9135,10 @@ def create_app(*, bind_host: str | None = None,
                     hub.invalidate_field_solve("the mount is parking for the roof")
                     hub.note_pointing_moved()
                     await tel.park()
+                    # Before the close, which waits on the roof: the blind
+                    # fallback must not project from the pre-park pointing
+                    # for as long as the shutter takes (#747).
+                    _tell_sun_watch_the_mount_parked()
                 from ..sequence.roof import close_observatory
                 return await close_observatory(dome, tel, log=bus.log)
         # replace=True is UNCHANGED behaviour for a second close arriving while
@@ -9290,10 +9336,15 @@ def create_app(*, bind_host: str | None = None,
         except DeviceError as e:
             raise _err(e)
         # spec §3.5.2: a manual rotation mid-exposure ruins the frame — refuse.
+        # CODED (#750, the class of #713): ``camera_busy`` in the ``_lane_409``
+        # shape, as the preflight route's own exposure refusal is, so a client
+        # tells it from every other conflict by its code and not by matching the
+        # sentence. The sentence is unchanged and lands at ``detail.detail``.
         if hub._capture_lock.locked():
-            raise HTTPException(
-                409, f"camera is busy ({hub._capture_busy or 'exposing'}); "
-                     f"rotator move refused")
+            raise _lane_409(
+                f"camera is busy ({hub._capture_busy or 'exposing'}); "
+                f"rotator move refused",
+                code="camera_busy", lane="rotator")
         rcfg = config_store.cfg().rotator
         # THE MOTION FENCE (#574, #589): read before the first await below,
         # the same discipline `Hub._approach_rotator`'s docstring asks of

@@ -36,18 +36,27 @@
 // `StepUpCard`: it says what the five-minute rule is for and what stays on the
 // LAN, and when the rig refuses a change for want of a recent sign-in
 // (`step_up_required`) it opens a SIGN IN AGAIN form - Google by its full-page
-// redirect, a local account in place. Password resets and admin edits are still
-// refused by the rig (403 `local_only`) and say so in the sentence they fail
-// with. `UserRow.tsx` and `AddUserForm.tsx` still draw those controls armed over
-// the relay, because each takes ONE lock reason for all of its controls; giving
-// RESET and the ADMIN role option their own LAN-only reason is a change to those
-// two files, not to this one.
+// redirect, a local account in place.
+//
+// WHAT STAYS ON THE LAN IS LOCKED, NOT DISCOVERED (#734, #731). The rig refuses
+// a password reset and any role but viewer and operator over the relay (403
+// `local_only`), so `UserRow` and `AddUserForm` take a second reason beside the
+// group lock, `lanOnlyReason`, fed from here with the LAN sentence on the relay
+// and null on the LAN. It locks RESET and the admin and syncer role options and
+// nothing else; every other control stays armed.
+//
+// AND THE CHANGE IS NOT LOST TO THE REFUSAL. A row or the add form that is
+// refused for want of a recent sign-in hands this editor a way to send the same
+// change again (`onStepUp`). It is held (one at a time, the latest) and sent
+// when a PASSWORD sign-in lands (`phase` becomes `fresh`). Google leaves the
+// page, so nothing is held across it, and the card says to repeat the change.
 
-import { useCallback, useEffect, useState, type JSX } from "react";
+import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { listUsers } from "../../../../../api/backends";
 import { useCanAdminUsers } from "../../../../../lib/caps";
 import { usePrincipal } from "../../../../../store";
 import type { User } from "../../../../../types";
+import { LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { useLock, useOnRelay, useStepUp, type UseStepUpResult } from "../../../../lib/gateHook";
 import { ActionButton, Card, EmptyCard, Field, LockNote, Mono, TextInput } from "../../../../ui";
 import { AddUserForm } from "./AddUserForm";
@@ -57,7 +66,8 @@ import {
   PEOPLE_CAP, PEOPLE_LIST_HIDDEN_HINT, PEOPLE_LIST_HIDDEN_TITLE, PEOPLE_RELAY_RULE,
   PEOPLE_RELAY_SCOPE, PEOPLE_RELAY_TITLE, STEP_UP_BUSY, STEP_UP_FAILED, STEP_UP_FRESH_HINT,
   STEP_UP_GOOGLE_NOTE, STEP_UP_OPEN, STEP_UP_PASSWORD, STEP_UP_RATE_LIMITED,
-  STEP_UP_REQUIRED_HINT, STEP_UP_SUBMIT, STEP_UP_TITLE, STEP_UP_USERNAME, USERS_ADD,
+  STEP_UP_REQUIRED_HINT, STEP_UP_RETRY_HINT, STEP_UP_SUBMIT, STEP_UP_TITLE,
+  STEP_UP_USERNAME, USERS_ADD,
   USERS_ADD_CANCEL, USERS_EMPTY_HINT, USERS_EMPTY_TITLE, USERS_EYEBROW, USERS_INTRO,
   USERS_LOADING, USERS_LOAD_FAILED, errText, isStepUpMessage, SIGN_IN_GOOGLE,
 } from "./peopleModel";
@@ -80,10 +90,28 @@ export function UsersEditor(): JSX.Element {
   const { lockedReason, onExplain } = useLock({ cap: PEOPLE_CAP });
   const stepUp = useStepUp();
   const { markRequired } = stepUp;
+  // The LAN sentence for the controls the rig refuses over the relay, null on
+  // the LAN. Not `useLock({ needsLan })`: that would also fold the capability
+  // sentence in, and the group lock above already carries that.
+  const lanOnlyReason = onRelay ? LOCAL_ONLY_REASON : null;
 
   const [users, setUsers] = useState<User[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // The change the rig last refused for want of a recent sign-in, sent again
+  // when a password sign-in lands. A ref for the action (nothing renders from
+  // it) and a flag for the card's wording.
+  const heldRetry = useRef<(() => void) | null>(null);
+  const [holding, setHolding] = useState(false);
+  // Also raises the SIGN IN AGAIN form: a row reports its refusal as a sentence
+  // that `report` below recognises, but the add form keeps its own error and
+  // reports nothing upward, so without this a refused create left the form
+  // closed and the person with nowhere to sign in.
+  const hold = useCallback((retry: () => void) => {
+    heldRetry.current = retry;
+    setHolding(true);
+    markRequired();
+  }, [markRequired]);
 
   const refresh = useCallback(async () => {
     if (!canAdmin) return;
@@ -96,6 +124,20 @@ export function UsersEditor(): JSX.Element {
   }, [canAdmin]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // A password sign-in has just landed: send the held change, once. Keyed on the
+  // phase CHANGING to `fresh`, never on a change being held while it already is,
+  // so a rig that refused again would be reported and not retried in a loop.
+  const phase = stepUp.phase;
+  useEffect(() => {
+    if (phase !== "fresh") return;
+    const retry = heldRetry.current;
+    if (retry === null) return;
+    heldRetry.current = null;
+    setHolding(false);
+    setErr(null);
+    retry();
+  }, [phase]);
 
   // The rows report a failure as a sentence, so a refusal for want of a recent
   // sign-in is recognised by that exact sentence (`peopleModel.errText` is the
@@ -124,7 +166,7 @@ export function UsersEditor(): JSX.Element {
       <Note>{USERS_INTRO}</Note>
       <LockNote reason={lockedReason} data-testid="users-locknote" />
 
-      {onRelay && canAdmin && <StepUpCard stepUp={stepUp} />}
+      {onRelay && canAdmin && <StepUpCard stepUp={stepUp} holding={holding} />}
 
       {err && <Verdict tone="bad" data-testid="users-error">{err}</Verdict>}
 
@@ -132,6 +174,8 @@ export function UsersEditor(): JSX.Element {
         <AddUserForm
           lockedReason={lockedReason}
           onExplain={onExplain}
+          lanOnlyReason={lanOnlyReason}
+          onStepUp={hold}
           onCreated={async () => { setAdding(false); await refresh(); }}
         />
       )}
@@ -157,6 +201,8 @@ export function UsersEditor(): JSX.Element {
               onError={report}
               lockedReason={lockedReason}
               onExplain={onExplain}
+              lanOnlyReason={lanOnlyReason}
+              onStepUp={hold}
             />
           ))}
         </Card>
@@ -177,7 +223,7 @@ export function UsersEditor(): JSX.Element {
  *
  *  A Google sign-in leaves the page and returns to the home screen, so the card
  *  says that instead of promising to come back to this form. */
-function StepUpCard({ stepUp }: { stepUp: UseStepUpResult }): JSX.Element {
+function StepUpCard({ stepUp, holding }: { stepUp: UseStepUpResult; holding: boolean }): JSX.Element {
   const [typed, setTyped] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const username = typed ?? stepUp.username;
@@ -213,7 +259,9 @@ function StepUpCard({ stepUp }: { stepUp: UseStepUpResult }): JSX.Element {
 
         {stepUp.phase === "required" && (
           <>
-            <Note tone="warn" data-testid="users-stepup-why">{STEP_UP_REQUIRED_HINT}</Note>
+            <Note tone="warn" data-testid="users-stepup-why">
+              {holding ? STEP_UP_RETRY_HINT : STEP_UP_REQUIRED_HINT}
+            </Note>
             {stepUp.google && (
               <>
                 <div className="nx-people-actions">

@@ -188,6 +188,16 @@ export function forceActivateConfirm(detail: string): {
   };
 }
 
+/** The running-conflict toast over the RELAY, where there is no force to offer:
+ *  `force` is the one option of the activate that the rig refuses 403
+ *  `local_only` there (#685), so the dialog that would send it is not shown and
+ *  the sentence says what is true instead. Worded from the server's own detail,
+ *  like the dialog, so the auto-resume cause still says what forcing would do. */
+export function forceNeedsLan(detail: string): string {
+  return `${sentenceFrom(detail)} Stop it first: forcing the switch needs the LAN, `
+    + "and you are connected through the relay.";
+}
+
 /** UPDATE FROM RIG overwrites stored state - the profile's device intent - so
  *  it carries the same friction as DELETE. The legacy panel used a bare
  *  hold-button whose only explanation was a `title` attribute, which never

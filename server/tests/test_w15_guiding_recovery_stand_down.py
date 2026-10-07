@@ -27,8 +27,17 @@ next spell, the next target and the next run each read once.
 binning from, was set per frame and never cleared, so a second run on the
 same engine process started with the first run's last step, and the first
 pre-recovery probe of the new run (or the cloud hold's) could copy an
-exposure, gain or binning the new run never chose. It is cleared where a run
+exposure, gain or binning the new run never chose. It is reset where a run
 starts, beside ``_holding_for_clear``.
+
+RE-PINNED AT THE WAVE 15 INTEGRATION (orchestrator ruling on #711). The reset
+was to None, which left a cloud hold entered BEFORE the run's first frame with
+no step to probe with: it ran blind to its bound. The reset now SEEDS the step
+from the plan's first light exposure step (``SequenceEngine._first_light_step``),
+never from a previous run. The case below pinned "nothing to copy, so no
+frame is taken"; it pins "the new run's OWN first step is what the read
+copies, and the first run's is not" now. ``test_w15_hold_step_seeded_at_run_start``
+covers the seed itself.
 
 Both cases drive the real engine on a simulator hub whose ``mode`` is set to
 "native" (a simulated frame carries no stars and always reads cloudy, which
@@ -252,20 +261,26 @@ async def test_a_second_runs_first_probe_does_not_copy_the_first_runs_step(
     """(#711) A run on the sim shoots one frame and ends, leaving its step as
     ``_hold_step``. A second run on the same engine starts, and before its
     first frame sets a step of its own the pre-recovery read is asked for the
-    sky: with nothing to copy it takes no frame, as a fresh process would,
-    instead of shooting the first run's exposure, gain and binning.
+    sky: it copies the NEW run's own first light step (gain 100, the default
+    of the second plan's Ha step), not the first run's exposure, gain and
+    binning (gain 77).
+
+    DELIBERATE PIN CHANGE (orchestrator ruling, wave 15 integration). This
+    used to pin that the read took NO frame ("nothing to copy"), which is the
+    blind hold #711's reset left behind; the step is seeded from the plan now.
 
     The read is asked right after `start`, before the new run's task has had
-    a turn (a read with no step to copy returns without a suspension), so only
-    the reset at the run's start can answer. The state is asserted after it,
-    so the mutant fails on what it does and not on what it leaves.
+    a turn, so only the run's start can answer. The state is asserted after
+    it, so the mutant fails on what it does and not on what it leaves.
 
-    MUTANT "no reset" (``self._hold_step = None`` removed from the run's
-    start): RED (observed):
-        AssertionError: a second run's first read copied the first run's
-        step: 1 frame(s) taken: [{'exp': 0.05, 'gain': 77, 'offset': 30,
-        'binning': 1, 'slot': 0, 'save': False, 'target': 'NGC 7331',
-        'frame_type': 'Light'}]
+    MUTANT "carry the old step" (the run's start does not reset ``_hold_step``
+    at all: ``self._hold_step = self._first_light_step(plan)`` removed): RED
+    (observed):
+        AssertionError: the new run started with the old run's step
+    MUTANT "seed None" (the reset back to ``self._hold_step = None``): RED
+    (observed):
+        AssertionError: the new run started with no step of its own, so a hold
+        before its first frame would probe blind: None
     """
     plan = SequencePlan(name="first", guide=False, dither_every=0,
                         autofocus_every=0, meridian_flip=False,
@@ -291,13 +306,17 @@ async def test_a_second_runs_first_probe_does_not_copy_the_first_runs_step(
     eng.start(SequencePlan(name="second", guide=True, recover_guiding=True,
                            targets=[_target()]))
     try:
+        own = eng.plan.targets[0].steps[0]
+        assert eng._hold_step is not None, (
+            f"the new run started with no step of its own, so a hold before "
+            f"its first frame would probe blind: {eng._hold_step}")
+        assert eng._hold_step.gain != 77 and eng._hold_step.id == own.id, (
+            "the new run started with the old run's step")
         taken = await eng._sky_closed_before_recovery(
             eng.plan.targets[0], why="guiding was lost")
         assert taken is False
-        assert len(rig.probes) == 0, (
+        assert len(rig.probes) == 1 and rig.probes[0]["gain"] == own.gain, (
             f"a second run's first read copied the first run's step: "
             f"{len(rig.probes)} frame(s) taken: {rig.probes}")
-        assert eng._hold_step is None, (
-            "the new run started with the old run's step")
     finally:
         await eng.abort()

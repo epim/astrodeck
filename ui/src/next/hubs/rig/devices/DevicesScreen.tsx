@@ -117,10 +117,10 @@ export function DevicesScreen(): JSX.Element {
   //
   // ACTIVATING A SAVED PROFILE IS NOT ONE OF THEM (#685): the rig allow-lists
   // `POST /api/profiles/<id>/activate` (without `force`) through the fence, so
-  // the popover's activate ignores this reason. The FIRST NIGHT card's CONNECT
-  // <profile> is the same call, but `ConnectOnceCard` takes ONE `lanReason` for
-  // CONNECT, DETECT and the simulator, so it still shows the LAN sentence on
-  // CONNECT until that card splits it; every other verb here is correct as is.
+  // the popover's activate ignores this reason, and so does the FIRST NIGHT
+  // card's CONNECT <profile>, which is the same call: `ConnectOnceCard` puts
+  // this reason on DETECT MY HARDWARE and RUN THE SIMULATOR only, and CONNECT
+  // answers to the capability and the busy flag.
   //
   // Passed down rather than taken with `useLock` inside each card: those two
   // components are props-only and take `canConfig` as a boolean, and the ONE

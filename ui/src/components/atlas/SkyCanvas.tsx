@@ -535,6 +535,20 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // always a fresh chance — pending backoff retries are cancelled first.
   useEffect(() => {
     if (mode === "schematic") {
+      // SURVEY off (#701, #752): nothing may ask for imagery again. A backoff
+      // retry armed by a failed fetch before the layer went off would fire
+      // anyway (its guard is `gen === genRef.current`, which a layer toggle
+      // did not bump) and its own failure would arm the next, up to 60 s
+      // apart, until the canvas unmounted. So the pending retry is cancelled,
+      // the load still in flight is aborted, and the generation moves on so a
+      // response that is already on its way is dropped, not shown.
+      if (retryRef.current.timer != null) {
+        window.clearTimeout(retryRef.current.timer);
+        retryRef.current.timer = null;
+      }
+      retryRef.current.attempt = 0;
+      genRef.current++;
+      abortRef.current?.abort();
       setSlowLoad(false);
       return;
     }

@@ -75,15 +75,44 @@ def test_move_409_without_rotator(client):
     assert "rotator" in r.json()["detail"]
 
 
+def _coded_camera_busy(r) -> dict:
+    """The exposure refusal's body: a 409 in the ``_lane_409`` shape, so a
+    client tells it from every other conflict by its ``code`` and not by
+    matching a sentence (#750, the class of #713)."""
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert isinstance(detail, dict), (
+        f"the exposure refusal is a bare-string 409, which no client can tell "
+        f"from any other conflict: {detail!r}")
+    assert detail["code"] == "camera_busy", detail
+    assert detail["lane"] == "rotator", detail
+    return detail
+
+
 def test_move_refused_while_exposing(client, hub, rot, monkeypatch):
+    """DELIBERATE PIN CHANGE (backlog WP-114, #750, wave 15 integration). This
+    asserted ``"busy" in r.json()["detail"]``, the bare-string 409 the route
+    used to raise. It is the coded ``camera_busy`` refusal now, in the shape its
+    sibling (the preflight route) answers; the human sentence is unchanged and
+    lands at ``detail.detail``.
+
+    Named mutant "the bare string again" (``api/app.py``: the route's
+    ``raise _lane_409(..., code="camera_busy", lane="rotator")`` made
+    ``raise HTTPException(409, <the same sentence>)``), run from a byte backup
+    and restored byte-identically; this case and the ``direct`` one below both
+    fail: ``AssertionError: the exposure refusal is a bare-string 409, which no
+    client can tell from any other conflict: 'camera is busy (sequence
+    exposure); rotator move refused'``."""
     class Locked:
         def locked(self):
             return True
     monkeypatch.setattr(hub, "_capture_lock", Locked())
     monkeypatch.setattr(hub, "_capture_busy", "sequence exposure", raising=False)
     r = client.post("/api/rotator/move", json={"position_deg": 90.0})
-    assert r.status_code == 409
-    assert "busy" in r.json()["detail"]
+    detail = _coded_camera_busy(r)
+    assert "busy" in detail["detail"]
+    assert "sequence exposure" in detail["detail"], detail
+    assert "rotator move refused" in detail["detail"], detail
 
 
 def test_move_returns_range_mapped_target(client, hub, rot):
@@ -255,8 +284,8 @@ def test_a_direct_move_is_still_refused_while_exposing(client, hub, rot,
     monkeypatch.setattr(hub, "_capture_busy", "sequence exposure", raising=False)
     r = client.post("/api/rotator/move",
                     json={"position_deg": 90.0, "direct": True})
-    assert r.status_code == 409
-    assert "busy" in r.json()["detail"]
+    detail = _coded_camera_busy(r)     # re-pinned with the one above (#750)
+    assert "busy" in detail["detail"]
 
 
 # ----------------------------------------- the preflight route (WP-88, #145)
