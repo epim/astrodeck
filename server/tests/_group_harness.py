@@ -364,6 +364,12 @@ async def night_hub(monkeypatch) -> tuple[Hub, list]:
     monkeypatch.setattr(SimTelescope, "SLEW_RATE_DEG_S", 1.0e6)
     h = Hub()
     await h.connect_sim()
+    # The sim rotator's coupling is known-good, as connect_sim already
+    # declares the sign. Without this the engine's nightly rotator
+    # self-test (#648) would run at the first rotating hop, add a goto
+    # the harness counts as a visit, and stamp real-clock sky records the
+    # fake clock reads as fresh. Tests of the self-test itself unset it.
+    h._rotation_trusted = True
     popped = [d for d in (h.devices.pop("focuser", None),
                           h.devices.pop("filterwheel", None)) if d is not None]
     if h.guider is not None:

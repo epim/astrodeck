@@ -91,22 +91,17 @@ export function deriveSinkHealth(sink: AlertSink, health: AlertHealth | null): H
   return { tone: "warn", label: "Untested", detail: "Send a test to verify delivery" };
 }
 
-/** The health block as the dead-man verdict reads it. `last_ok_age_s` (#125) is
- *  the seconds since the monitor last ACCEPTED a ping, null if it never has. It
- *  is typed here, optional, because `AlertHealth` (types.ts) does not carry it
- *  yet and a server older than the field does not send it; both read as "no
- *  accepted ping known", which is the safe side of a green badge. Every
- *  `AlertHealth` is assignable to this, so no caller changes. */
-export type DeadmanAwareHealth = Omit<AlertHealth, "deadman"> & {
-  deadman: AlertHealth["deadman"] & { last_ok_age_s?: number | null };
-};
-
 /** Three missed pings. The server pings every 60 s (alerting.py
  *  DEADMAN_INTERVAL_S); past this an external monitor's grace would have run
  *  out and paged, so a "Pinging" badge would be a claim nothing keeps. */
 const DEADMAN_STALE_S = 180;
 
-export function deadmanVerdict(health: DeadmanAwareHealth | null): HealthVerdict {
+/** The dead-man badge. `AlertHealth.deadman.last_ok_age_s` (#125) is the
+ *  seconds since the monitor last ACCEPTED a ping, null if it never has; it is
+ *  optional because a server older than the field does not send it, and an
+ *  absent value reads as "no accepted ping known", the safe side of a green
+ *  badge. */
+export function deadmanVerdict(health: AlertHealth | null): HealthVerdict {
   const dm = health?.deadman;
   if (!dm?.configured) return { tone: "dim", label: "Not set", detail: "No external monitor configured" };
   if (!dm.healthy) return { tone: "bad", label: "Unreachable", detail: "Monitor URL is not being reached - check it" };

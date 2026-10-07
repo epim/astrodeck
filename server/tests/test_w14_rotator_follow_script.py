@@ -524,3 +524,45 @@ def test_nothing_the_script_prints_or_writes_carries_a_coordinate_or_a_site(
 
     shown = capsys.readouterr().out + out.read_text(encoding="utf-8")
     assert "CANARY" not in shown, shown
+
+
+class _RotatorBlockDrops(_FakeRig):
+    """A rig whose status loses its ``rotator`` block after the pre-flight
+    read: ``poll_status`` swallows its own errors, so a poll that hit one
+    answers a status with no rotator in it."""
+
+    def get(self, path):
+        status = super().get(path)
+        if path == "/api/status" and getattr(self, "_polled", False):
+            status = {k: v for k, v in status.items() if k != "rotator"}
+        if path == "/api/status":
+            self._polled = True
+        return status
+
+
+def test_a_status_poll_that_drops_the_rotator_block_is_could_not_measure(
+        tmp_path, monkeypatch, capsys):
+    """A status with no rotator block leaves the mechanical angle None, and
+    ``float(None)`` is a TypeError. That is a step that produced no
+    measurement, so it is exit 2 and ``could not measure`` with the rotator
+    halted, like a solve that never lands, not a traceback. (WP-88's verifier
+    found it; no command is in flight at that point, so it was never
+    dangerous, only wrong to crash on.)
+
+    MUTANT "TypeError not caught" (``TypeError`` taken out of the except
+    tuple in ``run``): RED, a traceback in place of exit 2 -
+        TypeError: float() argument must be a string or a real number, not
+        'NoneType'
+    """
+    clock = _Clock()
+    rig = _RotatorBlockDrops(clock)
+    monkeypatch.setattr(follow, "time", clock)
+    monkeypatch.setattr(follow, "Rig", lambda: rig)
+    out = tmp_path / "captures" / "backlash" / "run.jsonl"
+
+    code = follow.run(str(out))
+
+    assert code == 2, capsys.readouterr().out
+    assert rig.halted is True
+    assert not any(p == "/api/rotator/move" for p, _ in rig.posts), rig.posts
+    assert "could not measure" in capsys.readouterr().out

@@ -8,7 +8,6 @@
 //   npx tsx src/lib/__tests__/alertSinks.test.ts
 
 import { validateDraft, deriveSinkHealth, deadmanVerdict, defaultDraft } from "../alertSinks";
-import type { DeadmanAwareHealth } from "../alertSinks";
 import type { AlertSink, AlertHealth } from "../../types";
 
 // ---------------------------------------------------------------- harness
@@ -99,7 +98,7 @@ test("health verdict: queue > verified > untested; disabled dims", () => {
 //   m3b, drop the stale limit. 15/16 passed; failing: "Pinging only while the
 //   accepted ping is recent, with its age: expected Stale, got Pinging".
 const dmHealth = (dm: { configured: boolean; healthy: boolean; last_ping_age_s: number | null;
-                        last_ok_age_s?: number | null }): DeadmanAwareHealth =>
+                        last_ok_age_s?: number | null }): AlertHealth =>
   ({ undelivered: 0, undelivered_by_sink: {}, deadman: dm });
 
 test("deadman verdict maps configured/healthy", () => {

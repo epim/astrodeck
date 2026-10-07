@@ -1904,7 +1904,16 @@ export interface AlertSinkInput extends AlertSink {
 export interface AlertHealth {
   undelivered: number;
   undelivered_by_sink: Record<string, number>;
-  deadman: { configured: boolean; healthy: boolean; last_ping_age_s: number | null };
+  deadman: {
+    configured: boolean;
+    healthy: boolean;
+    last_ping_age_s: number | null;
+    /** Seconds since the external monitor last ACCEPTED a ping (#125), null
+     *  if it never has (or the configured URL changed since). Optional
+     *  because a server older than the field does not send it; an absent
+     *  value reads as "no accepted ping known", never as healthy. */
+    last_ok_age_s?: number | null;
+  };
 }
 
 /** One obstruction wedge. `alt_max` is the floor the mount must clear while its

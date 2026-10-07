@@ -19,8 +19,10 @@ Expect a sane `AsiProperty` (name 'ZWO ASI220MM', plausible width/height/pixel s
 bit_depth, gain/offset ranges). Garbage fields => fix `ASI_CAMERA_INFO`/`ASI_CONTROL_CAPS`
 against the shipped `ASICamera2.h`.
 
-**Player One (`cameras/player_one_sdk.py`):** license PERMITS (bundled — see
-player-one-sdk-licensing.md); bindings ALREADY verified against the SDK's own
+**Player One (`cameras/player_one_sdk.py`):** licence: the SDK's `license.txt` grants use
+for development and has no distribution verb, so whether we may redistribute the
+library is the owner's ruling, pending in #632 (see player-one-sdk-licensing.md);
+bindings ALREADY verified against the SDK's own
 `python/pyPOACamera.py` + `include/PlayerOneCamera.h` V3.10.1 (enum values, struct layouts,
 sensor-mode/LRN API, POASetConfig/POAGetConfig per-call convention); the vendored DLL loads
 with all 20 exports resolving on the dev box (`count()=0`). Remaining at-scope step — a live

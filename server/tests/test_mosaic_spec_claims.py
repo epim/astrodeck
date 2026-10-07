@@ -6019,8 +6019,15 @@ def test_3_4_and_ruling_9_say_the_session_and_the_lock_as_s2_built_them():
         "once; 3.4 says it does")
 
     def commanded(planned, lock, connected):
+        # RE-PINNED FOR WP-90 (#648, wave 14 integration): the choke point
+        # asks one more question, whether rotation is off for the night
+        # (D-05), so this engine double answers it. Rotation is NOT off here:
+        # these four answers are ruling 9's (planned, lock, nothing), and the
+        # off case is graded in test_w14_recentre_rotation_off.py.
         eng = SimpleNamespace(_lock_in_force=lambda t: lock,
-                              _rotator_connected=lambda: connected)
+                              _rotator_connected=lambda: connected,
+                              _rotation_off_tonight=lambda: False,
+                              _say_rotation_off=lambda: None)
         return SequenceEngine._commanded_rotation(
             eng, SimpleNamespace(rotation_deg=planned))
 

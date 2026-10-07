@@ -1570,7 +1570,13 @@ class Hub:
                 role, {"backend": getattr(dev, "backend", primary)})
         self._seed_filter_config()  # UX-05: user slot names over hardware letters
         self._seed_egain_config()   # learned e-/ADU (driver value still wins)
-        # dedicated guide camera (sim only; None for nina/native/phd2).
+        # A dedicated guide camera ASSIGNED TO THE `guide_camera` ROLE (a native,
+        # Alpaca or sim rig alike: the role is in ``devices.backend.ROLES``) is
+        # connected, kept in ``self.devices`` and recorded in ``_last_connect``
+        # by the loop above, so ``reconnect_role`` can replay it. This is the
+        # OTHER path: the backend's own pseudo-device, which no role assignment
+        # names (``BackendSession.guide_camera()``: the sim exposes one,
+        # nina/native/phd2 return None). Only that one is sim-only.
         if result.guide_camera is not None:
             await result.guide_camera.connect()
             self.devices["guide_camera"] = result.guide_camera

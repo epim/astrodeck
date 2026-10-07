@@ -66,7 +66,7 @@ from astrodeck.flows.nodes import (
     create_params, default_params, target_angle)
 from astrodeck.flows.rig import RigFacts
 from astrodeck.flows.store import (
-    FLOW_SCHEMA, V3_SCHEMA, _v4_meanings, schema_for)
+    V3_SCHEMA, V4_SCHEMA, _v4_meanings, schema_for)
 from astrodeck.flows.to_plan import to_sequence_plan
 
 
@@ -526,8 +526,19 @@ class TestALoopFromAnAutofocusStampsSchema4:
     """
 
     def test_a_mosaic_looping_from_an_autofocus_stamps_4(self):
+        """RE-PINNED FOR BACKLOG WP-85 (#195, wave 14 integration): this
+        compared ``schema_for`` to ``FLOW_SCHEMA``, which was 4. The file
+        version is 5 now, and the version a FLOW_SCHEMA 4 meaning stamps is
+        ``V4_SCHEMA`` (4): this graph has no DUSK, so nothing in it is a
+        version 5 meaning. What it grades is unchanged: a loop wire stamps
+        4.
+
+        Mutant "the loop wire stamps the file version" (``schema_for``
+        returns ``FLOW_SCHEMA`` for a graph with a v4 meaning), observed:
+            E       assert 5 == 4
+        """
         g = _pass_lane("autofocus", rows=3, cols=2)
-        assert schema_for(g) == FLOW_SCHEMA == 4
+        assert schema_for(g) == V4_SCHEMA == 4
 
     def test_the_wire_alone_stamps_4(self):
         """With a 3x2 the grid alone stamps 4, so the wire's share is held on
@@ -541,10 +552,13 @@ class TestALoopFromAnAutofocusStampsSchema4:
             FAILED ...test_the_wire_alone_stamps_4
             (the 3x2 case stays green: its grid stamps 4 by itself, which is why
             the wire is held on its own)
+
+        RE-PINNED FOR BACKLOG WP-85 (#195, wave 14 integration): the stamp
+        is compared to ``V4_SCHEMA`` (4), not ``FLOW_SCHEMA``, which is 5.
         """
         g = _pass_lane("autofocus")
         assert _v4_meanings(g) == ["loop wire"]
-        assert schema_for(g) == FLOW_SCHEMA
+        assert schema_for(g) == V4_SCHEMA
         bare = g.model_copy(update={
             "edges": [e for e in g.edges if e.fromPort != "pass"]})
         assert (_v4_meanings(bare), schema_for(bare)) == ([], V3_SCHEMA)

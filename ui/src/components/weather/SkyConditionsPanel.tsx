@@ -397,7 +397,7 @@ export default function SkyConditionsPanel({ chrome = "panel" }: {
           {weather.ignore_tonight && (
             <span className="text-warn inline-flex items-center gap-1">
               <Icon name="alert" size={11} />
-              weather override active — resume will ignore clouds tonight
+              weather override active - forecast rain will not hold auto-resume until the next dusk (cloud forecasts never do)
             </span>
           )}
         </div>

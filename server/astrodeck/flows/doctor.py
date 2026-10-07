@@ -144,12 +144,20 @@ def _longest_sub_s(node) -> float:
 
 
 def _is_campaign(graph: FlowGraph):
-    """The DUSK WINDOW whose `repeat` makes this a campaign, or None.
+    """The DUSK WINDOW whose stored `repeat` makes this a campaign, or None.
 
     A campaign is not a longer night, it is a night that comes back: the cursor
     survives dawn and the flow re-arms. Rules 11 and 12 exist because the two
     things a single night never needs — something to advance the pool, and a
     shutdown lane — are exactly the two a campaign cannot run without.
+
+    STILL KEYED ON `repeat`, WHICH NO EDITOR OFFERS ANY MORE (#195, WP-85).
+    DUSK WINDOW's Automatic resume option replaced the Repeat row and decides
+    only whether the session comes back on later nights
+    (`SequencePlan.resume_across_nights`), not whether the flow is a campaign:
+    a "Single night" flow (the default) resumes by default and is not one. So
+    a campaign is reachable only from a stored flow and the campaign Example,
+    until a later change re-keys campaigns on the option.
     """
     for n in graph.nodes:
         if n.type == "dusk":

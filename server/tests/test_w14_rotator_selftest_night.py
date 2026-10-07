@@ -373,9 +373,24 @@ async def test_a_failed_self_test_shoots_the_panels_at_a_fixed_angle(
         AssertionError: no angle is requested once rotation is off: [None,
         30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0,
         30.0]
-    Under "setup filter removed" (only the ``if rotation is not None and
-    self._rotation_off_tonight():`` of `_setup_target` made ``if False:``)
-    the same two lines are observed.
+    WAVE 14 INTEGRATION (this note replaces WP-90's "setup filter removed"
+    mutant): the angle is withheld in `_commanded_rotation`, the one choke
+    point every acquisition and every re-centre reads. The ``if rotation is
+    not None and self._rotation_off_tonight():`` filter WP-90 first put in
+    `_setup_target` became dead code there and was removed: the mutant that
+    made it ``if False:`` survived all 67 tests of this file, the preflight
+    file and the two rotation-trust files, which proved it equivalent. The
+    mutant that turns this case red now is "the choke point does not honour
+    rotation off" (the ``if planned is not None and
+    self._rotation_off_tonight():`` block of `_commanded_rotation` removed),
+    which shows the same line, observed:
+
+        AssertionError: no angle is requested once rotation is off: [None,
+        30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0,
+        30.0]
+
+    test_w14_recentre_rotation_off.py grades the same choke point on the
+    three recovery re-centres.
     """
     _slip(hub)
     calls = _count_self_tests(monkeypatch)

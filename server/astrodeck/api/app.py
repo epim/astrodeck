@@ -6422,8 +6422,11 @@ def create_app(*, bind_host: str | None = None,
             # an editor. The canvas's compile (``flowsCompile``) runs when a
             # flow opens, after each save and on the Target modal's DONE or
             # LOOP PANELS, which write through ``flowsApplyFraming``; an edit
-            # between them compiles nothing (#356). The modal also posts its
-            # own draft here once a framing edit settles, for its RUN numbers.
+            # between them compiles nothing (#356), and Tonight asks for one
+            # more: when Tonight is read over a graph the compile in hand was
+            # not made from (#688), so its PLAN is never a stale graph's.
+            # The modal also posts its own draft here once a framing edit
+            # settles, for its RUN numbers.
             # The refusal is reported in the same list as every other loss.
             unmapped = [{"key": "plan", "detail": str(e), "level": "danger"}]
         run_readouts: dict = {}
@@ -9092,12 +9095,18 @@ def create_app(*, bind_host: str | None = None,
         block (``rotator.sky_sign``, ``rotator.trusted``). Runs on the
         ``rotate_to_pa`` lane, like the other two solving routes, so a second
         press while one runs is the lane's own 409. A failure is a log line;
-        the result is the status block."""
+        the result is the status block.
+
+        A RECORDING IS NAMED FIRST. It holds the exposure guard for the whole
+        file, so the busy test below would refuse it too, but with a
+        sentence about a sequence or an exposure that is not what is
+        running. ``_refuse_if_camera_owned`` answers with the recording's own
+        code, as it does on every other route that takes the camera."""
+        _refuse_if_camera_owned()
         if engine.running or hub._capture_lock.locked():
             raise HTTPException(
                 409, "camera is busy (a sequence or an exposure is running); "
                      "rotator preflight refused")
-        _refuse_if_camera_owned()
         try:
             hub.require("rotator")
             hub.require("camera")

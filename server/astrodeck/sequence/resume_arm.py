@@ -1446,17 +1446,21 @@ class ResumeArm:
                             f"every frame it asked for.", "sequence")
             return
         self._gave_up_for = None            # window open (again): fresh night
-        # "SINGLE NIGHT" MEANS ONE NIGHT (#195). `SequencePlan.resume_across_
-        # nights` is False for exactly the flows DUSK WINDOW compiled with
-        # `repeat == "Single night"`. A crash or a reboot on the SAME night
+        # AUTOMATIC RESUME OFF MEANS ONE NIGHT (#195). `SequencePlan.resume_
+        # across_nights` is False for exactly the flows whose DUSK WINDOW has
+        # Automatic resume Off (an explicit choice: `repeat`'s own default,
+        # "Single night", is not one). A crash or a reboot on the SAME night
         # still resumes here - continuity within a night is a separate
         # promise, and the window reopening because this tick is merely a
         # minute later than the last one is not "a later night". But the
         # window reopening because DAWN CAME AND WENT, and now it is open
         # again, means a night this session never agreed to has arrived, and
-        # arming it anyway is the exact bug the owner's ruling closed: a
-        # "Single night" flow that quietly finished itself on the next clear
-        # night like a campaign would.
+        # arming it anyway is the bug the owner's ruling closed: an Off flow
+        # that quietly finished itself on the next clear night like a
+        # campaign would. This is the NET: the engine already disarms such a
+        # session where its night ends (`_finalize_report`), and this check
+        # catches the one that slips through, a crash before dawn followed by
+        # a restart after it.
         #
         # CHECKED HERE, AHEAD OF EVERY OTHER REFUSAL BELOW, because every
         # refusal below is a RETRY ("try again in 10 minutes") and this one
