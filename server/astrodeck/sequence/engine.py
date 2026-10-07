@@ -9642,7 +9642,8 @@ class SequenceEngine:
             # switch is off, and total by construction (Hub.session_stack_add
             # swallows its own failures) -- a preview must not end a night.
             if accepted:
-                self.hub.session_stack_add(info, target=target.name)
+                self.hub.session_stack_add(info, target=target.name,
+                                           target_id=target.id)
             # Every linear sub is already a cloud measurement - hub's preview
             # path runs cloud_score on it and puts the verdict in info["cloud"].
             # Reading it here costs nothing and makes the sky verdict exactly as

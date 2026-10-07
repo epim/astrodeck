@@ -8329,8 +8329,25 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/sequence/stack",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
-    async def session_stack_state():
-        return hub.session_stack_status()
+    async def session_stack_state(panel: str = ""):
+        """The stack's status: the foreground panel, or ``?panel=<key or name>``.
+
+        Every top-level key describes the panel asked for and ``panels`` lists
+        them all, so a client that sends no ``panel`` reads exactly what it
+        always read. An unknown panel is an EMPTY picture, not an error: this
+        route is polled, and a panel the memory budget released between two
+        polls must read as "nothing there" rather than fail the poll.
+
+        ``hub.session_stack_status`` is the foreground view and is what no
+        ``panel`` gets, untouched. A panel is the stacker's own status with the
+        hub's ``backfill`` block laid over it: the pass is one per stacker, not
+        one per panel, and ``available`` is the hub's to count."""
+        if not panel:
+            return hub.session_stack_status()
+        body = hub.session_stack.status(panel)
+        body["backfill"] = hub.session_stack_status().get("backfill",
+                                                          body["backfill"])
+        return body
 
     # CAP_VIEW_PREVIEW, not CAP_VIEW_STATUS: this route returns PIXELS OF THE
     # SKY, which is the thing every other preview route is gated on. Counts and
@@ -8338,8 +8355,19 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/sequence/stack/preview.jpg",
              dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
-    async def session_stack_preview(size: int = 1600, channel: str = ""):
+    async def session_stack_preview(size: int = 1600, channel: str = "",
+                                    panel: str = ""):
         """The session stack as a JPEG: the composite, or ONE channel.
+
+        ``?panel=<key or name>`` renders that mosaic panel's own stack instead
+        of the foreground's (#172): the key is the target's id and a name is
+        accepted for a hand-typed URL. No panel is the foreground, with the
+        response this route has always given, byte for byte: ``X-Stack-Panel``
+        is sent ONLY when a panel was asked for, and carries the key actually
+        rendered, percent-encoded because a target can be named with a
+        character a header cannot carry. A panel that is not stacked is a 404
+        in its own words, and it is checked first, so a missing panel is never
+        reported as a missing channel.
 
         ``?channel=Ha`` renders that channel's own running mean instead of
         the colour composite (#D-SES-1), so "show me just Ha" stops being a
@@ -8357,13 +8385,22 @@ def create_app(*, bind_host: str | None = None,
         nothing."""
         capped = max(256, min(4096, int(size)))
         name = (channel or "").strip()
+        if panel and not hub.session_stack.has_panel(panel):
+            raise HTTPException(404, "nothing stacked for that panel yet")
         if name:
             # ``hub.session_stack`` is public and the stacker owns the
             # resolution, so there is no hub wrapper to add here.
             got = await asyncio.to_thread(
-                hub.session_stack.channel_preview, name, capped)
+                functools.partial(hub.session_stack.channel_preview, name,
+                                  capped, panel=panel or None))
             if got is None:
                 raise HTTPException(404, "nothing stacked in that channel yet")
+        elif panel:
+            got = await asyncio.to_thread(
+                functools.partial(hub.session_stack.rgb_preview, capped,
+                                  panel=panel))
+            if got is None:
+                raise HTTPException(404, "nothing stacked for that panel yet")
         else:
             got = await asyncio.to_thread(hub.session_stack_preview, capped)
             if got is None:
@@ -8379,12 +8416,19 @@ def create_app(*, bind_host: str | None = None,
         # about the picture it sits under. ``X-Stack-Channel`` is empty for
         # the composite, which is how a client tells the two renders apart
         # without re-reading its own request.
-        return Response(jpeg, media_type="image/jpeg", headers={
+        headers = {
             "Cache-Control": "no-store",
             "X-Stack-Seq": str(meta.get("seq", 0)),
             "X-Stack-Frames": str(meta.get("frames", 0)),
             "X-Stack-Channel": str(meta.get("channel", "") or ""),
-        })
+        }
+        if panel:
+            # Local import: this route is the only user and the module's own
+            # import block is not this change's to touch.
+            from urllib.parse import quote
+            headers["X-Stack-Panel"] = quote(
+                str(meta.get("panel", "") or ""), safe="")
+        return Response(jpeg, media_type="image/jpeg", headers=headers)
 
     # ---- live-preview routes (live-preview spec §4.4) ---------------------
     # Canonical URL: the client builds `/api/preview/{id}` and reads `mime` from
