@@ -22,8 +22,13 @@
 //
 // Each child imports its file and exits on the file's own exported result, so
 // the pass/fail signal is the file's, not a guess parsed out of its stdout.
+// It also writes two phase markers to stderr (`__IMPORTED__` once the import
+// has returned, `__EXITING__` right before `process.exit`), which the parent
+// strips from the output and reads only to say where a child that had to be
+// killed had got to (`timeoutPhase`, #664).
 //
-// The scoring functions below (`parseCounts`, `assertionStyle`, `computeOk`)
+// The scoring functions below (`parseCounts`, `assertionStyle`, `computeOk`,
+// `splitChildOutput`, `timeoutPhase`)
 // are exported so a unit test can exercise them directly, without spawning
 // real child processes or planting a fixture file that a normal `npm test`
 // walk would have to run (and, for the crash/false-tally shapes these guard
@@ -117,23 +122,106 @@ export function computeOk({ counts, byExit, err, timedOut }) {
   return (counts !== null && counts.failed === 0) || byExit;
 }
 
-/** On a timeout, whether the file's own cases had already finished.
+// The two lines the child writes to fd 2 so the parent can tell WHERE it
+// stopped (#664 Part A, #614). The child writes each followed by a newline;
+// the parent strips the tag and that newline, and reads them from STDERR only.
+const IMPORTED_TAG = "__IMPORTED__";
+const EXITING_TAG = "__EXITING__";
+const MARKER_LINES = new RegExp(`(?:${IMPORTED_TAG}|${EXITING_TAG})\\r?\\n?`, "g");
+
+/** Split a finished (or killed) child's captured streams into what the
+ *  summary prints and what the runner itself needs: the file's own output
+ *  with every runner marker removed, the `__COUNTS__` tag if the child got as
+ *  far as printing one, and which phase markers it wrote.
+ *
+ *  Pure, and the one place the markers are read, so a unit test can hand it
+ *  captured text and exercise exactly what `runOne` does with a real child's
+ *  streams. The markers are looked for in `stderr` only, because that is the
+ *  only stream the child writes them to: a test file that prints the word on
+ *  its own stdout must not make a frozen child read as having reached
+ *  `process.exit`. The patterns are NOT line-anchored: a file that wrote a
+ *  partial stderr line with no newline shares it with the next marker. */
+export function splitChildOutput(stdout, stderr) {
+  const err = stderr || "";
+  const tagged = /__COUNTS__(\{.*\})/.exec(err);
+  const text = err.replace(/__COUNTS__.*\n?/, "").replace(MARKER_LINES, "");
+  return {
+    output: [stdout || "", text].join("").trim(),
+    tagged: tagged ? JSON.parse(tagged[1]) : null,
+    imported: err.includes(IMPORTED_TAG),
+    exiting: err.includes(EXITING_TAG),
+  };
+}
+
+/** Whether a file's own cases finished as far as its OUTPUT can tell: it
+ *  printed a tally in one of the two numeric formats, or a throw-on-failure
+ *  completion phrase. */
+function hasTally(output) {
+  return parseCounts(output) !== null || assertionStyle(output);
+}
+
+/** The places a child can be stopped in once it has started, as ids a
+ *  decision (`shouldRetry`) can compare and as prose a human reads. */
+const PHASES = {
+  noTally: {
+    id: "no-tally",
+    prose: "during its test cases -- no tally was ever printed",
+  },
+  importPending: {
+    id: "import-pending",
+    prose: "after its own tally, before its import resolved -- the file's own "
+      + "tail or the module loader never returned",
+  },
+  importResolved: {
+    id: "import-resolved",
+    prose: "after its import resolved, before process.exit() was called -- "
+      + "the child's own few report lines never finished",
+  },
+  exitHung: {
+    id: "exit-hung",
+    prose: "after process.exit() was called -- the child never finished",
+  },
+};
+
+/** On a timeout, where the child had got to: `{ id, prose }`.
  *
  *  Issue #614: flowInspectorNotes.test.tsx printed its "7/7 passed" tally and
- *  then the child never exited, on a loaded CI runner. A kill that lands AFTER
- *  a file's tally (or throw-on-failure completion phrase) means whatever hung
- *  is in code that runs after the file's own cases — this runner's `runOne`
- *  has nothing left to do but `await import()` itself resolving and call
- *  `process.exit()`, so that import is what never returned. A kill with no
- *  tally at all hung somewhere inside the cases, before the file ever got to
- *  summarise them — a different bug shape, and worth telling apart on sight
- *  rather than re-deriving from the raw output every time. Exported so this
- *  is a pure-function unit test on captured output, not a fixture file that
- *  has to actually survive TIMEOUT_MS to prove the message is right. */
-export function timeoutPhase(output) {
-  return (parseCounts(output) !== null || assertionStyle(output))
-    ? "after its own tally -- the default export never resolved"
-    : "during its test cases -- no tally was ever printed";
+ *  then the child never exited, on a loaded CI runner; #664 saw the same on
+ *  other files. This used to say only "after its own tally -- the default
+ *  export never resolved", and that was a guess, not an observation: nothing
+ *  recorded whether the import HAD resolved. The child now writes two markers
+ *  (see `runOne`), so the answer is one of four:
+ *
+ *    no-tally         no tally and no __IMPORTED__: still inside the file's
+ *                     cases. Something in them never returned, before the
+ *                     file got to summarise anything.
+ *    import-pending   a tally but no __IMPORTED__: the cases finished and the
+ *                     import still did not return (the file's own tail, or
+ *                     the loader `--import tsx` runs).
+ *    import-resolved  __IMPORTED__ but no __EXITING__: the import returned and
+ *                     the child then stalled in its own few lines before it
+ *                     reached `process.exit()`.
+ *    exit-hung        __EXITING__: `process.exit()` was called and the child
+ *                     did not finish (it never returned, or it exited and its
+ *                     stdio pipes never closed: see the note on #664 below).
+ *
+ *  `imported` counts as proof the cases finished even when nothing scorable
+ *  was printed: calling that "during its test cases" would send the next
+ *  debugger to the wrong place. A timer or animation frame cannot be the
+ *  cause of the last two: `process.exit()` ends the child whatever handles
+ *  are live, so a stall there is the main thread itself not running. For
+ *  import-pending the markers alone cannot rule out a never-settling
+ *  top-level await in the file itself that a live timer keeps the child alive
+ *  around; #664's heartbeat (not one line in 60 s) says the freezes caught so
+ *  far were not that. Takes the
+ *  result `runOne` returns, or any `{ output, imported, exiting }`, so it is a
+ *  pure-function unit test on captured text and not a fixture file that has to
+ *  survive TIMEOUT_MS to prove the message is right. */
+export function timeoutPhase({ output, imported = false, exiting = false }) {
+  if (!hasTally(output) && !imported) return PHASES.noTally;
+  if (!imported) return PHASES.importPending;
+  if (!exiting) return PHASES.importResolved;
+  return PHASES.exitHung;
 }
 
 // `timeoutMs` defaults to the real suite's TIMEOUT_MS but can be overridden
@@ -145,14 +233,28 @@ export function timeoutPhase(output) {
 export function runOne(file, timeoutMs = TIMEOUT_MS) {
   // The child imports the file, which runs its assertions, then reports the
   // file's own exported `result` when it has one.
+  //
+  // `mark` writes the two phase markers (#664 Part A) with a SYNCHRONOUS
+  // write to fd 2, not console.error: a console write to a pipe can still be
+  // queued when the process exits or stalls, and the whole point of a marker
+  // is that it is on the wire BEFORE the next statement runs, so a child that
+  // freezes right after it still left the evidence behind. A marker that
+  // cannot be written (a full non-blocking pipe, a closed fd) is dropped
+  // rather than allowed to change how the child exits, and a dropped marker
+  // can only make the phase read EARLIER than the truth, never later.
   const url = pathToFileURL(file).href;
   const code = `
+    import { writeSync } from "node:fs";
+    const mark = (line) => { try { writeSync(2, line); } catch {} };
     const m = await import(${JSON.stringify(url)});
+    mark(${JSON.stringify(IMPORTED_TAG + "\n")});
     const r = m.result;
     if (r && typeof r.failed === "number") {
       console.error("__COUNTS__" + JSON.stringify(r));
+      mark(${JSON.stringify(EXITING_TAG + "\n")});
       process.exit(r.failed > 0 ? 1 : 0);
     }
+    mark(${JSON.stringify(EXITING_TAG + "\n")});
     process.exit(0);   // no export: the parent reads the printed tally
   `;
   return new Promise((resolve) => {
@@ -161,10 +263,8 @@ export function runOne(file, timeoutMs = TIMEOUT_MS) {
       ["--import", CSS_STUB_URL, "--import", "tsx", "--input-type=module", "--eval", code],
       { cwd: ROOT, timeout: timeoutMs, maxBuffer: 8 << 20 },
       (err, stdout, stderr) => {
-        const output = [stdout, (stderr || "").replace(/__COUNTS__.*\n?/, "")]
-          .join("").trim();
-        const tagged = /__COUNTS__(\{.*\})/.exec(stderr || "");
-        const counts = tagged ? JSON.parse(tagged[1]) : parseCounts(output);
+        const { output, tagged, imported, exiting } = splitChildOutput(stdout, stderr);
+        const counts = tagged ?? parseCounts(output);
         const timedOut = !!err && err.killed;
         // Exit 0 + a completion phrase = a throw-on-failure file that reached
         // its end. Counted as green but contributing no assertion count, since
@@ -179,11 +279,23 @@ export function runOne(file, timeoutMs = TIMEOUT_MS) {
           ok: computeOk({ counts, byExit, err, timedOut }),
           timedOut,
           output,
+          // Which of the child's own markers reached us. On a timeout these
+          // are what `timeoutPhase` reads to say where it stopped.
+          imported,
+          exiting,
         });
       },
     );
   });
 }
+
+// The phases `shouldRetry` gives a second chance: every one that comes AFTER
+// the file's own tally.
+const RETRYABLE_PHASES = new Set([
+  PHASES.importPending.id,
+  PHASES.importResolved.id,
+  PHASES.exitHung.id,
+]);
 
 /** Issue #664. A full-suite run (548 files, CONCURRENCY 8) on this shared box
  *  twice produced the #614 shape — a file printed its own clean tally and
@@ -213,45 +325,70 @@ export function runOne(file, timeoutMs = TIMEOUT_MS) {
  *  explanation an earlier pass of this comment drew from the same evidence,
  *  but does not yet say what blocks the thread. See #664.
  *
+ *  A timer was never a likely carrier, whatever the instrumentation showed:
+ *  the child ends in `process.exit(...)`, and `process.exit` ends the process
+ *  whatever timers, handles or animation frames are still live, so once the
+ *  import has returned a pending rAF chain cannot hold the child past its
+ *  tally. What can is the main thread not running, or the import or
+ *  `process.exit` not returning, and the child's phase markers (see `runOne`
+ *  and `timeoutPhase`) now say which of those it was.
+ *
+ *  First measurement (2026-10-07, ten full runs at CONCURRENCY 8 on the shared
+ *  box): one freeze in ten, capturePreviewMobileOverflow.test.tsx, the file
+ *  #664 first named, landed in `exit-hung`: `__EXITING__` reached the parent
+ *  and the child still did not finish for 60 s. Read that as "process.exit()
+ *  did not return OR the child exited and its stdio pipes never closed":
+ *  execFile's callback waits for the pipes as well as the exit, and its
+ *  timeout sets `killed` either way, so this evidence cannot tell the two
+ *  apart. The retry stays until the cause is known.
+ *
  *  160 isolated runs of the originally-reported file
  *  (capturePreviewMobileOverflow.test.tsx, 40 at CONCURRENCY 8 and then 120
  *  more) produced zero hangs on its own — whatever this is, it needs the
  *  full-suite run to show up, and has so far appeared on a different file
  *  each time it has been caught.
  *
- *  shouldRetry names the ONE shape worth a second try: the file's own
+ *  shouldRetry names the shapes worth a second try: the file's own
  *  assertions already finished (it printed a clean tally or a throw-on-
- *  failure completion phrase) and only the process's own exit missed the
- *  deadline. A timeout with NO tally at all is a different, more serious
- *  shape — something inside the file's own cases never returned — and must
- *  never be retried into a false green. */
+ *  failure completion phrase) and the child then failed to finish — whether
+ *  its import never returned, it stalled before `process.exit`, or
+ *  `process.exit` itself never returned (the `timeoutPhase` ids
+ *  import-pending, import-resolved and exit-hung). It compares those ids, not
+ *  the prose, so rewording a message cannot silently turn the retry off. A
+ *  timeout with NO tally at all is a different, more serious shape —
+ *  something inside the file's own cases never returned — and must never be
+ *  retried into a false green, whatever markers it wrote. */
 export function shouldRetry(result) {
   return result.timedOut
-    && timeoutPhase(result.output) === "after its own tally -- the default export never resolved";
+    && hasTally(result.output)
+    && RETRYABLE_PHASES.has(timeoutPhase(result).id);
 }
 
 /** Runs `file` once, and if it times out in the shape `shouldRetry` names,
  *  tries it exactly once more in a fresh child before reporting it broken.
- *  Exactly one retry, never a loop: a genuine hang (an app bug that cancels
- *  its own animation loop incorrectly, say) is deterministic and will time
+ *  Exactly one retry, never a loop: a genuine hang (a deadlock in the code
+ *  under test, say) is deterministic and will time
  *  out the same way again, so a second timeout is reported as the real
  *  failure it is rather than retried forever waiting for the box to go
  *  quiet. `timeoutMs` threads through to both attempts — see `runOne`.
  *
  *  The returned result carries `retried: true` whenever a second attempt
- *  ran (whether or not it then passed), so `main`'s final summary can name
- *  every file this happened to instead of relying on the per-attempt log
- *  line below, which a concurrent run can bury between other files'
- *  output. */
+ *  ran (whether or not it then passed), and `firstPhase`, the id of the phase
+ *  the FIRST attempt froze in: a freeze that then passes leaves no other
+ *  trace, so without it a loop of full runs could not say where the freezes
+ *  land. `main`'s final summary names every file this happened to, with that
+ *  phase, instead of relying on the per-attempt log line below, which a
+ *  concurrent run can bury between other files' output. */
 export async function runFileWithRetry(file, timeoutMs = TIMEOUT_MS) {
   const first = await runOne(file, timeoutMs);
   if (!shouldRetry(first)) return first;
+  const phase = timeoutPhase(first);
   const retry = await runOne(file, timeoutMs);
   if (retry.ok) {
-    console.log(`  (${relative(ROOT, file)} froze after printing its own clean `
-      + "tally -- cause unknown, see #664 -- then passed on a retry)");
+    console.log(`  (${relative(ROOT, file)} froze ${phase.prose} [${phase.id}] -- `
+      + "cause unknown, see #664 -- then passed on a retry)");
   }
-  return { ...retry, retried: true };
+  return { ...retry, retried: true, firstPhase: phase.id };
 }
 
 /** The line the final summary block prints naming every file that froze
@@ -264,12 +401,25 @@ export async function runFileWithRetry(file, timeoutMs = TIMEOUT_MS) {
  *  between two other files' own output) rather than only the single most
  *  recent occurrence. */
 export function retriedSummaryLine(results) {
+  // Each file is named with the phase its first attempt froze in: the
+  // evidence #664 is waiting for, which the retry would otherwise erase.
   const names = results
     .filter((r) => r.retried && r.ok)
-    .map((r) => relative(ROOT, r.file));
+    .map((r) => relative(ROOT, r.file) + (r.firstPhase ? ` [${r.firstPhase}]` : ""));
   if (names.length === 0) return null;
   return `${names.length} file(s) froze after a clean tally and passed on a `
     + `retry (#664): ${names.join(", ")}`;
+}
+
+/** The one-line reason the final summary gives for a file that is not green.
+ *  Pulled out of `main` so the timeout wording (which now carries the phase
+ *  the child stopped in, #664) is a pure function a unit test can read, not
+ *  text only a run that actually broke would ever print. */
+export function brokenReason(r) {
+  return r.timedOut
+    ? `timed out after ${TIMEOUT_MS / 1000}s (${timeoutPhase(r).prose})`
+    : r.counts ? `${r.counts.failed} failed`
+      : "no pass/fail tally in its output — cannot be scored";
 }
 
 /** Typecheck the whole project before running anything, and fail the run if
@@ -335,11 +485,7 @@ async function main() {
     passed += r.counts?.passed ?? 0;
     failed += r.counts?.failed ?? 0;
     if (!r.ok) {
-      const why = r.timedOut
-        ? `timed out after ${TIMEOUT_MS / 1000}s (${timeoutPhase(r.output)})`
-        : r.counts ? `${r.counts.failed} failed`
-          : "no pass/fail tally in its output — cannot be scored";
-      broken.push({ name: relative(ROOT, r.file), why, output: r.output });
+      broken.push({ name: relative(ROOT, r.file), why: brokenReason(r), output: r.output });
     }
   }
 

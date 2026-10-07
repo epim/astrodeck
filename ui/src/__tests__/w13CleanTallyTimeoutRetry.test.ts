@@ -11,9 +11,11 @@
 // WP-H3's own directive (issue #664, filed 2026-10-02 -- after the backlog
 // plan's 2026-09-30 approval, so no D-01..D-20 owner ruling in that plan
 // covers it) was to confirm or rule out jsdom's native requestAnimationFrame
-// as the carrier of #664 (a file prints its own clean tally, then the whole
-// run times out waiting for its default export to resolve - the same
-// symptom #614/#652 named). RULED OUT, not confirmed:
+// as the carrier of #664 (a file prints its own clean tally, then its child
+// is killed at TIMEOUT_MS - the same symptom #614/#652 named; "the default
+// export never resolved" was only ever a guess at where, and the child's
+// phase markers, w5RunTestsTimeoutPhase.test.ts and
+// w14ChildPhaseMarkers.test.ts, now measure it). RULED OUT, not confirmed:
 //
 //   * A stress harness ran capturePreviewMobileOverflow.test.tsx (the file
 //     #664 actually names) 160 times at CONCURRENCY 8 (40, then 120 more).
@@ -52,8 +54,10 @@
 // rAF and rules out CPU contention, it does not yet say what blocks the
 // thread; see #664. The fix is a runner-level mitigation for exactly the
 // shape measured, never for anything broader: `shouldRetry` named below is
-// true ONLY when a file's own tally already proved it correct and just the
-// process's own exit missed the deadline; `runFileWithRetry` then gives it
+// true ONLY when a file's own tally already proved it correct and the child
+// then failed to finish (one of the post-tally phases timeoutPhase names:
+// import-pending, import-resolved, exit-hung, compared by id, not by prose);
+// `runFileWithRetry` then gives it
 // exactly one more try in a fresh child. A timeout with no tally at all -
 // something still inside the file's own cases when it was killed - is a
 // different, more serious shape and is never retried, so a real hang still
@@ -102,6 +106,39 @@
 //   x retriedSummaryLine names a file that froze after a clean tally and
 //   passed on retry: expected a non-null summary line for a
 //   retried-and-passed result
+//
+// Backlog wave 14 (WP-97, #664 Part A) added the child's phase markers, so
+// `shouldRetry` now compares a phase ID for each post-tally shape and the
+// retry carries the first attempt's phase into the summary. Named mutants
+// (each applied to run-tests.mjs from a byte backup, restored
+// byte-identically, sha256-verified, and checked gone). Observed failures,
+// verbatim:
+//
+// "shouldRetry retries only the import-pending phase" (the
+// `RETRYABLE_PHASES.has(...)` test replaced with `timeoutPhase(result).id ===
+// PHASES.importPending.id`). "w13CleanTallyTimeoutRetry.test: 15/17 passed":
+//   x a timeout after the tally with __IMPORTED__ but no __EXITING__ is
+//   retried: the import-resolved shape is a post-tally freeze like the others
+//   x a timeout with __EXITING__ seen (process.exit never returned) is
+//   retried: the exit-hung shape is the one #664's brief says to test first,
+//   and it stays retried until its cause is found
+//
+// "shouldRetry drops the tally requirement" (the `&& hasTally(result.output)`
+// line deleted). "w13CleanTallyTimeoutRetry.test: 16/17 passed":
+//   x a timeout whose import resolved but printed nothing scorable is never
+//   retried: no tally: never retried, whatever the markers say
+//
+// "runFileWithRetry does not carry the first phase" (`firstPhase: phase.id`
+// dropped from the returned result). "w13CleanTallyTimeoutRetry.test: 15/17
+// passed":
+//   x a retried result carries the phase its first attempt froze in: expected
+//   the first attempt's phase import-pending, got undefined
+//
+// "retriedSummaryLine omits the phase" (the ` [${r.firstPhase}]` suffix
+// deleted). "w13CleanTallyTimeoutRetry.test: 16/17 passed":
+//   x retriedSummaryLine names the phase beside the file: expected the phase
+//   id in the summary line, got: 1 file(s) froze after a clean tally and
+//   passed on a retry (#664): <the fixture's path>
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -125,12 +162,17 @@ interface RunOneResult {
   ok: boolean;
   timedOut: boolean;
   output: string;
+  imported?: boolean;
+  exiting?: boolean;
   retried?: boolean;
+  firstPhase?: string;
 }
 interface RunTestsModule {
   runOne(file: string, timeoutMs?: number): Promise<RunOneResult>;
   runFileWithRetry(file: string, timeoutMs?: number): Promise<RunOneResult>;
-  shouldRetry(result: { timedOut: boolean; output: string }): boolean;
+  shouldRetry(result: {
+    timedOut: boolean; output: string; imported?: boolean; exiting?: boolean;
+  }): boolean;
   retriedSummaryLine(results: RunOneResult[]): string | null;
 }
 const nodeImport = (s: string): Promise<unknown> =>
@@ -183,6 +225,31 @@ test("a non-timeout result is never retried, even with a clean tally", () => {
     "retrying is only ever about a timeout; a file that exited on its own has nothing to retry");
 });
 
+// The child's own phase markers (#664 Part A) split "after the tally" into
+// three shapes; shouldRetry compares the phase ID for every one of them, so
+// a freeze that the markers name precisely is still retried, and none of the
+// three is mistaken for the no-tally shape.
+
+test("a timeout after the tally with __IMPORTED__ but no __EXITING__ is retried", () => {
+  assert(shouldRetry({ timedOut: true, output: "widget.test: 4/4 passed", imported: true }) === true,
+    "the import-resolved shape is a post-tally freeze like the others");
+});
+
+test("a timeout with __EXITING__ seen (process.exit never returned) is retried", () => {
+  assert(shouldRetry({
+    timedOut: true, output: "widget.test: 4/4 passed", imported: true, exiting: true,
+  }) === true,
+    "the exit-hung shape is the one #664's brief says to test first, and it stays retried until its cause is found");
+});
+
+test("a timeout whose import resolved but printed nothing scorable is never retried", () => {
+  // __IMPORTED__ proves the cases finished, but the runner's rule is that a
+  // timeout with no tally at all is never retried (existing rule, #664). Such
+  // a file is unscorable anyway; retrying it would only cost a second minute.
+  assert(shouldRetry({ timedOut: true, output: "", imported: true, exiting: true }) === false,
+    "no tally: never retried, whatever the markers say");
+});
+
 // --------------------------------------------------------- end-to-end cases
 //
 // Each fixture is a plain ".mjs" (unambiguous ESM regardless of package.json,
@@ -202,8 +269,8 @@ try {
       'import { existsSync, writeFileSync } from "node:fs";',
       `const MARKER = ${JSON.stringify(marker)};`,
       // The tally prints EVERY attempt, exactly like a real file's -- #664's
-      // own report shape is "tally printed, THEN the export never resolved",
-      // never a tally that fails to print at all.
+      // own report shape is "tally printed, THEN the child is killed at
+      // TIMEOUT_MS", never a tally that fails to print at all.
       'console.log("hangOnce.test: 1/1 passed");',
       "if (!existsSync(MARKER)) {",
       '  writeFileSync(MARKER, "ran");',
@@ -261,6 +328,34 @@ try {
     assert(line!.includes("#664"), `expected the issue number in the summary line, got: ${line}`);
     assert(line!.includes("hangOnce.test.mjs"),
       `expected the frozen file's own name in the summary line, got: ${line}`);
+  });
+
+  // The phase the FIRST attempt stopped in is what makes the summary line
+  // evidence instead of a bare count: a freeze that passes on its retry leaves
+  // no other trace, so without the phase a full-suite loop could not say where
+  // the freezes land (#664). hangOnce spins at its own top level, so its
+  // import never returned.
+  test("a retried result carries the phase its first attempt froze in", () => {
+    assert(hangOnceFinal !== undefined, "the previous case must have run first");
+    assert(hangOnceFinal!.firstPhase === "import-pending",
+      `expected the first attempt's phase import-pending, got ${hangOnceFinal!.firstPhase}`);
+  });
+
+  test("retriedSummaryLine names the phase beside the file", () => {
+    assert(hangOnceFinal !== undefined, "the previous case must have run first");
+    const line = retriedSummaryLine([hangOnceFinal!]);
+    assert(line !== null && line.includes("import-pending"),
+      `expected the phase id in the summary line, got: ${line}`);
+  });
+
+  test("retriedSummaryLine still names a retried file whose phase was not recorded", () => {
+    const noPhase: RunOneResult = {
+      file: hangOnceFile, counts: { passed: 1, failed: 0, total: 1 },
+      byExit: false, ok: true, timedOut: false, output: "", retried: true,
+    };
+    const line = retriedSummaryLine([noPhase]);
+    assert(line !== null && line.includes("hangOnce.test.mjs") && !line.includes("undefined"),
+      `a missing phase must not print as the word undefined, got: ${line}`);
   });
 
   test("retriedSummaryLine is null when nothing was retried", () => {
