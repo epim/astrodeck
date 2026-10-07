@@ -39,15 +39,23 @@ const RANGE_OPTIONS = ["full", "half", "quarter"] as const;
 // legacy/next line drags one bundle into the other. The sentences are the same
 // bar the button's name, which is in this card's sentence case; each side has a
 // test that pins its own.
+//
+// A follow test that FAILED does not lock the button (#697): the server runs
+// that test again on its own (two solves and the 20 degree step, the sign
+// kept), which is the press that follows re-seating the coupling. Only a PASS
+// locks it, and the follow test has an observing night (#709), so the lock
+// lifts by itself when the night turns over.
 const PREFLIGHT_NOTE =
   "Test rotator turns the rotator about 22 degrees and takes four plate solves: "
   + "two to learn which way the sky angle runs against the mechanical angle, two "
   + "to check the camera follows a 20 degree step. It measures only what this "
-  + "connection has not measured yet.";
+  + "connection has not measured yet. After a FAILED follow test it runs that "
+  + "test again on its own (two solves and the 20 degree step, the sign kept), "
+  + "so press it once the coupling has been re-seated.";
 
 const PREFLIGHT_DONE_NOTE =
-  "this connection has already measured the rotator; it measures again after "
-  + "the rig reconnects.";
+  "this connection has already measured the rotator tonight; it measures again "
+  + "on the next observing night or after the rig reconnects.";
 
 // What the rig knows about this rotator, in one line. null/undefined (an older
 // server) read as "not measured", which is not "failed".
@@ -57,7 +65,7 @@ function preflightLine(
   if (rot.trusted === false) {
     return {
       text: "FAILED: the camera did not follow a 20 degree step, so rotation "
-        + "is off until the rig reconnects",
+        + "is off. Press Test rotator to measure it again",
       failed: true,
     };
   }
@@ -141,8 +149,8 @@ export default function RotatorCard(): JSX.Element | null {
   const angleOk = angle.trim() !== "" && Number.isFinite(parsedAngle);
   const hint = angleOk ? adjustedPa(parsedAngle, rot, draft) : null;
   const preflight = preflightLine(rot);
-  const preflightKnown = (rot.sky_sign === 1 || rot.sky_sign === -1)
-    && (rot.trusted === true || rot.trusted === false);
+  const preflightPassed = (rot.sky_sign === 1 || rot.sky_sign === -1)
+    && rot.trusted === true;
 
   // --- dial geometry ---
   const size = 120, cx = 60, cy = 60, R = 48;
@@ -246,11 +254,13 @@ export default function RotatorCard(): JSX.Element | null {
             {/* Measures the sign and checks the camera follows the rotator
                 (#145, #594). Nothing in the product called those two
                 measurements, so every automated rotation was refused as "sign
-                not learned" until someone ran them by hand. Locked once both
-                are known: a second press would change nothing. */}
+                not learned" until someone ran them by hand. Locked once the
+                sign is measured and the follow test PASSED: a second press
+                would change nothing. A FAILED test leaves it live (#697), so
+                the owner can test again after re-seating the coupling. */}
             <button className="btn min-h-9" data-rotator-preflight
-                    disabled={busy || !canMove || preflightKnown}
-                    title={preflightKnown ? PREFLIGHT_DONE_NOTE : PREFLIGHT_NOTE}
+                    disabled={busy || !canMove || preflightPassed}
+                    title={preflightPassed ? PREFLIGHT_DONE_NOTE : PREFLIGHT_NOTE}
                     onClick={() => void run(() => api.post("/api/rotator/preflight", {}))}>
               Test rotator
             </button>
