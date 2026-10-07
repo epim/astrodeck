@@ -1,0 +1,335 @@
+// Copyright (c) 2026 James Penick
+// SPDX-License-Identifier: Apache-2.0
+// w13CleanTallyTimeoutRetry.test.ts - a guard on the test RUNNER itself
+// (`ui/run-tests.mjs`), not on any UI code. Companion to runTests.test.ts
+// (computeOk/parseCounts/assertionStyle) and w5RunTestsTimeoutPhase.test.ts
+// (timeoutPhase); this covers `shouldRetry`/`runFileWithRetry`, added for
+// issue #664.
+//
+//   Run directly:  npx tsx src/__tests__/w13CleanTallyTimeoutRetry.test.ts
+//
+// WP-H3's own directive (issue #664, filed 2026-10-02 -- after the backlog
+// plan's 2026-09-30 approval, so no D-01..D-20 owner ruling in that plan
+// covers it) was to confirm or rule out jsdom's native requestAnimationFrame
+// as the carrier of #664 (a file prints its own clean tally, then the whole
+// run times out waiting for its default export to resolve - the same
+// symptom #614/#652 named). RULED OUT, not confirmed:
+//
+//   * A stress harness ran capturePreviewMobileOverflow.test.tsx (the file
+//     #664 actually names) 160 times at CONCURRENCY 8 (40, then 120 more).
+//     Zero hangs.
+//   * Two full 548-file suite runs on THIS box reproduced the exact symptom
+//     anyway - but on src/next/__tests__/hubBoundary.test.tsx and then
+//     src/__tests__/appHeaderDom.test.tsx, two files that are not the one
+//     #664 names and that do not share a render tree. hubBoundary's own tree
+//     (HubBoundary/SheetHost plus two synthetic throwing bodies) calls
+//     requestAnimationFrame nowhere at all, directly confirmed by reading it.
+//   * Instrumented from a byte backup of run-tests.mjs (restored
+//     byte-identically afterward, sha256-verified): every child was given an
+//     unref'd setInterval, armed BEFORE its own `await import()`, writing
+//     process._getActiveHandles()/_getActiveRequests() to a file every 2s (a
+//     file, not a console.log through a pipe that a SIGTERM might never
+//     flush). BOTH caught hangs wrote ZERO lines in their full 60s window -
+//     no handle, no request, the whole time. A dangling jsdom rAF timer (or
+//     any other lingering async resource) would show up in that list, and
+//     would not stop an unrelated interval on the SAME event loop from firing
+//     alongside it - timers on one event loop interleave; they do not block
+//     each other. Zero dumps for 60 straight seconds on two different,
+//     rAF-free files is evidence against a dangling handle of any kind, not
+//     evidence for one.
+//
+// WP-H3's own instrumentation (an unref'd setInterval dumping
+// process._getActiveHandles()/_getActiveRequests() to a file every 2s, armed
+// before the child's own `await import()`) found ZERO heartbeat lines for the
+// full 60s window on BOTH caught hangs. An unref'd interval fires whenever the
+// event loop turns at all, so CPU/scheduling contention on the shared box -
+// WP-H3's first conclusion - cannot explain that: contention slows how often
+// the loop turns, it does not stop it turning for a full minute. Zero dumps
+// for the whole window means the child's MAIN THREAD stopped running
+// entirely after the tally printed (a synchronous stall or a blocked write),
+// not that it kept running, slowly. An independent reviewer read the same
+// evidence the same way. THE ROOT CAUSE IS UNKNOWN - this rules out jsdom's
+// rAF and rules out CPU contention, it does not yet say what blocks the
+// thread; see #664. The fix is a runner-level mitigation for exactly the
+// shape measured, never for anything broader: `shouldRetry` named below is
+// true ONLY when a file's own tally already proved it correct and just the
+// process's own exit missed the deadline; `runFileWithRetry` then gives it
+// exactly one more try in a fresh child. A timeout with no tally at all -
+// something still inside the file's own cases when it was killed - is a
+// different, more serious shape and is never retried, so a real hang still
+// fails the suite on the first attempt. Every file this happens to is also
+// named in the final summary block (`retriedSummaryLine`), not just in a
+// per-attempt console.log a concurrent run can bury between other files'
+// output, so CI logs show how often this is actually happening.
+//
+// Real `execFile` calls, not a pure-function stub for the end-to-end cases:
+// `shouldRetry` alone being right would not prove `runFileWithRetry` is wired
+// into anything (see this repo's own "test doubles hide the code under test"
+// lesson) - and the earlier two guards on this file (runTests.test.ts,
+// w5RunTestsTimeoutPhase.test.ts) already show what a PURE unit test of a
+// decision function buys on its own. A custom `timeoutMs` (3s, not the real
+// 60s TIMEOUT_MS) keeps both real-timeout fixtures well under a second each
+// of wall time beyond the measured ~90ms Node+tsx bootstrap, without this
+// guard becoming the next "costs a minute of CI time by design" problem.
+//
+// NAMED MUTANT "the retry safety net removed" (shouldRetry's body replaced
+// with `return false;`, run from a byte backup, restored byte-identically,
+// sha256-verified, grepped gone): the positive end-to-end case goes red
+// because runFileWithRetry never gives the hang-once fixture its second
+// chance, so the OVERALL result comes back exactly as it did before #664 was
+// looked at - timed out, not ok - even though the file's own single assertion
+// had already passed. It also takes down both pure-boundary cases, since
+// neither shape is "retried" once the function always says no. Observed
+// failure (verbatim, "w13CleanTallyTimeoutRetry.test: 4/7 passed"):
+//
+//   x a timeout after a clean N/N tally is retried: the #664 shape itself -
+//   a clean tally, then the kill - must be retried
+//   x a timeout after a throw-on-failure completion phrase is retried: a
+//   throw-on-failure file's completion phrase counts as a finished tally too
+//   - timeoutPhase already says so
+//   x a file that times out AFTER printing a clean tally gets exactly one
+//   retry, and the retry's clean pass is what is reported: expected ok=true
+//   timedOut=false after retry, got ok=false timedOut=true
+//
+// NAMED MUTANT "the summary line removed" (backlog wave 13 integration,
+// `retriedSummaryLine`'s body replaced with `return null;`, run from a byte
+// backup, restored byte-identically, sha256-verified): the "retriedSummaryLine
+// names a file that froze after a clean tally and passed on retry" case goes
+// red because the line that should name the frozen file is unconditionally
+// absent. Observed failure (verbatim, "w13CleanTallyTimeoutRetry.test:
+// 10/11 passed"):
+//
+//   x retriedSummaryLine names a file that froze after a clean tally and
+//   passed on retry: expected a non-null summary line for a
+//   retried-and-passed result
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// run-tests.mjs is a plain untyped .mjs script outside tsconfig's `include`
+// (it is the test RUNNER, not UI source) - a static `import` of it fails
+// `tsc` with "could not find a declaration file". Same dynamic-import trick
+// runTests.test.ts and runTestsCss.test.ts already use for the same file.
+interface RunOneCounts {
+  passed: number;
+  failed: number;
+  total: number;
+}
+interface RunOneResult {
+  file: string;
+  counts: RunOneCounts | null;
+  byExit: boolean;
+  ok: boolean;
+  timedOut: boolean;
+  output: string;
+  retried?: boolean;
+}
+interface RunTestsModule {
+  runOne(file: string, timeoutMs?: number): Promise<RunOneResult>;
+  runFileWithRetry(file: string, timeoutMs?: number): Promise<RunOneResult>;
+  shouldRetry(result: { timedOut: boolean; output: string }): boolean;
+  retriedSummaryLine(results: RunOneResult[]): string | null;
+}
+const nodeImport = (s: string): Promise<unknown> =>
+  (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(s);
+const RUN_TESTS_URL = new URL("../../run-tests.mjs", import.meta.url).href;
+const { runOne, runFileWithRetry, shouldRetry, retriedSummaryLine } =
+  (await nodeImport(RUN_TESTS_URL)) as RunTestsModule;
+
+// ---------------------------------------------------------------- harness
+let passed = 0;
+let failed = 0;
+const failures: string[] = [];
+function test(name: string, fn: () => void): void {
+  try { fn(); passed++; }
+  catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
+}
+async function atest(name: string, fn: () => Promise<void>): Promise<void> {
+  try { await fn(); passed++; }
+  catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
+}
+function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
+
+// Well under the real TIMEOUT_MS (60s) but far above the measured ~90ms
+// Node+tsx bootstrap for a trivial fixture, so a loaded CI runner cannot
+// flake this the way #664 itself flaked the real suite.
+const SMALL_TIMEOUT_MS = 3000;
+
+// --------------------------------------------------- shouldRetry: pure cases
+// Fast, exact-boundary coverage before the slower real-process cases below -
+// the same pairing runTestsCss.test.ts (real cases) and runTests.test.ts
+// (pure computeOk cases) already use for this file's other two guards.
+
+test("a timeout after a clean N/N tally is retried", () => {
+  assert(shouldRetry({ timedOut: true, output: "widget.test: 4/4 passed" }) === true,
+    "the #664 shape itself - a clean tally, then the kill - must be retried");
+});
+
+test("a timeout after a throw-on-failure completion phrase is retried", () => {
+  assert(shouldRetry({ timedOut: true, output: "setting up...\nall assertions passed" }) === true,
+    "a throw-on-failure file's completion phrase counts as a finished tally too - timeoutPhase already says so");
+});
+
+test("a timeout with no tally at all is NEVER retried", () => {
+  assert(shouldRetry({ timedOut: true, output: "rendering...\n" }) === false,
+    "a hang INSIDE the file's own cases is a different, more serious shape and must fail on the first attempt");
+});
+
+test("a non-timeout result is never retried, even with a clean tally", () => {
+  assert(shouldRetry({ timedOut: false, output: "widget.test: 4/4 passed" }) === false,
+    "retrying is only ever about a timeout; a file that exited on its own has nothing to retry");
+});
+
+// --------------------------------------------------------- end-to-end cases
+//
+// Each fixture is a plain ".mjs" (unambiguous ESM regardless of package.json,
+// same reasoning runTestsCss.test.ts's own fixture gives for the extension),
+// so it runs the identical code path `findTests`/`runOne` give a real file.
+
+let dir: string | undefined;
+try {
+  dir = mkdtempSync(join(tmpdir(), "astrodeck-w13-retry-"));
+
+  // ---- positive: the #664 shape itself -- hangs once, then is clean -------
+  const marker = join(dir, "ran-once.marker");
+  const hangOnceFile = join(dir, "hangOnce.test.mjs");
+  writeFileSync(
+    hangOnceFile,
+    [
+      'import { existsSync, writeFileSync } from "node:fs";',
+      `const MARKER = ${JSON.stringify(marker)};`,
+      // The tally prints EVERY attempt, exactly like a real file's -- #664's
+      // own report shape is "tally printed, THEN the export never resolved",
+      // never a tally that fails to print at all.
+      'console.log("hangOnce.test: 1/1 passed");',
+      "if (!existsSync(MARKER)) {",
+      '  writeFileSync(MARKER, "ran");',
+      // A busy `while` loop, not `await new Promise(() => {})`: Node 24 (this
+      // box's only Node) detects a bare unsettled top-level await once the
+      // event loop would otherwise go idle and exits the process itself with
+      // a warning, in well under a second -- it never reaches our own
+      // SIGTERM. A loop that never yields matches what WP-H3 actually
+      // measured for #664 (zero live handles for the whole window the real
+      // hangs were killed in) and forces the genuine, timed-out-by-us kill
+      // this case needs to exercise.
+      "  while (true) { /* busy -- never yields, no handle for Node to see */ }",
+      "}",
+      "export const result = { passed: 1, failed: 0, total: 1 };",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  let hangOnceFinal: RunOneResult | undefined;
+  await atest(
+    "a file that times out AFTER printing a clean tally gets exactly one retry, and the retry's clean pass is what is reported",
+    async () => {
+      const start = Date.now();
+      const final = await runFileWithRetry(hangOnceFile, SMALL_TIMEOUT_MS);
+      hangOnceFinal = final;
+      const elapsedMs = Date.now() - start;
+      assert(final.ok === true && final.timedOut === false,
+        `expected ok=true timedOut=false after retry, got ok=${final.ok} timedOut=${final.timedOut}`);
+      // The first attempt must have genuinely been killed at SMALL_TIMEOUT_MS
+      // (not short-circuited some other way) -- if the retry wiring silently
+      // skipped straight to a second attempt without the first ever actually
+      // timing out, this bound would not hold.
+      assert(elapsedMs >= SMALL_TIMEOUT_MS,
+        `expected the first attempt to consume the full ${SMALL_TIMEOUT_MS}ms timeout before the retry ran, `
+        + `but the whole call took only ${elapsedMs}ms`);
+    },
+  );
+
+  // ---- #664 item 2: the retry is named in the FINAL summary block, not
+  // only in the per-attempt console.log a concurrent run can bury between
+  // other files' own output.
+  test("a file that froze once after its tally is marked retried, for the final summary to name", () => {
+    assert(hangOnceFinal !== undefined, "the previous case must have run first");
+    assert(hangOnceFinal!.retried === true,
+      `expected runFileWithRetry to mark a genuinely-retried result, got retried=${hangOnceFinal!.retried}`);
+  });
+
+  test("retriedSummaryLine names a file that froze after a clean tally and passed on retry", () => {
+    assert(hangOnceFinal !== undefined, "the previous case must have run first");
+    const line = retriedSummaryLine([hangOnceFinal!]);
+    assert(line !== null, "expected a non-null summary line for a retried-and-passed result");
+    assert(line!.includes("1 file(s)"),
+      `expected the count in the summary line, got: ${line}`);
+    assert(line!.includes("#664"), `expected the issue number in the summary line, got: ${line}`);
+    assert(line!.includes("hangOnce.test.mjs"),
+      `expected the frozen file's own name in the summary line, got: ${line}`);
+  });
+
+  test("retriedSummaryLine is null when nothing was retried", () => {
+    const cleanResult: RunOneResult = {
+      file: hangOnceFile, counts: { passed: 1, failed: 0, total: 1 },
+      byExit: false, ok: true, timedOut: false, output: "",
+    };
+    assert(retriedSummaryLine([cleanResult]) === null,
+      "a run with no retried file must print nothing, not an empty-named line");
+  });
+
+  test("retriedSummaryLine excludes a file that was retried but still failed", () => {
+    const stillBroken: RunOneResult = {
+      file: hangOnceFile, counts: null, byExit: false, ok: false,
+      timedOut: true, output: "", retried: true,
+    };
+    assert(retriedSummaryLine([stillBroken]) === null,
+      "a retry that did NOT pass belongs in the broken list, not the retried-and-passed summary line");
+  });
+
+  // ---- negative: a hang with NO tally is never retried --------------------
+  const attemptsLog = join(dir, "attempts.log");
+  const hangAlwaysFile = join(dir, "hangAlways.test.mjs");
+  writeFileSync(
+    hangAlwaysFile,
+    [
+      'import { appendFileSync } from "node:fs";',
+      // Appended, not overwritten: a second invocation (which must never
+      // happen) would add a second line, which the assertion below catches.
+      `appendFileSync(${JSON.stringify(attemptsLog)}, "attempt\\n");`,
+      // No console.log at all -- this file never gets as far as its own
+      // tally, the "during its test cases" shape shouldRetry must refuse.
+      // A busy loop, not a dangling await -- see hangOnce.test.mjs above for
+      // why.
+      "while (true) { /* busy -- never yields, no handle for Node to see */ }",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await atest(
+    "a file that times out with NO tally is reported broken on the first attempt, never retried",
+    async () => {
+      const final = await runFileWithRetry(hangAlwaysFile, SMALL_TIMEOUT_MS);
+      assert(final.ok === false && final.timedOut === true,
+        `expected the no-tally hang to stay broken, got ok=${final.ok} timedOut=${final.timedOut}`);
+      const attempts = readFileSync(attemptsLog, "utf8").trim().split("\n").filter(Boolean);
+      assert(attempts.length === 1,
+        `expected exactly one child process to have run (no retry), got ${attempts.length} attempt(s)`);
+    },
+  );
+
+  // Sanity control: runOne on its own (no retry wrapper) must still behave
+  // exactly as it did before this change for a file that just exits cleanly
+  // -- the optional `timeoutMs` default must not have altered that path.
+  const cleanFile = join(dir, "clean.test.mjs");
+  writeFileSync(cleanFile, 'console.log("clean.test: 1/1 passed");\nexport const result = { passed: 1, failed: 0, total: 1 };\n', "utf8");
+  await atest("runOne with an explicit timeoutMs still scores a clean file correctly", async () => {
+    const r = await runOne(cleanFile, SMALL_TIMEOUT_MS);
+    assert(r.ok === true && r.timedOut === false && r.counts?.failed === 0,
+      `expected a clean pass, got ${JSON.stringify(r)}`);
+  });
+} finally {
+  if (dir) rmSync(dir, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------- report
+const total = passed + failed;
+console.log(`w13CleanTallyTimeoutRetry.test: ${passed}/${total} passed`);
+if (failures.length) console.error(failures.join("\n"));
+
+export const result = { passed, failed, total };
