@@ -116,6 +116,9 @@ export function RestrictedList(): JSX.Element {
               <span className="nx-sys-entryname">{a.title}</span>
               <Mono size={10}>{remedyLabel(a.remedy)}</Mono>
             </div>
+            {a.detail && (
+              <p className="nx-sys-note" data-testid="restricted-detail">{a.detail}</p>
+            )}
 
             {/* The licensor's own words, then ours, never merged. */}
             <blockquote className="nx-sys-quote" data-testid="restricted-quote">{a.quote}</blockquote>

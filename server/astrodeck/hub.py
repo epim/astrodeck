@@ -7548,8 +7548,9 @@ class Hub:
                     f"followed only {fraction:.0%} of the "
                     f"{mech_travel:+.2f}° commanded move (sky "
                     f"{sky_travel:+.2f}°); rotation is off for the night "
-                    f"and panels will be shot at a fixed angle until the "
-                    f"next self-test passes", "rotator")
+                    f"and panels will be shot at a fixed angle until "
+                    f"TEST ROTATOR (on the rotator panel) passes again",
+                    "rotator")
         bus.publish("rotator", action="self_test", passed=passed,
                     fraction=round(fraction, 3),
                     mechanical_travel_deg=round(mech_travel, 2),
@@ -9456,6 +9457,44 @@ class Hub:
             warm = self.warm_state()
             if warm is not None and "camera" in out:
                 out["camera"]["warm"] = warm
+        # THE FINGERPRINT IS RECORDED BEFORE THE PROBE BELOW WAITS (wave 15
+        # integration). The record writes what the reads above sampled, and the
+        # probe's wait is an await (a worker-thread hop, and up to five seconds
+        # when the guide camera stalls). Recorded after it, a poll that had read
+        # the focuser, then waited, then wrote that reading could put a position
+        # it took BEFORE the recovery ladder's sweep over the position the ladder
+        # had just vouched for (``fingerprint.vouch``), and the next tick swept
+        # again. Recorded here, the wait cannot age the sample.
+        # Record last-known device state so a power cut is DETECTABLE on the way
+        # back up. Read off ``out`` rather than re-querying: these values were
+        # just measured, and a second round of device reads on the status path
+        # would cost more than the feature. Coalesced to one write per 10s and
+        # swallows its own errors, so it is safe on this hot path.
+        #
+        # OFF THE LOOP (#97). Coalescing bounds how OFTEN this writes, not how
+        # LONG a write takes, and the write goes through the private-ACL path
+        # on a directory holding the night's images: py-spy caught this stack
+        # on the loop thread on 2026-09-19 and the write was measured at 7 s.
+        # record() takes its own lock, because this now runs on a worker thread
+        # and poll_status is entered both from _status_loop and from
+        # /api/status.
+        try:
+            from .devices import fingerprint as _fp
+            _m = out.get("mount") or {}
+            _f = out.get("focuser") or {}
+            _w = out.get("filterwheel") or {}
+            await asyncio.to_thread(
+                _fp.record, focuser_position=_f.get("position"),
+                filter_slot=_w.get("position"),
+                ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
+                parked=_m.get("parked"), tracking=_m.get("tracking"))
+            # The worker records a slow write, the loop says it: bus.publish is
+            # loop-affine (see fingerprint._slow_write_notice).
+            _slow = _fp.take_slow_write_notice()
+            if _slow:
+                bus.log("warning", _slow, "fingerprint")
+        except Exception:  # noqa: BLE001 — never break status over bookkeeping
+            pass
         # THE GUIDE CAMERA'S LIVENESS (#16, job 2c). The imaging camera is asked
         # for its temperature above every tick, and for a native camera that
         # read is also the only thing that notices an IDLE unplug: the adapter
@@ -9490,6 +9529,17 @@ class Hub:
                         lambda t: t.cancelled() or t.exception())
                     self._guide_probe = probe
                 await asyncio.wait({probe}, timeout=5.0)
+            except Exception:
+                pass
+        # The probe may have just noticed an unplug (the adapter's ``CameraGone``
+        # marks the device disconnected from its worker thread). ``connected`` was
+        # built before the wait, so say it again for the guide camera: the frame
+        # that notices must say so in EVERY field, not only in the descriptor
+        # below (wave 15 integration).
+        _listed = out.get("connected")
+        if gcam is not None and isinstance(_listed, dict) and "guide_camera" in _listed:
+            try:
+                _listed["guide_camera"] = gcam.describe()
             except Exception:
                 pass
         if self.guider and self.guider.connected:
@@ -9544,36 +9594,6 @@ class Hub:
                 "healthy": healthy,
                 "warming_up": not self._bridge_ready,
             }
-        # Record last-known device state so a power cut is DETECTABLE on the way
-        # back up. Read off ``out`` rather than re-querying: these values were
-        # just measured, and a second round of device reads on the status path
-        # would cost more than the feature. Coalesced to one write per 10s and
-        # swallows its own errors, so it is safe on this hot path.
-        #
-        # OFF THE LOOP (#97). Coalescing bounds how OFTEN this writes, not how
-        # LONG a write takes, and the write goes through the private-ACL path
-        # on a directory holding the night's images: py-spy caught this stack
-        # on the loop thread on 2026-09-19 and the write was measured at 7 s.
-        # record() takes its own lock, because this now runs on a worker thread
-        # and poll_status is entered both from _status_loop and from
-        # /api/status.
-        try:
-            from .devices import fingerprint as _fp
-            _m = out.get("mount") or {}
-            _f = out.get("focuser") or {}
-            _w = out.get("filterwheel") or {}
-            await asyncio.to_thread(
-                _fp.record, focuser_position=_f.get("position"),
-                filter_slot=_w.get("position"),
-                ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
-                parked=_m.get("parked"), tracking=_m.get("tracking"))
-            # The worker records a slow write, the loop says it: bus.publish is
-            # loop-affine (see fingerprint._slow_write_notice).
-            _slow = _fp.take_slow_write_notice()
-            if _slow:
-                bus.log("warning", _slow, "fingerprint")
-        except Exception:  # noqa: BLE001 — never break status over bookkeeping
-            pass
         return out
 
 

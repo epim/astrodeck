@@ -177,10 +177,23 @@ const visibilityNight = {
   best_window: null, alt_limit_deg: 20, never_rises_above_limit: false,
 };
 
+/** While set, a survey CUTOUT request is held open until the test answers it
+ *  (as a failure: `ok()` has no headers, so SkyCanvas's reader throws). The
+ *  request's abort signal is kept so a case can ask whether the canvas aborted
+ *  it. Used by the SURVEY-off case to put one load IN FLIGHT as the layer goes
+ *  off (#701, #752). */
+let holdCutouts = false;
+const heldCutouts: { signal: AbortSignal | undefined; answer: () => void }[] = [];
+
 const g = globalThis as any;
 g.fetch = async (url: any, init?: any) => {
   const u = String(url);
   asked.push(`${init?.method ?? "GET"} ${u}`);
+  if (holdCutouts && u.includes("/api/survey/cutout")) {
+    return new Promise((resolve) => {
+      heldCutouts.push({ signal: init?.signal, answer: () => resolve(ok({})) });
+    });
+  }
   if (u.includes("/api/survey/pack")) return ok(packPayload);
   if (u.includes("/api/cloudmap/dome")) {
     return ok({ enabled: true, observed_at: null, stale: false, alt_start: 6, alt_step: 6, az_step: 10, rows: [] });
@@ -222,19 +235,36 @@ g.fetch = async (url: any, init?: any) => {
 // What is held is recorded, and `clearTimeout` of a held timer drops it, which
 // is how a component that cancels its retry would show.
 //
-// KNOWN DEFECT THIS DOES NOT COVER, which is why the hold is not a fix: SkyCanvas's
-// scheduler effect returns early for `mode === "schematic"` (what AtlasHost
-// hands it when the layer is off) WITHOUT clearing `retryRef.current.timer`,
-// and the retry callback is guarded only by `gen === genRef.current`, which a
-// layer toggle does not bump. A retry armed before SURVEY went off therefore
-// fetches one cutout when it fires, and its own failure arms the next (10 s,
-// 20 s, ... 60 s): with the layer off, a failed survey keeps being asked for
-// until the canvas unmounts. Measured on this fixture: a cutout request 5.0 s
-// after the last pre-switch one, with data-survey="off". The fix is in
-// SkyCanvas.tsx (clear the retry timer and abort the in-flight load in that
-// branch); once it lands, add to the SURVEY-off case after its window
-// `assert(heldBackoff.size === 0, ...)`: no backoff timer may be armed while
-// the layer is off. It is red today, which is the only reason it is not here.
+// WHAT THE HOLD DOES NOT COVER, which is why the hold is not the fix: SkyCanvas's
+// scheduler effect used to return early for `mode === "schematic"` (what
+// AtlasHost hands it when the layer is off) WITHOUT clearing
+// `retryRef.current.timer`, and the retry callback is guarded only by
+// `gen === genRef.current`, which a layer toggle did not bump. A retry armed
+// before SURVEY went off therefore fetched one cutout when it fired, and its
+// own failure armed the next (10 s, 20 s, ... 60 s): with the layer off, a
+// failed survey kept being asked for until the canvas unmounted. Measured on
+// this fixture: a cutout request 5.0 s after the last pre-switch one, with
+// data-survey="off". FIXED at the wave 15 integration (#701, #752): that
+// branch now clears the retry timer, aborts the load in flight and bumps the
+// generation. The SURVEY-off case fires a copy of the pending retry by hand so
+// one load is IN FLIGHT as the layer goes off, and asserts on the held timers
+// at three moments: right after the switch (the retry armed before it is
+// cancelled), right after the in-flight load fails (that failure arms none)
+// and after the case's window. Each applied from a byte backup of
+// SkyCanvas.tsx's schematic branch, restored byte-identically and
+// sha256-verified. Observed, verbatim ("skyAtlasDom.test: 21/22 passed"):
+//   * the assertion with the fix not yet made (the branch as WP-115 found it):
+//     x SURVEY off fetches no imagery and still draws the markers and the
+//     reticle: the survey is off and 1 backoff timer(s) are still armed to ask
+//     for imagery again
+//   * `if (retryRef.current.timer != null) { ... }` and `attempt = 0` removed:
+//     x ...: the layer went off and the retry armed before it was not
+//     cancelled: expected 0, got 1
+//   * `abortRef.current?.abort();` removed:
+//     x ...: the layer went off and the load still in flight was not aborted:
+//   * `genRef.current++;` removed (the abort stays):
+//     x ...: a load that was in flight when the layer went off failed
+//     afterwards and armed a retry: expected 0, got 1
 const SURVEY_BACKOFF_MIN_MS = 5_000;
 const SURVEY_BACKOFF_MAX_MS = 60_000;
 const heldBackoff = new Map<number, () => void>();
@@ -540,6 +570,24 @@ await testAsync("SURVEY off fetches no imagery and still draws the markers and t
     "precondition: with the layer ON the canvas must have fetched imagery at least once, "
     + "or the assertion below cannot fail");
 
+  // ONE LOAD IN FLIGHT AS THE LAYER GOES OFF (#701, #752). The held backoff
+  // below can only show a timer that was armed BEFORE the switch; a load that
+  // is already out when the layer goes off would, on its own failure, arm a
+  // NEW one (the generation it carries still matched). So fire a copy of the
+  // pending retry by hand (the held timer itself stays armed, so the check
+  // that it is cancelled still has its subject), keep that request open, press
+  // the switch, and only then let the request fail.
+  assert(heldBackoff.size >= 1,
+    "precondition: a failed cutout armed a backoff retry before the layer went off");
+  holdCutouts = true;
+  const armedRetry = [...heldBackoff.values()][0];
+  act(() => { armedRetry(); });
+  await wait(0);
+  eq(heldCutouts.length, 1, "precondition: the retry's load is in flight as the layer goes off:");
+  assert(heldCutouts[0].signal != null && heldCutouts[0].signal.aborted === false,
+    "precondition: the in-flight load carries a live abort signal:");
+  holdCutouts = false;
+
   // The claim is about WHICH requests were made after the switch, not about how
   // many there were at some instant: `fetch` records a request when it is
   // CALLED, so everything in `asked` from this index on is a request made after
@@ -547,9 +595,23 @@ await testAsync("SURVEY off fetches no imagery and still draws the markers and t
   // A count read at a chosen moment answered a different question (did one
   // land between my two reads?) and gave "expected 5, got 6" on a starved box
   // without saying what the sixth was (#701).
+  // The hand-fired retry above was made while the layer was still on, so it is
+  // not counted: the index is taken after it.
   const askedAtOff = asked.length;
   click(sw);
   await settle();
+  assert(heldCutouts[0].signal!.aborted === true,
+    "the layer went off and the load still in flight was not aborted:");
+  eq(heldBackoff.size, 0,
+    "the layer went off and the retry armed before it was not cancelled:");
+  // The request fails AFTER the switch. The canvas has moved on (the
+  // generation the load carried is stale), so its failure must not arm another
+  // retry. Read at once: a later re-render of the canvas runs the effect again
+  // and would clear a stray timer, which would hide it.
+  await act(async () => { heldCutouts[0].answer(); });
+  await wait(0);
+  eq(heldBackoff.size, 0,
+    "a load that was in flight when the layer went off failed afterwards and armed a retry:");
   eq(JSON.parse(win.localStorage.getItem(SKY_PREF_KEYS.layers) ?? "{}").survey, false,
     "the survey layer did not reach localStorage:");
 
@@ -581,6 +643,13 @@ await testAsync("SURVEY off fetches no imagery and still draws the markers and t
   assert(packs.length === 0,
     "the pack poll outlived the layer that needed it - nothing is degraded when nothing was asked for: "
     + packs.join(" | "));
+  // THE HELD BACKOFF (#701, WP-115 left it red and wave 15's integration fixed
+  // SkyCanvas). The window above can only say what was REQUESTED inside it, and
+  // the backoff timers are held, so a retry armed before the switch never fires
+  // here: the one thing that shows it still armed is the hold itself. With the
+  // layer off no retry may be waiting to ask for imagery.
+  assert(heldBackoff.size === 0,
+    `the survey is off and ${heldBackoff.size} backoff timer(s) are still armed to ask for imagery again`);
 
   assert(container.querySelector("[data-atlas-marker]") != null,
     "SURVEY off took the target markers with it - only the tiles were meant to go");

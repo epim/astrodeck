@@ -61,6 +61,7 @@ import { useStore } from "../../../../store";
 import type { Profile, ProfileRow } from "../../../../types";
 import { NxIcon } from "../../../icons";
 import { useLock } from "../../../lib/gateHook";
+import { onRelay } from "../../../lib/relay";
 import {
   ActionButton, Card, EmptyCard, Field, Label, LockNote, Mono, TextInput,
 } from "../../../ui";
@@ -74,7 +75,7 @@ import {
   NAME_PLACEHOLDER, PROFILES_CAP, PROFILES_EYEBROW, REFRESH_LABEL,
   RENAME_FAILED, RETRY_LABEL, SAVE_BLURB, SAVE_BUSY, SAVE_BUTTON, SAVE_EYEBROW,
   UPDATE_FAILED, UPDATE_NEEDS_RIG, activated, activating, alreadyGone,
-  deleted, errText, exported, forceActivateConfirm, importFailed, isGone,
+  deleted, errText, exported, forceActivateConfirm, forceNeedsLan, importFailed, isGone,
   isLaneConflict, isRunningConflict, notActiveYet, rowBusyToast, updateConfirm,
   updated,
 } from "./profilesModel";
@@ -97,6 +98,14 @@ export function ProfilesEditor({ onRows }: {
   // `gate.ts` for exactly that reason - naming the capability here would be a
   // true sentence about the wrong blocker.
   const { lockedReason, onExplain } = useLock({ cap: PROFILES_CAP, needsLan: true });
+  // ACTIVATE IS THE ONE VERB THAT IS NOT LAN-ONLY (#685). The rig allow-lists
+  // `POST /api/profiles/<id>/activate` without `force` through the fence: it
+  // takes a profile that is already saved, so a relayed caller picks no
+  // destination. Its lock is the capability and the link alone, the same as the
+  // popover's ACTIVATE; rename, update, export-side writes, delete, import and
+  // save keep the LAN lock above. `force` is the one option still refused over
+  // the relay, which `onActivateFailed` below answers without offering it.
+  const { lockedReason: activateLockedReason } = useLock({ cap: PROFILES_CAP });
   // The capability alone, without the link state - the last-line guard before
   // the one irreversible call, for a token downgraded while a dialog was open.
   const canConfig = useCanConfigBackend();
@@ -209,6 +218,9 @@ export function ProfilesEditor({ onRows }: {
 
   const onActivateFailed = async (e: unknown, row: ProfileRow, wasForced: boolean) => {
     if (isRunningConflict(e) && !wasForced) {
+      // Over the relay the force this dialog would send is refused 403
+      // `local_only` (#685), so it is not offered: the toast says what is true.
+      if (onRelay()) { toast("warning", forceNeedsLan((e as ApiError).message)); return; }
       if (await confirmDialog(forceActivateConfirm((e as ApiError).message))) {
         await activateAndWait(row, true);
       }
@@ -471,6 +483,7 @@ export function ProfilesEditor({ onRows }: {
               onExport={() => { void onExport(row); }}
               onDelete={() => { void onDelete(row); }}
               lockedReason={lockedReason}
+              activateLockedReason={activateLockedReason}
               onExplain={onExplain}
             />
           ))}

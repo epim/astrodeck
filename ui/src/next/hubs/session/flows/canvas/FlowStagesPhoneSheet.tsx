@@ -484,6 +484,9 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   const readouts = useFlowRunReadouts();
   const logs = useStore((s) => s.flows.logs);
   const dirty = useStore((s) => s.flows.dirty);
+  // True while a PUT is out (the autosave's, or SAVE's own): the pill says
+  // SAVING and SAVE does not send the same graph beside it, as on the toolbar.
+  const saving = useStore((s) => s.flows.saving);
   const readonly = useStore((s) => s.flows.record?.readonly ?? false);
   const save = useStore((s) => s.flowsSave);
   const applyFraming = useStore((s) => s.flowsApplyFraming);
@@ -603,8 +606,8 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   // by `flowsRun` before it posts (#688), so it is not locked here, as on the
   // toolbar.
   const runReason = waitingReason ?? hookRunReason;
-  const saveReason = waitingReason ?? saveLockReason(dirty, readonly);
-  const stateWord = saveStateWord(dirty, readonly);
+  const saveReason = waitingReason ?? saveLockReason(dirty, readonly, saving);
+  const stateWord = saveStateWord(dirty, readonly, saving);
 
   /** BACK saves, exactly as the legacy `< LIBRARY` button did.
    *
@@ -638,7 +641,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
         : undefined}
       right={(
         <span data-testid="flow-stages-save-state">
-          <Pill tone={saveStateTone(dirty, readonly)} ariaLabel={`This flow: ${stateWord}`}>
+          <Pill tone={saveStateTone(dirty, readonly, saving)} ariaLabel={`This flow: ${stateWord}`}>
             {stateWord}
           </Pill>
         </span>

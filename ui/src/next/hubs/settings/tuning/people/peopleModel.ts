@@ -122,6 +122,12 @@ export const STEP_UP_REQUIRED_HINT =
   `The rig refused that change because this sign-in is more than ${STEP_UP_WINDOW_MIN} minutes old. Sign in again, then repeat the change.`;
 export const STEP_UP_FRESH_HINT =
   `Signed in again. Changes to people are open for ${STEP_UP_WINDOW_MIN} minutes.`;
+/** The hint over a change the editor is HOLDING (#734): a password sign-in sends
+ *  it again for the person; Google leaves the page, so nothing can be held across
+ *  it. Said as two clauses so the person is not told to repeat what will be
+ *  repeated, nor promised a retry that Google cannot give. */
+export const STEP_UP_RETRY_HINT =
+  `The rig refused that change because this sign-in is more than ${STEP_UP_WINDOW_MIN} minutes old. Sign in again below. A password sign-in sends the change again for you; Google returns to the home screen, so repeat it there.`;
 export const STEP_UP_OPEN = "SIGN IN AGAIN";
 export const STEP_UP_SUBMIT = "SIGN IN AGAIN";
 export const STEP_UP_BUSY = "SIGNING IN";

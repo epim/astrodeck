@@ -657,7 +657,19 @@ await test("run mode writes nothing: no DONE, every control disabled, the sky re
   const controls = Array.from(doc.querySelectorAll(
     ".tfs-scroller button, .tfs-scroller input, .tfs-scroller select, .tfs-scroller textarea") as any[]);
   assert(controls.length > 10, `premise: the scroller holds its controls: ${controls.length}`);
-  const live = controls.filter((el) => !el.matches(":disabled"))
+  // DELIBERATE PIN CHANGE (backlog WP-104, #600, wave 15 integration). This
+  // case said every control in the scroller is disabled. RETRY SET-ASIDE
+  // PANELS is a run control that is LIVE BY DESIGN: it brings tonight's
+  // set-aside panels back while the run is live, and a button inside the
+  // disabled fieldset would be natively disabled and never fire. So the one
+  // control is exempted here and PINNED: the `framing-retry` row holds exactly
+  // one control and it is RETRY SET-ASIDE PANELS (w15RetrySetAside.test.tsx
+  // pins the same invariant from the other side). Nothing else in run mode is
+  // exempted: any other control left live still fails the line after it.
+  const inRetry = (el: any): boolean => el.closest('[data-testid="framing-retry"]') != null;
+  const retry = controls.filter(inRetry);
+  eq(retry.map((el) => el.textContent), ["RETRY SET-ASIDE PANELS"], "the one run control");
+  const live = controls.filter((el) => !inRetry(el) && !el.matches(":disabled"))
     .map((el) => el.getAttribute("aria-label") ?? el.id ?? el.textContent);
   eq(live, [], "controls run mode leaves live");
   // The sky: no MOVE toggle, and no gesture that moves, turns or skips

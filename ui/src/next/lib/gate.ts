@@ -54,7 +54,9 @@ export interface GateInput {
    *  `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES` / `_REMOTE_LOCAL_ONLY_EXACT`:
    *  /api/config, /api/alerts, /api/drivers, /api/profiles, /api/connect,
    *  /api/survey/pack, /api/ephemeris, /api/locations, /api/switch/ports, the
-   *  update routes, /api/users, /api/auth/*). Declarative like `busyLane`:
+   *  update routes, /api/auth/*, the password reset under /api/users; NOT the
+   *  rest of /api/users or an unforced profile activate, which the rig opens
+   *  over the relay, #685). Declarative like `busyLane`:
    *  saying so does not mean the tab IS on the relay - `lockReason` reads
    *  `s.onRelay` to decide that. */
   needsLan?: boolean;

@@ -753,51 +753,125 @@ await testAsync("no next-side module imports components/settings/ProfileList", a
 
 // ================================================= the LAN fence (FIX-U-rig)
 //
-// All six profile routes live under `/api/profiles`, a prefix on `app.py`'s
-// `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`: activating one reconnects hardware to
+// The profile routes live under `/api/profiles`, a prefix on `app.py`'s
+// `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`: saving or changing one stores
 // caller-chosen serial ports and network hosts, which is the foothold the fence
 // exists for, so the rig answers 403 `local_only` over the relay whatever role
 // the cookie carries. The ADMIN below is the point of the test.
 //
-// Sabotage: drop `needsLan: true` from `ProfilesEditor`'s `useLock` and every
-// assertion on LOCAL_ONLY_REASON goes red - the buttons render armed and the
-// refusal arrives only after the press.
+// ONE ROUTE IS NOT FENCED (#685, wave 15 integration of WP-105): `POST
+// /api/profiles/<id>/activate` without `force`. It takes a profile that is
+// already saved, so a relayed caller picks no destination, and the rig allow-
+// lists it. The sheet's ACTIVATE therefore follows the capability and the link
+// alone, as the popover's does; rename and delete keep the LAN sentence; and
+// `force` - the one option still refused over the relay - is not offered there.
+//
+// Sabotage: drop `needsLan: true` from `ProfilesEditor`'s `useLock` and the
+// rename and delete assertions on LOCAL_ONLY_REASON go red - the buttons render
+// armed and the refusal arrives only after the press. Put the LAN rule back on
+// ACTIVATE (`activateLockedReason` omitted from the card) and the activate
+// assertions go red.
 const { LOCAL_ONLY_REASON } = await import("../../../../lib/gate");
 const { noteRemoteStatus, resetRelayForTests } = await import("../../../../lib/relay");
 
-await testAsync("on the relay every profile verb names the LAN, not a capability", async () => {
+// MUTANT "ACTIVATE keeps the LAN lock on the sheet" (ProfileCard.tsx:
+// `activateGroupLock` made `lockedReason`, so the sheet's ACTIVATE ignores the
+// editor's `activateLockedReason`). Observed, "rigProfiles.test: 16/18 passed":
+//   x on the relay ACTIVATE is armed and sends the unforced activate, while
+//     rename and delete name the LAN: ACTIVATE renders locked over the relay,
+//     but the rig allows an unforced activate (#685) (expected null, got true)
+//   x on the relay a running conflict is not offered a force the rig would
+//     refuse: a forced activate was sent over the relay (expected 1, got 0)
+//     (the second reads oddly because a locked ACTIVATE sends no activate at all)
+// MUTANT "the LAN lock cut from rename and delete" (ProfilesEditor.tsx:
+// `useLock({ cap: PROFILES_CAP, needsLan: true })` made `useLock({ cap:
+// PROFILES_CAP })`). Observed, 17/18: the first case, "profile-rename names the
+// wrong blocker over the relay (null) (expected This changes the rig's own
+// settings, so it needs the LAN - you are connected through the relay., got
+// null)".
+await testAsync("on the relay ACTIVATE is armed and sends the unforced activate, while rename and delete name the LAN", async () => {
   seed(ADMIN);
   mount();
   await settle();
-  // Precondition on the LAN: an admin's ACTIVATE is live, so what locks it
-  // below is the origin and nothing else.
+  // Precondition on the LAN: an admin's ACTIVATE is live, so what locks the
+  // others below is the origin and nothing else.
   const before = card(ROW_B.id).querySelector('[data-testid="profile-activate"]');
   assert(before != null, "no ACTIVATE - the list did not render");
   eq(before.getAttribute("aria-disabled"), null,
     "precondition: an admin on the LAN cannot activate, so the relay case proves nothing");
 
-  act(() => { noteRemoteStatus({ via: "relay" }); });
-  await settle();
-  const row = card(ROW_B.id);
-  for (const marker of ["profile-activate", "profile-rename", "profile-delete"]) {
-    const btn = row.querySelector(`[data-testid="${marker}"]`);
-    assert(btn != null, `${marker} vanished on the relay - nothing may be hidden`);
-    eq(btn.getAttribute("title"), LOCAL_ONLY_REASON,
-      `${marker} names the wrong blocker over the relay (${btn.getAttribute("title")})`);
+  try {
+    act(() => { noteRemoteStatus({ via: "relay" }); });
+    await settle();
+    const row = card(ROW_B.id);
+    const activate = row.querySelector('[data-testid="profile-activate"]');
+    assert(activate != null, "ACTIVATE vanished on the relay - nothing may be hidden");
+    eq(activate.getAttribute("aria-disabled"), null,
+      "ACTIVATE renders locked over the relay, but the rig allows an unforced activate (#685)");
+    for (const marker of ["profile-rename", "profile-delete"]) {
+      const btn = row.querySelector(`[data-testid="${marker}"]`);
+      assert(btn != null, `${marker} vanished on the relay - nothing may be hidden`);
+      eq(btn.getAttribute("title"), LOCAL_ONLY_REASON,
+        `${marker} names the wrong blocker over the relay (${btn.getAttribute("title")})`);
+    }
+    // The list itself still READS: `startswith` catches unsafe methods only, so
+    // GET /api/profiles answers over the relay and a remote operator can still
+    // see which rig is saved.
+    assert(cards().length >= 2, "the relay lock took the profile LIST with it");
+
+    // A locked one reaches nothing; the armed ACTIVATE asks, then sends exactly
+    // the unforced activate and nothing else that writes.
+    asked.length = 0;
+    click(row.querySelector('[data-testid="profile-rename"]'));
+    click(row.querySelector('[data-testid="profile-delete"]'));
+    await settle();
+    eq(asked.filter((a) => a.method !== "GET").length, 0,
+      `a locked relay press reached a fenced route: ${JSON.stringify(asked)}`);
+    click(activate);
+    await settle();
+    answer(true);
+    await settle();
+    const writes = asked.filter((a) => a.method !== "GET");
+    eq(writes.length, 1, `the relay activate sent more than the activate: ${JSON.stringify(writes)}`);
+    assert(/\/api\/profiles\/p-b\/activate$/.test(writes[0].url), `the write was not the activate: ${writes[0].url}`);
+    eq(writes[0].body.force, false, "the relay activate was forced");
+  } finally {
+    act(() => { noteRemoteStatus({ via: "direct" }); });
+    resetRelayForTests();
   }
-  // The list itself still READS: `startswith` catches unsafe methods only, so
-  // GET /api/profiles answers over the relay and a remote operator can still
-  // see which rig is saved.
-  assert(cards().length >= 2, "the relay lock took the profile LIST with it");
+});
 
-  asked.length = 0;
-  click(row.querySelector('[data-testid="profile-activate"]'));
+// MUTANT "the relay is offered the force" (ProfilesEditor.tsx: the
+// `if (onRelay()) { toast(...); return; }` line removed from
+// `onActivateFailed`). Observed, 17/18: "x on the relay a running conflict is not
+// offered a force the rig would refuse: the relay was offered the force dialog,
+// which the rig answers 403 local_only".
+await testAsync("on the relay a running conflict is not offered a force the rig would refuse", async () => {
+  seed(ADMIN);
+  mount();
   await settle();
-  eq(asked.filter((a) => a.method !== "GET").length, 0,
-    `a relay press reached a fenced route: ${JSON.stringify(asked)}`);
-
-  act(() => { noteRemoteStatus({ via: "direct" }); });
-  resetRelayForTests();
+  try {
+    act(() => { noteRemoteStatus({ via: "relay" }); });
+    await settle();
+    activatePosts = [{ status: 409, body: { detail: { detail: "a sequence is running", code: "running" } } }];
+    asked.length = 0;
+    click(within(card("p-b"), "profile-activate"));
+    await settle();
+    answer(true);                    // the activate confirm
+    await settle();
+    assert(confirmReq() == null,
+      "the relay was offered the force dialog, which the rig answers 403 local_only");
+    const posts = asked.filter((a) => a.method === "POST" && /\/activate$/.test(a.url));
+    eq(posts.length, 1, "a forced activate was sent over the relay");
+    eq(posts[0].body.force, false, "the one activate was forced");
+    assert(/forcing the switch needs the LAN/.test(toastText()),
+      `the refusal does not say that forcing needs the LAN: ${toastText()}`);
+    assert(/A sequence is running\./.test(toastText()),
+      `the toast dropped the server's own reason: ${toastText()}`);
+  } finally {
+    act(() => { noteRemoteStatus({ via: "direct" }); });
+    resetRelayForTests();
+  }
 });
 
 act(() => { rootRef!.unmount(); });

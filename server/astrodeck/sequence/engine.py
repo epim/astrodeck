@@ -2053,11 +2053,18 @@ class SequenceEngine:
         self._fire_state = {}
         self._clouds = CloudState()
         self._holding_for_clear = False
-        # The step a probe copies is this run's own, once its first frame has
-        # set it, and nothing before then (#711): it was set per frame and never
-        # cleared, so a run on an engine that had run before probed in its first
-        # frames through the previous run's exposure, gain and binning.
-        self._hold_step = None
+        # The step a probe copies is THIS run's own (#711): it was set per frame
+        # and never cleared, so a run on an engine that had run before probed in
+        # its first frames through the previous run's exposure, gain and binning.
+        # It is not left empty until the first frame sets it either (wave 15
+        # integration ruling): a cloud hold entered before that frame (the sky
+        # is cloudy at dusk, the first target is still being set up) would have
+        # no step to probe with, and a hold that cannot probe cannot see the
+        # sky clear, so it would run blind to its bound. It is SEEDED from the
+        # plan's first light step instead, which is the step the first frame is
+        # about to shoot, and never carried from a previous run. None only when
+        # the plan has no light step at all.
+        self._hold_step = self._first_light_step(plan)
         self._hold_deferred = None
         self._hold_deferred_said = False
         self._jumps_spent = 0
@@ -11085,9 +11092,25 @@ class SequenceEngine:
         lock = getattr(self.hub, "_motion_lock", None)
         if lock is not None:
             async with lock:
-                return await self._park_and_read_back(
+                parked = await self._park_and_read_back(
                     tel, during="auto-reopen close")
-        return await self._park_and_read_back(tel, during="auto-reopen close")
+        else:
+            parked = await self._park_and_read_back(
+                tel, during="auto-reopen close")
+        if parked:
+            # THE SUN WATCH IS TOLD, as the wind-down's park tells it (#747,
+            # #696): its blind fallback projects from the last position IT
+            # read, which this park has made stale, and a link that dropped
+            # before its next tick would log a false "Parking now" error and
+            # park a parked mount. Through the hub, as the status node finds
+            # the dew controller; never raises into the roof close.
+            try:
+                watch = getattr(self.hub, "sun_watch", None)
+                if watch is not None:
+                    watch.note_parked()
+            except Exception:      # noqa: BLE001
+                pass
+        return parked
 
     async def _await_safe_and_reopen(self, dome, reason: str, *,
                                      target: Target | None) -> None:
@@ -12037,6 +12060,23 @@ class SequenceEngine:
         self._observe_clouds(info)
         got = verdict_from_info(info if isinstance(info, dict) else {})
         return None if got is None else got[0]
+
+    @staticmethod
+    def _first_light_step(plan):
+        """The first light exposure step of ``plan``, or None: the first step
+        whose ``frame_type`` is Light on the first target that is not a
+        calibration target, in plan order. What ``_hold_step`` is seeded with
+        at a run's start (#711, wave 15 integration), so a cloud hold entered
+        before the first frame probes through the optics that frame will use. A
+        calibration target's steps are darks, bias and flats, and a probe
+        through one of those would score a blackout as cloud."""
+        for target in getattr(plan, "targets", None) or ():
+            if getattr(target, "calibration", False):
+                continue
+            for step in getattr(target, "steps", None) or ():
+                if getattr(step, "frame_type", "Light") == "Light":
+                    return step
+        return None
 
     def _probe_step(self):
         """The step a probe frame is taken with.
@@ -14842,7 +14882,9 @@ class SequenceEngine:
 
         THE GAP. At most one reading per ``CLOUD_PROBE_EVERY_S``, so a loss
         and recovery cycle cannot spend a minute of exposure on every frame
-        boundary (an attempts-spent stand-down asks again on each). The two
+        boundary (an attempts-spent stand-down reads ONCE, on arriving at the
+        spent bound, and not again for the same target in the same run while
+        the bound stays spent, #704). The two
         failure tails pass ``after_failure``: a recalibration that has just
         found no star IS new evidence about the sky, and the attempts that
         lead to it bound how often that happens, so those re-asks are not

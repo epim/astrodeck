@@ -9,6 +9,15 @@
 // access and fires no "last admin" 409 as long as another admin exists, so the
 // server will happily do it and say nothing. Delete is the third confirm.
 //
+// OVER THE RELAY (#734, #731). The rig refuses a password reset outright, and
+// it will not hand out the admin or syncer role, so those two controls are locked
+// with the LAN sentence BEFORE anything is typed or pressed (`lanOnlyReason`,
+// null on the LAN): a locked control sends nothing, which matters most for the
+// password the relay would otherwise carry on its way to being refused. Every
+// other control stays armed, because the rig does those behind a recent sign-in.
+// When it asks for one (`step_up_required`), the row hands the editor a way to
+// send the SAME change again (`onStepUp`) once the person has signed in.
+//
 // THE RESET ROW IS ITS OWN ERROR SURFACE. In the legacy panel a failed reset
 // ended exactly like a successful one - field cleared, row collapsed - because
 // it shared the panel-wide `run()` whose catch prints at the TOP of the list,
@@ -28,13 +37,16 @@ import { EyeGlyph, KeyGlyph, PersonGlyph, ShieldGlyph, TrashGlyph } from "./glyp
 import { Note, ScrollRow, Verdict } from "./PeopleSection";
 import {
   CONFIRM_SELF_DEMOTE, CONFIRM_SELF_DISABLE, DISABLED_BADGE, NO_EMAIL, PASSWORD_TOO_LONG,
-  PRINCIPAL_ROLES, USERS_DELETE_FAILED, USERS_RESET_FAILED, USERS_ROLE_FAILED,
-  USERS_STATUS_FAILED, YOU_BADGE, confirmDelete, errText, roleWord,
+  PEOPLE_RELAY_ROLES, PRINCIPAL_ROLES, USERS_DELETE_FAILED, USERS_RESET_FAILED,
+  USERS_ROLE_FAILED, USERS_STATUS_FAILED, YOU_BADGE, confirmDelete, errText,
+  isStepUpRequired, roleWord,
 } from "./peopleModel";
 
 const MAX_PASSWORD_BYTES = 72;
 
-export function UserRow({ user, isSelf, onChanged, onError, lockedReason, onExplain }: {
+export function UserRow({
+  user, isSelf, onChanged, onError, lockedReason, onExplain, lanOnlyReason = null, onStepUp,
+}: {
   user: User;
   /** Whether this row is the signed-in principal. Drives the YOU badge and the
    *  two self-harm confirms. */
@@ -43,6 +55,14 @@ export function UserRow({ user, isSelf, onChanged, onError, lockedReason, onExpl
   onError: (message: string) => void;
   lockedReason: string | null;
   onExplain: (reason: string) => void;
+  /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
+   *  It locks RESET and the role options the relay may not hand out, and nothing
+   *  else on the row: the rig does the rest over the relay. It outranks
+   *  `lockedReason`, which is the order `gate.ts` ranks the two in. */
+  lanOnlyReason?: string | null;
+  /** The rig refused this change for want of a recent sign-in. `retry` sends the
+   *  same change again; the editor calls it once the person has signed in. */
+  onStepUp?: (retry: () => void) => void;
 }): JSX.Element {
   const showToast = useStore((s) => s.showToast);
   const [busy, setBusy] = useState(false);
@@ -59,6 +79,11 @@ export function UserRow({ user, isSelf, onChanged, onError, lockedReason, onExpl
       await onChanged();
     } catch (e) {
       onError(errText(e, fallback));
+      // A refusal for want of a recent sign-in is not a verdict on the change:
+      // the editor is handed a way to send it again once the person has signed
+      // in, with whatever they had already confirmed (a hold-confirm is not
+      // asked twice).
+      if (isStepUpRequired(e)) onStepUp?.(() => { void run(fn, fallback); });
     } finally {
       setBusy(false);
     }
@@ -106,9 +131,13 @@ export function UserRow({ user, isSelf, onChanged, onError, lockedReason, onExpl
   };
 
   const Glyph = user.role === "admin" ? ShieldGlyph : user.enabled ? PersonGlyph : EyeGlyph;
+  // The reset is refused outright over the relay, so its lock is the LAN
+  // sentence there, and the group's own lock (no admin.users, a dead link) on
+  // the LAN.
+  const resetLock = lanOnlyReason ?? lockedReason;
   // A blocked reset would leave the typed password on screen with nothing to do
   // about it, so the reason names the field rather than the button.
-  const resetBlocker = lockedReason
+  const resetBlocker = resetLock
     ?? (pw === "" ? "Type the new password first." : pwTooLong ? PASSWORD_TOO_LONG : null);
 
   return (
@@ -134,7 +163,15 @@ export function UserRow({ user, isSelf, onChanged, onError, lockedReason, onExpl
             lockedReason={lockedReason}
             onExplain={onExplain}
             data-testid="users-row-role"
-            options={PRINCIPAL_ROLES.map((r) => ({ value: r, label: roleWord(r) }))}
+            options={PRINCIPAL_ROLES.map((r) => ({
+              value: r,
+              label: roleWord(r),
+              // The rig will not hand a relayed admin's reach out over the
+              // relay: only viewer and operator. The row's own role is left
+              // alone, since pressing it changes nothing.
+              lockedReason: lanOnlyReason && r !== user.role && !PEOPLE_RELAY_ROLES.includes(r)
+                ? lanOnlyReason : null,
+            }))}
           />
         </ScrollRow>
 
@@ -152,7 +189,7 @@ export function UserRow({ user, isSelf, onChanged, onError, lockedReason, onExpl
             kind="secondary"
             glyph={<KeyGlyph />}
             onPress={() => { setResetting((v) => !v); setPwErr(null); }}
-            lockedReason={lockedReason}
+            lockedReason={resetLock}
             onExplain={onExplain}
             ariaLabel={`Reset password for ${user.username}`}
             data-testid="users-row-reset"
@@ -184,7 +221,7 @@ export function UserRow({ user, isSelf, onChanged, onError, lockedReason, onExpl
               value={pw}
               onChange={(v) => { setPw(v); setPwErr(null); }}
               ariaLabel={`New password for ${user.username}`}
-              lockedReason={lockedReason}
+              lockedReason={resetLock}
               data-testid="users-reset-input"
             />
           </Field>
