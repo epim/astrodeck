@@ -37,7 +37,7 @@ from dataclasses import dataclass
 # compile's notes disagree about the same wire.
 from .compile import (
     LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, PASS_TYPES, _grid_dim,
-    _lane_index, _stage_label, campaign_block, compile_plan, is_multi_panel,
+    _lane_index, _stage_label, angle_code, campaign_block, compile_plan, is_multi_panel,
     lane_branched, lane_tail, loop_wires, one_panel_pass_wires, owner_of,
     panel_lane)
 from .identity import typed_coordinates
@@ -559,14 +559,30 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     # and never here. M15 is the same fact past the budget (k = 0.5 - c <= 0,
     # A.2) and REPLACES M6 there: the two would say the same thing with the
     # same remedy, once as a warning and once as a danger.
+    #
+    # THEY PRICE A CAMERA THAT SHOOTS EVERY PANEL AT ONE ANGLE (#175). A
+    # block the compile commands each panel's OWN angle (`to_plan.
+    # corrects_convergence`: a rotating block on a rig that is not known to
+    # lack a rotator, with a worst turn the rotator can settle to) is not
+    # charged for convergence, so both stay silent for it and only a block
+    # whose camera cannot correct (fixed, a rig with no rotator, a turn under
+    # the rotator's tolerance, or the switch off) is priced here. They ask
+    # the compile's own function, so the doctor never calls a block corrected
+    # that the compile leaves at one angle.
     from_conv: dict[str, tuple[float, float]] = {}
     if any(specs.values()):
         from ..catalog import framing
+        from . import to_plan
         for b in blocks:
             spec = specs[b.id]
-            if spec is not None:
-                from_conv[b.id] = (framing.convergence_share(spec),
-                                   framing.ROTATION_BUDGET)
+            if spec is None:
+                continue
+            if to_plan.corrects_convergence(
+                    framing.compute_mosaic(spec)["panels"],
+                    rotate=angle_code(b.params) == "rotate", rig=rig):
+                continue
+            from_conv[b.id] = (framing.convergence_share(spec),
+                               framing.ROTATION_BUDGET)
     for b in blocks:
         if b.id not in from_conv:
             continue

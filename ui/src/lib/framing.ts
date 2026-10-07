@@ -96,7 +96,20 @@ export interface GridPanel {
   col: number;
   ra_hours: number; // already %24-wrapped, in [0,24)
   dec_deg: number;
+  /** The LAYOUT angle: the one the grid is turned by, and the one the Atlas
+   *  draws every panel's rectangle at (PanelLayer). Not the camera angle of
+   *  a corrected panel, see `pa_deg`. */
   rotation_deg: number;
+  /** Meridian convergence at this panel: local north on the GRID's tangent
+   *  plane, degrees from +eta toward +xi (east). Server
+   *  `framing.panel_convergence_deg`; positive west of the centre, negative
+   *  east of it, 0 on the centre meridian. */
+  convergence_deg: number;
+  /** The camera's sky position angle for this panel, in [0,360): the layout
+   *  angle plus `convergence_deg`, so that the frame lies on the grid (#175).
+   *  Image up is north rotated toward WEST by it (CROTA2, confirmed on a
+   *  real solve). What a rotating block is commanded per panel. */
+  pa_deg: number;
 }
 
 // ----------------------------------------------------------------- FOV math
@@ -249,6 +262,39 @@ export function wrapRaHours(ra_hours: number): number {
   return r;
 }
 
+// ------------------------------------------------- meridian convergence (#175)
+/** How far north of a panel centre local north is sampled: small enough that
+ *  the projection's curvature over the step is negligible, far larger than its
+ *  rounding. Server `framing.NORTH_PROBE_DEG`, the same 1e-4. */
+export const NORTH_PROBE_DEG = 1e-4;
+
+/**
+ * Meridian convergence at a panel: local north at its centre as a direction on
+ * the GRID's tangent plane (tangent at `ra0_hours`,`dec0_deg`), degrees from +η
+ * toward +ξ (east). Mirrors server `framing.panel_convergence_deg` expression
+ * for expression: found by projecting a point `NORTH_PROBE_DEG` north of the
+ * centre, or south of it within that distance of the pole, where the answer is
+ * reversed. Positive for a panel west of the grid's centre (north leans toward
+ * the pole), negative east of it, 0 along the centre meridian.
+ *
+ * A frame at sky position angle θᵢ lies on the grid when θᵢ = θ + nᵢ (nᵢ this
+ * number): the camera's up for PA θᵢ sits at nᵢ − θᵢ on the grid plane and the
+ * grid's up at −θ, because image up is north rotated toward WEST by the angle.
+ */
+export function panelConvergenceDeg(
+  panel: SkyCoord,
+  ra0_hours: number,
+  dec0_deg: number,
+): number {
+  const ra = panel.ra_hours;
+  const dec = panel.dec_deg;
+  const step = dec + NORTH_PROBE_DEG <= 90 ? NORTH_PROBE_DEG : -NORTH_PROBE_DEG;
+  const a = project(ra, dec, ra0_hours, dec0_deg);
+  const b = project(ra, dec + step, ra0_hours, dec0_deg);
+  const sign = step > 0 ? 1 : -1;
+  return Math.atan2(sign * (b.xi - a.xi), sign * (b.eta - a.eta)) * RAD;
+}
+
 // ----------------------------------------------------------- mosaic tiling
 /**
  * Mosaic panel grid, mirroring `catalog/framing.py` exactly (spec §5):
@@ -256,8 +302,12 @@ export function wrapRaHours(ra_hours: number): number {
  *   gx   = (c − (cols−1)/2)·step_x ;  gy = ((rows−1)/2 − r)·step_y
  *   ξ = gx·cosθ − gy·sinθ ;  η = gx·sinθ + gy·cosθ      (θ = rotation_deg)
  *   (ra,dec) = deproject(ξ, η, ra0, dec0)               (ra already %24)
+ *   convergence_deg = panelConvergenceDeg(panel, ra0, dec0)
+ *   pa_deg = (θ + convergence_deg) wrapped into [0,360)  (#175)
  * Panels are returned in **boustrophedon (snake)** order so a multi-row mosaic
- * minimizes slew travel between consecutive panels.
+ * minimizes slew travel between consecutive panels. `rotation_deg` stays the
+ * LAYOUT angle (what the Atlas draws); the camera angle of each panel is
+ * `pa_deg`.
  */
 export function mosaicGrid(spec: MosaicGridSpec): GridPanel[] {
   const rows = Math.max(1, Math.round(spec.rows));
@@ -282,12 +332,21 @@ export function mosaicGrid(spec: MosaicGridSpec): GridPanel[] {
       const xi = gx * cosT - gy * sinT;
       const eta = gx * sinT + gy * cosT;
       const sky = deproject(xi, eta, spec.ra_hours, spec.dec_deg);
+      const convergence = panelConvergenceDeg(sky, spec.ra_hours, spec.dec_deg);
+      // Wrapped into [0,360) as the server wraps it, and past the one hole
+      // a tiny negative sum has: adding 360 to it rounds to exactly 360, which
+      // is not a position angle in [0,360).
+      let pa = (spec.rotation_deg + convergence) % 360;
+      if (pa < 0) pa += 360;
+      if (pa >= 360) pa = 0;
       panels.push({
         row: r,
         col: c,
         ra_hours: sky.ra_hours, // already %24-wrapped by deproject
         dec_deg: sky.dec_deg,
         rotation_deg: spec.rotation_deg,
+        convergence_deg: convergence,
+        pa_deg: pa,
       });
     }
   }

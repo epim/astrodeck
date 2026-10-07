@@ -21,12 +21,13 @@ h per panel and 58.5 h in all, 270 visits at 1 pass per visit (spec 5.5, A.3).
 WHAT THE NUMBERS ARE READ FROM. The SequencePlan the preview compiled, which
 is the plan the run would start: its targets (the live panels, their steps,
 their centres), its groups (the visit bound's passes and minimum, the mode,
-the angle tolerance ``to_plan`` took from ``framing.angle_tolerance_deg``) and
-its flip lead; the compile entry, for the block's node id; the ``RigFacts``
-the route read (the measured hop); and two focus settings the caller passes,
-``autofocus_every`` and ``refocus_on_temp_delta_c``. Nothing is re-derived
-from the node's params, so the RUN section can never describe a plan the run
-would not shoot.
+the angle tolerance ``to_plan`` took from ``framing.angle_tolerance_deg``, or
+from ``to_plan.corrected_tolerance_deg`` for a block whose panels are each
+commanded their own angle, #175) and its flip lead; the compile entry, for
+the block's node id; the ``RigFacts`` the route read (the measured hop); and
+two focus settings the caller passes, ``autofocus_every`` and
+``refocus_on_temp_delta_c``. Nothing is re-derived from the node's params, so
+the RUN section can never describe a plan the run would not shoot.
 
 NOTHING HERE IS SITE DATA (spec 6.9, the #19 class). The pre-flip idle is an
 RA span of panel centres in sidereal time, the plan's lead and a hop: "the
@@ -289,9 +290,12 @@ def _block(members: list["Target"], group: "TargetGroup | None", *,
       ``FLIP_FRAME_MARGIN_S``). 0 is "no idle before the flip". Null for a
       single target, which no group rule holds, and for a plan that does
       not flip.
-    * ``angle_tolerance_deg``: how far the camera may sit off the layout
-      angle, the group's (``framing.angle_tolerance_deg``, A.2 with
-      convergence's share taken first); null for a single target.
+    * ``angle_tolerance_deg``: how far the camera may sit off the angle it is
+      planned at, the group's (``framing.angle_tolerance_deg``, A.2 with
+      convergence's share taken first; for a block whose panels are each
+      commanded their own angle, #175, ``to_plan.corrected_tolerance_deg``,
+      A.2 with none taken, off each panel's own angle); null for a single
+      target.
     * ``focus``: ``FOCUS_TEMPERATURE`` when a temperature delta is armed,
       else ``FOCUS_FRAMES`` when ``autofocus_every`` is set, else
       ``FOCUS_ONCE`` (spec 5.6 step 6: a hop owes no sweep then), with the

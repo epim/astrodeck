@@ -17,42 +17,54 @@
         "col": 0,
         "ra_hours": 0.578742751340055,
         "dec_deg": 41.481379199474624,
-        "rotation_deg": 0.0
+        "rotation_deg": 0.0,
+        "convergence_deg": 1.3136419413493814,
+        "pa_deg": 1.3136419413493814
       },
       {
         "row": 0,
         "col": 1,
         "ra_hours": 0.7122,
         "dec_deg": 41.49873740313538,
-        "rotation_deg": 0.0
+        "rotation_deg": 0.0,
+        "convergence_deg": 0.0,
+        "pa_deg": 0.0
       },
       {
         "row": 0,
         "col": 2,
         "ra_hours": 0.8456572486599452,
         "dec_deg": 41.481379199474624,
-        "rotation_deg": 0.0
+        "rotation_deg": 0.0,
+        "convergence_deg": -1.3136419413493814,
+        "pa_deg": 358.6863580586506
       },
       {
         "row": 1,
         "col": 2,
         "ra_hours": 0.8436542715571209,
         "dec_deg": 40.48450399184178,
-        "rotation_deg": 0.0
+        "rotation_deg": 0.0,
+        "convergence_deg": -1.2939173686392735,
+        "pa_deg": 358.70608263136074
       },
       {
         "row": 1,
         "col": 1,
         "ra_hours": 0.7122,
         "dec_deg": 40.50126259686463,
-        "rotation_deg": 0.0
+        "rotation_deg": 0.0,
+        "convergence_deg": 0.0,
+        "pa_deg": 0.0
       },
       {
         "row": 1,
         "col": 0,
         "ra_hours": 0.5807457284428794,
         "dec_deg": 40.48450399184178,
-        "rotation_deg": 0.0
+        "rotation_deg": 0.0,
+        "convergence_deg": 1.2939173686392735,
+        "pa_deg": 1.2939173686392735
       }
     ],
     "total_fov_x_deg": 5.0,

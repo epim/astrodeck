@@ -8689,6 +8689,34 @@ def test_1_8_says_the_doctor_as_s3_built_it():
         copy
         assert False
 
+    BACKLOG WP-124 (#175) RE-PINNED THIS TEST: M6's case is a block with the
+    camera FIXED (``"angle": "Camera fixed at PA"``), since a rotating block's
+    panels are each commanded their own angle and M6 and M15 are silent for
+    it, which the test now asserts of the rotating twin of both cases.
+
+    RED under the doctor.py mutant "doctor charges every block" (the
+    ``if to_plan.corrects_convergence(`` exemption made ``if False and
+    to_plan.corrects_convergence(``):
+
+        AssertionError: a rotating block is charged for convergence it no
+        longer pays: ['▸ TARGET M31 - at Dec 75 meridian convergence turns
+        neighbouring panels against each other, which uses 38.9% of their
+        10% overlap. Widen the overlap or use fewer columns.', ...]
+        assert ['▸ TARGET M3...wer columns.'] == []
+          Left contains 2 more items, first extra item: '▸ TARGET M31 - at
+          Dec 75 meridian convergence turns neighbouring panels against each
+          other, which uses 38.9% of their 10% overlap. Widen the overlap or
+          use fewer columns.'
+
+    RED under the doctor.py mutant "doctor corrects every block" (the
+    exemption's ``rotate=angle_code(b.params) == "rotate"`` made
+    ``rotate=True``, so the fixed M6 case reads as corrected):
+
+        AssertionError: the doctor draws [] for the case 1.8's | M6 | row
+        names
+        assert 0 == 1
+         +  where 0 = len([])
+
     RED under the doctor.py mutant "M11 in every graph" (the ``if mosaic:``
     before M11's count of names made ``if True:``):
 
@@ -8771,8 +8799,12 @@ def test_1_8_says_the_doctor_as_s3_built_it():
             "anywhere in ``ui/src``") in doc
     assert only, "doctor.py's docstring no longer says it is the only copy"
     loop = ["t.target -> c.run", "c.pass -> t.next"]
+    # A FIXED camera, since #175: a rotating block's panels are each
+    # commanded their own angle and M6 and M15 are silent for it (checked
+    # below), so the case the row describes is the camera that shoots every
+    # panel at one angle.
     m6 = {**_M31, "rows": 1, "cols": 4, "overlap": 10, "dec": "+75 00 00",
-          "rotation": 0}
+          "rotation": 0, "angle": "Camera fixed at PA"}
     hop = RigFacts(hop_cost_s=160.0, hop_samples=6)
     cases = {
         "| M6 |": (_flow([("t", "target", m6), ("c", "cycle", _LRGB)], loop),
@@ -8823,6 +8855,17 @@ def test_1_8_says_the_doctor_as_s3_built_it():
         or "leaves no room for camera angle error" in i.text]
     assert both == ["danger"], (
         f"past the budget the doctor draws {both}; 1.8 says M15 alone")
+    # ...and the rotating twin of both cases is not charged for convergence
+    # (#175): each panel is commanded its own angle, so neither M6 nor M15
+    # prices it. The switch is `to_plan.CORRECT_MOSAIC_CONVERGENCE`.
+    spun = [i.text for case in (m6, budget) for i in doctor.check(_flow(
+        [("t", "target", {**case, "angle": "Rotate to PA"}),
+         ("c", "cycle", _LRGB)], loop))
+        if "turns neighbouring panels against each other" in i.text
+        or "leaves no room for camera angle error" in i.text]
+    assert spun == [], (
+        f"a rotating block is charged for convergence it no longer pays: "
+        f"{spun}")
     blank = [i.text for i in doctor.check(_flow(
         [("t", "target", {**m6, "ra": "", "dec": ""}), ("c", "cycle", _LRGB)],
         loop)) if "meridian convergence" in i.text]
@@ -9168,6 +9211,23 @@ def test_3_3_says_the_expansion_and_the_save_as_s3_built_them():
         AssertionError: 3.3 must say: "Its skip is kept (S4, #335): its panels'
         ids become the plan's own `skipped_ids` (3.4)"
         assert False
+
+    BACKLOG WP-124 (#175) RE-PINNED THE MEMBERS' ANGLE: a rotating block's
+    panels are commanded each its own ``pa_deg`` from ``compute_mosaic``
+    (the layout angle plus the panel's meridian convergence), where this
+    asserted the one layout angle ``{30.0}`` on all of them; the group's
+    ``pa_deg`` is still the layout angle.
+
+    RED under the to_plan.py mutant "commanded stays the block's" (the
+    panel's ``"rotation_deg": p["pa_deg"] if corrected else commanded`` made
+    ``commanded``):
+
+        AssertionError: a rotating block's panels are commanded {(0, 1):
+        30.0, (0, 2): 30.0, (1, 2): 30.0, (1, 1): 30.0, (1, 0): 30.0}; 3.3
+        says the layout angle, and #175 each panel's own: {(0, 0):
+        31.351999708653654, (0, 1): 30.22029997530982, (0, 2):
+        29.061949584367607, (1, 2): 28.634767704429972, ...}
+        assert {(0, 1): 30.0...1): 30.0, ...} == {(0, 1): 30.2...69071782, ...}
     """
     from astrodeck.flows import save_rules
     from astrodeck.flows.models import FlowRecord
@@ -9221,9 +9281,28 @@ def test_3_3_says_the_expansion_and_the_save_as_s3_built_them():
     assert group.id == whole.groups[0].id and group.skipped_ids == list(kept) \
         and group.skipped_ids == [identity.target_id(group.id, 0, 0)], (
             "skipping a panel moved an id; 3.3 says skip is in none of them")
-    shape = (group.mode, group.rotate, group.pa_deg, group.require_centred,
-             {t.rotation_deg for t in part.targets})
-    assert shape == ("rotate", True, 30.0, True, {30.0}), shape
+    shape = (group.mode, group.rotate, group.pa_deg, group.require_centred)
+    assert shape == ("rotate", True, 30.0, True), shape
+    # EACH PANEL IS COMMANDED ITS OWN ANGLE (#175, backlog WP-124): the
+    # group's `pa_deg` is the layout angle, and a rotating block's members
+    # carry the layout angle plus their own meridian convergence, which is
+    # `compute_mosaic`'s `pa_deg` for the cell, where they carried the one
+    # layout angle before. This 3x2 at Dec 41 turns 1.4 deg at its corners,
+    # over the rotator's 1 deg, so it is corrected.
+    from astrodeck.catalog import framing
+    from astrodeck.catalog.coords import parse_dec, parse_ra
+    laid = {(p["row"], p["col"]): p["pa_deg"] for p in framing.compute_mosaic(
+        dict(ra_hours=parse_ra(_M31["ra"]), dec_deg=parse_dec(_M31["dec"]),
+             rows=2, cols=3, overlap=0.25, rotation_deg=30.0,
+             fov_x_deg=2.0, fov_y_deg=1.33))["panels"]}
+    commanded = {(t.panel_row, t.panel_col): t.rotation_deg
+                 for t in part.targets}
+    assert commanded == {cell: laid[cell] for cell in commanded}, (
+        f"a rotating block's panels are commanded {commanded}; 3.3 says "
+        f"the layout angle, and #175 each panel's own: {laid}")
+    assert len(set(commanded.values())) > 1, (
+        "the panels of a 3x2 at Dec 41 turn apart; one angle on all of them "
+        "is the correction not applied")
     fixed, _ = plan_of({**_M31, "angle": "Camera fixed at PA",
                         "ifNotCentred": "Shoot anyway"})
     g = fixed.groups[0]
@@ -13848,15 +13927,25 @@ def _grid(cols: int, rows: int, overlap: float, dec: float,
 def _a1_measure(spec) -> dict:
     """What A.1's table says of ``spec``, measured as A.1 says to: local
     north at each panel centre from framing's own probe
-    (``_local_north_deg``), the turn between each pair of neighbours, and
-    each seam weighed by framing's ``_seam_share`` against its own strip,
-    the pairs in a row and the pairs in a column apart; ``c`` and the
-    tolerance are framing's ``convergence_share`` and
-    ``angle_tolerance_deg`` themselves."""
+    (``panel_convergence_deg``, the public name of the probe since #175),
+    the turn between each pair of neighbours, and each seam weighed by
+    framing's ``_seam_share`` against its own strip, the pairs in a row and
+    the pairs in a column apart; ``c`` and the tolerance are framing's
+    ``convergence_share`` and ``angle_tolerance_deg`` themselves.
+
+    ``compute_mosaic`` carries that same local north on every panel as
+    ``convergence_deg`` (#175: the per-panel angle's correction), and A.1's
+    "Worst panel" is the most any panel is turned against the grid, so the
+    keys are held to the probe here, signed, panel by panel."""
     from astrodeck.catalog import framing
     panels = framing.compute_mosaic(spec)["panels"]
-    north = {(p["row"], p["col"]): framing._local_north_deg(
+    north = {(p["row"], p["col"]): framing.panel_convergence_deg(
         p, spec.ra_hours, spec.dec_deg) for p in panels}
+    off_key = max(abs(p["convergence_deg"] - north[(p["row"], p["col"])])
+                  for p in panels)
+    assert off_key < 1e-9, (
+        f"compute_mosaic's convergence_deg is {off_key} deg from the local "
+        f"north A.1 measures; A.1's 'Worst panel' column is read off it")
 
     def turn(a: float, b: float) -> float:
         return abs((a - b + 180.0) % 360.0 - 180.0)
@@ -13989,6 +14078,18 @@ def test_appendix_a1_and_a2_are_what_framing_computes():
         AssertionError: A.1 probes local north 1e-5 deg north of each
         centre; framing probes 0.0001
         assert False
+
+    BACKLOG WP-124 (#175) added the held link between A.1's "Worst panel"
+    column and the per-panel key: ``compute_mosaic``'s ``convergence_deg`` is
+    the probe's local north at every panel, signed (``_a1_measure``).
+
+    RED under the framing.py mutant "convergence_deg written as 0" (the
+    panel loop's ``"convergence_deg": n_i`` made ``0.0``):
+
+        AssertionError: compute_mosaic's convergence_deg is
+        0.5494200712710638 deg from the local north A.1 measures; A.1's
+        'Worst panel' column is read off it
+        assert 0.5494200712710638 < 1e-09
     """
     from astrodeck.catalog import framing
     from astrodeck.sequence.angle_check import (
