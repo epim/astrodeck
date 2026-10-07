@@ -31,6 +31,15 @@ from pathlib import Path
 
 VENDOR_ROOT = Path(__file__).resolve().parent.parent / "vendor"
 
+#: The directory an operator points at a Player One SDK they fetched themselves.
+#: Named ONCE, here, because it has two readers that must agree: the loader
+#: (``cameras/player_one_sdk.py``) that opens the library, and the Credits
+#: screen's "is the fetch already done?" probe (``licensing.py``). They used to
+#: spell it differently (``ASTRODECK_PLAYERONE_SDK_DIR`` and
+#: ``PLAYERONE_SDK_DIR``), so an operator who did what the loader documents got
+#: a working camera and a screen saying the SDK was missing (#632).
+PLAYERONE_SDK_ENV = "ASTRODECK_PLAYERONE_SDK_DIR"
+
 
 def platform_tag() -> str:
     """The vendored-library subdirectory for this machine.
