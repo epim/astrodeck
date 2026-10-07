@@ -67,6 +67,7 @@ from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at m
                      report_csv_columns)
 from ..persist import safe_id_path, safe_subpath, secure_private_tree
 from ..catalog import search          # rows AND the reasons for what is missing
+from ..catalog import panel_csv            # the mosaic panel CSV (#178)
 from ..catalog import survey_pack as survey_pack_mod
 from ..catalog.survey import router as survey_router
 from ..catalog.tiles import router as tiles_router
@@ -3568,6 +3569,37 @@ def create_app(*, bind_host: str | None = None,
     app.include_router(ephemeris_router)
     app.include_router(video_router)
     app.include_router(planning_router)
+
+    # ------------------------------------------------ mosaic panel CSV (#178)
+    # The panel file the Target modal exports and imports, in the Telescopius
+    # column shape. view.status, NOT view.site_derived like
+    # /api/framing/mosaic: the answer is a function of the numbers the caller
+    # sent and of nothing the server knows about the site (no altitude, no
+    # date), so there is no coordinate for a sweep to recover. Every number
+    # and the angle convention live in catalog/panel_csv.py; these two routes
+    # call it and name what was wrong, and own nothing else.
+    @app.post("/api/framing/mosaic/csv",
+              dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def framing_mosaic_csv(spec: panel_csv.PanelCsvExportIn):
+        try:
+            text = panel_csv.export_csv(spec, spec.skip)
+        except panel_csv.PanelCsvError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
+        return Response(text, media_type="text/csv", headers={
+            "Content-Disposition": 'attachment; filename="astrodeck-panels.csv"',
+            # The convention travels with the file so the modal can show it
+            # without keeping a copy of the sentence.
+            "X-Panel-Csv-Convention": panel_csv.CONVENTION})
+
+    @app.post("/api/framing/mosaic/import",
+              dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def framing_mosaic_import(body: panel_csv.PanelCsvImportIn) -> dict:
+        try:
+            return panel_csv.parse_csv(body.text)
+        except panel_csv.PanelCsvError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
 
     # ---------------------------------------------------- health + version
     # /healthz is OPEN (no token, no session): the supervisor health-checks it on
