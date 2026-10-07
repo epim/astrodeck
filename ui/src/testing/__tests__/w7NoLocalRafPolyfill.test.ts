@@ -8,9 +8,16 @@
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
 //
 // WHY. #652 found the shim `g.requestAnimationFrame = (cb) => setTimeout(()
-// => cb(0), 0)` hand-copied into 27 UI test files, each one a possible
-// intermittent "export never resolves" hang on a loaded CI runner (#614's
-// suspected mechanism -- see rafPolyfill.ts's own header for the full story).
+// => cb(0), 0)` hand-copied into 27 UI test files, none of which could tell
+// that its own root had been torn down. #614 had suspected that shape of an
+// intermittent "N/N passed, then the child timed out" hang on a loaded CI
+// runner. That suspicion is NOT confirmed, and it cannot be the mechanism:
+// the runner's child ends in `process.exit()`, which ends the process whatever
+// timers or frames are still live, and #664's heartbeat saw the frozen
+// children's main thread not running at all. The guard stays for the hygiene
+// reason rafPolyfill.ts's own header gives (a frame requested after a root
+// unmounted must not fire into a torn-down tree), not as a cure for that hang;
+// see that header for the full story.
 // This file walks every `*.test.ts`/`*.test.tsx` under ui/src and fails if any
 // of them still assigns `requestAnimationFrame` an inline function literal of
 // its own, rather than going through installAutoRaf/createManualRaf.
