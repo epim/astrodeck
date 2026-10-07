@@ -529,12 +529,21 @@ export default function App() {
       // `veto_reason`: "RAIN VETOES. CLOUD DOES NOT."), after this same gate
       // refused two consecutive clear nights on a 100% cloud forecast. A cloud
       // hold is measured in-run, from the rig's own frames.
+      //
+      // The sentence after the numbers is ONE sentence shared by this dialog,
+      // NextApp.tsx's and SkyConditionsPanel's chip (#687), graded literally by
+      // src/__tests__/weatherHoldClaim.test.ts. Each clause is pinned there to
+      // the server it describes. It deliberately does NOT say the run follows
+      // "parameters defined in your astroflow": the CLOUD WATCH threshold never
+      // reaches the engine, so that is a promise nothing keeps.
       body:
         `Forecast peak ${a.peak_pct}% total cloud (${a.dominant_layer} layer ` +
         `dominant) between ${fmtHm(a.start_iso)} and ${fmtHm(a.end_iso)} — ` +
-        `at/above your ${w.threshold_pct}% threshold. The forecast does not ` +
-        `hold a run: a running session holds on what its own frames show, and ` +
-        `only forecast rain inside the hour blocks an auto-resume.`,
+        `at/above your ${w.threshold_pct}% threshold. A cloud forecast does ` +
+        `not hold a run. While it images, the rig checks the sky in its own ` +
+        `frames and pauses when they show cloud. Only forecast rain within ` +
+        `the next hour holds anything: it blocks an automatic restart and ` +
+        `dusk preparation.`,
       tone: "warn",
       mode: "ok",
     });
