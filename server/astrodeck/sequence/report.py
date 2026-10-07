@@ -291,6 +291,14 @@ class FrameRecord(BaseModel):
     binning: int | None = None
     ecc: float | None = None
     altitude_deg: float | None = None
+    #: A MOSAIC PANEL'S LIGHT FRAME SAYS WHICH MOSAIC AND WHICH PANEL (#188):
+    #: ``mosaic`` is ``naming.mosaic_label(group.name, group.id)`` and
+    #: ``panel`` is ``naming.panel_label(row, col)``, the values the frame's
+    #: FITS ``MOSAIC`` and ``PANEL`` cards carry. None for every other frame
+    #: (a non-member's, a dark a hold shoots on a panel) and for every report
+    #: written before the fields. Additive, like the PRO-10 fields above.
+    mosaic: str | None = None
+    panel: str | None = None
 
 
 class FilterBreakdown(BaseModel):
@@ -307,6 +315,13 @@ class TargetBreakdown(BaseModel):
     rejected: int = 0
     integration_s: float = 0.0
     by_filter: list[FilterBreakdown] = Field(default_factory=list)
+    #: The mosaic this row is a panel of, and the panel's ``"r-c"`` label
+    #: (#188): what lets a view group a mosaic's rows under one header
+    #: instead of listing N unrelated targets. None for a target that is no
+    #: mosaic's panel. Taken from the row's labelled frames (see
+    #: :meth:`_Totals.add`), so a row whose only frames are darks has none.
+    mosaic: str | None = None
+    panel: str | None = None
 
 
 #: Every key a ``sky_angles`` row carries, and the only ones
@@ -418,7 +433,14 @@ class _Totals:
                                      "integration_s": 0.0, "hfrs": [],
                                      "seed_median": None})
         te = self.pt.setdefault(fr.target, {"frames": 0, "rejected": 0,
-                                            "integration_s": 0.0, "filters": {}})
+                                            "integration_s": 0.0, "filters": {},
+                                            "mosaic": None, "panel": None})
+        if fr.mosaic:
+            # A frame that carries no label (a dark a hold shot on the panel,
+            # which can come before or after its first light) says nothing
+            # about the row, so it neither sets the label nor clears it.
+            te["mosaic"] = fr.mosaic
+            te["panel"] = fr.panel or None
         tfe = te["filters"].setdefault(fk, {"frames": 0, "rejected": 0,
                                             "integration_s": 0.0, "hfrs": [],
                                             "seed_median": None})
@@ -466,7 +488,9 @@ class _Totals:
             targets.append(TargetBreakdown(name=tname, frames=tv["frames"],
                                            rejected=tv["rejected"],
                                            integration_s=tv["integration_s"],
-                                           by_filter=tf))
+                                           by_filter=tf,
+                                           mosaic=tv.get("mosaic"),
+                                           panel=tv.get("panel")))
         return by_filter, targets, self.captured, self.rejected, self.integ
 
     @classmethod
@@ -489,8 +513,13 @@ class _Totals:
                 filters[fb.filter] = {"frames": fb.frames, "rejected": fb.rejected,
                                       "integration_s": fb.integration_s, "hfrs": [],
                                       "seed_median": fb.hfr_median}
+            # The labels come back with the counts: a resumed night writes
+            # the report again from these totals, and a panel that gets no
+            # frame on the second pass would otherwise be written out
+            # ungrouped (#188).
             t.pt[tb.name] = {"frames": tb.frames, "rejected": tb.rejected,
-                             "integration_s": tb.integration_s, "filters": filters}
+                             "integration_s": tb.integration_s, "filters": filters,
+                             "mosaic": tb.mosaic, "panel": tb.panel}
         return t
 
 
