@@ -27,7 +27,7 @@ import time
 import numpy as np
 
 from ..base import Camera, CameraFrame, DeviceError
-from .adapter import ROI, CameraAdapter
+from .adapter import ROI, CameraAdapter, CameraGone
 
 
 def _egain_from_caps(caps) -> float | None:
@@ -81,9 +81,9 @@ class NativeCamera(Camera):
         async with self._lock:
             try:
                 return await asyncio.to_thread(fn, *a)
-            except Exception:
+            except Exception as e:
                 if measures_connected:
-                    self.connected = False
+                    self._mark_dropped(self._why(e))
                 raise
 
     async def _poll(self, fn, *a):
@@ -96,9 +96,41 @@ class NativeCamera(Camera):
         ``_run``'s default does (issue #16)."""
         try:
             return await asyncio.to_thread(fn, *a)
-        except Exception:
-            self.connected = False
+        except Exception as e:
+            self._mark_dropped(self._why(e))
             raise
+
+    @staticmethod
+    def _why(exc: BaseException) -> str:
+        """The exception as one short line for the drop warning: the SDK's own
+        message names the call and its error-code name, and nothing else a
+        camera layer holds is worth putting in an alert."""
+        text = str(exc).strip() or type(exc).__name__
+        return text if len(text) <= 200 else text[:197] + "..."
+
+    def _mark_dropped(self, why: str) -> None:
+        """Measure ``connected`` false, and say so ONCE per drop.
+
+        Every site that finds the device gone funnels here: a failed hook
+        (``_run``/``_poll``), an exposure that never reports ready, and an idle
+        status read the SDK answers with "closed/removed" (``get_temperature``).
+        Before this the flag flipped silently, and the only trace was whatever
+        the failed call happened to raise into a log nobody was reading. The
+        warning is what ``alerting`` hears (it listens at warning and error), so
+        a camera that falls off the bus at 2 am reaches the owner's phone.
+
+        Only the True -> False TRANSITION logs. A dead camera is polled every
+        status tick (about every 2 s) and every later hook call fails again, so
+        a line per failure would be thousands of identical warnings that evict
+        the whole run log; the next line is earned by a reconnect and a second
+        loss. ``disconnect()`` sets False directly and never comes through
+        here, because a deliberate disconnect is not news."""
+        was_connected = self.connected
+        self.connected = False
+        if was_connected:
+            from ...events import bus
+            bus.log("warning", f"{self.name} is no longer answering: {why}",
+                    "camera")
 
     async def connect(self) -> None:
         # Idempotent: the orchestrator connects via get_device AND the hub's
@@ -164,7 +196,8 @@ class NativeCamera(Camera):
                     # exposure time plus the download/USB margin — the same
                     # kind of evidence a failed hook call is, just raised
                     # locally instead of thrown by the adapter. See issue #16.
-                    self.connected = False
+                    self._mark_dropped("no image-ready answer within the "
+                                       "exposure time plus the download margin")
                     raise DeviceError("exposure imageready timeout")
                 await asyncio.sleep(min(0.5, max(0.05, seconds / 20)))
         except asyncio.CancelledError:
@@ -176,7 +209,14 @@ class NativeCamera(Camera):
         applied = await asyncio.to_thread(self._a.applied_roi)
         roi = self._layout_roi(roi, applied, self._roi_complaints)
         data = self._shape(raw, roi, caps)
-        temp = await self.get_temperature()
+        try:
+            temp = await self.get_temperature()
+        except CameraGone:
+            # The camera went away between the download and this read. The
+            # frame is complete and in hand, so it is kept (temperature
+            # unknown); get_temperature has already marked the drop and said so,
+            # and the next exposure is what fails.
+            temp = None
         return CameraFrame(
             data=data, exposure_s=seconds, gain=gain, offset=offset,
             binning=roi.bin, bayer_pattern=caps.bayer_pattern,
@@ -308,7 +348,18 @@ class NativeCamera(Camera):
         await self._run(lambda: self._a.set_cooler(on))
 
     async def get_temperature(self) -> float | None:
-        return await asyncio.to_thread(self._a.get_temperature)
+        """The sensor temperature, and the one read that notices an IDLE
+        camera being unplugged (issue #16): the status poll makes it every tick
+        whether or not anything is exposing, and a removed camera is the only
+        thing that makes the adapter raise ``CameraGone`` rather than answer
+        None. That marks ``connected`` false (and says so once) and then
+        re-raises, so a caller that wants the temperature still learns it is
+        gone; every consumer on the hot paths already guards this call."""
+        try:
+            return await asyncio.to_thread(self._a.get_temperature)
+        except CameraGone as e:
+            self._mark_dropped(str(e))
+            raise
 
     async def cooler_power(self) -> int | None:
         return await asyncio.to_thread(self._a.get_cooler_power)

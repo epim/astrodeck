@@ -14,14 +14,22 @@ template when this lands."""
 from __future__ import annotations
 
 from ..base import DeviceError
-from .adapter import ROI, CameraAdapter, CameraCapabilities
+from .adapter import ROI, CameraAdapter, CameraCapabilities, CameraGone
 from . import registry
 from .zwo_asi_sdk import (
-    AsiProperty, make_asi, ASI_GAIN, ASI_EXPOSURE, ASI_OFFSET, ASI_TEMPERATURE,
-    ASI_IMG_RAW16, ASI_EXP_SUCCESS, ASI_EXP_FAILED,
+    AsiProperty, AsiSdkError, make_asi, ASI_GAIN, ASI_EXPOSURE, ASI_OFFSET,
+    ASI_TEMPERATURE, ASI_IMG_RAW16, ASI_EXP_SUCCESS, ASI_EXP_FAILED,
 )
 
 __all__ = ["AsiCameraAdapter", "AsiProperty"]
+
+#: ASI_ERROR_CODE values that mean the HANDLE is no longer usable, as opposed to
+#: "this control does not exist": 4 CAMERA_CLOSED and 5 CAMERA_REMOVED
+#: (zwo_asi_sdk.ERROR_NAMES; the vendored DLL's own ``4 CAMERA_CLOSED``
+#: immediate is cited at AsiSdk.ALIGN_H_BINNED). A camera with no temperature
+#: sensor answers 3 INVALID_CONTROL_TYPE and must keep reading None, so 3 is
+#: NOT here.
+_CAMERA_GONE_CODES = frozenset({4, 5})
 
 #: ASISetControlValue's value is a 32-bit c_long; clamp exposure microseconds so a
 #: very long exposure can't OverflowError at the ctypes boundary (the SDK then
@@ -177,8 +185,18 @@ class AsiCameraAdapter(CameraAdapter):
         self._sdk.stop_exposure(self._cam_id)
 
     def get_temperature(self) -> float | None:
+        # The ONE call the status poll makes on an idle camera, so it is the
+        # only thing that can notice an unplugged camera while nothing is
+        # exposing (issue #16). It used to answer None for every failure, which
+        # made a removed camera and a camera with no sensor the same silence.
         try:
             return self._sdk.get_control(self._cam_id, ASI_TEMPERATURE) / 10.0
+        except AsiSdkError as e:
+            if e.code in _CAMERA_GONE_CODES:
+                raise CameraGone(
+                    f"ASI camera is gone: {e.code_name} (code {e.code}) "
+                    f"from {e.fn}") from e
+            return None  # not all ASI report temperature (INVALID_CONTROL_TYPE)
         except Exception:  # noqa: BLE001 - not all ASI report temperature
             return None
 

@@ -9599,6 +9599,20 @@ class SequenceEngine:
                 needed.append("filterwheel")
             if plan.guide:
                 needed.append("guider")
+                # The dedicated guide camera is the device issue #16 was
+                # actually about (the 2026-09-12 strand), and the gate never
+                # looked at it. Absent when the guider shares the imaging
+                # sensor (native_backend.py's OAG fallback), so there is
+                # nothing to reconnect then.
+                #
+                # The reopen is the same NativeCamera object closing and
+                # opening itself, so the guider's held reference stays valid.
+                # It can lose a race with a guide loop that is mid-exposure on
+                # the handle being closed: that one exposure fails
+                # (CAMERA_CLOSED) and re-marks `connected` false, and the next
+                # frame boundary's pass through this gate reopens it again.
+                if "guide_camera" in self.hub.devices:
+                    needed.append("guide_camera")
             if plan.autofocus_every or any(t.autofocus_first for t in plan.targets):
                 needed.append("focuser")
             if any(not t.calibration for t in plan.targets):
@@ -9608,9 +9622,23 @@ class SequenceEngine:
             if dev is None:
                 continue
             # A camera that claims to be connected and is producing nothing is
-            # the case `connected` cannot express (issue #16).
+            # the case `connected` cannot express (issue #16). Imaging camera
+            # ONLY: the silent rule reads the imaging frame clock, which the
+            # guide camera never ticks.
             if getattr(dev, "connected", False) and not (
                     role == "camera" and self._camera_is_silent()):
+                if role == "guide_camera":
+                    # It is back (reopened here, or by a profile activate),
+                    # so an earlier give-up is over: a fresh outage is
+                    # retried at once, not held off by the old cool-off.
+                    self._guide_camera_retry_at = 0.0
+                continue
+            if role == "guide_camera" and (
+                    time.monotonic() < getattr(self, "_guide_camera_retry_at", 0.0)):
+                # Gave up on it a moment ago and nothing has changed. Each
+                # attempt publishes a `reconnect` event that alerting never
+                # dedupes, so retrying at every frame boundary would page once
+                # per frame for a camera that is not coming back.
                 continue
             tries = max(1, cfg.escalation.reconnect_retries)
             bus.log("warning", f"{role} has dropped out — reconnecting "
@@ -9628,6 +9656,20 @@ class SequenceEngine:
                 if attempt < tries:
                     await asyncio.sleep(RECONNECT_BACKOFF_S)
             else:
+                if role == "guide_camera":
+                    # SOFT-FAIL (#16): the run CAN shoot without a guide camera,
+                    # so one that will not reopen must never end an imaging
+                    # night. What guiding does without it is the owner's
+                    # existing policy for a guider that fails,
+                    # `escalation.guiding_action`, so say so and carry on.
+                    bus.log("warning",
+                            f"guide_camera dropped out and did not come back "
+                            f"after {tries} reconnect attempt"
+                            f"{'s' if tries > 1 else ''}; imaging continues and "
+                            f"guiding now falls to escalation.guiding_action "
+                            f"({cfg.escalation.guiding_action})", "sequence")
+                    self._guide_camera_retry_at = time.monotonic() + 60.0
+                    continue
                 # Out of attempts. Fall through to the ordinary teardown rather
                 # than inventing a second abort path: the run cannot shoot
                 # without this device, and SafetyAbort is what parks and warms.
