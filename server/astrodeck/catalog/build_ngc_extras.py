@@ -7,7 +7,8 @@ WHY THIS EXISTS. ``ngc.tsv`` keeps 8 of OpenNGC's 32 columns (id, common name,
 type, position, magnitude, size, alias) — everything a telescope needs to
 slew somewhere. It drops everything a *description* needs. Per
 docs/superpowers/backlog/2026-08-08-object-description-sources.md (the survey
-this implements), four of the discarded columns are worth a second look:
+this implements), four of the discarded columns are worth a second look
+(and #181 added a fifth, ``PosAng``, below):
 
   * ``Hubble``  — 30 distinct galaxy-subtype codes across 10,000+ rows. Turns
     "galaxy in Draco" into "spiral galaxy in Draco" — the single best return
@@ -15,6 +16,10 @@ this implements), four of the discarded columns are worth a second look:
   * ``MinAx``   — paired with ``MajAx`` (already carried, as ``size_arcmin``
     on the ``DSO`` dataclass — NOT duplicated here), gives an axis ratio.
     describe.py uses ratio >= 3 to say "edge-on".
+  * ``PosAng``  — (#181) the position angle of the major axis, north through
+    east. With MinAx/MajAx it is the object's SHAPE, which the Atlas draws as
+    an ellipse and SUGGEST GRID tiles by. Carried as two more columns,
+    ``axis_ratio`` and ``posang_deg``, written by ``shape_columns`` below.
   * ``Redshift``— converts to a distance. 376 rows are BLUESHIFTED (Local
     Group / Virgo infall); describe.py is the one that guards against a
     negative or noise-dominated distance, this script just carries the raw
@@ -28,8 +33,8 @@ this implements), four of the discarded columns are worth a second look:
 
 Deliberately NOT re-imported: ``Const`` (ours is already computed by
 build_constellations.py and agrees on 13,362/13,369 — see that script's
-sibling test for the 7 boundary disagreements), ``SurfBr``/``PosAng`` (no
-consumer in describe.py today), and the *rest* of ``Common names`` beyond the
+sibling test for the 7 boundary disagreements), ``SurfBr`` (no consumer
+today), and the *rest* of ``Common names`` beyond the
 first (that is objects.py's search-alias territory, out of this task's scope
 and out of this file's).
 
@@ -64,6 +69,7 @@ Output is deterministic (sorted by id), so a rebuild diffs cleanly.
 from __future__ import annotations
 
 import csv
+import math
 import re
 import sys
 from pathlib import Path
@@ -117,9 +123,76 @@ def worth_surfacing(note: str) -> bool:
     return bool(_HONEST_ABSENCE_RE.search(note) or _MAGELLANIC_RE.search(note))
 
 
-def _load_join_keys() -> dict[str, str]:
-    """id -> the raw-CSV lookup key (``alias or id``), read from ngc.tsv."""
-    out: dict[str, str] = {}
+def _parse_axis(raw: str) -> float | None:
+    """A MajAx/MinAx/PosAng cell as a finite float, or None for blank and for
+    anything that is not a number (float() accepts "nan" and "inf")."""
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def shape_columns(majax_raw: str, minax_raw: str, posang_raw: str,
+                  catalogue_size: float | None = None) -> tuple[str, str]:
+    """The ``axis_ratio`` and ``posang_deg`` cells for one OpenNGC row (#181).
+
+    ``axis_ratio`` is MinAx / MajAx to three places. It is a RATIO, not a minor
+    axis, because the size the catalogue shows is not always OpenNGC's: the
+    curated rows carry the sizes an imager uses (M31 is 190', OpenNGC says
+    177.83'), and a minor axis taken from OpenNGC beside a major axis taken from
+    the curated list would draw a different galaxy. objects.shape_of multiplies
+    the ratio by whichever size is shown.
+
+    ``posang_deg`` is PosAng folded onto [0, 180): an ellipse looks the same
+    turned half a circle, and OpenNGC publishes 180 on 44 rows and 359 on one.
+    A PosAng of 0 is a real angle (due north) and is written as "0.0"; only a
+    missing or unreadable PosAng is the empty cell.
+
+    Both are empty when there is nothing honest to say, and a circle is then
+    the fallback:
+
+      * either axis missing or zero: no ratio (the angle is its own cell and is
+        kept if OpenNGC published one);
+      * MinAx longer than MajAx: the axes are confused and a PosAng measured
+        along "the major axis" cannot be trusted either, so BOTH cells are
+        empty;
+      * ``catalogue_size`` (the size ngc.tsv carries for this id, itself a
+        MajAx) disagrees with this row's MajAx to ngc.tsv's two places: upstream
+        changed the row after ngc.tsv was built, and a ratio from one snapshot
+        on a size from another is a ratio of two different measurements. BOTH
+        cells are empty. Found rebuilding this file from a current download:
+        IC 2105 is 0.65' in ngc.tsv and 3.0' x 1.5' upstream today.
+        ``None`` skips this check.
+    """
+    maj = _parse_axis(majax_raw)
+    minor = _parse_axis(minax_raw)
+    pa = _parse_axis(posang_raw)
+
+    if catalogue_size is not None:
+        # ngc.tsv writes a missing MajAx as 0.0, so compare like with like.
+        if abs(round(maj or 0.0, 2) - catalogue_size) > 0.005:
+            return "", ""
+
+    ratio = ""
+    if maj is not None and minor is not None and maj > 0 and minor > 0:
+        if minor > maj:
+            return "", ""
+        rounded = round(minor / maj, 3)
+        if rounded > 0:
+            ratio = f"{rounded:.3f}"
+
+    angle = ""
+    if pa is not None:
+        # A second % 180 after rounding: 179.96 rounds to 180.0, which is 0.
+        angle = f"{round(pa % 180.0, 1) % 180.0:.1f}"
+    return ratio, angle
+
+
+def _load_join() -> dict[str, tuple[str, float | None]]:
+    """id -> (the raw-CSV lookup key ``alias or id``, ngc.tsv's size_arcmin for
+    that id or None if the cell is unreadable), read from ngc.tsv."""
+    out: dict[str, tuple[str, float | None]] = {}
     with open(NGC_TSV, encoding="utf-8") as fh:
         for line in fh:
             if line.startswith("#") or not line.strip():
@@ -127,7 +200,8 @@ def _load_join_keys() -> dict[str, str]:
             parts = line.rstrip("\n").split("\t")
             ident = parts[0]
             alias = parts[7] if len(parts) > 7 else ""
-            out[ident] = alias or ident
+            size = _parse_axis(parts[6]) if len(parts) > 6 else None
+            out[ident] = (alias or ident, size)
     return out
 
 
@@ -138,16 +212,18 @@ def main(paths: list[str]) -> int:
             for r in csv.DictReader(fh, delimiter=";"):
                 raw[designation(r["Name"].strip())] = r
 
-    join_keys = _load_join_keys()
+    join = _load_join()
 
     rows: dict[str, tuple] = {}
     notes_kept = 0
-    for ident, key in join_keys.items():
+    for ident, (key, catalogue_size) in join.items():
         r = raw.get(key)
         if r is None:
             continue
         hubble = (r.get("Hubble") or "").strip()
+        majax_raw = (r.get("MajAx") or "").strip()
         minax_raw = (r.get("MinAx") or "").strip()
+        posang_raw = (r.get("PosAng") or "").strip()
         redshift_raw = (r.get("Redshift") or "").strip()
         note_raw = (r.get("NED notes") or "").strip()
 
@@ -162,10 +238,14 @@ def main(paths: list[str]) -> int:
         note = note_raw if note_raw and worth_surfacing(note_raw) else ""
         if note:
             notes_kept += 1
+        axis_ratio, posang = shape_columns(majax_raw, minax_raw, posang_raw,
+                                           catalogue_size)
 
-        if not (hubble or minax or redshift or note):
+        if not (hubble or minax or redshift or note or axis_ratio or posang):
             continue  # nothing extra for this object -- no row at all
-        rows[ident] = (ident, hubble, minax, redshift, note)
+        # The five original columns first and in their original order, so a
+        # loader (or a reader's eye) written before #181 still finds them.
+        rows[ident] = (ident, hubble, minax, redshift, note, axis_ratio, posang)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with open(OUT, "w", encoding="utf-8", newline="") as fh:
@@ -173,10 +253,14 @@ def main(paths: list[str]) -> int:
         fh.write("# Columns OpenNGC publishes that ngc.tsv itself does not carry.\n")
         fh.write("# Regenerate: python -m astrodeck.catalog.build_ngc_extras "
                  "<NGC.csv> [<addendum.csv>]\n")
-        fh.write("# id\thubble\tminax_arcmin\tredshift\tned_note\n")
+        fh.write("# id\thubble\tminax_arcmin\tredshift\tned_note\t"
+                 "axis_ratio\tposang_deg\n")
         for key in sorted(rows):
             fh.write("\t".join(rows[key]) + "\n")
-    print(f"wrote {len(rows)} rows to {OUT} ({notes_kept} with a surfaced NED note)")
+    shaped = sum(1 for row in rows.values() if row[5])
+    angled = sum(1 for row in rows.values() if row[6])
+    print(f"wrote {len(rows)} rows to {OUT} ({notes_kept} with a surfaced NED "
+          f"note, {shaped} with an axis ratio, {angled} with a position angle)")
     return 0
 
 

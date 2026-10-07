@@ -29,7 +29,7 @@ from astrodeck.auth import (CAP_VIEW_SITE_DERIVED, CAP_VIEW_STATUS,
 from astrodeck.auth.rbac import assert_route_capabilities
 from astrodeck.catalog import region as region_mod
 from astrodeck.catalog.coords import angular_sep_deg
-from astrodeck.catalog.objects import CATALOG, MAG_UNKNOWN
+from astrodeck.catalog.objects import CATALOG, MAG_UNKNOWN, shape_fields
 from astrodeck.catalog.region import (objects_in_region, offered_at_fov,
                                       region_rows)
 from astrodeck.catalog.region import router as region_router
@@ -300,6 +300,51 @@ def test_every_row_carries_the_five_facts_the_info_card_shows():
         assert r["constellation"], f"{r['id']} has no constellation"
 
 
+def _region_row(obj_id: str) -> dict:
+    """The region row for one catalogue object, from a query centred on it and
+    narrow enough that every zoom band offers it."""
+    obj = _BY_ID[obj_id]
+    rows, _n, _t = region_rows(obj.ra_hours, obj.dec_deg, 0.05, fov_deg=0.2,
+                               limit=200, when=_WHEN)
+    return next(r for r in rows if r["id"] == obj_id)
+
+
+def test_a_region_row_carries_the_objects_shape_beside_its_size():
+    """#181. The Atlas draws what the region payload tells it, and until this
+    the payload told it one number per object, so every outline was a circle.
+    The minor axis and position angle ride the same row; they are the SAME
+    answers the search row gives (``objects.shape_fields``), because two routes
+    computing one object's ellipse two ways is how a card and a map disagree.
+
+    Needs ``_dso_region_row`` in catalog/region.py to merge
+    ``objects.shape_fields(obj)`` into its dict; a row without the keys is
+    what this fails on."""
+    m31 = _region_row("M31")
+    assert m31["minor_arcmin"] is not None and m31["minor_arcmin"] > 0
+    assert m31["minor_arcmin"] < m31["size_arcmin"]
+    assert m31["pa_deg"] == 35.0
+    assert ({k: m31[k] for k in ("minor_arcmin", "pa_deg")}
+            == shape_fields(_BY_ID["M31"]))
+
+
+def test_a_region_row_with_no_angle_says_null_and_a_zero_angle_says_zero():
+    """IC 434 has a published axis ratio and no PosAng: None, not 0. IC 342 is
+    published at PosAng 0, which is a real angle: 0.0, not None."""
+    flame = _region_row("IC 434")
+    assert flame["minor_arcmin"] is not None and flame["pa_deg"] is None
+    cold = _region_row("IC 342")
+    assert cold["pa_deg"] is not None and cold["pa_deg"] == 0.0
+
+
+def test_a_region_row_with_no_shape_carries_both_keys_as_null():
+    """NGC 6543 is a round planetary nebula OpenNGC gives no minor axis: the
+    client has to be able to rely on the keys being there and null, a circle
+    being the honest outline."""
+    row = _region_row("NGC 6543")
+    assert "minor_arcmin" in row and "pa_deg" in row
+    assert row["minor_arcmin"] is None and row["pa_deg"] is None
+
+
 # ============================================================== ranking and bands
 
 def test_rows_are_returned_in_score_order():
@@ -529,6 +574,24 @@ def test_route_publishes_no_alt_or_az(client):
         assert "alt" not in row and "az" not in row
 
 
+def test_the_route_serves_the_shape_keys_to_a_viewer(client, as_role):
+    """#181 over HTTP, through the real app. The row builders are unit-tested
+    above; this is the seam after them, where a response model or a key filter
+    would drop an additive key and no builder test would notice. A viewer reads
+    the keys: an axis ratio and a position angle are properties of the object,
+    not of the site.
+
+    Needs ``_dso_region_row`` in catalog/region.py to merge
+    ``objects.shape_fields(obj)`` into its dict, like the row tests above."""
+    as_role("viewer")
+    r = client.get("/api/catalog/region", params={
+        "ra_hours": 0.712, "dec_deg": 41.269, "radius_deg": 1.0})
+    assert r.status_code == 200, r.text
+    m31 = next(row for row in r.json()["rows"] if row["id"] == "M31")
+    assert 0 < m31["minor_arcmin"] < m31["size_arcmin"]
+    assert m31["pa_deg"] == 35.0
+
+
 def test_route_needs_view_status(client, as_role):
     as_role("viewer")
     ok = client.get("/api/catalog/region", params={
@@ -597,21 +660,24 @@ def test_route_is_registered_in_the_real_app():
     tests/test_routes_have_callers.py was written for: both halves tested, the
     seam between them never was.
 
-    So this asserts the real ``create_app()`` carries the route, and SKIPS with
-    the missing line spelled out while it does not (the router is being added
-    in a change that is not allowed to touch ``app.py``). A skip is visible in
-    the run summary; a silent pass would not be.
+    So this asserts the real ``create_app()`` carries the route and answers it.
+    It used to SKIP while the ``include_router`` line was still owed to
+    ``app.py``. The line landed, but the walk was ``app.router.routes`` flat,
+    which on FastAPI 0.141+ cannot see a route behind ``include_router``'s lazy
+    marker: the test went on skipping with "not registered yet" for a route that
+    was registered, and the real-app GET below never ran (found while checking
+    #181, which adds keys to this very response). The walk is
+    ``iter_app_routes`` now, and a missing route FAILS: the line is in
+    ``app.py``, so a skip would be a test that cannot fail.
     """
+    from astrodeck.auth.rbac import iter_app_routes
+
     app = app_module.create_app()
-    paths = {getattr(r, "path", "") for r in app.router.routes}
-    if "/api/catalog/region" not in paths:
-        pytest.skip(
-            "GET /api/catalog/region is not registered yet. Add, beside the "
-            "other atlas routers in api/app.py:\n"
-            "    from ..catalog.region import router as region_router   "
-            "(with the other imports)\n"
-            "    app.include_router(region_router)                      "
-            "(after app.include_router(visibility_router))")
+    assert any(getattr(r, "path", "") == "/api/catalog/region"
+               for r in iter_app_routes(app)), (
+        "GET /api/catalog/region is not registered in create_app(): the "
+        "include_router(region_router) line is missing from api/app.py, or sits "
+        "after the SPA catch-all")
     with TestClient(app) as c:
         r = c.get("/api/catalog/region", params={
             "ra_hours": 0.712, "dec_deg": 41.269, "radius_deg": 2.0})
