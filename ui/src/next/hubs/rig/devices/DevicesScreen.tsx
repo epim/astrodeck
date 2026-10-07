@@ -109,12 +109,18 @@ export function DevicesScreen(): JSX.Element {
 
   const addLock = useLock({ cap: "config.backend" });
 
-  // The LAN sentence for the three verbs on this screen that reach a fenced
-  // route: CONNECT <profile> and the popover's activate/save/delete go to
-  // `/api/profiles`, RUN THE SIMULATOR goes to `/api/connect` and
-  // `/api/drivers`, and DETECT MY HARDWARE opens the sheet that starts a
-  // `/api/discover` scan on arrival. All four prefixes are on `app.py`'s
-  // relay fence, so the rig answers 403 `local_only` for every role.
+  // The LAN sentence for the verbs on this screen that reach a fenced route:
+  // the popover's save/delete go to `/api/profiles`, RUN THE SIMULATOR goes to
+  // `/api/connect` and `/api/drivers`, and DETECT MY HARDWARE opens the sheet
+  // that starts a `/api/discover` scan on arrival. Those prefixes are on
+  // `app.py`'s relay fence, so the rig answers 403 `local_only` for every role.
+  //
+  // ACTIVATING A SAVED PROFILE IS NOT ONE OF THEM (#685): the rig allow-lists
+  // `POST /api/profiles/<id>/activate` (without `force`) through the fence, so
+  // the popover's activate ignores this reason. The FIRST NIGHT card's CONNECT
+  // <profile> is the same call, but `ConnectOnceCard` takes ONE `lanReason` for
+  // CONNECT, DETECT and the simulator, so it still shows the LAN sentence on
+  // CONNECT until that card splits it; every other verb here is correct as is.
   //
   // Passed down rather than taken with `useLock` inside each card: those two
   // components are props-only and take `canConfig` as a boolean, and the ONE
