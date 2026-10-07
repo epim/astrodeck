@@ -8624,6 +8624,11 @@ def create_app(*, bind_host: str | None = None,
             raise _err(e)
         return _spawn("solve", hub.solve_and_sync())
 
+    # Monotonic stamp of the last "position unknown" warning /api/mount/move
+    # wrote (None before the first). A one-slot list, not a global: the rate
+    # limit is about this app's log, and the route below is a closure.
+    move_unknown_warned_at: list[float | None] = [None]
+
     @app.post("/api/mount/move", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.move_axis"})
     async def move_axis(body: MoveAxisBody):
@@ -8646,7 +8651,32 @@ def create_app(*, bind_host: str | None = None,
             # always allowed. force has no meaning here -- only a solar session
             # (solar_avoidance=False) makes _check_solar inert.
             check_solar = getattr(hub, "_check_solar", None)
-            if rate != 0.0 and callable(check_solar):
+            # #144: the cone is measured from where the mount SAYS it points,
+            # and a driver that cannot vouch for that (an AM5 after a reset
+            # reports its home position, the pole, wherever the tube is) turns
+            # the check into a precise answer about nothing - a pass the
+            # operator would trust, or a refusal with no cause. So it is not
+            # run, and the response and one log line say so instead; the jog
+            # itself still goes ahead, because it computes no destination (a
+            # wrong position cannot send it to the wrong point in the sky) and
+            # refusing it would take away the only way to drive a reset mount
+            # home by eye.
+            position_unknown = (rate != 0.0
+                                and not getattr(tel, "position_known", True))
+            if position_unknown:
+                # ONCE A MINUTE: the hold-to-move pad re-asserts its rate about
+                # every 600 ms (``KEEPALIVE_MS``) to feed the deadman, so a line
+                # per post is a hundred identical lines a minute. No coordinates
+                # in it (the home position is the pole, #140).
+                now = time.monotonic()
+                if (move_unknown_warned_at[0] is None
+                        or now - move_unknown_warned_at[0] >= 60.0):
+                    move_unknown_warned_at[0] = now
+                    bus.log("warning",
+                            "manual move: the mount's position is unknown, so "
+                            "the solar-cone check was not run; watch the tube",
+                            "mount")
+            elif rate != 0.0 and callable(check_solar):
                 try:
                     cur_ra, cur_dec = await tel.get_position()
                 except Exception:
@@ -8682,6 +8712,11 @@ def create_app(*, bind_host: str | None = None,
                                 "mount")
                         return {"ok": True, "aborted": True}
                     await tel.move_axis(body.axis, rate)
+            # The pad reads this to know the move ran WITHOUT the cone check.
+            # Absent on every other answer, so a client that predates it sees
+            # exactly what it always saw.
+            if position_unknown:
+                return {"ok": True, "position_known": False}
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)

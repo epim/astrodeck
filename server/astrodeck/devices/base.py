@@ -310,6 +310,38 @@ class Telescope(Device):
     #: claim the more permissive answer.
     max_rate_deg_s: float | None = None
 
+    #: Does this driver have a reason to TRUST the coordinates it reports (#144)?
+    #: False means it has a reason to think its coordinate frame is wrong - the
+    #: AM5 after a power cycle reports its home position, pointing at the pole,
+    #: wherever the tube physically is, and every number computed from "where
+    #: the mount points" (a nudge destination, the solar-cone check on a manual
+    #: jog) is then a precise answer about nothing.
+    #:
+    #: A property in the driver, not a constant, because it is cleared by
+    #: evidence: a plate-solved ``sync`` re-establishes the frame, and
+    #: :meth:`trust_position` is the operator's word that the tube is where the
+    #: mount says. A goto does NOT clear it - it lands wherever the wrong model
+    #: sends it and the mount then reads back its own opinion of the arrival.
+    #:
+    #: Default True keeps every backend and every test double identical to what
+    #: they were before the flag existed: consumers read it with
+    #: ``getattr(tel, "position_known", True)``, so absent means known. A driver
+    #: that cannot tell a reset from a mount that simply is where it says does
+    #: not get to claim the less permissive answer, which is the same rule
+    #: ``max_rate_deg_s`` keeps in the other direction.
+    position_known: bool = True
+
+    async def trust_position(self) -> None:
+        """The operator says the tube is physically where this mount reports
+        it, which clears :attr:`position_known` without a sync. The one honest
+        use is "I drove it to its home position by eye, and the mount's home
+        read is therefore true".
+
+        Default: nothing to do. A driver with no reason to doubt its frame has
+        nothing to clear, so this does not raise - the route that reaches it is
+        offered to every mount."""
+        return None
+
     async def find_home(self) -> None:
         """Send the mount to its mechanical home and leave it USABLE there.
 
