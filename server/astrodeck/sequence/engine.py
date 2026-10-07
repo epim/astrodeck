@@ -7465,15 +7465,41 @@ class SequenceEngine:
                                     "to the mosaic's angle", kind="rotation")
 
     @staticmethod
+    def _planned_pa(target: Target, group: TargetGroup) -> float | None:
+        """The angle the camera is PLANNED at for one panel of ``group``
+        (#175): the panel's own ``rotation_deg`` when the group rotates and
+        the panel carries one, else the group's layout angle.
+
+        A block that corrects meridian convergence (`to_plan.
+        corrects_convergence`) commands each panel its own angle, its
+        corners some degrees off the group's ``pa_deg`` (6 at Dec 75 for a
+        3x3 at 25%), and its tolerance is held to THAT angle. Judged against
+        the group's, a corner that sat exactly where it was told would read
+        as off and be set aside by the correction meant to help it. A fixed
+        camera, or a panel with no angle of its own, has the group's layout
+        angle, which is what a block that does not correct gives every
+        panel, so those plans are judged as they always were. None when the
+        group has no angle (the check is then off, spec 3.4)."""
+        own = getattr(target, "rotation_deg", None)
+        if group.rotate and own is not None:
+            return own
+        return group.pa_deg
+
+    @staticmethod
     def _hop_angle_within(group: TargetGroup, rec: dict | None,
-                          since: float) -> bool:
+                          since: float, *,
+                          target: Target | None = None) -> bool:
         """True when this hop measured the camera within the group's angle
-        tolerance of its layout angle, mod 180: a record exposed at or after
-        ``since`` (the hop start), judged by `angle_check.angle_verdict`, the
-        rule ``_group_angle_check`` applies. A group with no finite angle or
-        tolerance has nothing to judge by, and a missing, stale or unreadable
-        record is no evidence: each answers False, so the deferral stands."""
-        pa, tol = group.pa_deg, group.angle_tolerance_deg
+        tolerance of the angle ``target`` is planned at (`_planned_pa`; the
+        group's layout angle with no ``target``), mod 180: a record exposed
+        at or after ``since`` (the hop start), judged by
+        `angle_check.angle_verdict`, the rule ``_group_angle_check`` applies.
+        A group with no finite angle or tolerance has nothing to judge by,
+        and a missing, stale or unreadable record is no evidence: each
+        answers False, so the deferral stands."""
+        pa = (SequenceEngine._planned_pa(target, group)
+              if target is not None else group.pa_deg)
+        tol = group.angle_tolerance_deg
         if (pa is None or tol is None or not math.isfinite(pa)
                 or not math.isfinite(tol) or tol < 0):
             return False
@@ -7486,7 +7512,9 @@ class SequenceEngine:
     # ---- the angle: the check on every hop (U-04) and ruling 9's lock ------
     #
     # A mosaic's panels share the group's layout angle, and every hop checks
-    # the angle its centring measured against it (spec 5.6 step 4, 6.12). A
+    # the angle its centring measured against it (spec 5.6 step 4, 6.12) -
+    # against the panel's own planned angle where the block corrects
+    # meridian convergence, `_planned_pa` (#175). A
     # target with no angle of its own locks the angle of its first shot and
     # is then commanded to it, or checked against it, like a planned one
     # (Revision 2, ruling 9). Both read the one measurement there is,
@@ -7958,8 +7986,19 @@ class SequenceEngine:
         tolerance negative included) has no check: None disables it (spec
         3.4), and `angle_verdict` refuses the others as a caller's bug.
         Every line is words and the camera's own angles; none carries a
-        number the site sets (6.9)."""
-        pa, tol = group.pa_deg, group.angle_tolerance_deg
+        number the site sets (6.9).
+
+        THE ANGLE IS THE PANEL'S OWN (#175): a rotating group whose block
+        corrects meridian convergence plans each panel at its own
+        ``rotation_deg`` (`_planned_pa`), and the tolerance is held to that
+        angle. WITH ROTATION OFF FOR THE NIGHT (D-05) it is the group's: the
+        camera sits at one angle, the block's, for every panel, and judged
+        against a corner's own angle a camera nothing can turn would be set
+        aside for an angle it cannot reach."""
+        rotates = group.rotate and not self._rotation_off_tonight()
+        pa = (self._planned_pa(target, group) if rotates
+              else group.pa_deg)
+        tol = group.angle_tolerance_deg
         if (pa is None or tol is None or not math.isfinite(pa)
                 or not math.isfinite(tol) or tol < 0):
             return
@@ -7981,7 +8020,9 @@ class SequenceEngine:
         # camera off its angle sets the group aside once, with the
         # turn-the-camera wording, where a rotator's ``off`` defers the
         # panel pass after pass for an angle nothing will bring it to.
-        rotates = group.rotate and not self._rotation_off_tonight()
+        # (``rotates``, read above with the angle it picks; the rotator's own
+        # reading stands in for a missing measurement only against the
+        # panel's planned angle, the one it was commanded.)
         reads = None
         if rotates and verdict.kind == "no_measurement":
             reads = await self._rotator_evidence(pa, centring)
@@ -8657,7 +8698,8 @@ class SequenceEngine:
         if member is not None and hop_centring is not None:
             self._group_hop_checks(
                 target, member, hop_centring, hop_miss,
-                angle_ok=self._hop_angle_within(member, hop_angle, hop_wall0))
+                angle_ok=self._hop_angle_within(member, hop_angle, hop_wall0,
+                                                target=target))
         if member is not None and "telescope" in self.hub.devices:
             await self._group_angle_check(target, member, hop_centring,
                                           hop_angle, hop_wall0)
