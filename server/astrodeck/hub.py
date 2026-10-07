@@ -8999,6 +8999,15 @@ class Hub:
                     # mount really has rather than a guess about somebody
                     # else's gearbox.
                     "max_rate_deg_s": getattr(tel, "max_rate_deg_s", None),
+                    # Does the driver have a reason to TRUST this position
+                    # (#144)? False after an AM5 reset until a sync: the mount
+                    # then reports its home position, pointing at the pole,
+                    # wherever the tube is. ALWAYS present, so a client never
+                    # has to tell "absent" from "known"; a driver with no such
+                    # flag reads True through the same ``getattr`` the nudge
+                    # route uses. Both UIs lock the step controls and pick the
+                    # ceiling rung off it.
+                    "position_known": bool(getattr(tel, "position_known", True)),
                     # Was this pointing CONFIRMED against the sky, or is it the
                     # mount's own opinion? See `note_pointing_verified`.
                     "pointing": {
@@ -9378,6 +9387,42 @@ class Hub:
             warm = self.warm_state()
             if warm is not None and "camera" in out:
                 out["camera"]["warm"] = warm
+        # THE GUIDE CAMERA'S LIVENESS (#16, job 2c). The imaging camera is asked
+        # for its temperature above every tick, and for a native camera that
+        # read is also the only thing that notices an IDLE unplug: the adapter
+        # raises ``CameraGone`` for the SDK's "closed/removed" codes and
+        # ``NativeCamera.get_temperature`` marks ``connected`` false and says so
+        # once (WP-89). The guide camera is the device that was actually
+        # stranded on 2026-09-12 and nothing asked it, so it read connected
+        # until a human noticed. The ANSWER IS DISCARDED, the side effect is the
+        # measurement; it runs before ``_guide_camera_info`` below so the frame
+        # that notices is the frame that says so.
+        #
+        # BOUNDED TWICE. Five seconds, because the frame is worth more than the
+        # answer and a USB stall on this camera must not hold it up (the
+        # imaging camera's read above has no bound and is not changed here). And
+        # ONE PROBE IN FLIGHT: a read still blocked inside the SDK when the wait
+        # ends keeps its worker thread, and a new probe every two seconds on top
+        # of it would take a thread a poll from the default executor until
+        # nothing else on the server (exposures, solves, the guider) could use
+        # one. So a probe that has not returned is left to finish and no second
+        # is started. A probe that never returns is not read as a drop: a slow
+        # answer is not a missing camera.
+        gcam = self.devices.get("guide_camera")
+        if gcam is not None and getattr(gcam, "connected", False):
+            try:
+                probe = getattr(self, "_guide_probe", None)
+                if probe is None or probe.done():
+                    probe = asyncio.ensure_future(gcam.get_temperature())
+                    # Nobody awaits this task, so its exception (CameraGone is
+                    # the expected one) is retrieved here or the loop reports
+                    # "Task exception was never retrieved" once per poll.
+                    probe.add_done_callback(
+                        lambda t: t.cancelled() or t.exception())
+                    self._guide_probe = probe
+                await asyncio.wait({probe}, timeout=5.0)
+            except Exception:
+                pass
         if self.guider and self.guider.connected:
             out["guider"] = self.guider.stats().__dict__ | {"name": self.guider.name}
         # Additive guide-camera descriptor so ConnectView can show the guiding

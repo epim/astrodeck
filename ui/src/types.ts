@@ -85,6 +85,18 @@ export interface MountStatus {
    *  TOUCH_MAX_RATE_DEG_S`). ABSENT means an engine older than S7c, and reads
    *  the same way. The AM5N reports 1.44. */
   max_rate_deg_s?: number | null;
+  /** Does the driver have a reason to TRUST this position (#144)? `false`
+   *  after a mount reset - the AM5 then reports its home position, pointing at
+   *  the pole, wherever the tube physically is - until a plate-solve sync or
+   *  the operator's word clears it. While it is false the step nudge is
+   *  refused (409 `position_unknown`) and a manual move runs without the
+   *  solar-cone check.
+   *
+   *  Always sent by a server that knows the flag, so ABSENT means an engine
+   *  older than #144 and reads as `true`: only an explicit `false` is a reason
+   *  to lock anything. Server: `hub.py poll_status`, from
+   *  `devices/base.py Telescope.position_known`. */
+  position_known?: boolean;
 }
 
 /** `focuser.temp_comp` - move the drawtube between frames as the tube cools
