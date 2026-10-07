@@ -133,7 +133,12 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
  *
  *  RUN otherwise: no answer yet, no session (never run, or the newest was
  *  abandoned: the route answers null for both), a complete session, or an
- *  active one that is not live here. `run_flow` starts all of those fresh.
+ *  active one that is not live here. `run_flow` starts all of those fresh,
+ *  except a complete session whose flow was edited to owe more: that press
+ *  is ASKED about first (409 `reopen`, #179, `askContinue` in
+ *  flowRunControls.tsx) and CONTINUEs the finished session on a yes. The
+ *  button still reads RUN there, since the progress route does not say
+ *  which complete session would be asked.
  *
  *  A dormant session whose numbers do not read as numbers still reads
  *  CONTINUE, since that is what the press does, but with no parenthetical:

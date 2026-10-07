@@ -159,6 +159,10 @@ from ..flows.continuation import _capture_times, _describe
 # recount logs (S4 orchestrator ruling 2) names the two modes in the words the
 # recount question uses, so the operator reads one vocabulary for one change.
 from ..flows.continuation import _MODE_WORDS
+# The reopen question (#179): the report that says whether a COMPLETE session
+# is asked about, and the sentence the 409 carries, built beside the
+# dropped-steps one so the numbers have one source.
+from ..flows.continuation import reopen_detail, reopen_report
 from ..flows.doctor import UNGUIDED_SUB_LINE_S, check as flow_doctor
 from ..flows.models import (MY_FLOWS_FOLDER, FlowGraph, FlowRecord,
                             MigrationNote)
@@ -1137,7 +1141,8 @@ def _adopt_again_detail(steps: int) -> str:
 def _continue_flow_session(first_read: Session, plan: SequencePlan,
                            body: FlowRunBody,
                            evidence: AdoptEvidence | None = None, *,
-                           plan_saved_ts: float | None = None) -> dict:
+                           plan_saved_ts: float | None = None,
+                           reopen: bool = False) -> dict:
     """CONTINUE a flow's dormant session on tonight's compile, or refuse with
     a 409 that says what continuing would do (#189 S1, spec 5.9, D6).
 
@@ -1147,6 +1152,18 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     engine's ledger writes, a finalize - runs between the read and the start,
     and the lock holds off store writes made from worker threads, deletes
     included (#212).
+
+    A COMPLETE SESSION IS THE ONE OTHER STATUS IT ACCEPTS (#179, spec I-30),
+    and only when the route's first read asked to reopen it (``reopen``, the
+    route having found a ``reopen_report``): the flow was edited to owe more
+    and shares a step id with the finished session. Every other status is
+    still ``session_changed``. ResumeArm never starts a complete session, so
+    there is no arm to race, and an ``active`` one is somebody's run.
+    ``engine.start`` sets any session it is handed active, so reopening
+    changes nothing in the engine. The re-read is ASKED AGAIN under the lock
+    (``reopen_report``): a flow that no longer owes more is
+    ``session_changed``, and a press without ``accept_reopen`` is the first
+    question of all.
 
     That is the whole defence against the one-starter race (2026-09-18).
     ``patch_session`` loads, checks and saves in separate ``to_thread`` calls,
@@ -1165,6 +1182,12 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     The refusals come in the order the UI asks them, each one lifted only by
     its own flag on the next request:
 
+    (0) ``reopen`` - the session is COMPLETE, and the flow now owes more
+        (#179). Asked FIRST, because it is the larger decision: whether the
+        finished session is extended at all, which the three below only
+        qualify. It cannot meet (a), which needs no step id shared, and a
+        reopen shares one. START OVER (``fresh``) is the other answer, and
+        never reaches here.
     (a) ``adopt`` - no step id is shared, the ledger holds frames, and the
         session was saved before S1 (``saved_before_s1``: none of its ids is
         one the compile mints), so its uuid4 ids no compile produces again.
@@ -1214,7 +1237,8 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
             s = session_store.load(first_read.id)
         except (KeyError, SessionUnreadable):
             s = None
-        if s is None or s.status != "dormant":
+        if s is None or not (s.status == "dormant"
+                             or (reopen and s.status == "complete")):
             now = "no longer on disk" if s is None else f"now {s.status}"
             raise HTTPException(409, detail={
                 "code": "session_changed", "session_id": first_read.id,
@@ -1223,6 +1247,28 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
                           f"being prepared: it is {now}, so it was not "
                           f"continued and nothing was written. Press Run "
                           f"again."})
+        # THE REOPEN QUESTION, FIRST (#179). Asked of THIS read, not the
+        # route's: the report is pure, so the lock costs nothing to ask it
+        # under. A flow that owes nothing now is a changed session in the
+        # same sense as one that went active, and nothing is written.
+        reopened = None
+        if s.status == "complete":
+            reopened = reopen_report(s, plan)
+            if reopened is None:
+                raise HTTPException(409, detail={
+                    "code": "session_changed", "session_id": s.id,
+                    "status": s.status,
+                    "detail": "this flow's session changed while the run was "
+                              "being prepared: the flow no longer owes more "
+                              "than the finished session holds, so it was "
+                              "not reopened and nothing was written. Press "
+                              "Run again."})
+            if not body.accept_reopen:
+                raise HTTPException(409, detail={
+                    "code": "reopen", "detail": reopen_detail(reopened),
+                    "session_id": s.id, "recorded": reopened.recorded,
+                    "accepted": reopened.accepted, "quota": reopened.quota,
+                    "owed": reopened.owed})
         report = plan_replace_report(s, plan)
         adopted = None
         if _asks_adopt(s, report):
@@ -1332,6 +1378,15 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
                 f"{moved[1]:g}°C: subs at two sensor temperatures cannot "
                 f"share one dark library. START OVER begins a new session "
                 f"at {moved[1]:g}°C.", "sequence")
+    if reopened is not None:
+        # After the start, like the lines above: a start the engine refused
+        # reopened nothing. Info: the operator answered the question, so
+        # this is the record of what was done, for a night log that would
+        # otherwise show a session going active that was last seen complete.
+        bus.log("info",
+                f"'{s.name}' was complete; reopened because the flow now "
+                f"asks for {reopened.owed} more "
+                f"sub{'' if reopened.owed == 1 else 's'}", "sequence")
     if quiet_recount is not None:
         # After the start, like the temperature line: a refused start
         # continued nothing and changed no mode. Info, not warning: it is
@@ -1349,6 +1404,10 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     if adopted is not None:
         out["adopted"] = {"matched": adopted.frames_matched,
                           "unmatched": adopted.rest()}
+    if reopened is not None:
+        # Present only when it happened, as ``adopted`` is, so every answer
+        # that reopened nothing is byte-identical to before.
+        out["reopened"] = True
     if disarmed:
         # #595, D-04: CONTINUE arms this session exactly as a fresh start
         # does, so it rides the same singleton and can disarm another
@@ -2637,7 +2696,7 @@ class FlowRunBody(BaseModel):
     a checkbox that can wave that through is a checkbox that will be ticked
     once and never read again.
 
-    The last four answer CONTINUE's questions (#189 S1, spec 5.9). Run
+    The last five answer CONTINUE's questions (#189 S1, spec 5.9). Run
     continues the flow's own dormant session by default, and each flag is the
     operator saying yes to one thing that continuing would otherwise refuse
     to do without asking:
@@ -2649,6 +2708,11 @@ class FlowRunBody(BaseModel):
       from the flow (409 ``dropped_steps`` asks).
     * ``accept_recount`` - continue under a different ``count_mode``, which
       recounts every banked frame (409 ``recount`` asks).
+    * ``accept_reopen`` - reopen the flow's COMPLETE session, because the
+      flow was edited to owe more and shares a step id with it (409 ``reopen``
+      asks, #179). It answers the question and never starts the reopen
+      itself: a complete session that owes nothing starts fresh whatever it
+      says.
 
     None of them lifts any guard above: identity, the unbounded quota, the
     horizon and the Sun all apply to a continue exactly as to a fresh run."""
@@ -2658,6 +2722,7 @@ class FlowRunBody(BaseModel):
     adopt: bool = False
     accept_dropped: bool = False
     accept_recount: bool = False
+    accept_reopen: bool = False
 
 
 class ResumeBody(BaseModel):
@@ -7202,6 +7267,14 @@ def create_app(*, bind_host: str | None = None,
         the write-locked section that does it, and its docstring lists the
         three 409s (``adopt``, ``recount``, ``dropped_steps``) that ask before
         continuing changes what the ledger counts. ``fresh`` starts over.
+
+        A COMPLETE newest session is ASKED ABOUT, never reopened silently
+        (#179): when the flow was edited to owe more and the compile shares a
+        step id with it (``reopen_report``), the press answers 409 ``reopen``
+        with the counts, and ``accept_reopen`` continues that session, so a
+        finished campaign can be extended in place. A complete session that
+        owes nothing, or shares no step id, starts fresh as it always did.
+        ``POST /api/flows/quick`` goes through this handler and inherits it.
         """
         try:
             rec = await asyncio.to_thread(flow_store.get, flow_id)
@@ -7307,9 +7380,12 @@ def create_app(*, bind_host: str | None = None,
         # after a START OVER the old session stays dormant (unarmed) forever,
         # and once the new one completes or is abandoned that rule would
         # reopen the ledger the operator chose to leave. A complete newest
-        # session starts fresh (spec 5.9; reopening one whose flow now owes
-        # more is I-30). The progress chip calls the same method, so it names
-        # the session this continues (#189 hardening A2).
+        # session starts fresh unless its flow now owes more and shares a step
+        # id with it, in which case the continue ASKS before it reopens it
+        # (``reopen``, #179, spec I-30): never silently, because the other
+        # answer, START OVER, walks away from the whole ledger. The progress
+        # chip calls the same method, so it names the session this continues
+        # (#189 hardening A2).
         #
         # This read is before an await, so it is only a hint: the continue
         # re-reads the session under the write lock before it decides.
@@ -7317,6 +7393,13 @@ def create_app(*, bind_host: str | None = None,
         if not body.fresh:
             latest = await asyncio.to_thread(
                 session_store.current_for_flow, flow_id)
+        # Pure and cheap (a report of two plans and a count), so asked here
+        # on the loop as ``plan_replace_report`` is for the ADOPT gate below.
+        # A report is the route's reason to hand a COMPLETE session to the
+        # continue; the locked section asks it again of its own read.
+        reopen = None
+        if latest is not None and latest.status == "complete":
+            reopen = reopen_report(latest, plan)
         # ADOPT'S CATALOGUE WORK, HERE AND NEVER IN THE LOCK (#249). The
         # match needs every target name resolved, and a body's position at
         # its capture instants: a full catalogue search each, 10 to 35 ms,
@@ -7351,10 +7434,10 @@ def create_app(*, bind_host: str | None = None,
             # Both branches, and nothing awaits between here and either
             # start: CONTINUE's locked section is synchronous too (#189 A7).
             _refuse_while_resume_recovers()
-            if latest is not None and latest.status == "dormant":
+            if latest is not None and (latest.status == "dormant" or reopen):
                 continued = _continue_flow_session(
                     latest, plan, body, evidence,
-                    plan_saved_ts=plan_saved_ts)
+                    plan_saved_ts=plan_saved_ts, reopen=bool(reopen))
             else:
                 # Synchronous, and it owns its own task — do not await it, and
                 # do not wrap it in a busy lane. "Already running" is raised in

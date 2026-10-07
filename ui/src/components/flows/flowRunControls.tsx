@@ -17,8 +17,9 @@
 //     running while it is stopping exactly as asked.
 //   * A 409 `unmapped` is a QUESTION, not an error: the server asking whether
 //     the operator accepts running a graph part of which will not be honoured.
-//     So are CONTINUE's three (#189 S1): `adopt`, `recount` and
-//     `dropped_steps`, each asked with ADOPT or CONTINUE and START OVER by
+//     So are CONTINUE's (#189 S1): `adopt`, `recount` and `dropped_steps`,
+//     and since #179 `reopen`, the finished session a flow was edited to owe
+//     more of. Each is asked with ADOPT or CONTINUE and START OVER by
 //     `askContinue` below. `runAnsweringQuestions` is the loop that asks them
 //     and re-posts; the #/next Sky flow sheet shares both.
 //
@@ -101,20 +102,33 @@ export { isRunPhaseLive } from "./flowRunState";
 // of each question is the server's sentence, verbatim and once: it holds the
 // numbers being decided on. The title only frames the decision.
 
+/** The codes a CONTINUE question can carry: the three the slice names, and
+ *  `reopen` (409 `reopen`, #179), asked when the flow's newest session is
+ *  COMPLETE and the flow was edited to owe more. */
+export type ContinueQuestionCode = FlowContinueCode | "reopen";
+
 /** What the question is deciding. Not a restatement of the sentence under it. */
-export const CONTINUE_TITLE: Record<FlowContinueCode, string> = {
+export const CONTINUE_TITLE: Record<ContinueQuestionCode, string> = {
   adopt: "Use the frames this flow captured before?",
   dropped_steps: "Continue without those steps?",
   recount: "Continue and recount the session?",
+  reopen: "Add to the finished session?",
 };
 
 /** The verb that says yes. ADOPT is not CONTINUE: it rewrites the session's
- *  step ids (after a .bak copy), which CONTINUE never does. */
-export const CONTINUE_VERB: Record<FlowContinueCode, string> = {
+ *  step ids (after a .bak copy), which CONTINUE never does. REOPEN's yes is
+ *  CONTINUE all the same: the session carries on with what it banked. */
+export const CONTINUE_VERB: Record<ContinueQuestionCode, string> = {
   adopt: "ADOPT",
   dropped_steps: "CONTINUE",
   recount: "CONTINUE",
+  reopen: "CONTINUE",
 };
+
+/** The questions whose own sentence already says what START OVER does, so the
+ *  dialog adds no note of its own: ADOPT's (`adopt_detail`) and REOPEN's
+ *  (`reopen_detail`). The same clause twice is noise. */
+const SAYS_START_OVER: ReadonlySet<string> = new Set(["adopt", "reopen"]);
 
 /** START OVER's one spelling: the button in a CONTINUE question's body, the
  *  button beside CONTINUE on every RUN surface (#189 S5) and the yes of the
@@ -123,8 +137,7 @@ export const START_OVER_LABEL = "START OVER";
 
 /** What START OVER does to the session being asked about, in the server's own
  *  words (continuation.py `adopt_detail`). Shown only under the questions
- *  whose sentence does not already say it - the adopt sentence does, and the
- *  same clause twice is noise. */
+ *  whose sentence does not already say it (`SAYS_START_OVER`). */
 export const START_OVER_NOTE = "START OVER begins a new session and leaves this one on disk.";
 
 /** Ask one CONTINUE question. Resolves to the answer to re-post with - the
@@ -157,7 +170,7 @@ export async function askContinue(
     body: (
       <span style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <span data-testid="continue-detail">{q.detail}</span>
-        {q.code !== "adopt" && <span>{START_OVER_NOTE}</span>}
+        {!SAYS_START_OVER.has(q.code) && <span>{START_OVER_NOTE}</span>}
         {/* `flex: none`: `.nx-confirm-btn` is `flex: 1` for the card's own
             button row, which inside this column would override its height. */}
         <button

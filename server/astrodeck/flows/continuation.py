@@ -39,6 +39,9 @@ start.
 * ``recount`` - a ledger is counted by its FROZEN plan's ``count_mode``, so
   continuing under a different mode recounts every banked frame at once. The
   operator is shown both totals before that happens.
+* ``reopen_report`` - a COMPLETE session whose flow has since been edited to
+  owe more. Run asks before it reopens that session, with the counts
+  (``reopen_detail``), and never reopens one silently (#179, I-30).
 """
 from __future__ import annotations
 
@@ -645,6 +648,84 @@ def dropped_detail(frames: int) -> str:
                 "on disk")
     return (f"{frames} subs belong to steps this flow no longer has; they "
             f"stay on disk")
+
+
+# ------------------------------------------------------------------ reopen
+
+@dataclass(frozen=True)
+class ReopenReport:
+    """What reopening a complete session on tonight's compile would do (#179).
+
+    ``recorded`` is every sub in the ledger and ``accepted`` the ones that are
+    effectively accepted (``Session.total_accepted``), whatever the count
+    mode: the two the operator reads off the session. ``quota`` is what the
+    compile asks for in all (the sum of its step counts) and ``owed`` what is
+    still owed of it, counted by THE COMPILE'S plan and its ``count_mode``,
+    which is what the run will count by once the session holds that plan.
+    ``counted`` is the part of the ledger that fills that quota."""
+    session_id: str
+    recorded: int
+    accepted: int
+    quota: int
+    owed: int
+
+    @property
+    def counted(self) -> int:
+        """The subs that count toward ``quota``: quota less what is owed, so
+        a step whose count was lowered below the subs it holds adds only the
+        subs that fill it, and a sub on a step that is gone adds none. Never
+        ``recorded``, which can name subs that fill nothing."""
+        return self.quota - self.owed
+
+
+def reopen_report(session: Session, plan: SequencePlan) -> ReopenReport | None:
+    """What reopening ``session`` on ``plan`` would do, or None when Run
+    should not ask (#179, spec I-30).
+
+    PURE, LIKE THE REST OF THIS MODULE: it reads the session and the plan, and
+    the route both asks it of its first read and asks it again of the
+    re-read inside the write lock.
+
+    Not None only when all three hold:
+
+    * the session is COMPLETE. A dormant one is CONTINUE's, and an active or
+      abandoned one is neither's.
+    * the compile SHARES a step id with it (``plan_replace_report`` ``kept``).
+      A re-framed single TARGET keys its steps on its geometry, so none is
+      shared and none of the ledger would count: that is a different
+      campaign, which starts fresh as it always did, not an extension.
+    * counted by ``plan`` it still OWES frames. ``Session.owed`` is mode-aware
+      on the session's own plan, so the plan is swapped in on a copy first:
+      tonight's compile and its ``count_mode`` are what decide, and the
+      session's own plan owes nothing by construction. A flow that owes
+      nothing starts fresh, whatever the operator has accepted in advance.
+    """
+    if session.status != "complete":
+        return None
+    rep = plan_replace_report(session, plan)
+    after = session.model_copy(update={"plan": plan}).owed()
+    if not rep.kept or after <= 0:
+        return None
+    return ReopenReport(
+        session_id=session.id, recorded=len(session.frames),
+        accepted=session.total_accepted(),
+        quota=sum(st.count for t in plan.targets for st in t.steps),
+        owed=after)
+
+
+def reopen_detail(report: ReopenReport) -> str:
+    """The reopen question's sentence, the one the 409 carries and the UI
+    prints verbatim: every number in it is the report's, so there is one
+    source for them. START OVER's clause is in it, which is why the dialog
+    adds no note of its own, as ADOPT's does not."""
+    held = (f" ({report.accepted} accepted)"
+            if report.accepted != report.recorded else "")
+    return (f"This flow's session is complete: {report.recorded} "
+            f"sub{_s(report.recorded)} recorded{held}. The flow now asks for "
+            f"{report.quota}, so {report.owed} more {_are(report.owed)} owed. "
+            f"CONTINUE reopens that session and counts the {report.counted} "
+            f"toward the {report.quota}. START OVER begins a new session "
+            f"that counts from 0.")
 
 
 def _s(n: int) -> str:
