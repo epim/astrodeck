@@ -35,13 +35,14 @@ import {
 } from "./panelLane";
 import { acceptCounts } from "./countsNotice";
 import {
-  COUNTS_MIGRATION_KEY, FLOW_SETTINGS, RUN_UNSAVED_EXAMPLE_REASON,
+  COUNTS_MIGRATION_KEY, FLOW_COALESCE_MS, FLOW_HISTORY_CAP, FLOW_HISTORY_EMPTY,
+  FLOW_SETTINGS, RUN_UNSAVED_EXAMPLE_REASON, historyOf,
 } from "./flowsTypes";
 import type {
-  FlowCalHealth, FlowCompileResult, FlowEdgeRec, FlowGraphRec, FlowLogLine,
-  FlowNodeRec, FlowNodeType, FlowPhoneTab, FlowReanchored, FlowRecordRec,
-  FlowRunState, FlowScreen, FlowSelection, FlowSettingKey, PendingWire,
-  TonightTab,
+  FlowCalHealth, FlowCommitKey, FlowCompileResult, FlowEdgeRec, FlowGraphRec,
+  FlowHistory, FlowLogLine, FlowNodeRec, FlowNodeType, FlowPhoneTab,
+  FlowReanchored, FlowRecordRec, FlowRunState, FlowScreen, FlowSelection,
+  FlowSettingKey, FlowSnapshot, PendingWire, TonightTab,
 } from "./flowsTypes";
 
 /** Ring size for the run log. README §"State management" says ~120. */
@@ -162,6 +163,15 @@ export interface FlowsState {
   sel: FlowSelection | null;
   editNode: string | null;
 
+  /** What the open flow's edits can be taken back to, and what an undo has
+   *  set aside for a redo (#688 part 3, WP-117). Written by `commit`, the one
+   *  choke point of an edit, and by `flowsUndo` and `flowsRedo`. Emptied by an
+   *  open and a close, and by nothing else: NOT by a save, because the
+   *  autosave fires two seconds after the last edit and an undo that stopped
+   *  at it would reach back two seconds. A flow made by the wizard arrives
+   *  through an open, so its first graph is not undoable. */
+  history: FlowHistory;
+
   // ── viewport, its own sub-object so a pan re-renders no node
   pan: { x: number; y: number };
   zoom: number;
@@ -271,7 +281,7 @@ export function compiledIsCurrent(f: Pick<FlowsState, "compiled" | "graph">): bo
 export const FLOWS_INIT: FlowsState = {
   cards: [], folders: [], libraryLoaded: false, libraryError: null,
   record: null, graph: { nodes: [], edges: [] }, dirty: false, saving: false,
-  sel: null, editNode: null,
+  sel: null, editNode: null, history: FLOW_HISTORY_EMPTY,
   // The prototype opens at this pan/zoom; a fresh canvas that started at 1.0/0,0
   // shows the first node hard against the corner.
   pan: { x: 24, y: 12 }, zoom: 0.92,
@@ -334,6 +344,16 @@ export interface FlowsActions {
   flowsDeleteSel: () => void;
   flowsConnect: (from: string, fromPort: string, to: string, toPort: string) => void;
   flowsSetName: (name: string) => void;
+  /** Takes the last edit back (#688 part 3): the graph AND the flow's name go
+   *  to what they were before it, the flow is marked edited (so the autosave
+   *  sends it), and a compile of the restored graph is asked for. A selection,
+   *  edit sheet or half-made wire that names something the restored graph does
+   *  not have is cleared. Nothing, not even a write, when there is nothing to
+   *  undo. `flowsRedo` is the other direction: what an undo set aside, until
+   *  the next edit. Neither is a way to leave the flow's saved state: a save
+   *  keeps the history. */
+  flowsUndo: () => void;
+  flowsRedo: () => void;
 
   flowsSelect: (sel: FlowSelection | null) => void;
   flowsSetEditNode: (id: string | null) => void;
@@ -857,11 +877,129 @@ function carryLoopWire(
 // test_mosaic_spec_claims.py reads.
 export { carryLoopWire };
 
+// ──────────────────────────────────────────────────────────── undo and redo
+//
+// (#688 part 3, WP-117.) An edit is any write that replaces the graph or the
+// flow's name, and every one of them goes through `commit` below, the way
+// every graph write already went through `touch`. Two actions wrote around
+// `touch`, `flowsDeleteSel` and `flowsSetName`; both go through `commit` now,
+// because a write that bypasses it is an edit nobody can take back, and an
+// undo that silently skips a delete is worse than none.
+
+/** What `commit` may join an edit to: the sort of write, the thing written and
+ *  the field, as `FlowCommitKey` without its clock. */
+type CommitJoin = Pick<FlowCommitKey, "kind" | "id" | "key">;
+
+/** `past` with the oldest entries dropped down to the cap. The NEWEST are the
+ *  ones kept: an undo walks back from the latest edit, so the edits it can
+ *  still reach are the recent ones. */
+function capped(past: readonly FlowSnapshot[]): readonly FlowSnapshot[] {
+  return past.length > FLOW_HISTORY_CAP ? past.slice(-FLOW_HISTORY_CAP) : past;
+}
+
+/** `h` with the server's counts switch written into every graph it holds, as
+ *  `flowsSave` writes it into the graph on screen (`acceptCounts`). The switch
+ *  is a fact about the STORED flow, not an edit the operator made: an undo
+ *  that took it back would put "every sub taken" on the canvas again, and the
+ *  next save would switch it and say so a second time. Graphs that count
+ *  accepted subs already are kept as the same objects. */
+function withCountsAccepted(h: FlowHistory): FlowHistory {
+  if (h.past.length === 0 && h.future.length === 0) return h;
+  const one = (e: FlowSnapshot): FlowSnapshot => {
+    const graph = acceptCounts(e.graph);
+    return graph === e.graph ? e : { ...e, graph };
+  };
+  return { ...h, past: h.past.map(one), future: h.future.map(one) };
+}
+
 export function createFlowsActions(
   set: SetFn, get: GetFn, api?: FlowsStoreApi,
 ): FlowsActions {
   const touch = (s: FlowsHost, graph: FlowGraphRec) =>
     patch(s, { graph, dirty: true });
+
+  /** THE ONE CHOKE POINT OF AN EDIT (#688 part 3): writes `graph` as `touch`
+   *  does, and first puts what it replaces, the graph AND the name, on the
+   *  history's `past`, drops the oldest past the cap, and empties `future`
+   *  (an edit made after an undo is a new branch: the redo is gone).
+   *
+   *  `join` names what a write of this kind is, for COALESCING: a node dragged
+   *  writes once per pointer move and a field typed into once per keystroke,
+   *  and fifty entries of one drag would leave nothing to undo into. A write
+   *  whose `join` equals the last write's, no later than `FLOW_COALESCE_MS`
+   *  after it, adds no entry: the entry already there holds the state before
+   *  the whole gesture. The clock slides with each write that joins, so a slow
+   *  drag with no pause that long in it is one entry. Every write without a
+   *  `join` (add, delete, wire, DONE, a setting) ends a burst and is an entry
+   *  of its own.
+   *
+   *  `extra` is whatever else the same write changes (a delete clears the
+   *  selection; a rename writes the record), in the ONE write, so no render
+   *  sees the new graph beside the old selection. */
+  const commit = (
+    s: FlowsHost, graph: FlowGraphRec, join?: CommitJoin, extra: Partial<FlowsState> = {},
+  ): Partial<FlowsHost> => {
+    const f = s.flows;
+    const h = historyOf(f);
+    const now = Date.now();
+    const last = h.lastCommit;
+    const joins = join !== undefined && last !== null
+      && last.kind === join.kind && last.id === join.id && last.key === join.key
+      && now - last.at <= FLOW_COALESCE_MS;
+    // `future` is emptied either way: when a write joins a burst it is already
+    // empty (the burst's first write emptied it, and an undo or a redo ends
+    // the burst), so this only matters for a state written by hand.
+    const future = h.future.length === 0 ? h.future : [];
+    const history: FlowHistory = joins && last !== null
+      ? { past: h.past, future, lastCommit: { ...last, at: now } }
+      : {
+        past: capped([...h.past, { graph: f.graph, name: f.record?.name ?? "" }]),
+        future,
+        lastCommit: join ? { ...join, at: now } : null,
+      };
+    return patch(s, { ...extra, graph, dirty: true, history });
+  };
+
+  /** One step through the history, in `dir`'s direction: false, and nothing
+   *  written, when there is nothing to step to. The state it leaves behind is
+   *  an edit like any other (`dirty`, so the autosave sends it), and it ends
+   *  a burst (`lastCommit: null`), so the next write is an entry of its own.
+   *
+   *  WHAT NAMES SOMETHING THE RESTORED GRAPH LACKS IS CLEARED, and only that:
+   *  the selection and the edit sheet follow a block or wire that is still
+   *  there, and a half-made wire from a block that is gone would otherwise
+   *  draw from nothing. Left as the same objects when they stand. */
+  const stepHistory = (dir: "undo" | "redo"): boolean => {
+    let stepped = false;
+    set((s) => {
+      const f = s.flows;
+      const h = historyOf(f);
+      const from = dir === "undo" ? h.past : h.future;
+      if (from.length === 0) return {};
+      const to = from[from.length - 1];
+      const here: FlowSnapshot = { graph: f.graph, name: f.record?.name ?? "" };
+      const rest = from.slice(0, -1);
+      const history: FlowHistory = dir === "undo"
+        ? { past: rest, future: [...h.future, here], lastCommit: null }
+        : { past: capped([...h.past, here]), future: rest, lastCommit: null };
+      const nodes = new Set(to.graph.nodes.map((n) => n.id));
+      const edges = new Set(to.graph.edges.map((e) => e.id));
+      stepped = true;
+      return patch(s, {
+        graph: to.graph,
+        ...(f.record && f.record.name !== to.name
+          ? { record: { ...f.record, name: to.name } } : {}),
+        dirty: true,
+        history,
+        sel: f.sel !== null && (f.sel.kind === "node" ? nodes.has(f.sel.id) : edges.has(f.sel.id))
+          ? f.sel : null,
+        editNode: f.editNode !== null && nodes.has(f.editNode) ? f.editNode : null,
+        wire: f.wire !== null && nodes.has(f.wire.from) ? f.wire : null,
+        tapWire: f.tapWire !== null && nodes.has(f.tapWire.from) ? f.tapWire : null,
+      });
+    });
+    return stepped;
+  };
 
   // THE NEWEST PROGRESS READ WINS, not the last one to arrive. Open, save, a
   // started run and a frame on a live run each start a read, and two for the
@@ -1330,6 +1468,13 @@ export function createFlowsActions(
           record: rec,
           graph: rec.graph ?? { nodes: [], edges: [] },
           dirty: false, sel: null, editNode: null,
+          // A FLOW JUST OPENED HAS NOTHING TO UNDO (#688 part 3): in the same
+          // write as the record, so no render sees this flow beside the last
+          // flow's history. Only a SUCCESSFUL open reaches here; a refused one
+          // returned above and leaves the open flow's history alone. A flow the
+          // wizard made arrives through here too, so its first graph is not
+          // undoable, and reopening the open flow starts it afresh.
+          history: FLOW_HISTORY_EMPTY,
           compiled: null, tonight: null, calHealth: null,
           // IN THE SAME WRITE AS THE RECORD, not left to the read below: node
           // ids are not unique across flows (the wizard mints n1, n2, ... in
@@ -1441,7 +1586,11 @@ export function createFlowsActions(
           // this graph and so comes down, the draft compile counts what the
           // stored flow counts, and the next save does not switch it again.
           // Not an edit: `dirty` was decided above, from what was sent.
-          ...(switched ? { graph: acceptCounts(s.flows.graph) } : {}),
+          // The history too (`withCountsAccepted`): an undo must not take the
+          // server's switch back.
+          ...(switched
+            ? { graph: acceptCounts(s.flows.graph), history: withCountsAccepted(historyOf(s.flows)) }
+            : {}),
         }));
         // What the save did to the counts, said once (`saveAnswerLines`).
         // AFTER the stale check above: an answer for a flow no longer open
@@ -1534,6 +1683,8 @@ export function createFlowsActions(
       set((s) => patch(s, {
         record: null, graph: { nodes: [], edges: [] }, dirty: false,
         sel: null, editNode: null, wire: null, tapWire: null,
+        // The history belongs to the flow that closed (#688 part 3).
+        history: FLOW_HISTORY_EMPTY,
         // An answer belongs to the open record and goes with it, and so do
         // the note its read carried and the sessions known to be its (#449).
         progress: null,
@@ -1565,16 +1716,24 @@ export function createFlowsActions(
           id, type, x: at.x, y: at.y,
           params: createParams(type),
         };
-        return touch(s, { ...s.flows.graph,
+        return commit(s, { ...s.flows.graph,
                           nodes: [...s.flows.graph.nodes, node] });
       });
       return id;
     },
 
-    flowsMoveNode: (id, x, y) => set((s) => touch(s, {
-      ...s.flows.graph,
-      nodes: s.flows.graph.nodes.map((n) => (n.id === id ? { ...n, x, y } : n)),
-    })),
+    flowsMoveNode: (id, x, y) => set((s) => {
+      const g = s.flows.graph;
+      const graph = { ...g, nodes: g.nodes.map((n) => (n.id === id ? { ...n, x, y } : n)) };
+      // A MOVE THAT GOES NOWHERE (a block that is gone, a drag that came back
+      // to the exact spot) is written as it always was, but it is not an edit
+      // to take back: an undo that changed nothing on screen would read as a
+      // broken button.
+      const node = g.nodes.find((n) => n.id === id);
+      if (!node || (node.x === x && node.y === y)) return touch(s, graph);
+      // One entry per drag: a write per pointer move joins the one before it.
+      return commit(s, graph, { kind: "move", id, key: "xy" });
+    }),
 
     flowsSetParam: (id, key, raw) => set((s) => {
       const node = s.flows.graph.nodes.find((n) => n.id === id);
@@ -1588,9 +1747,14 @@ export function createFlowsActions(
       // rule for this action and the modal's DONE (`coerceParam`), so the two
       // cannot drift.
       const v = coerceParam(NODE_DEFS[node.type].params[key], raw);
-      return touch(s, { ...s.flows.graph,
+      const graph = { ...s.flows.graph,
         nodes: s.flows.graph.nodes.map((n) =>
-          n.id === id ? { ...n, params: { ...n.params, [key]: v } } : n) });
+          n.id === id ? { ...n, params: { ...n.params, [key]: v } } : n) };
+      // A value written as it already is (a field left by blur or Enter
+      // unchanged) is no edit to take back, as a move that goes nowhere is not.
+      if (node.params[key] === v) return touch(s, graph);
+      // One entry per burst on one field: a keystroke joins the one before it.
+      return commit(s, graph, { kind: "param", id, key });
     }),
 
     flowsApplyFraming: (id, framing, loop) => {
@@ -1629,7 +1793,8 @@ export function createFlowsActions(
         const edges = withLoop({ ...g, nodes }, id, loop, nextEdgeId);
         if (nodes === g.nodes && edges === g.edges) return {};
         wrote = true;
-        return touch(s, { ...g, nodes, edges });
+        // ONE entry however many params DONE wrote: one undo takes DONE back.
+        return commit(s, { ...g, nodes, edges });
       });
       // Nothing written, nothing to check: the compile in hand is still the
       // answer for this graph. Otherwise the promise is the compile's, so the
@@ -1657,7 +1822,7 @@ export function createFlowsActions(
         // EVERY OTHER KEY IS KEPT: a flow saved by a newer build can carry a
         // setting this one does not know, and a save that dropped it would
         // change what that build runs.
-        return touch(s, { ...g, settings: { ...g.settings, [key]: value } });
+        return commit(s, { ...g, settings: { ...g.settings, [key]: value } });
       });
       return true;
     },
@@ -1676,9 +1841,13 @@ export function createFlowsActions(
         // own settings (spec 1.6), which a rebuilt `{ nodes, edges }` dropped.
         : { ...g, nodes: g.nodes.filter((n) => n.id !== sel.id),
             edges: g.edges.filter((e) => e.from !== sel.id && e.to !== sel.id) };
-      return { flows: { ...s.flows, graph, dirty: true, sel: null,
-                        editNode: s.flows.editNode === sel.id
-                          ? null : s.flows.editNode } };
+      // THROUGH `commit`, not around it as this write used to go (#688 part 3):
+      // a delete that left no entry is the one edit an operator most needs to
+      // take back.
+      return commit(s, graph, undefined, {
+        sel: null,
+        editNode: s.flows.editNode === sel.id ? null : s.flows.editNode,
+      });
     }),
 
     flowsConnect: (from, fromPort, to, toPort) => {
@@ -1742,13 +1911,25 @@ export function createFlowsActions(
         // IN THE SAME WRITE as the wire that caused it: one graph edit, one
         // dirty/compile cycle, and no moment at which the compile sees a
         // mosaic whose loop leaves a stage in the middle of its lane.
-        return touch(s, { ...g, edges: carryLoopWire(g, edges, from) });
+        return commit(s, { ...g, edges: carryLoopWire(g, edges, from) });
       });
     },
 
-    flowsSetName: (name) => set((s) => (s.flows.record
-      ? patch(s, { record: { ...s.flows.record, name }, dirty: true })
-      : {})),
+    flowsSetName: (name) => set((s) => {
+      const record = s.flows.record;
+      if (!record) return {};
+      const renamed = { ...record, name };
+      // The same name written again is no edit to take back.
+      if (name === record.name) return patch(s, { record: renamed, dirty: true });
+      // THROUGH `commit` (#688 part 3), the graph unchanged: a rename is an
+      // edit. The name is typed into an input, one write per keystroke, so
+      // the characters of one word are one entry.
+      return commit(s, s.flows.graph, { kind: "name", id: record.id, key: "name" },
+        { record: renamed });
+    }),
+
+    flowsUndo: () => { if (stepHistory("undo")) void get().flowsCompile(); },
+    flowsRedo: () => { if (stepHistory("redo")) void get().flowsCompile(); },
 
     // ──────────────────────────────────────────────── selection and editing
     flowsSelect: (sel) => set((s) => patch(s, { sel })),
