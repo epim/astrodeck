@@ -330,11 +330,17 @@ def continue_night(session: "Session", now: float) -> int | None:
     after a crash) it read one night more than the run route answered.
 
     NONE UNLESS THE SESSION IS DORMANT. ``run_flow`` continues a dormant
-    session and no other: a complete one starts fresh, as night 1 of a new
-    session, and an active one is the rig's live run, which RUN stops. A
-    night number beside either would state a CONTINUE that no press makes,
-    so the route then leaves the key out, the way a panel carries
-    ``locked_angle`` only where there is a lock.
+    session straight away and no other: a complete one starts fresh, as
+    night 1 of a new session, unless its flow was edited to owe more, in
+    which case the press ASKS first (409 ``reopen``, #179) and a night number
+    would promise a continue the operator may decline; and an active one is
+    the rig's live run, which RUN stops. A night number beside any of them
+    would state a CONTINUE that no press makes, so the route then leaves the
+    key out, the way a panel carries ``locked_angle`` only where there is a
+    lock. The button for a complete session that owes more therefore still
+    reads RUN, and the press asks. Saying so on the button would take a
+    ``reopens`` flag on the route's ``session``, from ``reopen_report`` of
+    the compile the route already holds; not built yet.
 
     NOT DERIVED FROM THE SITE: ``night_at`` keys ``now`` with
     ``events.night_key``, the server's own local noon-to-noon date, which is
