@@ -3339,6 +3339,10 @@ class SequenceEngine:
         if self._report_finalized:
             return
         self._report_finalized = True
+        # A RETRY ASKED AFTER THE SCHEDULER HAD RETURNED (#728). First, so the
+        # report that is finalized next names it and the session saved below
+        # carries it.
+        self._hand_pending_retries_to_the_session()
         rid = None
         if self.reporter is not None:
             try:
@@ -3461,6 +3465,62 @@ class SequenceEngine:
             # engine does not pin a project's whole ledger map until the
             # next run starts.
             self._accepted_seen = None
+
+    def _hand_pending_retries_to_the_session(self) -> None:
+        """What is still queued for the scheduler when the run is finalized
+        goes to the SESSION, as the dormant route would put it there (#728):
+        the records tonight holds for those panels are marked cleared, the
+        report names the retry, and the night log says so.
+
+        THE WINDOW. `retry_set_aside` answers ``live`` and only queues while
+        the run is going and its session is held, and the scheduler returns
+        before the session is cleared: the idle stop's own wait
+        (``IDLE_STOP_FINISH_S``, the first thing the run does after the
+        scheduler) stands between the two. A retry asked there was queued, the
+        operator was told so, and nothing drained it: the next `start`
+        discards the queue. This is the end of the run, the only point where
+        the queue is certainly never drained, so it is emptied here, into the
+        record the continue reads.
+
+        HONOURED, NOT REFUSED. The panel is still set aside in the run's own
+        state (it was dropped from the scheduler's list, or is set aside for
+        now), and nothing slews anywhere: the session is dormant, and the same
+        night's CONTINUE, restart or auto-resume takes the panel up, exactly as
+        after the dormant route (`note_set_aside_cleared`, ``set_aside_on`` no
+        longer reads a cleared record). Said in words only, as the drain's own
+        line is (6.9).
+
+        Never raises: this is called from the one path that must always
+        complete, and a record that cannot be marked is a warning, with the
+        queue emptied either way (it is the run's, and the run is over)."""
+        ids, self._pending_retries = self._pending_retries, []
+        session, plan = self._session, self.plan
+        if not ids or session is None or plan is None:
+            return
+        try:
+            by_id = {t.id: t for t in plan.targets}
+            wanted = [pid for pid in ids if pid in by_id]
+            standing = {r["target_id"] for r in session.note_set_aside_cleared(
+                wanted, night=night_key(time.time()))}
+            brought: dict[str, list[Target]] = {}
+            for pid in wanted:
+                t = by_id[pid]
+                group = self._group_of(t)
+                if pid in standing and group is not None:
+                    brought.setdefault(group.id, []).append(t)
+                    if self.reporter:
+                        self.reporter.mark_retried(t)
+            for gid, targets in brought.items():
+                group = self._groups[gid]
+                names = ", ".join(self._panel_name(t) for t in targets)
+                bus.log("info",
+                        f"{group.name or group.id}: set-aside panels retried "
+                        f"by the operator: {names}; the run had no scheduler "
+                        f"left to take them up, so the next start tonight "
+                        f"does", "sequence")
+        except Exception as e:  # noqa: BLE001 - a terminal path never raises
+            bus.log("warning", f"a retry asked as the run ended could not be "
+                               f"recorded: {e}", "sequence")
 
     #: How a night's ending reads on a flow card. The card renders "" | ok |
     #: warn | bad, and the distinction that matters to somebody scanning a
@@ -4086,11 +4146,12 @@ class SequenceEngine:
                 if wait_ts - now > WAIT_TEARDOWN_S and not deferral:
                     await self._idle_park_hold(
                         "the next target is a long wait away")
-                # THE WAIT ENDS EARLY FOR THE OPERATOR'S RETRY (#600): it
+                # THE WAIT ENDS EARLY FOR ANYTHING QUEUED (#600, #726): it
                 # can be 45 minutes long (a set-aside waiting for its
-                # expiry), and a panel brought back meanwhile is to be
-                # taken up now.
-                await self._wait_until_or_retry(wait_ts)
+                # expiry), and a panel brought back meanwhile, or a target
+                # an instruction has dropped, is to be taken up now, not
+                # when the soonest waiter's clock runs out.
+                await self._wait_until_or_queued(wait_ts)
             else:
                 # waiting but no resolvable start_ts (e.g. below-alt with unknown
                 # ETA): a short bounded, cancel-responsive sleep then re-evaluate.
@@ -6054,8 +6115,25 @@ class SequenceEngine:
             bus.log("info", f"{group.name or group.id}: set-aside panels "
                             f"retried by the operator: {labels}", "sequence")
 
-    async def _wait_until_or_retry(self, deadline_ts: float) -> None:
-        """`_wait_until`, ended early by a retry the operator queued (#600).
+    def _queued_for_the_scheduler(self) -> bool:
+        """Is anything waiting for the scheduler's next selection to take it
+        up (#726)? The one check the idle wait ends on: a set-aside panel the
+        operator asked back (``_pending_retries``, #600) or a ``skip_target``
+        aimed at a target the scheduler is not shooting
+        (``_pending_skips``). Both are drained at the top of `_schedule_loop`,
+        before anything is gated, so a wait that ended on either finds the
+        queue empty at its very next selection and cannot end on it twice.
+
+        ONE CHECK, NOT ONE PER QUEUE, so a third queue is added here and in
+        the drain and the wait learns it with them: the wait was taught about
+        retries alone (WP-104) and the skip queue, drained by the same loop
+        top, waited out the same clock. Pure reads of two containers; no
+        device I/O."""
+        return bool(self._pending_retries or self._pending_skips)
+
+    async def _wait_until_or_queued(self, deadline_ts: float) -> None:
+        """`_wait_until`, ended early by anything queued for the scheduler
+        (#600 for a retry, #726 for the rest: `_queued_for_the_scheduler`).
 
         The scheduler's idle wait is ONE `_wait_until` to its soonest waiter's
         wake, which for a panel set aside for now is its 45 minute expiry, for
@@ -6065,18 +6143,29 @@ class SequenceEngine:
         and returns only at the deadline. A retry queued meanwhile sat in
         ``_pending_retries`` until then, and the operator who had just fixed the
         cause and pressed RETRY watched the run wait out the clock it was meant
-        to cut short.
+        to cut short; a skip aimed at a future target sat in ``_pending_skips``
+        the same way, and a waiter the instruction had dropped was still waited
+        for.
 
         So the same wait is taken one step at a time, and ends at the first
-        step after a retry is queued, where the selection drains it
-        (`_drain_set_aside_retries`). Every step is a whole `_wait_until` pass:
-        the checkpoint, the safety gate and the idle clock, as before, and the
-        first step is taken whatever the deadline, so the guaranteed pass that
-        makes a past deadline impossible to spin on is kept. A deadline already
-        past is one such pass, as it always was."""
+        step after something is queued, where the selection drains it
+        (`_drain_set_aside_retries`, the skip drain). Every step is a whole
+        `_wait_until` pass: the checkpoint, the safety gate and the idle
+        clock, as before, and the first step is taken whatever the deadline, so
+        the guaranteed pass that makes a past deadline impossible to spin on is
+        kept. A deadline already past is one such pass, as it always was.
+
+        THE STEPS ARE THE ENGINE'S OWN TASK'S, deliberately, and not an event
+        raced against a timer on a task of its own: the clocked harness parks
+        only the engine's tasks on its fake clock (tests/_group_harness.py), so
+        a helper task sleeping the wait would be real seconds, and an engine
+        whose waits cannot be advanced cannot be tested for any night that
+        idles. The price is the step: a queued event is taken within one
+        ``SCHEDULE_WAIT_STEP_S`` of being queued, which is the cadence the
+        safety gate already runs at beside it."""
         await self._wait_until(min(deadline_ts,
                                    time.time() + SCHEDULE_WAIT_STEP_S))
-        while time.time() < deadline_ts and not self._pending_retries:
+        while time.time() < deadline_ts and not self._queued_for_the_scheduler():
             await self._wait_until(min(deadline_ts,
                                        time.time() + SCHEDULE_WAIT_STEP_S))
 
@@ -8697,7 +8786,19 @@ class SequenceEngine:
                             f"{target.name}: the mount would not track after "
                             f"the slew ({e})", "sequence")
                     if await self._tracking_now() is False:
-                        if not await self._recover_from_tracking_refusal(target):
+                        # THE RECOVERY'S RE-CENTRE IS THE HOP'S SOLVE (#738),
+                        # and this call site records the hop's row from it
+                        # at the common `_record_sky_angle` below. An empty
+                        # ``centring`` is how a caller says it takes the
+                        # result: the recovery then records nothing of its
+                        # own, and the one solve is one row. Without it a
+                        # centring-off target that had a refused track
+                        # recovered was two identical rows for one solve.
+                        # The result itself is not read here (this target
+                        # asked for no centring; the recovery's own line
+                        # says whether its re-centre converged).
+                        if not await self._recover_from_tracking_refusal(
+                                target, centring={}):
                             raise
                     else:
                         raise
@@ -11927,6 +12028,36 @@ class SequenceEngine:
                     "sequence")
             return quota, 0
 
+    async def _camera_off_its_cooling_target(self) -> float | None:
+        """The sensor's reading when it is MEASURED away from the plan's
+        cooling target (further than ``COOLER_AT_TARGET_C``, the band the
+        cooling wait itself calls at target), else None (#764).
+
+        None is "not shown to be warm", and covers every way nobody can say:
+        a plan with no ``cool_to`` (no setpoint to be away from), no camera or
+        one that is not connected (the dark's own call fails, as it always
+        did), a camera that cannot cool (`_cool_and_wait` shoots those at
+        ambient too), a sensor read that raises or times out, and a reading
+        that is not there. An unreadable sensor is not a verdict: only a
+        measured reading refuses, so a rig whose temperature read is the
+        thing that is broken is not stopped from building darks it could
+        always build. One bounded read, ``COOLER_CMD_TIMEOUT_S``."""
+        target_c = getattr(self.plan, "cool_to", None) if self.plan else None
+        if target_c is None:
+            return None
+        cam = self.hub.devices.get("camera")
+        if (cam is None or not getattr(cam, "connected", False)
+                or not getattr(cam, "can_cool", False)):
+            return None
+        try:
+            t = float(await asyncio.wait_for(cam.get_temperature(),
+                                             COOLER_CMD_TIMEOUT_S))
+        except (asyncio.TimeoutError, Exception):    # noqa: BLE001
+            return None
+        if not math.isfinite(t) or abs(t - target_c) <= COOLER_AT_TARGET_C:
+            return None
+        return t
+
     async def _hold_darks(self, target: Target | None) -> bool:
         """Shoot ONE dark matched to the interrupted step. ``True`` if it did.
 
@@ -11950,6 +12081,32 @@ class SequenceEngine:
             return False
 
         if self._hold_darks_want is None:
+            # NO DARKS BEFORE THE RUN'S FIRST FRAME ON A CAMERA MEASURED AWAY
+            # FROM ITS COOLING TARGET (#764). Before the #711 seed ``step`` was
+            # None until the first frame, so a hold entered before it shot
+            # nothing; seeded from the plan's first light step it reaches here
+            # at dusk, and a camera that did not cool (the run-start wait
+            # timed out under ``cooling_action = warn``, or the sensor is
+            # still walking down) would shoot darks at a temperature the
+            # library is not indexed by: cover for nothing, on a disk that
+            # fills. Asked of the SENSOR, once per hold (the refusal is the
+            # hold's, as the shortfall is: ``_hold_darks_want`` is reset as a
+            # hold opens), and only until the run has opened an exposure: a
+            # hold in the middle of a night behaves as it always did, and the
+            # cooler gate on its release is what asks about the sensor then.
+            warm = (await self._camera_off_its_cooling_target()
+                    if self._exposures_taken <= 0 else None)
+            if warm is not None:
+                self._hold_darks_want = 0
+                bus.log("info", f"cloud hold: no darks before the run's first "
+                                f"frame - the camera reads {warm:.1f}°C "
+                                f"against its {self.plan.cool_to:g}°C "
+                                f"setpoint, so a dark taken now would be a "
+                                f"warm one; holding without shooting",
+                        "sequence")
+                self._set_state(detail="held for cloud - no darks yet, the "
+                                       "camera is not at its cooling target")
+                return False
             want, have = self._hold_darks_shortfall(step, quota)
             self._hold_darks_want = want
             if want <= 0:
@@ -15091,6 +15248,8 @@ class SequenceEngine:
         here = (self._started_at, id(target))
         if not spent:
             self._sky_read_at_bound = None
+            # THE STAND-DOWN'S OWN MARK (#737), forgotten on the same terms.
+            self._stand_down_said_at = None
         if not (spent and getattr(self, "_sky_read_at_bound", None) == here):
             if await self._sky_closed_before_recovery(
                     target, why="guiding was lost"):
@@ -15166,8 +15325,22 @@ class SequenceEngine:
             # to no purpose. The run continues unguided, which is what it would
             # have done had the guider never come up at all, and the detail
             # says so instead of claiming to be recovering.
-            bus.log("warning", f"{why}; standing down from recovery and "
-                    f"continuing unguided", "sequence")
+            #
+            # SAID ONCE, NOT AT EVERY BOUNDARY AFTER IT (#737, the #704
+            # class: the sky read above, here the warning). The guider stays
+            # inactive and this branch is reached again at every frame
+            # boundary for the rest of the night: ten warning lines in ten
+            # frames, each repeating a sentence the first already said. It is
+            # said on arriving at the bound, once for this target in this run
+            # (the key is the sky read's, and is forgotten whenever the
+            # attempts are not spent, so a new spell, the next target and the
+            # next run each say it once). The detail is NOT guarded: the frame
+            # loop writes its own between two boundaries, and this is what
+            # puts "recovery stood down" back where the screens read it.
+            if getattr(self, "_stand_down_said_at", None) != here:
+                bus.log("warning", f"{why}; standing down from recovery and "
+                        f"continuing unguided", "sequence")
+                self._stand_down_said_at = here
             self._set_state(detail="guiding lost; recovery stood down")
             return
 
