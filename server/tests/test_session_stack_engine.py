@@ -41,11 +41,11 @@ class SpyStack:
         self.target = ""
 
     def add(self, data, filter_name, exposure_s, *, target=None, session=None,
-            bayer_pattern=None, key=None):
+            bayer_pattern=None, key=None, target_id=None):
         self.calls.append({"data": data, "filter": filter_name,
                            "exposure_s": exposure_s, "target": target,
                            "session": session, "bayer_pattern": bayer_pattern,
-                           "key": key})
+                           "key": key, "target_id": target_id})
         return "L"
 
 
@@ -127,6 +127,29 @@ async def test_the_stack_gets_linear_pixels_and_the_resolved_filter(sim_hub):
         assert str(call["key"]).lower().endswith(".fits"), call["key"]
 
 
+async def test_the_stack_is_told_which_target_by_id_as_well_as_name(sim_hub):
+    """#172 part A: a panel is keyed by the target's ID, because names repeat in
+    a plan with no group and ids do not. The engine is the only place that
+    holds the Target object, so this hand-off is the one place the id can
+    enter the stack.
+
+    Mutant ``M12-engine-no-target-id`` (engine.py's ``session_stack_add`` call
+    loses ``target_id=target.id``; run from a byte backup, restored): this test
+    fails with ``assert None == 'cc2ebc8268fd...'`` and the sim run below fails
+    with ``assert ['M42'] == ['5dc4c5f3813...']`` (both targets co-added into
+    one 6-frame stack keyed by their shared name)."""
+    spy = SpyStack()
+    sim_hub.session_stack = spy
+    engine = SequenceEngine(sim_hub)
+    plan = three_frame_plan()
+    engine.start(plan)
+    assert await wait_for(lambda: engine.state.get("state") == "complete")
+    assert spy.calls, "nothing reached the stack at all"
+    for call in spy.calls:
+        assert call["target"] == "M42"
+        assert call["target_id"] == plan.targets[0].id, call["target_id"]
+
+
 async def test_a_disabled_stack_is_never_called(sim_hub):
     # The default. Off must mean the frame loop does not even look up the sub.
     spy = SpyStack(enabled=False)
@@ -168,6 +191,45 @@ async def test_the_real_stacker_produces_a_composite_from_a_sim_run(sim_hub):
     assert got is not None
     jpeg, meta = got
     assert jpeg[:2] == b"\xff\xd8" and meta["mode"] == "narrowband"
+
+
+async def test_two_same_named_targets_are_two_panels_in_a_real_run(sim_hub):
+    # #172 part A end to end: nothing faked but the rig. Two targets that share
+    # a name in a plan with no group; keyed by name they would be one picture
+    # of both, keyed by id (what the engine hands over) they are two panels,
+    # and the first one's frames are still there after the second has run.
+    sim_hub.start_session_stack()
+    engine = SequenceEngine(sim_hub)
+
+    def target():
+        # BOTH at the same pointing, on purpose. The sim sky two degrees away
+        # has too few stars to register at 1 s (the stacker refuses those
+        # frames, which is correct), and what is under test is the KEY, not
+        # the sky: two targets with one name and one pointing are exactly the
+        # pair a name-keyed stack would fold into one picture of six.
+        return Target(
+            name="M42", ra_hours=5.5881, dec_deg=-5.3911,
+            center=False, autofocus_first=False,
+            # 1 s, as the e2e test above: shorter and the sim sky has too few
+            # stars to register, which would make this pass on a dead stacker.
+            steps=[ExposureStep(filter="Ha", exposure_s=1.0, gain=100, count=3)])
+
+    plan = SequencePlan(name="stack-two-panels",
+                        targets=[target(), target()],
+                        guide=False, dither_every=0, autofocus_every=0,
+                        meridian_flip=False)
+    engine.start(plan)
+    assert await wait_for(lambda: engine.state.get("state") == "complete"), \
+        engine.state
+    st = sim_hub.session_stack_status()
+    assert [p["key"] for p in st["panels"]] == [t.id for t in plan.targets], \
+        st["panels"]
+    assert {p["target"] for p in st["panels"]} == {"M42"}
+    assert [p["frames"] for p in st["panels"]] == [3, 3], \
+        f"the two targets were co-added or one was lost: {st['panels']}"
+    first = plan.targets[0].id
+    assert sim_hub.session_stack.status(panel=first)["frames"] == 3
+    assert sim_hub.session_stack.rgb_preview(240, panel=first) is not None
 
 
 async def test_a_stack_that_throws_does_not_end_the_night(sim_hub):

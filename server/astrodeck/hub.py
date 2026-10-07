@@ -6370,10 +6370,11 @@ class Hub:
         return self.session_stack_status()
 
     def reset_session_stack(self) -> dict:
-        """Throw the pixels away, keep the switch AND the identity. Dropping the
-        target/run here would make the next accepted frame reset a second time,
-        which is harmless but means the count the user just cleared briefly
-        comes back."""
+        """Throw EVERY panel's pixels away, keep the switch AND the run id.
+        Dropping the run here would make the next accepted frame drop the stack
+        a second time, which is harmless but means the count the user just
+        cleared briefly comes back. The panels themselves are not kept: they
+        are pixels, and the next frame of each makes its panel again."""
         st = self.session_stack
         st.reset(st.target, st.session)
         return self.session_stack_status()
@@ -6468,8 +6469,14 @@ class Hub:
         """(jpeg, meta) for the composite, or None when nothing is stacked."""
         return self.session_stack.rgb_preview(size)
 
-    def session_stack_add(self, info: dict, *, target: str = "") -> str | None:
+    def session_stack_add(self, info: dict, *, target: str = "",
+                          target_id: str = "") -> str | None:
         """Fold the light frame ``info`` describes into the session stack.
+
+        ``target`` and ``target_id`` name the PANEL the frame belongs to (#172):
+        the stack keeps one picture per panel and keys it by the id, because
+        names repeat in a plan with no group and ids do not. A caller that has
+        only a name still works and keys by it.
 
         Called from the sequence engine's frame loop with the frames its quality
         gate ACCEPTED, so what the composite shows is exactly what the run is
@@ -6504,7 +6511,8 @@ class Hub:
                 target=target, session=str(run),
                 bayer_pattern=effective_bayer(info.get("bayer_pattern"),
                                               info.get("binning")),
-                key=info.get("saved_path"))
+                key=info.get("saved_path"),
+                target_id=target_id or None)
         except Exception as e:                      # pragma: no cover - guard
             if not getattr(self, "_session_stack_warned", False):
                 self._session_stack_warned = True

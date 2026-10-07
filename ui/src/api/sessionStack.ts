@@ -56,6 +56,22 @@ export interface SessionStackBackfill {
   available: number;
 }
 
+/** One mosaic panel's stack. The server keeps one picture per panel and keeps
+ *  it across visits (#172); a one-target night has exactly one of these. */
+export interface SessionStackPanel {
+  /** What to send back as `?panel=`: the target's id, or its name when the
+   *  frames arrived without one. Opaque to the client. */
+  key: string;
+  /** The name to show. Not unique: two targets can share one. */
+  target: string;
+  /** Subs stacked in this panel, counted as the top-level `frames` is. */
+  frames: number;
+  integrated_s: number;
+  /** The stack's change counter at this panel's last frame. Counters never
+   *  repeat across panels, so the panel with the highest one is the latest. */
+  seq: number;
+}
+
 export interface SessionStackStatus {
   enabled: boolean;
   /** What the frames are of. Empty before the first accepted frame. */
@@ -73,10 +89,23 @@ export interface SessionStackStatus {
   has_image: boolean;
   render_age_s: number | null;
   backfill: SessionStackBackfill;
+  /** Every panel the stack holds, in the order they were first seen, whichever
+   *  panel the other fields describe. Optional: an older server sends none, and
+   *  a client must read that as "one panel, no chips". */
+  panels?: SessionStackPanel[];
+  /** Names of panels the server released to stay under its memory budget. A
+   *  name here can also be in `panels`: that panel came back and started again
+   *  from zero. */
+  evicted?: string[];
 }
 
-export const getSessionStack = (): Promise<SessionStackStatus> =>
-  api.get<SessionStackStatus>("/api/sequence/stack");
+/** The stack's status. Every field but `panels` and `evicted` describes ONE
+ *  panel: the one named, or the latest when none is. The panel is appended to
+ *  the query only when given, so the plain request is the one this app has
+ *  always made. */
+export const getSessionStack = (panel?: string | null): Promise<SessionStackStatus> =>
+  api.get<SessionStackStatus>(
+    "/api/sequence/stack" + (panel ? `?panel=${encodeURIComponent(panel)}` : ""));
 
 /** Switch the stack on. `backfill` also folds in the subs this run has already
  *  accepted - off by default on the server, because it is minutes of disk on a
@@ -125,14 +154,24 @@ export const resetSessionStack = (): Promise<SessionStackStatus> =>
  *  `<img>` cannot read a status code, so a caller has to notice through
  *  `onError` and must NOT silently fall back to the composite: the badge and the
  *  picture would then disagree, which is the defect this parameter exists to
- *  end. */
+ *  end.
+ *
+ *  `panel` asks for one mosaic panel's own stack (#172) instead of the latest
+ *  panel's. It follows the channel rule exactly: APPENDED ONLY WHEN GIVEN, so
+ *  the URL of a client that follows the latest panel (and every one-target
+ *  night) stays byte-identical to the one this app has always built. Pass the
+ *  panel's KEY (`status.panels[].key`), and the `seq` of THAT panel's status:
+ *  the cache key has to move when this panel's picture does, not when some
+ *  other panel's frame lands. */
 export const sessionStackImageUrl = (
   seq: number,
   size = 1200,
   channel?: string,
+  panel?: string,
 ): string =>
   u(`/api/sequence/stack/preview.jpg?size=${Math.round(size)}&seq=${seq}`
-    + (channel ? `&channel=${encodeURIComponent(channel)}` : ""));
+    + (channel ? `&channel=${encodeURIComponent(channel)}` : "")
+    + (panel ? `&panel=${encodeURIComponent(panel)}` : ""));
 
 /** "3h 12m" / "48m" / "40s": integration time, at the precision it is worth. */
 export function fmtIntegration(seconds: number): string {
