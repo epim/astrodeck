@@ -102,8 +102,12 @@ FLAT_FAILURES = ("not_enough_spread", "fit_unavailable")
 #: MODULE-LEVEL SINCE #507 (H4 orchestrator ruling 4), because the sequence
 #: engine reads the same line twice: a failure on a field under it is retried
 #: once at twice the exposure (``AutofocusResult.sparse_field``), and when the
-#: retry fails too, a light frame whose star count reaches it is what owes the
-#: sweep again. Two copies of 15 is how the two would come to disagree.
+#: retry fails too, the sweep it owes is gated on a probe that reaches it
+#: (``run_native_autofocus``'s ``min_probe_stars``, #558). Two copies of 15 is
+#: how the two would come to disagree. The line is the PROBE's, so it is only
+#: ever read against a probe: it used to be read against a light frame's
+#: count, which is a different frame (longer, usually finer-binned) and
+#: cleared it at about the first one.
 SPARSE_FIELD_WARN = 15
 
 
@@ -271,7 +275,8 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                binning: int = 2, expose_guard=None,
                                hfr_method: str | None = None,
                                tracking_check=None,
-                               approach_overshoot_steps: int | None = None
+                               approach_overshoot_steps: int | None = None,
+                               min_probe_stars: int | None = None
                                ) -> AutofocusResult:
     """Run a V-curve autofocus sweep driven by the native Rust engine.
 
@@ -298,6 +303,20 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     arrives moving IN (see ``config.FocusConfig`` for the backlash this exists
     for). An explicit value overrides the config and is what the tests use; 0
     disables the overshoot entirely.
+
+    ``min_probe_stars`` None, the default, gates nothing. A number is a line
+    for THIS sweep's probe frame (#558): when the probe counts fewer stars at
+    the start position, on a frame that is not clipped, the sweep is DECLINED
+    instead of run. The result is ``gated`` (and ``sparse_field``), the
+    focuser is back where it started, and the panel is told in a message that
+    is not a failure. The sequence engine's owed sparse-field re-sweep is the
+    one caller: it asks whether the sky has come back by the measurement the
+    sweep itself is judged on, a short binned probe, where it used to compare
+    a light frame's count with this module's ``SPARSE_FIELD_WARN`` (a line
+    set for the probe, read against a frame it was never set for). A clipped
+    probe is never gated, whatever its count: its stars are merged, not
+    missing, and waiting for a thicker sky would wait for the wrong thing
+    (the same reasoning as ``_failed``'s).
 
     Raises ``DeviceError`` (user-presentable) when the wheel is absent or the
     engine rejects an input; ALWAYS restores the focuser to its start position on
@@ -633,6 +652,34 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         n0 = int(pstats.get("star_count") or 0)
         probe_sat = saturation_fraction(probe.data)
         bus.log("info", f"autofocus: {n0} stars at the starting position", "focus")
+        #: THE CALLER'S LINE FOR THIS PROBE (#558), never lower than the line
+        #: below which no fit is possible. Engaged only on a probe that is not
+        #: clipped, as `_failed` does for the sparse flag: a clipped probe's
+        #: few stars are merged ones, so a thicker sky is not what it is
+        #: waiting for and the overexposure refusal below says what is.
+        floor = max(MIN_STARS_TO_SWEEP, int(min_probe_stars or 0))
+        if (min_probe_stars is not None and n0 < floor
+                and probe_sat < OVEREXPOSED_FRAC):
+            # DECLINED, NOT FAILED. The owed sparse-field re-sweep asked
+            # whether the field is rich enough to focus on by the probe's
+            # own count, and it is not yet. Same cleanup as the refusal
+            # below, since the speculative move is in flight here too, and
+            # the same device-side result (the focuser where it started),
+            # but the verdict is neither published nor returned as a
+            # failure: this will be asked again every few minutes for as
+            # long as the sky stays thin, and a panel that said "failed"
+            # each time would be crying wolf at a run that is doing what it
+            # promised.
+            reason = (f"only {n0} stars at the current focus, under the "
+                      f"{floor} the re-sweep owed after a sparse-field "
+                      f"failure waits for; not sweeping yet")
+            await _settle()
+            await _approach(start_pos)
+            bus.publish("focus", state="idle", points=[], best=None,
+                        message=reason)
+            return AutofocusResult(False, start_pos, None, [], reason,
+                                   sparse_field=True, start_stars=n0,
+                                   gated=True)
         if n0 < MIN_STARS_TO_SWEEP:
             # Both of these land in the panel — ``reason`` as the verdict chip,
             # ``advice`` as the detail line — so between them they get to carry

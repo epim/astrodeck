@@ -68,6 +68,10 @@ class RestrictedAsset:
     without: str
     #: Answers "is the fetch already done?" — None for an acknowledge remedy.
     present: Callable[[], bool] | None = field(default=None, compare=False)
+    #: A short clause saying HOW the asset is present, when that is not the
+    #: plain case, for the Credits row to show beside its state; None when
+    #: there is nothing to add. Asked only of a satisfied asset.
+    detail: Callable[[], str | None] | None = field(default=None, compare=False)
 
 
 #: ``requests``-free by design: this module is imported at startup and must not
@@ -80,17 +84,49 @@ def _dss2_present() -> bool:
         return False
 
 
-def _player_one_present() -> bool:
-    # The SAME variable the loader reads (``sdk_paths.PLAYERONE_SDK_ENV``): the
-    # probe used to ask for ``PLAYERONE_SDK_DIR`` and so disagreed with the
-    # loader in both directions (#632).
+#: What `_player_one_source` answers for an SDK the vendor's installer put
+#: where the loader looks.
+_BY_THE_VENDORS_INSTALLER = "installer"
+
+
+def _player_one_source() -> str | None:
+    """How the first file the LOADER would load got there: "installer" when
+    it is one of the vendor installer's own locations, "other" for the
+    operator's directory and the vendored copies, None when there is none.
+
+    THE LOADER'S OWN LIST, not a near copy of it (#705): the probe asked
+    ``sdk_paths.candidates`` without the loader's alternatives, so an SDK
+    installed by the vendor's installer opened a working camera under a
+    Credits row that said "not satisfied". The env var is the same variable
+    for the same reason (``sdk_paths.PLAYERONE_SDK_ENV``, #632), and
+    ``is_file`` is the loader's own test, not ``exists``. An import that
+    fails reads as "absent" here, as every probe in this module does: a
+    status screen must not raise."""
     try:
-        from .devices import sdk_paths
-        return any(p.exists() for p in
-                   sdk_paths.candidates("playerone", "PlayerOneCamera",
-                                        env_var=sdk_paths.PLAYERONE_SDK_ENV))
+        from .devices.cameras import player_one_sdk
+        installs = player_one_sdk.system_install_paths()
+        for path in player_one_sdk.sdk_candidates():
+            if path.is_file():
+                return (_BY_THE_VENDORS_INSTALLER if path in installs
+                        else "other")
     except Exception:
-        return False
+        pass
+    return None
+
+
+def _player_one_present() -> bool:
+    return _player_one_source() is not None
+
+
+def _player_one_detail() -> str | None:
+    """Says so when the SDK in use is the vendor installer's. Whether such an
+    install counts as "fetched" is the owner's ruling (#632); it IS in use
+    (the camera opens from it), so the row reads "in use", and this says
+    where it came from and that the redistribution question is still open."""
+    if _player_one_source() == _BY_THE_VENDORS_INSTALLER:
+        return ("installed by the vendor's installer "
+                "(redistribution ruling pending, #632)")
+    return None
 
 
 #: The survey whose tiles we may not redistribute — the HiPS id, matching
@@ -133,6 +169,7 @@ REGISTRY: tuple[RestrictedAsset, ...] = (
         source="https://player-one-astronomy.com/service/software/",
         without="Player One cameras cannot be opened natively",
         present=_player_one_present,
+        detail=_player_one_detail,
     ),
     RestrictedAsset(
         id="astrospheric",
@@ -219,7 +256,11 @@ def status() -> list[dict]:
 
     ``satisfied`` answers the only question the operator actually has: is this
     working, and if not, what do I do? A fetch asset is satisfied once the file
-    is on this machine; an acknowledge asset once somebody has said so."""
+    is on this machine; an acknowledge asset once somebody has said so.
+
+    ``detail`` is a clause for the row when the asset is satisfied in a way
+    worth saying (the Player One SDK put there by the vendor's own installer),
+    and None otherwise."""
     out: list[dict] = []
     for a in REGISTRY:
         if a.remedy == "acknowledge":
@@ -228,6 +269,7 @@ def status() -> list[dict]:
         else:
             row = None
             satisfied = bool(a.present and a.present())
+        detail = a.detail() if satisfied and a.detail else None
         out.append({
             "id": a.id,
             "title": a.title,
@@ -237,6 +279,7 @@ def status() -> list[dict]:
             "source": a.source,
             "without": a.without,
             "satisfied": satisfied,
+            "detail": detail,
             "consent": row,
         })
     return out

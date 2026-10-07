@@ -74,6 +74,17 @@ PARK_NOOP_DETECT_S = 5.0
 #: slow one. Generous, because the alternative to waiting is the failure this
 #: exists to prevent: the lost emergency park of 2026-08-06.
 HALT_DRAIN_TIMEOUT_S = 30.0
+#: How close to a celestial pole (degrees of declination) a freshly (re)opened
+#: mount's read has to be for the driver to take it as the HOME read of a reset
+#: mount (#144). A mount that has just powered up reports its home position,
+#: counterweight down and pointing at the pole, as exactly 90 degrees; this is
+#: three arcminutes, wide enough that the report's own rounding never misses it
+#: and narrow enough that a mount really pointed near the pole (Polaris sits
+#: more than half a degree from it) is not accused of having reset. It is a
+#: window on ONE read, not a measurement of anything: the home read and a real
+#: pointing at the pole are the same number, which is why the flag it sets is
+#: "unknown", not "wrong".
+POLE_SIGNATURE_DEG = 0.05
 
 #: |rate deg/s| upper bound -> LX200 rate index command.
 #: CALIBRATED ON HARDWARE 2026-07-20 (dec-axis nudges): the AM5 R-indices are
@@ -352,6 +363,12 @@ class ZwoAm5Telescope(Telescope):
         #: recurse back into the reopen. See _relink.
         self._relink_after = 0.0
         self._relinking = False
+        #: Latched True when a (re)open read the home pole (#144): the mount
+        #: reports where it BELIEVES the tube is, and after a reset that belief
+        #: is the home position wherever the tube physically is. Cleared only by
+        #: evidence, a successful ``sync`` or the operator's ``trust_position``,
+        #: and deliberately NOT by a goto (see ``position_known``).
+        self._position_untrusted = False
         #: Serializes `_park_now` against `pulse_guide` (WP-18, #342). Both
         #: issue motion commands on the one serial link, and a park landing
         #: while a pulse is mid-flight can interleave with it on the wire, or
@@ -393,6 +410,27 @@ class ZwoAm5Telescope(Telescope):
     @connected.setter
     def connected(self, value: bool) -> None:
         self._connected = bool(value)
+
+    @property
+    def position_known(self) -> bool:
+        """False from a (re)open that read the home pole until a sync or
+        ``trust_position`` (#144; the contract is ``Telescope.position_known``).
+
+        THE AM5 CANNOT TELL US. It has no home sensor and no brake, so after a
+        power cycle (reproduced on the rig 2026-09-23) it reports its home
+        position, pointing at the pole, wherever the tube is, and nothing on the
+        wire says it restarted. A pole-signature read at the handshake is the
+        evidence available; the cost of the false positive (a mount really
+        parked at home reads the same) is one sync, and a nudge at the pole is
+        already clamped by ``mount_offset``.
+
+        NOT CLEARED BY A GOTO, a slew's settle or a reopen that reads somewhere
+        else. A goto from a wrong model lands wherever the model sends it, the
+        settle poll reads back the mount's own opinion of the arrival, and
+        docs/hardware/zwo-am5-lx200-protocol.md records this mount's reported
+        coordinates walking 12.9 arcmin per minute while the tube held its
+        field, so none of it is a measurement of where the tube is."""
+        return not self._position_untrusted
 
     # ------------------------------------------------------------ helpers
 
@@ -638,11 +676,60 @@ class ZwoAm5Telescope(Telescope):
                     "the site in settings and reconnect to push it.", self.name)
             await self._get("Gps")   # prime state (parked flag)
             await self._get("GU")
+            await self._note_reset_signature()
         except Exception:
             await self._link.close()
             self.connected = False
             raise
         self.connected = True
+
+    async def _note_reset_signature(self) -> None:
+        """Latch ``position_known`` False when the mount, just (re)opened, reads
+        its home pole (#144).
+
+        Shared by ``connect`` and ``_relink``, which is where a reset is noticed:
+        a power cycle looks like a dropped link, and the reopen that follows is
+        the first chance to read what the mount now believes. Declination only,
+        one read: the signature is the pole, and a second command in every
+        handshake would be wire traffic with no use (and an RA read would also
+        feed the halt-window bookkeeping ``get_position`` owns).
+
+        ADVISORY. A mount that cannot be asked, or answers garbage, has shown no
+        evidence of a reset, so it is not accused of one and the connect carries
+        on; failing the handshake over a diagnostic read would turn an
+        inconvenience into an outage.
+
+        A LATCH, SET HERE AND NEVER CLEARED HERE. A later reopen that reads
+        somewhere else says only that the tube has been moved since, and a goto
+        from the wrong model moves it somewhere. Clearing is ``sync`` and
+        ``trust_position``.
+
+        NO COORDINATES IN THE LINE. The home position IS the pole, so any angle
+        read from it is a latitude oracle (#140); the line says what the driver
+        concluded and what clears it."""
+        try:
+            dec = lx200.parse_dec(await self._get("GD"))
+        except Exception:    # noqa: BLE001 - advisory read; no answer, no evidence
+            return
+        at_pole = abs(abs(dec) - 90.0) <= POLE_SIGNATURE_DEG
+        was_untrusted = self._position_untrusted
+        self._position_untrusted = was_untrusted or at_pole
+        if self._position_untrusted and not was_untrusted:
+            bus.log("warning",
+                    f"{self.name}: the mount reports its home position after "
+                    "(re)connecting, so its position is unknown until a "
+                    "plate-solve sync or the operator says the tube is at home",
+                    "mount")
+
+    async def trust_position(self) -> None:
+        """The operator says the tube is physically where the mount reports it
+        (in practice: "I drove it to its home position by eye"), which clears
+        ``position_known`` without a sync. See ``Telescope.trust_position``."""
+        if self._position_untrusted:
+            bus.log("info",
+                    f"{self.name}: position trusted on the operator's word",
+                    "mount")
+        self._position_untrusted = False
 
     async def disconnect(self) -> None:
         try:
@@ -728,6 +815,19 @@ class ZwoAm5Telescope(Telescope):
         await self.unpark()        # a parked mount refuses :hP# outright
         await self._park_now()     # never skipped — "parked" is not "at home"
         await self.unpark()        # and leave it usable, not parked
+        if self._position_untrusted:
+            # #133's second finding, reproduced 2026-09-23: after a reset the
+            # mount believes it is already home, so ``:hP#`` completed in about
+            # two seconds with no slew and ``POST /api/mount/home`` logged
+            # "mount homed" regardless. Homing does not re-establish a position
+            # the mount does not know (only a sync or the operator can), so this
+            # says so rather than leaving the success line unchallenged.
+            bus.log("warning",
+                    f"{self.name}: home was sent, but the mount's position is "
+                    "unknown, so the tube may not have moved: a reset mount "
+                    "believes it is already at home and stays put. Drive it "
+                    "home by eye and confirm it, or run a plate-solve sync",
+                    "mount")
 
     async def park(self) -> None:
         # Idempotent, mirroring unpark: re-parking a parked mount would cost a
@@ -1167,6 +1267,11 @@ class ZwoAm5Telescope(Telescope):
             raise DeviceError(f"{self.name}: sync failed: {exc}") from exc
         if reply == lx200.REFUSED:
             raise await self._refused_error("sync")
+        # The one measurement of where the tube really points: a sync is only
+        # ever asked with a plate-solved position (or the operator's own), so it
+        # re-establishes the frame a reset took away (#144). Only on a sync the
+        # mount ACCEPTED - the refusal above raised.
+        self._position_untrusted = False
 
     # --- rotate_axis: NOT offered on this mount, and here is why --------------
     #

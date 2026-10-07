@@ -22508,8 +22508,9 @@ def test_section_8_s5_and_s6_say_what_was_built():
     #189; S6, #196). Every test file either names is in the tree; the four
     in-task re-pins S5 names carry their own record of the change; the pins
     left for the integration name files that exist; S6's steps are the
-    wizard's, the stop condition and auto-resume left to #191 and #195; and
-    its one overlap constant is the server's.
+    wizard's, which backlog WP-100 (#196, wave 15) made seven (the stop
+    condition and auto-resume, which waited on #191 and #195, built as NIGHT
+    and RESUME); and its one overlap constant is the server's.
 
     The code: each named ``test_*.py`` under server/tests and each named
     ``*.test.ts`` or ``*.test.tsx`` under ``ui/src``; the four re-pinned
@@ -22585,6 +22586,45 @@ def test_section_8_s5_and_s6_say_what_was_built():
         AssertionError: the modal's coerceParam no longer reads as the slice's
         does; section 8's S5 says S7 fixed it (#358)
         assert False
+
+    RE-PINNED AT THE WAVE 15 INTEGRATION (backlog WP-100, #196). The wizard
+    has SEVEN steps, TARGET, FRAMING, FILTERS, GUIDING, NIGHT, RESUME and
+    REVIEW: NIGHT (the start, the stop and the altitude floor) and RESUME
+    (automatic resume on later nights) are the stop-condition and auto-resume
+    steps S6 left to #191 and #195. This held the five and the model's own
+    comment, "The stop condition and auto-resume steps are not built: they
+    wait on #191 and #195", which WP-100 deleted as the brief required. The
+    test now holds the seven (from `STEPS` and `STEP_TITLE`), asserts that
+    comment is gone (so nobody puts the stale sentence back), and holds
+    section 8's S6 to say the steps are seven, with NIGHT and RESUME built by
+    WP-100.
+
+    Three mutants of this re-pin, each run from a byte backup and restored
+    byte-identically (sha256 compared). RED under the spec mutant "S6 says
+    five steps" (``GUIDING, NIGHT, RESUME and REVIEW`` made ``GUIDING and
+    REVIEW`` in S6's As built paragraph):
+
+        AssertionError: section 8's S6 must say: 'Its steps are TARGET,
+        FRAMING, FILTERS, GUIDING, NIGHT, RESUME and REVIEW (`STEPS`; S6 built
+        the other five, and backlog WP-100 (#196, wave 15) built NIGHT and
+        RESUME, the stop condition and the automatic resume)'
+
+    RED under the wizardModel.ts mutant "RESUME dropped from STEPS" (``"night",
+    "resume", "review"`` made ``"night", "review"``):
+
+        AssertionError: (the wizard's steps, the stale 'not built' comment
+        gone, the UI's overlap the server's) = (['TARGET', 'FRAMING',
+        'FILTERS', 'GUIDING', 'NIGHT', 'REVIEW'], True, True); section 8's S6
+        says so
+
+    RED under the wizardModel.ts mutant "the stale comment back" (``The stop
+    condition and auto-resume steps are not built: they wait on #191 and
+    #195`` put back above `STEPS`):
+
+        AssertionError: (the wizard's steps, the stale 'not built' comment
+        gone, the UI's overlap the server's) = (['TARGET', 'FRAMING',
+        'FILTERS', 'GUIDING', 'NIGHT', 'RESUME', 'REVIEW'], False, True);
+        section 8's S6 says so
     """
     from astrodeck.catalog import framing
     s5, s6 = _section("S5:"), _section("S6:")
@@ -22628,7 +22668,7 @@ def test_section_8_s5_and_s6_say_what_was_built():
     titles = dict(re.findall(r"  (\w+): \"([A-Z ]+)\",", re.search(
         r"export const STEP_TITLE[^{]*\{(.*?)\};", model,
         re.DOTALL).group(1)))
-    waits = re.search(r"The stop condition and\s+\*\s+auto-resume steps are "
+    stale = re.search(r"The stop condition and\s+\*\s+auto-resume steps are "
                       r"not built: they wait on #191 and #195", model)
     said = [titles[s] for s in order]
     overlap = _ts_const(_ui("lib/framing.ts"), "DEFAULT_OVERLAP")
@@ -22645,15 +22685,20 @@ def test_section_8_s5_and_s6_say_what_was_built():
     _says(_line(s5, "**Not built in S5.**"),
           ("until S7 `framingModel.ts`'s own `coerceParam` read \"Infinity\" "
            "as a number, where the slice's no longer did",), "section 8's S5")
-    got = (said, bool(waits), overlap == framing.DEFAULT_OVERLAP)
-    assert got == (["TARGET", "FRAMING", "FILTERS", "GUIDING", "REVIEW"],
-                   True, True), (
-        f"(the wizard's steps, the two it leaves to #191 and #195, the UI's "
+    got = (said, stale is None, overlap == framing.DEFAULT_OVERLAP)
+    assert got == (["TARGET", "FRAMING", "FILTERS", "GUIDING", "NIGHT",
+                    "RESUME", "REVIEW"], True, True), (
+        f"(the wizard's steps, the stale 'not built' comment gone, the UI's "
         f"overlap the server's) = {got}; section 8's S6 says so")
     _says(s6, (f"Its steps are {', '.join(said[:-1])} and {said[-1]} "
-               f"(`STEPS`)", "`lib/framing.ts`'s `DEFAULT_OVERLAP`, which is "
-               "the server's", "the stop-condition and auto-resume steps, "
-               "which wait on #191 and #195"), "section 8's S6")
+               f"(`STEPS`; S6 built the other five, and backlog WP-100 "
+               f"(#196, wave 15) built NIGHT and RESUME, the stop condition "
+               f"and the automatic resume)",
+               "`lib/framing.ts`'s `DEFAULT_OVERLAP`, which is the server's",
+               "Not built in S6: the stop-condition and auto-resume steps, "
+               "which waited on #191 and #195 and which backlog WP-100 "
+               "(#196, wave 15) built as the NIGHT and RESUME steps"),
+          "section 8's S6")
 
 
 def test_9_says_what_s5_and_s6_did_to_four_rows():
@@ -22661,13 +22706,14 @@ def test_9_says_what_s5_and_s6_did_to_four_rows():
     I-08's door retired with its copy (S6, #196); I-18's live reader added,
     the latch still holding STOP (S5, #162, open); U-07's readouts built
     with no new topic (S5, #189); U-13's sheet and doors built but for the
-    stop condition and auto-resume (S6, #196).
+    stop condition and auto-resume (S6, #196), which backlog WP-100 (#196,
+    wave 15) then built as the NIGHT and RESUME steps.
 
     The code: no non-test file of ``ui/src`` holds "panels to Plan" or "Add
     target to Plan"; the run controls count the rig's run with
     ``isRunPhaseLive(phase) || ours``, ``ours`` from `flowRunLive`;
-    `runReadouts` exists; and `STEPS` holds neither a stop nor an
-    auto-resume step.
+    `runReadouts` exists; and `STEPS` holds the NIGHT and RESUME steps
+    (and still no step called stop or autoResume).
 
     RED under the flowRunControls.tsx mutant "the live reader dropped"
     (``const running = isRunPhaseLive(phase) || ours;`` made ``const running
@@ -22709,6 +22755,29 @@ def test_9_says_what_s5_and_s6_did_to_four_rows():
         assert ([], False, True, []) == ([], True, True, [])
           At index 1 diff: False != True
           Use -v to get more diff
+
+    RE-PINNED AT THE WAVE 15 INTEGRATION (backlog WP-100, #196). `STEPS` now
+    holds a `resume` step, so the old check that it holds none of stop,
+    resume and autoResume found ['resume'] (and, with NIGHT, the brief's
+    seven). The fourth element is now the wizard's NIGHT and RESUME steps,
+    and no step named stop or autoResume (the ids the spec never used). U-13's
+    row says WP-100 built the two the slice left, in WP-100's words.
+
+    RED under the spec mutant "U-13 without WP-100" (``; backlog WP-100 (#196,
+    wave 15) built them as the NIGHT and RESUME steps. |`` made ``. |`` in the
+    U-13 row):
+
+        AssertionError: 9's U-13 row must say: "S6 built the sheet in both UIs
+        and both doors, all but the stop condition and auto-resume, which
+        waited on #191 and #195 (S6, #196; section 8's S6); backlog WP-100
+        (#196, wave 15) built them as the NIGHT and RESUME steps"
+
+    RED under the wizardModel.ts mutant "RESUME dropped from STEPS":
+
+        AssertionError: (files still holding the retired door's strings, the
+        controls reading the live run, runReadouts, (the night and resume
+        steps, a stop or autoResume step)) = ([], True, True, (['night'], []));
+        section 9's rows say so
     """
     kept = sorted(str(p.relative_to(UI_SRC)) for p in UI_SRC.rglob("*.ts*")
                   if "__tests__" not in p.parts
@@ -22737,11 +22806,12 @@ def test_9_says_what_s5_and_s6_did_to_four_rows():
                       r"\[([^\]]*)\];", model).group(1)
     got = (kept, reader, "export function runReadouts" in _ui(
         "components/flows/runCopy.ts"),
-        [s for s in ("stop", "resume", "autoResume") if f'"{s}"' in steps])
-    assert got == ([], True, True, []), (
+        ([s for s in ("night", "resume") if f'"{s}"' in steps],
+         [s for s in ("stop", "autoResume") if f'"{s}"' in steps]))
+    assert got == ([], True, True, (["night", "resume"], [])), (
         f"(files still holding the retired door's strings, the controls "
-        f"reading the live run, runReadouts, a stop or resume step) = {got}; "
-        f"section 9's rows say so")
+        f"reading the live run, runReadouts, (the night and resume steps, a "
+        f"stop or autoResume step)) = {got}; section 9's rows say so")
     for row, phrases in (
             ("I-08", ("S6 retired the door the copy described",
                       "(S6, #196; section 8's S6)")),
@@ -22751,8 +22821,10 @@ def test_9_says_what_s5_and_s6_did_to_four_rows():
             ("U-07", ("S5 built the readouts from the sequence state",
                       "and added no topic (S5, #189; 5.10, 2.6)")),
             ("U-13", ("S6 built the sheet in both UIs and both doors, all but "
-                      "the stop condition and auto-resume, which wait on #191 "
-                      "and #195 (S6, #196; section 8's S6)",))):
+                      "the stop condition and auto-resume, which waited on "
+                      "#191 and #195 (S6, #196; section 8's S6); backlog "
+                      "WP-100 (#196, wave 15) built them as the NIGHT and "
+                      "RESUME steps",))):
         _says(_line(_spec(), f"| {row} |"), phrases, f"9's {row} row")
 
 
@@ -25616,6 +25688,24 @@ def test_the_owner_list_records_the_h4_orchestrator_rulings():
     ``set_aside_expiry``):
 
         Failed: DID NOT RAISE <class 'TypeError'>
+
+    RE-PINNED AT THE WAVE 15 INTEGRATION (backlog WP-102, #558). Item 56 said
+    the run "re-sweeps at the first frame whose star count clears the sparse
+    threshold"; it says the owed re-sweep falls due every
+    `SPARSE_RESWEEP_EVERY_S` and runs gated on its own probe, a declined probe
+    keeping the debt, and that #558 is fixed by WP-102.
+
+    RED under the spec mutant "item 56 as H4 wrote it" (``falls due every
+    `SPARSE_RESWEEP_EVERY_S` (600 s) and runs gated`` made ``falls due at the
+    first frame whose star count clears the sparse threshold and runs
+    gated``):
+
+        AssertionError: owner list item 56 must say: "the run moves to the
+        last good position this run found, or stays where the sweeps started
+        when it has none, and owes a re-sweep that falls due every
+        `SPARSE_RESWEEP_EVERY_S` (600 s) and runs gated on its own probe
+        (`run_autofocus`'s `min_probe_stars`, `AutofocusResult.gated`): a
+        declined probe keeps the debt"
     """
     from astrodeck.flows import tonight as tonight_mod
     from astrodeck.flows import wizard as wizard_mod
@@ -25689,11 +25779,13 @@ def test_the_owner_list_records_the_h4_orchestrator_rulings():
                   "`SessionReporter.record_sky_angle`")),
             (56, ("retries once at twice the exposure", "the run moves to "
                   "the last good position this run found, or stays where "
-                  "the sweeps started when it has none, and re-sweeps at "
-                  "the first frame whose star count clears the sparse "
-                  "threshold",
+                  "the sweeps started when it has none, and owes a re-sweep "
+                  "that falls due every `SPARSE_RESWEEP_EVERY_S` "
+                  f"({engine_mod.SPARSE_RESWEEP_EVERY_S:g} s) and runs gated "
+                  "on its own probe (`run_autofocus`'s `min_probe_stars`, "
+                  "`AutofocusResult.gated`): a declined probe keeps the debt",
                   "`SPARSE_FIELD_WARN`", "`_carry_on_after_sparse_failures`",
-                  "(#558)")),
+                  "(#558, fixed by backlog WP-102, wave 15)")),
             (57, ("refuses (422) an unguided narrowband sub at or past "
                   "`doctor.UNGUIDED_SUB_LINE_S`, naming the limit",
                   "`_within_the_unguided_line`, which refuses any unguided "
@@ -26443,6 +26535,30 @@ def test_5_6_says_the_hop_as_h4_built_it():
           At index 3 diff: ((5.0, 10.0), (358.0, 3.0), False) != ((5.0, 10.0),
           (3.0,), True)
           Use -v to get more diff
+
+    RE-PINNED AT THE WAVE 15 INTEGRATION (backlog WP-102, #558). The owed
+    sparse-field re-sweep no longer falls due at the first light frame that
+    counts `SPARSE_FIELD_WARN` stars: it falls due every
+    `SPARSE_RESWEEP_EVERY_S` and runs gated on its own probe
+    (`run_autofocus`'s `min_probe_stars`, `AutofocusResult.gated`); a declined
+    probe keeps the debt, and #558 is fixed. 5.6's "As built since H4, a
+    sparse field" says so, the interval is the engine's own constant, and the
+    pins that the retry doubles the exposure (`result = await _sweep(2 *
+    exposure_s)`) and that the sparse line is `SPARSE_FIELD_WARN` are
+    unchanged.
+
+    RED under the spec mutant "a light frame decides again" (``A light frame's
+    star count decides nothing now.`` made ``A light frame's star count
+    decides.``):
+
+        AssertionError: 5.6 must say: "A light frame's star count decides
+        nothing now"
+
+    RED under the engine.py mutant "the cadence halved" (``SPARSE_RESWEEP_
+    EVERY_S = 600.0`` made ``300.0``), which also turns the owner-list case
+    red:
+
+        AssertionError: 5.6 must say: '`SPARSE_RESWEEP_EVERY_S` (300 s)'
     """
     from astrodeck import hub as hub_mod
     from astrodeck import rotation
@@ -26453,6 +26569,7 @@ def test_5_6_says_the_hop_as_h4_built_it():
     follow = hub_mod.ROTATE_FOLLOW_FRACTION
     tries = hub_mod.SOLVE_WRITE_ATTEMPTS
     sparse = native_mod.SPARSE_FIELD_WARN
+    resweep_s = engine_mod.SPARSE_RESWEEP_EVERY_S
     s56 = _section("5.6")
     _says(s56, ("**As built since H4, the rotate's solve and its approach** "
                 "(H4, #531, #526, #532, H4 orchestrator ruling 3).",
@@ -26482,7 +26599,12 @@ def test_5_6_says_the_hop_as_h4_built_it():
                 f"({sparse}) stars", "retries it once at twice the exposure, "
                 "with the same filter, gain and binning, before "
                 "`af_failure_action` applies", "(`_carry_on_after_sparse_"
-                "failures`)", "(`_note_sparse_resweep`)", "(#558)"), "5.6")
+                "failures`)", "(`_note_sparse_resweep`)",
+                f"`SPARSE_RESWEEP_EVERY_S` ({resweep_s:g} s)",
+                "`min_probe_stars=SPARSE_FIELD_WARN`",
+                "(`AutofocusResult.gated`)", "A declined probe keeps the debt",
+                "A light frame's star count decides nothing now",
+                "(#558; fixed by backlog WP-102, wave 15)"), "5.6")
     hub_src = inspect.getsource(hub_mod.Hub)
     borrowing = sorted(name for name in ("_rotate_to_pa_attempts",
                                          "sync_rotator_to_sky",

@@ -30,6 +30,14 @@
 //     returned would be the exact green-while-wrong defect this project keeps
 //     paying for.
 //
+// THE SAVE-STATE PILL (#688 part 2, WP-99). The editor saves itself two seconds
+// after the last edit, and this header has no SAVE press, so the one way the
+// operator can see whether the rig holds what is on the canvas is this word:
+// SAVING while a PUT is out, SAVED, UNSAVED EDITS, or READ ONLY for an Example.
+// They are the #/next toolbar's own words (`saveStateWord`, from the pure
+// module both editors import), never a second set. Over a live run it says
+// why the edit is waiting: the autosave holds it until the run ends.
+//
 // RUN SAYS WHAT IT WILL DO (#189 S5, spec 5.9). With a dormant session the
 // button reads `CONTINUE M31 MOSAIC (night 3, 412/1890 subs)`, the one copy
 // every RUN surface prints (`useFlowRunControls().copy`), and START OVER sits
@@ -46,6 +54,7 @@ import type { FlowTier } from "./geometry";
 import {
   START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts, type RunCopy,
 } from "./flowRunControls";
+import { AUTOSAVE_PAUSED_NOTE, SAVE_READONLY_REASON, saveStateWord } from "./flowsTypes";
 
 // RUN's honest-disabled sentence moved to `flowRunControls.tsx` when the phone
 // MONITOR tab needed the same button. Re-exported from here because that is
@@ -175,6 +184,18 @@ const useCompiled = () => useStore((s) => s.flows.compiled !== null);
 const useIssues = () =>
   useStore(useShallow((s) => s.flows.compiled?.issues ?? EMPTY_ISSUES));
 const useBackendMode = () => useStore((s) => s.status?.mode);
+// The three facts the save-state pill reads, as primitives. `dirty` is the
+// store's own edit flag, `readonly` the server's word on an Example, `saving`
+// a PUT out now (`flowsSave`).
+const useDirty = () => useStore((s) => s.flows.dirty);
+const useReadonly = () => useStore((s) => s.flows.record?.readonly ?? false);
+const useSaving = () => useStore((s) => s.flows.saving);
+
+/** The pill's colour: warn only for edits the rig does not hold and nothing is
+ *  sending. The WORD carries the state, so this never has to. */
+export function saveStateClass(dirty: boolean, readonly: boolean, saving: boolean): string {
+  return !readonly && !saving && dirty ? "text-warn" : "text-dim";
+}
 
 export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
   const phone = tier === "phone";
@@ -187,6 +208,9 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
   const checked = useCompiled();
   const issues = useIssues();
   const mode = useBackendMode();
+  const dirty = useDirty();
+  const readonly = useReadonly();
+  const saving = useSaving();
 
   // RUN/STOP — one implementation, shared with the phone MONITOR tab's
   // full-width button. `running` counts `stopping`: the engine publishes
@@ -197,6 +221,15 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
     running, reason: runReason, explain, act: runAct, copy, startOver,
   } = useFlowRunControls();
   const continues = copy.verb === "CONTINUE";
+
+  // THE SAVE-STATE PILL. While a run of this flow is live the autosave is
+  // holding an edit on purpose (`flowsSlice` `autosaveFire`), and a bare UNSAVED
+  // EDITS would read as an autosave that had broken, so the title says why.
+  const saveWord = saveStateWord(dirty, readonly, saving);
+  const saveTitle = readonly ? SAVE_READONLY_REASON
+    : running && dirty && !saving ? AUTOSAVE_PAUSED_NOTE
+      : undefined;
+  const saveClass = saveStateClass(dirty, readonly, saving);
 
   // Tonight is gated on view.site_derived, NOT view.status: an audit of this
   // codebase recovered the observatory to 2.9 km from three viewer-legal
@@ -249,7 +282,19 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
       {/* 2 — phone title. README §5: the wordmark is replaced by a single
           truncating flow name, and nothing may overlap at 390px. */}
       {phoneTitle && (
-        <span className="font-mono text-[11px] flex-1 min-w-0 truncate">{name}</span>
+        // The pill rides UNDER the name, inside the title's own slot: the row
+        // beside it is README section 5's `LIBRARY / title / TONIGHT RUN i` at
+        // 390 px and has no width to give, and each line truncates alone.
+        <span className="flex-1 min-w-0 flex flex-col leading-tight">
+          <span className="font-mono text-[11px] truncate">{name}</span>
+          <span
+            className={`font-mono text-[9px] tracking-[0.06em] truncate ${saveClass}`}
+            data-testid="flow-header-save-state"
+            title={saveTitle}
+          >
+            {saveWord}
+          </span>
+        </span>
       )}
 
       {/* 3, 4 — logo + two-line wordmark: [DROPPED pending §G-5]. App.tsx:492-495
@@ -325,6 +370,21 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
             {chipText}
           </span>
         </Tooltip>
+      )}
+
+      {/* 8b — the save-state pill: SAVING / SAVED / UNSAVED EDITS (READ ONLY for
+          an Example), the #/next toolbar's own words. Editor-only, and on the
+          running row too: it is the one place an edit held by a live run says so.
+          The phone's is under the title above. */}
+      {editor && !phone && (
+        <span
+          className={`font-mono text-[10px] tracking-[0.06em] px-2 py-1 rounded-[3px]
+            border shrink-0 ${saveClass}`}
+          data-testid="flow-header-save-state"
+          title={saveTitle}
+        >
+          {saveWord}
+        </span>
       )}
 
       {/* 9 — ETA. ⚠ §G-13 is OPEN: it is unresolved whether this renders on a

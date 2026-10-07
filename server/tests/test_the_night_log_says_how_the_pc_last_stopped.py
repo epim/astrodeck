@@ -23,10 +23,29 @@ MUTATIONS RUN, and what each printed:
 
   M3, print param2 (the computer name) in the planned line. 1 failed:
   test_nothing_identifying_leaves.
+
+#606 part A added the BOOT WORD the dead-man beacon carries off the box
+(`bootcause.BOOT_WORD`, read by rig_beacon). MUTATIONS RUN for it, each from a
+byte backup, restored byte-identically (sha256 compared) with the mutant text
+grepped out afterwards:
+
+  M4, map the word from the LEVEL alone (`BOOT_WORD = "unexpected" if level ==
+  "warning" else "normal"`), which is what the first sketch did. 2 failed, the
+  two no-evidence ids of
+  test_the_boot_word_says_only_what_the_system_log_could_say:
+  `assert 'normal' == 'unread'`. A boot the log holds no record of is not a
+  normal one.
+
+  M5, never set BOOT_WORD in log_boot_cause (`BOOT_WORD = word` -> `pass`).
+  4 failed, the four ids that have a word to set, of the same test:
+  `assert 'unread' == 'unexpected'` (and `'unread' == 'normal'`).
 """
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+
+import pytest
 
 from astrodeck import bootcause
 
@@ -128,3 +147,63 @@ def test_the_startup_hook_writes_one_line_and_swallows_failure(monkeypatch):
     monkeypatch.setattr(bootcause, "_read_system_log", _boom)
     asyncio.run(bootcause.log_boot_cause(lambda *a: lines.append(a)))   # must not raise
     assert len(lines) == 1
+
+
+# ---------------------------------------------------------------- the boot word
+
+def test_the_boot_word_is_unread_until_the_read_finishes():
+    """Before the System log has been read (it is read off the loop, seconds
+    after startup), the beacon must say so, not guess. A FRESH copy of the
+    module is loaded: the real one's word is whatever an earlier test's app
+    lifespan left in it."""
+    spec = importlib.util.spec_from_file_location("astrodeck._bootcause_fresh", bootcause.__file__)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    assert fresh.BOOT_WORD == "unread"
+
+
+@pytest.mark.parametrize("events,word", [
+    # the 2026-09-08 thermal reset: nothing asked, the new boot says so
+    ((_ev(6005, "2026-09-08T20:33:05.0000000Z"),
+      _ev(41, "2026-09-08T20:33:02.0000000Z", "Microsoft-Windows-Kernel-Power")), "unexpected"),
+    ((_ev(6005, "2026-09-08T20:33:05.0000000Z"),
+      _ev(6008, "2026-09-08T20:33:09.0000000Z")), "unexpected"),
+    # a clean shutdown, and a planned restart: the two ways a PC stops normally
+    ((_ev(6006, "2026-09-15T09:31:40.0000000Z"),
+      _ev(6005, "2026-09-15T09:33:00.0000000Z")), "normal"),
+    ((_ev(1074, "2026-09-15T09:30:10.0000000Z", "User32", {"param1": "x.exe", "param5": "restart"}),
+      _ev(6006, "2026-09-15T09:31:40.0000000Z"),
+      _ev(6005, "2026-09-15T09:33:00.0000000Z")), "normal"),
+    # classify() logs these at INFO, but it is saying it does not know: a word
+    # that read "normal" here would be a claim the System log never made.
+    ((_ev(6006, "2026-09-15T09:31:40.0000000Z"),), "unread"),
+    ((_ev(6005, "2026-09-15T09:33:00.0000000Z"),), "unread"),
+])
+def test_the_boot_word_says_only_what_the_system_log_could_say(monkeypatch, events, word):
+    monkeypatch.setattr(bootcause, "BOOT_WORD", "unread")      # restored on teardown
+    monkeypatch.setattr(bootcause, "_read_system_log", lambda: "".join(events))
+    lines = []
+    asyncio.run(bootcause.log_boot_cause(lambda lvl, msg, src: lines.append((lvl, msg, src))))
+    assert len(lines) == 1, lines                    # the night-log line is still written
+    assert bootcause.BOOT_WORD == word, (bootcause.BOOT_WORD, lines)
+
+
+def test_an_unreadable_system_log_leaves_the_word_unread(monkeypatch):
+    monkeypatch.setattr(bootcause, "BOOT_WORD", "unread")
+    monkeypatch.setattr(bootcause, "_read_system_log", lambda: "")            # not Windows
+    asyncio.run(bootcause.log_boot_cause(lambda *a: None))
+    assert bootcause.BOOT_WORD == "unread"
+
+    def _boom():
+        raise RuntimeError("wevtutil exploded")
+    monkeypatch.setattr(bootcause, "_read_system_log", _boom)
+    asyncio.run(bootcause.log_boot_cause(lambda *a: None))                    # never raises
+    assert bootcause.BOOT_WORD == "unread"
+
+
+def test_classify_keeps_its_two_value_shape():
+    """The boot word came out of classify's own decision, not a re-parse of its
+    message; classify() itself still answers (level, message)."""
+    result = _classify(_ev(6005, "2026-09-08T20:33:05.0000000Z"),
+                       _ev(6008, "2026-09-08T20:33:09.0000000Z"))
+    assert isinstance(result, tuple) and len(result) == 2

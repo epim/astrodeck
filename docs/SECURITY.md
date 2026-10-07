@@ -131,10 +131,36 @@ itself — those belong at the reverse proxy for now.
   for a loopback development relay). The relay can observe and replay the home's
   signed session cookie, so operate it as a trusted bearer-token intermediary.
   Raw `ASTRODECK_TOKEN` headers and query parameters are never valid tunnel
-  credentials. Identity-management, relay-configuration, factory-reset, and
-  self-update mutation routes are direct-only at the home. Configuration,
-  alert-destination, driver/profile mutation, discovery, and connection-setup
-  routes are also direct-only because they can select or probe host/LAN resources.
+  credentials. Authentication-configuration, session-revocation, token-login,
+  relay-configuration, factory-reset, and self-update mutation routes are
+  direct-only at the home. Configuration, alert-destination, driver/profile
+  mutation, discovery, and connection-setup routes are also direct-only because
+  they can select or probe host/LAN resources. The one exception in that family
+  is `POST /api/profiles/<id>/activate`: reconnecting a profile that is already
+  saved takes only a saved id and no destination, so it is allowed over the relay
+  for an account that holds `config.backend`. Its `force` option, which aborts a
+  running sequence and disarms auto-resume, is direct-only (403 `local_only`).
+- People management over the relay is open in a narrowed form, behind a step-up.
+  Listing users needs only the admin session. Every change needs a sign-in less
+  than 300 seconds old, local or Google, completed through the relay; a session
+  minted from the break-glass access token never counts. With that, a relayed
+  admin can create a Google-only viewer or operator account, change a non-admin
+  between viewer and operator, enable or disable a non-admin, and delete a
+  non-admin. Password resets, any admin grant, any edit or deletion of an admin,
+  and username or email edits stay direct-only (403 `local_only`). The routes
+  under `/api/users` are a fail-closed allow-list at the fence: a route added
+  there later is direct-only until it is listed. A relayed request that fails
+  the step-up is 403 `step_up_required` and leaves a line in the audit log.
+  The step-up exists because the relay can replay a cookie it has seen, and a
+  replayed cookie is always older than the moment it was captured, so a relay
+  that only replays cookies cannot change who may sign in. It does NOT defend
+  against a malicious relay that is present during the step-up: a
+  TLS-terminating relay sees the password POST and the `Set-Cookie` that answers
+  it, and serves the page that drives the sign-in, so it can obtain the fresh
+  session and, within the narrowed operations above, create an operator or
+  viewer account for a Google identity of its choosing. That is why the relay
+  stays a trusted intermediary, and why admin grants and password resets are
+  kept off this path.
 - The home accepts only the Host names it expects on its listener: loopback,
   the bind address, and whatever `ASTRODECK_ALLOWED_HOSTS` adds (a comma-separated
   list of exact names, no wildcards). Anything else is answered 421, which is

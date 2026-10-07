@@ -22,12 +22,20 @@
 // see a session's. The store's delete (`SessionStore.delete`) removes the
 // file, its backup and its thumbnails directory and never a FITS frame, which
 // is what the confirm body says.
+//
+// RESTORE IS THE WAY BACK (#280), AND ONLY WHERE THERE IS ONE. A backup
+// (`<id>.json.bak`) beside the file, or all that is left of it (an "orphan"
+// row: the session file is gone), puts RESTORE on the card, gated as DELETE
+// is. It is rendered only when `card.backup`: with no backup the server
+// would answer 404, and a control that can only fail is not offered. Whether
+// it would load is the server's judgment (it reads the backup the way every
+// reader does), so the card does not claim it.
 
 import type { JSX } from "react";
 
 import { explainLock } from "../../../shell/explain";
 import { ActionButton, Mono, Pill } from "../../../ui";
-import { controlReason, runDelete } from "./cardActions";
+import { controlReason, runDelete, runRestore } from "./cardActions";
 import type { UnreadableCardData } from "./sessionsIndex";
 
 export function UnreadableSessionCard({ card, canControl, onChanged }: {
@@ -57,6 +65,19 @@ export function UnreadableSessionCard({ card, canControl, onChanged }: {
         <Pill tone="bad">UNREADABLE</Pill>
       </div>
       <Mono size={10} tone="dim">{card.reason}</Mono>
+      {/* RESTORE only where a backup is there to restore (#280), and gated
+          exactly as DELETE is: same sentence for a viewer, same honest lock. */}
+      {card.backup && (
+        <ActionButton
+          kind="secondary"
+          lockedReason={controlReason(canControl)}
+          onExplain={explainLock}
+          onPress={() => { void runRestore(card.id, card.name, onChanged); }}
+          data-testid={`session-unreadable-restore-${card.id}`}
+        >
+          RESTORE
+        </ActionButton>
+      )}
       <ActionButton
         kind="danger"
         lockedReason={controlReason(canControl)}

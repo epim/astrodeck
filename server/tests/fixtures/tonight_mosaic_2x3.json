@@ -656,6 +656,7 @@
    }
   ],
   "budget": [],
+  "resume_across_nights": true,
   "campaign": {
    "is_campaign": false,
    "has_pool": true,

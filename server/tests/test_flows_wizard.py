@@ -28,6 +28,7 @@ from astrodeck.flows import tonight
 from astrodeck.flows.compile import compile_plan, flow_order
 from astrodeck.flows.doctor import check
 from astrodeck.flows.nodes import NODE_DEFS
+from astrodeck.flows.rig import RigFacts
 from astrodeck.flows.to_plan import GraphNotRunnable, to_sequence_plan
 from astrodeck.flows.wizard import (
     AUTOMATION_OPTIONS, DEFAULT_OPTIONS, KIND_DEEP_SKY, KIND_EAA, KIND_MOSAIC,
@@ -222,6 +223,73 @@ class TestEveryGeneratedGraphPassesTheDoctor:
                                 f"no record of what it shot")
             for clash in _overlapping(graph.nodes):
                 problems.append(f"{where}: {clash}")
+        assert not problems, "\n".join(problems)
+
+
+#: The NIGHT and RESUME answers (backlog WP-100, #196) the matrix is asked
+#: with as well: a Clock-time stop with Off, a Clock-time start with an
+#: explicit Dawn, On and the lowest floor, and a civil dusk with the highest.
+#: Each variant moves different DUSK params, and none is the node's default.
+NIGHT_AXIS = (
+    dict(stop="Clock time", stop_clock="03:30", auto_resume="Off"),
+    dict(start="Clock time", start_clock="21:15", stop="Dawn", min_alt=0,
+         auto_resume="On"),
+    dict(start="Civil dusk", min_alt=90),
+)
+
+
+class TestEveryNightAnswerPassesTheDoctor:
+    @pytest.mark.parametrize("kind,opts", EVERY_ANSWER)
+    def test_the_night_answers_leave_every_graph_at_note_level(self, kind, opts):
+        """§9's bar, "every generated graph must pass the doctor", with the
+        answers the NIGHT and RESUME steps add: every kind × all 64 chip
+        subsets × ``NIGHT_AXIS``. A Clock-time stop and Off, a Clock-time
+        start, the lowest and the highest altitude floor: none of them may
+        bring a warning to the first flow the wizard makes.
+
+        Asked of each graph twice, once as the sheet would meet the doctor
+        and once on a rig whose reject guards are both off (doctor rule M9,
+        which is silent on a stop with a real boundary and warns on a
+        "Clock time" with no clock, or on "None": the answer the wizard does
+        not take). The graph must also be valid, and its DUSK node must carry
+        exactly what was answered.
+
+        RED under mutant "the stop clock is not written" (``_door_dusk``
+        never writing ``stopClock``), in all 256 answers (256 failed), on the
+        first variant, observed verbatim ([deepsky] shown):
+
+            E   AssertionError: Deep-sky target [] target='M16'
+                night={'stop': 'Clock time', 'stop_clock': '03:30',
+                'auto_resume': 'Off'}: doctor says ['\\u25b8 this plan counts
+                accepted subs with no stop time and both reject guards off,
+                so Run will refuse it: a sub the grader never accepts would
+                be retried without end. Stop the night at Dawn (DUSK
+                WINDOW), or set Settings > Standards > 'Give up on a step
+                after'.']
+            E     Deep-sky target [] target='M16' night={...}: DUSK stopClock
+                is '', not '03:30'
+        """
+        guards_off = RigFacts(reject_guards_off=True)
+        problems: list[str] = []
+        for night in NIGHT_AXIS:
+            graph = generate_answer(kind, opts, "M16", **night).record.graph
+            where = f"{kind} {sorted(opts)} target='M16' night={night}"
+            for rig in (None, guards_off):
+                loud = [i.text for i in check(graph, rig=rig)
+                        if i.level in ("warn", "danger")]
+                if loud:
+                    problems.append(f"{where}: doctor says {loud}")
+            errs = graph.validation_errors()
+            if errs:
+                problems.append(f"{where}: invalid graph {errs}")
+            dusk = _one(graph, "dusk").params
+            want = {"stop": "stop", "stop_clock": "stopClock",
+                    "start": "start", "start_clock": "startClock",
+                    "min_alt": "minAlt", "auto_resume": "autoResume"}
+            for answer, value in night.items():
+                if dusk[want[answer]] != value:
+                    problems.append(f"{where}: DUSK {want[answer]} is "
+                                    f"{dusk[want[answer]]!r}, not {value!r}")
         assert not problems, "\n".join(problems)
 
 

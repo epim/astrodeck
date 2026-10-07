@@ -60,7 +60,21 @@ silent. While blind the net:
 * publishes that it is blind (``state()``, on ``/api/safety/state``) as times
   and booleans only. The last position is NEVER logged or published: a mount's
   pointing is a latitude oracle (#140), so only separations and ages leave this
-  module.
+  module;
+* says ONE error the first blind tick the Sun is above the dawn-park threshold
+  (``dawn_park.park_threshold_deg``, read where dawn park reads it), because
+  from then on a mount that is not parked may be tracking toward the Sun with
+  nothing watching it, whatever the fallback projects. Once per blind streak
+  and per Sun-up stretch, never with a position or the Sun's altitude in it.
+
+OTHER PATHS PARK THE MOUNT TOO (#696). The fallback projects from the last
+position THIS net read, and the engine's wind-down and ``dawn_park`` move the
+tube without this net seeing it. They tell it through :meth:`SunWatch.
+note_parked`, reached as ``getattr(hub, "sun_watch", None)``: this class sets
+``hub.sun_watch`` itself, as ``DewController`` sets ``hub.dew_controller``. A
+noted park is "no motion possible" to the blind projection until the next live
+read, so a link that drops right after a park does not turn the pre-park
+pointing into a false "Parking now".
 
 A telescope object that does not exist at all (``tel is None``) is a rig that
 was never connected, or was deliberately disconnected. That stays a latched info
@@ -73,8 +87,9 @@ import os
 import time
 
 from .aio import reap
-from .catalog.coords import angular_sep_deg, sun_radec
+from .catalog.coords import angular_sep_deg, sun_altaz, sun_radec
 from .config import config_store
+from .dawn_park import park_threshold_deg
 from .events import bus
 
 #: Tick cadence, matching ``dawn_park``. The decision is made on a projection
@@ -266,6 +281,25 @@ class SunWatch:
         # dead link is logged on a cadence rather than twice a minute (see
         # _blind_projection). Not a latch: the park is retried every tick.
         self._blind_park_tries = 0
+        # When ANOTHER path (dawn park, the engine's wind-down) last told this
+        # net it had parked the mount and confirmed it, or None. Ended by the
+        # next live read that began after it (``_remember``); until then the
+        # blind projection takes the mount as parked. See ``note_parked``.
+        self._parked_noted_at: float | None = None
+        # Has this blind streak already said "blind in daylight" for the Sun-up
+        # stretch it is in? Released when the Sun goes back below the dawn-park
+        # threshold and when the streak ends, so each dawn of an outage and
+        # each new outage says it once (see ``_blind_in_daylight``).
+        self._blind_daylight_said = False
+        # The other park paths reach this net through the hub, so hub.py and
+        # api/app.py carry no wiring for it: the attach-yourself shape
+        # ``DewController`` uses for ``hub.dew_controller``. Total: a hub that
+        # refuses attributes is a test double, and a net that cannot be found
+        # costs the false-park protection, never a failed boot.
+        try:
+            hub.sun_watch = self
+        except Exception:       # pragma: no cover - an exotic hub double
+            pass
 
     # ------------------------------------------------------------- lifecycle
 
@@ -284,6 +318,25 @@ class SunWatch:
             self._task.cancel()
             await reap(self._task)
             self._task = None
+
+    def note_parked(self) -> None:
+        """Another path has just parked the mount and CONFIRMED it (#696).
+
+        Called by ``dawn_park`` after its park (or after finding the mount
+        already parked) and by the engine's wind-down after a park it read
+        back. Those move the tube without this net seeing it, and the blind
+        fallback projects from ``_last_good``, the last position THIS net read:
+        a link that dropped before the next tick left it projecting the
+        pre-park pointing, so it logged a false "Parking now" error (which
+        pages the owner) and sent a park to a mount that was already parked.
+
+        A noted park is "no motion possible" to the blind projection, and it
+        suppresses the daylight error (a parked tube is not tracking toward
+        the Sun), but it does NOT quiet the ordinary blind lines: the net is
+        still blind. It lasts until the next live read of the mount that began
+        after it (``_remember``), when the net's own position is true again.
+        A time, never a position."""
+        self._parked_noted_at = self._clock()
 
     def state(self) -> dict:
         """What ``/api/safety/state`` publishes about this net (#137).
@@ -375,12 +428,16 @@ class SunWatch:
                 await self._reopen(tel)
             if not getattr(tel, "connected", False):
                 self._blind("the mount's link is down, so this net cannot tell "
-                            "whether the Sun is closing on it")
+                            "whether the Sun is closing on it", cfg)
                 await self._blind_projection(tel, cfg, cone)
                 return
             # The reopen worked. Carry on and read it in THIS tick: the net was
             # not blind for a single one, so it counts nothing and says nothing.
 
+        # When this read BEGAN, not when it ended: a park confirmed while it is
+        # in flight is not undone by a position the mount gave from before it
+        # (``_remember``, #696).
+        read_started = self._clock()
         pos = await self._position(tel)
         if pos is None:
             # A mount that cannot say where it is pointing cannot be judged, and
@@ -395,13 +452,13 @@ class SunWatch:
             # ``Telescope.connect()`` returns at once when it already reports
             # ``connected``, so the call would buy nothing.
             self._blind("the mount will not report its position, so this net "
-                        "cannot tell whether the Sun is closing on it")
+                        "cannot tell whether the Sun is closing on it", cfg)
             await self._blind_projection(tel, cfg, cone)
             return
         self._clear_blind()
         ra_hours, dec_deg = pos
         now = self._clock()
-        self._remember(ra_hours, dec_deg, now)
+        self._remember(ra_hours, dec_deg, now, read_started)
         tracking = await self._tracking(tel)
         sep, lead = closest_approach(ra_hours, dec_deg, tracking=tracking,
                                      now=now, lead_s=self._lead_s)
@@ -435,15 +492,24 @@ class SunWatch:
                        level="error")
             return
 
+        def hold(held: str) -> None:
+            # The ONE wording of "somebody else has the mount": the check below
+            # and the re-check inside ``_park`` (#695) both write it.
+            self._hold(f"{held}; {approach}", sep, level="warning")
+
         held = self._hands_off_reason(cfg)
         if held is not None:
-            self._hold(f"{held}; {approach}", sep, level="warning")
+            hold(held)
             return
 
-        # Nothing awaits between the hands-off check above and the fence below,
-        # so the window ``dawn_park`` has to re-check for (a slew starting
-        # during its 30 s park query) cannot open here: both device reads
-        # happen BEFORE the check, not after it.
+        # THE AWAIT BELOW IS NOT FREE (#695). ``_is_parked`` is bounded by
+        # MOUNT_QUERY_TIMEOUT_S (30 s), and a run, a goto, a dome move or a
+        # polar lane can start inside it, so the hands-off check above is stale
+        # by the time the answer comes back. (This comment used to say that
+        # nothing awaits between that check and the fence, which was false: the
+        # same window ``dawn_park`` re-checks for after ITS 30 s park query.)
+        # ``_park`` therefore asks again immediately before it bumps the motion
+        # fence, the bump being what abandons a motion already in flight.
         if await self._is_parked(tel) is True:
             # A parked mount inside the cone means the park position itself is
             # wrong, not that the tube needs moving — parking it again is a
@@ -455,20 +521,37 @@ class SunWatch:
                        f"the park position is not safe", sep, level="error")
             return
 
-        await self._park(tel, approach)
+        await self._park(tel, approach, cfg=cfg, hold=hold)
 
     # --------------------------------------------------------------- the park
 
-    async def _park(self, tel, approach: str, *, loud: bool = True) -> bool:
+    async def _park(self, tel, approach: str, *, cfg, hold,
+                    loud: bool = True) -> bool | None:
         """THE park block, shared by the live path and the blind fallback so
         there is exactly one implementation of "get the tube out of the way".
-        True when the mount accepted the park.
+        True when the mount accepted the park, False when it did not, None when
+        the net stood aside because another job has the mount (#695).
+
+        THE LAST LOOK, before anything is said or fenced (#695). Both callers
+        decided on a hands-off check and then awaited ``_is_parked`` for up to
+        MOUNT_QUERY_TIMEOUT_S, so a run, a goto, a dome move or a polar lane
+        that began inside that await has not been looked for. Nothing awaits
+        between this check and the fence bump below, and the bump is what
+        abandons a motion in flight, so the check is made here, where it is the
+        last thing before the bump. It comes BEFORE the "Parking now" line,
+        which is an error and pages: a held park must not announce itself as a
+        park. ``hold(reason)`` is the caller's own warning hold line for a
+        hands-off reason, so the held park reads as the earlier check's does.
 
         ``loud`` False silences the "Parking now" and the FAILURE lines (never
         the success line): the blind fallback retries every tick against a link
         that may be dead for hours and passes it on a cadence, so a failing
         park is a heartbeat there instead of the 417-line flood that flushed
         the ring on 2026-08-09."""
+        held = self._hands_off_reason(cfg)
+        if held is not None:
+            hold(held)
+            return None
         if loud:
             bus.log("error", f"SUN WATCH: {approach}. Parking now.", "safety")
         try:
@@ -523,7 +606,8 @@ class SunWatch:
 
     # -------------------------------------------------------- the blind fallback
 
-    def _remember(self, ra_hours: float, dec_deg: float, now: float) -> None:
+    def _remember(self, ra_hours: float, dec_deg: float, now: float,
+                  started: float) -> None:
         """Record a successful read for the blind fallback to project from.
 
         Stored only when no mount-motion lane is busy: a position read while a
@@ -531,8 +615,18 @@ class SunWatch:
         the tube will be, and projecting from it would park (or fail to park)
         on a number that was already wrong. ``capture`` and ``looping`` are NOT
         excluded -- a frame in flight is exactly when a tube is holding still,
-        and excluding them would disable the fallback for most of every night."""
+        and excluding them would disable the fallback for most of every night.
+
+        A LIVE READ ENDS A NOTED PARK (#696), but only a read that began at or
+        after it (``started``): a read in flight when the park was confirmed
+        reports the pre-park pointing, and it is slow in exactly the
+        circumstance this exists for (a dying link, up to
+        MOUNT_QUERY_TIMEOUT_S), so letting it end the note would hand the
+        projection the stale position the note was there to refuse."""
         self._last_read_at = now
+        noted = self._parked_noted_at
+        if noted is not None and noted <= started:
+            self._parked_noted_at = None
         if self._busy_lanes() & HANDS_OFF_LANES:
             self._last_good = None
         else:
@@ -558,7 +652,17 @@ class SunWatch:
         unmoved, and recovery (``_clear_blind``) hands the next live read a
         fresh decision.
 
+        A PARK NOTED BY ANOTHER PATH (#696) is "no motion possible": the tube
+        is at the park point, which no projection from the pre-park pointing
+        describes, so nothing is projected and nothing is parked until a live
+        read ends the note. Silent, like a clear projection: the blind
+        escalation is already speaking, and says so (``_fallback_note``).
+
         Logs separations in degrees and ages in minutes. NEVER the position."""
+        if self._parked_noted_at is not None:
+            self._held = None
+            self._blind_park_tries = 0
+            return
         good = self._last_good
         if good is None:
             # Nothing to project from, and the blind line already says why.
@@ -602,13 +706,17 @@ class SunWatch:
                        "last-known position is stale after it", None)
             return
 
-        held = self._hands_off_reason(cfg)
-        if held is not None:
+        def hold(held: str) -> None:
             # The reason carries no ages or separations on purpose: _hold
             # dedupes on the text, and a number that changes every minute would
-            # log this warning once a minute for the whole run.
+            # log this warning once a minute for the whole run. Written by the
+            # check below and by the re-check inside ``_park`` (#695).
             self._hold(f"{held}; the last-known pointing is projected to reach "
                        f"the {cone:.0f}° exclusion cone", None, level="warning")
+
+        held = self._hands_off_reason(cfg)
+        if held is not None:
+            hold(held)
             return
 
         if await self._is_parked(tel) is True:
@@ -622,9 +730,13 @@ class SunWatch:
             return
 
         tries = self._blind_park_tries
-        self._blind_park_tries = tries + 1
-        if await self._park(tel, approach, loud=tries % BLIND_LOG_EVERY == 0):
-            self._blind_park_tries = 0
+        parked = await self._park(tel, approach, cfg=cfg, hold=hold,
+                                  loud=tries % BLIND_LOG_EVERY == 0)
+        if parked is None:
+            # Stood aside for another job: that is not an attempt, and counting
+            # it would make the first real park's "Parking now" silent.
+            return
+        self._blind_park_tries = 0 if parked else tries + 1
 
     # -------------------------------------------------------------- internals
 
@@ -725,11 +837,13 @@ class SunWatch:
         where = ": " if sep is None else f" (Sun {sep:.0f}° away): "
         bus.log(level, f"sun watch held off{where}{reason}", "safety")
 
-    def _blind(self, reason: str) -> None:
+    def _blind(self, reason: str, cfg) -> None:
         """One more tick with an unreadable position. Escalates by REPETITION
         COUNT, exactly ``dawn_park._fail``'s shape: quiet on the first tick,
         one warning at ``BLIND_WARN_AFTER``, then a repeating error every
-        ``BLIND_LOG_EVERY`` ticks from ``BLIND_ERROR_AFTER`` on.
+        ``BLIND_LOG_EVERY`` ticks from ``BLIND_ERROR_AFTER`` on, and on its own
+        clock, the Sun's, ONE error the first tick the Sun is above the
+        dawn-park threshold (``_blind_in_daylight``).
 
         Deliberately NOT routed through ``_hold``: ``_hold`` latches on the
         reason string and stays silent for as long as that reason holds,
@@ -756,17 +870,85 @@ class SunWatch:
         elif n >= BLIND_ERROR_AFTER and (n - BLIND_ERROR_AFTER) % BLIND_LOG_EVERY == 0:
             level = "error"
         else:
-            return
+            level = None
         mins = (self._clock() - self._blind_since) / 60.0
-        tail = "" if n == 1 else f" (blind for {mins:.0f} min, tick {n})"
-        note = self._fallback_note()
-        bus.log(level, f"sun watch held off: {reason}{note}{tail}", "safety")
+        if level is not None:
+            tail = "" if n == 1 else f" (blind for {mins:.0f} min, tick {n})"
+            note = self._fallback_note()
+            bus.log(level, f"sun watch held off: {reason}{note}{tail}", "safety")
+        self._blind_in_daylight(reason, cfg, mins, n)
+
+    def _blind_in_daylight(self, reason: str, cfg, mins: float, n: int) -> None:
+        """While blind, ONE error the first tick the Sun is above the dawn-park
+        threshold (#137, the part of the issue's item 1 that was left).
+
+        THE SUN KEEPS ITS OWN CLOCK. The count-driven lines above say "blind"
+        at tick 10 and tick 30 whatever the sky is doing, which is right for a
+        night and not enough for a morning: once the Sun is past the threshold
+        dawn park acts on, a mount that is not parked may be tracking toward it
+        and nothing can see it, and "10 minutes blind" does not say so. This
+        line does, and it is an ERROR because the alert sinks route only
+        warning and error. It is deliberately NOT flagged ``site_derived`` for
+        the same reason: such a line never reaches a sink (``alerting``), and
+        the page is the point (dawn park's own lines are unflagged too).
+
+        The threshold is ``dawn_park.park_threshold_deg``, read where dawn park
+        reads it, and the Sun's altitude is computed for ``hub.site`` as dawn
+        park computes it. A rig whose site was never set has no altitude to
+        compute (the placeholder is not a location), so this says nothing for
+        it, like dawn park.
+
+        Debounced like the blind lines: once per streak per Sun-up stretch.
+        The latch is released when the Sun is back below the threshold (the
+        next dawn of a long outage speaks again) and when the streak ends
+        (``_drop_blind``). A PARK NOTED by another path suppresses it: the tube
+        is at the park point, so nothing is tracking toward the Sun, and a page
+        for that would teach the owner to ignore this one.
+
+        The line carries the configured threshold and NO position: not the
+        mount's pointing (#140) and not the Sun's altitude, which is a site
+        computation."""
+        verdict = self._sun_against_dawn_threshold(cfg)
+        if verdict is None:
+            return
+        above, threshold = verdict
+        if not above:
+            self._blind_daylight_said = False
+            return
+        if self._blind_daylight_said or self._parked_noted_at is not None:
+            return
+        self._blind_daylight_said = True
+        bus.log("error", f"sun watch BLIND IN DAYLIGHT: {reason}; the Sun is "
+                         f"above the dawn-park threshold ({threshold:+.0f}°), so "
+                         f"a mount that is not parked may be tracking toward it "
+                         f"with nothing watching{self._fallback_note()} "
+                         f"(blind for {mins:.0f} min, tick {n})", "safety")
+
+    def _sun_against_dawn_threshold(self, cfg) -> tuple[bool, float] | None:
+        """``(is the Sun at or above the dawn-park threshold, that threshold)``,
+        or None when this net cannot tell: no site has been set, or the Sun
+        cannot be computed. Never raises: a bookkeeping failure must not cost
+        the blind line it rides on."""
+        try:
+            site = self.hub.site
+            if site.get("is_default", True):
+                return None
+            alt, _az = sun_altaz(site["latitude"], site["longitude"],
+                                 self._clock())
+            threshold = park_threshold_deg(cfg)
+            return alt >= threshold, threshold
+        except Exception:       # noqa: BLE001 - see the docstring
+            return None
 
     def _fallback_note(self) -> str:
         """Why the blind fallback has nothing to project from, or "" when it
         has. Said on every blind line, not just the first: the line an operator
         reads at warning or error is the one that must not leave them believing
         a last-known position is covering for the dark mount."""
+        if self._parked_noted_at is not None:
+            return ("; a park was confirmed after the last position was read, "
+                    "so the tube is taken as parked until the mount can be "
+                    "read again")
         if self._last_read_at is None:
             return ("; no position has been read since this server started, "
                     "so there is no last-known pointing to project from")
@@ -801,3 +983,4 @@ class SunWatch:
         self._blind_reason = None
         self._blind_count = 0
         self._blind_park_tries = 0
+        self._blind_daylight_said = False

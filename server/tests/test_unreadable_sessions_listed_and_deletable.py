@@ -204,7 +204,16 @@ def test_each_kind_is_listed_with_its_reason(client, kind):
 def test_each_kind_is_deletable(client, kind):
     """DELETE removes the file, keeps its ``.bak`` and its thumbs directory
     (#266: even a ``.bak`` that is not a ledger, since the delete never reads
-    it), and the list no longer shows it.
+    it), and the list shows the file no more: the one row left is the kept
+    ``.bak``, listed as an ORPHAN row.
+
+    DELIBERATE PIN CHANGE (backlog WP-109, #280, wave 15 integration). This
+    said the list was EMPTY after the delete. WP-109 lists a kept backup whose
+    session file is gone as an orphan row (so the operator can restore or
+    remove it through the API and both UIs), and this delete keeps the ``.bak``
+    on purpose, so the list is no longer empty: it holds exactly that backup.
+    What the case still pins is that the deleted FILE is not listed (no row of
+    the unreadable kind), and that the one row is the orphan.
 
     RED under mutant "delete loads the session first" (the route's first
     ``except SessionUnreadable: s = None`` removed, i.e. ``session_store.
@@ -247,7 +256,10 @@ def test_each_kind_is_deletable(client, kind):
     assert r.json()["deleted"] == SID
     assert (path.exists(), bak.exists(), side.exists()) == (False, True,
                                                              True)
-    assert client.get("/api/sessions").json()["sessions"] == []
+    rows = client.get("/api/sessions").json()["sessions"]
+    assert [(r["id"], r.get("orphan")) for r in rows] == [(SID, True)], (
+        f"the list after the delete must hold only the kept backup, as an "
+        f"orphan row: {rows}")
 
 
 class _EngineRunning:

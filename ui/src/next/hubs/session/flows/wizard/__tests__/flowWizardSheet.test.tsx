@@ -307,12 +307,29 @@ function nextStep(): void {
   assert(b && b.getAttribute("aria-disabled") !== "true", `NEXT is locked: ${b?.getAttribute("title")}`);
   click(b);
 }
+const stepNow = (): string | null => q("wizard-step")?.getAttribute("data-step") ?? null;
+/** Press NEXT until the wizard is on `step`, and say which steps it passed.
+ *  Every press must LEAVE the step it was on and the loop is bounded, so a step
+ *  that is never reached fails here by name and the walk does not count presses
+ *  (#720: adding NIGHT and RESUME to the wizard, backlog WP-100 / #196, turned
+ *  two hard-coded presses into red cases that had nothing to do with either). */
+function nextUntil(step: string): string[] {
+  const visited: string[] = [];
+  for (let i = 0; i < 12 && stepNow() !== step; i++) {
+    const was = stepNow();
+    nextStep();
+    assert(stepNow() !== was, `NEXT did not leave ${was}`);
+    visited.push(String(stepNow()));
+  }
+  assert(stepNow() === step, `NEXT never reached ${step}: stopped on ${stepNow()} (passed ${visited.join(", ")})`);
+  return visited;
+}
 async function walkAndGenerate(): Promise<void> {
-  nextStep();
-  nextStep();
+  nextUntil("filters");
   for (const f of ["L", "R", "G", "B"]) click(q(`wizard-filter-${f}`));
-  nextStep();
-  nextStep();
+  const passed = nextUntil("review");
+  assert(passed.includes("night") && passed.includes("resume"),
+    `the walk to REVIEW did not pass the NIGHT and RESUME steps: ${passed.join(", ")}`);
   click(btn("wizard-generate"));
   await until("the saved flow's review", () => q("wizard-saved") !== null && btn("wizard-run") !== null);
   await settle();

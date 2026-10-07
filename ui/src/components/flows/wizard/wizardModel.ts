@@ -31,8 +31,16 @@
 // `prefillFromParams`), so a reload or a shared link reopens the same wizard.
 // The keys carry a `wz_` prefix because route params are one flat map for the
 // whole sheet stack: the door underneath keeps its own keys beside them.
+//
+// THE NIGHT AND RESUME STEPS (backlog WP-100, #196) ASK WHAT DUSK WINDOW HOLDS:
+// when the night starts and stops, the lowest altitude a target is shot at, and
+// whether the flow comes back on later nights (the owner's "automatic resume").
+// Each opens on the node's OWN default (`NODE_DEFS.dusk`), and `wizardBody`
+// leaves a key OUT when its answer is that default, so an operator who changed
+// nothing posts the body the sheet always posted: the server's silence is the
+// node's default, and nothing here restates it.
 
-import { TARGET_ANGLES } from "../nodeDefs";
+import { AUTO_RESUME_CHOICES, NODE_DEFS, TARGET_ANGLES } from "../nodeDefs";
 import { GRID_MAX, type RunReadouts } from "../framing/framingModel";
 import { compiledReadouts } from "../framing/framingApi";
 import type { FlowCompileResult, FlowUnmapped, FlowWizardAnswers } from "../../../lib/flowsApi";
@@ -70,6 +78,35 @@ export const NO_OPTICS_REASON = "set the camera and focal length in Settings > O
 /** wizard.py `CYCLES_MAX`: the most subs of each filter a door may ask for. */
 export const CYCLES_MAX = 10_000;
 
+/** wizard.py `CLOCK_TIME`: DUSK WINDOW's choice that reads its time from a
+ *  clock field, for Start and for Stop alike. */
+export const CLOCK_TIME = "Clock time";
+/** wizard.py `DUSK_STARTS`: the Start choices the wizard offers, in the
+ *  editor's order (nodeDefs.ts's DUSK `start` options). */
+export const DUSK_STARTS = ["Astro dusk", "Nautical dusk", "Civil dusk", "Clock time"] as const;
+export type DuskStart = (typeof DUSK_STARTS)[number];
+/** wizard.py `DUSK_STOPS`: the Stop choices the wizard offers. The editor's
+ *  third, "None", is not one: a run with no stop images into daylight and does
+ *  not park at dawn, and the server refuses it for a wizard night. */
+export const DUSK_STOPS = ["Dawn", "Clock time"] as const;
+export type DuskStop = (typeof DUSK_STOPS)[number];
+/** wizard.py `MIN_ALT_MIN_DEG` and `MIN_ALT_MAX_DEG`: the range of the lowest
+ *  altitude a target is shot at, degrees, both ends answers. */
+export const MIN_ALT_MIN_DEG = 0;
+export const MIN_ALT_MAX_DEG = 90;
+/** wizard.py `AUTO_RESUME_CHOICES`, which is nodes.py's and nodeDefs.ts's own:
+ *  imported from the editor's table, never copied. "On" is the first. */
+export { AUTO_RESUME_CHOICES };
+
+/** DUSK WINDOW's own defaults, read from the node the server creates and the
+ *  editor draws (nodeDefs.ts mirrors nodes.py): what a sheet opens on, and
+ *  what an answer equal to it leaves out of the body. wizardModel.test.ts holds
+ *  each to the wizard's choices, so a default the wizard cannot offer fails a
+ *  test instead of reading as the first choice. */
+const DUSK_DEFAULTS = NODE_DEFS.dusk.params as {
+  start: DuskStart; stop: DuskStop; minAlt: number; autoResume: string;
+};
+
 /** The two angles a mosaic may be laid out at (wizard.py `MOSAIC_ANGLES`,
  *  unpacked from `TARGET_ANGLES` there as here, so a fourth angle added to the
  *  node fails the parity test instead of being offered to a grid). */
@@ -88,17 +125,21 @@ export const DEFAULT_CYCLES = 10;
 
 // ------------------------------------------------------------------ steps
 
-export type WizardStep = "target" | "framing" | "filters" | "guiding" | "review";
+export type WizardStep = "target" | "framing" | "filters" | "guiding" | "night" | "resume" | "review";
 
-/** The stepped sheet's order (Revision 2 ruling 4). The stop condition and
- *  auto-resume steps are not built: they wait on #191 and #195. */
-export const STEPS: readonly WizardStep[] = ["target", "framing", "filters", "guiding", "review"];
+/** The stepped sheet's order (Revision 2 ruling 4). NIGHT (the start, the
+ *  stop and the altitude floor, #191) and RESUME (automatic resume on later
+ *  nights, #195) sit between GUIDING and the review; backlog WP-100 built
+ *  them. */
+export const STEPS: readonly WizardStep[] = ["target", "framing", "filters", "guiding", "night", "resume", "review"];
 
 export const STEP_TITLE: Record<WizardStep, string> = {
   target: "TARGET",
   framing: "FRAMING",
   filters: "FILTERS",
   guiding: "GUIDING",
+  night: "NIGHT",
+  resume: "RESUME",
   review: "REVIEW",
 };
 
@@ -198,14 +239,34 @@ export interface WizardAnswers {
   /** Typed text; read by `cyclesOf`. */
   cycles: string;
   guiding: boolean;
+  /** NIGHT (backlog WP-100): when the night starts and stops, and the lowest
+   *  altitude a target is shot at. Each opens on DUSK WINDOW's own default
+   *  (`DUSK_DEFAULTS`). A clock is typed text, read by `clockOf` and only
+   *  asked beside its "Clock time"; the altitude is typed text, read by
+   *  `minAltOf`. */
+  start: DuskStart;
+  startClock: string;
+  stop: DuskStop;
+  stopClock: string;
+  minAlt: string;
+  /** RESUME: the owner's "automatic resume on subsequent nights until capture
+   *  quota is fulfilled". On opens, as DUSK WINDOW's missing-key default is On
+   *  (`dusk_auto_resume`); `wizardBody` writes "Off" only. */
+  autoResume: boolean;
 }
+
+/** Whether a DUSK WINDOW `autoResume` value is On: anything but an explicit
+ *  "Off", as nodes.py `dusk_auto_resume` reads it. */
+const autoResumeOn = (v: string): boolean => v !== AUTO_RESUME_CHOICES[1];
 
 /** The answers a sheet opens with. The angle question starts from what did
  *  arrive (a mode with no PA keeps its mode, a PA with "Any angle" keeps its
  *  number), so the operator finishes the angle rather than retyping it. No
  *  filter is ticked: which filters to shoot is the operator's answer, and a
  *  door knows nothing of it. Guiding starts on, as it does in both other
- *  sheets that ask it. */
+ *  sheets that ask it. NIGHT and RESUME open on the DUSK WINDOW node's own
+ *  defaults (`DUSK_DEFAULTS`), so a sheet nobody changes them in posts none
+ *  of the six keys. */
 export function initialAnswers(p: WizardPrefill): WizardAnswers {
   const mode = p.angleMode !== null && (MOSAIC_ANGLES as readonly string[]).includes(p.angleMode)
     ? (p.angleMode as MosaicAngle) : null;
@@ -218,6 +279,12 @@ export function initialAnswers(p: WizardPrefill): WizardAnswers {
     drafts: {},
     cycles: String(DEFAULT_CYCLES),
     guiding: true,
+    start: DUSK_DEFAULTS.start,
+    startClock: "",
+    stop: DUSK_DEFAULTS.stop,
+    stopClock: "",
+    minAlt: String(DUSK_DEFAULTS.minAlt),
+    autoResume: autoResumeOn(DUSK_DEFAULTS.autoResume),
   };
 }
 
@@ -236,6 +303,23 @@ export function cyclesOf(text: string): number | null {
   if (!/^\d+$/.test(t)) return null;
   const n = Number(t);
   return n >= 1 && n <= CYCLES_MAX ? n : null;
+}
+
+/** A typed clock time as the server reads it (`checked_clock`): trimmed,
+ *  strict HH:MM on the 24-hour clock, or null. ASCII digits only, as there. */
+export function clockOf(text: string): string | null {
+  const t = text.trim();
+  return /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(t) ? t : null;
+}
+
+/** A typed altitude floor in degrees, or null for anything that is not a
+ *  plain decimal number from `MIN_ALT_MIN_DEG` to `MIN_ALT_MAX_DEG`. A plain
+ *  decimal and not `Number(text)`, which reads "" as 0 and "0x1A" as 26. */
+export function minAltOf(text: string): number | null {
+  const t = text.trim();
+  if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= MIN_ALT_MIN_DEG && n <= MIN_ALT_MAX_DEG ? n : null;
 }
 
 /** The live rig as the wizard reads it: the camera field at bin 1 (null
@@ -297,6 +381,15 @@ export const NEED_ANGLE =
   "A mosaic is laid out at one camera angle: choose ROTATE TO or CAMERA FIXED AT, and type the PA in degrees.";
 export const NEED_FILTER = "Tick at least one filter.";
 export const NEED_CYCLES = `Set how many subs of each filter to take: a whole number from 1 to ${CYCLES_MAX}.`;
+/** NIGHT's three gaps, each in words and with an example, as NEED_COORDS is:
+ *  a "Clock time" with no time is a boundary that never arrives, and the
+ *  server refuses it, so the sheet says so before GENERATE. */
+export const NEED_START_CLOCK =
+  "Type the time the night starts, as HH:MM on the 24-hour clock (21:30): a Clock time start has no other way to say when.";
+export const NEED_STOP_CLOCK =
+  "Type the time the night stops, as HH:MM on the 24-hour clock (03:30): a Clock time stop has no other way to say when.";
+export const NEED_MIN_ALT =
+  `Type the lowest altitude to shoot at, in degrees: a number from ${MIN_ALT_MIN_DEG} to ${MIN_ALT_MAX_DEG}.`;
 
 /** Why FILTERS waits on an exposure box, naming the filter. */
 export function exposureReason(filter: string): string {
@@ -357,6 +450,17 @@ export function stepReason(
       const over = overCap(a.plan);
       return over.length > 0 ? capReason(over) : null;
     }
+    case "night": {
+      // In the order the step draws its rows. A clock is asked only beside
+      // its "Clock time": a time typed and then abandoned for another
+      // choice is not sent (`wizardBody`) and so is not a gap.
+      if (a.start === CLOCK_TIME && clockOf(a.startClock) === null) return NEED_START_CLOCK;
+      if (a.stop === CLOCK_TIME && clockOf(a.stopClock) === null) return NEED_STOP_CLOCK;
+      return minAltOf(a.minAlt) === null ? NEED_MIN_ALT : null;
+    }
+    case "resume":
+      // A choice between two answers that both stand: it has no gap.
+      return null;
     case "review":
       return null;
   }
@@ -391,7 +495,16 @@ export function firstGap(
  *  that takes them; ONE TARGET (a 1 x 1 framing, or a mosaic planned as one)
  *  sends none of them, because the generator refuses a grid answer with any
  *  other kind (`_mosaic_answers_belong`), and the coordinates are then the
- *  framing's centre. */
+ *  framing's centre.
+ *
+ *  NIGHT AND RESUME (backlog WP-100) SEND ONLY WHAT WAS CHANGED: a key whose
+ *  answer is DUSK WINDOW's own default is left out, because the server reads
+ *  a missing key as "not given" and writes nothing, which is the node's
+ *  default already. That is what keeps the recorded request byte for byte
+ *  (a sheet nobody changed these in posts the body it always did), and why
+ *  the answer is never sent as a restatement of what the server has. A clock
+ *  goes with its "Clock time" and with nothing else, the server refusing it
+ *  anywhere else; the keys come in the server model's order. */
 export function wizardBody(p: WizardPrefill, a: WizardAnswers): FlowWizardAnswers {
   const t = targetOf(p, a);
   const mosaic = plansMosaic(p, a);
@@ -419,6 +532,21 @@ export function wizardBody(p: WizardPrefill, a: WizardAnswers): FlowWizardAnswer
     if (cycles !== null) body.cycles = cycles;
   }
   body.guiding = a.guiding;
+  if (a.stop !== DUSK_DEFAULTS.stop) {
+    body.stop = a.stop;
+    const clock = clockOf(a.stopClock);
+    if (a.stop === CLOCK_TIME && clock !== null) body.stop_clock = clock;
+  }
+  if (a.start !== DUSK_DEFAULTS.start) {
+    body.start = a.start;
+    const clock = clockOf(a.startClock);
+    if (a.start === CLOCK_TIME && clock !== null) body.start_clock = clock;
+  }
+  const alt = minAltOf(a.minAlt);
+  if (alt !== null && alt !== Number(DUSK_DEFAULTS.minAlt)) body.min_alt = alt;
+  if (a.autoResume !== autoResumeOn(DUSK_DEFAULTS.autoResume)) {
+    body.auto_resume = a.autoResume ? AUTO_RESUME_CHOICES[0] : AUTO_RESUME_CHOICES[1];
+  }
   return body;
 }
 
@@ -592,6 +720,57 @@ export function reviewLines(r: RunReadouts): string[] {
     `${plural(r.subs_total, "sub", "subs")} on one panel`,
     `${hoursWords(r.total_s)} h in all`,
   ];
+}
+
+/** The NIGHT answers as the pre-generate review words them: where the night
+ *  starts and stops and the altitude floor, as ANSWERED. A restatement, not a
+ *  computation: no window, no hours and nothing of the sky (the doctor's lines
+ *  and the server's brief, after GENERATE, are where a night is judged). A
+ *  clock shows as typed while it is not a valid time, so the line never
+ *  invents one. */
+export function nightWords(a: WizardAnswers): string {
+  const at = (text: string) => clockOf(text) ?? (text.trim() || "no time");
+  const start = a.start === CLOCK_TIME ? `${at(a.startClock)} (clock time)` : a.start.toLowerCase();
+  const stop = a.stop === CLOCK_TIME ? `${at(a.stopClock)} (clock time)` : a.stop.toLowerCase();
+  const alt = minAltOf(a.minAlt);
+  return `from ${start} to ${stop}, min altitude ${alt === null ? a.minAlt.trim() || "not set" : `${alt} deg`}`;
+}
+
+/** The RESUME answer as the pre-generate review words it. */
+export function resumeWords(a: WizardAnswers): string {
+  return a.autoResume
+    ? "on: it resumes on subsequent nights until every frame is taken"
+    : "off: a subsequent night does not resume it, CONTINUE it by hand";
+}
+
+// ------------------------------------------------------- the server's brief
+
+/** Where the review's first line stands: asked for, read, or not read. The
+ *  brief is the server's own sentence about the saved flow (tonight.py
+ *  `brief`, read back from the graph with every number as the graph holds it),
+ *  and the review prints it and writes none of it. It comes from a read of its
+ *  own, so it is NEVER a gate: a failed read is `unavailable`, said in words,
+ *  and leaves RUN exactly as the compile leaves it. */
+export type BriefRead =
+  | { state: "waiting" }
+  | { state: "ok"; text: string }
+  | { state: "unavailable" };
+
+export const BRIEF_WAITING = "Waiting for the server's brief of the saved flow.";
+export const BRIEF_UNAVAILABLE = "The brief is unavailable.";
+
+/** `brief` out of a Tonight answer, or null when it is not text or is blank.
+ *  Only that one key is read and nothing else of the answer is kept: the rest
+ *  of it is derived from the site, and the review has no use for it. */
+export function briefOf(answer: unknown): string | null {
+  if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return null;
+  const b = (answer as Record<string, unknown>).brief;
+  return typeof b === "string" && b.trim() !== "" ? b.trim() : null;
+}
+
+/** The review's first line for a read: the brief itself, or why there is none. */
+export function briefLine(read: BriefRead): string {
+  return read.state === "ok" ? read.text : read.state === "waiting" ? BRIEF_WAITING : BRIEF_UNAVAILABLE;
 }
 
 /** What the review prints for one block: its lines, or why it has none. */

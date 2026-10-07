@@ -41,6 +41,18 @@ DELIBERATE_ROUND_COUNTS = {
     # would just be this same round count spelled differently.
     "test_asiair_backend.py::"
     "test_the_event_loop_keeps_running_during_a_slow_rpc.ticker",
+    # The stand-in scheduler (wave 15, WP-116, #702): it hands the loop back
+    # for 40 turns of 5 ms and, at turn 20 exactly, holds the loop's thread
+    # for 1.5 bounds, which is what a starved thread looks like to the spin
+    # watchdog. The count IS the fixture (the stall must land in the middle
+    # of a night that otherwise yields), not a wait for a condition: nothing
+    # is being waited on, and "until N turns" would be this same loop spelled
+    # differently. Taking this entry out reproduces the red the merged tree
+    # showed before it was added: `test_group_harness_watchdog.py::
+    # test_a_starved_loop_is_not_a_spin_under_the_non_spin_bound.starved_once
+    # at line 293`.
+    "test_group_harness_watchdog.py::"
+    "test_a_starved_loop_is_not_a_spin_under_the_non_spin_bound.starved_once",
 }
 
 #: Loops of #610's exact shape that this scan found OUTSIDE the 19 files

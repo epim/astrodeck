@@ -34,6 +34,7 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 
 const { ApiError } = await import("../../../../../api");
 const { activateErrorMessage } = await import("../rigConnect");
+const { noteRemoteStatus, resetRelayForTests } = await import("../../../../lib/relay");
 
 let passed = 0;
 let failed = 0;
@@ -69,6 +70,66 @@ test("the plain busy cause still reads as a capitalized sentence", () => {
       + "or force-activate from the profiles sheet.",
     `unexpected message for the plain cause: "${msg}"`,
   );
+});
+
+// MUTANT "the relay is pointed at the profiles sheet's force" (rigConnect.ts:
+// `viaRelay ? ... : ...` made always the LAN wording). Observed, "4/5 passed":
+// "x on the relay the coded 409 says forcing needs the LAN, and points nowhere:
+// unexpected relay message: "A sequence is running. Stop it first, or
+// force-activate from the profiles sheet."".
+test("on the relay the coded 409 says forcing needs the LAN, and points nowhere", () => {
+  const msg = activateErrorMessage(
+    new ApiError("a sequence is running", 409, false, "running"), true);
+  assert(msg === "A sequence is running. Stop it first: forcing the switch needs the LAN, "
+    + "and you are connected through the relay.", `unexpected relay message: "${msg}"`);
+  assert(!/force-activate/.test(msg),
+    `the relay was pointed at a force-activate it cannot use: "${msg}"`);
+  const recovering = activateErrorMessage(
+    new ApiError(RECOVERING_DETAIL, 409, false, "running"), true);
+  assert(recovering.includes("turns that session's auto-resume off"),
+    `the relay message dropped the server's own reason: "${recovering}"`);
+});
+
+test("the relay wording changes only the coded 409", () => {
+  const lane = activateErrorMessage(new ApiError("'profile' is already running", 409), true);
+  assert(lane === "Another profile is still connecting - wait for it to finish before switching again.",
+    `the lane guard changed on the relay: "${lane}"`);
+  assert(activateErrorMessage(new Error("boom"), true) === "boom", "a plain error changed on the relay");
+});
+
+// THE DEFAULT IS THE WIRING (wave 15 verifier). Every production caller passes
+// the error alone (`activateErrorMessage(e)`), so the relay wording reaches an
+// operator only through `viaRelay`'s default, `onRelay()`. The cases above pass
+// `viaRelay` by hand, so a default that read `false` (the relay told to point at
+// a force it cannot use) left all of them green.
+//
+// MUTANT "the default ignores the relay" (rigConnect.ts: `viaRelay: boolean =
+// onRelay()` made `viaRelay: boolean = false`). Run from a byte backup and
+// restored byte-identically (sha256 compared): the cases above stay 5/5, and
+// this one is red:
+// "x the default reads the origin: on the relay, with no second argument, the
+// coded 409 says forcing needs the LAN: the relay was pointed at a
+// force-activate it cannot use: "A sequence is running. Stop it first, or
+// force-activate from the profiles sheet."".
+test("the default reads the origin: on the relay, with no second argument, the coded 409 says forcing needs the LAN", () => {
+  noteRemoteStatus({ via: "relay" });
+  try {
+    const msg = activateErrorMessage(
+      new ApiError("a sequence is running", 409, false, "running"));
+    assert(/forcing the switch needs the LAN/.test(msg) && !/force-activate/.test(msg),
+      `the relay was pointed at a force-activate it cannot use: "${msg}"`);
+  } finally {
+    resetRelayForTests();
+  }
+  noteRemoteStatus({ via: "direct" });
+  try {
+    const msg = activateErrorMessage(
+      new ApiError("a sequence is running", 409, false, "running"));
+    assert(/force-activate from the profiles sheet/.test(msg) && !/needs the LAN/.test(msg),
+      `the LAN was told forcing needs the LAN: "${msg}"`);
+  } finally {
+    resetRelayForTests();
+  }
 });
 
 test("the uncoded lane-busy 409 keeps its own sentence", () => {
