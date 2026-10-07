@@ -455,9 +455,16 @@ operator or admin access"); role: "connect a camera first"; busy: the
   `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`/`_EXACT`: `/api/config`,
   `/api/alerts`, `/api/drivers`, `/api/profiles`, `/api/connect`,
   `/api/survey/pack`, `/api/ephemeris`, `/api/locations`,
-  `/api/switch/ports`, the update routes, `/api/users`, `/api/auth/*` - with
-  403 `code: "local_only"`, because a tunnelled session is a replayable
-  bearer credential. Every control that issues one of these writes passes
+  `/api/switch/ports`, the update routes, `/api/auth/*`, the password reset
+  under `/api/users` - with 403 `code: "local_only"`, because a tunnelled
+  session is a replayable bearer credential. `/api/users` is NOT fenced as a
+  whole any more (#685): the list read and four changes (a Google-only viewer
+  or operator, a role move between those two, enable/disable, delete of a
+  non-admin) are open over the relay behind a sign-in under five minutes old,
+  and an unforced `POST /api/profiles/<id>/activate` is allow-listed through
+  the `/api/profiles` prefix; only the rows inside those that the rig still
+  refuses carry a per-control LAN lock. Every control that issues one of
+  these writes passes
   `useLock({ needsLan: true, ... })` so it renders honest-locked with
   `LOCAL_ONLY_REASON` ("This changes the rig's own settings, so it needs the
   LAN - you are connected through the relay.") before the press, never after

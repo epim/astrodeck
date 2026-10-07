@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
+import threading
 from pathlib import Path
 
 VENDOR_ROOT = Path(__file__).resolve().parent.parent / "vendor"
@@ -41,6 +42,64 @@ VENDOR_ROOT = Path(__file__).resolve().parent.parent / "vendor"
 PLAYERONE_SDK_ENV = "ASTRODECK_PLAYERONE_SDK_DIR"
 
 
+#: ``(the platform.machine callable the answer came from, the answer)``, or
+#: None before the first read. See `_machine`.
+_machine_cache: tuple[object, str] | None = None
+_MACHINE_LOCK = threading.Lock()
+
+
+def _machine() -> str:
+    """The machine type, lower-cased, without asking WMI on Windows and asking
+    ``platform.machine()`` at most once per process everywhere else (#699).
+
+    WINDOWS READS THE ENVIRONMENT. ``platform.machine()`` there costs about
+    140 ms and two WMI queries on its first call, from CPython 3.12 on, and
+    ``platform_tag`` is reached from ``find_astap`` on every solve resolve,
+    from worker threads. Nothing serialises that first call: six racing
+    threads issued twelve concurrent WMI queries, which were the "Windows
+    fatal exception: code 0x8007000e" dumps in passing test runs and, once in
+    a hundred under load, an ``OSError: [Errno 9]`` that failed a run whose
+    tests had all passed. Measured under 40 CPU burners, eight threads racing
+    that first call ended the process with a segmentation fault in 22 of 25
+    runs; the same threads behind the lock below, 3 of 25; with the first
+    call made on the main thread, 0 of 25. So the only safe number of WMI
+    calls from a worker thread is none. ``PROCESSOR_ARCHITEW6432`` (the
+    native architecture, set for a 32-bit process on 64-bit Windows) and
+    ``PROCESSOR_ARCHITECTURE`` are what CPython itself falls back on when
+    WMI fails (``platform._get_machine_win32``), so they name the same
+    machine.
+
+    EVERYWHERE ELSE, AND WINDOWS WITHOUT THOSE VARIABLES, takes the answer
+    from ``platform.machine()`` once, holding a lock around the first call (a
+    cache alone would not do: ``functools.lru_cache`` lets two threads compute
+    one missing key at once).
+
+    The cache is keyed on the callable the answer came from, not on nothing:
+    the machine cannot change under a running process, but the callable can
+    be replaced, and the tests that ask what the tag would be on another box
+    (``test_sdk_paths.py``, ``test_astap_bundle.py``) do exactly that. A
+    replaced ``platform.machine`` is a different question and gets its own
+    answer, so they need no reset hook and cannot be given a stale one.
+    """
+    global _machine_cache
+    if sys.platform == "win32":
+        native = (os.environ.get("PROCESSOR_ARCHITEW6432")
+                  or os.environ.get("PROCESSOR_ARCHITECTURE"))
+        if native:
+            return native.lower()
+    probe = platform.machine
+    cached = _machine_cache
+    if cached is not None and cached[0] is probe:
+        return cached[1]
+    with _MACHINE_LOCK:
+        cached = _machine_cache           # a thread that waited finds it here
+        if cached is not None and cached[0] is probe:
+            return cached[1]
+        answer = probe().lower()
+        _machine_cache = (probe, answer)
+        return answer
+
+
 def platform_tag() -> str:
     """The vendored-library subdirectory for this machine.
 
@@ -49,7 +108,7 @@ def platform_tag() -> str:
     thing under two names (Linux and macOS report it differently), so both map
     to one tag.
     """
-    machine = platform.machine().lower()
+    machine = _machine()
     if sys.platform == "darwin":
         # Universal/fat dylibs are the norm on macOS, so one directory serves
         # both Apple silicon and Intel.

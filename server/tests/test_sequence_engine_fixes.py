@@ -91,6 +91,26 @@ async def wait_for(predicate, timeout=30.0):
     return False
 
 
+def record_state_transitions(engine, monkeypatch) -> list[dict]:
+    """Every state ``engine`` publishes, in order: the merged ``engine.state``
+    as it stood right after each ``_set_state`` (#714).
+
+    A test that polls ``engine.state`` sees only the states that happen to
+    last until its next poll; a state the engine publishes and then replaces
+    inside one poll, or before the first one, is invisible to it. Recording
+    the transitions makes "the engine passed through X, and then through Y"
+    a statement about the engine rather than about how the box was loaded.
+    Patched on the instance, so call it BEFORE ``engine.start``."""
+    seen: list[dict] = []
+    real_set_state = engine._set_state
+
+    def record(**kw):
+        real_set_state(**kw)
+        seen.append(dict(engine.state))
+    monkeypatch.setattr(engine, "_set_state", record)
+    return seen
+
+
 def _light_target(name="M42", **kw):
     base = dict(name=name, ra_hours=5.5881, dec_deg=-5.3911, center=False,
                 autofocus_first=False,
@@ -326,24 +346,50 @@ async def test_schedule_state_cleared_once_gated_target_starts(sim_hub, temp_sto
     target's window is gated must not survive past the wait: once the gated
     target actually starts running, ``engine.state`` must no longer carry a
     stale 'schedule' key (GET /api/sequence/state, the monitor snapshot, and the
-    WS payload all serve ``engine.state`` verbatim)."""
+    WS payload all serve ``engine.state`` verbatim).
+
+    THE CLOCK IS JUMPED, NOT RACED (#714). This used to run ``time.time`` 3600x
+    fast, so a gate 10 minutes out opened 0.17 s of real time after the test
+    took its first reading. The engine's first look at the gate comes some
+    real time after that (``start`` has to bring the run up first), so on a
+    loaded box the gate was already open at the first look, the engine never
+    published 'waiting' at all, and the test failed with 'all targets
+    complete' on a run that was behaving. Reproduced at will by holding the
+    loop 0.5 s after ``start()``, which is done below on purpose. Now the
+    clock is the real one plus an offset that only the test moves: the gate
+    stays shut for as long as the engine takes to reach it, however long that
+    is, and opens at the moment the test says.
+
+    The states are READ FROM THE ENGINE'S OWN TRANSITIONS
+    (`record_state_transitions`) rather than polled out of ``engine.state``.
+    The old poll (``target == "B" and "schedule" not in state``) was also
+    satisfied by the run's terminal publish, which clears ``schedule`` for
+    its own reasons, so it could not tell the clear this test is about from
+    that one. Here the publish that starts the target, and every publish
+    after it, must be free of the key.
+
+    MUTANT "the start of the target does not clear the wait" (the
+    ``schedule=None`` argument of the ``slewing to`` publish in
+    `SequenceEngine._setup_target` deleted): RED (observed):
+        E   AssertionError: the publish that starts B still carries the wait's
+        schedule block: {'state': 'waiting', 'reason': ...
+    """
     set_safety(temp_store, enabled=False)
 
-    # Accelerate the engine's clock 3600x (1 real second = 1 fake hour) so a
-    # target gated a few *wall-clock* minutes out becomes ready after only a
-    # couple of real seconds. Exercises the SAME schedule.py window-resolution
-    # math (HH:MM clock start) as the sibling "mount stops tracking" test above
-    # — only the rate real time advances is sped up. asyncio's own scheduling
-    # uses time.monotonic (unaffected by patching time.time), so this does not
-    # break the event loop / wait_for polling below.
+    # The real clock, plus an offset the test alone moves. asyncio's own
+    # scheduling uses time.monotonic, which this does not touch.
     real_time = time.time
-    t0 = real_time()
+    offset_s = [0.0]
 
-    def fast_time():
-        return t0 + (real_time() - t0) * 3600.0
-    monkeypatch.setattr(time, "time", fast_time)
+    def jumped_time():
+        return real_time() + offset_s[0]
+    monkeypatch.setattr(time, "time", jumped_time)
+    # `_wait_until` sleeps min(this, time left) of REAL seconds per tick, and
+    # only notices the jump at the next tick: 5 s each would make the test
+    # wait out the tick it was in.
+    monkeypatch.setattr(engine_mod, "SCHEDULE_WAIT_STEP_S", 0.05)
 
-    future = time.strftime("%H:%M", time.localtime(t0 + 10 * 60))  # 10 min out
+    future = time.strftime("%H:%M", time.localtime(time.time() + 10 * 60))
     b = _light_target(name="B", ra_hours=6.0, dec_deg=-6.0,
                       steps=[ExposureStep(filter="L", exposure_s=0.05, count=1)])
     b.schedule.start_mode = "time"
@@ -353,17 +399,42 @@ async def test_schedule_state_cleared_once_gated_target_starts(sim_hub, temp_sto
                         targets=[b])
 
     engine = SequenceEngine(sim_hub)
+    states = record_state_transitions(engine, monkeypatch)
     engine.start(plan)
+    # A box too loaded to run the engine for half a second. Under the old
+    # clock the gate was open by the time this returned.
+    time.sleep(0.5)
     try:
         assert await wait_for(
-            lambda: (engine.state.get("schedule") or {}).get("state") == "waiting",
-            timeout=20), engine.state
-        # the (accelerated) wait ends and B starts running — the stale schedule
-        # sub-state must be cleared, not merged forward forever.
+            lambda: any((s.get("schedule") or {}).get("state") == "waiting"
+                        for s in states),
+            timeout=20), states[-1] if states else "no state was published"
+        waiting = [s for s in states
+                   if (s.get("schedule") or {}).get("state") == "waiting"]
+        assert waiting[0].get("target") == "B", waiting[0]
+
+        # the (jumped) wait ends and B starts running: the publish that says
+        # so, and everything after it, must not carry the wait forward.
+        mark = len(states)
+        offset_s[0] = 11 * 60.0
         assert await wait_for(
-            lambda: engine.state.get("target") == "B"
-                    and "schedule" not in engine.state,
-            timeout=20), engine.state
+            lambda: any(str(s.get("detail") or "").startswith("slewing to B")
+                        for s in states[mark:]),
+            timeout=20), states[-1]
+        started = next(i for i in range(mark, len(states))
+                       if str(states[i].get("detail") or "")
+                       .startswith("slewing to B"))
+        assert "schedule" not in states[started], (
+            f"the publish that starts B still carries the wait's schedule "
+            f"block: {states[started].get('schedule')}")
+
+        assert await wait_for(lambda: not engine.running, timeout=20), states[-1]
+        assert states[-1].get("state") == "complete", states[-1]
+        stale = [s for s in states[started:] if "schedule" in s]
+        assert stale == [], (
+            f"{len(stale)} publish(es) after B started carry a schedule "
+            f"block: {stale[0] if stale else None}")
+        assert "schedule" not in engine.state, engine.state
     finally:
         await engine.abort()
 

@@ -123,6 +123,7 @@ from .. import factory_reset as factory_reset_module
 from .. import gallery as gallery_module
 from .. import capture_geometry
 from .. import gallery_listing
+from .. import rig_beacon
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
@@ -187,7 +188,7 @@ from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                manifest_json, readme_text, weights_csv)
 from ..sequence.resume_arm import ResumeArm
 from ..plans import migrate_plan_policy_fields
-from ..sequence.session import (Session, SessionUnreadable,
+from ..sequence.session import (LiveSessionReadable, Session, SessionUnreadable,
                                 migrate_legacy_resume, session_store)
 from ..sequence.session_files import active_session, files_index
 from ..weather import NoNightError, weather_service
@@ -213,6 +214,13 @@ dispatcher = AlertDispatcher(bus, lambda: config_store.cfg())
 # external dead-man's-switch + emit progress heartbeats (§1.8/§1.9-F). Done by
 # injection (not an import inside the engine) to avoid a circular import.
 engine.dispatcher = dispatcher
+# The dead-man ping carries the rig's status beacon (#606 part A): six words from
+# a closed vocabulary, no site, no coordinates, no label. The source is read at
+# each ping, so it reports the engine and the night log as they are THEN. Set
+# here, beside the engine it describes, because the dispatcher is built above
+# before the engine exists; a beacon that is built and never handed to the
+# dispatcher is a claim nothing keeps (test_w15_rig_beacon.py pins this line).
+dispatcher.beacon_source = rig_beacon.make_source(engine, bus)
 
 # Auto-resume-at-dusk service (sessions spec §5). Started in the lifespan, like
 # the AlertDispatcher; a disarm or any manual start stops its interest (it
@@ -2345,6 +2353,51 @@ class FlowWizardBody(BaseModel):
     cycles: int | None = None
     #: On lights the Guiding chip; off says it stays dark.
     guiding: bool | None = None
+    #: THE NIGHT AND RESUME ANSWERS (backlog WP-100, #196): what the sheet's
+    #: NIGHT and RESUME steps ask, written to the lane's one DUSK WINDOW.
+    #: Every one defaults to None and writes NOTHING then, for the reason the
+    #: door's answers above do: a default here would be written into every
+    #: flow the sheet has ever made, and "silent" is not "answered Dawn".
+    #: Each is checked by the wizard's own reader, before pydantic's coercion
+    #: (a ``true`` is not a stop, and read as 1.0 it would be a floor of one
+    #: degree nobody chose), and the generator checks them again, with the
+    #: pairs that only make sense together (a "Clock time" and its clock).
+    stop: str | None = None
+    stop_clock: str | None = None
+    start: str | None = None
+    start_clock: str | None = None
+    min_alt: float | None = None
+    auto_resume: str | None = None
+
+    @field_validator("stop", mode="before")
+    @classmethod
+    def _stop(cls, v):
+        return flow_wizard.checked_stop(v)
+
+    @field_validator("start", mode="before")
+    @classmethod
+    def _start(cls, v):
+        return flow_wizard.checked_start(v)
+
+    @field_validator("stop_clock", mode="before")
+    @classmethod
+    def _stop_clock(cls, v):
+        return flow_wizard.checked_clock("stop_clock", v)
+
+    @field_validator("start_clock", mode="before")
+    @classmethod
+    def _start_clock(cls, v):
+        return flow_wizard.checked_clock("start_clock", v)
+
+    @field_validator("min_alt", mode="before")
+    @classmethod
+    def _min_alt(cls, v):
+        return flow_wizard.checked_min_alt(v)
+
+    @field_validator("auto_resume", mode="before")
+    @classmethod
+    def _auto_resume(cls, v):
+        return flow_wizard.checked_auto_resume(v)
 
     @field_validator("cycles", mode="before")
     @classmethod
@@ -2622,6 +2675,15 @@ class SessionPatchBody(BaseModel):
     plan: SequencePlan | None = None     # dormant-only full replacement (spec §4)
 
 
+class RetrySetAsideBody(BaseModel):
+    """Body of ``POST /api/sequence/retry-set-aside`` (#600). ``group`` is a
+    group's id (``state.group.id``), or null for every group of the plan.
+    ``session_id`` names the stored session on the DORMANT path, when no run
+    is live; a live run needs none."""
+    group: str | None = None
+    session_id: str | None = None
+
+
 class FramePatchBody(BaseModel):
     override: str | None = None          # "accept" | "reject" | null (clear)
     metrics: dict[str, float] | None = None
@@ -2849,7 +2911,39 @@ _REMOTE_LOCAL_ONLY_EXACT = frozenset({
     "/api/update/config",
     "/api/sync/push/now",
 })
-_REMOTE_LOCAL_ONLY_PREFIXES = ("/api/users", "/api/discover")
+_REMOTE_LOCAL_ONLY_PREFIXES = ("/api/discover",)
+# LAN-only whatever an allow-list row below says: checked BEFORE it, so widening
+# ``_REMOTE_ALLOWED_ROUTES`` later cannot reopen one of these. A password is a
+# credential and the relay would see it in the request body.
+_REMOTE_LOCAL_ONLY_PATTERNS = (
+    re.compile(r"^/api/users/[^/]+/password$"),
+)
+# Prefixes that are FAIL-CLOSED over the relay: a relayed request under one is
+# refused unless a row of ``_REMOTE_ALLOWED_ROUTES`` names its method and path.
+# ``/api/users`` used to be a plain LAN-only prefix (since 173cc996), which left
+# an admin off the LAN unable to list or change anyone (#685); the owner's
+# requirement is that user management is not LAN-only, so four operations are
+# opened, each behind a sign-in under five minutes old for a mutation
+# (``auth.deps.require_recent_signin``) and each narrowed by the content rules
+# in ``auth/local_routes.py``. A route added under /api/users later is LAN-only
+# until somebody lists it here.
+_REMOTE_ALLOWLIST_ONLY_PREFIXES = ("/api/users",)
+# (METHOD, path pattern) rows a relayed request may use even though a fenced
+# prefix covers the path. Exact match on both: a trailing slash, another
+# method or an extra segment is NOT one of these.
+_REMOTE_ALLOWED_ROUTES = (
+    ("GET", re.compile(r"^/api/users$")),
+    ("POST", re.compile(r"^/api/users$")),
+    ("PATCH", re.compile(r"^/api/users/[^/]+$")),
+    ("DELETE", re.compile(r"^/api/users/[^/]+$")),
+    # Activating a profile that is ALREADY SAVED. The route takes a saved id and
+    # nothing else, and the content of a profile can only be written by the
+    # still-fenced POST/PATCH/PUT /api/profiles, so no caller-chosen
+    # destination exists to abuse. ``force`` (abort a running sequence and
+    # disarm auto-resume) is refused over the relay inside ``activate_profile``;
+    # ``/apply``, ``/api/connect/*`` and ``/api/discover`` stay fenced.
+    ("POST", re.compile(r"^/api/profiles/[^/]+/activate$")),
+)
 # These route families either choose host filesystem/network destinations or
 # cause the server to probe/connect to caller-selected local resources. Reads
 # remain available where useful, but no tunnelled bearer session may mutate or
@@ -3141,6 +3235,61 @@ def _path_is_open(path: str) -> bool:
     return False
 
 
+def _under(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _remote_fence_denies(method: str, path: str) -> bool:
+    """True iff a RELAY-tunnelled ``method`` ``path`` must be refused 403
+    ``local_only``. The one decision the fence middleware makes, kept as a pure
+    function so every row of it can be tested without a request.
+
+    Order matters and is the point: the exact paths and the explicit LAN-only
+    patterns are refused FIRST, so no allow-list row can reopen them; then the
+    allow-list; then the fenced prefixes (``/api/users`` fail-closed, the rest
+    for unsafe methods only)."""
+    method = method.upper()
+    if path in _REMOTE_LOCAL_ONLY_EXACT:
+        return True
+    if any(pattern.match(path) for pattern in _REMOTE_LOCAL_ONLY_PATTERNS):
+        return True
+    if any(method == allowed and pattern.match(path)
+           for allowed, pattern in _REMOTE_ALLOWED_ROUTES):
+        return False
+    if any(_under(path, prefix) for prefix in _REMOTE_LOCAL_ONLY_PREFIXES):
+        return True
+    if any(_under(path, prefix)
+           for prefix in _REMOTE_ALLOWLIST_ONLY_PREFIXES):
+        return True
+    unsafe_method = method not in {"GET", "HEAD", "OPTIONS"}
+    return unsafe_method and any(
+        _under(path, prefix) for prefix in _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES)
+
+
+def _tell_sun_watch_the_mount_parked() -> None:
+    """Tell the sun watch a park this route made has been CONFIRMED (#747, the
+    #696 class).
+
+    The sun watch's blind fallback projects from the last position IT read, and a
+    park it did not see leaves that position stale: if the link then drops before
+    its next tick it logs a false "SUN WATCH: ... Parking now." error, which pages
+    the owner, and sends a park to a mount that is already parked. The engine's
+    wind-down and ``dawn_park`` already tell it (#696); the operator's PARK and the
+    roof close's park-for-the-roof did not.
+
+    Reached through the hub (``SunWatch`` sets ``hub.sun_watch`` itself), the way
+    the engine and dawn park reach it, so a hub without one (every test double, a
+    build without the net) is a no-op. Called only AFTER ``tel.park()`` has
+    returned: a park that raised was not confirmed and tells nobody. Never raises:
+    bookkeeping must not turn a park that worked into a failed route."""
+    try:
+        watch = getattr(hub, "sun_watch", None)
+        if watch is not None:
+            watch.note_parked()
+    except Exception:       # noqa: BLE001 - see the docstring
+        pass
+
+
 def create_app(*, bind_host: str | None = None,
                allowed_hosts: str | None = None) -> FastAPI:
     host_allowlist = _trusted_hosts(
@@ -3187,13 +3336,7 @@ def create_app(*, bind_host: str | None = None,
                 return JSONResponse(
                     {"detail": "missing or invalid auth token"}, status_code=401)
         path = request.url.path
-        if (remote and (
-                path in _REMOTE_LOCAL_ONLY_EXACT
-                or any(path == prefix or path.startswith(prefix + "/")
-                       for prefix in _REMOTE_LOCAL_ONLY_PREFIXES)
-                or (unsafe_method and any(
-                    path == prefix or path.startswith(prefix + "/")
-                    for prefix in _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES)))):
+        if remote and _remote_fence_denies(request.method, path):
             return JSONResponse(
                 {"detail": "this security-sensitive operation is LAN-only",
                  "code": "local_only"},
@@ -5964,7 +6107,7 @@ def create_app(*, bind_host: str | None = None,
 
     @app.post("/api/profiles/{profile_id}/activate", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
     @declare(CAP_CONFIG_BACKEND)
-    async def activate_profile(profile_id: str,
+    async def activate_profile(profile_id: str, request: Request,
                                body: ProfileApplyBody | None = None):
         """Set a profile active AND connect its rig (W1.6 / C2). Reuses the
         ``_spawn_connect`` convention so it can't run concurrently with ``apply``
@@ -5977,8 +6120,22 @@ def create_app(*, bind_host: str | None = None,
         alignment is running and ``force`` is not set (the connect is destructive
         - it disconnects the current rig). Auto-resume's recovery ladder counts
         as running (#238); forced, it is stopped with its session disarmed and
-        waited for before the connect (see ``connect_rig``)."""
+        waited for before the connect (see ``connect_rig``).
+
+        Over the relay (#685, backlog ruling) an UNFORCED activate of a saved
+        profile is allowed: it takes only a saved id, the profile's content is
+        written by the still-fenced profile routes, and it already 409s while
+        anything runs. ``force`` is 403 ``local_only`` there, answered before
+        anything else: it aborts a running sequence and disarms auto-resume,
+        which is a decision made at the rig, not by a cookie the relay carries.
+        A relayed caller still needs ``config.backend``, so this opens nothing
+        a role did not already hold."""
         force = bool(body and body.force)
+        if force and _scope_is_remote(request):
+            raise HTTPException(403, detail={
+                "detail": "forcing a profile over a running sequence is "
+                          "LAN-only: it stops the run and disarms auto-resume",
+                "code": "local_only"})
         if not _profile_exists(profile_id):
             raise HTTPException(404, "profile not found")
         busy = _teardown_busy_detail()
@@ -6535,6 +6692,14 @@ def create_app(*, bind_host: str | None = None,
         flow refuses it. The camera field and the measured angle stay rig
         facts too; a client sends none of the three. A refusal of a door
         answer is the same 422, naming the answer.
+
+        THE NIGHT AND RESUME ANSWERS (backlog WP-100, #196): ``stop``,
+        ``stop_clock``, ``start``, ``start_clock``, ``min_alt`` and
+        ``auto_resume``, which the sheet's NIGHT and RESUME steps ask, go to
+        the generator as they came, each None when the body does not carry
+        it, and write nothing then. A "Clock time" without its clock, a clock
+        with no "Clock time" to belong to, and a stop of "None" are refused
+        in the generator's words, the same 422.
         """
         sky = getattr(hub, "last_sky_angle", None)
         measured = sky.get("pa_deg") if isinstance(sky, dict) else None
@@ -6551,7 +6716,10 @@ def create_app(*, bind_host: str | None = None,
                 angle_mode=body.angle_mode, pa_deg=body.pa_deg,
                 use_measured=body.use_measured, skip=body.skip, ra=body.ra,
                 dec=body.dec, cycle_plan=body.cycle_plan, cycles=body.cycles,
-                guiding=body.guiding, rig=_rig_facts(),
+                guiding=body.guiding, stop=body.stop,
+                stop_clock=body.stop_clock, start=body.start,
+                start_clock=body.start_clock, min_alt=body.min_alt,
+                auto_resume=body.auto_resume, rig=_rig_facts(),
                 measured_pa_deg=measured, wheel=_rig_wheel())
         except ValueError as e:
             raise HTTPException(422, detail={"detail": str(e),
@@ -7376,7 +7544,10 @@ def create_app(*, bind_host: str | None = None,
         # store's reason for every file it cannot read (#242), which DELETE
         # removes. No ledger field on those: see ``_unreadable_row``. Such a
         # row says ``backup: true`` when a ``.bak`` sits beside the file,
-        # which DELETE keeps (#266).
+        # which DELETE keeps (#266), and POST .../restore brings back (#280).
+        # A ``.bak`` with no file beside it is a row of its own, ``orphan:
+        # true`` as well (``_orphan_row``): its restore brings the session
+        # back and its DELETE removes the backup and the thumbnails.
         return {"sessions": await asyncio.to_thread(session_store.list)}
 
     @app.get("/api/sessions/{session_id}")
@@ -7658,10 +7829,19 @@ def create_app(*, bind_host: str | None = None,
         # with only ``KeyError`` caught, the delete never ran. It has no
         # status to refuse on, so ``s`` is None and the file's word is
         # silent; the engine's word below still decides whether it runs.
+        #
+        # AND SO IS A BACKUP WITH NO FILE BESIDE IT (#280). ``load`` calls
+        # that ``KeyError`` too, and the delete used to answer 404 for the one
+        # id the list showed: the backup #266 keeps could not be removed
+        # without a shell. It is a hint here, as the status above is; the
+        # locked re-read below decides.
         try:
             s = await asyncio.to_thread(session_store.load, session_id)
         except KeyError:
-            raise HTTPException(404, "session not found")
+            if not await asyncio.to_thread(session_store.has_orphan_backup,
+                                           session_id):
+                raise HTTPException(404, "session not found")
+            s = None
         except SessionUnreadable:
             s = None
         if s is not None and s.status == "active":
@@ -7687,11 +7867,16 @@ def create_app(*, bind_host: str | None = None,
         # (2026-09-24), removing a thumbs directory costs 17 ms at 170
         # frames and 53 ms at 600, once, on a delete the operator asked for.
         with session_store.write_locked():
+            orphan = False
             try:
                 s = session_store.load(session_id)
             except KeyError:
-                # Another delete landed during the drain.
-                raise HTTPException(404, "session not found")
+                # Another delete landed during the drain, unless a backup is
+                # all that is left (#280): then it is that backup's delete.
+                orphan = session_store.has_orphan_backup(session_id)
+                if not orphan:
+                    raise HTTPException(404, "session not found")
+                s = None
             except SessionUnreadable:
                 s = None                # unreadable (#242): see the top
             # THE ENGINE'S WORD AS WELL AS THE FILE'S. They agree unless a
@@ -7731,23 +7916,100 @@ def create_app(*, bind_host: str | None = None,
             # file, not that. ``s is None`` is exactly "unreadable" here: a
             # missing file answered 404 above. A readable session's backup
             # still goes with it, as ``delete`` documents.
-            kept = session_store.delete(session_id, keep_backup=s is None)
+            #
+            # AN ORPHANED BACKUP IS NOT KEPT (#280): ``s is None`` there
+            # means "no file", and the backup is the one thing this delete was
+            # pressed on. Kept again, it would answer 200 and leave the row,
+            # with nothing left to press.
+            kept = session_store.delete(
+                session_id, keep_backup=s is None and not orphan)
         if kept is None:
             return {"deleted": session_id}
-        # In words as well as a key, and naming the file, because nothing
-        # lists a ``.bak``: once the row is gone, this answer is the last
-        # thing that says the backup is there and what it is called. File
-        # names only, never the path: the captures directory is the rig's
-        # filesystem. "If ... intact", because nothing read the backup: the
-        # delete keeps whatever ``.bak`` it finds.
+        # In words as well as a key, and naming the file, because the row
+        # the operator pressed is gone: this answer says what stays and what
+        # it is called. The list then shows the backup as a row of its own
+        # (``orphan``, #280), and the sentence says what that row offers.
+        # File names only, never the path: the captures directory is the
+        # rig's filesystem. "If ... intact", because nothing read the backup:
+        # the delete keeps whatever ``.bak`` it finds.
         return {"deleted": session_id, "backup_kept": kept.name,
                 "detail": (
                     f"Removed {kept.stem}, which could not be read. Its "
                     f"backup {kept.name} remains in the sessions folder, "
-                    f"and so do the session's thumbnails: renaming the "
-                    f"backup to {kept.stem} brings the session log back as it "
-                    f"was when the backup was taken, if the backup itself "
-                    f"is intact.")}
+                    f"and so do the session's thumbnails. The backup is "
+                    f"listed as a session whose file is gone: RESTORE brings "
+                    f"the session log back as it was when the backup was "
+                    f"taken, if the backup itself is intact, and DELETE "
+                    f"removes it.")}
+
+    @app.post("/api/sessions/{session_id}/restore",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def restore_session(session_id: str):
+        # THE RESTORE HALF OF #266 (#280). DELETE of an unreadable file keeps
+        # ``<id>.json.bak``, the copy taken before an ADOPT, because it can be
+        # the last good record of the session log; this puts it back. It
+        # replaces a file that is MISSING or that nothing can read, and never a
+        # readable one (409 ``live_session_readable``): that is the current log,
+        # and a restore is a way back from damage, not an undo. What it
+        # restores is judged first by the store's own judgment, and the answers
+        # are in its words, never pydantic's, which quote what they refused.
+        #
+        # THE ENGINE'S WORD, AS THE DELETE'S. The run's next ledger write puts
+        # its own copy of the session back over whatever was restored, so
+        # while the engine runs THIS session the file is not ours to touch.
+        # Checked once before the drain as a hint and once in the section
+        # that decides.
+        def _running_it() -> bool:
+            ours = getattr(engine, "_session", None)
+            return bool(engine.running and ours is not None
+                        and ours.id == session_id)
+
+        if _running_it():
+            raise HTTPException(409, "cannot restore a running session")
+        # A render left from a finished run ends in ``session_store.save`` of
+        # the engine's in-memory copy, which would put a stale session over
+        # the restored file (the delete's drain, #212, restore-shaped).
+        await engine.drain_thumbs_for_session(session_id)
+        # Judged and written in one synchronous section under the store's
+        # write lock, with no await in it: nothing on the loop can start the
+        # session in between, and no worker-thread write can land in the
+        # middle (#212). On the loop, then, for the same reason as the
+        # delete's unlink; it is a restore the operator asked for, once.
+        with session_store.write_locked():
+            if _running_it():
+                raise HTTPException(409, "cannot restore a running session")
+            try:
+                s = session_store.restore_backup(session_id)
+            except KeyError:
+                raise HTTPException(404, "no backup")
+            except SessionUnreadable as e:
+                # The BACKUP's reason (the live file is not judged for
+                # damage, only for being readable). 422: the request names a
+                # file that is there and cannot be used, as a plan's does.
+                raise HTTPException(422, detail={
+                    "detail": f"the backup cannot be read: {e.reason}",
+                    "code": "backup_unreadable"})
+            except LiveSessionReadable:
+                raise HTTPException(409, detail={
+                    "detail": (f"{session_id}.json can be read, so it is "
+                               "not replaced: restoring is for a session "
+                               "file that is missing or unreadable"),
+                    "code": "live_session_readable"})
+        # File names and counts only, never a path. What the backup cannot
+        # say is said: frames accepted after it was taken are in no copy of
+        # it, and the FITS files, which this never touches, are the record of
+        # them. The status is the one the session now has, not "dormant" by
+        # rule: only an ``active`` backup is demoted, so a backup of a complete
+        # session comes back complete. "Session log", not ledger (the wording
+        # pass, #689).
+        return {"restored": session_id, "accepted": s.total_accepted(),
+                "backup_ts": session_store.backup_mtime(session_id),
+                "detail": (
+                    f"Restored {session_id}.json from its backup. Frames "
+                    f"accepted after the backup was taken are not in it; the "
+                    f"FITS files are untouched. The session is {s.status} "
+                    f"and auto-resume is off.")}
 
     @app.get("/api/sessions/{session_id}/frames/{frame_id}/thumb",
              dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
@@ -8568,6 +8830,11 @@ def create_app(*, bind_host: str | None = None,
             raise _err(e)
         return _spawn("solve", hub.solve_and_sync())
 
+    # Monotonic stamp of the last "position unknown" warning /api/mount/move
+    # wrote (None before the first). A one-slot list, not a global: the rate
+    # limit is about this app's log, and the route below is a closure.
+    move_unknown_warned_at: list[float | None] = [None]
+
     @app.post("/api/mount/move", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.move_axis"})
     async def move_axis(body: MoveAxisBody):
@@ -8590,7 +8857,32 @@ def create_app(*, bind_host: str | None = None,
             # always allowed. force has no meaning here -- only a solar session
             # (solar_avoidance=False) makes _check_solar inert.
             check_solar = getattr(hub, "_check_solar", None)
-            if rate != 0.0 and callable(check_solar):
+            # #144: the cone is measured from where the mount SAYS it points,
+            # and a driver that cannot vouch for that (an AM5 after a reset
+            # reports its home position, the pole, wherever the tube is) turns
+            # the check into a precise answer about nothing - a pass the
+            # operator would trust, or a refusal with no cause. So it is not
+            # run, and the response and one log line say so instead; the jog
+            # itself still goes ahead, because it computes no destination (a
+            # wrong position cannot send it to the wrong point in the sky) and
+            # refusing it would take away the only way to drive a reset mount
+            # home by eye.
+            position_unknown = (rate != 0.0
+                                and not getattr(tel, "position_known", True))
+            if position_unknown:
+                # ONCE A MINUTE: the hold-to-move pad re-asserts its rate about
+                # every 600 ms (``KEEPALIVE_MS``) to feed the deadman, so a line
+                # per post is a hundred identical lines a minute. No coordinates
+                # in it (the home position is the pole, #140).
+                now = time.monotonic()
+                if (move_unknown_warned_at[0] is None
+                        or now - move_unknown_warned_at[0] >= 60.0):
+                    move_unknown_warned_at[0] = now
+                    bus.log("warning",
+                            "manual move: the mount's position is unknown, so "
+                            "the solar-cone check was not run; watch the tube",
+                            "mount")
+            elif rate != 0.0 and callable(check_solar):
                 try:
                     cur_ra, cur_dec = await tel.get_position()
                 except Exception:
@@ -8626,6 +8918,11 @@ def create_app(*, bind_host: str | None = None,
                                 "mount")
                         return {"ok": True, "aborted": True}
                     await tel.move_axis(body.axis, rate)
+            # The pad reads this to know the move ran WITHOUT the cone check.
+            # Absent on every other answer, so a client that predates it sees
+            # exactly what it always saw.
+            if position_unknown:
+                return {"ok": True, "position_known": False}
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)
@@ -8705,6 +9002,9 @@ def create_app(*, bind_host: str | None = None,
                 hub.invalidate_field_solve("the mount is parking")
                 hub.note_pointing_moved()
                 await tel.park()
+            # The sun watch's blind fallback must not project from the pre-park
+            # pointing (#747); after the await, so only a park that returned.
+            _tell_sun_watch_the_mount_parked()
             # PARK IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE TO PROVE.
             #
             # Until 2026-08-02 this path wrote nothing anywhere. The morning
@@ -8745,11 +9045,22 @@ def create_app(*, bind_host: str | None = None,
 
         async def _home():
             t = hub.require("telescope")
+            # READ BEFORE THE HOME IS SENT (#725, #133's second finding). After
+            # an AM5 reset the mount believes it is already at home, so ``:hP#``
+            # moves nothing and "homed" would be a success line written by the
+            # caller regardless of what the callee proved. A mount whose
+            # position is unknown gets NO line here: the driver has already
+            # warned that the tube may not have moved, and a quiet log is more
+            # honest than that warning followed by this claim. Read first so a
+            # driver that clears the flag as it homes cannot turn the answer
+            # into "known" after the fact.
+            known = getattr(t, "position_known", True)
             async with hub._motion_lock:
                 hub.invalidate_field_solve("the mount is homing")
                 hub.note_pointing_moved()
                 await t.find_home()
-            bus.log("info", "mount homed", "mount")   # see park, above
+            if known:
+                bus.log("info", "mount homed", "mount")   # see park, above
         return _spawn("goto", _home(), replace=True)
 
     @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
@@ -8824,6 +9135,10 @@ def create_app(*, bind_host: str | None = None,
                     hub.invalidate_field_solve("the mount is parking for the roof")
                     hub.note_pointing_moved()
                     await tel.park()
+                    # Before the close, which waits on the roof: the blind
+                    # fallback must not project from the pre-park pointing
+                    # for as long as the shutter takes (#747).
+                    _tell_sun_watch_the_mount_parked()
                 from ..sequence.roof import close_observatory
                 return await close_observatory(dome, tel, log=bus.log)
         # replace=True is UNCHANGED behaviour for a second close arriving while
@@ -8982,19 +9297,54 @@ def create_app(*, bind_host: str | None = None,
 
     # ---------------------------------------------------------- rotator
 
+    def _refuse_while_sequence_runs(refused: str, why: str, *,
+                                    lane: str) -> None:
+        """Raise 409 ``sequence_running`` while a run is going, or return
+        (#698, backlog ruling for WP-114). The ONE refusal the rotator's move
+        and solving routes share, so a fourth route that turns or calibrates
+        the camera takes the guard by calling it.
+
+        THE ROUTES, NOT THE HUB. ``hub.rotate_to_pa`` is what the engine
+        itself calls for every rotating panel, so a refusal in the hub would
+        stop the run it exists to protect; only the operator's buttons come
+        through here. STOP (``/api/rotator/halt``) is deliberately not one of
+        them.
+
+        A RUN IS NOT AN EXPOSURE. Between two frames the capture lock is free,
+        which is exactly when ROTATE TO PA used to be accepted and turned the
+        camera under the run: a mosaic panel shot at the wrong angle, a
+        rotating group's angle check failing mid-run, flats and lights at
+        different angles. ``lane`` is the lane the refused route would have
+        spawned on, and ``blocked_by`` names what holds it, the
+        ``lane_blocked`` shape (``_lane_409``); the sentence is at
+        ``detail.detail`` where the panels already read it."""
+        if engine.running:
+            raise _lane_409(
+                f"a sequence is running; {refused} refused, because {why}. "
+                f"Stop the run first",
+                code="sequence_running", lane=lane, blocked_by="sequence")
+
     @app.post("/api/rotator/move",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def rotator_move(body: RotatorMoveBody):
+        _refuse_while_sequence_runs(
+            "rotator move", "it would turn the camera under the run's frames",
+            lane="rotator")
         try:
             rot = hub.require("rotator")
         except DeviceError as e:
             raise _err(e)
         # spec §3.5.2: a manual rotation mid-exposure ruins the frame — refuse.
+        # CODED (#750, the class of #713): ``camera_busy`` in the ``_lane_409``
+        # shape, as the preflight route's own exposure refusal is, so a client
+        # tells it from every other conflict by its code and not by matching the
+        # sentence. The sentence is unchanged and lands at ``detail.detail``.
         if hub._capture_lock.locked():
-            raise HTTPException(
-                409, f"camera is busy ({hub._capture_busy or 'exposing'}); "
-                     f"rotator move refused")
+            raise _lane_409(
+                f"camera is busy ({hub._capture_busy or 'exposing'}); "
+                f"rotator move refused",
+                code="camera_busy", lane="rotator")
         rcfg = config_store.cfg().rotator
         # THE MOTION FENCE (#574, #589): read before the first await below,
         # the same discipline `Hub._approach_rotator`'s docstring asks of
@@ -9067,8 +9417,16 @@ def create_app(*, bind_host: str | None = None,
     async def rotator_sync_to_sky(body: RotatorSyncBody):
         """Measure the sky position angle and tell the rotator where it is.
         MOVES NOTHING. Before this the only way to establish the sky↔mechanical
-        offset was to command a rotation (2026-08-07)."""
+        offset was to command a rotation (2026-08-07).
+
+        Refused while a sequence runs (#698): it exposes and re-calibrates the
+        rotator's sky offset, which the run's angle checks and its next
+        rotation read."""
         _refuse_if_camera_owned()
+        _refuse_while_sequence_runs(
+            "sync to sky",
+            "it would re-calibrate the rotator's sky angle under the run",
+            lane="rotate_to_pa")
         try:
             hub.require("rotator")
             hub.require("camera")
@@ -9101,24 +9459,47 @@ def create_app(*, bind_host: str | None = None,
         file, so the busy test below would refuse it too, but with a
         sentence about a sequence or an exposure that is not what is
         running. ``_refuse_if_camera_owned`` answers with the recording's own
-        code, as it does on every other route that takes the camera."""
+        code, as it does on every other route that takes the camera.
+
+        THE REFUSALS ARE CODED (#713, #698): ``sequence_running`` while a run
+        is going, ``camera_busy`` for an exposure with no run (the live loop's
+        frame, a capture), both in the ``_lane_409`` shape, so a client can
+        tell them from any other 409. A run is named first: it holds the
+        exposure guard for most of its night, and stopping it is what frees
+        the camera.
+
+        THE BUTTON IS THE OPERATOR'S RETEST (#697, backlog ruling for
+        WP-114): ``retest_failed=True`` runs the follow test again when the
+        last one FAILED, keeping the learned sign, so a coupling the owner has
+        re-seated is tested without reconnecting the whole rig. The automatic
+        callers (a goto, the engine) leave a failure standing."""
         _refuse_if_camera_owned()
-        if engine.running or hub._capture_lock.locked():
-            raise HTTPException(
-                409, "camera is busy (a sequence or an exposure is running); "
-                     "rotator preflight refused")
+        _refuse_while_sequence_runs(
+            "rotator preflight",
+            "it turns the rotator about 22 degrees and takes four plate "
+            "solves, which would ruin the run's frames",
+            lane="rotate_to_pa")
+        if hub._capture_lock.locked():
+            raise _lane_409(
+                "camera is busy (an exposure is running); rotator preflight "
+                "refused",
+                code="camera_busy", lane="rotate_to_pa")
         try:
             hub.require("rotator")
             hub.require("camera")
         except DeviceError as e:
             raise _err(e)
-        return _spawn("rotate_to_pa", hub.ensure_rotator_ready())
+        return _spawn("rotate_to_pa",
+                      hub.ensure_rotator_ready(retest_failed=True))
 
     @app.post("/api/rotator/rotate-to-pa",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def rotator_rotate_to_pa(body: RotateToPaBody):
         _refuse_if_camera_owned()
+        _refuse_while_sequence_runs(
+            "rotate to PA", "it would turn the camera under the run's frames",
+            lane="rotate_to_pa")
         try:
             hub.require("rotator")
             hub.require("camera")
@@ -9818,6 +10199,112 @@ def create_app(*, bind_host: str | None = None,
             disarm=True)
         await engine.abort()
         return {"aborted": True}
+
+    @app.post("/api/sequence/retry-set-aside",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def sequence_retry_set_aside(body: RetrySetAsideBody | None = None):
+        """RETRY SET-ASIDE PANELS (#600; backlog ruling D-07, owner-approved
+        2026-09-30): bring tonight's set-aside panels of a mosaic back, for
+        one group (``group``, a ``state.group.id``) or all (null).
+
+        A panel set aside for the night used to stay out of it until
+        tomorrow even once the operator had fixed the cause. ``control.mount``,
+        like pause, resume and abort: the run slews to a panel it takes up
+        again, so a retry can move the mount, though this route moves
+        nothing itself. The relay forwards it by capability.
+
+        LIVE (a run is going): the engine QUEUES the panels and the route
+        answers ``{"queued": [labels], "live": true}``. The engine drains
+        its queue in its own scheduler loop, so nothing here mutates a run
+        mid-visit or writes the session file, which the engine's copy owns
+        while live (`SequenceEngine.retry_set_aside`). A retried panel is
+        judged by the selection, never force-slewed.
+
+        DORMANT (no run, one that has ended, or a stored session named by
+        ``session_id`` that is not the live run's): the stored session's
+        records for tonight are marked cleared and saved, in one locked
+        section on a worker thread (as PATCH /api/sessions/{id} does,
+        #167), so the same night's CONTINUE, restart or auto-resume takes
+        the panel up. ``session_id`` names it, else the armed one. 409 when
+        it is not dormant or when nothing is set aside tonight (complete
+        panels are not touched); 404 for no such session or group. The
+        answer is ``{"cleared": [labels], "live": false}``.
+
+        Either way the night log says so, in words and no numbers (6.9)."""
+        group = body.group if body is not None else None
+        session_id = body.session_id if body is not None else None
+        # A STORED SESSION NAMED BY ID IS THAT SESSION'S, even while another
+        # run is live: the request is about the one it names, and the live
+        # run's panels are none of its business.
+        live_id = None
+        if engine.running:
+            live_id = (engine.state.get("session") or {}).get("id")
+        other = (session_id is not None and live_id is not None
+                 and session_id != live_id)
+        try:
+            out = {"live": False} if other else engine.retry_set_aside(group)
+        except KeyError:
+            raise HTTPException(404, "no such group")
+        if out["live"]:
+            if not out["queued"]:
+                raise HTTPException(409, "nothing is set aside")
+            return {"queued": out["queued"], "live": True}
+
+        def _locked() -> tuple[list[str], list[str]]:
+            with session_store.write_locked():
+                if session_id is not None:
+                    try:
+                        s = session_store.load(session_id)
+                    except KeyError:
+                        raise HTTPException(404, "session not found")
+                else:
+                    s = session_store.armed()
+                    if s is None:
+                        raise HTTPException(
+                            404, "no run is live and no session is armed: "
+                                 "name the stored session with session_id")
+                # Read fresh, under the lock: a start that landed since the
+                # route began (ResumeArm's tick) is the status this sees.
+                if s.status != "dormant":
+                    raise HTTPException(
+                        409, f"session is {s.status}, not dormant")
+                groups = {g.id: g for g in s.plan.groups}
+                if group is not None and group not in groups:
+                    raise HTTPException(404, "no such group")
+                # What a complete panel still owes is nothing: its record, if
+                # it has one, is left alone.
+                owed = s.remaining()
+                members: dict[str, list] = {}
+                for t in s.plan.targets:
+                    if (t.mosaic_group in groups and not t.calibration
+                            and (group is None or t.mosaic_group == group)
+                            and (sum(x.count for x in t.steps) == 0
+                                 or any(owed.get(x.id, 0) for x in t.steps))):
+                        members.setdefault(t.mosaic_group, []).append(t)
+                wanted = [t.id for ts in members.values() for t in ts]
+                standing = {r["target_id"] for r in s.note_set_aside_cleared(
+                    wanted, night=night_key(time.time()))}
+                if not standing:
+                    raise HTTPException(409, "nothing is set aside")
+                session_store.save(s)
+                labels: list[str] = []
+                lines: list[str] = []
+                for gid, ts in members.items():
+                    names = [SequenceEngine._panel_name(t) for t in ts
+                             if t.id in standing]
+                    if names:
+                        labels.extend(names)
+                        lines.append(
+                            f"{groups[gid].name or gid}: set-aside panels "
+                            f"retried by the operator: {', '.join(names)}; "
+                            f"the next start tonight takes them up")
+                return labels, lines
+
+        labels, lines = await asyncio.to_thread(_locked)
+        for line in lines:
+            bus.log("info", line, "sequence")
+        return {"cleared": labels, "live": False}
 
     @app.get("/api/sequence/state")
     @declare(CAP_VIEW_STATUS)

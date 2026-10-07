@@ -35,11 +35,16 @@ export interface ConnectOnceCardProps {
   profile: ProfileRow | null;
   canConfig: boolean;
   /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
-   *  All three verbs below reach a route on the rig's LAN fence (`/api/profiles`
-   *  for the activate, `/api/connect` + `/api/drivers` for the simulator,
-   *  `/api/discover` for the scan DETECT MY HARDWARE lands on), so the refusal
-   *  is about the ORIGIN and outranks the capability sentence - an admin on the
-   *  relay is refused too. */
+   *  It locks DETECT MY HARDWARE and RUN THE SIMULATOR, which reach routes on the
+   *  rig's LAN fence (`/api/connect` + `/api/drivers` for the simulator,
+   *  `/api/discover` for the scan DETECT lands on): the refusal is about the
+   *  ORIGIN and outranks the capability sentence - an admin on the relay is
+   *  refused too.
+   *
+   *  It does NOT lock CONNECT <profile>. Activating a saved profile is the one
+   *  `/api/profiles` call the rig lets through the fence (`POST
+   *  /api/profiles/<id>/activate` without `force`, #685), so that button follows
+   *  the capability and the busy flag alone, as the popover's ACTIVATE does. */
   lanReason?: string | null;
   busy: boolean;
   onConnectProfile: (row: ProfileRow) => void;
@@ -66,11 +71,13 @@ function body(profileName: string | null): string {
 }
 
 export function ConnectOnceCard(p: ConnectOnceCardProps): JSX.Element {
-  // LAN first, capability second, busy last - the same order `gate.ts` uses.
-  const lock = p.lanReason
-    ?? (p.canConfig
-      ? (p.busy ? "A rig action is already running - wait for it to finish." : null)
-      : `needs ${accessPhrase("config.backend")}`);
+  // Capability, then busy: what CONNECT <profile> answers to on any origin.
+  const capLock = p.canConfig
+    ? (p.busy ? "A rig action is already running - wait for it to finish." : null)
+    : `needs ${accessPhrase("config.backend")}`;
+  // LAN first, capability second, busy last - the same order `gate.ts` uses -
+  // for the two verbs the rig's relay fence refuses.
+  const lock = p.lanReason ?? capLock;
 
   return (
     <Card tone="accent" padding={14} data-testid="first-night">
@@ -87,7 +94,7 @@ export function ConnectOnceCard(p: ConnectOnceCardProps): JSX.Element {
             size="lg"
             full
             data-testid="first-night-connect"
-            lockedReason={lock}
+            lockedReason={capLock}
             onExplain={p.explain}
             onPress={() => p.onConnectProfile(p.profile as ProfileRow)}
           >

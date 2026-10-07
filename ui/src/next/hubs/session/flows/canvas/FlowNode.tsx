@@ -11,10 +11,15 @@
 // selectors that return PRIMITIVES - zustand compares the selector's result
 // with Object.is, so selecting stage B cannot wake stage A. Nothing sends a
 // per-stage status (there is no `flow.node` topic, and nothing writes
-// `flows.statuses`, #464, canvasModel `asNodeStatus`), so every stage reads
-// idle; the status selector is as narrow as the others so that a status feed,
-// once there is one, wakes one stage. `memo` then stops the surface's own
-// re-renders walking every card. Reaching for a `useFlowNode(id)` shape here
+// `flows.statuses`, #464, canvasModel `asNodeStatus`), so the field alone reads
+// every stage idle, a live run of this flow included, which is false. The card
+// treats an unwritten status as ABSENT while the open flow's run is live and
+// draws no dot (`showStatus = written || !runLive`, the phone stage list's
+// rule), and says idle only where it is true; both added selectors are
+// booleans too, so a sequence tick inside the run wakes nobody. The status
+// selector is as narrow as the others so that a status feed, once there is
+// one, wakes one stage. `memo` then stops the surface's own re-renders walking
+// every card. Reaching for a `useFlowNode(id)` shape here
 // would undo all of it: it returns the node OBJECT, reference-equal only while
 // every writer maps just the node it touched.
 //
@@ -42,6 +47,7 @@ import {
 } from "../../../../../components/flows/geometry";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 import { progressChip } from "../../../../../components/flows/flowProgress";
+import { flowRunLive, knownSessions } from "../../../../../components/flows/flowRunState";
 import { withLoop, type LaneGraph } from "../../../../../components/flows/panelLane";
 import { targetFooter, targetLoops } from "../../../../../components/flows/targetSummary";
 import { useStore } from "../../../../../store";
@@ -305,6 +311,22 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
   // minute. `progressChip` is the same: the chip STRING, not the progress
   // answer, which is a new object on every re-read.
   const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
+  // WHAT THE DOT MAY SAY (#464 part A). `status` above is idle for every
+  // stage, since nothing writes `flows.statuses`, and through a live run of
+  // THIS flow that is false: the dot's name and tooltip read IDLE over a rig
+  // that is shooting. The phone stage list already treats the field as absent
+  // while its flow runs (`FlowStagesPhoneSheet` `StageRow`, S5, from the
+  // real-page probe) and this is its rule, word for word: a stage with no
+  // status of its own shows none while the open flow's run is live, and idle
+  // stays whenever nothing of this flow runs, where it is true. `flowRunLive`
+  // asks the session the sequence state writes against the sessions the slice
+  // knows as this flow's, so another flow's run, or none open, leaves idle
+  // standing. The marks-row pill below already prints only a non-idle word, so
+  // the dot was the reader that said it. Both are booleans (Object.is): a
+  // sequence tick inside the run wakes nobody.
+  const written = useStore((s) => s.flows.statuses[node.id] !== undefined);
+  const runLive = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
+  const showStatus = written || !runLive;
   const selected = useStore((s) => s.flows.sel?.kind === "node" && s.flows.sel.id === node.id);
   const mark = useStore((s) => nodeMarkLevel(s.flows.compiled?.unmapped, node.type));
   const markWhy = useStore((s) => nodeMarkDetail(s.flows.compiled?.unmapped, node.type));
@@ -397,7 +419,9 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
       // reports what the compile said - but `canvas.css` paints a border for
       // the two LOSS levels only. A note is not a defect in the graph.
       data-selected={selected ? "true" : "false"}
-      data-status={status}
+      // Absent, not "idle", while `showStatus` is false: the attribute is the
+      // card's own report of its status, and it has none to report.
+      data-status={showStatus ? status : undefined}
       data-loss={mark ?? undefined}
       style={{ width: w, transform: `translate3d(${node.x}px,${node.y}px,0)` }}
       onClick={onCardClick}
@@ -434,15 +458,19 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
           </span>
         )}
         {/* The status WORD is the dot's accessible name AND its tooltip, so the
-            state is readable without the colour and without the silhouette. */}
-        <span
-          className="nx-flow-node-led"
-          data-status={status}
-          data-pulse={status === "busy" ? "true" : undefined}
-          role="img"
-          title={word}
-          aria-label={`stage ${word}`}
-        />
+            state is readable without the colour and without the silhouette.
+            NO DOT AT ALL while `showStatus` is false: an emptied name on a
+            hollow ring would still draw "off", and the ring is the claim. */}
+        {showStatus && (
+          <span
+            className="nx-flow-node-led"
+            data-status={status}
+            data-pulse={status === "busy" ? "true" : undefined}
+            role="img"
+            title={word}
+            aria-label={`stage ${word}`}
+          />
+        )}
         <button
           type="button"
           data-flows-edit

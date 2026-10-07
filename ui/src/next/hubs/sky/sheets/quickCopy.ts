@@ -84,9 +84,14 @@ export const INFO: Record<string, InfoTopic> = {
   },
   flats: {
     t: "DUSK FLATS",
-    b: "Holds the flow until the twilight window, then shoots a flat set per filter before "
-      + "darkness is spent on it. Flats divide out dust and vignetting; without them a "
-      + "stack keeps every shadow the optics put there.",
+    // Leads with what the engine does today (#192, #603 job A): no stage runs
+    // this block. The server's `to_plan.DUSK_FLATS_WIRED` is the one switch;
+    // `test_w15_dusk_flats_claim.py` reads this text and fails the day it is
+    // flipped without this changing.
+    b: "Not run yet: the engine has no dusk-flats stage, so this block takes no flats. "
+      + "When wired it will hold the flow until the twilight window, then shoot a flat set "
+      + "per filter before darkness is spent on it. Flats divide out dust and vignetting; "
+      + "without them a stack keeps every shadow the optics put there.",
   },
   darks: {
     t: "DARKS AFTER",

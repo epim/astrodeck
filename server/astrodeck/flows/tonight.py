@@ -564,6 +564,27 @@ def _target_coords(entry: dict, resolver: Callable[[str], tuple[float, float] | 
 
 # ------------------------------------------------------------------ dusk flats
 
+def _dusk_flats_wired() -> bool:
+    """Whether the engine runs a DUSK FLATS block: ``to_plan.DUSK_FLATS_WIRED``,
+    the one switch (#192, #603).
+
+    The brief's clause and the STORY row are worded from this, and the
+    compiler's "will not take flats" warning is present exactly when it is
+    False, so the preview cannot promise what the plan's own warning denies.
+    Read AT CALL TIME and imported lazily: ``to_plan`` imports this module, so
+    a top-level import of its constant would bind the value at load (a test
+    or a flip of the constant would not reach the copy) and could cycle."""
+    from . import to_plan
+    return bool(to_plan.DUSK_FLATS_WIRED)
+
+
+#: Said in place of what the block would do while the engine has no dusk-flats
+#: stage. Operator-entered text and fixed words only: the Tonight answer is
+#: served to roles with no site view, so no figure the site decides (the
+#: window's length in minutes is a function of the latitude, #19) may enter it.
+_FLATS_NOT_RUN = "the engine has no dusk-flats stage yet"
+
+
 def _flats_window(window_text: str, lat: float, lon: float,
                   dusk: float) -> tuple[float | None, float | None]:
     """The sun-altitude band a DUSK FLATS node names, as two timestamps.
@@ -667,8 +688,9 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     no such key, so their answer is what it was.
 
     Returns ``{ok, reason, now_unix, twilight_deg, night, flats, moon, targets,
-    budget, story}``; on failure ``ok`` is False, ``reason`` says why in a
-    sentence, and every time-bearing key is None/empty rather than plausible.
+    budget, resume_across_nights, campaign, brief, story}``; on failure ``ok``
+    is False, ``reason`` says why in a sentence, and every time-bearing key is
+    None/empty rather than plausible.
     """
     t_now = time.time() if now is None else float(now)
     graph = plan if isinstance(plan, FlowGraph) else None
@@ -819,6 +841,14 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
         "moon": moon,
         "targets": targets,
         "budget": budget,
+        # WHETHER A SUBSEQUENT NIGHT RESUMES THIS FLOW (#712): the compiled
+        # plan's own flag, which `compile_plan` writes False only for an
+        # explicit DUSK WINDOW Automatic resume Off, so absent reads True, as
+        # `_story`'s budget rows read it. The Target modal's campaign line
+        # (`framingApi.campaignLine`) has nothing but this answer to read the
+        # plan from, and said "resumes at the next dusk" of an Off flow. A
+        # plain boolean: no figure the site decides.
+        "resume_across_nights": plan_dict.get("resume_across_nights") is not False,
         # The CAMPAIGN tab and the STORY tab's brief. Both read the GRAPH, not
         # the compile, so both are empty when a caller hands in a plan dict -
         # the same rule the dawn story already follows for the report sink.
@@ -1925,9 +1955,20 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         # something the run would not do. A DOME node's safety effect (the
         # unsafe-close path) is covered by the "2. the dome" STORY row rather
         # than repeated here.
+        # THE CLAUSE FOLLOWS THE ENGINE (#192, #603 job A), not the node: no
+        # stage runs a DUSK FLATS block, so ", and shoots N flats per filter
+        # (...) in the twilight window" promised frames the run would not
+        # take, beside the compiler's own "this run will not take flats".
+        # The count and the method are no longer quoted for the same reason:
+        # a figure printed beside "does not run" reads as a plan.
         if df is not None:
-            t += (f", and shoots {df.params.get('count')} flats per filter "
-                  f"({str(df.params.get('method')).lower()}) in the twilight window")
+            if _dusk_flats_wired():
+                t += (f", and shoots {df.params.get('count')} flats per "
+                      f"filter ({str(df.params.get('method')).lower()}) in "
+                      f"the twilight window")
+            else:
+                t += (", and has a DUSK FLATS block that the engine does not "
+                      "run yet, so no flats are taken")
         seg.append(t + ".")
 
     # `stages`, not `rig`: `rig` is the rig facts handed in.
@@ -2011,11 +2052,24 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
                    f"night does - and the next best takes over.")
 
     if cw is not None:
-        t = (f"If cloud cover above {cw.params.get('threshold')}% is detected, "
-             f"imaging pauses at the frame boundary")
+        # NO PERCENTAGE (#707). The CLOUD WATCH node's threshold dial never
+        # reaches the engine: `_eval_predicate` answers `clouds_in` with the
+        # detector's own verdict and `to_plan` reports the dial as dropped
+        # (BOOLEAN_TRIGGERS, "does not reach the engine"), so "cloud cover
+        # above 40%" quoted a number the run never acts on.
+        #
+        # THE QUEUE CLAUSE SAYS WHAT A HOLD DOES (#603 job A): it shoots
+        # darks, matched to the step it interrupts and capped at what the
+        # library still needs (`_hold_darks`). The queue's order, its bias
+        # leg and its flats leg are not wired (`to_plan._automation`), so the
+        # old "(darks → bias → flats-if-panel)" listed two stages that never
+        # run. Not tied to `_dusk_flats_wired`: these are the QUEUE's legs,
+        # a different stage from the DUSK FLATS block.
+        t = ("If cloud cover is detected (this trigger fires on the cloud "
+             "detector's own verdict), imaging pauses at the frame boundary")
         if cq is not None:
-            t += (" and the calibration queue banks whatever the library lacks "
-                  "(darks → bias → flats-if-panel)")
+            t += (" and the calibration queue takes darks for whatever the "
+                  "library lacks (its bias and flat legs are not run yet)")
         t += (f"; once the sky holds clear for {cw.params.get('clearFor')} min it")
         steps: list[str] = []
         if hold is not None:
@@ -2478,23 +2532,47 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
                          "Dome: any unsafe or stale safety reading closes it, "
                          "whatever the flow is doing", TONE_DIM))
 
-    # 3. dusk flats, if the sky is bright enough for long enough
+    # 3. dusk flats, if the sky is bright enough for long enough - and if the
+    #    engine runs them. It does not (#192, #603 job A: no dusk-flats stage),
+    #    so the row said "Flats window (...): ... flats, exposure solved to
+    #    28 500 ADU per filter" about a block that takes none, beside the
+    #    compiler's "this run will not take flats". While
+    #    ``to_plan.DUSK_FLATS_WIRED`` is False the row says the block is drawn
+    #    and not run, as a warning; it is still timed at the window's start
+    #    when that resolves, so the story still sorts by it, and an
+    #    unresolvable window keeps its own warning row. No site-derived figure
+    #    enters the new sentences: the old "about N min" is a function of the
+    #    latitude, and this answer is served to roles with no site view (#19).
     flats = out["flats"]
     if flats:
+        wired = _dusk_flats_wired()
         adu = flats.get("adu_target")
         adu_txt = f"{int(_num(adu)):,}".replace(",", " ") if adu else "target"
         if flats["start_unix"] is not None and flats["end_unix"] is not None:
-            mins = int(round((flats["end_unix"] - flats["start_unix"]) / 60.0))
-            timed.append(row(
-                flats["start_unix"],
-                f"Flats window ({flats['window']}, about {mins} min): "
-                f"{str(flats['method']).lower()} flats, exposure solved to "
-                f"{adu_txt} ADU per filter", TONE_DIM))
-        else:
+            if wired:
+                mins = int(round(
+                    (flats["end_unix"] - flats["start_unix"]) / 60.0))
+                timed.append(row(
+                    flats["start_unix"],
+                    f"Flats window ({flats['window']}, about {mins} min): "
+                    f"{str(flats['method']).lower()} flats, exposure solved "
+                    f"to {adu_txt} ADU per filter", TONE_DIM))
+            else:
+                timed.append(row(
+                    flats["start_unix"],
+                    f"DUSK FLATS ({flats['window']}) is drawn but not run: "
+                    f"{_FLATS_NOT_RUN}", TONE_WARN))
+        elif wired:
             timed.append(row(
                 dusk, f"Dusk flats are configured for \"{flats['window']}\" - "
                 f"that window does not name two sun altitudes, so its clock "
                 f"times are not resolved here", TONE_WARN))
+        else:
+            timed.append(row(
+                dusk, f"DUSK FLATS ({flats['window']}) is drawn but not "
+                f"run: {_FLATS_NOT_RUN}, and that window does not name two "
+                f"sun altitudes, so its clock times are not resolved here",
+                TONE_WARN))
 
     # 4. astronomical darkness (the deeper boundary, separate from dusk)
     if night["dark_start_unix"] is not None:
@@ -2546,9 +2624,17 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     #    nothing compiles to nothing.
     whens = {str(i.get("when") or "") for i in (plan.get("instructions") or [])}
     if "on_clouds_in" in whens or "on_clouds_clear" in whens:
-        rules.append(row(None, "IF clouds in → hold the loop · calibration queue "
-                               "(black slot → darks → bias → flats-if-panel) · "
-                               "clean resume when it clears", TONE_WARN, "ANY"))
+        # WHAT A HOLD DOES (#603 job A): it shoots darks, and only when a
+        # CALIBRATION QUEUE on the canvas gives it a quota (`plan_extras`'
+        # `cloud_hold_darks`). The row named "(black slot -> darks -> bias ->
+        # flats-if-panel)" for every flow that holds, queue or none, and two
+        # of those stages are not run. Read off the COMPILED automation, like
+        # the rest of this tab.
+        queue = ("the calibration queue takes darks only (bias and flats "
+                 "are not run yet) · "
+                 if automation.get("calibration_queue") else "")
+        rules.append(row(None, f"IF clouds in → hold the loop · {queue}"
+                               f"clean resume when it clears", TONE_WARN, "ANY"))
     if any(w.startswith("on_") and w not in
            {"on_clouds_in", "on_clouds_clear", "on_unsafe", "on_frame_graded"}
            for w in whens):

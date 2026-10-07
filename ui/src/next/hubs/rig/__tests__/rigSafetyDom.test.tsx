@@ -133,7 +133,10 @@ let domeState = { connected: false, shutter: "unknown", requires_park_before_clo
 let alertHealth: unknown = {
   undelivered: 0,
   undelivered_by_sink: {},
-  deadman: { configured: true, healthy: true, last_ping_age_s: 42 },
+  // `last_ok_age_s` is the seconds since the monitor ACCEPTED a ping (#125):
+  // the one field that makes PINGING a fact. `last_ping_age_s` is the age of the
+  // last attempt, which an unaccepted ping also moves (WP-106, wave 15).
+  deadman: { configured: true, healthy: true, last_ping_age_s: 42, last_ok_age_s: 42 },
 };
 
 function freshConfig(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -638,12 +641,48 @@ await testAsync("the dead-man row reports the live health, and empty sinks are c
   assert(asked.some((a) => a === "GET /api/alerts/health"),
     "the sheet never asked for the dead-man health");
   const row = q('[data-testid="safety-deadman-row"]');
-  assert(/last ping 42s ago/.test(row.textContent || ""),
-    `the dead-man row does not carry the live ping age: "${row.textContent}"`);
+  // DELIBERATE PIN CHANGE (backlog WP-106, #606 part A, wave 15 integration).
+  // This said /last ping 42s ago/ over a fixture that carried only
+  // `last_ping_age_s`, which pinned the old reading: a ping that left but was
+  // never ACCEPTED printed as a green age. The row's sub-line is the verdict's
+  // own detail now, and an accepted ping is the only thing it counts.
+  assert(/last ping accepted 42s ago/.test(row.textContent || ""),
+    `the dead-man row does not carry the live accepted-ping age: "${row.textContent}"`);
+  assert(/PINGING/.test(row.textContent || ""),
+    `an accepted ping 42s ago is not PINGING: "${row.textContent}"`);
   const warn = q('[data-testid="safety-no-sinks"]');
   assert(warn != null, "a rig with no alert channel is not warned about it");
   eq((warn.textContent || "").trim(), EMPTY_SINKS_WARNING,
     "the empty-sinks warning is not the sentence that makes NOTIFY meaningful");
+});
+
+// MUTANT "the row reads the attempt, not the acceptance" (lib/alertSinks.ts
+// `deadmanVerdict`: `const age = dm.last_ok_age_s;` made `const age =
+// dm.last_ping_age_s;`). Observed, 29/30 (the case above stays green: its
+// fixture carries both fields):
+//   x the dead-man row with no accepted ping reads WAITING, not a green age: a
+//     ping that was never accepted is not WAITING: "DEAD-MAN SWITCHconfigured
+//     <U+00B7> last ping accepted 42s agoPINGING<U+203A>"
+await testAsync("the dead-man row with no accepted ping reads WAITING, not a green age", async () => {
+  const held = alertHealth;
+  // A server older than `last_ok_age_s`, or a monitor that has never accepted
+  // a ping: the attempt age is there, the acceptance is not.
+  alertHealth = { undelivered: 0, undelivered_by_sink: {},
+    deadman: { configured: true, healthy: true, last_ping_age_s: 42 } };
+  try {
+    seed();
+    await mount();
+    const row = q('[data-testid="safety-deadman-row"]');
+    const text = row.textContent || "";
+    assert(/WAITING/.test(text),
+      `a ping that was never accepted is not WAITING: "${text}"`);
+    assert(/no ping accepted yet/.test(text),
+      `the row does not say why it is waiting: "${text}"`);
+    assert(!/PINGING/.test(text) && !/42s ago/.test(text),
+      `a ping that was never accepted is drawn as PINGING: "${text}"`);
+  } finally {
+    alertHealth = held;
+  }
 });
 
 await testAsync("the roof rows appear only when a dome is actually connected", async () => {

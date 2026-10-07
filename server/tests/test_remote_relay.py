@@ -365,7 +365,14 @@ def test_direct_transport_token_does_not_block_remote_session_auth(
     ("GET", "/api/discover"),
     ("POST", "/api/remote/config"),
     ("POST", "/api/system/factory-reset"),
-    ("GET", "/api/users"),
+    # DELIBERATE PIN CHANGE (backlog WP-105, #685, wave 15 integration). This
+    # row was ``("GET", "/api/users")``: listing people was LAN-only. WP-105 put
+    # remote people management behind a fresh sign-in, as the owner required,
+    # so a tunnelled admin may now list and manage users (the ``GET`` answers
+    # 200, which is the requirement and no longer a leak). What stays
+    # LAN-only, and stays 403 ``local_only`` here, is the credential reset: a
+    # replayed cookie must not be able to set a password.
+    ("POST", "/api/users/abc/password"),
 ])
 def test_tunneled_admin_cannot_replay_cookie_into_privilege_root_routes(
         tmp_path, monkeypatch, method, path):

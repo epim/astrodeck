@@ -17,12 +17,19 @@
 // says the thumbnails go too, and promises no backup. A readable session's
 // confirm is unchanged.
 //
+// AND A BACKUP WHOSE FILE IS GONE (#280). The list shows it as a row of its
+// own, `backup: true` and `orphan: true`; there is no file left for its
+// delete to remove, so the confirm says the backup and the thumbnails are
+// what goes, and says the file is already gone. The two sentences above would
+// each be false for it ("only the file goes", "the backup stays").
+//
 // NAMED MUTANTS, each run in a private copy of ui/ (never the shared tree,
 // #254) from the pristine bytes of the file it changes, restored and sha256
 // checked; the observed failure is quoted at the test.
 //   D1 "the old body"              every row's confirm is the session sentence
 //   D2 "the backup never said"     unreadableDeleteBody ignores `row.backup`
 //   D3 "the backup always said"    unreadableDeleteBody takes every row as backed up
+//   D4 "the orphan never said"     unreadableDeleteBody ignores `row.orphan`
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -66,6 +73,12 @@ const BACKED_UP = {
   id: "s-bak", name: "NGC 7000 Ha", status: "unreadable", unreadable: "not valid JSON",
   updated_ts: 1_757_000_300, backup: true,
 };
+/** The session file is gone and only `s-orph.json.bak` is left (#280). */
+const ORPHANED = {
+  id: "s-orph", name: "M101 LRGB", status: "unreadable",
+  unreadable: "the session file is gone; only its backup remains",
+  updated_ts: 1_757_000_250, backup: true, orphan: true,
+};
 /** Damaged, and nothing beside it: the #242 row, no `backup` key at all. */
 const BARE = {
   id: "s-bad", name: "s-bad", status: "unreadable", unreadable: "it has no status",
@@ -96,7 +109,7 @@ g.fetch = async (url: string, init?: { method?: string }) => {
     json: async () => data, text: async () => JSON.stringify(data),
   });
   // Newest `updated_ts` first, as the server sorts.
-  if (url === "/api/sessions") return json({ sessions: [BACKED_UP, BARE, READABLE] });
+  if (url === "/api/sessions") return json({ sessions: [BACKED_UP, ORPHANED, BARE, READABLE] });
   if (url === "/api/sessions/s-bak" && method === "DELETE") {
     return json({
       deleted: "s-bak", backup_kept: "s-bak.json.bak",
@@ -211,6 +224,27 @@ await testAsync("an unreadable row with no backup: the file and its thumbnails g
   assert(!/Removes the session ledger/.test(body), `the confirm still claims a ledger goes: ${body}`);
   assert(/Saved FITS frames are NOT deleted\. This cannot be undone\.$/.test(body),
     `the confirm lost the FITS sentence or the warning: ${body}`);
+});
+
+await testAsync("an orphaned backup: the file is already gone, and the backup and thumbnails are what the delete removes", async () => {
+  // D4 "the orphan never said" (`if (row.orphan)` made `if (false)`), observed
+  // (4/5 passed; the backup branch's sentence came out, which says the backup
+  // STAYS):
+  //   x an orphaned backup: the file is already gone, and the backup and
+  //   thumbnails are what the delete removes: the confirm does not name the
+  //   backup as what goes:
+  //     expected "Removes the backup file s-orph.json.bak and the thumbnails. The
+  //     session file is already gone. [...]"
+  //     got      "Removes only the file s-orph.json, which cannot be read. Its
+  //     backup s-orph.json.bak stays, and so do the thumbnails, [...]"
+  const { title, body } = await confirmFor("Delete unreadable session M101 LRGB");
+  await answer(false);
+  assert(title.includes("M101 LRGB"), `the confirm does not name the row: ${title}`);
+  eq(body,
+    "Removes the backup file s-orph.json.bak and the thumbnails. The session file is already gone. "
+    + "Saved FITS frames are NOT deleted. This cannot be undone.",
+    "the confirm does not name the backup as what goes:");
+  assert(!/stays/.test(body), `the confirm says the backup stays: ${body}`);
 });
 
 await testAsync("control: a readable session's confirm is the session delete's sentence, unchanged", async () => {

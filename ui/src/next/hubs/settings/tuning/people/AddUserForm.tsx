@@ -15,6 +15,13 @@
 // a LOGIC module (plan section 2.1), shared rather than re-derived: two copies
 // of an email rule is two chances to disagree about what an address is.
 //
+// OVER THE RELAY (#734, #731). The rig accepts a viewer or an operator over the
+// relay and refuses an admin or a syncer, so those two role options are locked
+// with the LAN sentence (`lanOnlyReason`, null on the LAN) while every other
+// control stays armed. When the rig asks for a recent sign-in instead
+// (`step_up_required`), the form hands its caller a way to press CREATE again
+// (`onStepUp`) once the person has signed in; the fields are still filled in.
+//
 // Two behaviours worth naming because they are easy to lose in a re-skin:
 //
 //  * `created` is kept separate from `err`. Once `createUser` has returned, the
@@ -26,7 +33,7 @@
 //  * the submit button is honest-disabled on `newUserBlocker`'s SENTENCE, never
 //    a bare boolean, so a form that cannot be submitted always says why.
 
-import { useState, type FormEvent, type JSX } from "react";
+import { useRef, useState, type FormEvent, type JSX } from "react";
 import { createUser } from "../../../../../api/backends";
 import {
   emailLooksValid, newUserBlocker, newUserBody, passwordTooLong, signInSummary,
@@ -40,11 +47,13 @@ import { Note, ScrollRow, Verdict } from "./PeopleSection";
 import {
   ADD_EMAIL, ADD_METHOD, ADD_PASSWORD, ADD_ROLE, ADD_SUBMIT, ADD_SUBMIT_BUSY, ADD_USERNAME,
   EMAIL_INVALID, EMAIL_REQUIRED, GOOGLE_ONLY_PASSWORD_NOTE, METHOD_GOOGLE, METHOD_PASSWORD,
-  PASSWORD_TOO_LONG, PRINCIPAL_ROLES, USERS_CREATE_FAILED, createdLine, errText, roleWord,
+  PASSWORD_TOO_LONG, PEOPLE_RELAY_ROLES, PRINCIPAL_ROLES, USERS_CREATE_FAILED, createdLine,
+  errText, isStepUpRequired, roleWord,
 } from "./peopleModel";
 
 export function AddUserForm({
   onCreated, defaultRole = "operator", lockedReason = null, onExplain,
+  lanOnlyReason = null, onStepUp,
 }: {
   /** Called after a successful create so the caller can re-read its own list.
    *  Its failure is the caller's, not this form's - see the header note. */
@@ -52,6 +61,14 @@ export function AddUserForm({
   defaultRole?: PrincipalRole;
   lockedReason?: string | null;
   onExplain?: (reason: string) => void;
+  /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
+   *  It locks the role options the relay may not hand out and nothing else. */
+  lanOnlyReason?: string | null;
+  /** The rig refused the create for want of a recent sign-in. `retry` presses
+   *  CREATE again on whatever the form holds by then, and does nothing if the
+   *  form can no longer be submitted; the caller runs it once the person has
+   *  signed in. */
+  onStepUp?: (retry: () => void) => void;
 }): JSX.Element {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -98,7 +115,18 @@ export function AddUserForm({
       setRole(defaultRole);
       await onCreated();
     } catch (e2) {
-      if (!made) setErr(errText(e2, USERS_CREATE_FAILED));
+      if (!made) {
+        setErr(errText(e2, USERS_CREATE_FAILED));
+        if (isStepUpRequired(e2)) {
+          onStepUp?.(() => {
+            // The latest render's submit and blocker, not the failed press's:
+            // the person may have fixed a field while signing in, and a form
+            // that has since been emptied must not send.
+            const now = latest.current;
+            if (now.blocker === null) void now.submit();
+          });
+        }
+      }
     } finally {
       // The PEOPLE editor unmounts this form on success; the guided setup card
       // does NOT (it stays up until an enabled admin exists), and that is where
@@ -106,6 +134,10 @@ export function AddUserForm({
       setBusy(false);
     }
   };
+
+  // What a retry after a sign-in reads: the form as it is NOW.
+  const latest = useRef({ submit, blocker });
+  latest.current = { submit, blocker };
 
   // The group lock (no admin.users) outranks the draft's own blocker: telling
   // somebody their email is missing is noise when nothing on the form can be
@@ -191,7 +223,13 @@ export function AddUserForm({
               lockedReason={lockedReason}
               onExplain={onExplain}
               data-testid="users-add-role"
-              options={PRINCIPAL_ROLES.map((r) => ({ value: r, label: roleWord(r) }))}
+              options={PRINCIPAL_ROLES.map((r) => ({
+                value: r,
+                label: roleWord(r),
+                // Only viewer and operator can be handed out over the relay.
+                lockedReason: lanOnlyReason && !PEOPLE_RELAY_ROLES.includes(r)
+                  ? lanOnlyReason : null,
+              }))}
             />
           </ScrollRow>
         </Field>

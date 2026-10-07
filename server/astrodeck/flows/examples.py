@@ -86,13 +86,22 @@ def _m16() -> FlowRecord:
     "The M16 example reproduces the full cloud-dodge choreography from real
     engine events (hold → black slot → darks → bias skip → flats-if-panel →
     clean stop → restore filter → re-center → conditional refocus → resume)."
-    Every wire that choreography needs is in the edge list below."""
+    Every wire that choreography needs is in the edge list below.
+
+    THE LIBRARY CARD SAYS WHAT THE RUN DOES (#192, #603 job A), and no more
+    than that. It used to open "Dome opens at dusk, lens-cap flats in the
+    twilight window" and promise "darks->bias->flats until quota": nothing
+    opens the dome, no engine stage runs a DUSK FLATS block (the node and its
+    DOME are drawn, and ``to_plan`` says so), and a cloud hold takes darks
+    only (the queue's bias and flats legs are unwired). The tagline keeps the
+    cloud-dodge, which does run. ``test_w15_dusk_flats_claim.py`` holds the
+    card against the switch (``to_plan.DUSK_FLATS_WIRED``)."""
     return FlowRecord(
         id="example-m16", readonly=True, folder=EXAMPLES_FOLDER,
         name="M16 - full-service night",
-        tagline="Dome opens at dusk, lens-cap flats in the twilight window, lights "
-                "until clouds - then black slot, darks→bias→flats until quota, and "
-                "a clean resume (filter back, re-center, refocus if drifted).",
+        tagline="Full-service night: autofocus, guide and shoot Ha at M16 until "
+                "clouds - then darks while the hold lasts, and a clean resume "
+                "(filter back, re-center, refocus if drifted).",
         graph=_graph(
             [("n1", "dusk", 30, 50), ("n16", "dome", 260, 50), ("n17", "duskflats", 490, 50),
              ("n2", "target", 720, 50),

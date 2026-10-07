@@ -232,13 +232,26 @@ const hours1 = (seconds: number) => (seconds / 3600).toFixed(1);
  *  a block that fits in one night, which is not a campaign. The resume clause
  *  is what the engine does today: `engine.start` arms auto-resume on every
  *  run, so the old "Set DUSK to repeat nightly" advice changed nothing and is
- *  not given. */
+ *  not given.
+ *
+ *  THE CLAUSE FOLLOWS THE PLAN'S RESUME FLAG (#712). Since #195 a DUSK
+ *  WINDOW whose Automatic resume is Off is disarmed where its night ends, so
+ *  "stays armed and resumes at the next dusk" was false of it, and a block
+ *  that spans nights is exactly where an operator reads this line. The flag
+ *  is the compile's `resume_across_nights`, which only an explicit Off writes
+ *  False; the Tonight answer carries it (`tonight.resolve_tonight`, the same
+ *  flag its budget rows read), and ABSENT reads as resuming, as the model's
+ *  own default does. Off says a later night does not resume it and to
+ *  CONTINUE it by hand, in the server's words (`tonight._NO_LATER_RESUME`). */
 export function campaignLine(
   readouts: RunReadouts | null, tonight: unknown, canViewSiteDerived: boolean,
 ): string | null {
   if (!canViewSiteDerived || !readouts || !finite(readouts.total_s)) return null;
   if (tonight === null || typeof tonight !== "object") return null;
-  const t = tonight as { ok?: unknown; night?: { dusk_unix?: unknown; dawn_unix?: unknown } | null };
+  const t = tonight as {
+    ok?: unknown; night?: { dusk_unix?: unknown; dawn_unix?: unknown } | null;
+    resume_across_nights?: unknown;
+  };
   if (t.ok !== true || !t.night) return null;
   const dusk = t.night.dusk_unix;
   const dawn = t.night.dawn_unix;
@@ -246,6 +259,11 @@ export function campaignLine(
   const nightS = dawn - dusk;
   const nights = readouts.total_s / nightS;
   if (!(nights > 1)) return null;
-  return `this is a campaign: about ${nights.toFixed(1)} nights of ${hours1(nightS)} h before hops. `
-    + "The session stays armed and resumes at the next dusk.";
+  const spans = `this is a campaign: about ${nights.toFixed(1)} nights of ${hours1(nightS)} h before hops. `;
+  // Only a boolean false is Off: anything else (true, absent, an older server's
+  // answer with no such key) is the plan's default, resuming.
+  if (t.resume_across_nights === false) {
+    return spans + "Automatic resume is off, so a subsequent night does not resume it by itself: CONTINUE it by hand.";
+  }
+  return spans + "The session stays armed and resumes at the next dusk.";
 }
