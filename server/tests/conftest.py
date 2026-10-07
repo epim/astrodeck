@@ -1531,17 +1531,68 @@ def _a_session_store_instance_dict_is_unshadowed():
 
     RED under mutant (this fixture deleted): see
     test_w3_session_store_unshadow.py.
+
+    EVERY SINGLETON, NOT ONLY THIS ONE (#833). #522 fixed the class for the
+    one object it was found on. Wave 16's CI then went red on Linux because
+    ``monkeypatch.setattr(app_module.engine, "abort", ...)`` planted the
+    engine's bound ``abort`` the same way, and test_connect_rig_guard's
+    ``monkeypatch.setattr(SequenceEngine, "abort", ...)`` spy, later on the
+    same worker, never saw the forced connect's abort. The sweep now covers
+    every module-level instance of an ``astrodeck`` class in every loaded
+    ``astrodeck`` module (engine, hub, bus, stores), still removing only an
+    entry that is the class's own function bound to that very instance,
+    which changes no lookup. The name stays, since the #522 cases drive this
+    fixture by it.
+
+    RED under mutant "sweep only session_store" (``*_singletons()`` dropped
+    from the swept list): ``pytest -n 0 -p no:randomly
+    tests/test_w15_remote_profile_activate.py tests/test_connect_rig_guard.py``
+    failed ``test_force_gets_through_and_aborts_the_run_first`` with
+    ``assert [] == [True]``; the helper's own case is
+    test_w16_singleton_unshadow.py.
     """
     yield
-    import types
+    from astrodeck.sequence.session import session_store
+    for obj in [session_store, *_singletons()]:
+        _strip_restored_bound_methods(obj)
 
-    from astrodeck.sequence.session import SessionStore, session_store
-    stale = [name for name, value in vars(session_store).items()
+
+def _singletons() -> list:
+    """Every module-level instance of an ``astrodeck`` class in a loaded
+    ``astrodeck`` module, once each. Read at teardown, after monkeypatch has
+    put every module attribute back, so a patched-in stand-in is not what is
+    swept."""
+    seen: dict[int, object] = {}
+    for name, mod in list(sys.modules.items()):
+        if mod is None or not (name == "astrodeck"
+                               or name.startswith("astrodeck.")):
+            continue
+        for value in list(vars(mod).values()):
+            if (isinstance(value, type)
+                    or not type(value).__module__.startswith("astrodeck")
+                    or not hasattr(value, "__dict__")):
+                continue
+            seen.setdefault(id(value), value)
+    return list(seen.values())
+
+
+def _strip_restored_bound_methods(obj) -> list[str]:
+    """Remove from ``vars(obj)`` each entry that is ``type(obj)``'s own
+    function bound to ``obj`` (what monkeypatch's undo leaves on an
+    instance), and return the names removed."""
+    import types
+    try:
+        entries = list(vars(obj).items())
+    except TypeError:
+        return []
+    cls = type(obj)
+    stale = [name for name, value in entries
              if isinstance(value, types.MethodType)
-             and value.__self__ is session_store
-             and getattr(SessionStore, name, None) is value.__func__]
+             and value.__self__ is obj
+             and getattr(cls, name, None) is value.__func__]
     for name in stale:
-        delattr(session_store, name)
+        delattr(obj, name)
+    return stale
 
 
 @pytest.fixture
