@@ -23,10 +23,20 @@
 // TAB SWITCHING DOES NOT REFETCH. The answer is about one instant, so it is
 // re-resolved when the sheet OPENS (and when the open flow changes), not when
 // the reader moves between four views of the same payload.
+//
+// THE READ SAVES THE CANVAS FIRST (#688). `flowsFetchTonight` stores the edit
+// and compiles it before it asks the route, because the route describes the
+// STORED flow and PLAN is the compile: before that, deleting a block and
+// adding two others left STORY and PLAN describing the flow as it was last
+// saved until the flow was left and opened again. What this sheet adds is the
+// two cases where the stored flow still is not the canvas once the flush is
+// done: an example (its edits are never saved) and an edit the save did not
+// keep, each said above the tabs that read the stored flow.
 
 import { useEffect, useMemo, useState, type JSX } from "react";
 
-import type { TonightTab } from "../../../../../components/flows/flowsTypes";
+import { compiledIsCurrent } from "../../../../../components/flows/flowsSlice";
+import { tonightStoredNote, type TonightTab } from "../../../../../components/flows/flowsTypes";
 import { capAllowed } from "../../../../../lib/caps";
 import { runIsLive } from "../../../../../lib/lastSessionFrame";
 import { usePrincipal, useResumeArm, useSeq, useStore } from "../../../../../store";
@@ -71,6 +81,12 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
   const payload = useStore((s) => s.flows.tonight);
   const loading = useStore((s) => s.flows.tonightLoading);
   const error = useStore((s) => s.flows.tonightError);
+  const dirty = useStore((s) => s.flows.dirty);
+  const readonly = useStore((s) => s.flows.record?.readonly === true);
+  // PLAN reads `flows.compiled`, which `flowsFetchTonight` brings up to date
+  // with the canvas as part of the flush it makes before it reads (#688). Until
+  // that compile lands, the one in hand is of an earlier graph.
+  const planPending = useStore((s) => s.flows.tonightLoading && !compiledIsCurrent(s.flows));
 
   const principal = usePrincipal();
   const locked = capAllowed(principal, "view.site_derived") ? null : TONIGHT_LOCK_REASON;
@@ -149,6 +165,16 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
   const read = useMemo(() => (mine ? readTonight(payload) : null), [mine, payload]);
   const live = mine ? nightLine(read?.night ?? null) : "";
 
+  // Said once the flush is done (`dirty` means nothing while the PUT is still
+  // out), only over a payload that is drawn, and never on PLAN, which renders
+  // a compile of the canvas itself. `!read` is what holds it back while an
+  // edited flow is being saved: `flowsFetchTonight` clears the answer in hand
+  // for exactly that flow, so nothing is drawn until the PUT has answered. An
+  // example's answer is kept (nothing replaces it), and its note is true from
+  // the first frame.
+  const storedNote = locked || !mine || !flowId || tab === "plan" || error || !read
+    ? null : tonightStoredNote(readonly, dirty);
+
   let body: JSX.Element;
   if (locked) {
     body = (
@@ -173,7 +199,13 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
   } else if (tab === "plan") {
     // PLAN does not touch /tonight at all - it renders the compile - so it
     // answers even while the site is unset and every other tab is refusing.
-    body = <TonightPlanBlock />;
+    // Not the compile in hand while the flush's own is still out: that is the
+    // plan of the flow as last compiled, which is the report this fixes.
+    body = planPending ? (
+      <p className="nx-tn-note" data-testid="tonight-plan-pending">
+        Compiling this graph - the plan appears when the server answers.
+      </p>
+    ) : <TonightPlanBlock />;
   } else if (error) {
     body = (
       <div className="nx-tn-stack" data-testid="tonight-error">
@@ -255,6 +287,10 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
           <Mono size={10} tone="accent2" data-testid="tonight-parked">
             {resumesLine(read?.night.dusk_unix ?? null)}
           </Mono>
+        )}
+
+        {storedNote && (
+          <p className="nx-tn-note" data-testid="tonight-stored-note">{storedNote}</p>
         )}
 
         {body}

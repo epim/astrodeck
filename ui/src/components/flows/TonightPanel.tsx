@@ -29,7 +29,8 @@ import {
 import { Overlay } from "../Overlay";
 import { useStore } from "../../store";
 import { radioNextIndex } from "../../lib/radiogroup";
-import type { TonightTab } from "./flowsTypes";
+import { compiledIsCurrent } from "./flowsSlice";
+import { tonightStoredNote, type TonightTab } from "./flowsTypes";
 import TonightTimeline, {
   type TonightFlats, type TonightMoon, type TonightNight, type TonightTarget,
 } from "./TonightTimeline";
@@ -254,10 +255,18 @@ export function TonightPanel(): JSX.Element {
   const payload = useStore((s) => s.flows.tonight);
   const loading = useStore((s) => s.flows.tonightLoading);
   const error = useStore((s) => s.flows.tonightError);
+  const dirty = useStore((s) => s.flows.dirty);
+  const readonly = useStore((s) => s.flows.record?.readonly === true);
+  // PLAN reads `flows.compiled`, which `flowsFetchTonight` brings up to date
+  // with the canvas as part of the flush it makes before it reads (#688). Until
+  // that compile lands, the one in hand is of an earlier graph.
+  const planPending = useStore((s) => s.flows.tonightLoading && !compiledIsCurrent(s.flows));
 
   // Re-resolved on every open, not cached: this is an answer about a specific
   // instant, and a panel reopened two hours later would otherwise show the
-  // window that has since closed.
+  // window that has since closed. `flowsFetchTonight` also SAVES the canvas
+  // first (#688), because the route describes the stored flow and PLAN needs a
+  // compile of the graph on screen; this effect is the only thing that asks.
   useEffect(() => {
     if (!open || !flowId) return;
     void fetchTonight();
@@ -267,10 +276,22 @@ export function TonightPanel(): JSX.Element {
 
   const close = () => setUi({ tonightOpen: false });
 
+  // What the three tabs that read the STORED flow owe the operator when the
+  // flow on the canvas is not it (#688): an example, whose edits are never
+  // saved, or an edit the flush could not save. Not while the flush is still
+  // out (the PUT has not answered, so `dirty` says nothing yet), and not on
+  // PLAN, which renders a compile of the canvas itself.
+  const storedNote = tab === "plan" || loading || error
+    ? null : tonightStoredNote(readonly, dirty);
+
   let body: JSX.Element;
   if (tab === "plan") {
     // PLAN does not touch /tonight at all (§E.5) — it renders the compile.
-    body = <TonightPlan />;
+    // Not the one in hand while the flush's compile is still out: that is the
+    // plan of the flow as last compiled, which is the report this fixes.
+    body = planPending
+      ? <TonightNote>Compiling this graph — the plan appears when the server answers.</TonightNote>
+      : <TonightPlan />;
   } else if (error) {
     body = (
       <TonightNote>
@@ -345,6 +366,12 @@ export function TonightPanel(): JSX.Element {
         data-flows-tonight={tab}
         className="px-4 py-3.5"
       >
+        {storedNote && (
+          <p data-testid="tonight-stored-note"
+            className="mb-3 text-[12px] leading-[1.5] text-warn [text-wrap:pretty]">
+            {storedNote}
+          </p>
+        )}
         {body}
       </div>
     </Overlay>
