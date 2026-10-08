@@ -25,7 +25,7 @@ import {
 } from "../../../../api/sessions";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import { accessPhrase } from "../../../../lib/caps";
-import { disarmedWarningLine, type DisarmedSession } from "../../../../lib/disarmed";
+import { disarmedWarningLine } from "../../../../lib/disarmed";
 import { mergePreview, type MergePreview } from "../../../../lib/sessions";
 import { useStore } from "../../../../store";
 import type { SequencePlan } from "../../../../types";
@@ -341,21 +341,10 @@ export async function runUpdateFromPlan(
 
 // ------------------------------------------------------------ the queue (#598)
 //
-// `SessionPatch` / `SessionPatchResult` (api/sessions.ts) do not carry the
-// queue's fields and that file belongs to another work package, so the
-// widening is local: `api.patch` never validates or strips a field (the
-// response is exactly what the server sent), the same way NowEmpty reads
-// `disarmed` off a narrower type.
-
-type QueuePatch = SessionPatch & { queue_next?: boolean };
-type QueuePatchResult = SessionPatchResult & {
-  queued_behind?: QueueTarget | null;
-  dequeued?: QueueTarget[];
-  disarmed?: DisarmedSession[];
-};
-
-const patchQueue = (id: string, body: QueuePatch): Promise<QueuePatchResult> =>
-  patchSession(id, body) as Promise<QueuePatchResult>;
+// `queue_next` rides `SessionPatch` and `queued_behind` / `dequeued` /
+// `disarmed` ride `SessionPatchResult` (api/sessions.ts), the same types the
+// rest of the app patches with; the local widening wave 17's WP-133 had to
+// write while that file was another package's is gone (#598 integration).
 
 /** ARM AS NEXT: wait behind the live or armed session and be armed when it
  *  COMPLETES. Nothing is armed or disarmed now, which is the whole point, and
@@ -363,8 +352,8 @@ const patchQueue = (id: string, body: QueuePatch): Promise<QueuePatchResult> =>
  *  loses its place, which is said in a second toast naming it (D-04). */
 export async function runQueueNext(id: string, name: string, after: () => void): Promise<void> {
   try {
-    const body: QueuePatch = { queue_next: true };
-    const r = await patchQueue(id, body);
+    const body: SessionPatch = { queue_next: true };
+    const r: SessionPatchResult = await patchSession(id, body);
     const behind = r.queued_behind?.name || "the running session";
     toast("success", `"${name}" is next`,
       `It is armed when "${behind}" completes, never after a stop or a fault. `
@@ -383,8 +372,8 @@ export async function runQueueNext(id: string, name: string, after: () => void):
 /** CANCEL on the NEXT chip: the session waits for nothing again. */
 export async function runCancelQueue(id: string, name: string, after: () => void): Promise<void> {
   try {
-    const body: QueuePatch = { queue_next: false };
-    await patchQueue(id, body);
+    const body: SessionPatch = { queue_next: false };
+    await patchSession(id, body);
     toast("success", `"${name}" is no longer next`, "It stays dormant and unarmed.");
     after();
   } catch (e) {
@@ -398,8 +387,8 @@ export async function runCancelQueue(id: string, name: string, after: () => void
 export async function runArmNow(id: string, monitorConnected: boolean, after: () => void): Promise<void> {
   if (!monitorConnected && !(await confirmArmWithoutMonitor())) return;
   try {
-    const body: QueuePatch = { auto_resume: true, queue_next: false };
-    const r = await patchQueue(id, body);
+    const body: SessionPatch = { auto_resume: true, queue_next: false };
+    const r: SessionPatchResult = await patchSession(id, body);
     toast("success", "Auto-resume armed");
     if (r.disarmed && r.disarmed.length > 0) {
       toast("warning", "Arming this session disarmed another", disarmedWarningLine(r.disarmed));

@@ -28,10 +28,10 @@ copy is keyed on the COMPILED PLAN's ``dusk_flats`` and its method, not on the
 switch alone: a panel block is promised (the brief, the STORY row), a cap or
 sky block is "drawn but not run", and a block the plan drops (an unusable
 count) is not promised at all. ``TestThePreviewFollowsThePlan`` is the guard.
-THE UI's two static strings still open with the not-run sentence and are
-other files' (``nodeDefs.ts``, ``quickCopy.ts``): ``test_the_ui_copy_follows_
-the_switch`` is a STRICT xfail until they are rewritten, and goes red the day
-they are, so the marker cannot be forgotten.
+THE UI's two static strings (``nodeDefs.ts``, ``quickCopy.ts``) were other
+files' and opened with the not-run sentence until the wave 17 integration
+rewrote them (#744): ``test_the_ui_copy_follows_the_switch`` was a STRICT xfail
+until then, and is an ordinary test now.
 
 #707 rides along: the brief's CLOUD WATCH sentence printed the node's threshold
 dial as "cloud cover above 40%", and ``to_plan`` reports that the dial "does not
@@ -476,24 +476,38 @@ class TestOneSwitch:
         else:
             assert "the engine has no dusk-flats stage yet" in row["msg"]
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BLOCKED ON THE UI (WP-134 blocked_on): nodeDefs.ts's duskflats desc "
-        "and quickCopy.ts's flats body still open with the not-run sentence, "
-        "which is false since the engine runs the flat-panel method. Remove "
-        "this marker when they are rewritten (strict: it fails the day they "
-        "are, so it cannot be forgotten)."))
     def test_the_ui_copy_follows_the_switch(self):
         """The node's description and the quick sheet's DUSK FLATS card are
         static strings the switch cannot reach, so they are read as text: each
         opens with the not-run sentence exactly while the switch is off.
 
         With the switch on (since WP-134) they must NOT open with it, and
-        they do: this is the one part of the package the engine's author could
-        not fix, so it is a strict xfail with the files named, not a pass.
+        they say what the stage does: the flat-panel method runs once a night
+        before the first light and only with a connected panel, the Sun window
+        is not waited for, and the lens-cap and twilight-sky methods are not
+        run yet (#744, #603 job B; the wave 17 integration rewrote both
+        strings). This was a strict xfail while the UI files were another
+        package's, with the marker's own instruction to remove it the day they
+        were rewritten; it is an ordinary test now.
 
-        RED under "node desc restored" / "quick card restored" (an opening
-        not-run sentence put back on a rewritten string) and under "switch
-        ignored" once the UI is rewritten."""
+        RED under "node desc restored" / "quick card restored" (the opening
+        not-run sentence put back on a rewritten string), observed, from a
+        byte backup (restored, sha256 compared):
+
+            AssertionError: nodeDefs.ts duskflats desc opens with the not-run
+            sentence: True, but DUSK_FLATS_WIRED is True
+
+        and the same line for ``quickCopy.ts flats body``; under "switch off,
+        copy as it is" (``DUSK_FLATS_WIRED = False``), from the other side:
+
+            AssertionError: nodeDefs.ts duskflats desc opens with the not-run
+            sentence: False, but DUSK_FLATS_WIRED is False
+
+        and under "the other two methods dropped" (the lens-cap and
+        twilight-sky sentence taken out of the node's description):
+
+            AssertionError: nodeDefs.ts duskflats desc does not say the other
+            two methods are not run yet: The Flat panel method runs: ..."""
         for label, text in (("nodeDefs.ts duskflats desc", _node_desc()),
                             ("quickCopy.ts flats body", _quick_flats_body())):
             opens = text.startswith(NOT_RUN)
@@ -505,6 +519,22 @@ class TestOneSwitch:
                     f"{label} no longer says what the stage is for: {text}")
                 assert "shoots" not in text.replace("When wired it will", ""), (
                     f"{label} says the block shoots something: {text}")
+            else:
+                low = text.lower()
+                assert "flat panel" in low and "once per night" in low, (
+                    f"{label} does not say the flat-panel method runs once a "
+                    f"night: {text}")
+                assert "before the first light" in low, (
+                    f"{label} does not say when in the night: {text}")
+                assert "connected flat panel" in low, (
+                    f"{label} does not say it needs a connected panel: {text}")
+                assert ("lens cap" in low and "twilight sky" in low
+                        and "not run yet" in low), (
+                    f"{label} does not say the other two methods are not run "
+                    f"yet: {text}")
+                assert "does not wait for the" in low, (
+                    f"{label} does not say the Sun window is not waited for: "
+                    f"{text}")
 
 
 class TestThePreviewFollowsThePlan:

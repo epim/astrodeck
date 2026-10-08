@@ -427,6 +427,24 @@
     },
     {
       "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Flat panel",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 627
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Translucent lens cap",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 627
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Twilight sky",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 627
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
       "label": "CALIBRATION QUEUE",
       "source": "ui/src/components/flows/nodeDefs.ts",
       "line": 559

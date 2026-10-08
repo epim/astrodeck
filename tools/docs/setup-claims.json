@@ -2221,11 +2221,11 @@
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
-    "claim": "These procedures use the classic interface at `#/classic`. The alternative interface has its own [Rig and settings layout](next-ui.md). Connecting equipment and managing profiles require admin access (`config.backend`) and a direct connection to the controller, not the relay.",
+    "claim": "These procedures use the classic interface at `#/classic`. The alternative interface has its own [Rig and settings layout](next-ui.md). Activating a saved profile to reconnect the rig needs `control.reconnect` (admin or operator access) and also works through the relay. Forcing the switch while a sequence is running, every other profile change and connecting equipment need admin access (`config.backend`) and a direct connection to the controller, not the relay.",
     "source": "ui/src/components/settings/DriversPanel.tsx",
     "line": 42,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Read current source at b79c271f; the activate and force clauses re-sourced for #759 and #839 (wave 17), exercised by server/tests/test_w17_reconnect_capability.py and ui/src/components/settings/__tests__/w17ClassicReconnect.test.tsx; no hardware run or deployment execution by setup author.",
     "sources": [
       {
         "path": "ui/src/components/settings/DriversPanel.tsx",
@@ -2237,7 +2237,11 @@
       },
       {
         "path": "ui/src/components/settings/ProfileList.tsx",
-        "line": 552
+        "line": 207
+      },
+      {
+        "path": "ui/src/lib/caps.ts",
+        "line": 105
       },
       {
         "path": "relay/relay/config.py",
@@ -2245,7 +2249,7 @@
       },
       {
         "path": "server/astrodeck/api/app.py",
-        "line": 2782
+        "line": 6236
       }
     ],
     "id": "SETUP-101"

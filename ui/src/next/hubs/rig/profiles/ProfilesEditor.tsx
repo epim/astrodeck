@@ -47,10 +47,10 @@ import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { ApiError } from "../../../../api";
 import {
   activateProfile, captureProfile, deleteProfile, getProfile, importProfile,
-  listProfiles, renameProfile, saveProfile,
+  listProfiles, renameProfile, saveProfile, type RedactedProfile,
 } from "../../../../api/backends";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
-import { useCanConfigBackend } from "../../../../lib/caps";
+import { accessPhrase, useCanConfigBackend } from "../../../../lib/caps";
 import {
   liveRoleCount, profileActivateConfirm, profileConnectsNothing,
   profileResolvesRealMotion,
@@ -72,10 +72,11 @@ import {
   ACTIVATE_FAILED, CAPTURE_FAILED, CAPTURE_NEEDS_RIG, DEFAULT_CAPTURE_NAME,
   DELETE_FAILED, EMPTY_HINT, EMPTY_TITLE, EXPORT_FAILED,
   IMPORTED, IMPORT_LABEL, LANE_BUSY, LOADING, LOAD_FAILED, NAME_LABEL,
-  NAME_PLACEHOLDER, PROFILES_CAP, PROFILES_EYEBROW, REFRESH_LABEL,
+  NAME_PLACEHOLDER, PROFILES_CAP, PROFILES_EYEBROW, RECONNECT_CAP, REFRESH_LABEL,
   RENAME_FAILED, RETRY_LABEL, SAVE_BLURB, SAVE_BUSY, SAVE_BUTTON, SAVE_EYEBROW,
   UPDATE_FAILED, UPDATE_NEEDS_RIG, activated, activating, alreadyGone,
-  deleted, errText, exported, forceActivateConfirm, forceNeedsLan, importFailed, isGone,
+  deleted, errText, exported, forceActivateConfirm, forceNeedsBackend, forceNeedsLan,
+  importFailed, isGone,
   isLaneConflict, isRunningConflict, notActiveYet, rowBusyToast, updateConfirm,
   updated,
 } from "./profilesModel";
@@ -105,7 +106,11 @@ export function ProfilesEditor({ onRows }: {
   // popover's ACTIVATE; rename, update, export-side writes, delete, import and
   // save keep the LAN lock above. `force` is the one option still refused over
   // the relay, which `onActivateFailed` below answers without offering it.
-  const { lockedReason: activateLockedReason } = useLock({ cap: PROFILES_CAP });
+  //
+  // AND ITS CAPABILITY IS `control.reconnect`, NOT `config.backend` (#759, owner
+  // ruling 2026-10-07): an operator may reconnect the rig by activating a saved
+  // profile. `force` stays `config.backend`, answered in `onActivateFailed`.
+  const { lockedReason: activateLockedReason } = useLock({ cap: RECONNECT_CAP });
   // The capability alone, without the link state - the last-line guard before
   // the one irreversible call, for a token downgraded while a dialog was open.
   const canConfig = useCanConfigBackend();
@@ -160,14 +165,16 @@ export function ProfilesEditor({ onRows }: {
     if (busyId === row.id) return;
     setBusyId(row.id);
     try {
-      let full: Profile | null = null;
+      let full: RedactedProfile | null = null;
       try {
         // `getProfile` is typed `RedactedProfile` because a viewer or operator
-        // receives a partial record. Every action here is `config.backend`-
-        // gated, so a caller who reaches this line holds it and the server
-        // sends the whole record. The cast asserts the capability the type
-        // cannot see; it is not a shortcut.
-        full = await getProfile(row.id) as Profile;
+        // receives a partial record. An OPERATOR reaches this line since #759
+        // (control.reconnect) and gets that partial record: the two judgements
+        // below take a structural parameter and read only `primary_backend`,
+        // `devices[].role/backend` and the NINA host, and every one of them
+        // fails toward asking (a stripped NINA host still leaves the non-sim-
+        // primary clause, which over-prompts). No cast is made (#840).
+        full = await getProfile(row.id);
       } catch {
         /* fall back to the row's mode heuristic below */
       }
@@ -221,6 +228,13 @@ export function ProfilesEditor({ onRows }: {
       // Over the relay the force this dialog would send is refused 403
       // `local_only` (#685), so it is not offered: the toast says what is true.
       if (onRelay()) { toast("warning", forceNeedsLan((e as ApiError).message)); return; }
+      // An operator may reconnect and may not force (`config.backend`, #759):
+      // the dialog that would send it is not offered, and the toast says who can.
+      if (!canConfig) {
+        toast("warning", forceNeedsBackend(
+          (e as ApiError).message, accessPhrase(PROFILES_CAP)));
+        return;
+      }
       if (await confirmDialog(forceActivateConfirm((e as ApiError).message))) {
         await activateAndWait(row, true);
       }

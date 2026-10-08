@@ -15,7 +15,8 @@ panels for weeks. The chain this file grades, end to end:
 * ``GroupRun._count_failure``: a streak of guide-start failures and nothing
   else is a ``guide_start`` set-aside, as a streak of centring misses is a
   ``centring`` one (it was ``deferred``), so the Campaign can say "no guide
-  star" and not only "failed to centre or guide";
+  star"; a MIXED streak stays ``deferred`` and the Campaign names the streak
+  and no cause (#836);
 * ``progress._starved``: ``{nights, kind}`` on the panel's entry, only where
   the streak has reached ``STARVED_AFTER_NIGHTS`` (every other answer is
   byte-identical to the answer before);
@@ -560,13 +561,61 @@ class TestTheCampaignNamesIt:
     @pytest.mark.parametrize("kind, phrase", [
         ("centring", "no star to solve on"),
         ("guide_start", "no guide star"),
-        ("deferred", "failed to centre or guide"),
     ])
-    def test_each_kind_has_its_fixed_phrase(self, kind, phrase):
+    def test_each_single_cause_kind_has_its_fixed_phrase(self, kind, phrase):
+        """DELIBERATE PIN CHANGE (#836): this case also held ``("deferred",
+        "failed to centre or guide")`` and asserted the same ``(<phrase>), so
+        it will not finish`` frame for it. The two kinds that name ONE cause
+        keep their sentence; the mixed kind has its own case below."""
         prog = _rows_progress(("M16 1-2", {"nights": 3, "kind": kind}))
         note = _campaign(_mosaic_only(), None, lambda: prog)["note"]
         assert (f"Panel M16 1-2 has been set aside on 3 nights running "
                 f"({phrase}), so it will not finish") in note, note
+
+    def test_a_mixed_streak_names_the_streak_and_no_cause_and_no_advice(self):
+        """``deferred`` is ``GroupRun._count_failure``'s word for a streak
+        that failed more than one way, and it includes rotation, angle,
+        pier-side and autofocus deferrals, plus the mosaic's last live panel
+        held by the D-03 rule. The first sentence said "failed to centre or
+        guide" and advised a change to the panel's framing, which is wrong
+        for a pier-side or an autofocus streak (#836). The sentence names the
+        panel and the nights and stops.
+
+        DELIBERATE PIN CHANGE (#836): the case above used to pin the old
+        phrase and the framing advice for this kind.
+
+        Mutant "deferred says its old cause again" (``_STARVED_WHY``'s
+        ``"deferred": None`` made ``"deferred": "failed to centre or
+        guide"``). RED, observed here and in the clocked-simulator case below
+        (2 failed, 38 passed):
+        AssertionError: 0 of 1 mosaic panels done, 0 of 4 subs captured. Panel
+          M16 1-2 has been set aside on 3 nights running (failed to centre or
+          guide), so it will not finish without a change to its framing or
+          this block's setting. Nights to finish are not forecast ...
+        assert 'Panel M16 1-2 has been set aside on 3 nights running.' in
+          '0 of 1 mosaic panels done, ...'
+
+        Mutant "deferred keeps the advice" (``_panels_clause``'s ``if why is
+        None:`` made ``if False:``). RED, observed, in the same two cases
+        (2 failed, 38 passed):
+        AssertionError: 0 of 1 mosaic panels done, 0 of 4 subs captured. Panel
+          M16 1-2 has been set aside on 3 nights running (None), so it will
+          not finish without a change to its framing or this block's setting.
+          ...
+        assert 'Panel M16 1-2 has been set aside on 3 nights running.' in
+          '0 of 1 mosaic panels done, ...'
+        """
+        prog = _rows_progress(("M16 1-2", {"nights": 3, "kind": "deferred"}))
+        c = _campaign(_mosaic_only(), None, lambda: prog)
+        note = c["note"]
+        assert "Panel M16 1-2 has been set aside on 3 nights running." in note, note
+        for gone in ("failed to centre or guide", "so it will not finish",
+                     "framing", "(None)", "nights running ("):
+            assert gone not in note, (
+                f"the mixed streak named a cause it does not have: {note}")
+        # The row still carries the kind, so a reader that wants the word has it.
+        assert c["starved"] == [{"block": "m", "name": "M16 1-2",
+                                 "nights": 3, "kind": "deferred"}]
 
     def test_a_flow_with_nothing_starved_is_unchanged(self):
         prog = _rows_progress(("M16 1-1", None), ("M16 1-2", None))
@@ -718,7 +767,11 @@ async def test_a_panel_that_fails_its_solve_three_nights_is_named(
     assert "starved" not in notes[0] and "starved" not in notes[1]
     assert notes[2]["starved"] == [{"block": "m", "name": "M31 2-2",
                                     "nights": 3, "kind": "deferred"}]
-    assert ("Panel M31 2-2 has been set aside on 3 nights running (failed to "
-            "centre or guide)") in notes[2]["note"], notes[2]["note"]
+    # DELIBERATE PIN CHANGE (#836): this asserted "... running (failed to
+    # centre or guide)" for the held-pass kind. "deferred" names no cause, so
+    # the Campaign names the streak and nothing else.
+    assert ("Panel M31 2-2 has been set aside on 3 nights running."
+            in notes[2]["note"]), notes[2]["note"]
+    assert "failed to centre or guide" not in notes[2]["note"], notes[2]["note"]
     assert all(session.set_aside_streak(t) == (0, None)
                for t in ("p00", "p01", "p10")), "the others were shot"

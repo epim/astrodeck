@@ -81,8 +81,10 @@ async def test_start_returns_and_logs_the_session_it_disarmed(sim_hub):
     start's return value names it, and a warning says so.
 
     NAMED MUTANT (run from a byte backup, restored and sha256-verified):
-    delete the ``disarmed.append({"id": other.id, "name": ...})`` line
-    inside ``SequenceEngine.start``'s singleton loop (engine.py), leaving
+    delete the ``disarmed.append({"id": other.id, "name": ...})`` call
+    inside ``SequenceEngine._arm_exclusively`` (engine.py; the one singleton
+    loop ``start`` shares with the PATCH route and the queue promotion since
+    #837, where it used to be ``start``'s own), leaving
     ``other.auto_resume = False`` / ``session_store.save(other)`` in place.
     This test then fails with:
 

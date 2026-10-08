@@ -28,7 +28,9 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { listReports } from "../../../../api/reports";
-import { isUnreadableRow, listSessionRows, type UnreadableListRow } from "../../../../api/sessions";
+import {
+  isUnreadableRow, listSessionRows, type QueuedSession, type UnreadableListRow,
+} from "../../../../api/sessions";
 import type { SessionListRow, SessionReportSummary, SessionRow } from "../../../../types";
 
 // ------------------------------------------------------------- what a card is
@@ -63,16 +65,12 @@ export interface SessionCardData {
   queuedBehind?: string | null;
 }
 
-/** A session row as the server now sends it. `SessionRow` (types.ts) does not
- *  carry `queued_behind` yet and that file is another work package's, so the
- *  widening is local, as NowEmpty reads `disarmed` off a narrower type. The
- *  key is absent from a server that predates #598, which reads as no wait. */
-export type QueueAwareRow = SessionRow & { queued_behind?: string | null };
-
-/** The id a row's session waits behind, or null. A strict string, so a
- *  malformed value reads as no wait rather than as a session called "true". */
+/** The id a row's session waits behind, or null. `SessionRow.queued_behind` is
+ *  absent from a server that predates #598 (no wait); the strict string check
+ *  keeps a malformed value reading as no wait rather than as a session called
+ *  "true". */
 export function rowQueuedBehind(row: SessionRow): string | null {
-  const q = (row as QueueAwareRow).queued_behind;
+  const q = row.queued_behind;
   return typeof q === "string" && q !== "" ? q : null;
 }
 
@@ -197,8 +195,9 @@ export function buildCards(
 // rows it sent, with the SAME choice of what to wait behind, so a verb is
 // offered exactly when the server would not answer 409.
 
-/** What a session waits behind, named for the words on screen. */
-export interface QueueTarget { id: string; name: string }
+/** What a session waits behind, named for the words on screen. The shared
+ *  `QueuedSession` (api/sessions.ts), which is also what a patch answers with. */
+export type QueueTarget = QueuedSession;
 
 /** How a session's wait stands, for the chip on its card.
  *
