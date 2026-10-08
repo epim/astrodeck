@@ -371,12 +371,18 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
     ) and first_rec["reason"].startswith(ASIDE), (
         f"{at}: the session's first set-aside record is {first_rec}")
     # D-03 (#591): the second record is the held-pass escalation on 2-2
-    # alone, kind "group", never a second "centring" one -- the
+    # alone, kind "deferred", never a second "centring" one -- the
     # three-strike path (ASIDE's words) is not reached again once 2-2 is
     # the mosaic's only live panel.
+    # DELIBERATE PIN CHANGE (backlog WP-131, #180 part A, wave 17): this was
+    # kind "group". The held-pass rule's set-aside of the mosaic's LAST LIVE
+    # PANEL is the panel's own, kind "deferred" (it does not expire, so the
+    # engine does what it did): "group" is the word for the whole mosaic
+    # going quiet, and a panel that never completes is the one case the
+    # Campaign must name.
     assert (second_rec["target_id"], second_rec["step_id"],
             second_rec["night"], second_rec["kind"], second_rec["ts"]) == (
-        ids[("2-2", "L")][0], None, NIGHT_ONE, "group", T0 + FOR_THE_NIGHT
+        ids[("2-2", "L")][0], None, NIGHT_ONE, "deferred", T0 + FOR_THE_NIGHT
     ) and second_rec["reason"].startswith(
         "2-2 (the mosaic's last live panel) has been held for 6 passes"), (
         f"{at}: the session's second set-aside record is {second_rec}")

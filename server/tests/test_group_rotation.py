@@ -514,7 +514,13 @@ async def test_a_panel_that_will_not_centre_is_deferred_three_times_then_set_asi
         assert _shot(night, label) == ["L", "R"] * 3, label
     assert [(r["target_id"], r.get("kind"), bool(r.get("expired")))
             for r in night.stored.set_aside] == [
-        ("p11", "centring", True), ("p11", "group", False)]
+        ("p11", "centring", True), ("p11", "deferred", False)]
+    # DELIBERATE PIN CHANGE (backlog WP-131, #180 part A, wave 17): the
+    # second record was kind "group". The held-pass rule's set-aside of the
+    # mosaic's LAST LIVE PANEL is the panel's own, kind "deferred" (it does
+    # not expire, so nothing else moved): "group" is the word for the whole
+    # mosaic going quiet, and the Campaign names a panel set aside night
+    # after night by its kind.
 
 
 async def test_control_a_group_that_does_not_require_centring_shoots_the_panel(

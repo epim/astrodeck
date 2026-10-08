@@ -2295,12 +2295,53 @@ def _read_progress(progress: ProgressSource) -> Mapping[str, Any] | None:
     return got if isinstance(got, Mapping) else None
 
 
+#: Why a starved panel is starved, in the Campaign's words, by the KIND of
+#: its set-aside (#180 part A, backlog WP-131). THREE FIXED PHRASES AND NO
+#: FREE TEXT: the set-aside record's own reason can carry a solver's error,
+#: and this note is served to a viewer, so the sentence is built from the kind
+#: alone. "deferred" is a streak that failed more than one way.
+_STARVED_WHY = {
+    "centring": "no star to solve on",
+    "guide_start": "no guide star",
+    "deferred": "failed to centre or guide",
+}
+
+
+def _starved_of(panel: Mapping[str, Any]) -> dict | None:
+    """``{nights, kind}`` from a progress panel's ``starved`` entry, or None
+    when it has none or the entry is not one the server sends: a ``kind``
+    that is none of ``_STARVED_WHY``'s three words, a ``nights`` that is no
+    whole number of at least one. Read defensively because the progress
+    answer is injected, and a word that is not one of the three must never
+    reach the sentence."""
+    got = panel.get("starved")
+    if not isinstance(got, Mapping):
+        return None
+    kind, nights = got.get("kind"), got.get("nights")
+    if (not isinstance(kind, str) or kind not in _STARVED_WHY
+            or isinstance(nights, bool) or not isinstance(nights, int)
+            or nights < 1):
+        return None
+    return {"nights": nights, "kind": kind}
+
+
+def _starved_rows(rows: list[dict] | None) -> list[dict]:
+    """The Campaign's ``starved`` list: ``{block, name, nights, kind}`` for
+    each shot panel whose row says it is starved, in grid order, empty when
+    none is. A skipped panel is never one."""
+    return [{"block": r["block"], "name": r["name"], **r["starved"]}
+            for r in rows or [] if not r["skipped"] and "starved" in r]
+
+
 def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
     """The CAMPAIGN tab's rows for a flow's mosaics, one per panel, from the
     progress answer (``progress.flow_progress``), or None with no progress.
 
     A row is ``{block, name, row, col, banked, owed, total, done, pct,
-    skipped}``: a shot panel's numbers are the progress answer's own subs,
+    skipped}`` and, for a panel the progress answer says is starved
+    (``Session.set_aside_streak``: set aside whole night after night, #180
+    part A), ``starved: {nights, kind}`` too, present only where it is true.
+    A shot panel's numbers are the progress answer's own subs,
     banked (capped at each step's count), owed and total, counted by the
     session's count mode, so the tab and the card's chip can never disagree;
     ``done`` is a panel that owes nothing. A skipped panel follows its
@@ -2333,6 +2374,9 @@ def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
                 "done": total > 0 and owed == 0,
                 "pct": min(100, round(100 * banked / total)) if total else None,
                 "skipped": False})
+            starved = _starved_of(p)
+            if starved is not None:
+                rows[-1]["starved"] = starved
         for p in block.get("skipped") or []:
             rows.append({
                 "block": node_id, "name": p.get("name"),
@@ -2345,7 +2389,14 @@ def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
 def _panels_clause(rows: list[dict] | None) -> str:
     """The note's sentence about a flow's mosaic panels: how many are done,
     the subs banked of the subs asked, and what the skipped ones hold; or
-    that no progress was read, so no count is claimed."""
+    that no progress was read, so no count is claimed.
+
+    A panel the progress answer says is starved (set aside whole on several
+    nights running, #180 part A) is named after that count, one sentence each
+    and in grid order: how many nights, why in the kind's fixed words
+    (``_STARVED_WHY``), and that it will not finish without a change. Said
+    here because both Campaign surfaces draw the note and neither draws a
+    row."""
     if rows is None:
         return ("No progress was read for this flow's mosaic, so no panel's "
                 "count is claimed.")
@@ -2361,7 +2412,15 @@ def _panels_clause(rows: list[dict] | None) -> str:
         t += (f"; {len(skipped)} skipped panel{'' if one else 's'} "
               f"hold{'s' if one else ''} {held} more, which come back when "
               f"re-enabled")
-    return t + "."
+    t += "."
+    for r in shot:
+        if "starved" in r:
+            s = r["starved"]
+            t += (f" Panel {r['name']} has been set aside on {s['nights']} "
+                  f"nights running ({_STARVED_WHY[s['kind']]}), so it will "
+                  f"not finish without a change to its framing or this "
+                  f"block's setting.")
+    return t
 
 
 def _campaign(graph: FlowGraph | None,
@@ -2380,6 +2439,13 @@ def _campaign(graph: FlowGraph | None,
     speaks of panels), where it used to be "campaigns need one" and nothing
     else. A flow with no mosaic never reads ``progress`` and answers exactly
     as it did.
+
+    A PANEL SET ASIDE NIGHT AFTER NIGHT IS NAMED (#180 part A, backlog
+    WP-131). The note says so in a sentence per panel (``_panels_clause``) and
+    the answer adds ``starved: [{block, name, nights, kind}]``, present only
+    when a panel is. The progress answer decides which (``progress._starved``);
+    this reads it, and its words are the kind's three fixed phrases, never the
+    set-aside record's free text.
 
     A CYCLE IS THE UNIT, and it is complete only when EVERY slot in the table
     has its subs. So a member's banked cycles is the MINIMUM over the slots of
@@ -2420,11 +2486,15 @@ def _campaign(graph: FlowGraph | None,
     if pool is None and mosaics:
         rows = _panel_rows(mosaics, progress)
         clause = _panels_clause(rows)
-        return {"is_campaign": False, "has_pool": False, "has_ledger": False,
-                "quota": 0, "members": [],
-                "note": (f"{clause} {_NOT_FORECAST} {dawn}" if rows is not None
-                         else f"{clause} {dawn}"),
-                "panels": rows or [], "has_progress": rows is not None}
+        out = {"is_campaign": False, "has_pool": False, "has_ledger": False,
+               "quota": 0, "members": [],
+               "note": (f"{clause} {_NOT_FORECAST} {dawn}" if rows is not None
+                        else f"{clause} {dawn}"),
+               "panels": rows or [], "has_progress": rows is not None}
+        starved = _starved_rows(rows)
+        if starved:
+            out["starved"] = starved
+        return out
     if pool is None:
         return {"is_campaign": False, "has_pool": False, "has_ledger": False,
                 "quota": 0, "members": [],
@@ -2513,6 +2583,9 @@ def _campaign(graph: FlowGraph | None,
         rows = _panel_rows(mosaics, progress)
         out.update(note=f"{note} {_panels_clause(rows)}", panels=rows or [],
                    has_progress=rows is not None)
+        starved = _starved_rows(rows)
+        if starved:
+            out["starved"] = starved
     return out
 
 
