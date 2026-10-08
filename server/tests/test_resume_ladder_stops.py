@@ -609,8 +609,10 @@ async def test_disarming_the_recovered_session_stops_the_ladder(
         [abandoned] [delete] [arm_another] the same line
 
     RED under mutant "the singleton does not stop the ladder" (the
-    ``stop_recovery`` call in PATCH's singleton loop removed),
-    ``arm_another`` only, the same two lines. Under "delete does not stop
+    ``stop_recovery`` call in PATCH's singleton loop removed; since #837 that
+    loop is ``SequenceEngine._arm_exclusively`` and the call is the
+    ``on_disarm`` hook the route hands it, replaced by a no-op in the
+    re-run of 2026-10-07), ``arm_another`` only, the same two lines. Under "delete does not stop
     the ladder" (the call in ``delete_session`` removed), ``delete`` only,
     and under "abandon does not stop" (PATCH's condition reduced to
     ``body.auto_resume is False``), ``abandoned`` only, the same two lines

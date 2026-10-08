@@ -2221,11 +2221,11 @@
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
-    "claim": "These procedures use the classic interface at `#/classic`. The alternative interface has its own [Rig and settings layout](next-ui.md). Connecting equipment and managing profiles require admin access (`config.backend`) and a direct connection to the controller, not the relay.",
+    "claim": "These procedures use the classic interface at `#/classic`. The alternative interface has its own [Rig and settings layout](next-ui.md). Activating a saved profile to reconnect the rig needs `control.reconnect` (admin or operator access) and also works through the relay. Forcing the switch while a sequence is running, every other profile change and connecting equipment need admin access (`config.backend`) and a direct connection to the controller, not the relay.",
     "source": "ui/src/components/settings/DriversPanel.tsx",
     "line": 42,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Read current source at b79c271f; the activate and force clauses re-sourced for #759 and #839 (wave 17), exercised by server/tests/test_w17_reconnect_capability.py and ui/src/components/settings/__tests__/w17ClassicReconnect.test.tsx; no hardware run or deployment execution by setup author.",
     "sources": [
       {
         "path": "ui/src/components/settings/DriversPanel.tsx",
@@ -2237,7 +2237,11 @@
       },
       {
         "path": "ui/src/components/settings/ProfileList.tsx",
-        "line": 552
+        "line": 207
+      },
+      {
+        "path": "ui/src/lib/caps.ts",
+        "line": 105
       },
       {
         "path": "relay/relay/config.py",
@@ -2245,7 +2249,7 @@
       },
       {
         "path": "server/astrodeck/api/app.py",
-        "line": 2782
+        "line": 6236
       }
     ],
     "id": "SETUP-101"
@@ -3681,15 +3685,15 @@
   },
   {
     "page": "docs/guide/remote-access-and-roles.md",
-    "claim": "| operator | Status, previews, weather, site-derived planning, capture, guiding and mount control |",
+    "claim": "| operator | Status, previews, weather, site-derived planning, capture, guiding, mount control and reconnecting a saved profile |",
     "source": "server/astrodeck/auth/capabilities.py",
-    "line": 84,
+    "line": 145,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author. Re-read for #759 (WP-146): control.reconnect is in the operator set.",
     "sources": [
       {
         "path": "server/astrodeck/auth/capabilities.py",
-        "line": 84
+        "line": 145
       },
       {
         "path": "ui/src/next/hubs/sky/sheets/sites.tsx",
@@ -3743,15 +3747,15 @@
   },
   {
     "page": "docs/guide/remote-access-and-roles.md",
-    "claim": "An operator cannot edit the site, connect backends, configure safety or download raw FITS by default. A syncer is a data-transfer role, not an operator with extra rights. Sign-in identifies the account; its role determines what it may do.",
+    "claim": "An operator can reconnect the rig by activating a saved profile, but cannot edit the site, add or change backends and profiles, configure safety or download raw FITS by default. A syncer is a data-transfer role, not an operator with extra rights. Sign-in identifies the account; its role determines what it may do.",
     "source": "server/astrodeck/auth/capabilities.py",
-    "line": 84,
+    "line": 145,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author. Re-read for #759 (WP-146): the operator set holds control.reconnect and no config.* capability; exercised by server/tests/test_w17_reconnect_capability.py.",
     "sources": [
       {
         "path": "server/astrodeck/auth/capabilities.py",
-        "line": 84
+        "line": 145
       },
       {
         "path": "ui/src/next/hubs/sky/sheets/sites.tsx",
@@ -3956,11 +3960,11 @@
   },
   {
     "page": "docs/guide/remote-access-and-roles.md",
-    "claim": "Some configuration and connection operations are blocked over the relay even for admins. Perform those directly at the controller. Activating an already saved profile is the exception: it is allowed over the relay for an account that may configure backends, but not with the force option. The current relay has no public viewer-share-link creation endpoint; use a viewer account instead. Closing a browser or signing out does not stop a server-side sequence.",
+    "claim": "Some configuration and connection operations are blocked over the relay even for admins. Perform those directly at the controller. Activating an already saved profile is the exception: it is allowed over the relay for an administrator or an operator, but not with the force option, which stops a running sequence and is for an administrator at the controller. The current relay has no public viewer-share-link creation endpoint; use a viewer account instead. Closing a browser or signing out does not stop a server-side sequence.",
     "source": "server/astrodeck/api/app.py",
     "line": 2872,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at 5039ba76 plus the #685 change (WP-105); no hardware run or relay deployment executed by the author.",
+    "verification_note": "Read current source at 5039ba76 plus the #685 change (WP-105) and the #759 change (WP-146: control.reconnect); exercised by server/tests/test_w15_remote_profile_activate.py and server/tests/test_w17_reconnect_capability.py. No hardware run or relay deployment executed by the author.",
     "sources": [
       {
         "path": "server/astrodeck/api/app.py",
@@ -3968,11 +3972,11 @@
       },
       {
         "path": "server/astrodeck/api/app.py",
-        "line": 6024
+        "line": 6216
       },
       {
         "path": "server/astrodeck/auth/capabilities.py",
-        "line": 84
+        "line": 145
       },
       {
         "path": "relay/relay/config.py",

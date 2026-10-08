@@ -290,10 +290,21 @@ def test_nothing_opens_the_dome_or_the_cover_for_the_night():
 
     WHEN THIS GOES RED, #601 (or a sibling) has landed: replace the tooltip's
     last sentence with the owner's, clause by clause, and move this row to the
-    tests of the behaviour that now exists."""
+    tests of the behaviour that now exists.
+
+    DELIBERATE PIN CHANGE, BACKLOG WP-134 (#603 job B, wave 17): the DUSK
+    FLATS stage (``_dusk_flats``) re-opens the dust cover AFTER its flats, but
+    only a cover that was open when the stage began: the flats leave it shut
+    (``_panel_off_safe``), and the lights that follow must not be taken
+    through it. That is restoring what it found, not opening the cover for the
+    night, and the tooltip stays true: ``test_w17_dusk_flats_panel.py::
+    test_a_cover_that_was_shut_is_left_shut`` holds the other half. So the
+    one extra opener is listed, by its function, and any other new one still
+    fails here."""
     root = SERVER / "astrodeck"
     engine = _opener_calls(root / "sequence" / "engine.py")
-    assert engine == [("open_shutter", "_await_safe_and_reopen")], (
+    assert engine == [("open_shutter", "_await_safe_and_reopen"),
+                      ("open_cover", "_dusk_flats")], (
         f"the engine opens a roof or cover somewhere new: {engine}; the "
         f"tooltip says it does not yet open the dome for the night")
     for rel in ("sequence/resume_arm.py", "dusk_arm.py"):

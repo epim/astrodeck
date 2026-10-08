@@ -328,7 +328,13 @@ export default function SessionsPanel() {
                     label={`Auto-resume ${r.name} at dusk`} />
                 </label>
               )}
-              {r.auto_resume && noMonitor && (
+              {/* ONLY A DORMANT SESSION IS ARMED IN ANY SENSE THAT STARTS A RUN
+                  (#838, as the #/next card): `armed()` asks for dormant, and this
+                  line says the rig "may start in bad weather". A complete
+                  session carries no switch worth warning about (a file from
+                  before the engine cleared it at completion still has the flag),
+                  and a live one has already started. */}
+              {r.auto_resume && r.status === "dormant" && noMonitor && (
                 <span className="text-[11px] text-warn inline-flex items-center gap-1">
                   <Icon name="alert" size={12} />
                   auto-resume armed without a safety monitor — rig may start in bad weather

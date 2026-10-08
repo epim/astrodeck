@@ -84,13 +84,19 @@ export const INFO: Record<string, InfoTopic> = {
   },
   flats: {
     t: "DUSK FLATS",
-    // Leads with what the engine does today (#192, #603 job A): no stage runs
-    // this block. The server's `to_plan.DUSK_FLATS_WIRED` is the one switch;
-    // `test_w15_dusk_flats_claim.py` reads this text and fails the day it is
-    // flipped without this changing.
-    b: "Not run yet: the engine has no dusk-flats stage, so this block takes no flats. "
-      + "When wired it will hold the flow until the twilight window, then shoot a flat set "
-      + "per filter before darkness is spent on it. Flats divide out dust and vignetting; "
+    // Leads with what the engine does today (#192, #603, #744): it runs the
+    // Flat panel method only. The server's `to_plan.DUSK_FLATS_WIRED` /
+    // `DUSK_FLATS_RUNS` are the one switch; `test_w15_dusk_flats_claim.py`
+    // reads this text and fails the day it is flipped without this changing.
+    // The chip adds the block with the vocabulary's default method, which is
+    // the lens cap (`NODE_DEFS.duskflats.params`), so the sentence says to
+    // change it: a quick flow that ticks this chip and leaves the method takes
+    // no flats, and the card's CHECKS say so.
+    b: "The Flat panel method runs: once per night, before the first light, and only with a "
+      + "connected flat panel; without one it says so once and goes on. It does not wait for "
+      + "the twilight window. The translucent lens cap and twilight sky methods are not run "
+      + "yet. This chip adds the block set to Translucent lens cap, so change its Method to "
+      + "Flat panel on the flow card to take flats. Flats divide out dust and vignetting; "
       + "without them a stack keeps every shadow the optics put there.",
   },
   darks: {

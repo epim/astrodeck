@@ -119,7 +119,15 @@ function readTonight(payload: Record<string, unknown> | null): TonightRead | nul
       dark_end_unix: night ? num(night.dark_end_unix) : null,
     },
     flats: flats
-      ? { start_unix: num(flats.start_unix), end_unix: num(flats.end_unix) }
+      ? {
+          start_unix: num(flats.start_unix),
+          end_unix: num(flats.end_unix),
+          // The flat-panel method happens at the run's start, not the Sun
+          // window (#744): a strict boolean, so anything else reads as the
+          // window it always was.
+          runs_at_start: flats.runs_at_start === true,
+          at_unix: num(flats.at_unix),
+        }
       : null,
     moon: moon
       ? {

@@ -1420,6 +1420,13 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             "window": _text(flats.params.get("window")),
             "adu_target": _finite(flats.params.get("adu")),
             "count": _finite(flats.params.get("count")),
+            # WHICH FILTERS (#603 job B): the node's "Filters" option, as
+            # the operator's own text ("All in wheel" or "Tonight's plan
+            # only"). It decides what the stage shoots, so it has to survive
+            # the compile; `to_plan.dusk_flats_plan` reads it, and a missing
+            # or unknown value reads as the node's default, the plan's own
+            # filters.
+            "filters": _text(flats.params.get("filters")),
         }
     if calib is not None:
         automation["calibration_queue"] = {
