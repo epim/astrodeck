@@ -259,14 +259,18 @@ const ADMIN = {
   caps: ["view.status", "view.preview", "view.media", "view.site_precise",
     "view.site_derived", "view.weather", "control.capture", "control.mount",
     "control.guide", "control.power", "config.safety", "config.solar_override",
+    "control.reconnect",
     "config.backend", "config.site_optics", "config.alerts", "admin.users",
     "system.update"],
 };
 const OPERATOR = {
   role: "operator", email: "op@rig",
   caps: ["view.status", "view.preview", "view.weather", "view.site_derived",
-    "control.capture", "control.guide", "control.mount"],
+    "control.capture", "control.guide", "control.mount",
+    // #759: reconnect a SAVED profile. Not config.backend.
+    "control.reconnect"],
 };
+const VIEWER = { role: "viewer", email: null, caps: ["view.status", "view.preview"] };
 
 function seed(principal: unknown = ADMIN, rows: any[] = [clone(ROW_A), clone(ROW_B)]): void {
   serverRows = rows;
@@ -552,7 +556,14 @@ await testAsync("deleting the ACTIVE profile escalates to a hold and says the bo
 });
 
 // =========================================== 5. a principal who cannot write
-await testAsync("an operator sees the whole sheet read-only, with ONE sentence, and fires nothing", async () => {
+// DELIBERATE PIN CHANGE (WP-146, #759, owner ruling 2026-10-07: "This should be
+// permitted for Admin and operator roles"). This case listed ACTIVATE among the
+// seven controls an operator finds locked, with seven presses and seven
+// coalesced toasts. An operator now RECONNECTS by activating a saved profile
+// (`control.reconnect`), so ACTIVATE is armed and the six that WRITE a profile
+// (import, save, rename, update, export, delete) stay locked behind the one
+// sentence. The viewer variant below keeps ACTIVATE in the locked set.
+await testAsync("an operator sees the profile writes read-only, with ONE sentence, and fires nothing; ACTIVATE is armed", async () => {
   seed(OPERATOR);
   mount();
   await settle();
@@ -567,7 +578,7 @@ await testAsync("an operator sees the whole sheet read-only, with ONE sentence, 
   const a = card("p-a");
   const controls = [
     id("profiles-import"), id("profile-save-current"),
-    within(a, "profile-activate"), within(a, "profile-rename"),
+    within(a, "profile-rename"),
     within(a, "profile-update"), within(a, "profile-export"),
     within(a, "profile-delete"),
   ];
@@ -575,6 +586,10 @@ await testAsync("an operator sees the whole sheet read-only, with ONE sentence, 
     assert(c != null, "a control is missing entirely - a viewer must see the same screen");
     eq(c.getAttribute("aria-disabled"), "true", `${c.getAttribute("data-testid")} is not honest-disabled`);
   }
+  const reconnect = within(a, "profile-activate");
+  assert(reconnect != null, "ACTIVATE is missing entirely");
+  eq(reconnect.getAttribute("aria-disabled"), null,
+    "an operator's ACTIVATE is locked, but control.reconnect is held");
   eq(qa("[disabled]").length, 0,
     "a native `disabled` attribute is on the page, which removes the reason from the a11y tree");
   // The save field is readOnly rather than disabled, so the name stays readable.
@@ -584,7 +599,7 @@ await testAsync("an operator sees the whole sheet read-only, with ONE sentence, 
   await settle();
   eq(commands().length, 0, "a locked control still wrote to the rig");
   assert(confirmReq() == null, "a locked control opened a confirm dialog");
-  // Seven presses, one reason: the store coalesces identical toasts onto a
+  // Six presses, one reason: the store coalesces identical toasts onto a
   // single card with an x N chip, so the count is the evidence that each press
   // answered rather than the number of cards.
   eq(toasts().length, 1,
@@ -593,6 +608,67 @@ await testAsync("an operator sees the whole sheet read-only, with ONE sentence, 
     "not every locked press said something");
   assert(toasts().every((t) => t.level === "warning" && /needs admin access/.test(t.title || "")),
     `a locked press did not say the reason: ${toastText()}`);
+});
+
+// The viewer keeps ACTIVATE in the locked set (the case above moved it out for
+// an operator), and the sentence names the capability that gates it now, by
+// role, rather than the config.backend sentence the rest of the sheet carries.
+await testAsync("a viewer's ACTIVATE is locked and names operator or admin access", async () => {
+  seed(VIEWER);
+  mount();
+  await settle();
+  asked.length = 0;
+  const activate = within(card("p-a"), "profile-activate");
+  eq(activate.getAttribute("aria-disabled"), "true", "a viewer's ACTIVATE is armed");
+  eq(activate.getAttribute("title"), "needs operator or admin access",
+    `ACTIVATE does not name control.reconnect: ${activate.getAttribute("title")}`);
+  eq(within(card("p-a"), "profile-delete").getAttribute("title"), "needs admin access",
+    "the other controls stopped naming config.backend");
+  click(activate);
+  await settle();
+  eq(commands().length, 0, "a locked ACTIVATE still wrote to the rig");
+  assert(confirmReq() == null, "a locked ACTIVATE opened a confirm dialog");
+});
+
+// #759: an operator may reconnect and may NOT force. A forced activate aborts the
+// running sequence and disarms auto-resume - a `config.backend` decision on the
+// rig (403 on the LAN for an operator) - so the dialog that would send it is not
+// offered, and the toast says who can.
+//
+// MUTANT "the force is offered to an operator" (ProfilesEditor.tsx: the
+// `if (!canConfig) { ... return; }` branch of `onActivateFailed` removed).
+// MUTANT "ACTIVATE rides config.backend on the sheet" (ProfilesEditor.tsx:
+// `useLock({ cap: RECONNECT_CAP })` made `useLock({ cap: PROFILES_CAP })`).
+// Observed 2026-10-07 from a byte backup (restored, sha256 compared), the force
+// mutant "rigProfilesDom.test: 20/21 passed": "x an operator ACTIVATEs with the
+// unforced request, and a running conflict is not offered a force: an operator
+// was offered the force dialog, which the rig answers 403 (config.backend)"; the
+// ACTIVATE mutant 17/21, four cases: "x an operator sees the profile writes
+// read-only, with ONE sentence, and fires nothing; ACTIVATE is armed: an
+// operator's ACTIVATE is locked, but control.reconnect is held (expected null,
+// got true)", "x a viewer's ACTIVATE is locked and names operator or admin
+// access: ACTIVATE does not name control.reconnect: needs admin access (expected
+// needs operator or admin access, got needs admin access)", the unforced-press
+// case, and the relay operator case.
+await testAsync("an operator ACTIVATEs with the unforced request, and a running conflict is not offered a force", async () => {
+  seed(OPERATOR);
+  mount();
+  await settle();
+  activatePosts = [{ status: 409, body: { detail: { detail: "a sequence is running", code: "running" } } }];
+  asked.length = 0;
+  click(within(card("p-b"), "profile-activate"));
+  await settle();
+  answer(true);                    // the activate confirm
+  await settle();
+  assert(confirmReq() == null,
+    "an operator was offered the force dialog, which the rig answers 403 (config.backend)");
+  const posts = asked.filter((a) => a.method === "POST" && /\/activate$/.test(a.url));
+  eq(posts.length, 1, "the operator's activate was not sent exactly once, or a force followed");
+  eq(posts[0].body.force, false, "the operator's activate was forced");
+  assert(/forcing the switch needs admin access/.test(toastText()),
+    `the refusal does not say who can force: ${toastText()}`);
+  assert(/A sequence is running\./.test(toastText()),
+    `the toast dropped the server's own reason: ${toastText()}`);
 });
 
 // ============================================ 6. the load error and its RETRY
@@ -835,6 +911,41 @@ await testAsync("on the relay ACTIVATE is armed and sends the unforced activate,
     eq(writes.length, 1, `the relay activate sent more than the activate: ${JSON.stringify(writes)}`);
     assert(/\/api\/profiles\/p-b\/activate$/.test(writes[0].url), `the write was not the activate: ${writes[0].url}`);
     eq(writes[0].body.force, false, "the relay activate was forced");
+  } finally {
+    act(() => { noteRemoteStatus({ via: "direct" }); });
+    resetRelayForTests();
+  }
+});
+
+// #759 on the relay: an operator's ACTIVATE is armed and unforced like an
+// admin's, and rename and delete still name the LAN (the origin outranks the
+// missing capability), so neither sentence blames the wrong blocker.
+await testAsync("on the relay an operator's ACTIVATE is armed and unforced, while rename and delete name the LAN", async () => {
+  seed(OPERATOR);
+  mount();
+  await settle();
+  try {
+    act(() => { noteRemoteStatus({ via: "relay" }); });
+    await settle();
+    const row = card(ROW_B.id);
+    const activate = row.querySelector('[data-testid="profile-activate"]');
+    assert(activate != null, "ACTIVATE vanished on the relay - nothing may be hidden");
+    eq(activate.getAttribute("aria-disabled"), null,
+      "an operator's ACTIVATE renders locked over the relay (control.reconnect is held)");
+    for (const marker of ["profile-rename", "profile-delete"]) {
+      const btn = row.querySelector(`[data-testid="${marker}"]`);
+      eq(btn.getAttribute("title"), LOCAL_ONLY_REASON,
+        `${marker} names the wrong blocker for an operator over the relay (${btn.getAttribute("title")})`);
+    }
+    asked.length = 0;
+    click(activate);
+    await settle();
+    answer(true);
+    await settle();
+    const writes = asked.filter((a) => a.method !== "GET");
+    eq(writes.length, 1, `the relay activate sent more than the activate: ${JSON.stringify(writes)}`);
+    assert(/\/api\/profiles\/p-b\/activate$/.test(writes[0].url), `the write was not the activate: ${writes[0].url}`);
+    eq(writes[0].body.force, false, "the operator's relay activate was forced");
   } finally {
     act(() => { noteRemoteStatus({ via: "direct" }); });
     resetRelayForTests();

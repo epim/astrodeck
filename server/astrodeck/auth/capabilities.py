@@ -47,6 +47,25 @@ CAP_CONTROL_CAPTURE = "control.capture"    # imaging: capture/loop/AF, cooler, d
 CAP_CONTROL_MOUNT = "control.mount"        # ALL mount MOTION (motion-boundary derived)
 CAP_CONTROL_GUIDE = "control.guide"        # start/stop/dither guiding
 CAP_CONTROL_POWER = "control.power"        # switch/set (can brown out the rig)
+#: Reconnect the rig by activating a profile that is ALREADY SAVED, without
+#: ``force`` (#759, the owner's ruling on 2026-10-07: "This should be permitted
+#: for Admin and operator roles"). Held by admin and operator, never by viewer
+#: or syncer.
+#:
+#: It exists because the only thing an operator was missing was the right to
+#: bring a dropped rig back: ``POST /api/profiles/<id>/activate`` needed
+#: ``config.backend``, which ALSO writes a profile's content, the driver
+#: endpoints and the managed-PHD2 spawn, so granting that would have handed an
+#: operator the ability to point the rig at a host of their choosing. Activate
+#: takes a saved id and nothing else, and 409s while a sequence, a capture loop,
+#: a polar alignment or the auto-resume ladder is running, so a capability that
+#: covers ONLY it opens no destination and tears nothing down mid-run.
+#:
+#: ``force`` (abort a running sequence and disarm auto-resume) is NOT covered:
+#: it stays ``config.backend``, so admin only, and stays direct-only over the
+#: relay for everyone. Saving, editing and deleting profiles, ``/apply``,
+#: ``/api/connect/*`` and ``/api/discover`` keep ``config.backend`` too.
+CAP_CONTROL_RECONNECT = "control.reconnect"
 
 CAP_CONFIG_SAFETY = "config.safety"            # DESTRUCTIVE: pier/horizon floors + safety/simulate
 CAP_CONFIG_SOLAR_OVERRIDE = "config.solar_override"  # daytime/sun-cone + force-bypass (seam)
@@ -60,6 +79,7 @@ ALL_CAPS = frozenset({
     CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_MEDIA, CAP_VIEW_SITE_PRECISE,
     CAP_VIEW_SITE_DERIVED, CAP_VIEW_WEATHER,
     CAP_CONTROL_CAPTURE, CAP_CONTROL_MOUNT, CAP_CONTROL_GUIDE, CAP_CONTROL_POWER,
+    CAP_CONTROL_RECONNECT,
     CAP_CONFIG_SAFETY, CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONFIG_BACKEND,
     CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_ALERTS, CAP_ADMIN_USERS, CAP_SYSTEM_UPDATE,
 })
@@ -98,6 +118,12 @@ ROLES_CAP: dict[str, frozenset[str]] = {
     # operator holds view.weather even though it still lacks
     # view.site_precise. Still NOT control.power/config.*/view.media/
     # view.site_precise (the exact GPS fix stays admin-only everywhere else).
+    # Owner ruling on #759 (2026-10-07): an operator may also reconnect the rig
+    # by activating a SAVED profile (control.reconnect), on the LAN and through
+    # the relay, because an operator running a night has to be able to bring a
+    # dropped rig back. That is the whole of it: still NOT config.backend, so no
+    # saving/editing/deleting a profile, no /apply, no /api/connect/*, no
+    # /api/discover, and no ``force`` over a running sequence.
     # A HEADLESS DATA MOVER, and nothing else (2026-08-11). The job is: hold a
     # /ws subscription, notice a frame landed, fetch the bytes. That is exactly
     # view.status + view.media, and the point of the role is everything it does
@@ -120,6 +146,7 @@ ROLES_CAP: dict[str, frozenset[str]] = {
         CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_WEATHER,
         CAP_VIEW_SITE_DERIVED,
         CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
+        CAP_CONTROL_RECONNECT,
     }),
     # everything incl. view.media, view.site_precise.
     "admin": ALL_CAPS,

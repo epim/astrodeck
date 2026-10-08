@@ -20,11 +20,19 @@
 import { ApiError } from "../../../../api";
 import type { ProfileRow } from "../../../../types";
 
-/** The capability EVERY write on this surface needs. The server enforces it on
- *  all six routes (`POST /api/profiles`, `/capture`, `/{id}/activate`,
- *  `PATCH /{id}`, `DELETE /{id}`), so the sheet names it once and gates
- *  everything on it. */
+/** The capability every write on this surface needs EXCEPT an unforced ACTIVATE
+ *  (`RECONNECT_CAP` below). The server enforces it on `POST /api/profiles`,
+ *  `/capture`, `PATCH /{id}`, `DELETE /{id}` and `/{id}/apply`, and on a FORCED
+ *  activate, so the sheet names it once and gates all of those on it. */
 export const PROFILES_CAP = "config.backend" as const;
+
+/** The capability an UNFORCED ACTIVATE needs (#759, owner ruling 2026-10-07:
+ *  "This should be permitted for Admin and operator roles"). It is narrower than
+ *  `PROFILES_CAP` on purpose: an operator can bring a dropped rig back by
+ *  activating a profile that is already saved, and still cannot save, rename,
+ *  update, delete or force one. The server enforces it on `POST
+ *  /api/profiles/<id>/activate` and holds a forced activate to `PROFILES_CAP`. */
+export const RECONNECT_CAP = "control.reconnect" as const;
 
 // ------------------------------------------------------------------ headings
 
@@ -196,6 +204,17 @@ export function forceActivateConfirm(detail: string): {
 export function forceNeedsLan(detail: string): string {
   return `${sentenceFrom(detail)} Stop it first: forcing the switch needs the LAN, `
     + "and you are connected through the relay.";
+}
+
+/** The running-conflict toast for a caller who may reconnect but may not force:
+ *  an operator holds `RECONNECT_CAP` and not `PROFILES_CAP`, and a forced
+ *  activate (it aborts the running sequence and disarms auto-resume) is a
+ *  `PROFILES_CAP` decision, so the dialog that would send it is not shown and the
+ *  sentence says who can. `who` is `accessPhrase(PROFILES_CAP)`, passed in
+ *  because this module stays free of the store; worded from the server's own
+ *  detail like the dialog and the relay toast. */
+export function forceNeedsBackend(detail: string, who: string): string {
+  return `${sentenceFrom(detail)} Stop it first: forcing the switch needs ${who}.`;
 }
 
 /** UPDATE FROM RIG overwrites stored state - the profile's device intent - so

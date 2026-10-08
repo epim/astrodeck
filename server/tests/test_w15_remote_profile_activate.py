@@ -17,6 +17,10 @@ allowed over the relay WITHOUT force; saving, editing or deleting profiles,
 ``/apply``, ``/api/connect/*`` and ``/api/discover`` stay fenced; a relayed
 caller gets nothing beyond what its capabilities already allow.
 
+WP-146 (#759, the owner's ruling on 2026-10-07) narrowed the capability from
+``config.backend`` to ``control.reconnect`` so an operator may do this too; the
+role matrix lives in ``test_w17_reconnect_capability.py``.
+
 Named mutants, each run from a byte backup under
 ``pytest -n 0 tests/test_w15_remote_profile_activate.py`` and restored
 byte-identically (sha256 compared) on 2026-10-07. What each one made the suite
@@ -89,10 +93,12 @@ def rig(tmp_path, monkeypatch):
                          role="admin", require_email=True)
     operator = users.create(username="op@example.com", password=PASSWORD,
                             role="operator", require_email=True)
+    viewer = users.create(username="view@example.com", password=PASSWORD,
+                          role="viewer", require_email=True)
     prof = Profile(name="Sim Rig", primary_backend="sim")
     profile_lib.save(prof)
     return types.SimpleNamespace(app=app, store=store, admin=admin,
-                                 operator=operator, pid=prof.id)
+                                 operator=operator, viewer=viewer, pid=prof.id)
 
 
 def _cookie(user) -> str:
@@ -125,25 +131,35 @@ def _wait_active(store, pid, c) -> None:
 
 
 class _Spy:
-    """Records what the activate route would do to the rig, and does none of it."""
+    """Records what the activate route would do to the rig, and does none of it.
+
+    Patched on the CLASS, not on the engine / resume_arm / hub instances. A
+    ``monkeypatch.setattr`` on an instance whose attribute is a class-level
+    method undoes by writing the bound method BACK onto the instance, so the
+    shadow outlives the test and a later test that patches the class (as
+    ``test_connect_rig_guard.py`` does for ``SequenceEngine.abort``) patches
+    something the instance no longer looks up. Run in file order that test
+    failed with ``assert [] == [True]``; on a class the undo restores the
+    class dict entry itself and nothing is left behind."""
 
     def __init__(self, monkeypatch):
         self.calls: list[str] = []
         spy = self
 
-        async def _abort():
+        async def _abort(_self):
             spy.calls.append("abort")
 
-        def _stop_recovery(*a, **kw):
+        def _stop_recovery(_self, *a, **kw):
             spy.calls.append("stop_recovery")
 
-        async def _connect(profile_id):
+        async def _connect(_self, profile_id):
             spy.calls.append("connect")
             return {}
 
-        monkeypatch.setattr(app_module.engine, "abort", _abort)
-        monkeypatch.setattr(app_module.resume_arm, "stop_recovery", _stop_recovery)
-        monkeypatch.setattr(app_module.hub, "connect_profile_id", _connect)
+        monkeypatch.setattr(type(app_module.engine), "abort", _abort)
+        monkeypatch.setattr(type(app_module.resume_arm), "stop_recovery",
+                            _stop_recovery)
+        monkeypatch.setattr(type(app_module.hub), "connect_profile_id", _connect)
 
 
 def test_relayed_admin_can_activate_a_saved_profile(rig):
@@ -236,14 +252,25 @@ def test_the_other_profile_and_connect_routes_stay_fenced(rig):
     assert profile_lib.get(pid).name == "Sim Rig"
 
 
-def test_a_relayed_operator_gets_nothing_a_role_did_not_hold(rig, monkeypatch):
-    """The carve-out opens the FENCE, not a capability: activate still needs
-    ``config.backend``, which the operator role does not hold, so a relayed
-    operator is told 403 ``capability not held`` -- not ``local_only``, and the
-    rig is not touched. (Letting operators reconnect gear is a capability
-    decision, tracked on the work package, not something a fence can grant.)"""
+def test_a_relayed_operator_can_activate_but_a_relayed_viewer_cannot(rig, monkeypatch):
+    """DELIBERATE PIN CHANGE (WP-146, #759, the owner's ruling on 2026-10-07: "This
+    should be permitted for Admin and operator roles"). This test used to pin that a
+    relayed operator got 403 ``capability not held`` because activate needed
+    ``config.backend``. The route now needs the narrower ``control.reconnect``,
+    which operator holds and viewer does not. The fence is unchanged: it still
+    only lets the one route through. The full role x origin x force matrix is in
+    ``test_w17_reconnect_capability.py``."""
     spy = _Spy(monkeypatch)
     with _client(rig, rig.operator, remote=True) as c:
+        r = c.post(f"/api/profiles/{rig.pid}/activate")
+        assert r.status_code == 200, r.text
+        deadline = time.monotonic() + 10
+        while "connect" not in spy.calls and time.monotonic() < deadline:
+            c.get("/api/status")  # lets the spawned connect run on the loop
+            time.sleep(0.02)
+    assert spy.calls == ["connect"]
+    spy.calls.clear()
+    with _client(rig, rig.viewer, remote=True) as c:
         r = c.post(f"/api/profiles/{rig.pid}/activate")
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == "capability not held"
