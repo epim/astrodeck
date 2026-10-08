@@ -15,13 +15,36 @@
 // reason passed in exactly as `DevicesScreen` passes it, so neither can pass by
 // the other being broken.
 //
+// WP-146 (#759, owner ruling 2026-10-07: "This should be permitted for Admin and
+// operator roles") narrows ACTIVATE's capability from `config.backend` to
+// `control.reconnect`, which an operator holds. The popover reads it from the
+// store, so every mount below names the principal it is for. SAVE and DELETE
+// stay `config.backend` and stay locked for an operator, on the LAN and on the
+// relay; a viewer's ACTIVATE stays locked and names "operator or admin access".
+//
 // NAMED SABOTAGES:
 //   * put `p.lanReason ??` back at the head of `activateLock` -> "ACTIVATE is not
 //     locked over the relay" fails on `aria-disabled` ("true", not null).
 //   * drop `p.lanReason ??` from `deleteLock` -> "SAVE and DELETE keep the LAN
 //     sentence" fails on the delete control's title.
 //   * drop the capability branch from `activateLock` -> "a caller without
-//     config.backend is still told so" fails (the lock was cut, not narrowed).
+//     control.reconnect is still told so" fails (the lock was cut, not narrowed).
+//   * ACTIVATE_GATE_IS_BACKEND (WP-146): `const canReconnect = useCan(
+//     RECONNECT_CAP)` made `const canReconnect = p.canConfig` -> "an operator's
+//     ACTIVATE is armed, on the relay and on the LAN" fails on `aria-disabled`.
+//   * DELETE_RIDES_RECONNECT (WP-146): `profileDeleteLock(p.canConfig)` made
+//     `profileDeleteLock(canReconnect)` -> the same case fails on DELETE's title.
+//
+// Run 2026-10-07 from a byte backup, each restored byte-identically (sha256
+// compared). Observed:
+//   * ACTIVATE_GATE_IS_BACKEND: "w15ProfilesPopoverRelay.test: 4/6 passed",
+//     "x pressing ACTIVATE over the relay as an operator sends the unforced
+//     activate and nothing else that writes: unexpected writes: [] (expected 1,
+//     got 0)" and "x an operator's ACTIVATE is armed, on the relay and on the LAN,
+//     while SAVE and DELETE stay locked: an operator's ACTIVATE renders locked
+//     over the relay (control.reconnect is held) (expected null, got true)";
+//   * DELETE_RIDES_RECONNECT: "5/6 passed", "x an operator's ACTIVATE is armed
+//     ...: DELETE does not name config.backend for an operator: "null"".
 //
 // Run 2026-10-07 from a byte backup, each restored byte-identically (sha256
 // compared). Observed:
@@ -103,6 +126,20 @@ const { useStore } = await import("../../../../../store");
 const { LOCAL_ONLY_REASON } = await import("../../../../lib/gate");
 const { ProfilesPopover } = await import("../ProfilesPopover");
 
+// The caps each role really holds (server `auth/capabilities.py`). ACTIVATE
+// answers to `control.reconnect`; SAVE and DELETE answer to `config.backend`,
+// which only an admin holds.
+const ADMIN = {
+  role: "admin", email: "a@rig",
+  caps: ["view.status", "view.preview", "control.reconnect", "config.backend"],
+};
+const OPERATOR = {
+  role: "operator", email: "o@rig",
+  caps: ["view.status", "view.preview", "control.reconnect"],
+};
+const VIEWER = { role: "viewer", email: null, caps: ["view.status", "view.preview"] };
+type Who = { role: string; email: string | null; caps: string[] };
+
 let passed = 0;
 let failed = 0;
 const failures: string[] = [];
@@ -126,15 +163,16 @@ const toastMessages = () =>
   ((useStore.getState() as any).toasts as Array<{ title?: string; message?: string }>)
     .map((t) => t.title ?? t.message);
 
-async function mountPopover(over: Record<string, unknown> = {}): Promise<void> {
+async function mountPopover(over: Record<string, unknown> = {}, who: Who = ADMIN): Promise<void> {
   await act(async () => { root.render(null); });
-  await act(async () => { useStore.setState({ toasts: [] } as never); });
+  await act(async () => { useStore.setState({ toasts: [], principal: who } as never); });
   asks.length = 0;
   await act(async () => {
     root.render(createElement(ProfilesPopover, {
       rows: [ROW as any],
       liveDevices: 0,
-      canConfig: true,
+      // What `DevicesScreen` derives from the same principal.
+      canConfig: who.caps.includes("config.backend"),
       // Exactly what `DevicesScreen` hands down while the tab is on the relay.
       lanReason: LOCAL_ONLY_REASON,
       busy: null,
@@ -169,33 +207,76 @@ await testAsync("ACTIVATE is not locked over the relay, and SAVE and DELETE keep
   eq(save.getAttribute("title"), LOCAL_ONLY_REASON, "SAVE names the wrong blocker");
 });
 
-await testAsync("pressing ACTIVATE over the relay sends the unforced activate and nothing else that writes", async () => {
-  await mountPopover();
-  await act(async () => {
-    q("profile-pick-p1").dispatchEvent(
-      new win.MouseEvent("click", { bubbles: true, cancelable: true }));
-    // `waitForProfileActive` waits one poll interval (1.5 s) before it looks.
-    await new Promise((r) => setTimeout(r, 1800));
+for (const [label, who] of [["an admin", ADMIN], ["an operator", OPERATOR]] as Array<[string, Who]>) {
+  await testAsync(`pressing ACTIVATE over the relay as ${label} sends the unforced activate and nothing else that writes`, async () => {
+    await mountPopover({}, who);
+    await act(async () => {
+      q("profile-pick-p1").dispatchEvent(
+        new win.MouseEvent("click", { bubbles: true, cancelable: true }));
+      // `waitForProfileActive` waits one poll interval (1.5 s) before it looks.
+      await new Promise((r) => setTimeout(r, 1800));
+    });
+    await settle();
+    const writes = asks.filter((a) => a.method !== "GET");
+    eq(writes.length, 1, `unexpected writes: ${JSON.stringify(writes)}`);
+    eq(writes[0].method, "POST", "the activate was not a POST");
+    assert(writes[0].url.endsWith("/api/profiles/p1/activate"),
+      `the write was not the activate: ${writes[0].url}`);
+    assert(toastMessages().some((m) => /is active/.test(String(m))),
+      `the activate never reported landing: ${JSON.stringify(toastMessages())}`);
   });
-  await settle();
-  const writes = asks.filter((a) => a.method !== "GET");
-  eq(writes.length, 1, `unexpected writes: ${JSON.stringify(writes)}`);
-  eq(writes[0].method, "POST", "the activate was not a POST");
-  assert(writes[0].url.endsWith("/api/profiles/p1/activate"),
-    `the write was not the activate: ${writes[0].url}`);
-  assert(toastMessages().some((m) => /is active/.test(String(m))),
-    `the activate never reported landing: ${JSON.stringify(toastMessages())}`);
+}
+
+// DELIBERATE PIN CHANGE (WP-146, #759): this case was "a caller without
+// config.backend is still told so" and built the caller as `canConfig: false`.
+// An operator has no config.backend and now MAY activate, so the caller that is
+// still refused is a viewer, and the sentence names the capability that gates
+// ACTIVATE now.
+await testAsync("a caller without control.reconnect is still told so, relay or not", async () => {
+  for (const lanReason of [LOCAL_ONLY_REASON, null]) {
+    await mountPopover({ lanReason }, VIEWER);
+    const pick = q("profile-pick-p1");
+    eq(pick.getAttribute("aria-disabled"), "true",
+      "a viewer can press ACTIVATE (control.reconnect not held)");
+    eq(pick.getAttribute("title"), "Activating a profile needs operator or admin access.",
+      `the lock does not name the capability: "${pick.getAttribute("title")}"`);
+    assert(pick.getAttribute("title") !== LOCAL_ONLY_REASON,
+      "a missing capability was reported as the relay");
+  }
 });
 
-await testAsync("a caller without config.backend is still told so, relay or not", async () => {
-  await mountPopover({ canConfig: false });
-  const pick = q("profile-pick-p1");
-  eq(pick.getAttribute("aria-disabled"), "true",
-    "a caller without config.backend can press ACTIVATE over the relay");
-  assert(/needs/.test(String(pick.getAttribute("title"))),
-    `the lock does not name the capability: "${pick.getAttribute("title")}"`);
-  assert(pick.getAttribute("title") !== LOCAL_ONLY_REASON,
-    "a missing capability was reported as the relay");
+// The headline of #759: an operator holds control.reconnect and not
+// config.backend, so ACTIVATE is armed and SAVE / DELETE are not, on the relay
+// (where they name the LAN, as for an admin) and on the LAN (where they name the
+// capability they need). Asserted on the SAME mounts so neither half can pass by
+// the other being broken.
+await testAsync("an operator's ACTIVATE is armed, on the relay and on the LAN, while SAVE and DELETE stay locked", async () => {
+  // Relay: SAVE and DELETE name the LAN, exactly as for an admin.
+  await mountPopover({}, OPERATOR);
+  let pick = q("profile-pick-p1");
+  eq(pick.getAttribute("aria-disabled"), null,
+    "an operator's ACTIVATE renders locked over the relay (control.reconnect is held)");
+  eq(pick.getAttribute("title"), null, "an operator's ACTIVATE carries a lock sentence");
+  eq(q("profile-delete-p1").getAttribute("aria-disabled"), "true",
+    "DELETE renders armed for an operator over the relay");
+  eq(q("profile-delete-p1").getAttribute("title"), LOCAL_ONLY_REASON,
+    "DELETE names the wrong blocker for an operator on the relay");
+  eq(q("profile-save").getAttribute("aria-disabled"), "true",
+    "SAVE renders armed for an operator over the relay");
+  eq(q("profile-save").getAttribute("title"), LOCAL_ONLY_REASON,
+    "SAVE names the wrong blocker for an operator on the relay");
+
+  // LAN: nothing fences them, so the capability is the reason.
+  await mountPopover({ lanReason: null }, OPERATOR);
+  pick = q("profile-pick-p1");
+  eq(pick.getAttribute("aria-disabled"), null,
+    "an operator's ACTIVATE renders locked on the LAN (control.reconnect is held)");
+  assert(/admin access/.test(String(q("profile-delete-p1").getAttribute("title"))),
+    `DELETE does not name config.backend for an operator: "${q("profile-delete-p1").getAttribute("title")}"`);
+  eq(q("profile-save").getAttribute("aria-disabled"), "true",
+    "SAVE renders armed for an operator on the LAN");
+  assert(/admin access/.test(String(q("profile-save").getAttribute("title"))),
+    `SAVE does not name config.backend for an operator: "${q("profile-save").getAttribute("title")}"`);
 });
 
 await testAsync("a busy lane still locks ACTIVATE over the relay", async () => {

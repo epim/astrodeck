@@ -51,6 +51,7 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     configure_provider_from_auth, get_active_provider,
                     get_principal, require, resolve_principal,
                     set_active_provider)
+from ..auth.capabilities import CAP_CONTROL_RECONNECT
 from ..auth.rbac import assert_route_capabilities, declare
 # Site-precision redaction helpers + the WS re-auth cadence live in a neutral,
 # import-light module so BOTH the LAN /ws handler (here) and the relay-tunneled
@@ -6230,10 +6231,12 @@ def create_app(*, bind_host: str | None = None,
         # keeps the driver OUT of _busy (same single lane as activate).
         return _spawn_connect(hub.apply_profile(prof))
 
-    @app.post("/api/profiles/{profile_id}/activate", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
-    @declare(CAP_CONFIG_BACKEND)
+    @app.post("/api/profiles/{profile_id}/activate")
+    @declare(CAP_CONTROL_RECONNECT)
     async def activate_profile(profile_id: str, request: Request,
-                               body: ProfileApplyBody | None = None):
+                               body: ProfileApplyBody | None = None,
+                               principal: Principal = Depends(
+                                   require(CAP_CONTROL_RECONNECT))):
         """Set a profile active AND connect its rig (W1.6 / C2). Reuses the
         ``_spawn_connect`` convention so it can't run concurrently with ``apply``
         and streams progress over the WS. The active pointer is set INSIDE
@@ -6253,14 +6256,35 @@ def create_app(*, bind_host: str | None = None,
         anything runs. ``force`` is 403 ``local_only`` there, answered before
         anything else: it aborts a running sequence and disarms auto-resume,
         which is a decision made at the rig, not by a cookie the relay carries.
-        A relayed caller still needs ``config.backend``, so this opens nothing
-        a role did not already hold."""
+        The route floor is ``control.reconnect`` (#759, the owner's ruling on
+        2026-10-07: "This should be permitted for Admin and operator roles"),
+        held by admin and operator, so an operator can bring a dropped rig back
+        on the LAN and through the relay. It is deliberately narrower than
+        ``config.backend``, which also writes profile content and driver
+        endpoints and stays the gate for everything else under ``/api/profiles``
+        and ``/api/connect``. ``force`` is the one decision on this route that
+        stays a ``config.backend`` one (admin only): it is checked below, after
+        the origin, and before the run is touched.
+
+        The route's ``@declare`` carries only the floor, because that is what
+        every caller needs. Naming ``config.backend`` there too would need a
+        ``FIELD_LEVEL_CAP_ROUTES`` row in ``auth/rbac.py``; the force rule is
+        pinned by ``tests/test_w17_reconnect_capability.py`` instead."""
         force = bool(body and body.force)
         if force and _scope_is_remote(request):
             raise HTTPException(403, detail={
                 "detail": "forcing a profile over a running sequence is "
                           "LAN-only: it stops the run and disarms auto-resume",
                 "code": "local_only"})
+        if force and not principal.has(CAP_CONFIG_BACKEND):
+            # Origin first (above), capability second: the same order as every
+            # other gate that has both, so an operator on the relay is told the
+            # truer, harder blocker. Nothing has been touched yet.
+            raise HTTPException(403, detail={
+                "detail": f"forcing a profile over a running sequence needs "
+                          f"{CAP_CONFIG_BACKEND}: it stops the run and "
+                          f"disarms auto-resume",
+                "code": "forbidden"})
         if not _profile_exists(profile_id):
             raise HTTPException(404, "profile not found")
         busy = _teardown_busy_detail()

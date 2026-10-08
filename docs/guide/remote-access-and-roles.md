@@ -27,10 +27,10 @@ For a realistic role test on the controller itself, check the loopback trust set
 |---|---|
 | viewer | Status and downsized previews |
 | syncer | Status and raw science/media downloads; no rig controls |
-| operator | Status, previews, weather, site-derived planning, capture, guiding and mount control |
+| operator | Status, previews, weather, site-derived planning, capture, guiding, mount control and reconnecting a saved profile |
 | admin | All capabilities, including precise site, configuration, power, users and updates |
 
-An operator cannot edit the site, connect backends, configure safety or download raw FITS by default. A syncer is a data-transfer role, not an operator with extra rights. Sign-in identifies the account; its role determines what it may do.
+An operator can reconnect the rig by activating a saved profile, but cannot edit the site, add or change backends and profiles, configure safety or download raw FITS by default. A syncer is a data-transfer role, not an operator with extra rights. Sign-in identifies the account; its role determines what it may do.
 
 ## Add or change accounts
 
@@ -57,7 +57,7 @@ A shared `ASTRODECK_TOKEN` is a direct transport credential. It does not replace
 
 The controller opens an outbound connection to an owner-operated relay. Remote browsers use the relay's HTTPS address and authenticate with a real home account. The relay terminates transport encryption and handles session cookies, so it is a trusted part of the deployment.
 
-Some configuration and connection operations are blocked over the relay even for admins. Perform those directly at the controller. Activating an already saved profile is the exception: it is allowed over the relay for an account that may configure backends, but not with the force option. The current relay has no public viewer-share-link creation endpoint; use a viewer account instead. Closing a browser or signing out does not stop a server-side sequence.
+Some configuration and connection operations are blocked over the relay even for admins. Perform those directly at the controller. Activating an already saved profile is the exception: it is allowed over the relay for an administrator or an operator, but not with the force option, which stops a running sequence and is for an administrator at the controller. The current relay has no public viewer-share-link creation endpoint; use a viewer account instead. Closing a browser or signing out does not stop a server-side sequence.
 
 An administrator can manage people over the relay after signing in again. Every change needs a sign-in less than five minutes old, because the relay can see and replay a session cookie but cannot make you sign in. Over the relay you can add a Google-only viewer or operator, move a viewer or operator between those two roles, disable or enable them, and delete them. Passwords, administrator accounts and changes to a username or email stay on the controller. This does not protect against a relay that is hostile while you sign in, so run the relay yourself.
 
