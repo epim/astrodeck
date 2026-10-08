@@ -661,6 +661,16 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
     reproduces the pin it replaces (e8c80245..., e2c5f6ca..., 209ed15c...,
     6e9f8d1c... and 35cb51dd...), byte for byte. Regenerated from the SAME
     ``_dump`` below, against the fixed code, with no other change.
+
+    DELIBERATE PIN CHANGE, BACKLOG WP-134 (#603 job B, wave 17), FOR ONE
+    EXAMPLE: ``SequencePlan`` gained ``dusk_flats``, and example-m16 is the
+    one Example with a DUSK FLATS block (translucent lens cap, so carried and
+    not run), so its plan now carries ``dusk_flats`` and its hash moves
+    (``a3350c97...`` to ``04344014...``). The other six have no such block
+    and keep theirs, because the dump leaves the key out while it is None.
+    PROVEN, not assumed: with ``dusk_flats`` popped off the dump, the same
+    dump hashes to ``a3350c97...``, byte for byte. Regenerated from the SAME
+    ``_dump`` below.
     """
 
     BEFORE = {
@@ -669,7 +679,7 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
         "example-m31":
             "1ec44305b89e06739a2d6cbec2175f70858aabd700247e16c511b5c6f93e8561",
         "example-m16":
-            "a3350c974a434c6258f2e0fc93689399245a0803eaaf5565b5d9c3157bad7d84",
+            "0434401412faf20c6ec4ae0d22cd850fc0fad38bae89823f3051d5229b9b6232",
         "example-cycle":
             "33a8207074ea272bd551d4c981eae9cd8560880279501598cfda2438c10dda84",
         "example-pool":
@@ -762,3 +772,127 @@ class TestTheLegacySlewNote:
         assert "the 0.5 arcmin tolerance" in ignored
         assert "never reached the run" in detail
         assert "set centring on the TARGET" in detail
+
+
+class TestTheDuskFlatsMapping:
+    """#603 job B (WP-134): a compiled DUSK FLATS block becomes the plan's
+    ``dusk_flats``, by ``to_plan.dusk_flats_plan``, the one mapping Tonight's
+    copy reads too. Pure; it never raises."""
+
+    BLOCK = {"method": "Flat panel", "window": "Sun \u22122\u00b0 \u2026 "
+             "\u22128\u00b0", "adu_target": 28500.0, "count": 15.0,
+             "filters": "Tonight's plan only"}
+
+    def _plan(self, **over):
+        from astrodeck.flows.to_plan import dusk_flats_plan
+        return dusk_flats_plan({**self.BLOCK, **over}, light_filters=["L", "Ha"])
+
+    @pytest.mark.parametrize("text,method", [
+        ("Flat panel", "panel"), ("Translucent lens cap", "cap"),
+        ("Twilight sky", "sky"), ("  flat PANEL ", "panel")])
+    def test_the_method_is_matched_on_the_nodes_own_option_text(
+            self, text, method):
+        """RED under "methods swapped" (the cap and sky entries of
+        ``_DUSK_FLATS_METHODS`` exchanged): the 'cap' and 'sky' rows."""
+        plan, why = self._plan(method=text)
+        assert why == "" and plan.method == method
+
+    @pytest.mark.parametrize("window,band", [
+        ("Sun \u22122\u00b0 \u2026 \u22128\u00b0", (-2.0, -8.0)),
+        ("Sun 0\u00b0 \u2026 \u22126\u00b0", (0.0, -6.0)),
+        ("Sun -8\u00b0 ... -2\u00b0", (-2.0, -8.0)),
+        ("Sun \u20132\u00b0 \u2026 \u20136\u00b0", (-2.0, -6.0)),
+        ("Now", (None, None)), ("After sunset", (None, None)),
+        ("Sun -2\u00b0", (None, None)),
+        ("Sun +2\u00b0 ... -6\u00b0", (None, None)),
+        ("Sun -4\u00b0 ... -4\u00b0", (None, None))])
+    def test_the_window_text_is_read_as_two_sun_altitudes(self, window, band):
+        """The same expression the preview reads (``tonight._ANGLE_RE``); the
+        higher altitude first; 'Now' and anything that does not name two
+        altitudes at or below the horizon carry no band. RED under "sign
+        ignored" (``_flats_band`` reading every altitude as positive): the
+        first row's band is (8.0, 2.0)."""
+        plan, why = self._plan(window=window)
+        assert why == ""
+        assert (plan.window_hi_deg, plan.window_lo_deg) == band
+
+    def test_filters_follow_the_nodes_option(self):
+        """'Tonight's plan only' (the default, and what a blank or unknown
+        value reads as) is the plan's light filters in plan order; 'All in
+        wheel' is None, and the engine reads the wheel."""
+        assert self._plan()[0].filters == ["L", "Ha"]
+        assert self._plan(filters="")[0].filters == ["L", "Ha"]
+        assert self._plan(filters="All in wheel")[0].filters is None
+
+    def test_the_lamp_level_is_left_to_the_connected_panel(self):
+        assert self._plan()[0].panel_brightness is None
+
+    @pytest.mark.parametrize("over,field", [
+        ({"count": 0.0}, "count"), ({"count": 201.0}, "count"),
+        ({"count": None}, "count"), ({"adu_target": 0.0}, "ADU"),
+        ({"adu_target": 70000.0}, "ADU"), ({"adu_target": None}, "ADU"),
+        ({"method": ""}, "method"), ({"method": "Dome flat"}, "method")])
+    def test_a_block_the_stage_cannot_run_is_none_and_says_why(
+            self, over, field):
+        """Never raises (the compile route answers 500 on a draft that
+        does): ``(None, <why>)`` naming the field, which ``_automation`` turns
+        into 'this run will not take flats'. The 1 to 200 and 1 to 65535 in
+        the sentences are the model's own bounds."""
+        plan, why = self._plan(**over)
+        assert plan is None and field in why, (plan, why)
+
+    def test_the_boundaries_are_in(self):
+        assert self._plan(count=1.0)[0].count == 1
+        assert self._plan(count=200.0)[0].count == 200
+        assert self._plan(adu_target=65535.0)[0].adu_target == 65535
+
+    def test_no_block_and_a_non_block_are_none(self):
+        from astrodeck.flows.to_plan import dusk_flats_plan
+        assert dusk_flats_plan(None)[0] is None
+        assert dusk_flats_plan("Flat panel")[0] is None
+
+    def test_the_field_is_absent_from_a_dump_that_has_none(self):
+        """ADDITIVE: every plan without the block dumps as before, which is
+        what keeps the stored sessions and the digests above unchanged. RED
+        under "always dumped" (the wrap serializer's ``dusk_flats`` pop
+        removed): the key is there with a null."""
+        plan, _ = to_sequence_plan(compile_plan(_one_target(), "n"))
+        assert plan.dusk_flats is None
+        assert "dusk_flats" not in plan.model_dump(mode="json")
+        assert "dusk_flats" not in json.loads(plan.model_dump_json())
+
+    def test_a_panel_flow_resolves_the_lights_filters_in_plan_order(self):
+        """Resolved in ``to_sequence_plan``, where the targets are known: the
+        distinct filters of the LIGHT steps of the built targets, in plan
+        order, each once."""
+        g = FlowGraph(
+            nodes=[_n("f", "duskflats", method="Flat panel", count=5,
+                      adu=20000),
+                   _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09", rotation=0),
+                   _n("c", "capture", x=200, filter="Ha", exposure=180,
+                      count=4, gain=100, bin="1"),
+                   _n("c2", "capture", x=300, filter="L", exposure=60,
+                      count=4, gain=100, bin="1"),
+                   _n("c3", "capture", x=400, filter="Ha", exposure=60,
+                      count=4, gain=100, bin="1")],
+            edges=[_e("f", "done", "t", "arm"), _e("t", "target", "c", "run"),
+                   _e("c", "complete", "c2", "run"),
+                   _e("c2", "complete", "c3", "run")])
+        plan, _ = to_sequence_plan(compile_plan(g, "n"), g)
+        assert plan.dusk_flats.filters == ["Ha", "L"], plan.dusk_flats
+        assert (plan.dusk_flats.count, plan.dusk_flats.adu_target) == (5, 20000)
+
+    def test_a_block_the_stage_cannot_run_leaves_the_field_off(self):
+        g = FlowGraph(
+            nodes=[_n("f", "duskflats", method="Flat panel", count=0,
+                      adu=20000),
+                   _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09", rotation=0),
+                   _n("c", "capture", x=200, filter="L", exposure=60,
+                      count=4, gain=100, bin="1")],
+            edges=[_e("f", "done", "t", "arm"), _e("t", "target", "c", "run")])
+        plan, unmapped = to_sequence_plan(compile_plan(g, "n"), g)
+        assert plan.dusk_flats is None
+        (row,) = [u for u in unmapped if u["key"] == "automation.dusk_flats"]
+        assert row["level"] == "warn" and "will not take flats" in row["detail"]

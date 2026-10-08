@@ -564,24 +564,46 @@ def _target_coords(entry: dict, resolver: Callable[[str], tuple[float, float] | 
 
 # ------------------------------------------------------------------ dusk flats
 
-def _dusk_flats_wired() -> bool:
-    """Whether the engine runs a DUSK FLATS block: ``to_plan.DUSK_FLATS_WIRED``,
-    the one switch (#192, #603).
+def _dusk_flats_runs(plan: Mapping | None, graph: FlowGraph | None):
+    """``(runs, flats, why_not)``: whether the engine will run this flow's
+    DUSK FLATS block, the ``DuskFlatsPlan`` the compile makes of it (None when
+    there is no block, or the stage cannot run it as set), and, when it will
+    not run it, a fragment saying why in the engine's own terms.
 
-    The brief's clause and the STORY row are worded from this, and the
-    compiler's "will not take flats" warning is present exactly when it is
-    False, so the preview cannot promise what the plan's own warning denies.
-    Read AT CALL TIME and imported lazily: ``to_plan`` imports this module, so
-    a top-level import of its constant would bind the value at load (a test
+    READ OFF THE COMPILED PLAN, NOT THE GRAPH (#603 job B). The brief and the
+    story used to be worded from the node, so they promised whatever the node
+    said; the stage runs what ``to_plan.dusk_flats_plan`` makes of the
+    compile's ``automation["dusk_flats"]``, and that SAME function answers
+    here, so a block the plan drops (an unusable count, a method the stage
+    does not run yet) is never promised. ``plan`` is the compiled dict
+    ``resolve_tonight`` already holds; without it the graph is compiled here.
+
+    ``to_plan.DUSK_FLATS_WIRED``, the one switch (#192, #603), is read AT CALL
+    TIME and ``to_plan`` is imported lazily: ``to_plan`` imports this module,
+    so a top-level import of its constant would bind the value at load (a test
     or a flip of the constant would not reach the copy) and could cycle."""
     from . import to_plan
-    return bool(to_plan.DUSK_FLATS_WIRED)
+    if not to_plan.DUSK_FLATS_WIRED:
+        return False, None, _FLATS_NOT_RUN
+    block = ((plan or {}).get("automation") or {}).get("dusk_flats")
+    if block is None and plan is None and graph is not None:
+        block = (compile_plan(graph, "").get("automation") or {}
+                 ).get("dusk_flats")
+    flats, why = to_plan.dusk_flats_plan(block)
+    if flats is None:
+        return False, None, f"the engine cannot run it as set: {why}"
+    if flats.method not in to_plan.DUSK_FLATS_RUNS:
+        label = to_plan.DUSK_FLATS_METHOD_LABEL[flats.method]
+        return False, flats, (f"the engine runs the flat-panel method only, "
+                              f"and this one is {label}")
+    return True, flats, ""
 
 
-#: Said in place of what the block would do while the engine has no dusk-flats
-#: stage. Operator-entered text and fixed words only: the Tonight answer is
-#: served to roles with no site view, so no figure the site decides (the
-#: window's length in minutes is a function of the latitude, #19) may enter it.
+#: Said in place of what the block would do while the engine does not run it
+#: (here: no stage at all; `_dusk_flats_runs` words the other reasons).
+#: Operator-entered text and fixed words only: the Tonight answer is served to
+#: roles with no site view, so no figure the site decides (the window's length
+#: in minutes is a function of the latitude, #19) may enter it.
 _FLATS_NOT_RUN = "the engine has no dusk-flats stage yet"
 
 
@@ -1967,10 +1989,14 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         # The count and the method are no longer quoted for the same reason:
         # a figure printed beside "does not run" reads as a plan.
         if df is not None:
-            if _dusk_flats_wired():
-                t += (f", and shoots {df.params.get('count')} flats per "
-                      f"filter ({str(df.params.get('method')).lower()}) in "
-                      f"the twilight window")
+            runs, flats_plan, _why = _dusk_flats_runs(plan, g)
+            if runs:
+                # The stage's own count, off the plan, and only the method it
+                # runs: with a flat panel, once, before the first light, and
+                # not in "the twilight window" (a panel does not wait for it).
+                t += (f", and shoots {flats_plan.count} flats per filter "
+                      f"with the flat panel before its first light, if a "
+                      f"flat panel is connected")
             else:
                 t += (", and has a DUSK FLATS block that the engine does not "
                       "run yet, so no flats are taken")
@@ -2068,7 +2094,7 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         # library still needs (`_hold_darks`). The queue's order, its bias
         # leg and its flats leg are not wired (`to_plan._automation`), so the
         # old "(darks → bias → flats-if-panel)" listed two stages that never
-        # run. Not tied to `_dusk_flats_wired`: these are the QUEUE's legs,
+        # run. Not tied to the DUSK FLATS block: these are the QUEUE's legs,
         # a different stage from the DUSK FLATS block.
         t = ("If cloud cover is detected (this trigger fires on the cloud "
              "detector's own verdict), imaging pauses at the frame boundary")
@@ -2652,32 +2678,30 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     #    latitude, and this answer is served to roles with no site view (#19).
     flats = out["flats"]
     if flats:
-        wired = _dusk_flats_wired()
+        runs, flats_plan, why = _dusk_flats_runs(plan, graph)
         adu = flats.get("adu_target")
         adu_txt = f"{int(_num(adu)):,}".replace(",", " ") if adu else "target"
-        if flats["start_unix"] is not None and flats["end_unix"] is not None:
-            if wired:
-                mins = int(round(
-                    (flats["end_unix"] - flats["start_unix"]) / 60.0))
-                timed.append(row(
-                    flats["start_unix"],
-                    f"Flats window ({flats['window']}, about {mins} min): "
-                    f"{str(flats['method']).lower()} flats, exposure solved "
-                    f"to {adu_txt} ADU per filter", TONE_DIM))
-            else:
-                timed.append(row(
-                    flats["start_unix"],
-                    f"DUSK FLATS ({flats['window']}) is drawn but not run: "
-                    f"{_FLATS_NOT_RUN}", TONE_WARN))
-        elif wired:
+        if runs:
+            # THE FLAT PANEL, which the stage runs (#603 job B): timed where
+            # the run starts, not at the Sun window, because a panel does not
+            # wait for the sky (the stage runs when the run reaches it, before
+            # the first light). Operator numbers and fixed words only: no
+            # figure the site decides (#19).
             timed.append(row(
-                dusk, f"Dusk flats are configured for \"{flats['window']}\" - "
-                f"that window does not name two sun altitudes, so its clock "
-                f"times are not resolved here", TONE_WARN))
+                night["window_start_unix"],
+                f"DUSK FLATS (flat panel): {flats_plan.count} flats per "
+                f"filter, exposure solved to {adu_txt} ADU, taken once before "
+                f"the first light - skipped, with a line in the log, if no "
+                f"flat panel is connected", TONE_DIM))
+        elif flats["start_unix"] is not None and flats["end_unix"] is not None:
+            timed.append(row(
+                flats["start_unix"],
+                f"DUSK FLATS ({flats['window']}) is drawn but not run: "
+                f"{why}", TONE_WARN))
         else:
             timed.append(row(
                 dusk, f"DUSK FLATS ({flats['window']}) is drawn but not "
-                f"run: {_FLATS_NOT_RUN}, and that window does not name two "
+                f"run: {why}, and that window does not name two "
                 f"sun altitudes, so its clock times are not resolved here",
                 TONE_WARN))
 
