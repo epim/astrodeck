@@ -1839,6 +1839,12 @@ class SequenceEngine:
         # not even a log line to notice — the whole feature was absent, quietly,
         # on exactly the path it exists for.
         session.auto_resume = True
+        # A SESSION THAT STARTS WAITS FOR NOTHING (#598, D-04). Cleared here
+        # because every start path reaches this line (CONTINUE, a flow run,
+        # /resume, ResumeArm's own tick, the promotion's own start): a marker
+        # that survived a start by hand would arm the session again behind
+        # the run it already outran, the moment that run completed.
+        session.queued_behind = None
         # NAMED, NOT SILENT (#595, D-04). The singleton below used to disarm
         # every other armed session with nothing to show for it: no log line,
         # no response field, so the only way to notice was a manual read of
@@ -1850,26 +1856,18 @@ class SequenceEngine:
         try:
             # Server-enforced singleton, same rule as the PATCH route: the
             # active session is THE armed one, so arming it disarms the rest.
-            for other in session_store.load_all():
-                if other.id != session.id and other.auto_resume:
-                    other.auto_resume = False
-                    session_store.save(other)
-                    disarmed.append({"id": other.id,
-                                     "name": other.name or other.plan.name})
+            # ONE LOOP, shared with the PATCH route and the queue's promotion
+            # (``_arm_exclusively``, #837), which also says so, as a WARNING:
+            # this is the owner's protection against a crash or restart going
+            # away, and it happened as a side effect of starting something
+            # else. Named inside the engine, because every start path reaches
+            # this line - the Plan editor, a flow run, CONTINUE, /resume,
+            # /recover, and ResumeArm's own auto-resume - so the one place
+            # that disarms is the one place that says so, rather than trusting
+            # each caller to ask.
+            disarmed = self._arm_exclusively(session)
         except Exception:  # noqa: BLE001 - never block a run over bookkeeping
             pass
-        if disarmed:
-            # A WARNING, not info: this is the owner's protection against a
-            # crash or restart going away, and it happened as a side effect
-            # of starting something else. Named here, inside the engine,
-            # because every start path reaches this line — the Plan editor,
-            # a flow run, CONTINUE, /resume, /recover, and ResumeArm's own
-            # auto-resume — so the one place that disarms is the one place
-            # that says so, rather than trusting each caller to ask.
-            names = ", ".join(d["name"] or d["id"] for d in disarmed)
-            bus.log("warning",
-                    f"starting '{plan.name or 'Tonight'}' disarmed "
-                    f"auto-resume for: {names}", "sequence")
         self._session = session
         self._done = dict(session.done_map()) if resume else {}
         self._frames_done = sum(self._done.values())
@@ -3064,6 +3062,13 @@ class SequenceEngine:
                 elif self._no_setpoint_must_stop_the_run():
                     skip_detail = "skipped: this run has no target temperature"
                 if skip_detail is None:
+                    # DUSK FLATS (#603 job B): the flat set, once a night,
+                    # AFTER the cooling wait (a flat is shot at the setpoint's
+                    # offset and gain, and the sensor is at it) and BEFORE the
+                    # scheduler's first target, so it can never land in the
+                    # dark after a light frame. A no-op for a plan without the
+                    # block, which is every plan saved before it existed.
+                    await self._dusk_flats()
                     await self._run_scheduled(plan)
                 spell_ran_out = True
             except BaseException as exc:
@@ -3383,6 +3388,20 @@ class SequenceEngine:
             self._session.status = ("complete"
                                     if reason == "complete" and not unmet
                                     else "dormant")
+            # A COMPLETE SESSION HAS NOTHING LEFT TO RESUME (#838).
+            # ``start()`` arms every run, so a run that finishes the plan
+            # would otherwise leave a FINISHED session carrying
+            # ``auto_resume`` forever. ``armed()`` never returns it (it asks
+            # for a dormant one), so the flag did nothing, but it read as
+            # news everywhere else: the card drew an "armed without a
+            # monitor" chip on a night that is over, and the singleton named
+            # it when a later start switched it off. Cleared where the status
+            # is decided, so the saved file never holds complete-and-armed.
+            # ONLY a complete finish: every other ending leaves frames owed
+            # and keeps the arming that carries it through a crash or a
+            # restart (the dormant branches below decide those).
+            if self._session.status == "complete":
+                self._session.auto_resume = False
             # AN ABORT IS A DECISION, NOT A FAULT.
             #
             # `dormant` is right for a stopped run -- it still owes frames --
@@ -3461,16 +3480,133 @@ class SequenceEngine:
                         "sequence")
             else:
                 self._session.crash_resumes = 0
+            saved = False
             try:
                 session_store.save(self._session)
+                saved = True
             except Exception as e:
                 bus.log("warning", f"session save failed: {e}", "sequence")
+            # THE QUEUE'S ONE EVENT (#598, backlog ruling D-04, owner-approved
+            # 2026-09-30): the session this one was waiting behind COMPLETED.
+            # Asked of the status the decision above wrote, never of `reason`:
+            # 'complete' with frames still owed is dormant, and a dawn
+            # cut-off, an incomplete night, an unsafe stop, an abort, an
+            # error, a quality stop and a cooling skip all leave THIS session
+            # owing frames and armed (or disarmed on purpose), so the session
+            # behind it stays queued and unarmed. And only once the store
+            # holds it as complete: a save that failed leaves a dormant file
+            # that ResumeArm would resume, and arming a second session beside
+            # it is the singleton broken.
+            if saved and self._session.status == "complete":
+                self._promote_queued(self._session)
             self._record_flow_result(self._session, reason)
             self._session = None
             # The memo is the finished session's: let it go with it, so the
             # engine does not pin a project's whole ledger map until the
             # next run starts.
             self._accepted_seen = None
+
+    @staticmethod
+    def _arm_exclusively(
+        session: Session,
+        on_disarm: Callable[[Session], None] | None = None,
+    ) -> list[dict]:
+        """Arm ``session`` and disarm every OTHER armed session, saving each
+        of them; the session itself is the caller's to save (it has more to
+        write in the same file). Returns ``[{"id", "name"}, ...]`` for the
+        ones that were really armed (dormant or live), which is also what the
+        warning names: a finished session's leftover flag losing its switch is
+        hygiene, not news.
+
+        THE SINGLETON, ONCE (#598, D-04; #837). ``start()``, the PATCH route
+        and the promotion all arm one session and disarm the rest, and each
+        used to run its own copy of this loop (and say so in its own comment).
+        It is written once here and all three call it. The PATCH route and
+        the promotion hold ``session_store.write_locked()`` around it and
+        await nothing. ``start()`` does not hold it, as its own copy of the
+        loop never did (it is sync, refuses a live run, and a ladder only
+        works while none is live), so a PATCH that arms in the same instant
+        as a start is a race the shared loop did not create and does not
+        close.
+
+        ``on_disarm`` is called with each session about to lose its switch,
+        BEFORE it is saved, and is the one difference between the callers: the
+        PATCH route stops a recovery ladder that is working on that session
+        (``resume_arm.stop_recovery``, #220), in the same locked section and
+        before the disarm lands, so the ladder cannot take a step in between.
+        ``start()`` and the promotion pass none: they run while no ladder can
+        be working (``start()`` refuses a live run, and a ladder only works
+        while none is live)."""
+        disarmed: list[dict] = []
+        session.auto_resume = True
+        for other in session_store.load_all():
+            if other.id == session.id or not other.auto_resume:
+                continue
+            other.auto_resume = False
+            if on_disarm is not None:
+                on_disarm(other)
+            session_store.save(other)
+            if other.status in ("dormant", "active"):
+                disarmed.append({"id": other.id,
+                                 "name": other.name or other.plan.name})
+        if disarmed:
+            names = ", ".join(d["name"] or d["id"] for d in disarmed)
+            bus.log("warning",
+                    f"arming '{session.name or session.plan.name}' disarmed "
+                    f"auto-resume for: {names}", "sequence")
+        return disarmed
+
+    def _promote_queued(self, done: Session) -> None:
+        """Arm the session waiting behind ``done``, which has just COMPLETED
+        (#598, backlog ruling D-04, owner-approved 2026-09-30).
+
+        The caller asks this only of a session the store holds as complete;
+        nothing else promotes, because every other ending leaves ``done``
+        owing frames and armed (or disarmed on purpose), and the session
+        behind it must not take its place. ResumeArm then starts the promoted
+        session on its next tick the ordinary way: its window, the veto, the
+        recovery ladder. Arming is all this does, so a window that is closed
+        now simply waits.
+
+        One section under the store's write lock, load to save, awaiting
+        nothing: a PATCH that queues or abandons the session at this moment
+        runs wholly before or wholly after it (``write_locked``). Only a
+        DORMANT session is promoted: one abandoned, deleted or started by
+        hand since it was queued is not waiting any more. A queue of one is
+        enforced where it is set; a second session found waiting behind the
+        same one (a hand edit) is left queued and named, never armed beside
+        the first.
+
+        Never raises: this is a terminal path, and a failure here must not
+        skip the bookkeeping after it. The session stays queued and unarmed,
+        which is the safe direction, and the warning says so."""
+        label = done.name or done.plan.name or done.id
+        try:
+            with session_store.write_locked():
+                waiting = [s for s in session_store.load_all()
+                           if s.queued_behind == done.id
+                           and s.status == "dormant"]
+                if not waiting:
+                    return
+                waiting.sort(key=lambda s: s.updated_ts, reverse=True)
+                nxt, rest = waiting[0], waiting[1:]
+                nxt.queued_behind = None
+                self._arm_exclusively(nxt)
+                session_store.save(nxt)
+                line = (f"'{label}' is complete, so "
+                        f"'{nxt.name or nxt.plan.name}' is armed and starts "
+                        f"when its window opens")
+                if rest:
+                    line += ("; also waiting behind it, and left queued: "
+                             + ", ".join(s.name or s.plan.name or s.id
+                                         for s in rest))
+                bus.log("info", line, "sequence")
+        except Exception as e:  # noqa: BLE001 - a terminal path never raises
+            bus.log("warning",
+                    f"'{label}' is complete but the session waiting behind "
+                    f"it could not be armed ({e}); it stays queued and "
+                    f"unarmed, so arm it from the session list",
+                    "sequence")
 
     def _hand_pending_retries_to_the_session(self) -> None:
         """What is still queued for the scheduler when the run is finalized
@@ -9225,9 +9361,12 @@ class SequenceEngine:
             if st.done:
                 break
             exp = st.exposure_s
-        if not st.converged:
-            bus.log("warning", f"{target.name}: flat exposure did not converge "
-                               f"({st.reason}); using {st.exposure_s:g}s", "sequence")
+        # THE REASON IS KEPT, AND SAID BY THE CALLER (#841). The return value
+        # is `(exposure_s, converged)` and stays so; what an unconverged solve
+        # MEANS differs by caller (the opening solve ends the step, a mid-set
+        # re-solve goes on at its best estimate), so each says its own line,
+        # once, with the solver's reason from here.
+        self._flat_solve_reason = st.reason
         return st.exposure_s, st.converged
 
     async def _run_calibration(self, ti: int, target: Target) -> None:
@@ -9305,7 +9444,30 @@ class SequenceEngine:
                                        CALIBRATOR_CMD_TIMEOUT_S, "calibrator on")
                         panel_lit = True
                     self._set_state(detail=f"{target.name}: solving flat exposure")
-                    solved_exp, _ = await self._solve_flat_exposure(step, target)
+                    solved_exp, converged = await self._solve_flat_exposure(
+                        step, target)
+                    if not converged:
+                        # A FLAT NOBODY METERED IS NOT A FLAT (#841). The
+                        # solver gives up at a rail (the source is too dim at
+                        # the longest exposure, too bright at the shortest) or
+                        # after its iteration cap, and the exposure it hands
+                        # back is then just the last number it tried. Shooting
+                        # the whole set at it banked count frames that no
+                        # ADU target describes: a panel that did not light
+                        # (a dead lamp, a cover left open) or a sky past its
+                        # window produced a library full of empty or
+                        # saturated flats, each one looking like a flat to the
+                        # matcher. None of this step's frames are shot; the
+                        # reason is said once, and the next step (the next
+                        # filter) goes on. The panel is turned off by the
+                        # finally below, as for any other way out of the step.
+                        bus.log("warning",
+                                f"{target.name}: flat exposure did not "
+                                f"converge on {step.filter or 'no filter'} "
+                                f"({self._flat_solve_reason}) - none of its "
+                                f"{step.count} flats are shot, and the next "
+                                f"step goes on", "sequence")
+                        continue
                 for i in range(self._done.get(key, 0), step.count):
                     await self._checkpoint()
                     # CALIBRATION HAS A STOP BOUNDARY TOO (§1.6). Same per-FRAME
@@ -9360,8 +9522,17 @@ class SequenceEngine:
                             and i % FLAT_RESOLVE_EVERY == 0):
                         self._set_state(detail=f"{target.name}: re-metering flat "
                                                f"(the sky has moved)")
-                        solved_exp, _ = await self._solve_flat_exposure(
+                        solved_exp, resolved = await self._solve_flat_exposure(
                             step, target, start_exposure_s=solved_exp)
+                        if not resolved:
+                            # A set already under way goes on at the best
+                            # estimate the solver has: its opening solve
+                            # converged, so these are flats, drifting. Said
+                            # once per re-solve, as the solver itself used to.
+                            bus.log("warning",
+                                    f"{target.name}: flat exposure did not "
+                                    f"converge ({self._flat_solve_reason}); "
+                                    f"using {solved_exp:g}s", "sequence")
                     exp = solved_exp if solved_exp is not None else step.exposure_s
                     self._begin_frame(ti, si, exp)
                     self._set_state(state="running",
@@ -12298,6 +12469,316 @@ class SequenceEngine:
         if taken:
             bus.log("info", f"day darks: {taken} frame(s) captured before the "
                             f"warm ramp", "sequence")
+
+    # ------------------------------------------------- DUSK FLATS (#603 job B)
+
+    #: Why the last `_solve_flat_exposure` ended, in the solver's own word
+    #: ("converged", "too_dim_at_max", "too_bright_at_min", "max_iterations").
+    #: Read by the caller that has to say what an unconverged solve means.
+    _flat_solve_reason: str = ""
+
+    #: The observing night (`night_key`) on which the DUSK FLATS stage last
+    #: settled: shot, or said why it would not. The stage runs once per night
+    #: on this engine, so a resume the same night does not walk the filters
+    #: again. It is a MEMORY, not the guarantee: a restart loses it, and what
+    #: keeps a restart from reshooting is the library (`_dusk_flats_fresh`).
+    _dusk_flats_night: str | None = None
+
+    #: The exposure the panel metering starts from, in seconds. The solver
+    #: chooses the exposure, not this; it converges from a decade either side.
+    _DUSK_FLATS_SEED_S = 1.0
+
+    def _lights_taken_tonight(self) -> bool:
+        """Has a LIGHT frame of this plan been banked on tonight's observing
+        night? Read off the session ledger by step id, so a calibration frame
+        (or another night's light) is not one.
+
+        The DUSK FLATS stage asks it because the flats come BEFORE the first
+        light: a run restarted after lights are down is in astronomical
+        darkness with a sky to image, and a flat set then costs the night what
+        the sky is giving."""
+        plan, session = self.plan, self._session
+        if plan is None or session is None:
+            return False
+        light_ids = {s.id for t in plan.targets if not t.calibration
+                     for s in t.steps
+                     if str(s.frame_type or "Light") == "Light"}
+        night = night_key(time.time())
+        return any(f.step_id in light_ids and f.ts > 0.0
+                   and night_key(f.ts) == night for f in session.frames)
+
+    def _dusk_flats_fresh(self, filt: str | None, gain: int, offset: int,
+                          binning: int, quota: int,
+                          rotation_deg: float | None) -> tuple[bool, int]:
+        """``(fresh, already_banked)`` for one filter's flats: does the
+        library already hold a FULL set, young enough to trust, that the
+        pipeline would apply to lights at this gain and binning?
+
+        THE QUEUE'S if-stale RULE, asked of ``health_matrix`` for the FLAT
+        kind, the call the Calibration Matrix panel renders, so the panel and
+        the engine cannot give the operator two answers about one library.
+        This is what makes a restart idempotent: the per-night latch dies with
+        the process, the flats on disk do not.
+
+        FAILS TO SHOOTING, as ``_hold_darks_shortfall`` does, and for the same
+        reason: a library that cannot be read is no reason to go without
+        flats."""
+        lib = getattr(self.hub, "master_library", None)
+        if lib is None:
+            return False, 0
+        try:
+            from ..calibration.matcher import LightNeed
+            from ..flows.calibration_health import (VERDICT_OK, CalNeed,
+                                                    frame_from_header,
+                                                    health_matrix)
+            need = CalNeed(LightNeed(
+                exposure_s=1.0, gain=int(gain), offset=int(offset),
+                temp_c=None, binning=int(binning), filter=str(filt or "")),
+                rotation_deg=rotation_deg)
+            frames = [f for f in (frame_from_header(h, ts=ts, path=str(p))
+                                  for p, h, ts in lib.iter_cal_headers())
+                      if f is not None]
+            rows = health_matrix([need], frames, masters=lib.list_masters(),
+                                 quota=quota, kinds=("FLAT",))
+            if not rows:
+                return False, 0
+            return rows[0].verdict == VERDICT_OK, rows[0].have
+        except Exception as exc:                  # noqa: BLE001 - reported
+            bus.log("warning", f"DUSK FLATS: could not read the flat library "
+                               f"({exc}) - shooting the full set", "sequence")
+            return False, 0
+
+    async def _dusk_flats_rotation(self) -> float | None:
+        """The rotator's mechanical angle, or None when there is no rotator
+        or it will not say. Best-effort and bounded: it only decides which
+        flats the library already holds, and a rotator that does not answer is
+        no reason to stop the stage."""
+        rot = self.hub.devices.get("rotator")
+        if rot is None or not getattr(rot, "connected", False):
+            return None
+        try:
+            return float(await asyncio.wait_for(
+                rot.get_mechanical_position(),
+                CALIBRATOR_CMD_TIMEOUT_S)) % 360.0
+        except Exception:                          # noqa: BLE001
+            return None
+
+    def _dusk_flat_recipes(self, df) -> tuple[list[tuple], list[str]]:
+        """``(recipes, missing)``: one ``(filter, gain, offset, binning)`` per
+        flat set to shoot, in filter order, and the named filters the wheel
+        does not have.
+
+        A flat is matched on GAIN and BINNING as well as filter
+        (``flat_matches``), so each set is shot at the settings of the lights
+        that will be calibrated by it: the distinct ``(gain, binning)`` of the
+        plan's LIGHT steps on that filter, or of the plan's first light step
+        for a filter no light uses ("All in wheel"). A plan with no light step
+        falls back to the step model's own defaults.
+
+        ``df.filters`` names the filters ('Tonight's plan only', resolved by
+        ``to_sequence_plan``); None is every non-opaque slot of the wheel. With
+        no wheel, or no filter named, the wheel is not moved and one
+        unfiltered set is shot per light setting."""
+        plan = self.plan
+        lights = [s for t in (plan.targets if plan else ())
+                  if not t.calibration for s in t.steps
+                  if str(s.frame_type or "Light") == "Light"]
+        defaults = (ExposureStep.model_fields["gain"].default,
+                    ExposureStep.model_fields["offset"].default,
+                    ExposureStep.model_fields["binning"].default)
+        fallback = ((lights[0].gain, lights[0].offset, lights[0].binning)
+                    if lights else defaults)
+
+        fw = self.hub.devices.get("filterwheel")
+        wheel = fw is not None and getattr(fw, "connected", False)
+        missing: list[str] = []
+        if df.filters is None:
+            names: list[str | None] = (
+                [n for i, n in enumerate(fw.filter_names)
+                 if n and not fw.is_opaque(i)] if wheel else [])
+        elif wheel:
+            known = list(fw.filter_names)
+            wanted = list(dict.fromkeys(df.filters))
+            missing = [n for n in wanted if n not in known]
+            names = [n for n in wanted if n in known]
+        else:
+            names = []
+        # Nothing to name (an empty list, no wheel, no light on a filter):
+        # one unfiltered set, the wheel left where it is.
+        unfiltered = not names and not missing
+        recipes: list[tuple] = []
+        for filt in ([None] if unfiltered else names):
+            sets: dict[tuple, tuple] = {}
+            for s in lights:
+                if filt is None or s.filter == filt:
+                    sets.setdefault((s.gain, s.binning),
+                                    (s.gain, s.offset, s.binning))
+            for gain, offset, binning in (sets.values() or [fallback]):
+                recipes.append((filt, int(gain), int(offset), int(binning)))
+        return recipes, missing
+
+    async def _dusk_flats(self) -> None:
+        """Shoot the flat set a flow's DUSK FLATS block asks for, once per
+        observing night, before the first light (#603 job B).
+
+        ONLY THE FLAT PANEL. 'cap' and 'sky' are carried in the plan and
+        reported here as not run yet (they need a bright sky and a wait for
+        the Sun, which is job C). A panel is a constant light source: the
+        stage does not wait for the node's Sun window, and runs whenever the
+        run reaches it. It never runs once a light frame has been taken
+        tonight (`_lights_taken_tonight`), and a library that already holds a
+        fresh full set for a filter skips that filter (`_dusk_flats_fresh`).
+
+        WITHOUT A FLAT SOURCE it says so once and the night goes on. A failed
+        stage never stops the night, as the day darks do not; but a
+        ``SafetyAbort`` and a cancel propagate, so an unsafe trip mid-flats is
+        the night's end like any other, with the lamp off and the cover shut
+        by ``_run_calibration``'s own ``finally``.
+
+        THE COVER IS LEFT AS IT WAS FOUND. A flip-flat's cover must be shut
+        for its lamp to light the aperture (#194), and ``_panel_off_safe``
+        leaves it shut, so a cover that was OPEN when the stage began is
+        re-opened here once the set is done: otherwise the first light would
+        be taken through a shut cover, a whole night of black frames. Opening
+        a cover that was found shut is #601's (with the roof), not this
+        stage's. On an abort or a cancel nothing re-opens it: shut is the
+        safe state.
+
+        The flats are taken at the rotator's current angle, not at each
+        panel's (flats keyed by rotator angle is #176), and the panel is
+        driven as a dust-cover panel: the node does not say which placement it
+        is, and a dome-mounted or handheld panel cannot be driven from here.
+        """
+        plan = self.plan
+        df = getattr(plan, "dusk_flats", None)
+        if df is None:
+            return
+        night = night_key(time.time())
+        if self._dusk_flats_night == night:
+            return
+        if df.method != "panel":
+            self._dusk_flats_night = night
+            label = {"cap": "translucent lens cap",
+                     "sky": "twilight sky"}.get(df.method, df.method)
+            bus.log("warning", f"DUSK FLATS ({label}) is not run yet: only the "
+                               f"flat-panel method is, so this night goes on "
+                               f"without flats", "sequence")
+            return
+        cc = self.hub.calibrator
+        cam = self.hub.devices.get("camera")
+        if cc is None or not getattr(cc, "connected", False):
+            self._dusk_flats_night = night
+            bus.log("warning", "DUSK FLATS skipped: no flat panel is "
+                               "connected, so the night goes on without flats",
+                    "sequence")
+            return
+        if cam is None or not getattr(cam, "connected", False):
+            self._dusk_flats_night = night
+            bus.log("warning", "DUSK FLATS skipped: no camera is connected, so "
+                               "the night goes on without flats", "sequence")
+            return
+        if self._lights_taken_tonight():
+            self._dusk_flats_night = night
+            bus.log("info", "DUSK FLATS skipped: a light frame has already "
+                            "been taken tonight, and the flats come before "
+                            "the first one", "sequence")
+            return
+
+        cover_was_open = False
+        shot = skipped = unmetered = 0
+        try:
+            recipes, missing = self._dusk_flat_recipes(df)
+            for name in missing:
+                bus.log("warning", f"DUSK FLATS: filter '{name}' is not in "
+                                   f"the wheel - no flats for it", "sequence")
+            rotation = await self._dusk_flats_rotation()
+            rotating = any(getattr(g, "rotate", False)
+                           for g in (plan.groups if plan else ()))
+            bus.log("info",
+                    f"DUSK FLATS: {df.count} flats on each of {len(recipes)} "
+                    f"set(s) from the flat panel, before the first light. "
+                    f"The panel is driven as a dust-cover panel (the node "
+                    f"does not say which placement it is), the Sun window is "
+                    f"not waited for, and the flats are taken at the "
+                    f"rotator's current angle"
+                    + (" and not at each panel's: this plan rotates its "
+                       "mosaic panels (#176)" if rotating
+                       else (" (no rotator is connected)"
+                             if rotation is None else "")),
+                    "sequence")
+            if getattr(cc, "has_cover", False):
+                try:
+                    state = await asyncio.wait_for(cc.get_cover_state(),
+                                                   CALIBRATOR_CMD_TIMEOUT_S)
+                    cover_was_open = getattr(state, "value", state) == "open"
+                except Exception as exc:           # noqa: BLE001 - reported
+                    bus.log("warning", f"DUSK FLATS: could not read the "
+                                       f"cover state ({exc}) - it will be "
+                                       f"left shut afterwards", "sequence")
+            level = (df.panel_brightness if df.panel_brightness is not None
+                     else max(1, int(getattr(cc, "max_brightness", 1) or 1)
+                              // 2))
+            per_filter: dict = {}
+            for filt, *_rest in recipes:
+                per_filter[filt] = per_filter.get(filt, 0) + 1
+            for filt, gain, offset, binning in recipes:
+                fresh, have = self._dusk_flats_fresh(
+                    filt, gain, offset, binning, df.count, rotation)
+                name = filt or "no filter"
+                if fresh:
+                    skipped += 1
+                    bus.log("info", f"DUSK FLATS: the library already holds "
+                                    f"{have} fresh flats for {name} at gain "
+                                    f"{gain} - skipping", "sequence")
+                    continue
+                tag = f" g{gain}" if per_filter[filt] > 1 else ""
+                flat_target = Target(
+                    name=f"dusk flats {name}{tag}", ra_hours=0.0, dec_deg=0.0,
+                    calibration=True, center=False, autofocus_first=False,
+                    steps=[ExposureStep(
+                        filter=filt, exposure_s=self._DUSK_FLATS_SEED_S,
+                        gain=gain, offset=offset, binning=binning,
+                        count=df.count, frame_type="Flat",
+                        adu_target=df.adu_target, panel_brightness=level)])
+                await self._run_calibration(0, flat_target)
+                # A SET THE EXPOSURE WOULD NOT METER IS NOT A SET SHOT (#841):
+                # `_run_calibration` shoots none of a step whose solve did not
+                # converge, and says why, so the closing line counts it apart.
+                if self._done.get(f"{flat_target.id}:"
+                                  f"{flat_target.steps[0].id}", 0) > 0:
+                    shot += 1
+                else:
+                    unmetered += 1
+        except SafetyAbort:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:                   # noqa: BLE001 - reported
+            bus.log("warning", f"DUSK FLATS stopped after {shot} set(s): "
+                               f"{exc} - the night goes on without the rest",
+                    "sequence")
+            # A failure ahead of the lamp-on leaves `_run_calibration`'s own
+            # finally with nothing to turn off, and one in the middle of it
+            # leaves the lamp state unknown: ask for off, best effort.
+            await self._panel_off_safe()
+        # Reached only when the stage ended on its own (an abort or a cancel
+        # left above): the night is going on to its lights.
+        self._dusk_flats_night = night
+        if cover_was_open:
+            try:
+                await _bounded(self.hub.open_cover(), CALIBRATOR_CMD_TIMEOUT_S,
+                               "open cover")
+            except SafetyAbort:
+                raise
+            except Exception as exc:               # noqa: BLE001 - reported
+                bus.log("error", f"COVER NOT REOPENED - DUSK FLATS left the "
+                                 f"dust cover shut, and the lights that "
+                                 f"follow would be taken through it: {exc}",
+                        "sequence")
+        bus.log("info", f"DUSK FLATS: {shot} set(s) shot, {skipped} skipped "
+                        f"(the library had them)"
+                        + (f", {unmetered} not shot (the exposure would not "
+                           f"meter)" if unmetered else ""), "sequence")
 
     async def _stand_down_guider(self) -> None:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:

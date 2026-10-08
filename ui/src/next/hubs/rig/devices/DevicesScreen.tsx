@@ -33,12 +33,13 @@ import { nav } from "../../../router";
 import { useLock, useOnRelay } from "../../../lib/gateHook";
 import { LOCAL_ONLY_REASON } from "../../../lib/gate";
 import { listDrivers, listProfiles } from "../../../../api/backends";
-import { accessPhrase, useCanConfigBackend } from "../../../../lib/caps";
+import { accessPhrase, useCan, useCanConfigBackend } from "../../../../lib/caps";
 import { liveRoleCount, type AssignmentMap } from "../../../../lib/equipment";
 import {
   useConfig, useEquipConnected, useSafety, useSequence, useStatus, useStore,
 } from "../../../../store";
 import type { DriversResponse, ProfileRow as ProfileRowData } from "../../../../types";
+import { RECONNECT_CAP } from "../profiles/profilesModel";
 import { ConnectOnceCard } from "./ConnectOnceCard";
 import { DeviceRow } from "./DeviceRow";
 import { ProfileRow } from "./ProfileRow";
@@ -53,6 +54,12 @@ const FOOTER_NOTE =
 
 /** Quoted from `views/EquipmentView.tsx:1107-1112`, em-dash and all. */
 const READ_ONLY_NOTE = `Read-only - connecting equipment needs ${accessPhrase("config.backend")}.`;
+/** An operator can reconnect a SAVED profile (#759) and nothing else on this
+ *  screen that writes, so the note says both instead of calling the whole screen
+ *  read-only while CONNECT is armed. */
+const RECONNECT_ONLY_NOTE =
+  `Adding and changing equipment needs ${accessPhrase("config.backend")}. `
+  + "You can reconnect a saved profile.";
 
 const ADD_SUB = "scan this computer for USB, Alpaca and ASCOM drivers";
 
@@ -63,6 +70,7 @@ export function DevicesScreen(): JSX.Element {
   const safety = useSafety();
   const seqState = useSequence()?.state;
   const canConfig = useCanConfigBackend();
+  const canReconnect = useCan(RECONNECT_CAP);
 
   const [data, setData] = useState<DriversResponse | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -191,6 +199,7 @@ export function DevicesScreen(): JSX.Element {
         <ConnectOnceCard
           profile={activeProfile}
           canConfig={canConfig}
+          canReconnect={canReconnect}
           lanReason={lanReason}
           busy={busy != null}
           explain={explain}
@@ -247,7 +256,9 @@ export function DevicesScreen(): JSX.Element {
       <QuickActions />
 
       {!canConfig && (
-        <span data-testid="devices-readonly"><Mono size={11} tone="dim">{READ_ONLY_NOTE}</Mono></span>
+        <span data-testid="devices-readonly">
+          <Mono size={11} tone="dim">{canReconnect ? RECONNECT_ONLY_NOTE : READ_ONLY_NOTE}</Mono>
+        </span>
       )}
 
       <div style={{ fontSize: 12, color: "var(--text-3, #7683a5)", lineHeight: 1.5, padding: "0 2px" }}>

@@ -736,8 +736,13 @@ class GroupRun:
       visit (:meth:`note_let_through`), for :meth:`visitable`.
     - ``set_aside_kind``: what kind of set-aside each entry of ``set_aside``
       is (#534): ``"centring"`` for a streak of centring failures and nothing
-      else, the one kind that expires (:func:`set_aside_expiry`), and a word
-      for each other cause. The engine records it with the set-aside.
+      else, the one kind that expires (:func:`set_aside_expiry`),
+      ``"guide_start"`` for a streak of failed guide starts and nothing else
+      (#180 part A), ``"deferred"`` for a mixed streak AND for a panel the
+      held-pass rule set aside as the mosaic's last live panel
+      (:meth:`_apply_held_pass_rule`), and a word for each other cause. The
+      engine records it with the set-aside, and the Campaign names a panel set
+      aside night after night by the first three (``session.STARVING_KINDS``).
     - ``expired``: the panels whose centring set-aside expired this run
       (:meth:`expire_set_aside`). The engine keeps the night's count, which a
       restart reads back from ``Session.set_aside``.
@@ -1218,8 +1223,19 @@ class GroupRun:
         # kind of cause the passing hour clears. A streak with any other
         # failure in it failed for a reason waiting does not change, so it is
         # set aside for the night as before.
+        #
+        # A STREAK OF GUIDE-START FAILURES AND NOTHING ELSE is named for what
+        # it is, GUIDE_START, and no longer "deferred" (#180 part A, backlog
+        # WP-131): the Campaign's sentence about a panel set aside night after
+        # night says "no guide star" for it, and names only the streak (no
+        # cause, no advice, #836) for a mixed one. Nothing else reads the
+        # word, so this changes no behaviour: it does not expire (only
+        # CENTRING does, ``_may_expire``), and the published group state and
+        # the session record carry the new word.
+        streak = self._streak_kinds[panel]
         self.set_aside_kind[panel] = (
-            CENTRING if self._streak_kinds[panel] == {CENTRING} else "deferred")
+            CENTRING if streak == {CENTRING}
+            else GUIDE_START if streak == {GUIDE_START} else "deferred")
         return VisitAction("set_aside", reason)
 
     # -- the pass
@@ -1434,7 +1450,23 @@ class GroupRun:
                     f"{subject} has been held for {streak} passes in a "
                     f"row with no panel struck and no progress made; set "
                     f"aside for tonight")
-            panels = self.set_aside_all(reason, kind="group")
+            # THE LAST LIVE PANEL'S OWN SET-ASIDE IS THE PANEL'S, NOT THE
+            # GROUP'S (#180 part A, backlog WP-131), when the cause is the
+            # ordinary six-pass streak. A mosaic that is five panels done and
+            # one that will not centre ends every night here: the other
+            # panels are complete, so the held rule is the only path that
+            # sets the sixth aside, and recording it as "group" (the word for
+            # the whole mosaic going quiet, a fog or a cloud bank) hid the one
+            # panel that never completes from the Campaign. It is "deferred",
+            # the word a mixed streak takes: it does not expire (only
+            # CENTRING does), so the engine does exactly what it did, and
+            # ``session.STARVING_KINDS`` names it. NOT for a rig-side fault
+            # (``same_as_last``: the identical reason twice, "not the sky"):
+            # that is not the panel's framing, and several panels held
+            # together are the night's, so both stay "group".
+            kind = ("deferred" if len(live_before) == 1 and not same_as_last
+                    else "group")
+            panels = self.set_aside_all(reason, kind=kind)
             self.held_streak = 0
             self._held_pass_reason = None
             return PassEnd("set_aside_all",

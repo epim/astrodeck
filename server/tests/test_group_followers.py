@@ -357,7 +357,13 @@ async def test_an_after_group_follower_is_skipped_once_the_mosaic_is_set_aside(
     # D-03: one group-kind record, naming 1-1 as the mosaic's last live
     # panel; never a per-panel "centring" one, and nothing expires.
     assert [(r["target_id"], r.get("kind"), r.get("expired"))
-            for r in night.stored.set_aside] == [("p00", "group", None)]
+            for r in night.stored.set_aside] == [("p00", "deferred", None)]
+    # DELIBERATE PIN CHANGE (backlog WP-131, #180 part A, wave 17): this
+    # record was kind "group". The held-pass rule's set-aside of the mosaic's
+    # LAST LIVE PANEL is the panel's own, kind "deferred" (it does not
+    # expire, so nothing else moved): "group" is the word for the whole
+    # mosaic going quiet, and the Campaign names a panel set aside night
+    # after night by its kind.
     assert night.said("1-1 (the mosaic's last live panel) has been held "
                       "for 6 passes in a row")
     assert all(who != FOLLOWER for _t, who in night.gotos), night.gotos

@@ -336,9 +336,18 @@ async def test_another_run_still_going_when_the_ladder_returns_is_left_alone(
 async def test_a_session_completed_inside_the_ladder_is_not_reopened(
         rig, arm, bus_lines):
     """The run inside the ladder banks everything the plan owes and ends
-    ``complete``. Completion does not disarm (only an abort does), so the
-    file says complete AND armed, and only the status check stands between
-    ResumeArm and reopening a finished session.
+    ``complete``. The file is then complete AND armed, and only the status
+    check stands between ResumeArm and reopening a finished session.
+
+    DELIBERATE PIN CHANGE (#838, wave 17 integration). This used to say
+    "Completion does not disarm (only an abort does)" and take the armed flag
+    from the run itself. The engine now clears ``auto_resume`` where a night
+    completes (``_finalize_report``), so a real run no longer leaves that
+    shape. What the case grades is the INDEPENDENT net - ``_still_startable``
+    refuses a complete session whatever its flag says - and a file the engine
+    did not write (from before the clear, or armed by hand) still has the
+    shape. So the case asserts the engine's clear, then puts the flag back by
+    hand, and the rest is as it was.
 
     RED under mutant "no dormant re-check" (the ``status != "dormant"`` test
     in ``_still_startable`` removed), observed verbatim:
@@ -355,6 +364,13 @@ async def test_a_session_completed_inside_the_ladder_is_not_reopened(
         _start_by_hand(rig, one.id)
         banked = [f.id for f in rig.bank([0, 0, 1, 1])]
         await rig.end_night("complete")
+        done = session_store.load(one.id)
+        assert (done.status, done.auto_resume, done.owed()) == (
+            "complete", False, 0), (
+            "the engine left a finished session armed (#838)")
+        # A file the engine did not write: complete and armed.
+        done.auto_resume = True
+        session_store.save(done)
         done = session_store.load(one.id)
         assert (done.status, done.auto_resume, done.owed()) == (
             "complete", True, 0), "premise: complete, still armed, owes none"

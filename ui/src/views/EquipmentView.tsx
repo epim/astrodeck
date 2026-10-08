@@ -27,6 +27,7 @@ import {
   connectRig,
   discoverHardware,
   getProfile,
+  type RedactedProfile,
   hwAlreadyConfigured,
   listBackends,
   listDrivers,
@@ -35,7 +36,7 @@ import {
   setProvidersConfig,
 } from "../api/backends";
 import { useConfig, useStore } from "../store";
-import { accessPhrase, useCanConfigBackend } from "../lib/caps";
+import { accessPhrase, useCan, useCanConfigBackend } from "../lib/caps";
 import {
   buildRigSpec,
   deviceChoices,
@@ -70,7 +71,9 @@ import BackendLinkGrid from "../components/settings/BackendLinkGrid";
 // for).
 import { waitForProfileActive } from "../components/settings/ProfileList";
 import { ROLE_LABEL } from "../components/settings/backendMeta";
-import { forceNeedsLan, sentenceFrom } from "../next/hubs/rig/profiles/profilesModel";
+import {
+  PROFILES_CAP, RECONNECT_CAP, forceNeedsBackend, forceNeedsLan, sentenceFrom,
+} from "../next/hubs/rig/profiles/profilesModel";
 import { onRelay } from "../next/lib/relay";
 import { EmptyState, Field, HonestButton, InfoDot, Led, Panel } from "../components/ui";
 import { Icon } from "../components/icons";
@@ -190,12 +193,25 @@ export function compareRoleIdentity(
  *  to Settings -> Profiles would send the operator to a force that cannot be
  *  sent. The message is `forceNeedsLan`, the sentence the #/next surfaces say
  *  (`rigConnect.ts`, `ProfilesEditor.tsx`), so no surface tells the operator
- *  something different. `viaRelay` is read at call time; a test passes it. */
-export function activateErrorMessage(e: unknown, viaRelay: boolean = onRelay()): string {
+ *  something different. `viaRelay` is read at call time; a test passes it.
+ *
+ *  AN OPERATOR MAY RECONNECT AND MAY NOT FORCE (#759, #839). Forcing is
+ *  `config.backend`, and Settings → Profiles will not offer the force dialog to a
+ *  caller without it, so the pointer would send them to a control that is not
+ *  theirs. `canForce` is the caller's `config.backend`; without it the sentence
+ *  is `forceNeedsBackend`, naming who can. The relay is checked first: over the
+ *  relay nobody can force, so the sentence about the LAN is true for everyone. */
+export function activateErrorMessage(
+  e: unknown,
+  viaRelay: boolean = onRelay(),
+  canForce: boolean = true,
+): string {
   return e instanceof ApiError && e.code === "running"
     ? (viaRelay
       ? forceNeedsLan(e.message)
-      : `${sentenceFrom(e.message)} Stop it first, or force-activate from Settings → Profiles.`)
+      : canForce
+        ? `${sentenceFrom(e.message)} Stop it first, or force-activate from Settings → Profiles.`
+        : forceNeedsBackend(e.message, accessPhrase(PROFILES_CAP)))
     : e instanceof ApiError && e.status === 409
       ? "Another profile is still connecting — wait for it to finish before switching again."
       : e instanceof Error
@@ -208,6 +224,10 @@ export default function EquipmentView(): JSX.Element {
   const status = useStore((s) => s.status);
   const showToast = useStore((s) => s.showToast);
   const canConfig = useCanConfigBackend();
+  // Activating a SAVED profile is `control.reconnect` (operator and admin), not
+  // `config.backend` (#759, #839). Every other write on this screen - connect,
+  // detect, save, the dropdown picks - keeps `canConfig`.
+  const canReconnect = useCan(RECONNECT_CAP);
   const config = useConfig();
 
   const [data, setData] = useState<DriversResponse | null>(null);
@@ -850,11 +870,15 @@ export default function EquipmentView(): JSX.Element {
       // already running" reason (below) reachable for the first time.
       setBusyWhat("activate");
       try {
-        let full: Profile | null = null;
+        // An OPERATOR reaches this line since #759 and is served the REDACTED
+        // record (no nina_host, host, port, extra), so the record keeps its
+        // type and goes straight to the two judgements, which take a structural
+        // parameter and read only `primary_backend`, `devices[].role/.backend`
+        // and the NINA host (#840). The cast that stood here claimed every action
+        // on this screen is config.backend-gated; this one is not.
+        let full: RedactedProfile | null = null;
         try {
-          // See the note on the capture path above: config.backend-gated, so
-          // the server sends the unredacted record.
-          full = await getProfile(row.id) as Profile;
+          full = await getProfile(row.id);
         } catch {
           /* fall through: still confirm on the teardown, just without the
              "puts nothing back" escalation we could not verify */
@@ -896,7 +920,8 @@ export default function EquipmentView(): JSX.Element {
         // truncation length — and when auto-resume's recovery ladder is the
         // cause (#238), the clause that is cut is the one saying forcing
         // disarms that session, exactly what this fix exists to show.
-        showToast("error", activateErrorMessage(e), { verbatim: true });
+        // `undefined` for the origin keeps `viaRelay`'s default as the wiring.
+        showToast("error", activateErrorMessage(e, undefined, canConfig), { verbatim: true });
       } finally {
         setBusyWhat(null);
       }
@@ -1139,6 +1164,7 @@ export default function EquipmentView(): JSX.Element {
             <p className="text-[11px] text-dim mt-2 inline-flex items-center gap-1.5">
               <Icon name="lock" size={11} />
               Read-only — connecting equipment needs {accessPhrase("config.backend")}.
+              {canReconnect && " You can reconnect a saved profile below."}
             </p>
           )}
         </Panel>
@@ -1204,8 +1230,8 @@ export default function EquipmentView(): JSX.Element {
                   <HonestButton
                     className="btn min-h-11 !py-1 !px-2 text-[10px]"
                     reason={
-                      !canConfig
-                        ? `Activating a profile needs ${accessPhrase("config.backend")}.`
+                      !canReconnect
+                        ? `Activating a profile needs ${accessPhrase(RECONNECT_CAP)}.`
                         : busy
                           ? "A rig action is already running — wait for it to finish."
                           : null

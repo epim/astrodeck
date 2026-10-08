@@ -28,7 +28,9 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { listReports } from "../../../../api/reports";
-import { isUnreadableRow, listSessionRows, type UnreadableListRow } from "../../../../api/sessions";
+import {
+  isUnreadableRow, listSessionRows, type QueuedSession, type UnreadableListRow,
+} from "../../../../api/sessions";
 import type { SessionListRow, SessionReportSummary, SessionRow } from "../../../../types";
 
 // ------------------------------------------------------------- what a card is
@@ -57,6 +59,19 @@ export interface SessionCardData {
    *  different claims. */
   integrationS: number | null;
   reportId: string | null;
+  /** The id of the session this one WAITS BEHIND (#598, backlog ruling D-04),
+   *  or null/absent when it waits for nothing. Optional so a card built by a
+   *  caller that predates the field still type-checks; absent reads as null. */
+  queuedBehind?: string | null;
+}
+
+/** The id a row's session waits behind, or null. `SessionRow.queued_behind` is
+ *  absent from a server that predates #598 (no wait); the strict string check
+ *  keeps a malformed value reading as no wait rather than as a session called
+ *  "true". */
+export function rowQueuedBehind(row: SessionRow): string | null {
+  const q = row.queued_behind;
+  return typeof q === "string" && q !== "" ? q : null;
 }
 
 /** A night key by the same noon rollover the server uses, so a report that
@@ -143,6 +158,7 @@ export function buildCards(
         autoResume: row.auto_resume,
         integrationS: hit ? hit.integration_s : null,
         reportId: hit?.id ?? null,
+        queuedBehind: rowQueuedBehind(row),
       };
     });
 
@@ -169,6 +185,82 @@ export function buildCards(
   }
 
   return cards.sort((a, b) => b.updatedTs - a.updatedTs);
+}
+
+// -------------------------------------------------------------- the queue (#598)
+//
+// A dormant session can WAIT BEHIND the run that is live, else the session that
+// is armed, and be armed by that one completing (backlog ruling D-04,
+// owner-approved 2026-09-30). The server decides all of it; these read the
+// rows it sent, with the SAME choice of what to wait behind, so a verb is
+// offered exactly when the server would not answer 409.
+
+/** What a session waits behind, named for the words on screen. The shared
+ *  `QueuedSession` (api/sessions.ts), which is also what a patch answers with. */
+export type QueueTarget = QueuedSession;
+
+/** How a session's wait stands, for the chip on its card.
+ *
+ *  `waiting`: the session it waits behind is still going to run by itself
+ *  (live, or dormant and armed), so completing is a thing that can happen.
+ *
+ *  `stranded`: the marker names a session that has gone (abandoned, deleted),
+ *  finished (a completion would already have promoted this one) or stopped by
+ *  hand (dormant and disarmed: an operator stop is not a completion). The
+ *  server never promotes on any of those, so the card says plainly that this
+ *  session is waiting behind nothing and offers to arm it now: the failure
+ *  the queue exists to prevent, a night spent expecting it to start. */
+export type QueueView =
+  | { kind: "waiting"; behind: QueueTarget }
+  | { kind: "stranded" };
+
+const hasId = (c: SessionCardData): c is SessionCardData & { id: string } => c.id != null;
+
+/** Will this session start by itself, so something can be queued behind it? */
+function goesByItself(c: SessionCardData): boolean {
+  return c.status === "active" || (c.status === "dormant" && c.autoResume);
+}
+
+/** The session `card` would wait behind: the live run first, else the armed
+ *  dormant one (the server's choice), never `card` itself. null when there is
+ *  neither, which is the reason ARM AS NEXT gives. */
+export function queueTargetFor(
+  cards: readonly SessionCardData[], card: SessionCardData,
+): QueueTarget | null {
+  const others = cards.filter(hasId).filter((c) => c.id !== card.id);
+  const pick = others.find((c) => c.status === "active")
+    ?? others.find((c) => c.status === "dormant" && c.autoResume);
+  return pick ? { id: pick.id, name: pick.name } : null;
+}
+
+/** The chip a dormant, unarmed session's wait shows, or null when it waits for
+ *  nothing. An ARMED session shows none even if a marker is left on it: it
+ *  starts in its own right, and "waits for" would be false. */
+export function queueViewOf(
+  cards: readonly SessionCardData[], card: SessionCardData,
+): QueueView | null {
+  const behind = card.queuedBehind ?? null;
+  if (behind == null || card.status !== "dormant" || card.autoResume) return null;
+  const a = cards.find((c) => c.id === behind);
+  return a && goesByItself(a)
+    ? { kind: "waiting", behind: { id: behind, name: a.name } }
+    : { kind: "stranded" };
+}
+
+/** The session waiting behind session `id`, for the "next: ..." line beside
+ *  `id`'s own armed state, or null. Only one that is really waiting: a
+ *  stranded marker is not a next session. */
+export function queuedNextOf(
+  cards: readonly SessionCardData[], id: string,
+): SessionCardData | null {
+  return cards.find((c) => c.queuedBehind === id
+    && queueViewOf(cards, c)?.kind === "waiting") ?? null;
+}
+
+/** Every session whose wait has nothing to wait behind, for the warning that
+ *  says it will not start by itself. */
+export function strandedQueue(cards: readonly SessionCardData[]): SessionCardData[] {
+  return cards.filter((c) => queueViewOf(cards, c)?.kind === "stranded");
 }
 
 // ------------------------------------------------------------------ the read
@@ -265,6 +357,28 @@ export function useSessionsIndex(enabled: boolean): SessionsIndex & { refresh: (
   const refresh = useCallback(() => { void loadSessionsIndex(true); }, []);
 
   return { ...snap, refresh };
+}
+
+const NO_CARDS: SessionCardData[] = [];
+let shelfMemo: {
+  rows: SessionListRow[]; reports: SessionReportSummary[]; cards: SessionCardData[];
+} | null = null;
+
+/** The shelf's cards from the shared snapshot, WITHOUT asking for a read: a
+ *  card that needs to know what its neighbours are doing (the queue's "what
+ *  would I wait behind", #598) reads the snapshot the grid already loaded.
+ *  Memoised on the snapshot's own arrays, so thirty cards share one fold
+ *  instead of each running `buildCards`. Empty until the shelf has been read,
+ *  which every queue answer reads as "nothing else is running or armed". */
+export function useShelfCards(): SessionCardData[] {
+  const snap = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  if (snap.rows == null || snap.reports == null) return NO_CARDS;
+  if (shelfMemo && shelfMemo.rows === snap.rows && shelfMemo.reports === snap.reports) {
+    return shelfMemo.cards;
+  }
+  const cards = buildCards(snap.rows, snap.reports);
+  shelfMemo = { rows: snap.rows, reports: snap.reports, cards };
+  return cards;
 }
 
 /**

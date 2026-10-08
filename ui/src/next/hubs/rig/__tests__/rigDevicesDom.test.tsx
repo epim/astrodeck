@@ -22,9 +22,11 @@
 //     control makes every surface agree with every other surface and with
 //     nothing on the hardware.
 //  6. READ-ONLY IS RENDERED, NOT REMOVED. An operator (no `config.backend`)
-//     still SEES ADD A DEVICE and the profile list, dimmed, with the reason -
+//     still SEES ADD A DEVICE and the profile writes, dimmed, with the reason -
 //     and pressing them fires no request and navigates nowhere. A viewer's COOL
-//     is the same shape.
+//     is the same shape. The ONE thing an operator may do here is reconnect a
+//     saved profile (`control.reconnect`, #759): ACTIVATE and CONNECT <profile>
+//     are armed for them, on the LAN and on the relay.
 //  7. THE FIRST NIGHT CARD IS THE INTERSTITIAL'S NEW HOME. Its four rows are
 //     what `NotConnectedInterstitial` used to say; RUN THE SIMULATOR posts a
 //     RigSpec of sim roles to `/api/connect/rig`, NOT the legacy
@@ -106,10 +108,18 @@ const ok = (body: unknown) => ({
   ok: true, status: 200, statusText: "OK", json: async () => body,
 });
 
+/** The body of the next profile-activate answer, as a 409; null for success. */
+let activateFails: unknown = null;
+
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
   const u = String(url);
   asked.push({ method, url: u, body: init?.body ? JSON.parse(init.body) : null });
+  if (method === "POST" && /\/api\/profiles\/[^/]+\/activate$/.test(u) && activateFails) {
+    const body = activateFails;
+    activateFails = null;
+    return { ok: false, status: 409, statusText: "HTTP 409", json: async () => body };
+  }
   // A FRESH object every read, as a real server gives: returning the same
   // reference makes React's `Object.is` bail-out swallow the reload, and
   // "the table did not fill" would then be an artefact of the fixture.
@@ -175,6 +185,7 @@ const ADMIN = {
   caps: [
     "view.status", "view.preview", "view.weather", "view.site_derived",
     "control.capture", "control.guide", "control.mount", "control.power",
+    "control.reconnect",
     "config.safety", "config.backend", "config.site_optics", "config.alerts",
   ],
 };
@@ -184,6 +195,8 @@ const OPERATOR = {
   caps: [
     "view.status", "view.preview", "view.weather", "view.site_derived",
     "control.capture", "control.guide", "control.mount",
+    // #759: reconnect a SAVED profile. Not config.backend.
+    "control.reconnect",
   ],
 };
 const VIEWER = { role: "viewer", email: null, caps: ["view.status", "view.preview"] };
@@ -372,22 +385,35 @@ await testAsync("an operator sees ADD A DEVICE and the profiles, read-only", asy
   eq(asked.length, before, "a locked ADD A DEVICE still fired a request");
   eq(win.location.hash, hash, "a locked ADD A DEVICE still navigated");
 
-  // The profiles popover, same rule: listed, dimmed, explained.
+  // The profiles popover, same rule for everything that WRITES a profile:
+  // listed, dimmed, explained. DELIBERATE PIN CHANGE (WP-146, #759, owner
+  // ruling 2026-10-07: "This should be permitted for Admin and operator
+  // roles"): the pick itself used to be asserted locked here; an operator now
+  // RECONNECTS by activating a saved profile, so it is armed.
   click(q('[data-testid="profile-row"]'));
   await settle();
   const pick = qd('[data-testid="profile-pick-p1"]');
   assert(pick != null, "the profile list was hidden from an operator");
-  eq(pick.getAttribute("aria-disabled"), "true", "aria-disabled:");
-  assert(/admin access/.test(pick.getAttribute("title") ?? ""),
-    `the reason does not name the capability (${pick.getAttribute("title")})`);
-  const before2 = asked.length;
-  click(pick);
-  await settle();
-  eq(asked.length, before2, "a locked profile row still activated a profile");
+  eq(pick.getAttribute("aria-disabled"), null,
+    "an operator cannot reconnect a saved profile (control.reconnect is held)");
+  for (const writer of ["profile-delete-p1", "profile-save"]) {
+    const w = qd(`[data-testid="${writer}"]`);
+    assert(w != null, `${writer} was hidden from an operator instead of dimmed`);
+    eq(w.getAttribute("aria-disabled"), "true", `${writer} aria-disabled:`);
+    assert(/admin access/.test(w.getAttribute("title") ?? ""),
+      `${writer}'s reason does not name the capability (${w.getAttribute("title")})`);
+    const before2 = asked.length;
+    click(w);
+    await settle();
+    eq(asked.length, before2, `a locked ${writer} still reached the rig`);
+  }
 
   const note = q('[data-testid="devices-readonly"]');
   assert(note != null && /admin access/.test(note.textContent),
     "no read-only note saying who could connect equipment");
+  assert(/reconnect a saved profile/.test(note.textContent),
+    "the note calls the whole screen read-only while an operator's CONNECT is armed: "
+    + `${note.textContent}`);
 });
 
 await testAsync("a viewer's COOL is dimmed, explained, and fires nothing", async () => {
@@ -971,27 +997,172 @@ await testAsync("on the relay CONNECT <profile> is armed for a role that holds c
 });
 
 // MUTANT "CONNECT ignores the capability" (ConnectOnceCard.tsx: the button's
-// `lockedReason={capLock}` made `lockedReason={null}`). Observed,
+// `lockedReason={connectLock}` made `lockedReason={null}`). Observed,
 // "rigDevicesDom.test: 30/31 passed":
-//   x on the relay a role without config.backend still reads the capability on
-//     CONNECT, not the LAN: an operator without config.backend has an armed
-//     CONNECT on the relay (expected true, got null)
-await testAsync("on the relay a role without config.backend still reads the capability on CONNECT, not the LAN", async () => {
+//   x on the relay a role without control.reconnect still reads the capability on
+//     CONNECT, not the LAN: a viewer has an armed CONNECT on the relay
+//     (expected true, got null)
+//
+// DELIBERATE PIN CHANGE (WP-146, #759, owner ruling 2026-10-07: "This should be
+// permitted for Admin and operator roles"). This case was "a role without
+// config.backend" and built the caller as an OPERATOR, asserting CONNECT armed
+// `true`. An operator has no config.backend and now MAY reconnect, so the role
+// that is "simply not allowed" is a viewer, and the capability CONNECT names is
+// control.reconnect (operator or admin).
+await testAsync("on the relay a role without control.reconnect still reads the capability on CONNECT, not the LAN", async () => {
+  clearPicks();
+  seed({ principal: VIEWER, equipConnected: false, status: NOTHING_CONNECTED, safety: null });
+  mount();
+  await settle();
+  await onTheRelay(async () => {
+    const connect = q('[data-testid="first-night-connect"]');
+    assert(connect != null, "no CONNECT <profile> for a viewer - nothing may be hidden");
+    eq(connect.getAttribute("aria-disabled"), "true",
+      "a viewer has an armed CONNECT on the relay");
+    assert(connect.getAttribute("title") !== LOCAL_ONLY_REASON,
+      "CONNECT names the LAN as the blocker for a role that is simply not allowed: "
+      + `${connect.getAttribute("title")}`);
+    eq(connect.getAttribute("title"), "needs operator or admin access",
+      `CONNECT does not name the capability: ${connect.getAttribute("title")}`);
+  });
+});
+
+// #759, the headline on the FIRST NIGHT card. An operator holds
+// `control.reconnect` and not `config.backend`, so CONNECT <profile> is armed and
+// its press sends the UNFORCED activate, while RUN THE SIMULATOR (a
+// `config.backend` verb) stays locked and names the capability it needs. Run
+// on the LAN and on the relay, where the simulator names the LAN instead.
+//
+// MUTANT "CONNECT rides config.backend" (ConnectOnceCard.tsx: the CONNECT
+// button's `lockedReason={connectLock}` made `lockedReason={backendLock}`).
+// Observed 2026-10-07 from a byte backup (restored, sha256 compared),
+// "rigDevicesDom.test: 31/35 passed":
+//   x on the relay a role without control.reconnect still reads the capability on
+//     CONNECT, not the LAN: CONNECT does not name the capability: needs admin
+//     access (expected needs operator or admin access, got needs admin access)
+//   x an operator on the LAN reconnects the active profile from FIRST NIGHT and
+//     cannot run the simulator: an operator's CONNECT <profile> is locked, but
+//     control.reconnect is held (expected null, got true)
+//   (and the relay operator case and the running-conflict case, same cause).
+// MUTANT "the simulator rides control.reconnect" (the simulator's `lockedReason
+// ={lock}` made `lockedReason={connectLock}`). Observed, 33/35:
+//   x an operator on the LAN reconnects the active profile from FIRST NIGHT and
+//     cannot run the simulator: RUN THE SIMULATOR is armed for an operator
+//     (config.backend is not held) (expected true, got null)
+// MUTANT "the popover's DELETE rides control.reconnect" (ProfilesPopover.tsx:
+// `profileDeleteLock(p.canConfig)` made `profileDeleteLock(canReconnect)`).
+// Observed, 34/35: "x an operator sees ADD A DEVICE and the profiles, read-only:
+//   profile-delete-p1 aria-disabled: (expected true, got null)".
+// MUTANT "the note ignores control.reconnect" (DevicesScreen.tsx: `{canReconnect ?
+// RECONNECT_ONLY_NOTE : READ_ONLY_NOTE}` made `{READ_ONLY_NOTE}`). Observed,
+// 34/35: "x an operator sees ADD A DEVICE and the profiles, read-only: the note
+//   calls the whole screen read-only while an operator's CONNECT is armed:
+//   Read-only - connecting equipment needs admin access.".
+// MUTANT "the popover's ACTIVATE rides config.backend" (ProfilesPopover.tsx:
+// `useCan(RECONNECT_CAP)` made `p.canConfig`). Observed, 34/35: "x an operator
+//   sees ADD A DEVICE and the profiles, read-only: an operator cannot reconnect a
+//   saved profile (control.reconnect is held) (expected null, got true)".
+async function operatorConnectsTheProfile(): Promise<void> {
+  const connect = q('[data-testid="first-night-connect"]');
+  assert(connect != null, "no CONNECT <profile> for an operator");
+  eq(connect.getAttribute("aria-disabled"), null,
+    "an operator's CONNECT <profile> is locked, but control.reconnect is held");
+  asked.length = 0;
+  click(connect);
+  await settle();
+  assert(useStore.getState().confirm != null,
+    "the press asked no confirm before activating a rig that moves real hardware");
+  act(() => { useStore.getState().resolveConfirm(true); });
+  await settle();
+  const post = asked.find((a) => a.method === "POST" && /\/api\/profiles\/p1\/activate/.test(a.url));
+  assert(post != null,
+    `the operator's CONNECT never reached the rig: ${JSON.stringify(asked.map((a) => `${a.method} ${a.url}`))}`);
+  assert(post!.body?.force !== true, "the operator's CONNECT forced the activate");
+}
+
+await testAsync("an operator on the LAN reconnects the active profile from FIRST NIGHT and cannot run the simulator", async () => {
+  clearPicks();
+  seed({ principal: OPERATOR, equipConnected: false, status: NOTHING_CONNECTED, safety: null });
+  mount();
+  await settle();
+  const sim = q('[data-testid="first-night-sim"]');
+  eq(sim.getAttribute("aria-disabled"), "true",
+    "RUN THE SIMULATOR is armed for an operator (config.backend is not held)");
+  eq(sim.getAttribute("title"), "needs admin access",
+    `the simulator does not name config.backend: ${sim.getAttribute("title")}`);
+  // The card does not invite a press it will refuse.
+  assert(/Detecting hardware and the simulator need admin access/.test(q('[data-testid="first-night"]').textContent),
+    `the body still advertises the simulator to an operator: ${q('[data-testid="first-night"]').textContent}`);
+  await operatorConnectsTheProfile();
+});
+
+await testAsync("on the relay an operator's CONNECT <profile> is armed and sends the unforced activate; the simulator names the LAN", async () => {
   clearPicks();
   seed({ principal: OPERATOR, equipConnected: false, status: NOTHING_CONNECTED, safety: null });
   mount();
   await settle();
   await onTheRelay(async () => {
-    const connect = q('[data-testid="first-night-connect"]');
-    assert(connect != null, "no CONNECT <profile> for an operator - nothing may be hidden");
-    eq(connect.getAttribute("aria-disabled"), "true",
-      "an operator without config.backend has an armed CONNECT on the relay");
-    assert(connect.getAttribute("title") !== LOCAL_ONLY_REASON,
-      "CONNECT names the LAN as the blocker for a role that is simply not allowed: "
-      + `${connect.getAttribute("title")}`);
-    assert(/needs/.test(String(connect.getAttribute("title"))),
-      `CONNECT does not name the capability: ${connect.getAttribute("title")}`);
+    const sim = q('[data-testid="first-night-sim"]');
+    eq(sim.getAttribute("title"), LOCAL_ONLY_REASON,
+      `the simulator names the wrong blocker on the relay: ${sim.getAttribute("title")}`);
+    await operatorConnectsTheProfile();
   });
+});
+
+// #759: the activate of this surface never sends `force` (`activateProfileRow`),
+// and on a running conflict it used to point at "force-activate from the profiles
+// sheet". An operator may reconnect and may NOT force (`config.backend`), so the
+// pointer would send them to a dialog they are never offered; the toast names who
+// can instead. An admin is still pointed at the sheet.
+//
+// MUTANT "the pointer ignores the caller" (rigConnect.ts: `activateProfileRow`
+// passes `true` for `canForce`). Observed 2026-10-07, 34/35: "x a running
+// conflict tells an operator who can force, and still points an admin at the
+// sheet: the operator is not told who can force: A sequence is running. Stop it
+// first, or force-activate from the profiles sheet.".
+await testAsync("a running conflict tells an operator who can force, and still points an admin at the sheet", async () => {
+  const running = { detail: { detail: "a sequence is running", code: "running" } };
+  const press = async (principal: unknown): Promise<string> => {
+    clearPicks();
+    seed({ principal, equipConnected: false, status: NOTHING_CONNECTED, safety: null, toasts: [] });
+    mount();
+    await settle();
+    activateFails = running;
+    click(q('[data-testid="first-night-connect"]'));
+    await settle();
+    act(() => { useStore.getState().resolveConfirm(true); });
+    await settle();
+    return toastTitles().join(" | ");
+  };
+  const operator = await press(OPERATOR);
+  assert(/forcing the switch needs admin access/.test(operator),
+    `the operator is not told who can force: ${operator}`);
+  assert(!/force-activate from the profiles sheet/.test(operator),
+    `the operator is pointed at a force dialog they are never offered: ${operator}`);
+  const admin = await press(ADMIN);
+  assert(/force-activate from the profiles sheet/.test(admin),
+    `an admin lost the pointer to the force dialog: ${admin}`);
+});
+
+await testAsync("a viewer is told who may reconnect, by role, and an operator with no profile is told who may scan", async () => {
+  clearPicks();
+  seed({ principal: VIEWER, equipConnected: false, status: NOTHING_CONNECTED, safety: null });
+  mount();
+  await settle();
+  assert(/Ask someone with operator or admin access to connect the rig/.test(q('[data-testid="first-night"]').textContent),
+    `a viewer with an active profile is not told operator or admin may reconnect: ${q('[data-testid="first-night"]').textContent}`);
+  // No active profile: nothing short of config.backend can scan or simulate, so
+  // the sentence names the narrower audience.
+  seed({
+    principal: OPERATOR, equipConnected: false, status: NOTHING_CONNECTED, safety: null,
+    config: { active_profile_id: null, cooling: { warm_ramp: true, warm_rate_c_per_min: 2, warm_ambient_c: null } },
+  });
+  mount();
+  await settle();
+  assert(/Ask someone with admin access to connect the rig/.test(q('[data-testid="first-night"]').textContent),
+    `an operator with no profile is not told that only admin can scan: ${q('[data-testid="first-night"]').textContent}`);
+  eq(q('[data-testid="first-night-detect"]').getAttribute("aria-disabled"), "true",
+    "DETECT MY HARDWARE is armed for an operator");
 });
 
 // DETECT MY HARDWARE keeps the LAN sentence: it opens the sheet whose scan is a

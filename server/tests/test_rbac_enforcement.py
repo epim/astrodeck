@@ -130,6 +130,9 @@ def test_viewer_blocked_on_control_and_media(tmp_path, monkeypatch):
         assert c.post("/api/connect/sim").status_code == 403
         # raw FITS needs view.media which viewer lacks
         assert c.get("/api/preview/1/fits").status_code == 403
+        # reconnecting the rig needs control.reconnect (#759): refused before the
+        # profile is even looked up, so an unknown id is 403, not 404.
+        assert c.post("/api/profiles/none/activate").status_code == 403
 
 
 # ===================================================== T-RBAC-4 operator boundary
@@ -154,6 +157,20 @@ def test_operator_boundary(tmp_path, monkeypatch):
                       json={"port_id": 0, "value": 1.0}).status_code == 403
         assert c.get("/api/preview/1/fits").status_code == 403
         assert c.post("/api/connect/sim").status_code == 403
+        # control.reconnect (#759, the owner's ruling on 2026-10-07): activating a SAVED
+        # profile is the one backend-family call an operator may make. An unknown
+        # id is 404, which proves the request got past the capability gate; the
+        # rest of the family keeps config.backend and stays 403.
+        assert c.post("/api/profiles/none/activate").status_code == 404
+        assert c.post("/api/profiles/none/apply").status_code == 403
+        assert c.post("/api/profiles", json={"name": "x"}).status_code == 403
+        assert c.post("/api/connect/rig",
+                      json={"primary": "sim"}).status_code == 403
+        assert c.get("/api/discover").status_code == 403
+        # ... and its force stays a config.backend decision, refused before the
+        # run is touched.
+        assert c.post("/api/profiles/none/activate",
+                      json={"force": True}).status_code == 403
 
 
 # ============================================ T-RBAC-7/8 field-level POST /api/config

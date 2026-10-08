@@ -433,6 +433,41 @@ class Instruction(BaseModel):
         return self
 
 
+class DuskFlatsPlan(BaseModel):
+    """The flats a flow's DUSK FLATS block asks for, as the engine runs them
+    (#603 job B; backlog wave 17, WP-134).
+
+    ADDITIVE, and ABSENT from a plan's dump while None (``SequencePlan``'s
+    wrap serializer), so a stored session and every plan without the block
+    dumps byte for byte as before.
+
+    ``method`` is the node's "Method": 'panel' (Flat panel), 'cap'
+    (Translucent lens cap) or 'sky' (Twilight sky). Only 'panel' is run
+    (``SequenceEngine._dusk_flats``); the other two are CARRIED, so the plan
+    says what the flow asked for, and the engine says out loud that it does
+    not run them yet. The window is the node's "Wait for" band as two
+    non-positive Sun altitudes, ``window_hi_deg`` the higher (the start of an
+    evening) and ``window_lo_deg`` the lower; both None for "Now", which has
+    no band. A panel is a constant light source and does not wait for it.
+
+    ``filters`` is the list of filter names to shoot, in order: None means
+    every filter in the wheel ("All in wheel"); "Tonight's plan only" is
+    resolved by ``to_sequence_plan`` to the plan's own LIGHT-step filters.
+    ``panel_brightness`` None means the connected panel's middle level: the
+    solver chooses the exposure, not the lamp.
+
+    The bounds are the stage's own failure modes, not the node's: a count of
+    zero asks for no flats, and a ceiling keeps one mistyped digit from
+    holding the camera for the whole evening."""
+    method: Literal["panel", "cap", "sky"]
+    window_hi_deg: float | None = None
+    window_lo_deg: float | None = None
+    filters: list[str] | None = None
+    adu_target: int = Field(ge=1, le=65535)
+    count: int = Field(ge=1, le=200)
+    panel_brightness: int | None = Field(None, ge=0)
+
+
 class SequencePlan(BaseModel):
     name: str = "Tonight"
     targets: list[Target] = []
@@ -561,15 +596,23 @@ class SequencePlan(BaseModel):
     # engine reads it, because nothing in the plan is shot for it; a target
     # the plan does shoot must not be listed (``plan_identity_errors``).
     skipped_ids: list[str] = []
+    # --- the DUSK FLATS block, as the engine runs it (#603 job B; ADDITIVE,
+    # and ABSENT from the dump while None, like ``skipped_ids``, so every plan
+    # without the block dumps byte for byte as before). ``SequenceEngine.
+    # _dusk_flats`` reads it once a night, before the first light.
+    dusk_flats: DuskFlatsPlan | None = None
 
     @model_serializer(mode="wrap")
     def _omit_an_empty_skip(self, handler: SerializerFunctionWrapHandler):
-        """The dump without ``skipped_ids`` when it is empty, whatever the
-        mode, and nested in a ``Session`` too. A wrap serializer, so every
-        other field, and the JSON schema, are pydantic's own."""
+        """The dump without ``skipped_ids`` when it is empty, and without
+        ``dusk_flats`` when it is None, whatever the mode, and nested in a
+        ``Session`` too. A wrap serializer, so every other field, and the JSON
+        schema, are pydantic's own."""
         out = handler(self)
         if isinstance(out, dict) and not out.get("skipped_ids"):
             out.pop("skipped_ids", None)
+        if isinstance(out, dict) and out.get("dusk_flats") is None:
+            out.pop("dusk_flats", None)
         return out
 
     def total_frames(self) -> int:

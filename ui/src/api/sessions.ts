@@ -3,6 +3,7 @@
 // api/sessions.ts — typed wrappers for the multi-night session routes
 // (sessions spec §6). Cookie auth is automatic; ApiError on non-2xx.
 import { api } from "../api";
+import type { DisarmedSession } from "../lib/disarmed";
 import type {
   SequencePlan, SequenceState, Session, SessionFilesIndex, SessionFrame, SessionListRow,
   SessionRow, UnreadableSessionRow,
@@ -12,7 +13,16 @@ export interface SessionPatch {
   auto_resume?: boolean;
   status?: "abandoned";
   plan?: SequencePlan;
+  /** #598 (backlog ruling D-04): true waits behind the live run, else the armed
+   *  session, and is armed when that one COMPLETES; false cancels the wait. The
+   *  server refuses it together with `auto_resume: true`. */
+  queue_next?: boolean;
 }
+
+/** A session named for the words on screen: the one a patch left another waiting
+ *  behind, or the one it dropped from the queue (`{id, name}` as the server
+ *  sends them). */
+export interface QueuedSession { id: string; name: string }
 
 export interface MergeSummary {
   kept: string[];
@@ -26,6 +36,15 @@ export interface SessionPatchResult {
   auto_resume: boolean;
   remaining: Record<string, number>;
   merge?: MergeSummary;
+  /** Present only on a request that carried `queue_next`: what this session now
+   *  waits behind, or null once it waits for nothing. */
+  queued_behind?: QueuedSession | null;
+  /** Present only when a queue of one was REPLACED: the session that lost its
+   *  place (#598, D-04's visibility rule). */
+  dequeued?: QueuedSession[];
+  /** Present only when this patch armed a session and so disarmed others (#595,
+   *  D-04): who lost their auto-resume. */
+  disarmed?: DisarmedSession[];
 }
 
 /** An unreadable row as the server sends it since #266: `types.ts`'s #242
