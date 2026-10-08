@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SessionCard.tsx - one night on the Gallery shelf.
 //
-// Four facts and six verbs. The facts are the thumbnail, the sub count, what
+// Four facts and seven verbs. The facts are the thumbnail, the sub count, what
 // this phone already has, and the session's state; the verbs live behind the
 // overflow control so the card stays a picture and not a toolbar.
 //
@@ -26,13 +26,15 @@ import { sessionDates } from "../../../../components/sequence/sessionDates";
 import { nav } from "../../../router";
 import { NxIcon } from "../../../icons";
 import { explainLock } from "../../../shell/explain";
-import { IconButton48, Mono, Pill, Popover } from "../../../ui";
+import { ActionButton, IconButton48, Mono, Pill, Popover } from "../../../ui";
 import type { Tone } from "../../../ui";
 import { downloadedLine, type DlEntry } from "../sheets/filesData";
 import {
-  ARMED_WITHOUT_MONITOR_CHIP, runAbandon, runAutoResume, runDelete,
-  runResume, runUpdateFromPlan, verbsFor, type Verb,
+  ARMED_WITHOUT_MONITOR_CHIP, controlReason, runAbandon, runArmNow, runAutoResume,
+  runCancelQueue, runDelete, runQueueNext, runResume, runUpdateFromPlan, verbsFor,
+  type Verb,
 } from "./cardActions";
+import { queueTargetFor, queueViewOf, useShelfCards } from "./sessionsIndex";
 import type { SessionCardData } from "./useSessionCards";
 import type { SequencePlan } from "../../../../types";
 
@@ -65,6 +67,12 @@ export function SessionCard({
   const [menu, setMenu] = useState(false);
   const [broken, setBroken] = useState(false);
   const anchor = useRef<HTMLSpanElement | null>(null);
+  // WHAT THIS SESSION COULD WAIT BEHIND, AND WHAT IT DOES (#598). Read off the
+  // shelf the grid already loaded, so no card asks for a read of its own and
+  // the grid needs no new prop.
+  const shelf = useShelfCards();
+  const queueTarget = queueTargetFor(shelf, card);
+  const queueView = queueViewOf(shelf, card);
 
   const url = live && stackUrl ? stackUrl : thumb ? u(thumb) : null;
 
@@ -127,13 +135,16 @@ export function SessionCard({
       case "autoResume":
         if (card.id) void runAutoResume(card.id, !card.autoResume, monitorConnected, onChanged);
         break;
+      case "queueNext": if (card.id) void runQueueNext(card.id, card.name, onChanged); break;
       case "report": if (card.reportId) nav.sheet("report", { id: card.reportId }); break;
       case "abandon": if (card.id) void runAbandon(card.id, card.name, onChanged); break;
       case "delete": if (card.id) void runDelete(card.id, card.name, onChanged); break;
     }
   };
 
-  const verbs = verbsFor(card, canControl);
+  const verbs = verbsFor(card, canControl, queueTarget);
+  // CANCEL and ARM NOW are writes like the menu's: the same reason, on the control.
+  const writeReason = controlReason(canControl);
 
   return (
     <div
@@ -209,6 +220,43 @@ export function SessionCard({
             <Pill tone="warn">{ARMED_WITHOUT_MONITOR_CHIP}</Pill>
           )}
         </div>
+        {queueView && card.id && (
+          <div
+            data-testid={`session-queue-${card.key}`}
+            style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 2 }}
+          >
+            {queueView.kind === "waiting" ? (
+              <>
+                {/* The chip says what happens and when; the wait is never an
+                    arming, so the session behind keeps its own. */}
+                <Pill tone="accent">{`NEXT: waits for ${queueView.behind.name}`}</Pill>
+                <ActionButton
+                  kind="ghost" size="md"
+                  lockedReason={writeReason} onExplain={explainLock}
+                  onPress={() => void runCancelQueue(card.id as string, card.name, onChanged)}
+                  data-testid={`session-queue-cancel-${card.key}`}
+                >
+                  CANCEL
+                </ActionButton>
+              </>
+            ) : (
+              <>
+                {/* The session it waited behind is gone, finished or stopped by
+                    hand. Only a COMPLETION promotes, so nothing will: say so,
+                    and offer the one thing that does start it. */}
+                <Pill tone="warn">WAITING BEHIND NOTHING</Pill>
+                <ActionButton
+                  kind="secondary" size="md"
+                  lockedReason={writeReason} onExplain={explainLock}
+                  onPress={() => void runArmNow(card.id as string, monitorConnected, onChanged)}
+                  data-testid={`session-queue-armnow-${card.key}`}
+                >
+                  ARM NOW
+                </ActionButton>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <Popover open={menu} anchorRef={anchor} onClose={() => setMenu(false)} align="end"

@@ -2742,6 +2742,26 @@ class SessionPatchBody(BaseModel):
     auto_resume: bool | None = None
     status: str | None = None            # only "abandoned" is accepted
     plan: SequencePlan | None = None     # dormant-only full replacement (spec §4)
+    # #598 (backlog ruling D-04, owner-approved 2026-09-30): True makes this
+    # DORMANT session wait behind the live run, else the armed session, and be
+    # armed by that one COMPLETING; False clears the wait. It never touches an
+    # auto_resume, which is the point: arming the session instead disarms the
+    # run that most needs its restart resume (#595). None leaves it alone.
+    queue_next: bool | None = None
+
+    @field_validator("queue_next")
+    @classmethod
+    def _queue_is_not_arming(cls, v, info):
+        """Queueing and arming are alternatives, so asking for both is
+        refused before the route runs (a 422 changes nothing): arming a
+        session disarms the others (``patch_session`` saves each one before
+        the queue is looked at), which is exactly the cost queueing exists
+        to avoid, and a client sending both has misread which it wants."""
+        if v and info.data.get("auto_resume"):
+            raise ValueError(
+                "queue_next and auto_resume cannot both be set: queue the "
+                "session behind the running one, or arm it, not both")
+        return v
 
 
 class RetrySetAsideBody(BaseModel):
@@ -8031,6 +8051,72 @@ def create_app(*, bind_host: str | None = None,
                             f"arming '{s.name or s.plan.name or s.id}' "
                             f"disarmed auto-resume for: {names}",
                             "sequence")
+                # THE QUEUE MARKER (#598, backlog ruling D-04, owner-approved
+                # 2026-09-30). A dormant session can WAIT BEHIND the run that
+                # is live, else the one that is armed, and be armed by that
+                # one completing (``SequenceEngine._promote_queued``). Setting
+                # it leaves EVERY auto_resume alone: the old way (arming this
+                # session) disarmed the run that most needed its restart
+                # resume, which is the cost this exists to avoid. Read fresh
+                # under the lock this section holds, like the singleton above.
+                #
+                # Every refusal comes before any write, so a refused request
+                # changes nothing (the field validator has already refused
+                # the one combination, queue_next with auto_resume, whose
+                # arming half writes other sessions before this point).
+                queued: dict | None = None
+                dequeued: list[dict] = []
+                if body.queue_next:
+                    if s.status != "dormant":
+                        raise HTTPException(
+                            409, "only a dormant session can wait behind "
+                                 "another")
+                    live = engine._session if engine.running else None
+                    behind = live if live is not None else session_store.armed()
+                    if behind is None:
+                        raise HTTPException(
+                            409, "nothing is running or armed to wait "
+                                 "behind; arm it instead")
+                    if behind.id == s.id:
+                        raise HTTPException(
+                            409, "a session cannot wait behind itself")
+                    # A QUEUE OF ONE per session: a second session queued
+                    # behind the same one replaces the first, which is said
+                    # (the D-04 visibility rule: a silent replacement is the
+                    # silent disarm over again).
+                    for other in session_store.load_all():
+                        if (other.id != s.id
+                                and other.queued_behind == behind.id):
+                            other.queued_behind = None
+                            session_store.save(other)
+                            dequeued.append(
+                                {"id": other.id,
+                                 "name": other.name or other.plan.name})
+                    s.queued_behind = behind.id
+                    queued = {"id": behind.id,
+                              "name": behind.name or behind.plan.name}
+                    mine = s.name or s.plan.name or s.id
+                    if dequeued:
+                        names = ", ".join(d["name"] or d["id"]
+                                          for d in dequeued)
+                        bus.log("warning",
+                                f"'{mine}' now waits behind "
+                                f"'{queued['name']}' in place of: {names}",
+                                "sequence")
+                    else:
+                        bus.log("info",
+                                f"'{mine}' waits behind '{queued['name']}' "
+                                f"and is armed when it completes",
+                                "sequence")
+                elif body.queue_next is False and s.queued_behind is not None:
+                    s.queued_behind = None
+                    bus.log("info",
+                            f"'{s.name or s.plan.name or s.id}' no longer "
+                            f"waits behind another session", "sequence")
+                if s.status == "abandoned" and s.queued_behind is not None:
+                    # Abandoned is withdrawn from the shelf: it waits for
+                    # nothing, and the marker would outlive the reason for it.
+                    s.queued_behind = None
                 # A DISARM STOPS THE LADDER RECOVERING THIS SESSION (#220).
                 # It used to be read only after the ladder, by ResumeArm's
                 # re-check, so the mount was solved and re-centred, minutes
@@ -8054,6 +8140,15 @@ def create_app(*, bind_host: str | None = None,
                        "remaining": s.remaining()}
                 if merge is not None:
                     out["merge"] = merge
+                if body.queue_next is not None:
+                    # #598: what this session now waits behind ({id, name}),
+                    # or null once it waits for nothing; asked-for requests
+                    # only, so every other answer is unchanged.
+                    out["queued_behind"] = queued
+                if dequeued:
+                    # Present only when a queue of one was REPLACED, as
+                    # ``disarmed`` is: the session that lost its place.
+                    out["dequeued"] = dequeued
                 if disarmed:
                     # #595, D-04: present only when this PATCH actually
                     # disarmed another session, exactly as engine.start's own

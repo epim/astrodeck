@@ -1,6 +1,6 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
-// cardActions.ts - the six verbs on a Gallery card, their availability, and
+// cardActions.ts - the verbs on a Gallery card (seven since ARM AS NEXT, #598), their availability, and
 // the sentence each destructive one has to say first.
 //
 // EVERY CONFIRM BODY HERE IS VERBATIM (plan C.4). They are not decoration: each
@@ -21,13 +21,15 @@ import { ApiError } from "../../../../api";
 import {
   deleteSession, getSession, isUnreadableRow, listSessionRows, patchSession, restoreBody,
   restoreSession, resumeSession, unreadableDeleteBody, type DeleteSessionResult,
-  type UnreadableListRow,
+  type SessionPatch, type SessionPatchResult, type UnreadableListRow,
 } from "../../../../api/sessions";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import { accessPhrase } from "../../../../lib/caps";
+import { disarmedWarningLine, type DisarmedSession } from "../../../../lib/disarmed";
 import { mergePreview, type MergePreview } from "../../../../lib/sessions";
 import { useStore } from "../../../../store";
 import type { SequencePlan } from "../../../../types";
+import type { QueueTarget } from "./sessionsIndex";
 import type { SessionCardData } from "./useSessionCards";
 
 export const CONFIRM_ABANDON =
@@ -42,6 +44,10 @@ export const CONFIRM_AUTO_RESUME_NO_MONITOR =
   "No safety monitor is connected - the rig may start unattended in bad " +
   "weather. A persistent warning stays on this card while armed.";
 
+/** The verb that makes a dormant session wait behind the live or armed one
+ *  (#598, backlog ruling D-04). */
+export const QUEUE_NEXT_LABEL = "ARM AS NEXT";
+
 export const ARMED_WITHOUT_MONITOR_CHIP =
   "auto-resume armed without a safety monitor - rig may start in bad weather";
 
@@ -52,7 +58,8 @@ export function mergeConfirmBody(m: MergePreview): string {
     + "but stop counting toward any quota).";
 }
 
-export type VerbId = "resume" | "update" | "autoResume" | "report" | "abandon" | "delete";
+export type VerbId =
+  | "resume" | "update" | "autoResume" | "queueNext" | "report" | "abandon" | "delete";
 
 export interface Verb {
   id: VerbId;
@@ -77,11 +84,26 @@ export function controlReason(canControl: boolean): string | null {
  * per-status reasons mirror what the server would answer, so a tap that cannot
  * work is refused with the server's own logic rather than discovered in a 409.
  */
-export function verbsFor(card: SessionCardData, canControl: boolean): Verb[] {
+export function verbsFor(
+  card: SessionCardData, canControl: boolean, queueTarget: QueueTarget | null = null,
+): Verb[] {
   const capReason = controlReason(canControl);
   const noSession = card.id ? null : "This night has a report but no session log, so there is nothing to act on.";
   const dormantOnly = card.status === "dormant" ? null : "Only a dormant session can be resumed or edited.";
   const notActive = card.status === "active" ? "The session is running - stop the run first." : null;
+  // ARM AS NEXT (#598). Offered exactly when the server would not answer 409:
+  // dormant, not already armed in its own right (it would not need to wait),
+  // not already waiting (the chip on the card cancels that), and with a live
+  // or armed session to wait behind (`queueTargetFor`, the server's own choice).
+  const queueReason = card.status !== "dormant"
+    ? "Only a dormant session can wait for another one."
+    : card.autoResume
+      ? "This session is already armed, so it starts by itself and has nothing to wait for."
+      : card.queuedBehind != null
+        ? "This session already waits for another one; cancel it from the NEXT chip on the card."
+        : queueTarget == null
+          ? "Nothing else is running or armed to wait behind. Turn AUTO-RESUME on to arm this session instead."
+          : null;
 
   return [
     {
@@ -98,6 +120,11 @@ export function verbsFor(card: SessionCardData, canControl: boolean): Verb[] {
       id: "autoResume",
       label: card.autoResume ? "AUTO-RESUME ON" : "AUTO-RESUME OFF",
       reason: noSession ?? capReason ?? dormantOnly,
+    },
+    {
+      id: "queueNext",
+      label: QUEUE_NEXT_LABEL,
+      reason: noSession ?? capReason ?? queueReason,
     },
     {
       id: "report",
@@ -254,19 +281,20 @@ export async function runRestore(id: string, name: string, after: () => void): P
 
 /** Arming it without a safety monitor is the one that needs a sentence: the rig
  *  can start itself at dusk into weather nothing is watching. */
+async function confirmArmWithoutMonitor(): Promise<boolean> {
+  return confirmDialog({
+    title: "Arm auto-resume with no safety monitor?",
+    body: CONFIRM_AUTO_RESUME_NO_MONITOR,
+    tone: "warn",
+    mode: "confirm",
+    confirmLabel: "Arm it",
+  });
+}
+
 export async function runAutoResume(
   id: string, next: boolean, monitorConnected: boolean, after: () => void,
 ): Promise<void> {
-  if (next && !monitorConnected) {
-    const go = await confirmDialog({
-      title: "Arm auto-resume with no safety monitor?",
-      body: CONFIRM_AUTO_RESUME_NO_MONITOR,
-      tone: "warn",
-      mode: "confirm",
-      confirmLabel: "Arm it",
-    });
-    if (!go) return;
-  }
+  if (next && !monitorConnected && !(await confirmArmWithoutMonitor())) return;
   try {
     await patchSession(id, { auto_resume: next });
     toast("success", next ? "Auto-resume armed" : "Auto-resume disarmed");
@@ -308,5 +336,76 @@ export async function runUpdateFromPlan(
     after();
   } catch (e) {
     toast("error", "Could not update this session", say(e));
+  }
+}
+
+// ------------------------------------------------------------ the queue (#598)
+//
+// `SessionPatch` / `SessionPatchResult` (api/sessions.ts) do not carry the
+// queue's fields and that file belongs to another work package, so the
+// widening is local: `api.patch` never validates or strips a field (the
+// response is exactly what the server sent), the same way NowEmpty reads
+// `disarmed` off a narrower type.
+
+type QueuePatch = SessionPatch & { queue_next?: boolean };
+type QueuePatchResult = SessionPatchResult & {
+  queued_behind?: QueueTarget | null;
+  dequeued?: QueueTarget[];
+  disarmed?: DisarmedSession[];
+};
+
+const patchQueue = (id: string, body: QueuePatch): Promise<QueuePatchResult> =>
+  patchSession(id, body) as Promise<QueuePatchResult>;
+
+/** ARM AS NEXT: wait behind the live or armed session and be armed when it
+ *  COMPLETES. Nothing is armed or disarmed now, which is the whole point, and
+ *  the toast says so; a queue of one means a session already waiting there
+ *  loses its place, which is said in a second toast naming it (D-04). */
+export async function runQueueNext(id: string, name: string, after: () => void): Promise<void> {
+  try {
+    const body: QueuePatch = { queue_next: true };
+    const r = await patchQueue(id, body);
+    const behind = r.queued_behind?.name || "the running session";
+    toast("success", `"${name}" is next`,
+      `It is armed when "${behind}" completes, never after a stop or a fault. `
+      + `"${behind}" keeps its own auto-resume.`);
+    if (r.dequeued && r.dequeued.length > 0) {
+      const names = r.dequeued.map((d) => d.name || d.id).join(", ");
+      toast("warning", "Another session lost its place in the queue",
+        `${names} no longer waits behind "${behind}": only one can be next.`);
+    }
+    after();
+  } catch (e) {
+    toast("error", "Could not queue this session", say(e));
+  }
+}
+
+/** CANCEL on the NEXT chip: the session waits for nothing again. */
+export async function runCancelQueue(id: string, name: string, after: () => void): Promise<void> {
+  try {
+    const body: QueuePatch = { queue_next: false };
+    await patchQueue(id, body);
+    toast("success", `"${name}" is no longer next`, "It stays dormant and unarmed.");
+    after();
+  } catch (e) {
+    toast("error", "Could not cancel the queue", say(e));
+  }
+}
+
+/** ARM NOW on a stranded queue: the session it waited behind has gone, so
+ *  nothing will ever promote it. Arms it in its own right, drops the dead
+ *  marker in the same request, and names whatever that disarmed (D-04). */
+export async function runArmNow(id: string, monitorConnected: boolean, after: () => void): Promise<void> {
+  if (!monitorConnected && !(await confirmArmWithoutMonitor())) return;
+  try {
+    const body: QueuePatch = { auto_resume: true, queue_next: false };
+    const r = await patchQueue(id, body);
+    toast("success", "Auto-resume armed");
+    if (r.disarmed && r.disarmed.length > 0) {
+      toast("warning", "Arming this session disarmed another", disarmedWarningLine(r.disarmed));
+    }
+    after();
+  } catch (e) {
+    toast("error", "Could not arm this session", say(e));
   }
 }

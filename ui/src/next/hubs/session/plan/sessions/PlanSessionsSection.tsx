@@ -34,7 +34,7 @@
 // warnings: no safety monitor, a cloud forecast that does NOT hold it, and an
 // active weather override that suppresses the one forecast that would.
 
-import { useCallback, useEffect, useRef, useState, type JSX } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 
 import { setIgnoreTonight } from "../../../../../api/weather";
 import { getSession, listSessions } from "../../../../../api/sessions";
@@ -43,6 +43,7 @@ import SessionReviewDrawer from "../../../../../components/sequence/SessionRevie
 import {
   accessPhrase, useCanControlCapture, useCanControlMount,
 } from "../../../../../lib/caps";
+import { nextSessionLine, strandedQueueLine } from "../../../../../lib/disarmed";
 import { targetProgress } from "../../../../../lib/sessions";
 import { useSafety, useSequence, useStore, useWeather } from "../../../../../store";
 import type { Session, SessionRow } from "../../../../../types";
@@ -50,9 +51,12 @@ import {
   ActionButton, Bar, Card, Label, LockNote, Mono, StatusPill, Switch,
 } from "../../../../ui";
 import {
-  runAbandon, runAutoResume, runDelete, runResume, runUpdateFromPlan, verbsFor,
-  type VerbId,
+  controlReason, runAbandon, runArmNow, runAutoResume, runCancelQueue, runDelete, runQueueNext,
+  runResume, runUpdateFromPlan, verbsFor, type VerbId,
 } from "../../gallery/cardActions";
+import {
+  queuedNextOf, queueTargetFor, queueViewOf, rowQueuedBehind, type QueueTarget,
+} from "../../gallery/sessionsIndex";
 import type { SessionCardData } from "../../gallery/useSessionCards";
 import "./sessions.css";
 
@@ -100,6 +104,7 @@ function asCard(r: SessionRow): SessionCardData {
     autoResume: r.auto_resume,
     integrationS: null,
     reportId: null,
+    queuedBehind: rowQueuedBehind(r),
   };
 }
 
@@ -108,9 +113,10 @@ function asCard(r: SessionRow): SessionCardData {
  *  per-status sentences - which are the ones the server would answer with. */
 export function rowVerbReasons(
   r: SessionRow, canControl: boolean, lockedReason: string | null,
+  queueTarget: QueueTarget | null = null,
 ): Record<VerbId, string | null> {
   const out = {} as Record<VerbId, string | null>;
-  for (const v of verbsFor(asCard(r), canControl)) out[v.id] = lockedReason ?? v.reason;
+  for (const v of verbsFor(asCard(r), canControl, queueTarget)) out[v.id] = lockedReason ?? v.reason;
   return out;
 }
 
@@ -165,6 +171,12 @@ export function PlanSessionsSection({ lockedReason, onExplain }: PlanSectionProp
 
   const noMonitor = !safety || !safety.connected;
   const after = () => { void refresh(); };
+  // The queue (#598) is read off the same rows, as the Gallery reads it off its
+  // own, so the two screens answer "what would this wait behind" alike.
+  const cards = useMemo(() => rows.map(asCard), [rows]);
+  // CANCEL and ARM NOW are writes like the five verbs: the section-wide reason
+  // first, then the capability, in the server's own words.
+  const writeLock = lockedReason ?? controlReason(canControl);
 
   const onIgnoreWeather = async (v: boolean) => {
     try {
@@ -208,7 +220,10 @@ export function PlanSessionsSection({ lockedReason, onExplain }: PlanSectionProp
         const s = details[r.id];
         const progress = s ? targetProgress(s.plan, s.frames) : [];
         // One capability answer per row, from the Gallery's own verb table.
-        const why = rowVerbReasons(r, canControl, lockedReason);
+        const card = asCard(r);
+        const why = rowVerbReasons(r, canControl, lockedReason, queueTargetFor(cards, card));
+        const view = queueViewOf(cards, card);
+        const next = queuedNextOf(cards, r.id);
         return (
           <div className="nx-plansess-row" key={r.id} data-testid={`plan-session-${r.id}`}>
             <div className="nx-plansess-title">
@@ -223,6 +238,39 @@ export function PlanSessionsSection({ lockedReason, onExplain }: PlanSectionProp
               {r.accepted}/{r.total} accepted over {r.nights} night{r.nights === 1 ? "" : "s"}
               {" · "}{sessionDates(r.created_ts, r.updated_ts)}
             </Mono>
+            {next && (
+              <Mono size={10} tone="accent" data-testid={`plan-session-next-${r.id}`}>
+                {nextSessionLine(next.name, next.id ?? next.key)}
+              </Mono>
+            )}
+            {view?.kind === "waiting" && (
+              <div className="nx-plansess-verbs" data-testid={`plan-session-queue-${r.id}`}>
+                <Mono size={10} tone="accent">{`NEXT: waits for ${view.behind.name}`}</Mono>
+                <ActionButton
+                  kind="ghost"
+                  lockedReason={writeLock}
+                  onExplain={onExplain}
+                  onPress={() => void runCancelQueue(r.id, r.name, after)}
+                  data-testid={`plan-session-queue-cancel-${r.id}`}
+                >
+                  cancel
+                </ActionButton>
+              </div>
+            )}
+            {view?.kind === "stranded" && (
+              <div className="nx-plansess-verbs" data-testid={`plan-session-queue-${r.id}`}>
+                <p className="nx-plansess-warn">{strandedQueueLine([r.name])}</p>
+                <ActionButton
+                  kind="secondary"
+                  lockedReason={writeLock}
+                  onExplain={onExplain}
+                  onPress={() => void runArmNow(r.id, !noMonitor, after)}
+                  data-testid={`plan-session-queue-armnow-${r.id}`}
+                >
+                  arm now
+                </ActionButton>
+              </div>
+            )}
 
             {progress.map((tp) => (
               <div className="nx-plansess-target" key={tp.target_id}>
@@ -251,6 +299,16 @@ export function PlanSessionsSection({ lockedReason, onExplain }: PlanSectionProp
                 data-testid={`plan-session-update-${r.id}`}
               >
                 update from plan
+              </ActionButton>
+              <ActionButton
+                kind="ghost"
+                lockedReason={why.queueNext}
+                onExplain={onExplain}
+                onPress={() => void runQueueNext(r.id, r.name, after)}
+                ariaLabel={`Arm ${r.name} to start when the running session completes`}
+                data-testid={`plan-session-queue-next-${r.id}`}
+              >
+                arm as next
               </ActionButton>
               <ActionButton
                 kind="ghost"

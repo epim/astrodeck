@@ -1842,6 +1842,12 @@ class SequenceEngine:
         # not even a log line to notice — the whole feature was absent, quietly,
         # on exactly the path it exists for.
         session.auto_resume = True
+        # A SESSION THAT STARTS WAITS FOR NOTHING (#598, D-04). Cleared here
+        # because every start path reaches this line (CONTINUE, a flow run,
+        # /resume, ResumeArm's own tick, the promotion's own start): a marker
+        # that survived a start by hand would arm the session again behind
+        # the run it already outran, the moment that run completed.
+        session.queued_behind = None
         # NAMED, NOT SILENT (#595, D-04). The singleton below used to disarm
         # every other armed session with nothing to show for it: no log line,
         # no response field, so the only way to notice was a manual read of
@@ -3464,16 +3470,119 @@ class SequenceEngine:
                         "sequence")
             else:
                 self._session.crash_resumes = 0
+            saved = False
             try:
                 session_store.save(self._session)
+                saved = True
             except Exception as e:
                 bus.log("warning", f"session save failed: {e}", "sequence")
+            # THE QUEUE'S ONE EVENT (#598, backlog ruling D-04, owner-approved
+            # 2026-09-30): the session this one was waiting behind COMPLETED.
+            # Asked of the status the decision above wrote, never of `reason`:
+            # 'complete' with frames still owed is dormant, and a dawn
+            # cut-off, an incomplete night, an unsafe stop, an abort, an
+            # error, a quality stop and a cooling skip all leave THIS session
+            # owing frames and armed (or disarmed on purpose), so the session
+            # behind it stays queued and unarmed. And only once the store
+            # holds it as complete: a save that failed leaves a dormant file
+            # that ResumeArm would resume, and arming a second session beside
+            # it is the singleton broken.
+            if saved and self._session.status == "complete":
+                self._promote_queued(self._session)
             self._record_flow_result(self._session, reason)
             self._session = None
             # The memo is the finished session's: let it go with it, so the
             # engine does not pin a project's whole ledger map until the
             # next run starts.
             self._accepted_seen = None
+
+    @staticmethod
+    def _arm_exclusively(session: Session) -> list[dict]:
+        """Arm ``session`` and disarm every OTHER armed session, saving each
+        of them; the session itself is the caller's to save (it has more to
+        write in the same file). Returns ``[{"id", "name"}, ...]`` for the
+        ones that were really armed (dormant or live), which is also what the
+        warning names: a finished session's leftover flag losing its switch is
+        hygiene, not news.
+
+        THE SINGLETON, ONCE (#598, D-04). ``start()`` and the PATCH route each
+        run their own copy of this loop (and say so in their own comments);
+        the promotion needed a third, so it is written once here and the other
+        two can call it. The caller holds ``session_store.write_locked()`` and
+        awaits nothing.
+
+        No ``stop_recovery`` as the PATCH copy has: this runs from a run's own
+        finalize, and ResumeArm's ladder only works while no run is live, so
+        there is no ladder to stop at this moment (``start()``'s copy makes the
+        same call)."""
+        disarmed: list[dict] = []
+        session.auto_resume = True
+        for other in session_store.load_all():
+            if other.id == session.id or not other.auto_resume:
+                continue
+            other.auto_resume = False
+            session_store.save(other)
+            if other.status in ("dormant", "active"):
+                disarmed.append({"id": other.id,
+                                 "name": other.name or other.plan.name})
+        if disarmed:
+            names = ", ".join(d["name"] or d["id"] for d in disarmed)
+            bus.log("warning",
+                    f"arming '{session.name or session.plan.name}' disarmed "
+                    f"auto-resume for: {names}", "sequence")
+        return disarmed
+
+    def _promote_queued(self, done: Session) -> None:
+        """Arm the session waiting behind ``done``, which has just COMPLETED
+        (#598, backlog ruling D-04, owner-approved 2026-09-30).
+
+        The caller asks this only of a session the store holds as complete;
+        nothing else promotes, because every other ending leaves ``done``
+        owing frames and armed (or disarmed on purpose), and the session
+        behind it must not take its place. ResumeArm then starts the promoted
+        session on its next tick the ordinary way: its window, the veto, the
+        recovery ladder. Arming is all this does, so a window that is closed
+        now simply waits.
+
+        One section under the store's write lock, load to save, awaiting
+        nothing: a PATCH that queues or abandons the session at this moment
+        runs wholly before or wholly after it (``write_locked``). Only a
+        DORMANT session is promoted: one abandoned, deleted or started by
+        hand since it was queued is not waiting any more. A queue of one is
+        enforced where it is set; a second session found waiting behind the
+        same one (a hand edit) is left queued and named, never armed beside
+        the first.
+
+        Never raises: this is a terminal path, and a failure here must not
+        skip the bookkeeping after it. The session stays queued and unarmed,
+        which is the safe direction, and the warning says so."""
+        label = done.name or done.plan.name or done.id
+        try:
+            with session_store.write_locked():
+                waiting = [s for s in session_store.load_all()
+                           if s.queued_behind == done.id
+                           and s.status == "dormant"]
+                if not waiting:
+                    return
+                waiting.sort(key=lambda s: s.updated_ts, reverse=True)
+                nxt, rest = waiting[0], waiting[1:]
+                nxt.queued_behind = None
+                self._arm_exclusively(nxt)
+                session_store.save(nxt)
+                line = (f"'{label}' is complete, so "
+                        f"'{nxt.name or nxt.plan.name}' is armed and starts "
+                        f"when its window opens")
+                if rest:
+                    line += ("; also waiting behind it, and left queued: "
+                             + ", ".join(s.name or s.plan.name or s.id
+                                         for s in rest))
+                bus.log("info", line, "sequence")
+        except Exception as e:  # noqa: BLE001 - a terminal path never raises
+            bus.log("warning",
+                    f"'{label}' is complete but the session waiting behind "
+                    f"it could not be armed ({e}); it stays queued and "
+                    f"unarmed, so arm it from the session list",
+                    "sequence")
 
     def _hand_pending_retries_to_the_session(self) -> None:
         """What is still queued for the scheduler when the run is finalized
