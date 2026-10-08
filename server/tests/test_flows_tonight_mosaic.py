@@ -671,19 +671,25 @@ class TestCampaignRowsPerPanel:
             " 1 of 4 mosaic panels done, 12 of 40 subs captured."), c["note"]
 
     def test_a_repeating_mosaic_is_a_campaign(self):
-        """A mosaic whose DUSK WINDOW repeats is a campaign with no pool; one
-        that shoots a single night is not.
+        """A mosaic with no pool is no campaign, whatever DUSK WINDOW's
+        retired ``repeat`` still holds.
 
-        Mutant "a mosaic is never a campaign" (``is_campaign`` False on the
-        no-pool answer) failed:
-            E   assert False is True
+        RE-PINNED FOR BACKLOG WP-118 (#195, wave 16 integration). This case
+        read "a mosaic whose DUSK WINDOW repeats is a campaign with no pool;
+        one that shoots a single night is not", with ``repeat`` set to
+        "Nightly until pool complete". The campaign is keyed on Automatic
+        resume and the flow's shape now (``compile.campaign_block``: a pool),
+        and ``repeat`` is inert (kept verbatim through a load and a save, read
+        by nothing), so a mosaic with no pool is a campaign under neither
+        setting. The case keeps its stored ``repeat`` so a keyed-on-repeat
+        regression fails here.
         """
         once = _tonight(_mosaic_flow(), progress=None)["campaign"]
         assert once["is_campaign"] is False
         nightly = _mosaic_flow()
         nightly.nodes[0].params["repeat"] = "Nightly until pool complete"
         again = _tonight(nightly, progress=None)["campaign"]
-        assert again["is_campaign"] is True
+        assert again["is_campaign"] is False
 
     def test_a_mapping_serves_as_well_as_a_callable(self):
         answer = _progress_for(_mosaic_flow(), {(0, 0): 2})

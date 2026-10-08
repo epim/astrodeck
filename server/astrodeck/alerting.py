@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import time
 from collections import OrderedDict
 from collections import deque
@@ -142,6 +143,28 @@ _PATH_WITHHELD = "<path withheld>"
 # Source tag on the dispatcher's own diagnostic logs so they are NOT routed back
 # through the alert pipeline (would otherwise self-feed a failure loop).
 _ALERT_LOG_SOURCE = "alert"
+
+# The loggers of the HTTP client every sink and the dead-man ping go through (#736).
+# httpx writes ``HTTP Request: GET <the whole url> "HTTP/1.1 200 OK"`` at INFO on
+# 'httpx', and httpcore traces each connection it opens at DEBUG. For a
+# healthchecks-style monitor the url's path IS the ping secret (#694), and the same
+# line carries a Telegram bot token or a Slack/Discord webhook path for every other
+# sink. Nothing configures a handler today, so nothing is written; a later
+# ``logging.basicConfig(level=INFO)``, a debug flag or a wrapper process that
+# captures root logs would put them in stderr and every log file. A level on the
+# named logger holds against a root level set later (a logger's own level beats
+# the root's), so this is said once, at import, before any client exists.
+_HTTP_CLIENT_LOGGERS = ("httpx", "httpcore")
+
+
+def _quiet_http_client_logs() -> None:
+    """Hold httpx's and httpcore's own loggers at WARNING, so a process that is
+    configured at INFO or DEBUG never writes a request line carrying a url."""
+    for name in _HTTP_CLIENT_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
+_quiet_http_client_logs()
 
 
 def _url_is_safe(url: str, *, allow_private: bool = False) -> bool:
@@ -1014,7 +1037,11 @@ class AlertDispatcher:
           target that can never be a monitor), we LOG A LOUD ONE-SHOT WARNING so
           the user is not lulled into a false sense of monitoring. Without this,
           a user who configured a deadman believes they are covered when nothing
-          is ever pinged."""
+          is ever pinged.
+
+        And it never raises (#735): a url httpx will not build a request for
+        (a non-numeric port, say) takes the same one-shot warning as an
+        unreachable one, instead of escaping into a caller that swallows it."""
         url = getattr(self.get_config(), "deadman_url", "") or ""
         if not url:
             return
@@ -1047,6 +1074,31 @@ class AlertDispatcher:
                     f"ping; verify the url/host is reachable",
                     _ALERT_LOG_SOURCE,
                 )
+            return
+        except Exception as e:  # noqa: BLE001 - the ping never raises out of here (#735)
+            # Everything above is a transport failure. What is left is httpx
+            # refusing to BUILD a request for the url (``InvalidURL``, which is an
+            # ``Exception`` and not an ``HTTPError``, plus the IDNA and encoding
+            # ``ValueError``s; ``_url_is_safe`` reads the scheme and the host and
+            # never the port, so a typo in it gets this far) and anything nobody
+            # foresaw. Left to escape, it was eaten by the wall-clock loop's own
+            # ``except Exception: pass`` (or sat unretrieved on the pipelined
+            # ping's task), ``_deadman_warned`` stayed None, and the settings
+            # badge read 'waiting' for good: the owner believed the rig was
+            # watched and nothing was ever pinged. Said once per url, by the
+            # exception's TYPE and never its text, and with the scrubbed url (#694).
+            if self._deadman_warned != url:
+                self._deadman_warned = url
+                if isinstance(e, (httpx.InvalidURL, ValueError)):
+                    what = ("url is not one the HTTP client can build a request for "
+                            f"({self._scrub_url(url)}): {type(e).__name__} — it is "
+                            "being SKIPPED and no pings are being sent; check the "
+                            "port and any stray characters in it")
+                else:
+                    what = (f"ping failed before it could be sent "
+                            f"({self._scrub_url(url)}): {type(e).__name__} — no "
+                            "ping left, and this is not the monitor's doing")
+                self.bus.log("warning", f"dead-man's-switch {what}", _ALERT_LOG_SOURCE)
             return
         # A reachable-but-error status (e.g. 404 from a deleted healthcheck) also
         # warrants a one-shot warning: the user thinks they have a deadman, but

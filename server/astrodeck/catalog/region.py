@@ -64,7 +64,8 @@ from ..auth.rbac import declare
 from .constellations import constellation_for
 from .coords import angular_sep_deg
 from .describe import describe
-from .objects import _ALIASES, _TYPE_NAMES, CATALOG, MAG_UNKNOWN, DSO
+from .objects import (_ALIASES, _TYPE_NAMES, CATALOG, MAG_UNKNOWN, DSO,
+                      shape_fields)
 
 _CATALOGUE_PREFIX = re.compile(r"^[A-Za-z]+")
 
@@ -254,6 +255,10 @@ def _dso_region_row(obj: DSO, sep_deg: float) -> dict:
         # and a card that prints it as a brightness is inventing a measurement.
         "mag": None if obj.mag >= MAG_UNKNOWN else obj.mag,
         "size_arcmin": obj.size_arcmin,
+        # The object's ellipse (#181): ``minor_arcmin`` and ``pa_deg``, both
+        # always present and None when unknown, from the same function the
+        # search row calls, so one object never has two ellipses.
+        **shape_fields(obj),
         "constellation": constellation_for(obj.id),
         "describe": describe(obj),
         # 109 rows carry one ("NGC 224" for M31). The single most useful line

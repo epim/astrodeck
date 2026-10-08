@@ -743,6 +743,12 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
           {countsLine && (
             <BannerCard tone="info" text={countsLine} data-testid="flow-stages-counts" />
           )}
+          {/* What RUN does for a flow whose Automatic resume is Off (#195,
+              WP-118): `copy.notice`, empty for a flow that resumes and on
+              STOP. A standing line beside the button, never part of it. */}
+          {copy.notice !== "" && (
+            <BannerCard tone="info" text={copy.notice} data-testid="flow-stages-run-notice" />
+          )}
           {/* The replay line: dusk will replay the version the armed session
               froze unless CONTINUE applies the saved edits. A warning, so it
               takes the warn tone; no dismiss, since it stays true until

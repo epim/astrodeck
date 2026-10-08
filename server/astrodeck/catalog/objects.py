@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .difficulty import difficulty_for
+from .ngc_extras import extras_for
 
 log = logging.getLogger(__name__)
 
@@ -337,10 +338,51 @@ def _dso_row(o: DSO) -> dict:
         "ra_hours": o.ra_hours, "dec_deg": o.dec_deg,
         "mag": None if unknown else o.mag,
         "size_arcmin": o.size_arcmin,
+        **shape_fields(o),
         "difficulty": "unknown" if unknown else d["tier"],
         "surface_brightness": None if unknown else d["surface_brightness"],
         "difficulty_source": "unmeasured" if unknown else d["source"],
     }
+
+
+def shape_of(obj: DSO) -> tuple[float, float, float | None] | None:
+    """``(major, minor, pa)`` for an object that has a published shape, else
+    None (#181). Arcminutes, arcminutes, degrees from north through east.
+
+    ``major`` is the object's OWN ``size_arcmin`` -- the curated size or
+    OpenNGC's, whichever the catalogue shows -- so an outline drawn from this
+    agrees with the size printed beside it. ``minor`` is that size times
+    OpenNGC's axis RATIO, not OpenNGC's minor axis: the curated list sizes M31
+    at 190' where OpenNGC says 177.83' x 69.66', and a minor axis taken from one
+    source beside a major axis from the other would draw a different galaxy.
+
+    None when there is no usable ratio (or no major axis to scale), and a circle
+    is then the honest outline. ``pa`` is None when OpenNGC publishes no angle
+    for an object whose ratio it does publish (IC 434, the Flame Nebula); it is
+    never defaulted to 0, which is a real angle (due north). A position angle
+    with no ratio orients nothing -- a circle has none -- so it is not served.
+
+    Nothing here is site-derived: both numbers are properties of the object.
+    """
+    extra = extras_for(obj.id)
+    if extra is None or extra.axis_ratio is None or obj.size_arcmin <= 0:
+        return None
+    return obj.size_arcmin, obj.size_arcmin * extra.axis_ratio, extra.posang_deg
+
+
+def shape_fields(obj: DSO) -> dict:
+    """The two wire keys for an object's shape, for every row that describes a
+    deep-sky object (the search row here and the Atlas region row beside it, so
+    one object never has two ellipses). Both ALWAYS present, both None when
+    unknown -- additive keys a client can rely on. ``pa_deg`` is None only when
+    the angle is unknown: 0.0 is an angle and goes out as 0.0."""
+    shape = shape_of(obj)
+    if shape is None:
+        return {"minor_arcmin": None, "pa_deg": None}
+    _major, minor, pa = shape
+    # Three places: the ratio carries three, so more digits are float noise
+    # (69.30868000000001) rather than precision.
+    return {"minor_arcmin": round(minor, 3), "pa_deg": pa}
 
 
 def _star_hits(q: str, qs: str) -> list[tuple[int, dict]]:

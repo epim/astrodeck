@@ -1132,6 +1132,55 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
     return f"{node.type}.{from_port}"
 
 
+#: A campaign's one stop condition: the session is complete when every target
+#: holds the frames it asked for (``campaign_block``).
+CAMPAIGN_UNTIL = "pool_complete"
+
+
+def campaign_block(graph: FlowGraph) -> dict | None:
+    """The ``campaign`` block this flow's compile writes, or None: THE ONE
+    DECISION of what a campaign is (#195, WP-118; spec Revision 2, ruling 7).
+
+    A CAMPAIGN IS A POOL THAT COMES BACK: a POOL block in a flow whose DUSK
+    WINDOW has Automatic resume On. It is not a longer night and it is not a
+    word a retired select once held. A flow with a DUSK WINDOW that resumes and
+    no pool resumes as it always has, with no block (a single TARGET or a
+    mosaic that does not finish tonight is resumed by the same machinery, and
+    says so in its own words); a flow with Automatic resume Off is told not to
+    come back, so it is no campaign even when it has a pool; and a flow with no
+    DUSK WINDOW carries no opinion about resuming at all, so it has none
+    either.
+
+    ``until`` HAS ONE SHAPE, ``pool_complete``. It used to be ``nights_30`` for
+    any ``repeat`` that did not name a pool, a stop condition nothing ever
+    counted (``to_plan`` said "Nothing counts NIGHTS" in a note), so a flow
+    could promise a limit the run would not keep. The session is complete when
+    every target has the frames it asked for, however many nights that takes,
+    which is what ``pool_complete`` says and the only thing a campaign does.
+
+    READ BY THE COMPILE, THE DOCTOR AND TONIGHT, so the plan, the doctor's
+    ``_is_campaign`` and the CAMPAIGN tab cannot drift apart on the same graph:
+    the defect this replaces was four copies of "``repeat`` is not Single
+    night", one per reader. NOTHING HERE READS ``repeat``, which no editor has
+    offered since 0.3.41 and which the DUSK WINDOW vocabulary no longer
+    declares; a stored one is inert, and reads as Automatic resume On
+    (``nodes.dusk_auto_resume``).
+
+    ABSENT, NOT A DEFAULT, when it is None: ``compile_plan`` writes the key
+    only for a campaign, the same convention as ``resume_across_nights``, so a
+    compile that is not one is byte for byte what it was.
+    """
+    dusk = next((n for n in graph.nodes if n.type == "dusk"), None)
+    if dusk is None or not dusk_auto_resume(dusk.params):
+        return None
+    if not any(n.type == "pool" for n in graph.nodes):
+        return None
+    # `repeat` and `resume` are the block's other two keys, unchanged: it comes
+    # back each night, and it picks up from the capture cursor (the frame
+    # ledger) rather than starting the night again.
+    return {"repeat": "nightly", "until": CAMPAIGN_UNTIL, "resume": "cursor"}
+
+
 def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     """The compiled plan: schedule + targets + automation + instructions.
 
@@ -1382,38 +1431,25 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             "flats_require_panel": True,
         }
 
+    # THE CAMPAIGN BLOCK IS ``campaign_block``'S, from Automatic resume and the
+    # flow's own shape, never from `repeat` (WP-118): see its docstring.
+    plan_campaign = campaign_block(graph)
     if dusk is not None:
-        repeat = str(dusk.params.get("repeat") or "Single night")
-        if repeat != "Single night":
-            # A CAMPAIGN, and the three keys say the three things that make one:
-            # it comes back (`repeat`), it knows when to stop (`until`), and it
-            # picks up where it left off rather than starting the night again
-            # (`resume`). `until` is derived from the operator's own phrasing so
-            # a future option cannot silently compile to "run for ever".
-            plan_campaign = {
-                "repeat": "nightly",
-                "until": ("pool_complete" if "pool" in repeat.lower()
-                          else "nights_30"),
-                "resume": "cursor",
-            }
-        else:
-            plan_campaign = None
         # WHETHER THE FLOW RESUMES ON LATER NIGHTS (#195, owner ruling 7 on
         # #189) IS `autoResume`'S, AND NOTHING ELSE'S. Only an explicit "Off"
         # makes it False (`SequencePlan.resume_across_nights`, read by
         # `_finalize_report` at the stop boundary and by `ResumeArm.tick`
         # the next night); a missing key, a value this build does not offer
-        # and every `repeat` all read ON.
+        # and every stored `repeat` all read ON.
         #
         # 0.3.40 decided this from `repeat` (`repeat != "Single night"`), and
-        # `repeat`'s own default IS "Single night", so every DUSK WINDOW flow
+        # `repeat`'s own default WAS "Single night", so every DUSK WINDOW flow
         # nobody had touched compiled to "do not resume": the opposite of the
         # ruling, which says the option defaults ON and that a saved "Single
-        # night" must NOT be read as Off. `repeat` still keys the `campaign`
-        # block above, and no longer reads into this.
+        # night" must NOT be read as Off. `repeat` keyed the `campaign` block
+        # until WP-118 and keys nothing now.
         resume_across_nights = dusk_auto_resume(dusk.params)
     else:
-        plan_campaign = None
         # A flow with no DUSK WINDOW carries no opinion on resuming at all, so
         # it keeps doing what it has always done: whatever ends the run
         # leaves it dormant and armed, exactly as before this field existed.

@@ -20,7 +20,8 @@ export { CalibrationLibraryEditor } from "./CalibrationLibraryEditor";
 export { CalibrationTolerancesEditor } from "./CalibrationTolerancesEditor";
 export { SkyPackEditor } from "./SkyPackEditor";
 export {
-  binTooNarrow, binWarning, buildReportLine, groupHeading, libraryLoadError,
+  atTolDefaults, binTooNarrow, binWarning, buildReportLine, groupHeading, libraryLoadError,
+  resetTolerances,
   libraryLockSentence, surveyLockSentence, toleranceLockSentence, toleranceSummary,
   BUILD_LABEL, LIB_EMPTY_TITLE, LIB_TITLE, PACK_ATTRIBUTION, PACK_DELETE_TITLE,
   PACK_FETCHING_REASON, PACK_RETRY_HINT, TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON,

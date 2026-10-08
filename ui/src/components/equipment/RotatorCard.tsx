@@ -11,8 +11,9 @@ import { useEffect, useState, type JSX } from "react";
 import type { RotatorConfig } from "../../types";
 import { api, ApiError } from "../../api";
 import { setRotatorConfig } from "../../api/backends";
-import { useConfig, useStatus, useStore } from "../../store";
+import { useConfig, useSequence, useStatus, useStore } from "../../store";
 import { accessPhrase, useCanConfigBackend, useCanControlCapture } from "../../lib/caps";
+import { runIsLive } from "../../lib/lastSessionFrame";
 import { adjustedPa, mod360 } from "../../lib/rotation";
 import { allowedSweepDeg, arcPath, polarXY } from "../../lib/rotatorDial";
 import { Panel, InfoDot } from "../ui";
@@ -57,6 +58,35 @@ const PREFLIGHT_DONE_NOTE =
   "this connection has already measured the rotator tonight; it measures again "
   + "on the next observing night or after the rig reconnects.";
 
+// WHAT THE RIG ANSWERS A PRESS WITH WHILE A RUN IS LIVE (#751, #698): 409
+// `sequence_running`, its sentence built by `_refuse_while_sequence_runs` in
+// `api/app.py` as `a sequence is running; <refused> refused, because <why>. Stop
+// the run first`. Go and the nudges, Rotate to PA, Sync to sky and Test rotator
+// are disabled while a run is live and carry their route's sentence as their
+// title, word for word (the panel in `next/hubs/rig/rotator/RotatorPanel.tsx` has
+// its own copy for the same reason this file keeps its own PREFLIGHT_NOTE;
+// `w16RotatorCardSequenceLock.test.tsx` reads all four out of `app.py`). Halt and
+// Reverse are not among them: the rig answers both.
+const sequenceSentence = (refused: string, why: string): string =>
+  `a sequence is running; ${refused} refused, because ${why}. Stop the run first`;
+
+const SEQUENCE_MOVE = sequenceSentence(
+  "rotator move", "it would turn the camera under the run's frames");
+const SEQUENCE_ROTATE = sequenceSentence(
+  "rotate to PA", "it would turn the camera under the run's frames");
+const SEQUENCE_SYNC = sequenceSentence(
+  "sync to sky", "it would re-calibrate the rotator's sky angle under the run");
+const SEQUENCE_PREFLIGHT = sequenceSentence(
+  "rotator preflight",
+  "it turns the rotator about 22 degrees and takes four plate solves, which "
+  + "would ruin the run's frames");
+
+// A disabled button's title is not shown on touch, so the lock is also said
+// once in the card, naming what is dim and what is not.
+const SEQUENCE_LOCK_NOTE =
+  "A sequence is running, so Go, the nudges, Rotate to PA, Sync to sky and "
+  + "Test rotator are locked until it stops. Halt stays live.";
+
 // What the rig knows about this rotator, in one line. null/undefined (an older
 // server) read as "not measured", which is not "failed".
 function preflightLine(
@@ -91,6 +121,10 @@ export default function RotatorCard(): JSX.Element | null {
   // control.capture server-side (server/astrodeck/api/app.py:2716-2775), NOT
   // config.backend — a distinct gate from the ROM config controls below.
   const canMove = useCanControlCapture();
+  // `runIsLive`: running, paused, holding for cloud and winding down from an
+  // abort are all `engine.running` on the rig, so all of them are refused. A
+  // principal who cannot move the rotator is told that, not about the run.
+  const runLive = runIsLive(useSequence()) && canMove;
   const rot = status?.rotator;
 
   const seed: RotatorConfig = { ...DEFAULT_ROTATOR_CFG, ...(config?.rotator ?? {}) };
@@ -212,11 +246,14 @@ export default function RotatorCard(): JSX.Element | null {
                    value={angle} placeholder="PA °"
                    onChange={(e) => setAngle(e.target.value)}
                    aria-label="Target position angle, degrees" />
-            <button className="btn min-h-9" disabled={busy || !angleOk || !canMove}
+            <button className="btn min-h-9" disabled={busy || !angleOk || !canMove || runLive}
+                    title={runLive ? SEQUENCE_MOVE : undefined}
                     onClick={() => hint && void move(hint.target)}>Go</button>
-            <button className="btn min-h-9" disabled={busy || !canMove}
+            <button className="btn min-h-9" disabled={busy || !canMove || runLive}
+                    title={runLive ? SEQUENCE_MOVE : undefined}
                     onClick={() => void move(rot.sky_deg - 1)}>−1°</button>
-            <button className="btn min-h-9" disabled={busy || !canMove}
+            <button className="btn min-h-9" disabled={busy || !canMove || runLive}
+                    title={runLive ? SEQUENCE_MOVE : undefined}
                     onClick={() => void move(rot.sky_deg + 1)}>+1°</button>
             {/* Halt is urgent -> stays 1-tap even while `busy` (CaptureView Stop /
                 SlewPad Stop precedent) but is still capability-gated for viewers. */}
@@ -232,7 +269,8 @@ export default function RotatorCard(): JSX.Element | null {
             </p>
           )}
           <div className="flex items-center gap-2 flex-wrap">
-            <button className="btn btn-accent min-h-9" disabled={busy || !canMove}
+            <button className="btn btn-accent min-h-9" disabled={busy || !canMove || runLive}
+                    title={runLive ? SEQUENCE_ROTATE : undefined}
                     onClick={() => void run(() => api.post("/api/rotator/rotate-to-pa",
                       { target_pa_deg: angleOk ? mod360(parsedAngle) : rot.sky_deg }))}>
               Rotate to PA (plate solve)
@@ -246,8 +284,9 @@ export default function RotatorCard(): JSX.Element | null {
                 same solve, and the difference between them is whether the
                 camera turns. */}
             <button className="btn min-h-9" data-rotator-sync
-                    disabled={busy || !canMove}
-                    title="Plate-solve and tell the rotator its sky angle. Does not turn the camera."
+                    disabled={busy || !canMove || runLive}
+                    title={runLive ? SEQUENCE_SYNC
+                      : "Plate-solve and tell the rotator its sky angle. Does not turn the camera."}
                     onClick={() => void run(() => api.post("/api/rotator/sync-to-sky", {}))}>
               Sync to sky (no movement)
             </button>
@@ -259,8 +298,9 @@ export default function RotatorCard(): JSX.Element | null {
                 would change nothing. A FAILED test leaves it live (#697), so
                 the owner can test again after re-seating the coupling. */}
             <button className="btn min-h-9" data-rotator-preflight
-                    disabled={busy || !canMove || preflightPassed}
-                    title={preflightPassed ? PREFLIGHT_DONE_NOTE : PREFLIGHT_NOTE}
+                    disabled={busy || !canMove || runLive || preflightPassed}
+                    title={runLive ? SEQUENCE_PREFLIGHT
+                      : preflightPassed ? PREFLIGHT_DONE_NOTE : PREFLIGHT_NOTE}
                     onClick={() => void run(() => api.post("/api/rotator/preflight", {}))}>
               Test rotator
             </button>
@@ -273,6 +313,13 @@ export default function RotatorCard(): JSX.Element | null {
               </label>
             )}
           </div>
+          {runLive && (
+            <p className="text-[11px] text-dim inline-flex items-center gap-1.5"
+               data-rotator-sequence-lock>
+              <Icon name="lock" size={11} />
+              {SEQUENCE_LOCK_NOTE}
+            </p>
+          )}
           <p className={`text-[11px] leading-snug ${preflight.failed ? "text-bad" : "text-dim"}`}
              data-rotator-preflight-line>
             {preflight.text}

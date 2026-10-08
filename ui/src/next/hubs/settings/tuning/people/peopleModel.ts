@@ -127,7 +127,7 @@ export const STEP_UP_FRESH_HINT =
  *  it. Said as two clauses so the person is not told to repeat what will be
  *  repeated, nor promised a retry that Google cannot give. */
 export const STEP_UP_RETRY_HINT =
-  `The rig refused that change because this sign-in is more than ${STEP_UP_WINDOW_MIN} minutes old. Sign in again below. A password sign-in sends the change again for you; Google returns to the home screen, so repeat it there.`;
+  `The rig refused that change because this sign-in is more than ${STEP_UP_WINDOW_MIN} minutes old. Sign in again below. A password sign-in sends the change again for you; Google returns to People, so repeat it there.`;
 export const STEP_UP_OPEN = "SIGN IN AGAIN";
 export const STEP_UP_SUBMIT = "SIGN IN AGAIN";
 export const STEP_UP_BUSY = "SIGNING IN";
@@ -136,7 +136,7 @@ export const STEP_UP_PASSWORD = "Password";
 export const STEP_UP_FAILED = "That sign-in did not work. Check the username and password.";
 export const STEP_UP_RATE_LIMITED = "Too many sign-in attempts. Wait a minute and try again.";
 export const STEP_UP_GOOGLE_NOTE =
-  "Google sends you back to the home screen. Open Settings and People again, then repeat the change.";
+  "Google sends you back to People. Repeat the change there.";
 
 /** The roles a RELAYED admin can hand out or move a non-admin between. Matches
  *  `_RELAY_ROLES` in `server/astrodeck/auth/local_routes.py`. The rig is the

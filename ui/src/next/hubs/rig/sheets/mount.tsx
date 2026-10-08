@@ -67,7 +67,11 @@ import { useBusyOrPending } from "../../../../lib/useBusy";
 import { humanizeLaneConflict } from "../../../../lib/humanize";
 import { accessPhrase, useCanControlMount } from "../../../../lib/caps";
 import { useTouchSettings } from "../../../../lib/touchStore";
-import type { Axis, Dir } from "../../../../lib/slewController";
+import {
+  POSITION_UNKNOWN_NOTE, POSITION_UNKNOWN_STEPS_REASON, TRUST_POSITION_CONFIRM_BODY,
+  TRUST_POSITION_CONFIRM_LABEL, TRUST_POSITION_CONFIRM_TITLE, TRUST_POSITION_LABEL,
+  positionKnown, type Axis, type Dir,
+} from "../../../../lib/slewController";
 import { altTone, fmtAlt, fmtMag } from "../../../../lib/catalogFormat";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import SlewPad from "../../../../components/SlewPad";
@@ -112,7 +116,9 @@ const FOOTER_NOTE =
   "At the GUIDE rate a pad tap moves the mount by the RA STEP or DEC STEP above; "
   + "at any faster rate a tap does nothing and holding a pad key slews until you "
   + "let go. Tracking follows the object unless you pin it here. The pad and the "
-  + "steps are locked while a flow owns the mount.";
+  + "steps are locked while a flow owns the mount, and the steps alone are "
+  + "locked while the mount does not know where it points: holding a pad key "
+  + "is then the way to move it.";
 
 /** The step each tile starts on, in arcminutes.
  *
@@ -230,6 +236,11 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // altitude pins the observer to a circle on the Earth. RA/Dec stay, so
   // `m` itself is still truthy; only the two derived fields go missing.
   const altAzKnown = !!m && typeof m.alt === "number" && typeof m.az === "number";
+  // #144: false after a power-up or reset, until a plate-solve sync or the
+  // operator's word. Only an explicit false counts (an engine older than the
+  // flag sends none). Everything below that is computed from "where the mount
+  // points" - a step, the ALT / AZ tile - reads this first.
+  const positionIsKnown = positionKnown(m);
 
   // plan 0.5: a run holds the mount while it is running or paused.
   const flowOwns = sequence?.state === "running" || sequence?.state === "paused";
@@ -433,6 +444,14 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // never-blocked list names it, and a fence around the escape hatch is the
   // exact bug the inventory records three times.
   const padReason = firstReason(base.lockedReason, flowExtra);
+  // THE STEPS HAVE A LOCK THE HOLD DOES NOT (#144). A step is a goto computed
+  // from where the mount thinks it points, and right now it does not know; a
+  // hold computes no destination, so the pad, SLEW RATE and the hold-to-move
+  // keys stay on `padReason` alone and are how the tube is driven home by eye.
+  // The flow's reason still wins: it is the larger lock.
+  const stepReason = firstReason(
+    padReason, positionIsKnown ? null : POSITION_UNKNOWN_STEPS_REASON,
+  );
 
   // ------------------------------------------------- the rate and step tiles
   //
@@ -470,6 +489,12 @@ export function MountSheet(_props: SheetProps): JSX.Element {
 
   const nudge = async (axis: Axis, dir: Dir): Promise<void> => {
     if (padReason) { explain(padReason); return; }
+    // The dials above are locked for this, but a tap reaches here from the pad
+    // and from a keyboard, neither of which passes through a dial. Said, not
+    // swallowed: a press that does nothing and says nothing is the defect this
+    // library exists to remove. The server's own 409 `position_unknown` below is
+    // the backstop for a status frame that is a moment stale.
+    if (!positionIsKnown) { explain(POSITION_UNKNOWN_STEPS_REASON); return; }
     const step = axis === "ra" ? raStep : decStep;
     const reversed = axis === "ra"
       ? touchRef.current.reverseRa
@@ -553,6 +578,50 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   const gotoReason = firstReason(
     base.lockedReason, laneGoto.lockedReason, flowExtra,
   );
+
+  // TRUST POSITION (#144). The operator's word that the tube is physically at the
+  // mount's home or park position, which the mount's own report then matches.
+  // Locked like every other mount verb - by the access floor, by a motion in
+  // flight (the claim is about a tube at rest), by a request already on the
+  // wire, and by a flow that owns the mount - because it lifts the guard that
+  // stops a step computing from a believed position, and a viewer or a run
+  // must not be able to say it.
+  const trustReason = firstReason(
+    base.lockedReason, laneGoto.lockedReason,
+    sending ? SENDING_REASON : null,
+    flowExtra,
+  );
+  const trustPosition = async (): Promise<void> => {
+    if (trustReason) { explain(trustReason); return; }
+    // ASKED FIRST, in the words of what is being claimed. One tap on a button
+    // beside the pad must not be able to switch off a guard on a word the
+    // operator did not mean; the question says what is attested and what to do
+    // instead when it is not true.
+    const sure = await confirmDialog({
+      title: TRUST_POSITION_CONFIRM_TITLE,
+      body: TRUST_POSITION_CONFIRM_BODY,
+      tone: "warn", mode: "confirm", confirmLabel: TRUST_POSITION_CONFIRM_LABEL,
+    });
+    if (!sure) return;
+    await act("trust", async () => {
+      const res = await api.post<{ position_known?: boolean }>("/api/mount/trust-position");
+      // The answer is the driver's own verdict afterwards. A driver that keeps
+      // its own evidence and declines must not be reported as cleared: the
+      // sheet unlocks on the next status frame, never on this press.
+      if (res?.position_known === false) {
+        showToast("warning",
+          "The mount did not accept that its position is known. Run SOLVE + SYNC instead.",
+          { verbatim: true });
+        return;
+      }
+      enqueueToast({
+        level: "success",
+        title: "Position trusted",
+        detail: "Steps unlock with the next status update. SOLVE + SYNC later "
+          + "replaces this with a measurement.",
+      });
+    });
+  };
 
   const pressSolve = () => {
     if (sending || solving) return;
@@ -687,6 +756,33 @@ export function MountSheet(_props: SheetProps): JSX.Element {
           executing slews - narrates itself on the screen that launched it. */}
       <GotoStrip />
 
+      {/* WHY THE STEPS ARE LOCKED, at the top where it is read first. Information
+          tone, not a warning: a mount powered up parked at home reads the same
+          pole as a reset one, so this is the ORDINARY start of every night until
+          the first plate-solve sync. The button says what it attests on the line
+          under it; the confirmation says it again in full. */}
+      {!positionIsKnown && (
+        <div data-testid="mount-position">
+          <BannerCard tone="info" text={POSITION_UNKNOWN_NOTE} data-testid="mount-position-note" />
+          <div style={{ marginTop: 6 }}>
+            <ActionButton
+              kind="secondary" full
+              lockedReason={trustReason} onExplain={explain}
+              busy={sending === "trust"}
+              onPress={() => void trustPosition()}
+              data-testid="mount-trust-position"
+            >
+              {TRUST_POSITION_LABEL}
+            </ActionButton>
+          </div>
+          <div style={{ marginTop: 4 }}>
+            <Mono size={10.5} tone="dim">
+              {TRUST_POSITION_LABEL} says the tube is physically at its home or park position.
+            </Mono>
+          </div>
+        </div>
+      )}
+
       {/* `nx-readouts-wrap` (next.css) wraps the row inside the 420 px panel
           instead of clipping NOT VERIFIED and the azimuth at the sheet's
           edge. */}
@@ -708,19 +804,26 @@ export function MountSheet(_props: SheetProps): JSX.Element {
           tone={pierSide === "unknown" ? "dim" : undefined}
           data-testid="tile-pier"
         />
+        {/* While the mount does not know where it points, what it reports is
+            its HOME position: an altitude read there is the site latitude, and
+            neither angle says where the tube is. No alt, az, RA or Dec is shown
+            (#144, #140); the tile says whose reading it would have been. */}
         <ReadoutTile
           label="ALT / AZ"
           value={
             !m ? "-"
+              : !positionIsKnown ? "unknown"
               : altAzKnown ? `${m.alt}° / ${m.az}°`
               : "hidden"
           }
           sub={
             !m ? "no pointing reported"
+              : !positionIsKnown ? "the mount's home reading, not the tube"
               : altAzKnown ? `RA ${m.ra_str} · Dec ${m.dec_str}`
               : `needs ${accessPhrase("view.site_derived")}`
           }
-          tone={altAzKnown && m.alt < 20 ? "warn" : undefined}
+          tone={!positionIsKnown && m ? "warn"
+            : altAzKnown && m.alt < 20 ? "warn" : undefined}
           data-testid="tile-altaz"
         />
         <ReadoutTile
@@ -769,7 +872,7 @@ export function MountSheet(_props: SheetProps): JSX.Element {
         options={STEP_OPTIONS}
         value={raStep}
         onChange={setRaStep}
-        lockedReason={padReason}
+        lockedReason={stepReason}
         onExplain={explain}
         data-testid="mount-ra-step"
       />
@@ -779,7 +882,7 @@ export function MountSheet(_props: SheetProps): JSX.Element {
         options={STEP_OPTIONS}
         value={decStep}
         onChange={setDecStep}
-        lockedReason={padReason}
+        lockedReason={stepReason}
         onExplain={explain}
         data-testid="mount-dec-step"
       />

@@ -395,6 +395,19 @@ async def test_the_hop_count_walks_the_ledger_once(clock, monkeypatch):
     ledger again beside the one walk for the map): RED (observed) -
         AssertionError: one hop count (acquiring index None) walked the
         12-frame ledger 10 times; once is enough
+
+    RE-AIMED FOR BACKLOG WP-125 (#516, wave 16 integration): that mutant is
+    now EQUIVALENT on its own, because `_step_complete` without a map reads
+    the engine's one ledger memo (`_ledger_counts`) and the memo walks once.
+    It is killed again only together with the memo bypassed (the two-line
+    mutant "memo bypassed, per-step definition": `_ledger_counts`'s
+    ``if seen is None or seen[0] is not s or seen[1] > n:`` made ``if True:``
+    AND the ``accepted=accepted`` argument of `_remaining_hops`'s
+    `_step_complete` call dropped), RED (observed) -
+        AssertionError: one hop count (acquiring index None) walked the
+        12-frame ledger 10 times; once is enough
+        assert 10 <= 1
+    The memo itself is graded in test_w16_ledger_memo.py.
     """
     walks: list[int] = []
     real = Session.accepted_by_step
@@ -413,7 +426,10 @@ async def test_the_hop_count_walks_the_ledger_once(clock, monkeypatch):
         walks.clear()
         got = e._remaining_hops()
         assert got == want, f"premise: {got} hops with index {cur}, want {want}"
-        assert len(walks) == 1, (
+        # RE-PINNED FOR BACKLOG WP-125 (#516, wave 16 integration): the hop
+        # count reads the engine's one ledger memo, so the first count builds
+        # it (one walk) and the next two find it built (none): at most one.
+        assert len(walks) <= 1, (
             f"one hop count (acquiring index {cur}) walked the "
             f"{walks[0] if walks else 0}-frame ledger {len(walks)} times; "
             f"once is enough")

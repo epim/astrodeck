@@ -9,12 +9,13 @@
 // access and fires no "last admin" 409 as long as another admin exists, so the
 // server will happily do it and say nothing. Delete is the third confirm.
 //
-// OVER THE RELAY (#734, #731). The rig refuses a password reset outright, and
-// it will not hand out the admin or syncer role, so those two controls are locked
-// with the LAN sentence BEFORE anything is typed or pressed (`lanOnlyReason`,
-// null on the LAN): a locked control sends nothing, which matters most for the
-// password the relay would otherwise carry on its way to being refused. Every
-// other control stays armed, because the rig does those behind a recent sign-in.
+// OVER THE RELAY (#734, #731, #761). The rig refuses a password reset outright,
+// it will not hand out the admin or syncer role, and it refuses ANY change to an
+// administrator (role, enabled, delete), so those controls are locked with the
+// LAN sentence BEFORE anything is typed or pressed (`lanOnlyReason`, null on the
+// LAN): a locked control sends nothing, which matters most for the password the
+// relay would otherwise carry on its way to being refused. Every other control
+// stays armed, because the rig does those behind a recent sign-in.
 // When it asks for one (`step_up_required`), the row hands the editor a way to
 // send the SAME change again (`onStepUp`) once the person has signed in.
 //
@@ -56,9 +57,10 @@ export function UserRow({
   lockedReason: string | null;
   onExplain: (reason: string) => void;
   /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
-   *  It locks RESET and the role options the relay may not hand out, and nothing
-   *  else on the row: the rig does the rest over the relay. It outranks
-   *  `lockedReason`, which is the order `gate.ts` ranks the two in. */
+   *  It locks RESET, the role options the relay may not hand out, and the whole
+   *  role / enabled / DELETE set on an ADMINISTRATOR's row, and nothing else: the
+   *  rig does the rest over the relay. It outranks `lockedReason`, which is the
+   *  order `gate.ts` ranks the two in. */
   lanOnlyReason?: string | null;
   /** The rig refused this change for want of a recent sign-in. `retry` sends the
    *  same change again; the editor calls it once the person has signed in. */
@@ -135,6 +137,16 @@ export function UserRow({
   // sentence there, and the group's own lock (no admin.users, a dead link) on
   // the LAN.
   const resetLock = lanOnlyReason ?? lockedReason;
+  // AN ADMINISTRATOR'S ROW over the relay (#761). The rig answers 403
+  // `local_only` to ANY change to an admin target, whatever the field (role,
+  // enabled) and to deleting one (`local_routes._relay_refuses`), so those three
+  // controls carry the LAN sentence before the press, as the classic panel's
+  // `adminLock` has since #685. It outranks the group lock for the reason
+  // `lanOnlyReason` does. Only the admin's own row: a non-admin's role, enable
+  // and delete are done over the relay behind a recent sign-in, and locking them
+  // would take away the one thing the relay is for.
+  const adminLock = lanOnlyReason && user.role === "admin" ? lanOnlyReason : null;
+  const rowLock = adminLock ?? lockedReason;
   // A blocked reset would leave the typed password on screen with nothing to do
   // about it, so the reason names the field rather than the button.
   const resetBlocker = resetLock
@@ -160,7 +172,7 @@ export function UserRow({
             label={`Role for ${user.username}`}
             value={user.role}
             onChange={(r) => { void onRole(r); }}
-            lockedReason={lockedReason}
+            lockedReason={rowLock}
             onExplain={onExplain}
             data-testid="users-row-role"
             options={PRINCIPAL_ROLES.map((r) => ({
@@ -181,7 +193,7 @@ export function UserRow({
             onChange={(v) => { void onToggle(v); }}
             label={`${user.enabled ? "Disable" : "Enable"} ${user.username}`}
             hideLabel
-            lockedReason={lockedReason}
+            lockedReason={rowLock}
             onExplain={onExplain}
             data-testid="users-row-enabled"
           />
@@ -200,7 +212,7 @@ export function UserRow({
             kind="danger"
             glyph={<TrashGlyph />}
             onPress={() => { void onDelete(); }}
-            lockedReason={lockedReason}
+            lockedReason={rowLock}
             onExplain={onExplain}
             ariaLabel={`Delete ${user.username}`}
             data-testid="users-row-delete"

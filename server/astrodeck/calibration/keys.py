@@ -4,10 +4,29 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from typing import Mapping
 
 CAL_FRAME_TYPES = frozenset({"DARK", "BIAS", "FLAT"})
+
+#: The header card a frame's rotator MECHANICAL angle is written to (#176;
+#: ``imaging.fitsio`` writes it from ``FrameMeta.rotator_mech_deg``). Not
+#: ROTATANG: that one is the SKY position angle, which reads differently for
+#: the same physical angle whenever the rotator is re-synced, and a dust
+#: shadow follows the metal.
+ROTATOR_CARD = "ROTMECH"
+
+#: The default width of one rotator-angle bin, in degrees (#176). A flat's id
+#: carries the bin its angle falls in, so flats shot within one bin are one
+#: master and flats in two bins are two. Two degrees puts a bin's half-width
+#: at the matcher's ``ROTATION_TOL_DEG``: wide enough that the repeats of one
+#: panel's angle land in one master, narrow enough that a stack never spans
+#: more than two tolerances of dust shadow. The matcher compares a light with
+#: the master's own angle (the circular mean of its frames), not with the bin.
+#: ``CalibrationConfig.rotator_bin_deg`` is meant to carry this default
+#: (beside ``temp_bin_c``); until it does the library uses this one.
+ROTATOR_BIN_DEG = 2.0
 
 
 # IMAGETYP normalization: NINA/ASCOM write "Dark", "Dark Frame", "DARK",
@@ -50,6 +69,13 @@ class CalKey:
     #: astropy raise; the master now writes it through
     #: ``fitsio.write_name_card``, as a frame does.
     filter: str
+    #: The rotator's MECHANICAL angle the frame was shot at, 0..360, read from
+    #: the ROTMECH card (#176); None when the frame has none. Only a FLAT's key
+    #: carries it: a dark is shot with the shutter closed and a bias has no
+    #: light on it, so the angle is no part of either's identity. It trails and
+    #: defaults, so every seven-field ``CalKey(...)`` built by hand still
+    #: works and equals what a header without the card reads as.
+    rotator_mech_deg: float | None = None
 
 
 def temp_bin(temp_c: float | None, width: float) -> float | None:
@@ -60,6 +86,54 @@ def temp_bin(temp_c: float | None, width: float) -> float | None:
     return round(round(temp_c / width) * width, 3)
 
 
+def mech_angle(raw: object) -> float | None:
+    """A header value as a mechanical angle in [0, 360), or None when it is
+    not one.
+
+    None for a missing card, text that is not a number, a logical, NaN or
+    infinity: zero is a real camera angle, so a junk card must read as
+    UNKNOWN (no constraint on a flat) and never as 0.0, which would match the
+    wrong flats. A turn is folded (370 reads 10, -0.4 reads 359.6) and
+    rounded to a milli-degree, so two readings of one angle are one number."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    # The second fold: 359.9996 rounds to 360.0, and a key must say 0.0.
+    return round(value % 360.0, 3) % 360.0
+
+
+def mech_angle_from_header(header: Mapping) -> float | None:
+    """The frame's rotator MECHANICAL angle: the ROTMECH card, through
+    ``mech_angle``. THE ONE READING in this codebase, shared by the key and
+    by the health matrix's header bridge.
+
+    A frame written before #176 has only ROTATANG, which is a SKY angle:
+    comparing it as if it were mechanical would match a flat to a light on
+    the strength of a number that moves when the rotator is re-synced, so it
+    is never read here, and such a frame is unknown."""
+    return mech_angle(header.get(ROTATOR_CARD, None))
+
+
+def rotator_bin(angle: float | None, width: float) -> int | float | None:
+    """The bin a mechanical angle falls in: ``round(angle / width)`` folded
+    into ``0 .. round(360 / width) - 1``, so a bin wraps with the turn
+    (359.6 and 0.4 are one bin, not 180 and 0). None passes through.
+
+    ``width <= 0`` disables binning, as ``temp_bin`` does, and returns the
+    angle itself to a milli-degree."""
+    if angle is None:
+        return None
+    if width <= 0:
+        return round(angle % 360.0, 3)
+    count = max(1, round(360.0 / width))
+    return round(angle / width) % count
+
+
 def key_from_header(header: Mapping) -> CalKey | None:
     """CalKey from a FITS header, or None when IMAGETYP is absent/not a cal type.
 
@@ -68,7 +142,9 @@ def key_from_header(header: Mapping) -> CalKey | None:
     the filter (shutter closed, mono-agnostic). A flat's slot name is read
     through ``fitsio.full_name`` (#332, #371), so two slots whose names fold
     to one FILTER card are two keys, each carrying its name as typed (see
-    ``CalKey.filter``)."""
+    ``CalKey.filter``). A flat also carries the rotator's mechanical angle
+    (``mech_angle_from_header``, the ROTMECH card; #176); a dark or a bias
+    never does, whatever its header says."""
     ftype = _norm_imagetyp(header.get("IMAGETYP", ""))
     if ftype is None:
         return None
@@ -77,7 +153,9 @@ def key_from_header(header: Mapping) -> CalKey | None:
     temp = None if ccd is None else round(float(ccd), 3)
     if ftype in ("DARK", "BIAS"):
         filt = ""
+        angle = None
     else:
+        angle = mech_angle_from_header(header)
         # Lazy, as ``naming`` is below: this module is the pure key, and the
         # decoder lives with the writer that encodes the card.
         from ..imaging.fitsio import full_name
@@ -90,6 +168,7 @@ def key_from_header(header: Mapping) -> CalKey | None:
         temp_c=temp,
         binning=int(header.get("XBINNING", 1) or 1),
         filter=filt,
+        rotator_mech_deg=angle,
     )
 
 
@@ -133,10 +212,21 @@ def _cut(safe_filter: str) -> str:
 
 
 def key_index_id(key: CalKey, temp_bin_width: float, *,
-                 digest: bool = False) -> str:
+                 digest: bool = False,
+                 rotator_bin_deg: float = ROTATOR_BIN_DEG) -> str:
     """Stable filesystem-safe id for a key's BUCKET (temp binned). e.g.
     'dark_e300.000_g100_o30_t-10_b1' / 'flat_g100_o30_b1_fHa'. Exposure/temp
     omitted where irrelevant (BIAS: no exp; FLAT: no exp/temp).
+
+    A FLAT whose rotator mechanical angle is KNOWN ends in ``_r<bin>``
+    (#176): 'flat_g100_o30_b1_fHa_r5' for a flat at 10 degrees in
+    ``rotator_bin_deg``-wide bins, so flats at different angles are different
+    buckets and never stack into one master. Only when the angle is known: an
+    id without it is byte for byte the id it always had, so no master file in
+    a library built before #176 changes its name. The suffix goes last, after
+    the filter's digest, and ``library._distinct_ids`` still finds a
+    collision of two ids that read alike (a slot literally named 'Ha_r5' with
+    no angle, and 'Ha' at bin 5) and digests both.
 
     ONE ID IS ONE FILE, so two slots must never share one (#372). A flat's
     filter is written through the strict sanitizer below, which is
@@ -218,4 +308,7 @@ def key_index_id(key: CalKey, temp_bin_width: float, *,
         if digest or safe_filter != key.filter:
             part += f"{DIGEST_SEP}{_name_digest(key.filter)}"
         parts += [f"g{key.gain}", f"o{key.offset}", f"b{key.binning}", part]
+        rbin = rotator_bin(key.rotator_mech_deg, rotator_bin_deg)
+        if rbin is not None:
+            parts.append(f"r{rbin:g}")
     return "_".join(parts)

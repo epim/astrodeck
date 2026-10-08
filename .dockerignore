@@ -25,6 +25,11 @@ server/config
 server/captures
 data
 
+# NOT excluded on purpose: packaging/native_probe.py is copied into the image and
+# run against the native wheel at build time (see the Dockerfile). The wheels
+# themselves arrive as the named build context `native` (--build-context), outside
+# this context, so no pattern may exclude a native-wheels directory either.
+
 # Docs, tests and scratch: not needed at runtime.
 docs
 relay

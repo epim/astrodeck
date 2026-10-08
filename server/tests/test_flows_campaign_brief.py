@@ -21,14 +21,27 @@ from __future__ import annotations
 
 import pytest
 
+from astrodeck.flows.compile import compile_plan
 from astrodeck.flows.examples import examples
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
+from astrodeck.flows.to_plan import to_sequence_plan
 from astrodeck.flows.tonight import (_campaign, brief,
                                      frames_by_target_from_reports)
 
 
 def _ex(flow_id: str):
     return next(e for e in examples() if e.id == flow_id).graph
+
+
+def _without_ids(value):
+    """``value`` with every ``id`` key dropped, recursively: ``to_sequence_plan``
+    mints a fresh uuid for each instruction, target and step, so two plans of
+    one graph are never equal until those are set aside."""
+    if isinstance(value, dict):
+        return {k: _without_ids(v) for k, v in value.items() if k != "id"}
+    if isinstance(value, list):
+        return [_without_ids(v) for v in value]
+    return value
 
 
 class _FB:
@@ -83,6 +96,88 @@ class TestTheBriefQuotesTheGraph:
         assert brief(g) == before, (
             "a dial the engine never reads changed the brief: the sentence "
             "quotes a number that decides nothing")
+
+    def test_the_hold_sentence_quotes_no_clear_for_dial(self):
+        """#743, the same class as #707 one clause later in the same sentence.
+        CLOUD WATCH's ``clearFor`` dial ("Clear must hold", 4 minutes) fed the
+        brief's "once the sky holds clear for 4 min it ..." and nothing else:
+        no reader of ``clearFor`` exists in the engine, which releases a hold
+        after ``CLOUD_RESUME_CLEAR_PROBES`` consecutive clear check frames
+        (``_hold_for_clear``). So the operator who read "4 min" and moved the
+        dial to 15 was promised a patience the run does not have, and the
+        brief changed while the night did not.
+
+        The sentence now says what the engine does (consecutive check frames
+        read clear) and prints no minutes, so this pins the same two halves
+        #707's case does: the old number is gone, and changing the dial leaves
+        the brief identical.
+
+        Named mutant "the clearFor dial quoted again" (``flows/tonight.py``'s
+        ``brief``: the cloud sentence's clause put back to ``t += (f"; once
+        the sky holds clear for {cw.params.get('clearFor')} min it")``), run
+        from a byte backup and restored byte-identically (sha256 compared):
+        RED, ``AssertionError: the cloud sentence still quotes the CLOUD WATCH
+        clearFor dial (4 min), which the engine never reads: ... once the sky
+        holds clear for 4 min it re-cools the sensor to setpoint and waits for
+        it to stabilize, ...``.
+
+        Named mutant "the dial carried in other words" (the clause made
+        ``t += (f"; once consecutive check frames read clear for
+        {cw.params.get('clearFor')} of them it")``, so the first pair of
+        assertions passes and only the second half can catch it), same
+        method: RED, ``AssertionError: the clearFor dial changed the brief:
+        the sentence quotes a number the engine never reads``.
+        """
+        g = _ex("example-cycle")
+        cw = next(n for n in g.nodes if n.type == "cloudwatch")
+        assert cw.params["clearFor"] == 4, (
+            "premise: the dial holds the number the old sentence quoted")
+        before = brief(g)
+        assert "4 min" not in before and "holds clear for" not in before, (
+            f"the cloud sentence still quotes the CLOUD WATCH clearFor dial "
+            f"(4 min), which the engine never reads: {before}")
+
+        cw.params["clearFor"] = 17
+        after = brief(g)
+        assert after == before, (
+            "the clearFor dial changed the brief: the sentence quotes a "
+            "number the engine never reads")
+        assert "17" not in after, after
+
+    def test_the_clear_for_dial_reaches_no_plan_field(self):
+        """THE PREMISE of the case above, so the sentence cannot be right only
+        by luck: the compile and the plan are identical whatever ``clearFor``
+        holds (the fresh uuid every entry carries is not a setting). The day
+        the dial is carried to the engine this goes red, and the brief should
+        then say the number again, because it would be one the run acts on."""
+        def plan_of(clear_for):
+            g = _ex("example-cycle")
+            next(n for n in g.nodes
+                 if n.type == "cloudwatch").params["clearFor"] = clear_for
+            compiled = compile_plan(g, "x")
+            plan, unmapped = to_sequence_plan(compiled, g)
+            return compiled, _without_ids(plan.model_dump()), unmapped
+
+        assert plan_of(4) == plan_of(17), (
+            "clearFor now changes the compiled plan or what it reports: the "
+            "engine reads it, so Tonight's brief may quote it again")
+
+    def test_the_hold_sentence_says_what_releases_the_hold(self):
+        """What the sentence says INSTEAD of the minutes is the engine's own
+        rule: it resumes when the check frames read clear in a row
+        (``_hold_for_clear``'s ``clear_streak``). "Consecutive" is only true
+        while the engine needs more than one, which is the premise asserted
+        first: at 1 the word would claim a streak nothing requires.
+
+        Named mutant "the release said without its streak" (the clause made
+        ``t += "; once the sky reads clear it"``), run from a byte backup:
+        RED, ``AssertionError: ... once the sky reads clear it re-cools ...``.
+        """
+        from astrodeck.sequence.engine import CLOUD_RESUME_CLEAR_PROBES
+        assert CLOUD_RESUME_CLEAR_PROBES >= 2, (
+            "premise: the engine needs a streak, so 'consecutive' is true")
+        b = brief(_ex("example-cycle"))
+        assert "; once consecutive check frames read clear it re-cools" in b, b
 
     def test_the_cycle_table_is_spelled_out_slot_by_slot(self):
         b = brief(_ex("example-cycle"))
@@ -465,8 +560,26 @@ class TestWhatTheCampaignTabWillSay:
         Repeat (DUSK WINDOW's Automatic resume replaced it, default On), so
         the note says which of the two this flow is, and it must not mention
         Repeat at all. The Off variant, which names CONTINUE, is graded in
-        test_w14_autoresume_tonight.py."""
+        test_w14_autoresume_tonight.py.
+
+        RE-PINNED AGAIN FOR BACKLOG WP-118 (#195, wave 16 integration): the
+        campaign now keys on Automatic resume and the flow's shape
+        (``compile.campaign_block``), not on DUSK WINDOW's retired ``repeat``,
+        so ``example-pool`` (a pool, Automatic resume at its default On) IS a
+        campaign, and with no ledger its note is the campaign's own "The
+        session log is unavailable ..." sentence. The "Automatic resume is on"
+        sentence is now reached only by a pool with NO DUSK WINDOW, which
+        carries no opinion and resumes as it always has; this case grades
+        both."""
         c = _campaign(_ex("example-pool"), None)
+        assert c["has_pool"] is True and c["is_campaign"] is True
+        assert c["note"].startswith(
+            "The session log is unavailable, so captured totals cannot be "
+            "shown. "), c["note"]
+        assert "Repeat" not in c["note"], c["note"]
+        bare = _ex("example-pool")
+        bare.nodes = [n for n in bare.nodes if n.type != "dusk"]
+        c = _campaign(bare, None)
         assert c["has_pool"] is True and c["is_campaign"] is False
         assert c["note"] == (
             "Automatic resume is on (DUSK WINDOW): a subsequent night "

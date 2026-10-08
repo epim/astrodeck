@@ -37,8 +37,9 @@ from dataclasses import dataclass
 # compile's notes disagree about the same wire.
 from .compile import (
     LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, PASS_TYPES, _grid_dim,
-    _lane_index, _stage_label, compile_plan, is_multi_panel, lane_branched,
-    lane_tail, loop_wires, one_panel_pass_wires, owner_of, panel_lane)
+    _lane_index, _stage_label, angle_code, campaign_block, compile_plan, is_multi_panel,
+    lane_branched, lane_tail, loop_wires, one_panel_pass_wires, owner_of,
+    panel_lane)
 from .identity import typed_coordinates
 from .models import FlowGraph
 from .nodes import NODE_DEFS, parse_cycle_plan, port_kind, target_angle
@@ -144,27 +145,25 @@ def _longest_sub_s(node) -> float:
 
 
 def _is_campaign(graph: FlowGraph):
-    """The DUSK WINDOW whose stored `repeat` makes this a campaign, or None.
+    """The DUSK WINDOW of a campaign, or None.
 
     A campaign is not a longer night, it is a night that comes back: the cursor
     survives dawn and the flow re-arms. Rules 11 and 12 exist because the two
-    things a single night never needs — something to advance the pool, and a
-    shutdown lane — are exactly the two a campaign cannot run without.
+    things a single night never needs - something to advance the pool, and a
+    shutdown lane - are exactly the two a campaign cannot run without.
 
-    STILL KEYED ON `repeat`, WHICH NO EDITOR OFFERS ANY MORE (#195, WP-85).
-    DUSK WINDOW's Automatic resume option replaced the Repeat row and decides
-    only whether the session comes back on later nights
-    (`SequencePlan.resume_across_nights`), not whether the flow is a campaign:
-    a "Single night" flow (the default) resumes by default and is not one. So
-    a campaign is reachable only from a stored flow and the campaign Example,
-    until a later change re-keys campaigns on the option.
+    KEYED ON THE COMPILED CAMPAIGN BLOCK, NOT ON `repeat` (#195, WP-118). It
+    asks ``compile.campaign_block``, the one function ``compile_plan`` writes
+    the plan's ``campaign`` key from, so this answers "campaign" exactly when
+    the plan says so: a POOL in a flow whose DUSK WINDOW has Automatic resume
+    On (``SequencePlan.resume_across_nights`` is the other half of the same
+    option). It read `repeat` until then, which no editor offered any more, so
+    the one flow that was a campaign by that test was a stored file or the
+    campaign Example, and the default pool flow was not.
     """
-    for n in graph.nodes:
-        if n.type == "dusk":
-            repeat = str(n.params.get("repeat") or "Single night")
-            if repeat != "Single night":
-                return n
-    return None
+    if campaign_block(graph.with_defaults()) is None:
+        return None
+    return next((n for n in graph.nodes if n.type == "dusk"), None)
 
 
 # ------------------------------------------------------------ the mosaic rules
@@ -321,6 +320,26 @@ def _pass_seconds(graph: FlowGraph, block) -> float:
         elif stage.type == "capture":
             total += max(0.0, _num(stage.params.get("exposure")))
     return total
+
+
+#: DUSK WINDOW's two clock times resolve independently to the occurrence
+#: nearest now (``schedule._clock_time_near_now``: within 12 hours of it), so
+#: a Stop more than this many minutes after the Start, or none at all, lands
+#: at or before the Start (#719, WP-144).
+CLOCK_WINDOW_MAX_MIN = 720
+
+
+def _clock_minutes(value) -> int | None:
+    """Minutes past midnight of an "HH:MM" clock card, read the way the
+    schedule reads it (``schedule._clock_time_near_now``: two ints around a
+    colon), or None for a blank or unparseable one."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        hh, mm = (int(x) for x in value.split(":", 1))
+    except (ValueError, AttributeError):
+        return None
+    return hh * 60 + mm
 
 
 def _mmss(seconds: float) -> str:
@@ -560,14 +579,30 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     # and never here. M15 is the same fact past the budget (k = 0.5 - c <= 0,
     # A.2) and REPLACES M6 there: the two would say the same thing with the
     # same remedy, once as a warning and once as a danger.
+    #
+    # THEY PRICE A CAMERA THAT SHOOTS EVERY PANEL AT ONE ANGLE (#175). A
+    # block the compile commands each panel's OWN angle (`to_plan.
+    # corrects_convergence`: a rotating block on a rig that is not known to
+    # lack a rotator, with a worst turn the rotator can settle to) is not
+    # charged for convergence, so both stay silent for it and only a block
+    # whose camera cannot correct (fixed, a rig with no rotator, a turn under
+    # the rotator's tolerance, or the switch off) is priced here. They ask
+    # the compile's own function, so the doctor never calls a block corrected
+    # that the compile leaves at one angle.
     from_conv: dict[str, tuple[float, float]] = {}
     if any(specs.values()):
         from ..catalog import framing
+        from . import to_plan
         for b in blocks:
             spec = specs[b.id]
-            if spec is not None:
-                from_conv[b.id] = (framing.convergence_share(spec),
-                                   framing.ROTATION_BUDGET)
+            if spec is None:
+                continue
+            if to_plan.corrects_convergence(
+                    framing.compute_mosaic(spec)["panels"],
+                    rotate=angle_code(b.params) == "rotate", rig=rig):
+                continue
+            from_conv[b.id] = (framing.convergence_share(spec),
+                               framing.ROTATION_BUDGET)
     for b in blocks:
         if b.id not in from_conv:
             continue
@@ -645,6 +680,36 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
                 "never accepts would be retried without end. Stop the night "
                 "at Dawn (DUSK WINDOW), or set Settings > Standards > 'Give up "
                 "on a step after'.", "warn"))
+
+    # DUSK WINDOW's Stop is a Clock time that is not after its Start (#719,
+    # WP-144). Both clock cards resolve to the occurrence nearest now, so a
+    # forward gap from Start to Stop of more than twelve hours, or none, puts
+    # the stop at or before the start and the run ends before it begins:
+    # "22:00" to "21:00" is 23 hours forward. A past-midnight window (22:00 to
+    # 03:30, 5.5 hours) and an exact twelve are fine. A blank or unreadable
+    # card says nothing: M9 and the compile already speak for a blank Stop.
+    # A DESIGN-TIME WARNING, NOT THE ENGINE'S PREDICATE: the two cards snap
+    # independently to the occurrence within 12 h of the moment the window is
+    # frozen, so a forward gap under twelve hours can still resolve backwards
+    # at some hours of the day; this catches the always-wrong windows. A sun
+    # Start with a Clock Stop needs a site and is Tonight's to say.
+    for n in graph.nodes:
+        if (n.type != "dusk" or n.params.get("start") != "Clock time"
+                or n.params.get("stop") != "Clock time"):
+            continue
+        began = _clock_minutes(n.params.get("startClock"))
+        ended = _clock_minutes(n.params.get("stopClock"))
+        if began is None or ended is None:
+            continue
+        gap = (ended - began) % 1440
+        if gap == 0 or gap > CLOCK_WINDOW_MAX_MIN:
+            out.append(Issue(
+                f"▸ {NODE_DEFS['dusk'].label} - Stop "
+                f"{str(n.params.get('stopClock')).strip()} is not after Start "
+                f"{str(n.params.get('startClock')).strip()} within a night: a "
+                f"clock stop resolves to the occurrence nearest now, so this "
+                f"run would end before it begins. Set a Stop later than the "
+                f"Start (past midnight is fine, up to 12 hours).", "warn"))
 
     # M10. A measured hop against the visit it buys (spec 5.3: a visit runs
     # `passes` rounds, and at least `minVisit` minutes of shutter).
@@ -925,9 +990,10 @@ def check(graph: FlowGraph, *, standards=None, mount=None,
     # them was redundant. The ROOF, which is the one part that does depend on
     # something outside the graph, is rule 9's job and still fires.
     #
-    # `_is_campaign` is kept: it is the only place that reads `repeat` and says
-    # what a campaign IS, and the next rule that needs the distinction should
-    # not have to rediscover it.
+    # `_is_campaign` is kept: it is where the doctor asks what a campaign IS
+    # (``compile.campaign_block``, a pool in a flow whose Automatic resume is
+    # On, WP-118), and the next rule that needs the distinction should not
+    # have to rediscover it.
     #
     # `test_flows_doctor_agrees_with_the_engine` asserts both stay gone, and
     # asserts structurally that no REDUNDANT_PORTS entry can be demanded here.

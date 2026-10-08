@@ -58,8 +58,9 @@ import {
 import { useCanConfigBackend } from "../../lib/caps";
 import { profileOverrideSummary } from "../../lib/effective";
 import {
-  forceActivateConfirm, isLaneConflict, isRunningConflict, sentenceFrom,
+  forceActivateConfirm, forceNeedsLan, isLaneConflict, isRunningConflict, sentenceFrom,
 } from "../../next/hubs/rig/profiles/profilesModel";
+import { onRelay } from "../../next/lib/relay";
 
 const MODE_LABEL: Record<ProfileRow["mode"], string> = {
   alpaca: "Native / Alpaca",
@@ -138,11 +139,26 @@ export type ActivateFailureOutcome =
  *  within LADDER_STOP_WAIT_S, so NOTHING was torn down — the rig is untouched,
  *  and the session's auto-resume is already off. Falling through to the lane
  *  guard's "another profile connect is still running" told the operator
- *  something false, since no connect was ever in flight. */
-export function activateFailureOutcome(e: unknown, wasForced: boolean): ActivateFailureOutcome {
+ *  something false, since no connect was ever in flight.
+ *
+ *  OVER THE RELAY THE FORCE IS NOT OFFERED (#762, #685). `force` is the one
+ *  option of the activate the rig refuses 403 `local_only` there, so the dialog
+ *  whose yes would send it is a button that cannot work, found out after the
+ *  press. The outcome is the toast `forceNeedsLan` words (the #/next profiles
+ *  sheet says the same), verbatim for the reason `wasForced`'s toast is: it is
+ *  long enough for the toast's log-line shortener to cut it. `viaRelay` is read
+ *  at call time; a test passes it. */
+export function activateFailureOutcome(
+  e: unknown, wasForced: boolean, viaRelay: boolean = onRelay(),
+): ActivateFailureOutcome {
   if (isRunningConflict(e)) {
     const detail = (e as ApiError).message;
-    if (!wasForced) return { kind: "force", confirm: forceActivateConfirm(detail) };
+    if (!wasForced) {
+      if (viaRelay) {
+        return { kind: "toast", level: "warning", message: forceNeedsLan(detail), verbatim: true };
+      }
+      return { kind: "force", confirm: forceActivateConfirm(detail) };
+    }
     return { kind: "toast", level: "warning", message: sentenceFrom(detail), verbatim: true };
   }
   // The UNCODED 409 is `_spawn_connect`'s own lane guard ("'profile' is

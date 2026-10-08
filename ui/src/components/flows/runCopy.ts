@@ -46,6 +46,8 @@
 import type { FlowProgress } from "../../lib/flowsApi";
 import type { SequenceState } from "../../types";
 import { flowRunLive } from "./flowRunState";
+import type { FlowGraphRec } from "./flowsTypes";
+import { duskAutoResume } from "./nodeDefs";
 
 // ------------------------------------------------------------- the button
 
@@ -70,6 +72,36 @@ export interface RunCopy {
   night: number | null;
   banked: number | null;
   total: number | null;
+  /** What RUN says about a flow whose DUSK WINDOW has Automatic resume Off:
+   *  `RESUME_OFF_LINE`, on RUN and CONTINUE and never on STOP, and "" for a
+   *  flow that resumes (and for a caller that did not say, which is the
+   *  default). It is a line BESIDE the button, never part of `text`: the
+   *  button says what the press does, this says what the NEXT night will not. */
+  notice: string;
+}
+
+/** The sentence RUN says about a flow whose Automatic resume is Off (#195,
+ *  WP-118; spec 2.4, Revision 2 ruling 7): the engine disarms such a session
+ *  where its night ends, so a later night does not start it, and the operator
+ *  who pressed RUN should not find that out at dusk. It says the two things
+ *  Tonight's copy says (`tonight._NO_LATER_RESUME`, "a subsequent night does
+ *  not resume by itself; CONTINUE it by hand") and the Target modal's
+ *  campaign line says in the same words as this one
+ *  (`framingApi.campaignLine`): a later night does not resume the flow, and
+ *  CONTINUE is the way. A same-night crash or restart still resumes, which is
+ *  the engine's separate promise and not this line's to restate. */
+export const RESUME_OFF_LINE =
+  "Automatic resume is off for this flow, so a subsequent night does not resume it by itself: CONTINUE it by hand.";
+
+/** Whether the flow on screen resumes on subsequent nights, read off its
+ *  first DUSK WINDOW as the compile reads it (nodes.py `dusk_auto_resume`, here
+ *  `duskAutoResume`): false only for an explicit "Off" in DUSK WINDOW's
+ *  `autoResume`. TRUE for a flow with no DUSK WINDOW and for no graph at all,
+ *  because a flow that says nothing resumes, and a notice that appeared for the
+ *  absence of an answer would be a claim about a choice nobody made. */
+export function graphResumes(graph: FlowGraphRec | null | undefined): boolean {
+  const dusk = graph?.nodes?.find((n) => n.type === "dusk");
+  return dusk ? duskAutoResume(dusk.params) : true;
 }
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
@@ -101,15 +133,30 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
  *
  *  RUN otherwise: no answer yet, no session (never run, or the newest was
  *  abandoned: the route answers null for both), a complete session, or an
- *  active one that is not live here. `run_flow` starts all of those fresh.
+ *  active one that is not live here. `run_flow` starts all of those fresh,
+ *  except a complete session whose flow was edited to owe more: that press
+ *  is ASKED about first (409 `reopen`, #179, `askContinue` in
+ *  flowRunControls.tsx) and CONTINUEs the finished session on a yes. The
+ *  button still reads RUN there, since the progress route does not say
+ *  which complete session would be asked.
  *
  *  A dormant session whose numbers do not read as numbers still reads
  *  CONTINUE, since that is what the press does, but with no parenthetical:
- *  numbers the server did not send are not put on the button. */
+ *  numbers the server did not send are not put on the button.
+ *
+ *  `resumes` is whether the flow's DUSK WINDOW has Automatic resume on
+ *  (`graphResumes`, default true: a caller that does not say reads a flow that
+ *  resumes, as every flow did before the option). False puts `RESUME_OFF_LINE`
+ *  in `copy.notice` on RUN and CONTINUE. The button's own `text` never changes
+ *  with it. */
 export function runCopy(flowName: string, progress: FlowProgress | null | undefined,
-                        live: boolean): RunCopy {
+                        live: boolean, resumes: boolean = true): RunCopy {
+  // The notice is said for the two verbs that START something, never for
+  // STOP, and only for a flow that said Off (`graphResumes`).
+  const notice = resumes ? "" : RESUME_OFF_LINE;
   const plain = (verb: RunVerb): RunCopy =>
-    ({ verb, name: "", detail: "", text: verb, night: null, banked: null, total: null });
+    ({ verb, name: "", detail: "", text: verb, night: null, banked: null, total: null,
+       notice: verb === "STOP" ? "" : notice });
   if (live) return plain("STOP");
   const session = progress?.session;
   if (!session || session.status !== "dormant") return plain("RUN");
@@ -137,6 +184,7 @@ export function runCopy(flowName: string, progress: FlowProgress | null | undefi
     night,
     banked: readable ? banked : null,
     total: readable ? total : null,
+    notice,
   };
 }
 
@@ -153,8 +201,11 @@ export const START_OVER_TITLE = "Start this flow over?";
 export function startOverBody(copy: RunCopy): string {
   const held = copy.banked !== null && copy.total !== null
     ? ` It holds ${copy.banked} of ${copy.total} subs.` : "";
+  // The new session is the Off flow's too: it will not come back on a
+  // subsequent night either, and this is the last thing said before it starts.
+  const off = copy.notice !== "" ? ` ${copy.notice}` : "";
   return "START OVER begins a new session that counts from 0 and leaves this one on disk,"
-    + ` where CONTINUE will not go back to it.${held}`;
+    + ` where CONTINUE will not go back to it.${held}${off}`;
 }
 
 // ----------------------------------------------------------- the readouts

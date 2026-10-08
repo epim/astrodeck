@@ -37,7 +37,7 @@ import { useCallback, useEffect, useRef, type JSX, type PointerEvent as RPointer
 import { useShallow } from "zustand/react/shallow";
 
 import { clampZoom, type FlowTier, type PortDir } from "../../../../../components/flows/geometry";
-import type { PortKind } from "../../../../../components/flows/flowsTypes";
+import { historyKeyAction, type PortKind } from "../../../../../components/flows/flowsTypes";
 // A LOGIC module, like geometry above: the flow-loop rule both editors and
 // flowsConnect share, in the server's sentence. Re-deriving it here is how two
 // copies of a rule drift apart.
@@ -131,6 +131,8 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
   const moveWire = useStore((s) => s.flowsMoveWire);
   const endWire = useStore((s) => s.flowsEndWire);
   const deleteSel = useStore((s) => s.flowsDeleteSel);
+  const undo = useStore((s) => s.flowsUndo);
+  const redo = useStore((s) => s.flowsRedo);
   const enqueueToast = useStore((s) => s.enqueueToast);
 
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -429,6 +431,18 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
       // Read at press time rather than subscribed to, so the handler is attached
       // once and still cannot be stale.
       const underSheet = parseHash(window.location.hash).sheets.length > 0;
+      // UNDO AND REDO (#688 part 3, WP-117): Ctrl or Cmd+Z, Ctrl or
+      // Cmd+Shift+Z, Ctrl+Y. Past the typing guard above, so in a param field
+      // or the flow's name Ctrl+Z is the browser's own text undo, and not under
+      // a sheet, for Delete's reason: the stage that changes is one the
+      // operator cannot see changing. Consumed, so the browser does not also
+      // act on the key.
+      const step = historyKeyAction(e);
+      if (step && !underSheet) {
+        e.preventDefault();
+        if (step === "undo") undo(); else redo();
+        return;
+      }
       if ((e.key === "Delete" || e.key === "Backspace") && !underSheet) {
         // Also stops Backspace navigating back in browsers that still do that.
         e.preventDefault();
@@ -441,7 +455,7 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [deleteSel, fit]);
+  }, [deleteSel, fit, undo, redo]);
 
   // --------------------------------------------------------------- render
 

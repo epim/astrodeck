@@ -131,12 +131,23 @@ def test_stop_frees_the_planes_as_well_as_flipping_the_switch():
     assert s.rgb_preview() is None
 
 
-def test_a_new_target_resets_the_stack():
+def test_a_new_target_gets_its_own_picture_and_the_old_one_stays():
+    # DELIBERATE PIN CHANGE (#172 part A, WP-121). This used to be
+    # `test_a_new_target_resets_the_stack` and asserted that the previous
+    # target's pixels were gone. They are kept now, by design: a rotating
+    # mosaic visits its panels in turn, and dropping a panel's stack at every
+    # hop meant the live stack never built. What is still pinned is the half
+    # that matters to a one-target reader: the picture SHOWN is the new
+    # target's alone (one frame), and the previous target's frames are not
+    # co-added into it. They are in their own panel.
     s = rgb_session()
     s.add(field(scale=1.0, seed=99), "R", 60.0, target="NGC 6946")
     st = s.status()
     assert st["target"] == "NGC 6946"
-    assert st["frames"] == 1, "the previous target's frames are still in the picture"
+    assert st["frames"] == 1, "the previous target's frames are in the picture"
+    assert s.status(panel="M42")["frames"] == 6, \
+        "the previous target's panel was thrown away instead of kept"
+    assert [p["key"] for p in st["panels"]] == ["M42", "NGC 6946"]
 
 
 def test_a_second_run_on_the_same_target_starts_a_new_picture():
@@ -253,7 +264,8 @@ def test_channels_are_registered_to_each_other_not_only_to_themselves():
         s.add(field(0, 0, scale=1.0, seed=40 + i), "R", 60.0, target="M42")
     for i in range(2):
         s.add(field(24, -16, scale=1.0, seed=50 + i), "G", 60.0, target="M42")
-    planes, h, w = s._aligned_planes()
+    # `_aligned_planes` takes the slot (#172): this session has one panel.
+    planes, h, w = s._aligned_planes(s._resolve(None))
     r_peak = np.unravel_index(int(np.argmax(planes["R"])), (h, w))
     g_peak = np.unravel_index(int(np.argmax(planes["G"])), (h, w))
     assert abs(int(r_peak[0]) - int(g_peak[0])) <= 1
@@ -500,7 +512,8 @@ def test_an_osc_and_a_mono_channel_end_up_the_same_size_in_a_real_stack():
             bayer_pattern="RGGB")
 
     assert mono.status()["downsample"] == osc.status()["downsample"] >= 2
-    assert osc._stacks["R"].mean().shape == mono._stacks["L"].mean().shape
+    assert (osc._resolve(None).stacks["R"].mean().shape
+            == mono._resolve(None).stacks["L"].mean().shape)
 
 
 def test_the_osc_channels_are_registered_as_one_frame_not_three():
