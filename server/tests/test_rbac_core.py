@@ -55,6 +55,13 @@ def test_has_capability_matrix():
     assert not has_capability("operator", "control.power")
     assert not has_capability("operator", "view.media")
     assert not has_capability("operator", "config.backend")
+    # control.reconnect (#759, the owner's ruling on 2026-10-07): an operator may
+    # reconnect the rig by activating a SAVED profile, a viewer and a syncer
+    # may not, and holding it does not carry config.backend with it.
+    assert has_capability("operator", "control.reconnect")
+    assert has_capability("admin", "control.reconnect")
+    assert not has_capability("viewer", "control.reconnect")
+    assert not has_capability("syncer", "control.reconnect")
     # admin: everything
     for cap in ALL_CAPS:
         assert has_capability("admin", cap)

@@ -138,8 +138,17 @@ itself — those belong at the reverse proxy for now.
   they can select or probe host/LAN resources. The one exception in that family
   is `POST /api/profiles/<id>/activate`: reconnecting a profile that is already
   saved takes only a saved id and no destination, so it is allowed over the relay
-  for an account that holds `config.backend`. Its `force` option, which aborts a
-  running sequence and disarms auto-resume, is direct-only (403 `local_only`).
+  for an account that holds `control.reconnect`, which the admin and operator
+  roles hold and the viewer and syncer roles do not. That capability is
+  deliberately narrower than `config.backend`: it covers this one route and
+  nothing else, so an operator can bring a dropped rig back but still cannot
+  save, edit or delete a profile, apply one with its overrides, connect a rig
+  from a caller-chosen specification, or scan the network, all of which keep
+  `config.backend`. The route still answers 409 while a sequence, capture loop,
+  polar alignment or the auto-resume ladder is running. Its `force` option,
+  which aborts a running sequence and disarms auto-resume, stays a
+  `config.backend` decision (admin only, 403 `forbidden` for an operator) and is
+  direct-only for every role (403 `local_only`).
 - People management over the relay is open in a narrowed form, behind a step-up.
   Listing users needs only the admin session. Every change needs a sign-in less
   than 300 seconds old, local or Google, completed through the relay; a session

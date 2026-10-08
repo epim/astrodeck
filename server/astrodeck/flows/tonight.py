@@ -564,24 +564,46 @@ def _target_coords(entry: dict, resolver: Callable[[str], tuple[float, float] | 
 
 # ------------------------------------------------------------------ dusk flats
 
-def _dusk_flats_wired() -> bool:
-    """Whether the engine runs a DUSK FLATS block: ``to_plan.DUSK_FLATS_WIRED``,
-    the one switch (#192, #603).
+def _dusk_flats_runs(plan: Mapping | None, graph: FlowGraph | None):
+    """``(runs, flats, why_not)``: whether the engine will run this flow's
+    DUSK FLATS block, the ``DuskFlatsPlan`` the compile makes of it (None when
+    there is no block, or the stage cannot run it as set), and, when it will
+    not run it, a fragment saying why in the engine's own terms.
 
-    The brief's clause and the STORY row are worded from this, and the
-    compiler's "will not take flats" warning is present exactly when it is
-    False, so the preview cannot promise what the plan's own warning denies.
-    Read AT CALL TIME and imported lazily: ``to_plan`` imports this module, so
-    a top-level import of its constant would bind the value at load (a test
+    READ OFF THE COMPILED PLAN, NOT THE GRAPH (#603 job B). The brief and the
+    story used to be worded from the node, so they promised whatever the node
+    said; the stage runs what ``to_plan.dusk_flats_plan`` makes of the
+    compile's ``automation["dusk_flats"]``, and that SAME function answers
+    here, so a block the plan drops (an unusable count, a method the stage
+    does not run yet) is never promised. ``plan`` is the compiled dict
+    ``resolve_tonight`` already holds; without it the graph is compiled here.
+
+    ``to_plan.DUSK_FLATS_WIRED``, the one switch (#192, #603), is read AT CALL
+    TIME and ``to_plan`` is imported lazily: ``to_plan`` imports this module,
+    so a top-level import of its constant would bind the value at load (a test
     or a flip of the constant would not reach the copy) and could cycle."""
     from . import to_plan
-    return bool(to_plan.DUSK_FLATS_WIRED)
+    if not to_plan.DUSK_FLATS_WIRED:
+        return False, None, _FLATS_NOT_RUN
+    block = ((plan or {}).get("automation") or {}).get("dusk_flats")
+    if block is None and plan is None and graph is not None:
+        block = (compile_plan(graph, "").get("automation") or {}
+                 ).get("dusk_flats")
+    flats, why = to_plan.dusk_flats_plan(block)
+    if flats is None:
+        return False, None, f"the engine cannot run it as set: {why}"
+    if flats.method not in to_plan.DUSK_FLATS_RUNS:
+        label = to_plan.DUSK_FLATS_METHOD_LABEL[flats.method]
+        return False, flats, (f"the engine runs the flat-panel method only, "
+                              f"and this one is {label}")
+    return True, flats, ""
 
 
-#: Said in place of what the block would do while the engine has no dusk-flats
-#: stage. Operator-entered text and fixed words only: the Tonight answer is
-#: served to roles with no site view, so no figure the site decides (the
-#: window's length in minutes is a function of the latitude, #19) may enter it.
+#: Said in place of what the block would do while the engine does not run it
+#: (here: no stage at all; `_dusk_flats_runs` words the other reasons).
+#: Operator-entered text and fixed words only: the Tonight answer is served to
+#: roles with no site view, so no figure the site decides (the window's length
+#: in minutes is a function of the latitude, #19) may enter it.
 _FLATS_NOT_RUN = "the engine has no dusk-flats stage yet"
 
 
@@ -819,8 +841,26 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     flats = None
     if automation.get("dusk_flats"):
         df = automation["dusk_flats"]
-        f0, f1 = _flats_window(str(df.get("window") or ""), lat, lon, dusk)
+        # THE FLAT-PANEL METHOD RUNS WHEN THE RUN STARTS, NOT AT THE SUN WINDOW
+        # (#744, #603 job B). A panel is a constant light source, so the stage
+        # does not wait for the node's Sun band: it runs once, when the run
+        # reaches it, before the first light. The Sun window still comes out
+        # of the node's text, and drawing a FLATS block there for a panel flow
+        # told the operator to plan the evening around an hour the engine does
+        # not use. So for a block the engine RUNS as a panel, the window times
+        # are dropped (start/end None: a client that knows nothing of the new
+        # keys draws nothing wrong) and `runs_at_start` + `at_unix` say where
+        # it happens. The other two methods are carried and not run
+        # (``_dusk_flats_runs``): they keep the window, drawn as such and
+        # worded "drawn but not run" in the story.
+        runs_at_start, _plan, _why = _dusk_flats_runs(plan_dict, graph)
+        if runs_at_start:
+            f0 = f1 = None
+        else:
+            f0, f1 = _flats_window(str(df.get("window") or ""), lat, lon, dusk)
         flats = {"start_unix": f0, "end_unix": f1,
+                 "runs_at_start": runs_at_start,
+                 "at_unix": window_start if runs_at_start else None,
                  "window": df.get("window"), "adu_target": df.get("adu_target"),
                  "count": df.get("count"), "method": df.get("method")}
 
@@ -1967,10 +2007,14 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         # The count and the method are no longer quoted for the same reason:
         # a figure printed beside "does not run" reads as a plan.
         if df is not None:
-            if _dusk_flats_wired():
-                t += (f", and shoots {df.params.get('count')} flats per "
-                      f"filter ({str(df.params.get('method')).lower()}) in "
-                      f"the twilight window")
+            runs, flats_plan, _why = _dusk_flats_runs(plan, g)
+            if runs:
+                # The stage's own count, off the plan, and only the method it
+                # runs: with a flat panel, once, before the first light, and
+                # not in "the twilight window" (a panel does not wait for it).
+                t += (f", and shoots {flats_plan.count} flats per filter "
+                      f"with the flat panel before its first light, if a "
+                      f"flat panel is connected")
             else:
                 t += (", and has a DUSK FLATS block that the engine does not "
                       "run yet, so no flats are taken")
@@ -2068,7 +2112,7 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         # library still needs (`_hold_darks`). The queue's order, its bias
         # leg and its flats leg are not wired (`to_plan._automation`), so the
         # old "(darks → bias → flats-if-panel)" listed two stages that never
-        # run. Not tied to `_dusk_flats_wired`: these are the QUEUE's legs,
+        # run. Not tied to the DUSK FLATS block: these are the QUEUE's legs,
         # a different stage from the DUSK FLATS block.
         t = ("If cloud cover is detected (this trigger fires on the cloud "
              "detector's own verdict), imaging pauses at the frame boundary")
@@ -2295,12 +2339,63 @@ def _read_progress(progress: ProgressSource) -> Mapping[str, Any] | None:
     return got if isinstance(got, Mapping) else None
 
 
+#: Why a starved panel is starved, in the Campaign's words, by the KIND of
+#: its set-aside (#180 part A, backlog WP-131). FIXED PHRASES AND NO FREE
+#: TEXT: the set-aside record's own reason can carry a solver's error, and
+#: this note is served to a viewer, so the sentence is built from the kind
+#: alone.
+#:
+#: "deferred" HAS NO CAUSE TO NAME (#836). It is `GroupRun._count_failure`'s
+#: word for a streak that failed more than one way, and that includes
+#: rotation, angle, pier-side and autofocus deferrals as well as centring and
+#: guide starts, plus the mosaic's last live panel held by the D-03 rule. The
+#: first version said "failed to centre or guide" and advised a change to the
+#: panel's framing, which is wrong for a pier-side or an autofocus streak, so
+#: its entry is None: the sentence names the streak and says nothing about
+#: why or what to change. The two kinds that DO name one cause keep their
+#: sentences.
+_STARVED_WHY: dict[str, str | None] = {
+    "centring": "no star to solve on",
+    "guide_start": "no guide star",
+    "deferred": None,
+}
+
+
+def _starved_of(panel: Mapping[str, Any]) -> dict | None:
+    """``{nights, kind}`` from a progress panel's ``starved`` entry, or None
+    when it has none or the entry is not one the server sends: a ``kind``
+    that is none of ``_STARVED_WHY``'s keys, a ``nights`` that is no
+    whole number of at least one. Read defensively because the progress
+    answer is injected, and a word that is not one of the three must never
+    reach the sentence."""
+    got = panel.get("starved")
+    if not isinstance(got, Mapping):
+        return None
+    kind, nights = got.get("kind"), got.get("nights")
+    if (not isinstance(kind, str) or kind not in _STARVED_WHY
+            or isinstance(nights, bool) or not isinstance(nights, int)
+            or nights < 1):
+        return None
+    return {"nights": nights, "kind": kind}
+
+
+def _starved_rows(rows: list[dict] | None) -> list[dict]:
+    """The Campaign's ``starved`` list: ``{block, name, nights, kind}`` for
+    each shot panel whose row says it is starved, in grid order, empty when
+    none is. A skipped panel is never one."""
+    return [{"block": r["block"], "name": r["name"], **r["starved"]}
+            for r in rows or [] if not r["skipped"] and "starved" in r]
+
+
 def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
     """The CAMPAIGN tab's rows for a flow's mosaics, one per panel, from the
     progress answer (``progress.flow_progress``), or None with no progress.
 
     A row is ``{block, name, row, col, banked, owed, total, done, pct,
-    skipped}``: a shot panel's numbers are the progress answer's own subs,
+    skipped}`` and, for a panel the progress answer says is starved
+    (``Session.set_aside_streak``: set aside whole night after night, #180
+    part A), ``starved: {nights, kind}`` too, present only where it is true.
+    A shot panel's numbers are the progress answer's own subs,
     banked (capped at each step's count), owed and total, counted by the
     session's count mode, so the tab and the card's chip can never disagree;
     ``done`` is a panel that owes nothing. A skipped panel follows its
@@ -2333,6 +2428,9 @@ def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
                 "done": total > 0 and owed == 0,
                 "pct": min(100, round(100 * banked / total)) if total else None,
                 "skipped": False})
+            starved = _starved_of(p)
+            if starved is not None:
+                rows[-1]["starved"] = starved
         for p in block.get("skipped") or []:
             rows.append({
                 "block": node_id, "name": p.get("name"),
@@ -2345,7 +2443,19 @@ def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
 def _panels_clause(rows: list[dict] | None) -> str:
     """The note's sentence about a flow's mosaic panels: how many are done,
     the subs banked of the subs asked, and what the skipped ones hold; or
-    that no progress was read, so no count is claimed."""
+    that no progress was read, so no count is claimed.
+
+    A panel the progress answer says is starved (set aside whole on several
+    nights running, #180 part A) is named after that count, one sentence each
+    and in grid order: how many nights, why in the kind's fixed words
+    (``_STARVED_WHY``), and that it will not finish without a change. Said
+    here because both Campaign surfaces draw the note and neither draws a
+    row.
+
+    A MIXED STREAK (``deferred``) GETS NEITHER THE WHY NOR THE ADVICE (#836):
+    it is one sentence that names the panel and the nights, because the cause
+    may be pier side or autofocus and "change its framing" would point the
+    operator at the wrong thing."""
     if rows is None:
         return ("No progress was read for this flow's mosaic, so no panel's "
                 "count is claimed.")
@@ -2361,7 +2471,20 @@ def _panels_clause(rows: list[dict] | None) -> str:
         t += (f"; {len(skipped)} skipped panel{'' if one else 's'} "
               f"hold{'s' if one else ''} {held} more, which come back when "
               f"re-enabled")
-    return t + "."
+    t += "."
+    for r in shot:
+        if "starved" in r:
+            s = r["starved"]
+            why = _STARVED_WHY[s["kind"]]
+            if why is None:
+                t += (f" Panel {r['name']} has been set aside on "
+                      f"{s['nights']} nights running.")
+            else:
+                t += (f" Panel {r['name']} has been set aside on "
+                      f"{s['nights']} nights running ({why}), so it will "
+                      f"not finish without a change to its framing or this "
+                      f"block's setting.")
+    return t
 
 
 def _campaign(graph: FlowGraph | None,
@@ -2380,6 +2503,13 @@ def _campaign(graph: FlowGraph | None,
     speaks of panels), where it used to be "campaigns need one" and nothing
     else. A flow with no mosaic never reads ``progress`` and answers exactly
     as it did.
+
+    A PANEL SET ASIDE NIGHT AFTER NIGHT IS NAMED (#180 part A, backlog
+    WP-131). The note says so in a sentence per panel (``_panels_clause``) and
+    the answer adds ``starved: [{block, name, nights, kind}]``, present only
+    when a panel is. The progress answer decides which (``progress._starved``);
+    this reads it, and its words are the kind's fixed phrases (none for a
+    mixed streak), never the set-aside record's free text.
 
     A CYCLE IS THE UNIT, and it is complete only when EVERY slot in the table
     has its subs. So a member's banked cycles is the MINIMUM over the slots of
@@ -2420,11 +2550,15 @@ def _campaign(graph: FlowGraph | None,
     if pool is None and mosaics:
         rows = _panel_rows(mosaics, progress)
         clause = _panels_clause(rows)
-        return {"is_campaign": False, "has_pool": False, "has_ledger": False,
-                "quota": 0, "members": [],
-                "note": (f"{clause} {_NOT_FORECAST} {dawn}" if rows is not None
-                         else f"{clause} {dawn}"),
-                "panels": rows or [], "has_progress": rows is not None}
+        out = {"is_campaign": False, "has_pool": False, "has_ledger": False,
+               "quota": 0, "members": [],
+               "note": (f"{clause} {_NOT_FORECAST} {dawn}" if rows is not None
+                        else f"{clause} {dawn}"),
+               "panels": rows or [], "has_progress": rows is not None}
+        starved = _starved_rows(rows)
+        if starved:
+            out["starved"] = starved
+        return out
     if pool is None:
         return {"is_campaign": False, "has_pool": False, "has_ledger": False,
                 "quota": 0, "members": [],
@@ -2513,6 +2647,9 @@ def _campaign(graph: FlowGraph | None,
         rows = _panel_rows(mosaics, progress)
         out.update(note=f"{note} {_panels_clause(rows)}", panels=rows or [],
                    has_progress=rows is not None)
+        starved = _starved_rows(rows)
+        if starved:
+            out["starved"] = starved
     return out
 
 
@@ -2579,32 +2716,30 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     #    latitude, and this answer is served to roles with no site view (#19).
     flats = out["flats"]
     if flats:
-        wired = _dusk_flats_wired()
+        runs, flats_plan, why = _dusk_flats_runs(plan, graph)
         adu = flats.get("adu_target")
         adu_txt = f"{int(_num(adu)):,}".replace(",", " ") if adu else "target"
-        if flats["start_unix"] is not None and flats["end_unix"] is not None:
-            if wired:
-                mins = int(round(
-                    (flats["end_unix"] - flats["start_unix"]) / 60.0))
-                timed.append(row(
-                    flats["start_unix"],
-                    f"Flats window ({flats['window']}, about {mins} min): "
-                    f"{str(flats['method']).lower()} flats, exposure solved "
-                    f"to {adu_txt} ADU per filter", TONE_DIM))
-            else:
-                timed.append(row(
-                    flats["start_unix"],
-                    f"DUSK FLATS ({flats['window']}) is drawn but not run: "
-                    f"{_FLATS_NOT_RUN}", TONE_WARN))
-        elif wired:
+        if runs:
+            # THE FLAT PANEL, which the stage runs (#603 job B): timed where
+            # the run starts, not at the Sun window, because a panel does not
+            # wait for the sky (the stage runs when the run reaches it, before
+            # the first light). Operator numbers and fixed words only: no
+            # figure the site decides (#19).
             timed.append(row(
-                dusk, f"Dusk flats are configured for \"{flats['window']}\" - "
-                f"that window does not name two sun altitudes, so its clock "
-                f"times are not resolved here", TONE_WARN))
+                night["window_start_unix"],
+                f"DUSK FLATS (flat panel): {flats_plan.count} flats per "
+                f"filter, exposure solved to {adu_txt} ADU, taken once before "
+                f"the first light - skipped, with a line in the log, if no "
+                f"flat panel is connected", TONE_DIM))
+        elif flats["start_unix"] is not None and flats["end_unix"] is not None:
+            timed.append(row(
+                flats["start_unix"],
+                f"DUSK FLATS ({flats['window']}) is drawn but not run: "
+                f"{why}", TONE_WARN))
         else:
             timed.append(row(
                 dusk, f"DUSK FLATS ({flats['window']}) is drawn but not "
-                f"run: {_FLATS_NOT_RUN}, and that window does not name two "
+                f"run: {why}, and that window does not name two "
                 f"sun altitudes, so its clock times are not resolved here",
                 TONE_WARN))
 

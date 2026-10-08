@@ -82,10 +82,28 @@ class TestArmingIsAboutTheActiveSession:
             "inside the fresh-run-only path")
 
     def test_the_singleton_still_holds(self):
+        """DELIBERATE PIN CHANGE (#837, wave 17 integration). This asserted
+        ``other.auto_resume = False`` in ``SequenceEngine.start``'s OWN source,
+        back when ``start`` ran its own copy of the singleton loop beside the
+        PATCH route's and the queue promotion's. The loop is written once now
+        (``SequenceEngine._arm_exclusively``) and all three call it, so the pin
+        follows the loop: ``start`` must still call the shared loop, and the
+        shared loop must still disarm every other session. The behaviour itself
+        (a start returns and logs the session it disarmed) is pinned by
+        ``test_w4_disarm_visible.py``, which did not change.
+
+        RED under mutant "start no longer arms exclusively" (``disarmed =
+        self._arm_exclusively(session)`` removed from ``start``), observed:
+
+            AssertionError: start no longer calls the shared singleton loop
+        """
         import inspect
         from astrodeck.sequence.engine import SequenceEngine
         src = inspect.getsource(SequenceEngine.start)
-        assert "other.auto_resume = False" in src, \
+        assert "self._arm_exclusively(session)" in src, \
+            "start no longer calls the shared singleton loop — two armed sessions would race"
+        loop = inspect.getsource(SequenceEngine._arm_exclusively)
+        assert "other.auto_resume = False" in loop, \
             "arming no longer disarms the others — two armed sessions would race"
 
 

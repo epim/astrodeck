@@ -25,12 +25,13 @@ import { nav } from "../../../router";
 import { ApiError } from "../../../../api";
 import { captureProfile, deleteProfile, listProfiles } from "../../../../api/backends";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
-import { accessPhrase } from "../../../../lib/caps";
+import { accessPhrase, useCan } from "../../../../lib/caps";
 import { profileOverrideSummary } from "../../../../lib/effective";
 import { profileSaveLock } from "../../../../lib/equipment";
 import { profileDeleteConfirm, profileDeleteLock } from "../../../../lib/profileDelete";
 import { useStore } from "../../../../store";
 import type { ProfileRow } from "../../../../types";
+import { RECONNECT_CAP } from "../profiles/profilesModel";
 import { activateProfileRow, type BusyWhat } from "./rigConnect";
 
 /** The library's own "nothing to save" sentence names the Equipment screen's
@@ -64,7 +65,13 @@ export interface ProfilesPopoverProps {
    *  saved, so a relayed caller picks no destination, and it never sends
    *  `force` from this surface (`activateProfileRow`), which is the one
    *  option the rig still refuses over the relay. Its lock is therefore the
-   *  capability and the busy lane only. */
+   *  capability and the busy lane only.
+   *
+   *  AND THAT CAPABILITY IS NOT `canConfig` (#759). Activating a saved profile
+   *  needs `control.reconnect`, which an operator holds, so ACTIVATE is read
+   *  from the store here (`useCan`) and `canConfig` (`config.backend`, admin
+   *  only) is left to gate SAVE and delete. An operator therefore sees ACTIVATE
+   *  armed and SAVE and delete locked, on the LAN and on the relay. */
   lanReason?: string | null;
   busy: BusyWhat;
   setBusy: (w: BusyWhat) => void;
@@ -77,6 +84,9 @@ export interface ProfilesPopoverProps {
 export function ProfilesPopover(p: ProfilesPopoverProps): JSX.Element {
   const [name, setName] = useState("");
   const [pending, setPending] = useState<string | null>(null);
+  // Not `p.canConfig`: an operator may reconnect the rig and may not write a
+  // profile. See `lanReason`'s note.
+  const canReconnect = useCan(RECONNECT_CAP);
 
   const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
     useStore.getState().showToast(level, message, opts);
@@ -84,8 +94,8 @@ export function ProfilesPopover(p: ProfilesPopoverProps): JSX.Element {
   // No `p.lanReason` here: the rig allows an unforced activate over the relay
   // (see the prop's note), so naming the LAN would be a true-sounding refusal of
   // something it will do. SAVE and delete below still lead with it.
-  const activateLock = !p.canConfig
-    ? `Activating a profile needs ${accessPhrase("config.backend")}.`
+  const activateLock = !canReconnect
+    ? `Activating a profile needs ${accessPhrase(RECONNECT_CAP)}.`
     : p.busy != null ? ACTIVATE_BUSY : null;
   const deleteLock = p.lanReason
     ?? profileDeleteLock(p.canConfig) ?? (p.busy != null ? ACTIVATE_BUSY : null);

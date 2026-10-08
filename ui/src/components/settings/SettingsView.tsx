@@ -54,6 +54,7 @@ import FactoryResetPanel from "./FactoryResetPanel";
 import CreditsPanel from "./CreditsPanel";
 import RestrictedAssetsPanel from "./RestrictedAssetsPanel";
 import { settingsPanelFromHash, type SettingsPanel } from "../../lib/settingsNavigation";
+import { RECONNECT_CAP } from "../../next/hubs/rig/profiles/profilesModel";
 
 type Tab =
   | "connect"
@@ -142,6 +143,10 @@ export default function SettingsView(): JSX.Element {
   const status = useStatus();
   const bootFailed = useBootConnectFailed();
   const canConfig = useCanConfigBackend();
+  // #759 / #839: an unforced profile ACTIVATE is `control.reconnect` (operator
+  // and admin), not `config.backend`, so the Profiles panel is shown to a
+  // principal holding EITHER and ProfileList locks each control by its own cap.
+  const canReconnect = useCan(RECONNECT_CAP);
   const canAdminUsers = useCanAdminUsers();
   const canSystemUpdate = useCanSystemUpdate();
   const canAlerts = useCan("config.alerts");
@@ -269,7 +274,9 @@ export default function SettingsView(): JSX.Element {
           <span className="text-dim">
             {isViewer
               ? `Read-only — you can view rig status and sign in, but connecting rigs and editing profiles needs ${accessPhrase("config.backend")}.`
-              : "Your role can't change backends or profiles. Connection status is shown for reference."}
+              : canReconnect
+                ? "Your role can't change backends or profiles, but it can reconnect a saved profile from the Profiles tab. Connection status is shown for reference."
+                : "Your role can't change backends or profiles. Connection status is shown for reference."}
           </span>
         </div>
       )}
@@ -387,11 +394,12 @@ export default function SettingsView(): JSX.Element {
       {activeTab === "profiles" && (
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
           <div className="order-2 lg:order-1 min-w-0">
-            {canConfig ? (
+            {canConfig || canReconnect ? (
               <ProfileList />
             ) : (
               <Panel title="Profiles">
                 <p className="text-xs text-dim">
+                  Activating a profile needs {accessPhrase(RECONNECT_CAP)}.
                   Managing profiles needs {accessPhrase("config.backend")}.
                 </p>
               </Panel>

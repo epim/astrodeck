@@ -148,7 +148,13 @@ async def test_a_pass_whose_only_exposure_was_floor_stopped_does_not_wait(
     # 1-1 is the group's last live panel.
     assert [(r["target_id"], r["kind"], bool(r.get("expired")))
             for r in night.stored.set_aside] == [
-        ("p01", "floor", False), ("p00", "group", False)], night.stored.set_aside
+        ("p01", "floor", False), ("p00", "deferred", False)], night.stored.set_aside
+    # DELIBERATE PIN CHANGE (backlog WP-131, #180 part A, wave 17): this
+    # record was kind "group". The held-pass rule's set-aside of the mosaic's
+    # LAST LIVE PANEL is the panel's own, kind "deferred" (it does not
+    # expire, so nothing else moved): "group" is the word for the whole
+    # mosaic going quiet, and the Campaign names a panel set aside night
+    # after night by its kind.
 
     holds = night.said("holding the mosaic 10 minutes before the next pass")
     assert holds == [

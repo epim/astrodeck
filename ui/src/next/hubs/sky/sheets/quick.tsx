@@ -830,7 +830,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
 
         {/* ---------------------------------------------------- calibration */}
         <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <HeaderRow label="INCLUDED" onHold={() => openBrief("flats")} right="each adds a real stage to the saved flow" />
+          <HeaderRow label="INCLUDED" onHold={() => openBrief("flats")} right="each adds a stage to the saved flow; hold one for what the engine runs" />
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {CALIBRATION.map((c) => (
               <HoldChip

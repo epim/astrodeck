@@ -38,13 +38,15 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, Literal, Sequence
 from uuid import uuid4
 
 from pydantic import ValidationError
 
 from ..catalog.coords import parse_dec, parse_ra
-from ..sequence.models import ActionKind, SequencePlan, TriggerKind
+from ..sequence.models import (ActionKind, DuskFlatsPlan, SequencePlan,
+                               TriggerKind)
 from ..sequence.schedule import sun_window_needs_a_site
 from . import identity, tonight
 from .compile import lane_refusals
@@ -931,20 +933,110 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
     return rules
 
 
-#: WHETHER THE ENGINE RUNS A DUSK FLATS BLOCK - the one switch (#192's copy
-#: sweep, #603 job A). It is False because there is no dusk-flats stage:
-#: ``_run_calibration`` is reached only from a cloud hold's darks and the
-#: wind-down's day darks, so a flow with DUSK FLATS compiles and takes no flats.
+#: WHETHER THE ENGINE HAS A DUSK FLATS STAGE - the one switch (#192's copy
+#: sweep, #603 job A). It is True since #603 job B (WP-134):
+#: ``SequenceEngine._dusk_flats`` runs once a night, before the first light.
+#: It runs ONE of the node's three methods, :data:`DUSK_FLATS_RUNS`; the
+#: other two are carried in the plan and reported as not run yet, so a
+#: sentence about what a given block does reads that set as well as this
+#: constant (``tonight._dusk_flats_runs``).
 #:
 #: TWO THINGS READ IT, and they must never disagree about one fact. This
-#: module's unmapped note below is present exactly when it is False, and every
-#: sentence ``tonight.py`` says about the block (the brief's clause, the STORY
-#: row) is worded from it (``tonight._dusk_flats_wired``). The UI's two static
-#: strings (``nodeDefs.ts`` duskflats ``desc`` and ``quickCopy.ts`` ``flats``)
-#: cannot read a Python constant, so ``test_w15_dusk_flats_claim.py`` reads
-#: them as text and fails the day this moves without them. #603 job B flips
-#: this ONE constant, with the stage that justifies it.
-DUSK_FLATS_WIRED = False
+#: module's "not wired" note below is present exactly when it is False, and
+#: every sentence ``tonight.py`` says about the block (the brief's clause, the
+#: STORY row) is worded from it. The UI's two static strings (``nodeDefs.ts``
+#: duskflats ``desc`` and ``quickCopy.ts`` ``flats``) cannot read a Python
+#: constant, so ``test_w15_dusk_flats_claim.py`` reads them as text.
+DUSK_FLATS_WIRED = True
+
+#: The ``DuskFlatsPlan.method`` values the stage runs. 'cap' and 'sky' need a
+#: bright sky and a Sun-altitude wait (job C, its own issue); a panel is a
+#: constant light source and needs neither.
+DUSK_FLATS_RUNS: frozenset[str] = frozenset({"panel"})
+
+#: The DUSK FLATS node's "Method" options (``nodes.py``, ``nodeDefs.ts``) ->
+#: ``DuskFlatsPlan.method``, matched on the option's own text, lower-cased.
+_DUSK_FLATS_METHODS = {"flat panel": "panel",
+                       "translucent lens cap": "cap",
+                       "twilight sky": "sky"}
+
+#: What an operator reads for each method in a sentence.
+DUSK_FLATS_METHOD_LABEL = {"panel": "flat panel", "cap": "translucent lens cap",
+                           "sky": "twilight sky"}
+
+
+def _flats_band(window_text: str) -> tuple[float | None, float | None]:
+    """The node's "Wait for" text as ``(window_hi_deg, window_lo_deg)``, the
+    two Sun altitudes in degrees, higher first; ``(None, None)`` for "Now" and
+    for text that does not name two altitudes at or below the horizon, which
+    carries no band (``tonight._flats_window`` reads the same text for the
+    preview, with the same expression: ``tonight._ANGLE_RE``).
+
+    The text is a display string (two altitudes joined by an ellipsis, with
+    the typographic minus), so an en or em dash an operator retyped reads as a
+    minus too, as it does there. An explicit plus is a positive altitude."""
+    angles: list[float] = []
+    for sign, mag in tonight._ANGLE_RE.findall(window_text or ""):
+        value = float(mag)
+        angles.append(value if sign in ("", "+") else -value)
+    if len(angles) != 2:
+        return None, None
+    hi, lo = max(angles), min(angles)
+    if hi > 0.0 or lo >= hi:
+        return None, None
+    return hi, lo
+
+
+def dusk_flats_plan(block: Mapping | None, *,
+                    light_filters: Sequence[str] | None = None
+                    ) -> tuple[DuskFlatsPlan | None, str]:
+    """``(plan, why_not)`` for a compiled ``automation["dusk_flats"]`` block
+    (``compile_plan``'s method, window, adu_target, count and filters).
+
+    ONE MAPPING, TWO READERS: ``to_sequence_plan`` builds the plan's field from
+    it, and Tonight's brief and story ask it what the run will do, so the
+    preview cannot promise what the plan drops (the same shape as
+    ``test_the_preview_cannot_promise_what_the_plan_drops``). It never raises:
+    a block the stage cannot run as set is ``(None, <why, in the operator's
+    words>)``, and the caller says "this run will not take flats".
+
+    ``light_filters`` is the plan's distinct LIGHT-step filters, in plan
+    order, which only ``to_sequence_plan`` knows. "Tonight's plan only" (the
+    node's default, and what a blank or unknown value reads as) takes them;
+    "All in wheel" is None, and the engine reads the wheel. A caller that
+    cannot name them (the preview) gets an empty list for the first, which is
+    its place-holder and never reaches an engine.
+
+    ``panel_brightness`` stays None: the solver chooses the exposure, not the
+    lamp, so the engine uses the connected panel's middle level."""
+    if not isinstance(block, Mapping):
+        return None, "the block carries no settings"
+    method_text = str(block.get("method") or "").strip()
+    method = _DUSK_FLATS_METHODS.get(method_text.lower())
+    if method is None:
+        return None, (f"its method ({method_text or 'blank'}) is not one of "
+                      f"Flat panel, Translucent lens cap or Twilight sky")
+    try:
+        adu = int(round(float(block.get("adu_target"))))
+    except (TypeError, ValueError, OverflowError):
+        return None, "its ADU target is not a number"
+    try:
+        count = int(round(float(block.get("count"))))
+    except (TypeError, ValueError, OverflowError):
+        return None, "its count per filter is not a number"
+    hi, lo = _flats_band(str(block.get("window") or ""))
+    wheel = str(block.get("filters") or "").strip().lower() == "all in wheel"
+    filters = None if wheel else [str(f) for f in (light_filters or [])]
+    try:
+        return DuskFlatsPlan(method=method, window_hi_deg=hi, window_lo_deg=lo,
+                             filters=filters, adu_target=adu, count=count), ""
+    except ValidationError as e:
+        field = str(e.errors()[0]["loc"][0])
+        return None, ({"adu_target": f"its ADU target ({adu}) is not from 1 "
+                                     f"to 65535",
+                       "count": f"its count per filter ({count}) is not from "
+                                f"1 to 200"}.get(field)
+                      or f"its {field} is not usable")
 
 
 def _automation(compiled: dict, out: list[dict], *,
@@ -1028,10 +1120,8 @@ def _automation(compiled: dict, out: list[dict], *,
                 "the dome policy compiled correctly but the engine cannot act "
                 "on it yet, so nothing will bind the dome or close it on an "
                 "unsafe reading during this run", "danger"))
-    if "dusk_flats" in auto and not DUSK_FLATS_WIRED:
-        out.append(_note("automation.dusk_flats",
-                         "the dusk-flats stage is not wired into the engine "
-                         "yet - this run will not take flats"))
+    if "dusk_flats" in auto:
+        out.extend(_dusk_flats_notes(auto["dusk_flats"]))
     if "calibration_queue" in auto:
         # PARTIALLY honoured now. The darks half reaches the engine as
         # `cloud_hold_darks` (see plan_extras) - a hold spends its dead time
@@ -1044,6 +1134,43 @@ def _automation(compiled: dict, out: list[dict], *,
             "interrupts, and only up to what the library still needs at those "
             "settings. The queue's order, and its bias and flat legs, are not "
             "wired into the engine yet"))
+
+
+def _dusk_flats_notes(block: Mapping | None) -> list[dict]:
+    """The unmapped row for a DUSK FLATS block, by what the stage will do.
+
+    Three cases, because they are not the same loss. With the switch off
+    (``DUSK_FLATS_WIRED``) the old "not wired" sentence. With a method the
+    stage runs (the flat panel) a ``note``: the block is honoured, so it is no
+    loss and blocks nothing, and the row says what is and is not carried. With
+    any other method, or a block the stage cannot run as set, a ``warn``: this
+    run will not take flats."""
+    if not DUSK_FLATS_WIRED:
+        return [_note("automation.dusk_flats",
+                      "the dusk-flats stage is not wired into the engine yet "
+                      "- this run will not take flats")]
+    plan, why = dusk_flats_plan(block)
+    if plan is None:
+        return [_note("automation.dusk_flats",
+                      f"DUSK FLATS cannot run as set: {why}. This run will "
+                      f"not take flats")]
+    label = DUSK_FLATS_METHOD_LABEL[plan.method]
+    if plan.method not in DUSK_FLATS_RUNS:
+        return [_note("automation.dusk_flats",
+                      f"the dusk-flats stage runs the flat-panel method only; "
+                      f"{label} flats are not run yet, so this run will not "
+                      f"take flats")]
+    return [_note(
+        "automation.dusk_flats",
+        f"DUSK FLATS runs with the flat panel: {plan.count} flats per filter, "
+        f"metered to {plan.adu_target} ADU, once per night and before the "
+        f"first light. It takes them only if a flat panel is connected; "
+        f"without one the run says so once and goes on without flats",
+        "note",
+        carried=["method: flat panel", f"count per filter: {plan.count}",
+                 f"ADU target: {plan.adu_target}", "which filters"],
+        ignored=["the Sun window: a panel is a constant light source, so the "
+                 "stage does not wait for the sky"])]
 
 
 #: Node types whose generic "settings do not reach the run" sentence is WRONG,
@@ -1964,6 +2091,22 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         fields["groups"] = groups
     if left_out:
         fields["skipped_ids"] = left_out
+    # DUSK FLATS (#603 job B). Here and not in `plan_extras` because "Tonight's
+    # plan only" means the filters of the LIGHT steps just built, which only
+    # this function has. A block the stage cannot run as set has already said
+    # so in `_automation`'s row, and leaves the field off.
+    flats_block = (compiled.get("automation") or {}).get("dusk_flats")
+    if flats_block is not None and DUSK_FLATS_WIRED:
+        light_filters: list[str] = []
+        for t in targets:
+            for s in t.get("steps") or []:
+                f = s.get("filter")
+                if (f and str(s.get("frame_type") or "Light") == "Light"
+                        and f not in light_filters):
+                    light_filters.append(f)
+        flats, _why = dusk_flats_plan(flats_block, light_filters=light_filters)
+        if flats is not None:
+            fields["dusk_flats"] = flats
     # THE GUIDE NODE MEANS WHAT IT DRAWS (#239 stage C).
     #
     # `guide` was never set here, so every flow-built night guided - a graph

@@ -559,6 +559,20 @@ class TestTheExamplesCompile:
                 "repeat": "nightly", "until": "pool_complete",
                 "resume": "cursor"}, (
                 "example-pool, a pool with Automatic resume On, is a campaign")
+        # BOUNDED THE SAME WAY, ONCE MORE, FOR BACKLOG WP-134 (#603 job B,
+        # wave 17): a DUSK FLATS block's compiled settings gained `filters`
+        # (the node's "Filters" option, which decides what the stage shoots),
+        # so example-m16, the one Example with a block, carries it. Popped off
+        # and checked against the node here, with the rest of its compile
+        # still the fixture's. RED under mutant "filters not compiled"
+        # (compile.py's `"filters": _text(...)` line removed): KeyError
+        # 'filters' on example-m16.
+        flats = (compiled.get("automation") or {}).get("dusk_flats")
+        if flats is not None:
+            node = next(n for n in ex.graph.with_defaults().nodes
+                        if n.type == "duskflats")
+            assert flats.pop("filters") == str(node.params.get("filters")), (
+                f"{ex_id}'s DUSK FLATS block does not compile its Filters")
         got = json.dumps(compiled, ensure_ascii=False)
         want = json.dumps(LEGACY_EXAMPLES[ex_id], ensure_ascii=False)
         assert got == want, f"{ex_id} changed its compile beyond the S3 keys"
@@ -590,6 +604,26 @@ class TestTheExamplesCompile:
         assert plan["automation"]["dome"]["on_unsafe"] == "close"
         assert plan["automation"]["dusk_flats"]["adu_target"] == 28500
         assert plan["automation"]["calibration_queue"]["quota"] == 20
+
+    def test_a_dusk_flats_block_compiles_which_filters_it_shoots(self):
+        """#603 job B (WP-134): the node's Filters option reaches the compiled
+        block as the operator's own text, because it decides what the stage
+        shoots; the other settings are as they were. RED under "filters not
+        compiled" (the ``"filters"`` entry of compile.py's dusk_flats block
+        removed): KeyError 'filters'."""
+        for choice in ("All in wheel", "Tonight's plan only"):
+            g = FlowGraph(nodes=[
+                _n("f", "duskflats", method="Flat panel", filters=choice,
+                   adu=20000, count=7),
+                _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
+                   dec="+41 16 09"),
+                _n("c", "capture", x=200, exposure=60, count=3)],
+                edges=[_e("f", "done", "t", "arm"),
+                       _e("t", "target", "c", "run")])
+            block = compile_plan(g, "n")["automation"]["dusk_flats"]
+            assert block["filters"] == choice
+            assert (block["method"], block["adu_target"], block["count"]) == (
+                "Flat panel", 20000, 7)
 
     def test_the_eaa_example_runs_now_and_shoots_short_subs(self):
         eaa = next(e for e in examples() if e.id == "example-eaa")

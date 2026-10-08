@@ -376,7 +376,13 @@ async def test_a_panel_struck_out_again_is_set_aside_for_the_night(
         f"made; set aside for tonight"]
     first, second = night.stored.set_aside
     assert (first["kind"], first.get("expired"), second["kind"],
-            second.get("expired")) == (CENTRING, True, "group", None)
+            second.get("expired")) == (CENTRING, True, "deferred", None)
+    # DELIBERATE PIN CHANGE (backlog WP-131, #180 part A, wave 17): the
+    # second record was kind "group". The held-pass rule's set-aside of the
+    # mosaic's LAST LIVE PANEL is the panel's own, kind "deferred" (it does
+    # not expire, so nothing else moved): "group" is the word for the whole
+    # mosaic going quiet, and the Campaign names a panel set aside night
+    # after night by its kind.
     tonight = night_key(T0)
     assert night.stored.set_aside_expiries_on(tonight) == {"p11": 1}
     assert night.stored.set_aside_on(tonight) == [second]

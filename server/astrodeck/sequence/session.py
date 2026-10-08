@@ -77,6 +77,25 @@ def report_night(report_id: str) -> str | None:
     except (ValueError, OverflowError):
         return None
 
+
+#: The set-aside kinds that say a panel was starved of what it needs to be
+#: shot, as opposed to set aside for a reason that is the night's or the
+#: sky's (``"floor"``, ``"rejects"``, ``"group"``, ``"angle"``): it could not
+#: be centred (``group_rules.CENTRING``), could not start guiding
+#: (``group_rules.GUIDE_START``), or failed in more than one of those ways
+#: (``"deferred"``: ``GroupRun._count_failure``'s word for a mixed streak, and
+#: the held-pass rule's for the mosaic's last live panel). Spelt out as words,
+#: so the ledger takes no dependency on the driver's rules;
+#: ``tests/test_w17_starved_panel.py`` pins the spellings to the constants
+#: (#180 part A, backlog WP-131).
+STARVING_KINDS = ("centring", "guide_start", "deferred")
+
+#: How many consecutive nights a panel is set aside for one of
+#: ``STARVING_KINDS`` before the progress answer and the Campaign call it
+#: starved (#180 part A). Defined once, here, beside the count it is
+#: compared with (``Session.set_aside_streak``).
+STARVED_AFTER_NIGHTS = 3
+
 #: Every value ``Session.status`` takes. Named so a caller asking "the newest
 #: session of this flow, whatever became of it" can say so in one word.
 SESSION_STATUSES = ("active", "dormant", "complete", "abandoned")
@@ -240,6 +259,21 @@ class Session(BaseModel):
     # ``extra="forbid"`` here, so a build that predates them loads this file
     # and ignores them (it then retries set-aside panels, today's behaviour),
     # and this build reads a file without them as empty.
+    # THE SESSION THIS ONE WAITS BEHIND (#598, backlog ruling D-04,
+    # owner-approved 2026-09-30): the id of a live or armed session A, set on a
+    # DORMANT session B by ``PATCH {queue_next: true}``. Under the singleton,
+    # "run A now, then armed B" leaves one of the two unprotected whichever way
+    # it is arranged: arming B disarms A's restart resume (#595). A queued B is
+    # deliberately NOT armed (``is_armed`` is unchanged: dormant plus
+    # ``auto_resume``), so ``SessionStore.armed`` still answers A and A keeps
+    # its protection. B is armed by exactly one event, A COMPLETING
+    # (``SequenceEngine._promote_queued``), and never by a safety stop, an
+    # operator stop or a dawn cut-off of A, which leave A owing frames and
+    # armed itself. Cleared when B starts by any path, when B is abandoned,
+    # on promotion, and by ``queue_next: false``. A queue of one: a second
+    # session queued behind the same A replaces the first. Additive with
+    # SESSION_SCHEMA still 1; a build that predates it ignores the key.
+    queued_behind: str | None = None
 
     # ---- nights and arming (derived; nothing here is written) --------------
     def observing_nights(self) -> list[str]:
@@ -412,6 +446,53 @@ class Session(BaseModel):
                     and r.get("step_id") is None and r.get("target_id")):
                 out[r["target_id"]] = out.get(r["target_id"], 0) + 1
         return out
+
+    def set_aside_streak(self, target_id: str) -> tuple[int, str | None]:
+        """On how many CONSECUTIVE observing nights, ending with the newest
+        this session ran, ``target_id`` was starved, and the kind of the
+        newest record: ``(0, None)`` when it was not (#180 part A, backlog
+        WP-131). The read behind "panel 1-3 has been set aside 4 nights
+        running" (``flows.progress._starved``).
+
+        A NIGHT COUNTS when the session holds a whole-panel record for the
+        target on it (``step_id`` None: a step the reject guard set aside
+        leaves the panel's other steps shot) of a kind in ``STARVING_KINDS``,
+        AND the session banked no effective frame of the target that night.
+        The records are keyed by ``events.night_key`` and the frames by their
+        report id, so both are put through ``report_night``, the function
+        ``observing_nights`` keys by, and a run whose id carries no stamp is
+        its own night there and matches no record. The walk stops at the
+        first night that does not count: a panel shot once since is not
+        starved, however often it was set aside before.
+
+        EXPIRED AND CLEARED RECORDS COUNT. Both stay as history of what the
+        night did (a centring set-aside that expired and struck out again, a
+        panel the operator brought back); the night is a night the panel was
+        set aside whichever way it went, and a retry that shot it is a
+        banked frame, which ends the streak on its own account. A record
+        with no ``kind`` (hand-edited, or from before kinds) is not starving:
+        nothing says why it was set aside.
+
+        ONLY THE KIND IS RETURNED, never the record's ``reason``: it is free
+        text that can carry a solver's error, and what is built from this
+        answer is served to a viewer. Tonight counts once its run has
+        started (``nights`` has its report id), so "including tonight" holds.
+        NOTHING HERE IS SITE-DERIVED: nights and kinds, no time."""
+        banked = {report_night(f.night) or f.night for f in self.frames
+                  if f.target_id == target_id and f.effective()}
+        streak, kind = 0, None
+        for night in reversed(self.observing_nights()):
+            records = [r for r in self.set_aside
+                       if r.get("target_id") == target_id
+                       and r.get("step_id") is None
+                       and r.get("night") == night
+                       and r.get("kind") in STARVING_KINDS]
+            if not records or night in banked:
+                break
+            if kind is None:
+                kind = records[-1]["kind"]
+            streak += 1
+        return streak, kind
 
     def lock_angle(self, target_id: str, pa_deg: float, *, solved_at: float,
                    exposed_at: float | None, source: str) -> dict:
@@ -1415,6 +1496,10 @@ class SessionStore:
                 "accepted": s.total_accepted(),
                 "total": s.plan.total_frames(), "auto_resume": s.auto_resume,
                 "owed": s.owed(), "origin": s.origin, "origin_id": s.origin_id,
+                # The session this one waits behind (#598): the Sessions
+                # panel's "next: ..." line reads it, and a viewer cannot tell
+                # a queued session from an unarmed one without it.
+                "queued_behind": s.queued_behind,
             })
         # An id that already has a row is not an orphan: a DELETE of its
         # unreadable file can land between the walk above and the scan here,

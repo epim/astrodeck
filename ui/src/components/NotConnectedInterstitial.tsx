@@ -12,7 +12,8 @@
 import type { JSX } from "react";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
-import { accessPhrase, useCanConfigBackend } from "../lib/caps";
+import { accessPhrase, useCan, useCanConfigBackend } from "../lib/caps";
+import { RECONNECT_CAP } from "../next/hubs/rig/profiles/profilesModel";
 import type { ViewName } from "../types";
 
 // Per-view ghost icon + one-liner. Icons come from the Batch-1 icon module.
@@ -33,6 +34,10 @@ export function NotConnectedInterstitial({ view }: { view: ViewName }): JSX.Elem
   // dangle a "Go to Rig" CTA at them (it would lead to a read-only picker) — they
   // get passive copy explaining the equipment isn't connected (W2.5).
   const canConnect = useCanConfigBackend();
+  // An operator cannot connect a NEW rig but may reconnect a SAVED profile
+  // (`control.reconnect`, #759, #839), which is exactly what this interstitial
+  // is waiting for. They are offered the way there; a viewer is told who to ask.
+  const canReconnect = useCan(RECONNECT_CAP);
   const meta = VIEW_META[view] ?? { icon: "rig" as IconName, line: "Connect your equipment to use this view." };
 
   return (
@@ -74,9 +79,24 @@ export function NotConnectedInterstitial({ view }: { view: ViewName }): JSX.Elem
             New here? Open the setup guide
           </button>
         </div>
+      ) : canReconnect ? (
+        <div className="mt-2 flex flex-col items-center gap-2">
+          <button
+            type="button"
+            className="btn btn-accent min-h-11"
+            onClick={() => setView("connect")}
+          >
+            <Icon name="rig" size={14} className="inline -mt-0.5 mr-1.5" />
+            Go to Rig
+          </button>
+          <p className="text-[11px] text-faint max-w-[40ch]">
+            Activate a saved profile there to reconnect. Detecting hardware and
+            changing profiles needs {accessPhrase("config.backend")}.
+          </p>
+        </div>
       ) : (
         <p className="text-[11px] text-faint max-w-[40ch] mt-1">
-          Ask someone with {accessPhrase("config.backend")} to connect the rig,
+          Ask someone with {accessPhrase(RECONNECT_CAP)} to reconnect the rig,
           then this view comes alive.
         </p>
       )}

@@ -630,12 +630,15 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "adu", label: "ADU target", control: "text" },
       { key: "count", label: "Count per filter", control: "text" },
     ],
-    // LEADS WITH WHAT THE ENGINE DOES TODAY (#192, #603 job A): no stage runs
-    // this block, so the first sentence says so and the intended behaviour
-    // follows in the conditional. The server's `to_plan.DUSK_FLATS_WIRED` is the
-    // one switch; this string cannot read it, so `test_w15_dusk_flats_claim.py`
-    // reads this text and fails the day the switch is flipped without it.
-    desc: "Not run yet: the engine has no dusk-flats stage, so this block takes no flats. When wired it will hold the flow until the twilight window (sun altitude band), then shoot the flat set - translucent lens cap, panel, or twilight sky - solving exposure to the ADU target per filter before darkness is wasted on it.",
+    // LEADS WITH WHAT THE ENGINE DOES TODAY (#192, #603, #744): the engine runs
+    // ONE of the three methods. The Flat panel method shoots its set once per
+    // night, before the first light, and does not wait for the Sun band (a
+    // panel needs no sky); the lens-cap and twilight-sky methods are carried
+    // and not run. The server's `to_plan.DUSK_FLATS_WIRED` / `DUSK_FLATS_RUNS`
+    // are the one switch; this string cannot read them, so
+    // `test_w15_dusk_flats_claim.py` reads this text and fails the day the
+    // switch is flipped without it.
+    desc: "The Flat panel method runs: once per night, before the first light, and only with a connected flat panel (without one it says so once and the night goes on). It does not wait for the Sun window; it shoots the count on each filter with the dust cover shut, solving exposure to the ADU target. The translucent lens cap and twilight sky methods are not run yet: a flow that uses either takes no flats.",
     // `window` is NOT lowercased: it starts with "Sun", a proper noun here.
     sum: (p) => low(p.method) + " · " + txt(p.window) + " · ×" + txt(p.count),
   },

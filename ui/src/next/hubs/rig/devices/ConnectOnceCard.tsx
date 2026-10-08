@@ -29,11 +29,19 @@ import { ActionButton, Card, Label, Mono } from "../../../ui";
 import { nav } from "../../../router";
 import { accessPhrase } from "../../../../lib/caps";
 import type { ProfileRow } from "../../../../types";
+import { RECONNECT_CAP } from "../profiles/profilesModel";
 
 export interface ConnectOnceCardProps {
   /** The active profile, or null when none is active (or its id dangles). */
   profile: ProfileRow | null;
+  /** `config.backend` (admin): what DETECT MY HARDWARE and RUN THE SIMULATOR
+   *  need. NOT what CONNECT <profile> needs - see `canReconnect`. */
   canConfig: boolean;
+  /** `control.reconnect` (operator and admin, #759): what CONNECT <profile>
+   *  needs. An operator may bring a saved profile back and may not scan, run the
+   *  simulator or write a profile, so the two are separate props and the card
+   *  gates each verb on its own. */
+  canReconnect: boolean;
   /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
    *  It locks DETECT MY HARDWARE and RUN THE SIMULATOR, which reach routes on the
    *  rig's LAN fence (`/api/connect` + `/api/drivers` for the simulator,
@@ -44,7 +52,8 @@ export interface ConnectOnceCardProps {
    *  It does NOT lock CONNECT <profile>. Activating a saved profile is the one
    *  `/api/profiles` call the rig lets through the fence (`POST
    *  /api/profiles/<id>/activate` without `force`, #685), so that button follows
-   *  the capability and the busy flag alone, as the popover's ACTIVATE does. */
+   *  its capability (`canReconnect`) and the busy flag alone, as the popover's
+   *  ACTIVATE does. */
   lanReason?: string | null;
   busy: boolean;
   onConnectProfile: (row: ProfileRow) => void;
@@ -54,30 +63,46 @@ export interface ConnectOnceCardProps {
   explain: (reason: string) => void;
 }
 
-const VIEWER_BODY = (
-  <>
-    Ask someone with {accessPhrase("config.backend")} to connect the rig, then
-    this view comes alive.
-  </>
-);
+/** Who to ask. With a profile to bring back the answer is whoever may reconnect
+ *  (operator or admin); with none, nothing short of `config.backend` can scan or
+ *  start the simulator, so it is admin. Derived from the role table, not
+ *  hand-written, so the sentence names the policy the buttons enforce. */
+function askBody(hasProfile: boolean): JSX.Element {
+  return (
+    <>
+      Ask someone with {accessPhrase(hasProfile ? RECONNECT_CAP : "config.backend")} to
+      connect the rig, then this view comes alive.
+    </>
+  );
+}
 
-function body(profileName: string | null): string {
+function body(profileName: string | null, canConfig: boolean): string {
   return profileName
     ? `Power the rig, then connect. The ${profileName} profile remembers every device, `
-      + "so you can connect them again with one tap. No hardware yet? The "
-      + "simulator runs the whole app."
+      + "so you can connect them again with one tap. "
+      + (canConfig
+        ? "No hardware yet? The simulator runs the whole app."
+        // An operator's CONNECT works and the simulator row beneath it does not:
+        // the card must not invite a press it will refuse.
+        : `Detecting hardware and the simulator need ${accessPhrase("config.backend")}.`)
     : "Power the rig, then connect. Saving this rig as a profile afterwards makes "
       + "next time one tap. No hardware yet? The simulator runs the whole app.";
 }
 
 export function ConnectOnceCard(p: ConnectOnceCardProps): JSX.Element {
-  // Capability, then busy: what CONNECT <profile> answers to on any origin.
-  const capLock = p.canConfig
-    ? (p.busy ? "A rig action is already running - wait for it to finish." : null)
+  const busyNote = "A rig action is already running - wait for it to finish.";
+  // Capability, then busy: what CONNECT <profile> answers to on any origin. Its
+  // capability is `control.reconnect`, which an operator holds (#759).
+  const connectLock = p.canReconnect
+    ? (p.busy ? busyNote : null)
+    : `needs ${accessPhrase(RECONNECT_CAP)}`;
+  // What the scan and the simulator answer to: `config.backend`, admin only.
+  const backendLock = p.canConfig
+    ? (p.busy ? busyNote : null)
     : `needs ${accessPhrase("config.backend")}`;
   // LAN first, capability second, busy last - the same order `gate.ts` uses -
   // for the two verbs the rig's relay fence refuses.
-  const lock = p.lanReason ?? capLock;
+  const lock = p.lanReason ?? backendLock;
 
   return (
     <Card tone="accent" padding={14} data-testid="first-night">
@@ -85,7 +110,9 @@ export function ConnectOnceCard(p: ConnectOnceCardProps): JSX.Element {
         <Label size={11}>FIRST NIGHT · CONNECT ONCE</Label>
 
         <div style={{ fontSize: 12, color: "var(--text-2, #9aa6c2)", lineHeight: 1.5 }}>
-          {p.canConfig ? body(p.profile?.name ?? null) : VIEWER_BODY}
+          {p.profile
+            ? (p.canReconnect ? body(p.profile.name, p.canConfig) : askBody(true))
+            : (p.canConfig ? body(null, true) : askBody(false))}
         </div>
 
         {p.profile ? (
@@ -94,7 +121,7 @@ export function ConnectOnceCard(p: ConnectOnceCardProps): JSX.Element {
             size="lg"
             full
             data-testid="first-night-connect"
-            lockedReason={capLock}
+            lockedReason={connectLock}
             onExplain={p.explain}
             onPress={() => p.onConnectProfile(p.profile as ProfileRow)}
           >

@@ -51,6 +51,7 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     configure_provider_from_auth, get_active_provider,
                     get_principal, require, resolve_principal,
                     set_active_provider)
+from ..auth.capabilities import CAP_CONTROL_RECONNECT
 from ..auth.rbac import assert_route_capabilities, declare
 # Site-precision redaction helpers + the WS re-auth cadence live in a neutral,
 # import-light module so BOTH the LAN /ws handler (here) and the relay-tunneled
@@ -2742,6 +2743,26 @@ class SessionPatchBody(BaseModel):
     auto_resume: bool | None = None
     status: str | None = None            # only "abandoned" is accepted
     plan: SequencePlan | None = None     # dormant-only full replacement (spec §4)
+    # #598 (backlog ruling D-04, owner-approved 2026-09-30): True makes this
+    # DORMANT session wait behind the live run, else the armed session, and be
+    # armed by that one COMPLETING; False clears the wait. It never touches an
+    # auto_resume, which is the point: arming the session instead disarms the
+    # run that most needs its restart resume (#595). None leaves it alone.
+    queue_next: bool | None = None
+
+    @field_validator("queue_next")
+    @classmethod
+    def _queue_is_not_arming(cls, v, info):
+        """Queueing and arming are alternatives, so asking for both is
+        refused before the route runs (a 422 changes nothing): arming a
+        session disarms the others (``patch_session`` saves each one before
+        the queue is looked at), which is exactly the cost queueing exists
+        to avoid, and a client sending both has misread which it wants."""
+        if v and info.data.get("auto_resume"):
+            raise ValueError(
+                "queue_next and auto_resume cannot both be set: queue the "
+                "session behind the running one, or arm it, not both")
+        return v
 
 
 class RetrySetAsideBody(BaseModel):
@@ -6210,10 +6231,12 @@ def create_app(*, bind_host: str | None = None,
         # keeps the driver OUT of _busy (same single lane as activate).
         return _spawn_connect(hub.apply_profile(prof))
 
-    @app.post("/api/profiles/{profile_id}/activate", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
-    @declare(CAP_CONFIG_BACKEND)
+    @app.post("/api/profiles/{profile_id}/activate")
+    @declare(CAP_CONTROL_RECONNECT)
     async def activate_profile(profile_id: str, request: Request,
-                               body: ProfileApplyBody | None = None):
+                               body: ProfileApplyBody | None = None,
+                               principal: Principal = Depends(
+                                   require(CAP_CONTROL_RECONNECT))):
         """Set a profile active AND connect its rig (W1.6 / C2). Reuses the
         ``_spawn_connect`` convention so it can't run concurrently with ``apply``
         and streams progress over the WS. The active pointer is set INSIDE
@@ -6233,14 +6256,35 @@ def create_app(*, bind_host: str | None = None,
         anything runs. ``force`` is 403 ``local_only`` there, answered before
         anything else: it aborts a running sequence and disarms auto-resume,
         which is a decision made at the rig, not by a cookie the relay carries.
-        A relayed caller still needs ``config.backend``, so this opens nothing
-        a role did not already hold."""
+        The route floor is ``control.reconnect`` (#759, the owner's ruling on
+        2026-10-07: "This should be permitted for Admin and operator roles"),
+        held by admin and operator, so an operator can bring a dropped rig back
+        on the LAN and through the relay. It is deliberately narrower than
+        ``config.backend``, which also writes profile content and driver
+        endpoints and stays the gate for everything else under ``/api/profiles``
+        and ``/api/connect``. ``force`` is the one decision on this route that
+        stays a ``config.backend`` one (admin only): it is checked below, after
+        the origin, and before the run is touched.
+
+        The route's ``@declare`` carries only the floor, because that is what
+        every caller needs. Naming ``config.backend`` there too would need a
+        ``FIELD_LEVEL_CAP_ROUTES`` row in ``auth/rbac.py``; the force rule is
+        pinned by ``tests/test_w17_reconnect_capability.py`` instead."""
         force = bool(body and body.force)
         if force and _scope_is_remote(request):
             raise HTTPException(403, detail={
                 "detail": "forcing a profile over a running sequence is "
                           "LAN-only: it stops the run and disarms auto-resume",
                 "code": "local_only"})
+        if force and not principal.has(CAP_CONFIG_BACKEND):
+            # Origin first (above), capability second: the same order as every
+            # other gate that has both, so an operator on the relay is told the
+            # truer, harder blocker. Nothing has been touched yet.
+            raise HTTPException(403, detail={
+                "detail": f"forcing a profile over a running sequence needs "
+                          f"{CAP_CONFIG_BACKEND}: it stops the run and "
+                          f"disarms auto-resume",
+                "code": "forbidden"})
         if not _profile_exists(profile_id):
             raise HTTPException(404, "profile not found")
         busy = _teardown_busy_detail()
@@ -7996,41 +8040,103 @@ def create_app(*, bind_host: str | None = None,
                             "auto-resume arms only dormant or active "
                             "sessions")
                     if body.auto_resume:
+                        # ARMING A SESSION ENDS ITS WAIT (#837, D-04). A
+                        # session armed in its own right starts by itself, so
+                        # a queue marker left on it would arm it AGAIN behind
+                        # the run it was waiting for: ``engine.start`` clears
+                        # the marker on every start path for the same reason.
+                        # Cleared here, before the save below, so the file
+                        # never holds armed-and-queued.
+                        s.queued_behind = None
                         # server-enforced singleton (spec §5): arming here
                         # disarms others, read fresh under the same lock this
                         # whole section holds, so a session armed by another
                         # request in the gap cannot survive this one's write.
-                        for other in session_store.load_all():
-                            if other.id != s.id and other.auto_resume:
-                                other.auto_resume = False
-                                # A disarm like any other, so it stops a
-                                # ladder that is recovering ``other`` (#220,
-                                # below); the next tick then recovers the
-                                # session armed here.
-                                resume_arm.stop_recovery(
-                                    "another session was armed in its place "
-                                    "while the recovery ladder was working, "
-                                    "so the ladder stopped before its next "
-                                    "step",
-                                    session_id=other.id)
-                                session_store.save(other)
-                                disarmed.append(
-                                    {"id": other.id,
-                                     "name": other.name or other.plan.name})
+                        #
+                        # NAMED, NOT SILENT (#595, backlog ruling D-04,
+                        # owner-approved 2026-09-30): ``_arm_exclusively`` is
+                        # the one loop ``engine.start`` disarms with, so it
+                        # says what it disarmed in the same warning and hands
+                        # back the same list, which this response carries as
+                        # ``disarmed``. A disarm like any other, it stops a
+                        # ladder that is recovering ``other`` (#220, below)
+                        # first; the next tick then recovers the session
+                        # armed here.
+                        disarmed = engine._arm_exclusively(
+                            s,
+                            on_disarm=lambda other: resume_arm.stop_recovery(
+                                "another session was armed in its place "
+                                "while the recovery ladder was working, "
+                                "so the ladder stopped before its next "
+                                "step",
+                                session_id=other.id))
                     s.auto_resume = body.auto_resume
-                if disarmed:
-                    # NAMED, NOT SILENT (#595, backlog ruling D-04,
-                    # owner-approved 2026-09-30). #595's own text: "the same
-                    # applies to PATCH auto_resume" -- this route runs its
-                    # own copy of the singleton `engine.start` disarms with
-                    # (above), so it owes the same warning and the same
-                    # `disarmed` field in its response, not left for a
-                    # caller to notice only by re-reading /api/sessions.
-                    names = ", ".join(d["name"] or d["id"] for d in disarmed)
-                    bus.log("warning",
-                            f"arming '{s.name or s.plan.name or s.id}' "
-                            f"disarmed auto-resume for: {names}",
-                            "sequence")
+                # THE QUEUE MARKER (#598, backlog ruling D-04, owner-approved
+                # 2026-09-30). A dormant session can WAIT BEHIND the run that
+                # is live, else the one that is armed, and be armed by that
+                # one completing (``SequenceEngine._promote_queued``). Setting
+                # it leaves EVERY auto_resume alone: the old way (arming this
+                # session) disarmed the run that most needed its restart
+                # resume, which is the cost this exists to avoid. Read fresh
+                # under the lock this section holds, like the singleton above.
+                #
+                # Every refusal comes before any write, so a refused request
+                # changes nothing (the field validator has already refused
+                # the one combination, queue_next with auto_resume, whose
+                # arming half writes other sessions before this point).
+                queued: dict | None = None
+                dequeued: list[dict] = []
+                if body.queue_next:
+                    if s.status != "dormant":
+                        raise HTTPException(
+                            409, "only a dormant session can wait behind "
+                                 "another")
+                    live = engine._session if engine.running else None
+                    behind = live if live is not None else session_store.armed()
+                    if behind is None:
+                        raise HTTPException(
+                            409, "nothing is running or armed to wait "
+                                 "behind; arm it instead")
+                    if behind.id == s.id:
+                        raise HTTPException(
+                            409, "a session cannot wait behind itself")
+                    # A QUEUE OF ONE per session: a second session queued
+                    # behind the same one replaces the first, which is said
+                    # (the D-04 visibility rule: a silent replacement is the
+                    # silent disarm over again).
+                    for other in session_store.load_all():
+                        if (other.id != s.id
+                                and other.queued_behind == behind.id):
+                            other.queued_behind = None
+                            session_store.save(other)
+                            dequeued.append(
+                                {"id": other.id,
+                                 "name": other.name or other.plan.name})
+                    s.queued_behind = behind.id
+                    queued = {"id": behind.id,
+                              "name": behind.name or behind.plan.name}
+                    mine = s.name or s.plan.name or s.id
+                    if dequeued:
+                        names = ", ".join(d["name"] or d["id"]
+                                          for d in dequeued)
+                        bus.log("warning",
+                                f"'{mine}' now waits behind "
+                                f"'{queued['name']}' in place of: {names}",
+                                "sequence")
+                    else:
+                        bus.log("info",
+                                f"'{mine}' waits behind '{queued['name']}' "
+                                f"and is armed when it completes",
+                                "sequence")
+                elif body.queue_next is False and s.queued_behind is not None:
+                    s.queued_behind = None
+                    bus.log("info",
+                            f"'{s.name or s.plan.name or s.id}' no longer "
+                            f"waits behind another session", "sequence")
+                if s.status == "abandoned" and s.queued_behind is not None:
+                    # Abandoned is withdrawn from the shelf: it waits for
+                    # nothing, and the marker would outlive the reason for it.
+                    s.queued_behind = None
                 # A DISARM STOPS THE LADDER RECOVERING THIS SESSION (#220).
                 # It used to be read only after the ladder, by ResumeArm's
                 # re-check, so the mount was solved and re-centred, minutes
@@ -8054,6 +8160,15 @@ def create_app(*, bind_host: str | None = None,
                        "remaining": s.remaining()}
                 if merge is not None:
                     out["merge"] = merge
+                if body.queue_next is not None:
+                    # #598: what this session now waits behind ({id, name}),
+                    # or null once it waits for nothing; asked-for requests
+                    # only, so every other answer is unchanged.
+                    out["queued_behind"] = queued
+                if dequeued:
+                    # Present only when a queue of one was REPLACED, as
+                    # ``disarmed`` is: the session that lost its place.
+                    out["dequeued"] = dequeued
                 if disarmed:
                     # #595, D-04: present only when this PATCH actually
                     # disarmed another session, exactly as engine.start's own
