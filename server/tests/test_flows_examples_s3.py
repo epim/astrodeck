@@ -88,13 +88,22 @@ MOSAIC_ID = "example-m31-mosaic"
 #: the pin it replaces (a3d327a3..., ad6365b7..., e91f2e1e..., cd874f8c...
 #: and 2e178320...), byte for byte. Regenerated from the same
 #: ``_plan_digest`` against the fixed code, with no other change.
+#:
+#: DELIBERATE PIN CHANGE, BACKLOG WP-134 (#603 job B, wave 17), FOR ONE
+#: EXAMPLE: ``SequencePlan`` gained ``dusk_flats``, and example-m16 is the one
+#: Example with a DUSK FLATS block (translucent lens cap, carried and not
+#: run), so its dump carries the key and its hash moves (``fcd8d6e0...`` to
+#: ``15b305f4...``). The other six have no block and keep theirs, because the
+#: dump leaves the key out while it is None. PROVEN: with ``dusk_flats``
+#: popped off the dump, example-m16 hashes to ``fcd8d6e0...``, byte for byte.
+#: Regenerated from the same ``_plan_digest``.
 HEAD_PLAN_SHA256 = {
     "example-campaign":
         "712f21bc36fc88d0a52addba55d2f2b80852d087081d9636559863f1cb0cfede",
     "example-m31":
         "110e846886c4a804cc5b377fd3f51cdfef9bc79b58e38571638bba5dcc3bf65f",
     "example-m16":
-        "fcd8d6e0aaec61d8f49a14376932e9bcd01acfbf158c319dd83f027d7d1097d3",
+        "15b305f42ce9ee462a38a20af322870b3438ae8580a8b5d56e2e3f11d0086e0a",
     "example-cycle":
         "a4fbfc3d6c4ff4665378efe7acc6fbc4600d6c7c59b5d9304ff9021c07094e38",
     "example-pool":

@@ -3073,6 +3073,13 @@ class SequenceEngine:
                 elif self._no_setpoint_must_stop_the_run():
                     skip_detail = "skipped: this run has no target temperature"
                 if skip_detail is None:
+                    # DUSK FLATS (#603 job B): the flat set, once a night,
+                    # AFTER the cooling wait (a flat is shot at the setpoint's
+                    # offset and gain, and the sensor is at it) and BEFORE the
+                    # scheduler's first target, so it can never land in the
+                    # dark after a light frame. A no-op for a plan without the
+                    # block, which is every plan saved before it existed.
+                    await self._dusk_flats()
                     await self._run_scheduled(plan)
                 spell_ran_out = True
             except BaseException as exc:
@@ -12411,6 +12418,302 @@ class SequenceEngine:
         if taken:
             bus.log("info", f"day darks: {taken} frame(s) captured before the "
                             f"warm ramp", "sequence")
+
+    # ------------------------------------------------- DUSK FLATS (#603 job B)
+
+    #: The observing night (`night_key`) on which the DUSK FLATS stage last
+    #: settled: shot, or said why it would not. The stage runs once per night
+    #: on this engine, so a resume the same night does not walk the filters
+    #: again. It is a MEMORY, not the guarantee: a restart loses it, and what
+    #: keeps a restart from reshooting is the library (`_dusk_flats_fresh`).
+    _dusk_flats_night: str | None = None
+
+    #: The exposure the panel metering starts from, in seconds. The solver
+    #: chooses the exposure, not this; it converges from a decade either side.
+    _DUSK_FLATS_SEED_S = 1.0
+
+    def _lights_taken_tonight(self) -> bool:
+        """Has a LIGHT frame of this plan been banked on tonight's observing
+        night? Read off the session ledger by step id, so a calibration frame
+        (or another night's light) is not one.
+
+        The DUSK FLATS stage asks it because the flats come BEFORE the first
+        light: a run restarted after lights are down is in astronomical
+        darkness with a sky to image, and a flat set then costs the night what
+        the sky is giving."""
+        plan, session = self.plan, self._session
+        if plan is None or session is None:
+            return False
+        light_ids = {s.id for t in plan.targets if not t.calibration
+                     for s in t.steps
+                     if str(s.frame_type or "Light") == "Light"}
+        night = night_key(time.time())
+        return any(f.step_id in light_ids and f.ts > 0.0
+                   and night_key(f.ts) == night for f in session.frames)
+
+    def _dusk_flats_fresh(self, filt: str | None, gain: int, offset: int,
+                          binning: int, quota: int,
+                          rotation_deg: float | None) -> tuple[bool, int]:
+        """``(fresh, already_banked)`` for one filter's flats: does the
+        library already hold a FULL set, young enough to trust, that the
+        pipeline would apply to lights at this gain and binning?
+
+        THE QUEUE'S if-stale RULE, asked of ``health_matrix`` for the FLAT
+        kind, the call the Calibration Matrix panel renders, so the panel and
+        the engine cannot give the operator two answers about one library.
+        This is what makes a restart idempotent: the per-night latch dies with
+        the process, the flats on disk do not.
+
+        FAILS TO SHOOTING, as ``_hold_darks_shortfall`` does, and for the same
+        reason: a library that cannot be read is no reason to go without
+        flats."""
+        lib = getattr(self.hub, "master_library", None)
+        if lib is None:
+            return False, 0
+        try:
+            from ..calibration.matcher import LightNeed
+            from ..flows.calibration_health import (VERDICT_OK, CalNeed,
+                                                    frame_from_header,
+                                                    health_matrix)
+            need = CalNeed(LightNeed(
+                exposure_s=1.0, gain=int(gain), offset=int(offset),
+                temp_c=None, binning=int(binning), filter=str(filt or "")),
+                rotation_deg=rotation_deg)
+            frames = [f for f in (frame_from_header(h, ts=ts, path=str(p))
+                                  for p, h, ts in lib.iter_cal_headers())
+                      if f is not None]
+            rows = health_matrix([need], frames, masters=lib.list_masters(),
+                                 quota=quota, kinds=("FLAT",))
+            if not rows:
+                return False, 0
+            return rows[0].verdict == VERDICT_OK, rows[0].have
+        except Exception as exc:                  # noqa: BLE001 - reported
+            bus.log("warning", f"DUSK FLATS: could not read the flat library "
+                               f"({exc}) - shooting the full set", "sequence")
+            return False, 0
+
+    async def _dusk_flats_rotation(self) -> float | None:
+        """The rotator's mechanical angle, or None when there is no rotator
+        or it will not say. Best-effort and bounded: it only decides which
+        flats the library already holds, and a rotator that does not answer is
+        no reason to stop the stage."""
+        rot = self.hub.devices.get("rotator")
+        if rot is None or not getattr(rot, "connected", False):
+            return None
+        try:
+            return float(await asyncio.wait_for(
+                rot.get_mechanical_position(),
+                CALIBRATOR_CMD_TIMEOUT_S)) % 360.0
+        except Exception:                          # noqa: BLE001
+            return None
+
+    def _dusk_flat_recipes(self, df) -> tuple[list[tuple], list[str]]:
+        """``(recipes, missing)``: one ``(filter, gain, offset, binning)`` per
+        flat set to shoot, in filter order, and the named filters the wheel
+        does not have.
+
+        A flat is matched on GAIN and BINNING as well as filter
+        (``flat_matches``), so each set is shot at the settings of the lights
+        that will be calibrated by it: the distinct ``(gain, binning)`` of the
+        plan's LIGHT steps on that filter, or of the plan's first light step
+        for a filter no light uses ("All in wheel"). A plan with no light step
+        falls back to the step model's own defaults.
+
+        ``df.filters`` names the filters ('Tonight's plan only', resolved by
+        ``to_sequence_plan``); None is every non-opaque slot of the wheel. With
+        no wheel, or no filter named, the wheel is not moved and one
+        unfiltered set is shot per light setting."""
+        plan = self.plan
+        lights = [s for t in (plan.targets if plan else ())
+                  if not t.calibration for s in t.steps
+                  if str(s.frame_type or "Light") == "Light"]
+        defaults = (ExposureStep.model_fields["gain"].default,
+                    ExposureStep.model_fields["offset"].default,
+                    ExposureStep.model_fields["binning"].default)
+        fallback = ((lights[0].gain, lights[0].offset, lights[0].binning)
+                    if lights else defaults)
+
+        fw = self.hub.devices.get("filterwheel")
+        wheel = fw is not None and getattr(fw, "connected", False)
+        missing: list[str] = []
+        if df.filters is None:
+            names: list[str | None] = (
+                [n for i, n in enumerate(fw.filter_names)
+                 if n and not fw.is_opaque(i)] if wheel else [])
+        elif wheel:
+            known = list(fw.filter_names)
+            wanted = list(dict.fromkeys(df.filters))
+            missing = [n for n in wanted if n not in known]
+            names = [n for n in wanted if n in known]
+        else:
+            names = []
+        # Nothing to name (an empty list, no wheel, no light on a filter):
+        # one unfiltered set, the wheel left where it is.
+        unfiltered = not names and not missing
+        recipes: list[tuple] = []
+        for filt in ([None] if unfiltered else names):
+            sets: dict[tuple, tuple] = {}
+            for s in lights:
+                if filt is None or s.filter == filt:
+                    sets.setdefault((s.gain, s.binning),
+                                    (s.gain, s.offset, s.binning))
+            for gain, offset, binning in (sets.values() or [fallback]):
+                recipes.append((filt, int(gain), int(offset), int(binning)))
+        return recipes, missing
+
+    async def _dusk_flats(self) -> None:
+        """Shoot the flat set a flow's DUSK FLATS block asks for, once per
+        observing night, before the first light (#603 job B).
+
+        ONLY THE FLAT PANEL. 'cap' and 'sky' are carried in the plan and
+        reported here as not run yet (they need a bright sky and a wait for
+        the Sun, which is job C). A panel is a constant light source: the
+        stage does not wait for the node's Sun window, and runs whenever the
+        run reaches it. It never runs once a light frame has been taken
+        tonight (`_lights_taken_tonight`), and a library that already holds a
+        fresh full set for a filter skips that filter (`_dusk_flats_fresh`).
+
+        WITHOUT A FLAT SOURCE it says so once and the night goes on. A failed
+        stage never stops the night, as the day darks do not; but a
+        ``SafetyAbort`` and a cancel propagate, so an unsafe trip mid-flats is
+        the night's end like any other, with the lamp off and the cover shut
+        by ``_run_calibration``'s own ``finally``.
+
+        THE COVER IS LEFT AS IT WAS FOUND. A flip-flat's cover must be shut
+        for its lamp to light the aperture (#194), and ``_panel_off_safe``
+        leaves it shut, so a cover that was OPEN when the stage began is
+        re-opened here once the set is done: otherwise the first light would
+        be taken through a shut cover, a whole night of black frames. Opening
+        a cover that was found shut is #601's (with the roof), not this
+        stage's. On an abort or a cancel nothing re-opens it: shut is the
+        safe state.
+
+        The flats are taken at the rotator's current angle, not at each
+        panel's (flats keyed by rotator angle is #176), and the panel is
+        driven as a dust-cover panel: the node does not say which placement it
+        is, and a dome-mounted or handheld panel cannot be driven from here.
+        """
+        plan = self.plan
+        df = getattr(plan, "dusk_flats", None)
+        if df is None:
+            return
+        night = night_key(time.time())
+        if self._dusk_flats_night == night:
+            return
+        if df.method != "panel":
+            self._dusk_flats_night = night
+            label = {"cap": "translucent lens cap",
+                     "sky": "twilight sky"}.get(df.method, df.method)
+            bus.log("warning", f"DUSK FLATS ({label}) is not run yet: only the "
+                               f"flat-panel method is, so this night goes on "
+                               f"without flats", "sequence")
+            return
+        cc = self.hub.calibrator
+        cam = self.hub.devices.get("camera")
+        if cc is None or not getattr(cc, "connected", False):
+            self._dusk_flats_night = night
+            bus.log("warning", "DUSK FLATS skipped: no flat panel is "
+                               "connected, so the night goes on without flats",
+                    "sequence")
+            return
+        if cam is None or not getattr(cam, "connected", False):
+            self._dusk_flats_night = night
+            bus.log("warning", "DUSK FLATS skipped: no camera is connected, so "
+                               "the night goes on without flats", "sequence")
+            return
+        if self._lights_taken_tonight():
+            self._dusk_flats_night = night
+            bus.log("info", "DUSK FLATS skipped: a light frame has already "
+                            "been taken tonight, and the flats come before "
+                            "the first one", "sequence")
+            return
+
+        cover_was_open = False
+        shot = skipped = 0
+        try:
+            recipes, missing = self._dusk_flat_recipes(df)
+            for name in missing:
+                bus.log("warning", f"DUSK FLATS: filter '{name}' is not in "
+                                   f"the wheel - no flats for it", "sequence")
+            rotation = await self._dusk_flats_rotation()
+            rotating = any(getattr(g, "rotate", False)
+                           for g in (plan.groups if plan else ()))
+            bus.log("info",
+                    f"DUSK FLATS: {df.count} flats on each of {len(recipes)} "
+                    f"set(s) from the flat panel, before the first light. "
+                    f"The panel is driven as a dust-cover panel (the node "
+                    f"does not say which placement it is), the Sun window is "
+                    f"not waited for, and the flats are taken at the "
+                    f"rotator's current angle"
+                    + (" and not at each panel's: this plan rotates its "
+                       "mosaic panels (#176)" if rotating
+                       else (" (no rotator is connected)"
+                             if rotation is None else "")),
+                    "sequence")
+            if getattr(cc, "has_cover", False):
+                try:
+                    state = await asyncio.wait_for(cc.get_cover_state(),
+                                                   CALIBRATOR_CMD_TIMEOUT_S)
+                    cover_was_open = getattr(state, "value", state) == "open"
+                except Exception as exc:           # noqa: BLE001 - reported
+                    bus.log("warning", f"DUSK FLATS: could not read the "
+                                       f"cover state ({exc}) - it will be "
+                                       f"left shut afterwards", "sequence")
+            level = (df.panel_brightness if df.panel_brightness is not None
+                     else max(1, int(getattr(cc, "max_brightness", 1) or 1)
+                              // 2))
+            per_filter: dict = {}
+            for filt, *_rest in recipes:
+                per_filter[filt] = per_filter.get(filt, 0) + 1
+            for filt, gain, offset, binning in recipes:
+                fresh, have = self._dusk_flats_fresh(
+                    filt, gain, offset, binning, df.count, rotation)
+                name = filt or "no filter"
+                if fresh:
+                    skipped += 1
+                    bus.log("info", f"DUSK FLATS: the library already holds "
+                                    f"{have} fresh flats for {name} at gain "
+                                    f"{gain} - skipping", "sequence")
+                    continue
+                tag = f" g{gain}" if per_filter[filt] > 1 else ""
+                flat_target = Target(
+                    name=f"dusk flats {name}{tag}", ra_hours=0.0, dec_deg=0.0,
+                    calibration=True, center=False, autofocus_first=False,
+                    steps=[ExposureStep(
+                        filter=filt, exposure_s=self._DUSK_FLATS_SEED_S,
+                        gain=gain, offset=offset, binning=binning,
+                        count=df.count, frame_type="Flat",
+                        adu_target=df.adu_target, panel_brightness=level)])
+                await self._run_calibration(0, flat_target)
+                shot += 1
+        except SafetyAbort:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:                   # noqa: BLE001 - reported
+            bus.log("warning", f"DUSK FLATS stopped after {shot} set(s): "
+                               f"{exc} - the night goes on without the rest",
+                    "sequence")
+            # A failure ahead of the lamp-on leaves `_run_calibration`'s own
+            # finally with nothing to turn off, and one in the middle of it
+            # leaves the lamp state unknown: ask for off, best effort.
+            await self._panel_off_safe()
+        # Reached only when the stage ended on its own (an abort or a cancel
+        # left above): the night is going on to its lights.
+        self._dusk_flats_night = night
+        if cover_was_open:
+            try:
+                await _bounded(self.hub.open_cover(), CALIBRATOR_CMD_TIMEOUT_S,
+                               "open cover")
+            except SafetyAbort:
+                raise
+            except Exception as exc:               # noqa: BLE001 - reported
+                bus.log("error", f"COVER NOT REOPENED - DUSK FLATS left the "
+                                 f"dust cover shut, and the lights that "
+                                 f"follow would be taken through it: {exc}",
+                        "sequence")
+        bus.log("info", f"DUSK FLATS: {shot} set(s) shot, {skipped} skipped "
+                        f"(the library had them)", "sequence")
 
     async def _stand_down_guider(self) -> None:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:

@@ -679,8 +679,17 @@ THREE_ANSWER_GRAPHS_SHA256 = \
 #: set of values is ``{True}``) and against the history: with the key popped,
 #: the same dump hashes to the pin from before WP-34, ``122ff5c79e4f...``,
 #: byte for byte. The key's presence is the only difference from that pin.
+#:
+#: DELIBERATE PIN CHANGE, BACKLOG WP-134 (#603 job B, wave 17), for one
+#: change and nothing else: ``SequencePlan`` gained ``dusk_flats``, and the
+#: 96 of the 192 plans whose chips include "Dusk flats" now carry it (the
+#: wizard's block is the node's default, translucent lens cap, so it is
+#: carried and not run). The other 96 have no such block and the dump leaves
+#: the key out while it is None. PROVEN: with ``dusk_flats`` popped off every
+#: dump the 192 hash to ``d6b9797dcca8...``, the pin from before, byte for
+#: byte. Regenerated from the SAME dump in the test below.
 WIZARD_PLANS_SHA256 = \
-    "d6b9797dcca8b4075f4cb684c313ce50d55c0cd11ac059c424ccb6eb676ed1ae"
+    "d4c5467c0571244f05d78832b7e7c4c90009dd9e0ad3444b5a6298136dd4001a"
 
 #: The pre-S3 TARGET's missing-key coordinates: M31's, verbatim.
 _OLD_M31 = ("00h 42m 44s", "+41° 16′ 09″")

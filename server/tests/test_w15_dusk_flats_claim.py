@@ -14,12 +14,24 @@ Example's library card promised "Dome opens at dusk, lens-cap flats in the
 twilight window". The engine has no such stage (``_run_calibration`` is reached
 only from a cloud hold's darks and the wind-down's day darks).
 
-ONE SWITCH, ``to_plan.DUSK_FLATS_WIRED`` (False today). The warning in the
-unmapped list is present exactly when it is False, and every sentence Tonight
-says about the block reads from the same constant, so the warning and the copy
-cannot disagree and #603 job B flips ONE constant. The UI's two static strings
-cannot read a Python constant, so ``test_the_ui_copy_follows_the_switch`` reads
-them as text and fails the day the constant moves without them.
+ONE SWITCH, ``to_plan.DUSK_FLATS_WIRED``. The warning in the unmapped list is
+present exactly when it is False, and every sentence Tonight says about the
+block reads from the same constant, so the warning and the copy cannot
+disagree. The UI's two static strings cannot read a Python constant, so
+``test_the_ui_copy_follows_the_switch`` reads them as text.
+
+RE-PINNED FOR BACKLOG WP-134 (#603 job B, wave 17): the switch is now True,
+because ``SequenceEngine._dusk_flats`` exists. It runs ONE of the node's three
+methods, the flat panel (``to_plan.DUSK_FLATS_RUNS``); the translucent lens
+cap and the twilight sky are carried in the plan and still not run, so the
+copy is keyed on the COMPILED PLAN's ``dusk_flats`` and its method, not on the
+switch alone: a panel block is promised (the brief, the STORY row), a cap or
+sky block is "drawn but not run", and a block the plan drops (an unusable
+count) is not promised at all. ``TestThePreviewFollowsThePlan`` is the guard.
+THE UI's two static strings still open with the not-run sentence and are
+other files' (``nodeDefs.ts``, ``quickCopy.ts``): ``test_the_ui_copy_follows_
+the_switch`` is a STRICT xfail until they are rewritten, and goes red the day
+they are, so the marker cannot be forgotten.
 
 #707 rides along: the brief's CLOUD WATCH sentence printed the node's threshold
 dial as "cloud cover above 40%", and ``to_plan`` reports that the dial "does not
@@ -32,39 +44,54 @@ carries ``resume_across_nights`` (the same flag ``_story``'s budget rows read).
 Site: 40 N 105 W, made up and NOT the observatory's, and the hub is pinned to
 it so no path can reach the configured one.
 
-NAMED MUTANTS, each run from a byte backup inside this worktree, the bytes
-restored and their sha256 compared, the mutant text counted back to what it was
-(2026-10-07). The failing assertion is quoted in the docstring of the test that
-catches it, or here:
+NAMED MUTANTS. The first group was run for WP-112 (2026-10-07) and is kept
+for the rows that still apply; the second group is WP-134's (2026-10-07), each
+run from a byte backup inside the worktree, the bytes restored and their sha256
+compared, the mutant text grepped out, the failing assertion verbatim:
 
-* "brief clause restored" (tonight.py ``brief()``'s DUSK FLATS branch,
-  ``if _dusk_flats_wired():`` made ``if True:``, so ", and shoots N flats per
-  filter (...)" is back for every flow): ``test_the_brief_says_the_block_is_not_run``
-  (both flows) and ``test_the_warning_and_the_copy_agree_under_both_settings
-  [unwired]`` RED.
-* "switch ignored" (to_plan.py ``DUSK_FLATS_WIRED = False`` made ``True``,
-  nothing wired): the brief and STORY tests, ``test_the_switch_ships_off``
-  (``assert True is False``), ``test_the_unmapped_list_still_carries_the_note``
-  (``assert (0 == 1)``) and ``test_the_ui_copy_follows_the_switch`` RED.
-* "copy ignores the switch" (tonight.py ``_dusk_flats_wired`` made ``return
-  False``): ``test_the_warning_and_the_copy_agree_under_both_settings[wired]``
-  RED.
+WP-112, still current:
+
 * "threshold restored" (the brief's cloud sentence put back to print
   ``cloud cover above {cw.params.get('threshold')}%``):
   ``test_the_cloud_sentence_prints_no_percentage`` RED.
-* "story row's old text restored" (``_story``'s ``wired = _dusk_flats_wired()``
-  made ``wired = True``): the STORY tests and the unwired agreement case RED.
 * "queue named for every hold" (the ANY row's ``if automation.get(
   "calibration_queue") else ""`` made ``if True else ""``):
   ``test_the_clouds_in_row_names_darks_only`` RED.
 * "resume flag constant" (the answer's ``resume_across_nights`` made ``True``):
   ``TestTheAnswerCarriesTheResumeFlag`` (two cases) RED.
-* "node desc restored", "quick card restored" (the opening sentence of
-  nodeDefs.ts's duskflats ``desc`` or of quickCopy.ts's ``flats`` body taken
-  off): ``test_the_ui_copy_follows_the_switch`` RED.
 * "m16 tagline restored" (examples.py's tagline back to "Dome opens at dusk,
   lens-cap flats ..."): ``test_the_m16_card_promises_neither_flats_nor_a_dome_
   opening`` RED (and ``test_flows_example_taglines`` 's control).
+
+WP-134 (the flat-panel stage):
+
+* "preview reads the node" (tonight.py ``_dusk_flats_runs``: ``if flats.method
+  not in to_plan.DUSK_FLATS_RUNS:`` made ``if False:``, so a cap or sky block
+  is promised): ``TestThePreviewFollowsThePlan`` RED, on the cap case:
+
+      AssertionError: cap: the plan runs flats: False, but the brief promises
+      them: True: This flow arms at astronomical dusk (-30 min), and shoots 3
+      flats per filter with the flat panel before its first light, if a flat
+      panel is connected. [...]
+
+* "panel copy dropped (brief)" (``brief()``'s ``if runs:`` made ``if
+  False:``): ``test_the_brief_promises_what_the_panel_stage_does`` RED:
+
+      AssertionError: This flow arms at astronomical dusk (-30 min), and has a
+      DUSK FLATS block that the engine does not run yet, so no flats are
+      taken. [...]
+
+* "panel copy dropped (story)" (``_story``'s ``if runs:`` made ``if False:``):
+  ``test_a_panel_block_is_a_dim_row_at_the_start_of_the_run`` RED:
+
+      AssertionError: DUSK FLATS (Sun -2 ... -8) is drawn but not run:
+
+* "copy ignores the switch" (``_dusk_flats_runs``'s ``if not
+  to_plan.DUSK_FLATS_WIRED:`` return removed): ``test_the_warning_and_the_copy_
+  agree_under_both_settings[unwired]`` RED:
+
+      AssertionError: wired=False: the brief says the block is not run: False,
+      but the unmapped warning is present: True
 """
 from __future__ import annotations
 
@@ -119,12 +146,15 @@ def _e(a, ap, b, bp):
     return FlowEdge(**{"from": a, "fromPort": ap, "to": b, "toPort": bp})
 
 
-def _hand(window="Sun −2° … −8°", *, extra=(), edges=(), **dusk) -> FlowGraph:
+def _hand(window="Sun −2° … −8°", *, extra=(), edges=(),
+          method="Flat panel", count=3, **dusk) -> FlowGraph:
     """DUSK -> DUSK FLATS -> TARGET -> SLEW -> CAPTURE, hand built (the flow a
-    new operator draws), with ``extra`` nodes and ``edges`` added."""
+    new operator draws), with ``extra`` nodes and ``edges`` added. The DUSK
+    FLATS method is the flat panel, the one method the engine runs (WP-134);
+    ``method`` names another."""
     nodes = [_n("d", "dusk", offset=-30, stop="Dawn", minAlt=30, **dusk),
-             _n("f", "duskflats", x=50, window=window, adu=28500, count=3,
-                method="Flat panel"),
+             _n("f", "duskflats", x=50, window=window, adu=28500, count=count,
+                method=method),
              _n("t", "target", x=100, name="M16 — Eagle",
                 ra="18h 18m 48s", dec="−13° 49′ 00″"),
              _n("s", "slew", x=200),
@@ -142,9 +172,15 @@ def _m16() -> FlowGraph:
     return next(e for e in examples() if e.id == "example-m16").graph
 
 
-#: The two flows with a DUSK FLATS node: the Example the library ships, and a
-#: hand-built one (so the test cannot pass by reading only the Example).
-GRAPHS = {"example-m16": _m16, "hand-built": _hand}
+def _hand_cap(**kw) -> FlowGraph:
+    return _hand(method="Translucent lens cap", **kw)
+
+
+#: The two flows with a DUSK FLATS node the engine does NOT run: the Example
+#: the library ships (translucent lens cap), and a hand-built one (so the test
+#: cannot pass by reading only the Example). The flat-panel block, which it
+#: does run, is ``_hand()`` and has its own tests below.
+GRAPHS = {"example-m16": _m16, "hand-built": _hand_cap}
 
 
 def _tonight(graph: FlowGraph) -> dict:
@@ -172,16 +208,15 @@ class TestTheBrief:
         not run it yet, and that no flats are taken: none of 'shoots', 'flats
         per filter' or 'exposure solved' survives.
 
-        RED under the named mutant "brief clause restored" (tonight.py
-        ``brief()``'s DUSK FLATS branch, ``if _dusk_flats_wired():`` made
-        ``if True:``, so the old ``t += f", and shoots {count} flats per
-        filter (...) in the twilight window"`` is the clause every flow gets),
+        RED under the named mutant "preview reads the node" (tonight.py
+        ``_dusk_flats_runs``: ``if flats.method not in to_plan.DUSK_FLATS_RUNS:``
+        made ``if False:``, so a lens-cap block is promised as a panel one),
         observed on the first case:
 
             AssertionError: example-m16's brief claims flats are shot: This
-            flow arms at astronomical dusk (−30 min), and shoots 15 flats per
-            filter (translucent lens cap) in the twilight window. It then arms
-            M16 - Eagle. [...]
+            flow arms at astronomical dusk (-30 min), and shoots 15 flats per
+            filter with the flat panel before its first light, if a flat panel
+            is connected. It then arms M16 - Eagle. [...]
         """
         text = brief(GRAPHS[which]())
         for word in FORBIDDEN:
@@ -189,6 +224,20 @@ class TestTheBrief:
                 f"{which}'s brief claims flats are shot: {text}")
         assert ("and has a DUSK FLATS block that the engine does not run "
                 "yet, so no flats are taken") in text, text
+
+    def test_the_brief_promises_what_the_panel_stage_does(self):
+        """A flat-panel block IS run (``SequenceEngine._dusk_flats``): the
+        clause says what the stage does, with the plan's own count, once,
+        before the first light, and only if a panel is connected. It does NOT
+        say the flats are shot "in the twilight window": a panel does not wait
+        for the sky.
+
+        RED under the named mutant "panel copy dropped" (``brief()``'s
+        ``if runs:`` made ``if False:``): the clause is the not-run sentence."""
+        text = brief(_hand())
+        assert ("and shoots 3 flats per filter with the flat panel before "
+                "its first light, if a flat panel is connected") in text, text
+        assert "does not run" not in text and "twilight window" not in text, text
 
     def test_the_cloud_sentence_names_darks_only(self):
         """A cloud hold shoots darks, matched to the step it interrupts. The
@@ -248,14 +297,13 @@ class TestTheStory:
         says it is not run, it is a warning, and it is still timed at the
         window's start (so the story still sorts by it).
 
-        RED under "story row's old text restored" (``_story``'s ``wired =
-        _dusk_flats_wired()`` made ``wired = True``, so the row's old f-string,
-        ``f"Flats window ({flats['window']}, about {mins} min): ..."``, is the
-        row), observed:
+        RED under "preview reads the node" (the same mutant as the brief's),
+        observed:
 
             AssertionError: example-m16: a STORY row claims flats are shot:
-            Flats window (Sun −2° … −8°, about 39 min): translucent lens cap
-            flats, exposure solved to 28 500 ADU per filter
+            DUSK FLATS (flat panel): 15 flats per filter, exposure solved to
+            28 500 ADU, taken once before the first light - skipped, with a
+            line in the log, if no flat panel is connected
         """
         out = _tonight(GRAPHS[which]())
         assert out["ok"], out["reason"]
@@ -266,7 +314,8 @@ class TestTheStory:
                     f"{row['msg']}")
         row = _flats_row(out["story"])
         assert "is drawn but not run" in row["msg"], row["msg"]
-        assert "the engine has no dusk-flats stage yet" in row["msg"]
+        assert ("the engine runs the flat-panel method only, and this one is "
+                "translucent lens cap") in row["msg"], row["msg"]
         assert row["tone"] == "warn"
         assert row["t_unix"] == out["flats"]["start_unix"] is not None
         timed = [r["t_unix"] for r in out["story"] if r["t_unix"] is not None]
@@ -276,7 +325,7 @@ class TestTheStory:
         """A window that names no two sun altitudes has no clock times, and its
         row is still a warning, at dusk, still saying why, and now also saying
         the block is not run."""
-        out = _tonight(_hand(window="After sunset"))
+        out = _tonight(_hand_cap(window="After sunset"))
         row = _flats_row(out["story"])
         assert row["tone"] == "warn"
         assert "does not name two sun altitudes" in row["msg"], row["msg"]
@@ -288,12 +337,35 @@ class TestTheStory:
         sentence that printed the window's length in minutes would print a
         function of the latitude (#19's class). The row carries the node's own
         window text and no figure the site decides."""
-        out = _tonight(_hand())
+        out = _tonight(_hand_cap())
         row = _flats_row(out["story"])
         assert row["msg"] == (
-            "DUSK FLATS (Sun −2° … −8°) is drawn but not run: the engine has "
-            "no dusk-flats stage yet"), row["msg"]
+            "DUSK FLATS (Sun −2° … −8°) is drawn but not run: the engine runs "
+            "the flat-panel method only, and this one is translucent lens "
+            "cap"), row["msg"]
         assert not re.search(r"\bmin\b|\bminutes\b|\d{2,}", row["msg"])
+        panel = _flats_row(_tonight(_hand())["story"])["msg"]
+        assert not re.search(r"\bmin\b|\bminutes\b", panel), panel
+        assert re.findall(r"\d+", panel) == ["3", "28", "500"], (
+            f"only the operator's own numbers, count and ADU target: {panel}")
+
+    def test_a_panel_block_is_a_dim_row_at_the_start_of_the_run(self):
+        """The panel stage does not wait for the Sun window, so its row is
+        timed where the run starts and is not a warning, whether or not the
+        window text resolves (it is not read).
+
+        RED under "panel copy dropped" (the story's ``if runs:`` made ``if
+        False:``): the row is the warning 'drawn but not run'."""
+        for window in ("Sun −2° … −8°", "After sunset", "Now"):
+            out = _tonight(_hand(window=window))
+            row = _flats_row(out["story"])
+            assert row["msg"] == (
+                "DUSK FLATS (flat panel): 3 flats per filter, exposure solved "
+                "to 28 500 ADU, taken once before the first light - skipped, "
+                "with a line in the log, if no flat panel is connected"), (
+                row["msg"])
+            assert row["tone"] == "dim", row
+            assert row["t_unix"] == out["night"]["window_start_unix"], row
 
     def test_the_clouds_in_row_names_darks_only(self):
         """The ANY row for a cloud hold listed "(black slot -> darks -> bias ->
@@ -328,88 +400,154 @@ class TestTheStory:
 # --------------------------------------------------------------- the switch
 
 class TestOneSwitch:
-    def test_the_switch_ships_off(self):
-        """Nothing runs a DUSK FLATS block today. Flipping this is #603 job B's
-        act, with the stage that justifies it; this fails the day it is flipped
-        without one."""
-        assert to_plan.DUSK_FLATS_WIRED is False
+    def test_the_switch_is_on_because_the_engine_has_the_stage(self):
+        """The switch says the engine has a dusk-flats stage. It does:
+        ``_dusk_flats`` is called from ``_run`` ahead of the scheduler, and
+        the methods it runs are the plan-mapped set. This fails the day either
+        is taken out without the other (a switch with no stage is the
+        original claim nothing keeps; a stage with the switch off hides it)."""
+        import inspect
 
-    def test_the_unmapped_list_still_carries_the_note(self):
-        g = _hand()
-        _, unmapped = to_sequence_plan(compile_plan(g, "n"), g)
-        notes = [u for u in unmapped if u["key"] == "automation.dusk_flats"]
-        assert len(notes) == 1 and "will not take flats" in notes[0]["detail"]
+        from astrodeck.sequence.engine import SequenceEngine
+        run = inspect.getsource(SequenceEngine._run)
+        assert to_plan.DUSK_FLATS_WIRED is True
+        assert run.index("await self._dusk_flats()") < run.index(
+            "await self._run_scheduled(plan)"), (
+            "the stage must be called before the scheduler's first target")
+        assert to_plan.DUSK_FLATS_RUNS == frozenset({"panel"})
+
+    def test_the_unmapped_row_says_what_the_stage_does_by_method(self):
+        """The panel is honoured: a ``note`` (no loss, nothing blocks a run).
+        The other two methods and an unusable block are a ``warn`` (a loss)
+        that says this run will not take flats."""
+        def row(g):
+            _, unmapped = to_sequence_plan(compile_plan(g, "n"), g)
+            rows = [u for u in unmapped if u["key"] == "automation.dusk_flats"]
+            assert len(rows) == 1, unmapped
+            return rows[0]
+
+        panel = row(_hand())
+        assert panel["level"] == "note" and "runs with the flat panel" in \
+            panel["detail"], panel
+        assert "will not take flats" not in panel["detail"]
+        for method in ("Translucent lens cap", "Twilight sky"):
+            r = row(_hand(method=method))
+            assert r["level"] == "warn" and "will not take flats" in \
+                r["detail"], r
+            assert "flat-panel method only" in r["detail"], r
+        for bad in ({"count": 0}, {"count": 5000}, {"method": "Dome flat"}):
+            r = row(_hand(**bad))
+            assert r["level"] == "warn", r
+            assert "cannot run as set" in r["detail"] and \
+                "will not take flats" in r["detail"], r
 
     @pytest.mark.parametrize("wired", [False, True], ids=["unwired", "wired"])
     def test_the_warning_and_the_copy_agree_under_both_settings(
             self, wired, monkeypatch):
-        """The unmapped note, the brief's clause and the STORY row are three
+        """The unmapped row, the brief's clause and the STORY row are three
         readings of one fact. With the switch off all three say the block is
-        not run; with it on the note is gone and the old wording (the stage
-        shoots flats) is what Tonight says, because that is what the switch
-        means. A copy that ignored the switch would leave them disagreeing.
+        not run; with it on, a flat-panel block is honoured (a note, no loss)
+        and Tonight says what the stage does. A copy that ignored the switch
+        would leave them disagreeing.
 
-        RED under "copy ignores the switch" (tonight.py ``_dusk_flats_wired``
-        made ``return False``), on the wired case, observed:
-
-            AssertionError: wired=True: the brief says the block is not run:
-            True, but the unmapped warning is present: False
-        """
+        RED under "copy ignores the switch" (tonight.py ``_dusk_flats_runs``
+        not reading ``DUSK_FLATS_WIRED``), on the unwired case: the brief
+        promises flats beside the compiler's own 'not wired' warning."""
         monkeypatch.setattr(to_plan, "DUSK_FLATS_WIRED", wired)
         g = _hand()
         _, unmapped = to_sequence_plan(compile_plan(g, "n"), g)
-        has_note = any(u["key"] == "automation.dusk_flats" for u in unmapped)
+        loss = any(u["key"] == "automation.dusk_flats"
+                   and u["level"] != "note" for u in unmapped)
         text = brief(g)
         out = _tonight(g)
         says_not_run = "does not run yet" in text
-        assert has_note == (not wired), f"wired={wired}: the note: {unmapped}"
+        assert loss == (not wired), f"wired={wired}: the loss row: {unmapped}"
         assert says_not_run == (not wired), (
             f"wired={wired}: the brief says the block is not run: "
-            f"{says_not_run}, but the unmapped warning is present: {has_note}")
+            f"{says_not_run}, but the unmapped warning is present: {loss}")
         row = _flats_row(out["story"])
         assert ("is drawn but not run" in row["msg"]) == (not wired), (
             f"wired={wired}: the STORY row disagrees with the warning: "
             f"{row['msg']}")
         if wired:
-            assert ("and shoots 3 flats per filter (flat panel) in the "
-                    "twilight window") in text, text
-            assert "exposure solved to 28 500 ADU per filter" in row["msg"]
+            assert ("and shoots 3 flats per filter with the flat panel "
+                    "before its first light") in text, text
+            assert "exposure solved to 28 500 ADU" in row["msg"]
+        else:
+            assert "the engine has no dusk-flats stage yet" in row["msg"]
 
+    @pytest.mark.xfail(strict=True, reason=(
+        "BLOCKED ON THE UI (WP-134 blocked_on): nodeDefs.ts's duskflats desc "
+        "and quickCopy.ts's flats body still open with the not-run sentence, "
+        "which is false since the engine runs the flat-panel method. Remove "
+        "this marker when they are rewritten (strict: it fails the day they "
+        "are, so it cannot be forgotten)."))
     def test_the_ui_copy_follows_the_switch(self):
         """The node's description and the quick sheet's DUSK FLATS card are
         static strings the switch cannot reach, so they are read as text: each
-        opens with the not-run sentence exactly while the switch is off, and
-        the day it is flipped this fails until someone has written what the
-        stage does. They go on to the intended behaviour in the conditional.
+        opens with the not-run sentence exactly while the switch is off.
 
-        RED under "switch ignored" (``DUSK_FLATS_WIRED = True``, nothing
-        wired), observed:
+        With the switch on (since WP-134) they must NOT open with it, and
+        they do: this is the one part of the package the engine's author could
+        not fix, so it is a strict xfail with the files named, not a pass.
 
-            AssertionError: nodeDefs.ts duskflats desc opens with the not-run
-            sentence: True, but DUSK_FLATS_WIRED is True
-
-        RED under "node desc restored" (nodeDefs.ts's duskflats ``desc``
-        with its opening not-run sentence taken off), observed:
-
-            AssertionError: nodeDefs.ts duskflats desc opens with the not-run
-            sentence: False, but DUSK_FLATS_WIRED is False
-
-        RED under "quick card restored" (quickCopy.ts's ``flats`` body with
-        its opening not-run sentence taken off), observed:
-
-            AssertionError: quickCopy.ts flats body opens with the not-run
-            sentence: False, but DUSK_FLATS_WIRED is False
-        """
+        RED under "node desc restored" / "quick card restored" (an opening
+        not-run sentence put back on a rewritten string) and under "switch
+        ignored" once the UI is rewritten."""
         for label, text in (("nodeDefs.ts duskflats desc", _node_desc()),
                             ("quickCopy.ts flats body", _quick_flats_body())):
             opens = text.startswith(NOT_RUN)
             assert opens == (not to_plan.DUSK_FLATS_WIRED), (
                 f"{label} opens with the not-run sentence: {opens}, but "
                 f"DUSK_FLATS_WIRED is {to_plan.DUSK_FLATS_WIRED}")
-            assert "When wired it will" in text, (
-                f"{label} no longer says what the stage is for: {text}")
-            assert "shoots" not in text.replace("When wired it will", ""), (
-                f"{label} says the block shoots something: {text}")
+            if not to_plan.DUSK_FLATS_WIRED:
+                assert "When wired it will" in text, (
+                    f"{label} no longer says what the stage is for: {text}")
+                assert "shoots" not in text.replace("When wired it will", ""), (
+                    f"{label} says the block shoots something: {text}")
+
+
+class TestThePreviewFollowsThePlan:
+    """THE GUARD (the shape of ``test_the_preview_cannot_promise_what_the_plan_
+    drops``): Tonight promises flats exactly when the COMPILED PLAN carries a
+    ``dusk_flats`` the engine runs, for every block the node can hold."""
+
+    CASES = {
+        "panel": dict(),
+        "cap": dict(method="Translucent lens cap"),
+        "sky": dict(method="Twilight sky"),
+        "zero count": dict(count=0),
+        "huge count": dict(count=5000),
+        "unknown method": dict(method="Dome flat"),
+    }
+
+    @pytest.mark.parametrize("case", list(CASES))
+    def test_the_preview_promises_only_what_the_plan_runs(self, case):
+        """RED under the named mutant "preview reads the node" (tonight.py
+        ``_dusk_flats_runs`` returning ``True`` for every block that compiles
+        a method, the plan's method check taken out): the cap and sky flows are
+        promised flats."""
+        g = _hand(**self.CASES[case])
+        plan, unmapped = to_sequence_plan(compile_plan(g, "n"), g)
+        runs = plan.dusk_flats is not None and plan.dusk_flats.method == "panel"
+        text = brief(g)
+        story = " ".join(r["msg"] for r in _tonight(g)["story"])
+        promised = "and shoots" in text and "flats per filter" in text
+        assert promised == runs, (
+            f"{case}: the plan runs flats: {runs}, but the brief promises "
+            f"them: {promised}: {text}")
+        assert ("exposure solved" in story) == runs, (case, story)
+        losses = [u for u in unmapped if u["key"] == "automation.dusk_flats"
+                  and u["level"] != "note"]
+        assert bool(losses) == (not runs), (case, unmapped)
+
+    def test_a_panel_block_reaches_the_plan_whole(self):
+        plan, _ = to_sequence_plan(compile_plan(_hand(), "n"), _hand())
+        df = plan.dusk_flats
+        assert (df.method, df.adu_target, df.count) == ("panel", 28500, 3)
+        assert (df.window_hi_deg, df.window_lo_deg) == (-2.0, -8.0)
+        assert df.filters == ["Ha"], "Tonight's plan only: the lights' filters"
+        assert df.panel_brightness is None
 
 
 def _node_desc() -> str:
@@ -454,11 +592,18 @@ class TestTheExamplesTagline:
         assert "—" not in tagline and "–" not in tagline, \
             "an Example's strings carry no em or en dash (examples.py)"
 
-    def test_no_example_tagline_claims_flats_while_the_stage_is_unwired(self):
-        if to_plan.DUSK_FLATS_WIRED:
-            pytest.skip("the stage is wired: a tagline may say what it does")
+    def test_no_example_tagline_claims_flats_the_stage_does_not_run(self):
+        """An Example whose DUSK FLATS block the engine does not run (any
+        method but the flat panel) must not claim flats on its card. The
+        flat-panel method is run, so a tagline may say what it does."""
         for ex in examples():
-            assert "flats" not in ex.tagline.lower(), (ex.id, ex.tagline)
+            blocks = [n for n in ex.graph.with_defaults().nodes
+                      if n.type == "duskflats"]
+            runs = bool(blocks) and all(
+                str(n.params.get("method")).strip().lower() == "flat panel"
+                for n in blocks)
+            if not runs:
+                assert "flats" not in ex.tagline.lower(), (ex.id, ex.tagline)
 
 
 # ----------------------------------------------------- the resume flag (#712)
