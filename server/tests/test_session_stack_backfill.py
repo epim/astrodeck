@@ -158,9 +158,12 @@ def test_only_this_run_is_planned(tmp_path):
         == [older.name]
 
 
-def test_only_one_target_is_planned(tmp_path):
-    # The stacker holds ONE target and resets when it changes, so a two-target
-    # backfill would spend the disk reads on both and keep the last.
+def test_every_target_of_the_run_is_planned_and_target_restricts(tmp_path):
+    # DELIBERATE PIN CHANGE (#172 part A, WP-121). This used to be
+    # `test_only_one_target_is_planned`: the stacker held ONE target and reset
+    # when it changed, so a two-target backfill spent its disk reads on both
+    # and kept the last. Each target is its own panel now, so the plan covers
+    # all of them, in capture order; `target=` is still how a caller restricts.
     session, t = make_session(tmp_path, [("R",), ("R",)])
     other = Target(name="M31", ra_hours=0.7, dec_deg=41.0,
                    steps=[ExposureStep(filter="R", exposure_s=60.0, count=5)])
@@ -171,8 +174,10 @@ def test_only_one_target_is_planned(tmp_path):
         ts=2000.0, night="night-1", target_id=other.id,
         step_id=other.steps[0].id, path=str(p)))
 
-    # The most recent frame is M31's, so that is the picture about to be shown.
-    assert [i.target for i in plan_backfill(session)] == ["M31"]
+    # Every target of the run, oldest first; M31's frame was written last.
+    assert [i.target for i in plan_backfill(session)] == ["M42", "M42", "M31"]
+    assert [i.target_id for i in plan_backfill(session)] == \
+        [t.id, t.id, other.id]
     # And asking for M42 gets M42's two, not all three.
     items = plan_backfill(session, target="M42")
     assert len(items) == 2 and {i.target for i in items} == {"M42"}
@@ -371,12 +376,15 @@ def test_enable_backfill_disable_enable_backfill_is_the_same_picture(tmp_path):
 
 
 def test_the_live_path_and_a_backfill_do_not_both_take_a_frame(tmp_path):
-    session, _ = make_session(tmp_path, [("R",), ("R",), ("R",)])
+    session, t = make_session(tmp_path, [("R",), ("R",), ("R",)])
     s = SessionStacker()
     s.start()
     # The live path already took the middle sub (it landed after the switch).
+    # It names the panel by the target's id, as the engine does since #172, and
+    # the ledger the backfill reads carries the same id: a live feed that named
+    # only the target would be a different panel.
     mid = session.frames[1]
-    s.add(field(1.5, -2.0, seed=101), "R", 60.0, target="M42",
+    s.add(field(1.5, -2.0, seed=101), "R", 60.0, target="M42", target_id=t.id,
           session="night-1", key=mid.path)
     assert s.status()["frames"] == 1
 
@@ -466,7 +474,7 @@ def test_backfill_and_live_frames_interleaved_all_land(tmp_path):
     injected from inside the pass, between two of its reads, which is exactly
     the interleaving the lock has to survive and is reproducible.
     """
-    session, _ = make_session(tmp_path, [("R",)] * 4)
+    session, t = make_session(tmp_path, [("R",)] * 4)
     s = SessionStacker()
     s.start()
     items = plan_backfill(session)
@@ -478,9 +486,10 @@ def test_backfill_and_live_frames_interleaved_all_land(tmp_path):
         out = real(*a, **kw)
         if injected["n"] < 2 and kw.get("key"):
             injected["n"] += 1
-            # A brand-new sub off the camera, mid-backfill.
+            # A brand-new sub off the camera, mid-backfill, naming its panel by
+            # the target's id as the engine does (#172).
             real(field(0.5, 0.5, seed=500 + injected["n"]), "G", 60.0,
-                 target="M42", session="night-1",
+                 target="M42", target_id=t.id, session="night-1",
                  key=f"/live/new{injected['n']}.fits")
         return out
 

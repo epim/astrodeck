@@ -34,9 +34,14 @@ brake, sometimes a different rotation; ``sessionstack``'s own docstring says
 last night's stack is not this night's, and the backfill does not get to
 disagree with the live path about that.
 
-**Which target.** One. The stacker holds a single target and resets when it
-changes, so backfilling two targets would leave the second one's frames and
-throw the first one's away, having spent the disk reads on both.
+**Which targets.** All of the run's, each into its own panel. The stacker used
+to hold one target and reset when it changed, so backfilling two would keep the
+second's frames and throw the first's away after reading both; panels are
+slots now (#172), so a mosaic night's every panel is caught up and the frames
+are handed over in capture order, which interleaves them. A caller that wants
+one passes ``target=``. Each item carries the target's ID as well as its name,
+because that is what the live path keys the panel by: a backfill that named a
+panel differently would build a second picture of it.
 
 **Where the metadata comes from.** The FITS header first (``FILTER`` as typed,
 ``EXPTIME``, ``BAYERPAT``, ``XBINNING``) because it describes the file actually
@@ -77,6 +82,10 @@ class BackfillItem:
     exposure_s: float = 0.0
     target: str = ""
     session: str = ""
+    #: The target's id in the plan, which is the panel key the live path uses.
+    #: Last, and defaulted, so an item built positionally or by a caller that
+    #: does not know panels still works (it then keys by name).
+    target_id: str = ""
 
     @property
     def key(self) -> str:
@@ -101,24 +110,24 @@ def plan_backfill(session, *, run: str = "", target: str = "",
     """The subs of ``session`` that belong in the stack and are not in it yet.
 
     ``run`` restricts to one report id (empty = whatever the session's most
-    recent frame belongs to). ``target`` restricts to one target NAME (empty =
-    the target of the most recent qualifying frame, which is the one the stack
-    is about to be showing). ``stacker``, when given, drops the frames it has
-    already consumed -- a pre-filter for the disk read, not the decision, which
-    ``add`` re-makes under its own lock.
+    recent frame belongs to). ``target`` restricts to one target, by NAME or by
+    id (empty = EVERY target of the run, each of which is a panel in the
+    stack). ``stacker``, when given, drops the frames it has already consumed,
+    in whichever panel -- a pre-filter for the disk read, not the decision,
+    which ``add`` re-makes under its own lock.
 
     Ordered oldest first, which is capture order. That matters for more than
     tidiness: the first frame of a channel seeds that channel's registration
     reference, so stacking in capture order is what makes a backfilled composite
-    the same picture the live path would have built.
+    the same picture the live path would have built. Across panels it means the
+    items interleave as the visits did.
     """
     if stacker is not None:
-        # A stack that already holds pixels has ALREADY chosen its (target,
-        # run); the backfill joins that picture rather than proposing another
-        # one, or the first frame it stacks would reset away the live frames it
-        # was meant to be catching up with.
+        # A stack that already holds pixels has ALREADY chosen its run; the
+        # backfill joins that picture rather than proposing another one, or the
+        # first frame it stacks would drop away the live frames it was meant to
+        # be catching up with. Only the run: every target is wanted.
         run = run or stacker.session
-        target = target or stacker.target
     frames = list(getattr(session, "frames", []) or [])
     if not frames:
         return []
@@ -135,12 +144,12 @@ def plan_backfill(session, *, run: str = "", target: str = "",
     usable = [f for f in usable if str(getattr(f, "night", "") or "") == run]
     if not usable:
         return []
-    if not target:
-        target = names.get(getattr(usable[-1], "target_id", ""), "")
 
     out: list[BackfillItem] = []
     for f in usable:
-        if names.get(getattr(f, "target_id", ""), "") != target:
+        tid = str(getattr(f, "target_id", "") or "")
+        name = names.get(tid, "")
+        if target and target not in (name, tid):
             continue
         path = Path(str(f.path))
         if stacker is not None and stacker.has_frame(str(path)):
@@ -151,7 +160,7 @@ def plan_backfill(session, *, run: str = "", target: str = "",
             filter_name=str(getattr(step, "filter", "") or "") if step else "",
             exposure_s=float(getattr(step, "exposure_s", 0.0) or 0.0)
             if step else 0.0,
-            target=target, session=run))
+            target=name, session=run, target_id=tid))
     return out
 
 
@@ -235,8 +244,11 @@ def run_backfill(stacker: SessionStacker, items: Iterable[BackfillItem], *,
 
     It gives up when the stack is switched off, when the operator resets it (the
     generation moves), or when the live path has moved the stack onto a
-    different target or run -- in each case the pixels this was filling are gone
-    or are no longer the pixels asked for.
+    different RUN -- in each case the pixels this was filling are gone or are no
+    longer the pixels asked for. Not when the live path moves to another
+    TARGET: panels are slots, the foreground changes at every live add of a
+    mosaic, and a guard that read that as "the stack moved" would end every
+    backfill at the first hop (#172).
 
     No pacing: the rate limit that matters is the disk, and between exposures a
     run is not competing for the CPU anyway. If it ever needs slowing down, the
@@ -249,15 +261,15 @@ def run_backfill(stacker: SessionStacker, items: Iterable[BackfillItem], *,
         return stacker.backfill
 
     gen = stacker.generation
-    wanted = (items[0].target, items[0].session)
+    wanted = items[0].session
     error = ""
     try:
         for item in items:
             if not stacker.enabled or stacker.generation != gen:
                 error = "stopped"
                 break
-            if stacker.target and (stacker.target, stacker.session) != wanted:
-                error = "the stack moved to another target"
+            if stacker.session and stacker.session != wanted:
+                error = "the stack moved to another run"
                 break
             if stacker.has_frame(str(item.path)):
                 stacker.backfill_step(skipped=True)
@@ -271,7 +283,8 @@ def run_backfill(stacker: SessionStacker, items: Iterable[BackfillItem], *,
                 continue
             landed = stacker.add(data, filt, exposure, target=item.target,
                                  session=item.session, bayer_pattern=bayer,
-                                 key=str(item.path))
+                                 key=str(item.path),
+                                 target_id=item.target_id or None)
             del data
             if landed:
                 stacker.backfill_step(added=landed)

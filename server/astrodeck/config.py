@@ -833,10 +833,17 @@ class CalibrationConfig(BaseModel):
     """PRO-1 master-library matching + stacking tolerances (appended — old
     configs load fine). ``exposure_tol_pct``/``temp_tol_c`` control how
     aggressively masters are reused across nights; ``temp_bin_c`` quantizes the
-    stacking bucket; ``stack_sigma``/``max_stack_frames`` bound the reduction."""
+    stacking bucket; ``stack_sigma``/``max_stack_frames`` bound the reduction.
+
+    ``rotator_bin_deg`` (#176, WP-122) is the width of one rotator-angle bin a
+    FLAT's master is keyed by (``calibration.keys.ROTATOR_BIN_DEG`` is its
+    default): flats shot within one bin are one master, flats in two bins are
+    two, because a dust shadow follows the metal. 0 disables binning, as
+    ``temp_bin_c`` does. Appended, so an old config loads at the default."""
     exposure_tol_pct: float = Field(5.0, ge=0, le=100)
     temp_tol_c: float = Field(2.0, ge=0, le=50)
     temp_bin_c: float = Field(5.0, ge=0, le=50)
+    rotator_bin_deg: float = Field(2.0, ge=0, le=30)
     stack_sigma: float = Field(3.0, gt=0, le=10)
     max_stack_frames: int = Field(100, ge=1, le=1000)
 
@@ -2733,6 +2740,16 @@ class ConfigStore:
                 f"the temperature bin ({calibration.temp_bin_c}°C) must be at "
                 f"least the match tolerance ({calibration.temp_tol_c}°C) — a "
                 "narrower bin splits frames that matched into separate stacks")
+        # The same rule for the rotator (#176, WP-122): a bin narrower than the
+        # matcher's own angle tolerance splits flats the matcher would accept
+        # for one light into two masters. 0 is "no binning", not a narrow bin.
+        from .calibration.matcher import ROTATION_TOL_DEG
+        if 0 < calibration.rotator_bin_deg < ROTATION_TOL_DEG:
+            raise ValueError(
+                f"the rotator-angle bin ({calibration.rotator_bin_deg}°) must "
+                f"be at least the match tolerance ({ROTATION_TOL_DEG}°), or 0 "
+                "for no binning — a narrower bin splits flats that matched "
+                "into separate masters")
         cfg = self.cfg()
         cfg.calibration = calibration
         return self.bump_and_save()

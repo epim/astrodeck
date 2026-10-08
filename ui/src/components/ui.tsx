@@ -718,13 +718,16 @@ export function LockedChip({ reason, children, className = "" }: {
  *  other views — which is how an idiom drifts into four slightly different
  *  opacities again. Same props, same rendered element; hoisting it is a move,
  *  not a redesign. */
-export function HonestButton({ reason, onClick, onExplain, className = "btn", children }: {
+export function HonestButton({ reason, onClick, onExplain, className = "btn", title, children }: {
   /** null / "" => the control is live. A sentence => it is blocked, for THIS. */
   reason: string | null;
   onClick: () => void;
   /** How the reason reaches the user when a blocked button is pressed. */
   onExplain: (reason: string) => void;
   className?: string;
+  /** The hover text of a LIVE button (a blocked one always says its reason).
+   *  RUN's standing notice rides here on the classic header (#195). */
+  title?: string;
   children: ReactNode;
 }) {
   return (
@@ -738,7 +741,7 @@ export function HonestButton({ reason, onClick, onExplain, className = "btn", ch
       // until a click makes a live-looking button feel broken. `LockedChip`
       // next door has always put its reason in `title`; this is the same
       // sentence, in the same place, so the two patterns agree.
-      title={reason || undefined}
+      title={reason || title || undefined}
       onClick={() => (reason ? onExplain(reason) : onClick())}
     >
       {children}

@@ -226,6 +226,17 @@ SAFETY_READ_TIMEOUT_S = 8.0
 #: reading all night (C1-12/C1-15).
 SAFETY_STALE_SLACK_S = 5.0
 
+#: How long the 2 s status poll waits for the imaging camera's sensor
+#: temperature (#724). One status period at most: for a native camera the read
+#: is an SDK call on a worker thread, and a USB stall inside it held the WHOLE
+#: frame (mount, focuser, rotator, guider, and the /api/status caller) for as
+#: long as the call stayed in the driver. The frame is worth more than the
+#: number; a read that has not returned by then is published as unknown (null).
+#: Shorter than the guide camera's five-second probe, whose answer is discarded:
+#: this one is a displayed reading that every client already renders as
+#: "cannot say".
+STATUS_CAMERA_TEMPERATURE_TIMEOUT_S = 2.0
+
 _CAPTURE_ENV = (os.environ.get("ASTRODECK_CAPTURE_DIR") or "").strip()
 CAPTURE_DIR = Path(_CAPTURE_ENV) if _CAPTURE_ENV else (Path(__file__).resolve().parents[2] / "captures")
 
@@ -3500,6 +3511,14 @@ class Hub:
                 # unmeasured -- what every rotator before R-4 assumed).
                 mech_now = _rotation.mod360(
                     float(await rot.get_mechanical_position()))
+                # #176: the metal's own angle, recorded as ROTMECH. Set
+                # BEFORE the sky conversion below, because that one needs a
+                # sync anchor and a learned sign and may raise, while the
+                # reading is a fact about the frame whatever the conversion
+                # says. This is what a flat is keyed and matched by: the
+                # sky angle above moves whenever the rotator is re-synced,
+                # and a dust shadow follows the metal, not the sky.
+                meta.rotator_mech_deg = mech_now
                 anchor_mech, anchor_offset = self._rotator_sync_anchor(
                     rot, mech_now)
                 meta.rotator_angle_deg = _rotation.mechanical_to_sky(
@@ -6370,10 +6389,11 @@ class Hub:
         return self.session_stack_status()
 
     def reset_session_stack(self) -> dict:
-        """Throw the pixels away, keep the switch AND the identity. Dropping the
-        target/run here would make the next accepted frame reset a second time,
-        which is harmless but means the count the user just cleared briefly
-        comes back."""
+        """Throw EVERY panel's pixels away, keep the switch AND the run id.
+        Dropping the run here would make the next accepted frame drop the stack
+        a second time, which is harmless but means the count the user just
+        cleared briefly comes back. The panels themselves are not kept: they
+        are pixels, and the next frame of each makes its panel again."""
         st = self.session_stack
         st.reset(st.target, st.session)
         return self.session_stack_status()
@@ -6468,8 +6488,14 @@ class Hub:
         """(jpeg, meta) for the composite, or None when nothing is stacked."""
         return self.session_stack.rgb_preview(size)
 
-    def session_stack_add(self, info: dict, *, target: str = "") -> str | None:
+    def session_stack_add(self, info: dict, *, target: str = "",
+                          target_id: str = "") -> str | None:
         """Fold the light frame ``info`` describes into the session stack.
+
+        ``target`` and ``target_id`` name the PANEL the frame belongs to (#172):
+        the stack keeps one picture per panel and keys it by the id, because
+        names repeat in a plan with no group and ids do not. A caller that has
+        only a name still works and keys by it.
 
         Called from the sequence engine's frame loop with the frames its quality
         gate ACCEPTED, so what the composite shows is exactly what the run is
@@ -6504,7 +6530,8 @@ class Hub:
                 target=target, session=str(run),
                 bayer_pattern=effective_bayer(info.get("bayer_pattern"),
                                               info.get("binning")),
-                key=info.get("saved_path"))
+                key=info.get("saved_path"),
+                target_id=target_id or None)
         except Exception as e:                      # pragma: no cover - guard
             if not getattr(self, "_session_stack_warned", False):
                 self._session_stack_warned = True
@@ -6615,7 +6642,11 @@ class Hub:
         Best-effort throughout: a wheel that will not answer must not turn a
         solve — the thing that RECOVERS pointing — into an exception. Every
         failure path here leaves the solve to run on whatever is loaded, which
-        is exactly what it did before this existed.
+        is exactly what it did before this existed. The one thing a failure
+        does NOT do is forget a move that was already sent: a move that fails
+        half-way still returns the slot to restore whenever the wheel may have
+        left it (#723), because the caller's restore is the only thing that
+        keeps the engine's focus offset right.
         """
         from .focus.filter_offsets import solve_filter_slot
         fw = self.devices.get("filterwheel")
@@ -6650,7 +6681,45 @@ class Hub:
                 return None
             bus.log("info", f"plate solve: filter {names[int(current)]!r} → "
                             f"{names[want]!r}", "solve")
-            await fw.set_position(want)
+            try:
+                await fw.set_position(want)
+            except Exception as e:  # noqa: BLE001 — see below
+                # A MOVE THAT FAILS HALF-WAY IS STILL OWED ITS WAY BACK (#723).
+                # The command was SENT. An Alpaca wheel whose poll times out
+                # while it is in transit, or a reply that never arrives for a
+                # move that was accepted, raises here with the wheel on
+                # ``want`` or on its way there; falling through to the broad
+                # ``except`` below returned None, "nothing moved", and every
+                # caller reads that as nothing to put back. The solve then
+                # ran through luminance and left the wheel there, and the next
+                # frame's ``_apply_filter`` computed its focus offset from a
+                # slot the focuser never travelled to.
+                #
+                # So ask where the wheel is. Still on the slot it started on,
+                # and standing still: nothing is owed, and no second command
+                # goes to a wheel that has just refused one. Anywhere else, or
+                # no answer (a wheel that will not answer cannot be assumed to
+                # have stayed): the way back is owed, and the caller's
+                # ``finally`` sends it. "Standing still" is asked separately
+                # because an Alpaca wheel in transit reports Position -1 and
+                # ``get_position`` clamps that to 0, so a wheel that left slot
+                # 0 reads as still being on it.
+                try:
+                    where = int(await fw.get_position())
+                    moving = bool(await fw.is_moving())
+                except Exception:  # noqa: BLE001 - cannot tell, so assume it left
+                    where, moving = None, True
+                if where == int(current) and not moving:
+                    bus.log("warning",
+                            f"plate solve: the wheel would not move to "
+                            f"{names[want]!r} ({e}); solving through "
+                            f"{names[int(current)]!r}", "solve")
+                    return None
+                bus.log("warning",
+                        f"plate solve: the move to {names[want]!r} failed "
+                        f"({e}) after the wheel may have left "
+                        f"{names[int(current)]!r}; it will be sent back",
+                        "solve")
             return int(current)
         except Exception as e:  # noqa: BLE001 — a solve must still be attempted
             bus.log("warning", f"plate solve: could not choose a filter ({e}); "
@@ -8929,6 +8998,73 @@ class Hub:
                            if t is not None and not t.done()),
         }
 
+    async def _imaging_temperature(self, cam) -> tuple[float | None, bool]:
+        """The imaging camera's sensor temperature for the status frame,
+        BOUNDED (#724): ``(reading, True)``, or ``(None, False)`` when the
+        camera has not answered within ``STATUS_CAMERA_TEMPERATURE_TIMEOUT_S``.
+
+        The read runs as ONE task in flight, and the poll waits on it. A read
+        still blocked inside the SDK when the wait ends keeps its worker
+        thread, and a fresh one every two seconds on top of it would take a
+        thread a poll from the default executor until nothing else on the
+        server (exposures, solves, the guider) could use one, so while one is
+        outstanding no second is started, and the next poll waits on the same
+        one. A read that has FINISHED is never reused: the next poll asks again.
+
+        A read that RAISES raises out of here, as it always did (``CameraGone``
+        is the idle-unplug notice, and the caller's guard decides what a failed
+        read does to the block). The bound is for a read that does not return,
+        not a way to swallow one that does.
+
+        The second element tells the caller whether the camera answered at all:
+        a camera that has just failed to would only hold the rest of its block's
+        reads (cooler, dew heater, fan) in the same stall, so the caller skips
+        them for the tick. The stall is said once, when it starts, and again
+        only after an answer has ended it.
+        """
+        held = getattr(self, "_imaging_probe", None)
+        if held is not None and held[0] is cam and not held[1].done():
+            probe = held[1]
+        else:
+            coro = cam.get_temperature()
+            # STARTED EAGERLY where the runtime can (3.12+): a read that answers
+            # without suspending (the simulator, and any backend that serves a
+            # cached value) is finished before this line returns, so the common
+            # case costs the poll no trip round the event loop at all. Without
+            # it every status poll would yield here, and the polls that run
+            # concurrently (the background loop and /api/status) would reach
+            # their later device reads in a different order than they always
+            # have. 3.11 has no eager start and takes the ordinary task.
+            if hasattr(asyncio, "eager_task_factory"):
+                probe = asyncio.Task(coro, loop=asyncio.get_running_loop(),
+                                     eager_start=True)
+            else:
+                probe = asyncio.ensure_future(coro)
+            # Nobody awaits a probe that outlives its poll, so its exception is
+            # retrieved here or the loop reports "Task exception was never
+            # retrieved" once per stall that ends in an error.
+            probe.add_done_callback(lambda t: t.cancelled() or t.exception())
+            self._imaging_probe = (cam, probe)
+        if probe.done():
+            done = {probe}
+        else:
+            done, _pending = await asyncio.wait(
+                {probe}, timeout=STATUS_CAMERA_TEMPERATURE_TIMEOUT_S)
+        if probe not in done:
+            if not getattr(self, "_imaging_stalled", False):
+                self._imaging_stalled = True
+                bus.log("warning",
+                        f"{getattr(cam, 'name', 'the imaging camera')}: the "
+                        f"sensor temperature read has not returned in "
+                        f"{STATUS_CAMERA_TEMPERATURE_TIMEOUT_S:g} s; the status "
+                        f"frame goes without it, and without the cooler, dew "
+                        f"heater and fan readings, until it does", "camera")
+            return None, False
+        self._imaging_stalled = False
+        if probe.cancelled():
+            return None, False
+        return probe.result(), True
+
     async def poll_status(self) -> dict:
         out: dict[str, Any] = {"connected": self.summary()["devices"],
                                "looping": self.looping, "mode": self.mode}
@@ -9099,6 +9235,16 @@ class Hub:
                 self.last_meridian = meridian
             except Exception:
                 pass
+        # WHEN THE FOCUSER IS SAMPLED, for the fingerprint (#760). Stamped
+        # BEFORE the read, so a vouch that lands while this poll is still on
+        # its way to ``record`` (every await between here and there: the wheel,
+        # the dome, the rotator, the camera) is newer than the reading, and
+        # ``record`` knows to ignore a reading older than a measurement.
+        try:
+            from .devices import fingerprint as _fp_clock
+            _fp_stamp = _fp_clock.new_sample_stamp()
+        except Exception:  # noqa: BLE001 — bookkeeping must never break status
+            _fp_stamp = None
         foc = self.devices.get("focuser")
         if foc and foc.connected:
             try:
@@ -9283,7 +9429,12 @@ class Hub:
         cam = self.devices.get("camera")
         if cam and cam.connected:
             try:
-                temp = await cam.get_temperature()
+                # BOUNDED (#724), and a timeout is an UNKNOWN reading, not a
+                # failure: the block is still built, with ``temperature`` null,
+                # which every client already renders as "cannot say". The
+                # camera's other reads below are skipped on such a tick (see
+                # ``_imaging_temperature``): they ask the same stalled device.
+                temp, _cam_answered = await self._imaging_temperature(cam)
                 _bayer = normalise_bayer(getattr(cam, "bayer_pattern", None))
                 # CAN THIS CAMERA RECORD VIDEO AT ALL (D-RIG-1), answered
                 # BEFORE the press. Without it the only way to find out is to
@@ -9415,7 +9566,8 @@ class Hub:
                 # apart, which is why the rule lives at the redaction seam
                 # (where both nodes are in hand) and not here.
                 try:
-                    getd = getattr(cam, "get_dew_heater", None)
+                    getd = (getattr(cam, "get_dew_heater", None)
+                            if _cam_answered else None)
                     dew = await getd() if callable(getd) else None
                     if dew is not None:
                         out["camera"]["dew_heater"] = int(dew)
@@ -9425,7 +9577,8 @@ class Hub:
                 # cannot make it look like whatever was last written. Absent
                 # when unknown, never 0.
                 try:
-                    getf = getattr(cam, "get_fan_power", None)
+                    getf = (getattr(cam, "get_fan_power", None)
+                            if _cam_answered else None)
                     fan = await getf() if callable(getf) else None
                     if fan is not None:
                         out["camera"]["fan_power"] = int(fan)
@@ -9435,7 +9588,8 @@ class Hub:
                 # (sim power model, Alpaca coolerpower probe, NINA optional). The
                 # at_target band is the single shared COOLER_AT_TARGET_C so it
                 # never drifts from the engine's cooling-wait gate.
-                getc = getattr(cam, "get_cooler", None)
+                getc = (getattr(cam, "get_cooler", None)
+                        if _cam_answered else None)
                 if callable(getc):
                     cooler = await getc()
                     if cooler is not None:
@@ -9464,7 +9618,10 @@ class Hub:
         # the focuser, then waited, then wrote that reading could put a position
         # it took BEFORE the recovery ladder's sweep over the position the ladder
         # had just vouched for (``fingerprint.vouch``), and the next tick swept
-        # again. Recorded here, the wait cannot age the sample.
+        # again. Recorded here, the wait cannot age the sample. What is left of
+        # the window (the reads above, and the hop to the worker) is closed by
+        # the stamp taken before the focuser read: ``record`` ignores a reading
+        # older than the last vouch (#760).
         # Record last-known device state so a power cut is DETECTABLE on the way
         # back up. Read off ``out`` rather than re-querying: these values were
         # just measured, and a second round of device reads on the status path
@@ -9487,7 +9644,8 @@ class Hub:
                 _fp.record, focuser_position=_f.get("position"),
                 filter_slot=_w.get("position"),
                 ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
-                parked=_m.get("parked"), tracking=_m.get("tracking"))
+                parked=_m.get("parked"), tracking=_m.get("tracking"),
+                sample_stamp=_fp_stamp)
             # The worker records a slow write, the loop says it: bus.publish is
             # loop-affine (see fingerprint._slow_write_notice).
             _slow = _fp.take_slow_write_notice()
@@ -9508,7 +9666,7 @@ class Hub:
         #
         # BOUNDED TWICE. Five seconds, because the frame is worth more than the
         # answer and a USB stall on this camera must not hold it up (the
-        # imaging camera's read above has no bound and is not changed here). And
+        # imaging camera's read above is bounded the same way, #724). And
         # ONE PROBE IN FLIGHT: a read still blocked inside the SDK when the wait
         # ends keeps its worker thread, and a new probe every two seconds on top
         # of it would take a thread a poll from the default executor until

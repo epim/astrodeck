@@ -25,11 +25,21 @@
 // nothing left to greyscale: the bytes on screen are that channel alone, and a
 // greyscale over them would only be a second, invented, transfer function.
 // `cssFilter` is the stretch and nothing else.
+//
+// THE PANEL IS A DIFFERENT PICTURE TOO, AND IT CHANGES WHAT IS POLLED (#172). A
+// mosaic keeps one stack per panel. `panel` is the key of the one the operator
+// pinned, or null to follow the latest. Like the channel it names the URL the
+// picture is fetched from, but it also names the STATUS request: the server
+// answers `GET /api/sequence/stack?panel=<key>` with that panel's counts,
+// channels and `seq`, so everything that reads `useSessionStackStatus` (the
+// badge, the channel strip) describes the picture on screen without learning
+// about panels. `panels` itself is the stack's whole list whichever panel was
+// asked for, which is what the chip row is drawn from.
 
 import { useEffect, useState } from "react";
 import {
   backfillSessionStack, getSessionStack, resetSessionStack, startSessionStack,
-  stopSessionStack, type SessionStackStatus,
+  stopSessionStack, type SessionStackPanel, type SessionStackStatus,
 } from "../../../../api/sessionStack";
 
 // --------------------------------------------------------------- stretch
@@ -54,6 +64,7 @@ function readStretch(): StretchMode {
 
 let stretch: StretchMode = readStretch();
 let channel: string | null = null;
+let panel: string | null = null;
 const viewListeners = new Set<() => void>();
 
 function publishView(): void { for (const fn of viewListeners) fn(); }
@@ -67,8 +78,39 @@ export interface StackView {
    *  folds onto L there and would show L's picture under another label. */
   channel: string | null;
   setChannel: (c: string | null) => void;
+  /** The mosaic panel pinned on screen: `status.panels[].key`, or null to
+   *  FOLLOW THE LATEST (the panel the most recent frame fed). It goes on the
+   *  wire as `?panel=`, so it is the server's key and never a display name.
+   *  Dropped by itself when that panel is no longer stacked. */
+  panel: string | null;
+  setPanel: (p: string | null) => void;
   /** The CSS `filter` for the image: the stretch, and only the stretch. */
   cssFilter: string;
+}
+
+/** The label each panel's chip carries. Names are not unique (two targets in a
+ *  plan with no group can share one), and two identical chips cannot be told
+ *  apart, so a repeated name is numbered in the order the panels were first
+ *  seen: "M42 1", "M42 2". A name that is alone is left alone. */
+export function panelLabels(panels: readonly SessionStackPanel[]): string[] {
+  const seen = new Map<string, number>();
+  for (const p of panels) seen.set(p.target, (seen.get(p.target) ?? 0) + 1);
+  const next = new Map<string, number>();
+  return panels.map((p) => {
+    const name = p.target || "panel";
+    if ((seen.get(p.target) ?? 0) < 2) return name;
+    const n = (next.get(p.target) ?? 0) + 1;
+    next.set(p.target, n);
+    return `${name} ${n}`;
+  });
+}
+
+/** The panel the most recent frame fed: the one with the highest `seq`. Null
+ *  for an empty list. What a "follow the latest" view is showing. */
+export function latestPanel(panels: readonly SessionStackPanel[]): SessionStackPanel | null {
+  let best: SessionStackPanel | null = null;
+  for (const p of panels) if (best === null || p.seq > best.seq) best = p;
+  return best;
 }
 
 export function useStackView(): StackView {
@@ -82,6 +124,7 @@ export function useStackView(): StackView {
   return {
     stretch,
     channel,
+    panel,
     cssFilter: STRETCH_FILTER[stretch],
     setStretch: (m) => {
       stretch = m;
@@ -89,12 +132,22 @@ export function useStackView(): StackView {
       publishView();
     },
     setChannel: (c) => { channel = c; publishView(); },
+    setPanel: (p) => {
+      if (p === panel) return;
+      panel = p;
+      publishView();
+      // The status on screen describes the panel that WAS pinned. Waiting for
+      // the next ten-second tick would show the wrong counts under the new
+      // picture for ten seconds, so ask now.
+      void refresh().then(schedule);
+    },
   };
 }
 
 export function resetStackViewForTests(): void {
   stretch = "AUTO";
   channel = null;
+  panel = null;
   viewListeners.clear();
 }
 
@@ -128,8 +181,22 @@ function publishStack(next: StackState): void {
 }
 
 async function refresh(): Promise<void> {
+  const asked = panel;
   try {
-    const s = await getSessionStack();
+    const s = await getSessionStack(asked);
+    // The pinned panel is not stacked any more (the server released it for
+    // memory, or the stack was reset): an empty status would leave the picture
+    // blank while other panels have one, so the pin is dropped and the latest
+    // is asked for. Only while the pin is still the one this answer is for.
+    if (asked !== null && panel === asked
+        && !(s.panels ?? []).some((p) => p.key === asked)) {
+      panel = null;
+      publishView();
+      return refresh();
+    }
+    // The pin moved while this was in flight: a newer request is on its way
+    // and this answer describes a panel nobody is looking at.
+    if (panel !== asked) return;
     publishStack({ ...stack, status: s, error: null, answered: true });
   } catch (e) {
     // A failed poll is not worth a red panel: the run is unaffected and the next
@@ -171,7 +238,18 @@ export function useSessionStackStatus(): StackRead {
   const act = (fn: () => Promise<SessionStackStatus>) => {
     publishStack({ ...stack, busy: true });
     void fn().then(
-      (s) => { publishStack({ status: s, busy: false, error: null, answered: true }); schedule(); },
+      (s) => {
+        if (panel !== null) {
+          // These four routes answer with the LATEST panel, and a pinned panel
+          // is on screen: publishing that reply would put the wrong counts
+          // under the picture until the next tick. Ask for the pinned one.
+          publishStack({ ...stack, busy: false, error: null });
+          void refresh().then(schedule);
+          return;
+        }
+        publishStack({ status: s, busy: false, error: null, answered: true });
+        schedule();
+      },
       (e: Error) => { publishStack({ ...stack, busy: false, error: e.message }); },
     );
   };

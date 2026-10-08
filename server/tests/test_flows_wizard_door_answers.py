@@ -213,8 +213,16 @@ class _Wheel:
 #: with ``autoResume`` popped from each generated DUSK node the digest is
 #: the previous pin, 2a1d2378..., byte for byte. Regenerated from the SAME
 #: code path against the fixed code.
+#:
+#: RE-PINNED IN BACKLOG WP-118 (#195, wave 16 integration): the generated
+#: DUSK WINDOW no longer carries ``repeat`` (the select was retired, and
+#: ``generate()`` writes none), so every one of the 768 blobs loses the
+#: ``"repeat": "Single night"`` line and nothing else. PROVEN, not assumed:
+#: with ``repeat: "Single night"`` put back on each generated DUSK node (the
+#: key absent on every one first) the digest is the previous pin,
+#: 92aa6664..., byte for byte. Regenerated from the SAME code path.
 TODAYS_ANSWERS_SHA256 = \
-    "92aa6664eaf1af9e80467951bdc5c4db3a3f39e12113b7b9d7be184885598031"
+    "fc691c0b0e31789c330e9f67f9968b99c042d10cb718ff6d91f0386734757af3"
 
 #: The chip subsets the route is asked, one of each shape a new answer's
 #: default could move: none, the Guiding chip alone, every chip but it, and
@@ -979,6 +987,17 @@ class TestTheRecordedAnswer:
         backlog WP-85 #195, 2026-10-07): the recorded DUSK node gained
         ``"autoResume": "On"`` beside ``"repeat": "Single night"``, and
         nothing else moved (the byte diff of the file is that one line).
+
+        RE-RECORDED IN BACKLOG WP-118 (#195, wave 16): the recorded DUSK node
+        lost the retired ``repeat`` line and nothing else moved.
+
+        RE-RECORDED AGAIN AT THE WAVE 16 INTEGRATION
+        (``ASTRODECK_REWRITE_WIZARD_FIXTURE=1``, backlog WP-123 #177):
+        the answer's ``issues`` gained the one ``note`` row a mosaic that runs
+        with ``solve_saved_lights`` off now carries (``coverage.stamping_note``
+        through the compile route; ``test_w16_stamping_note_in_compile.py``).
+        The byte diff of the file is that one entry; the recorded session
+        leaves the setting at its default, off.
         """
         text = _recording(client, monkeypatch)
         if REWRITE:

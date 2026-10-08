@@ -96,5 +96,107 @@ class ReleasePipeline(unittest.TestCase):
         self.assertNotIn(".probe",publish["with"]["files"])
         self.assertIn("dist/*.whl",publish["with"]["files"])
 
+    # --- the container image (#655, WP-655A) ---------------------------------
+    def image_steps(self):
+        job=self.jobs["image"]
+        needs=job["needs"]
+        self.assertIn("publish",[needs] if isinstance(needs,str) else needs,"the image is built only after every artifact gate and publication")
+        self.assertFalse(any(s.get("continue-on-error",False) for s in job["steps"]))
+        def one(predicate,what):
+            found=[(i,s) for i,s in enumerate(job["steps"]) if predicate(s)]
+            self.assertEqual(1,len(found),what)
+            return found[0]
+        download=one(lambda s:s.get("uses","").startswith("actions/download-artifact@"),"exactly one artifact download")
+        stage=one(lambda s:"astrodeck_native-" in s.get("run",""),"exactly one step stages the wheels")
+        build=one(lambda s:s.get("uses","").startswith("docker/build-push-action@"),"exactly one image build")
+        probe=one(lambda s:"native_probe.py" in s.get("run",""),"exactly one native probe step")
+        retag=one(lambda s:"imagetools create" in s.get("run",""),"exactly one retag step")
+        return job,download,stage,build,probe,retag
+
+    def test_image_downloads_the_linux_native_wheels_it_installs(self):
+        """Named mutants, each run from a byte backup and restored, and the failure each produced:
+        IMAGE-DOWNLOAD-REMOVED (the actions/download-artifact step deleted)
+          AssertionError: 1 != 0 : exactly one artifact download
+        IMAGE-CONTEXT-IS-DOWNLOAD-DIR (build-contexts native= pointed at the download folder, which also holds the frozen binaries)
+          AssertionError: '${{ runner.temp }}/accepted' == '${{ runner.temp }}/accepted' : the build context must not be the download folder
+        """
+        _,download,stage,build,_,_=self.image_steps()
+        with_=download[1]["with"]
+        self.assertEqual("accepted-linux-*",with_["pattern"],"only the linux payloads: the image needs neither the windows or macos wheels nor the source bundle")
+        self.assertTrue(with_["merge-multiple"])
+        self.assertLess(download[0],stage[0])
+        self.assertLess(stage[0],build[0])
+        # The download folder also receives the two frozen binaries (hundreds of
+        # megabytes); only the wheels may reach the build, from a clean directory.
+        contexts=dict((k.strip(),v.strip()) for k,_,v in (l.partition("=") for l in build[1]["with"]["build-contexts"].splitlines() if l.strip()))
+        self.assertEqual(["native"],list(contexts),"the Dockerfile stage `native` is what the wheels replace")
+        self.assertNotEqual(with_["path"],contexts["native"],"the build context must not be the download folder")
+        self.assertNotIn("astrodeck-linux",stage[1]["run"],"a frozen binary must not enter the image build")
+
+    def test_image_build_requires_the_native_engine(self):
+        """Named mutant IMAGE-NATIVE-REQUIRED (build-args REQUIRE_NATIVE=1 changed to REQUIRE_NATIVE=0), run from a byte backup and restored:
+          AssertionError: 'REQUIRE_NATIVE=1' not found in {'REQUIRE_NATIVE=0'} : a release image without the engine must fail the build, not ship as a development image
+        """
+        _,_,_,build,_,_=self.image_steps()
+        args={l.strip() for l in build[1]["with"]["build-args"].splitlines() if l.strip()}
+        self.assertIn("REQUIRE_NATIVE=1",args,"a release image without the engine must fail the build, not ship as a development image")
+        self.assertEqual({"linux/amd64","linux/arm64"},set(build[1]["with"]["platforms"].split(",")))
+        self.assertTrue(build[1]["with"]["push"])
+
+    def test_nothing_user_visible_is_tagged_before_the_probe_passes(self):
+        """Named mutants, each run from a byte backup and restored, and the failure each produced:
+        IMAGE-PROBE-BEFORE-TAG (the imagetools retag step moved ahead of the probe step)
+          AssertionError: 8 not less than 7 : the retag that creates :latest comes after the probe
+        IMAGE-BUILD-TAGS-LATEST (the candidate build tagged :latest directly)
+          AssertionError: False is not true : the build pushes a candidate name only
+        IMAGE-PROBE-FAILURE-IGNORED (the docker run inside the probe given || true)
+          AssertionError: '||' unexpectedly found in 'for platform in linux/amd64 linux/arm64; do ...
+        IMAGE-RETAG-NOT-BY-DIGEST (the retag names the candidate tag, not the probed digest)
+          AssertionError: 'steps.candidate.outputs.digest' not found in '${{ env.IMAGE_REPO }}:candidate'
+        """
+        job,_,_,build,probe,retag=self.image_steps()
+        tags=[l.strip() for l in build[1]["with"]["tags"].splitlines() if l.strip()]
+        self.assertTrue(tags and all("candidate" in t for t in tags),"the build pushes a candidate name only")
+        for t in tags:
+            self.assertFalse(t.endswith(":latest") or "ref_name" in t,"the build must not give the image a user-visible name")
+        self.assertLess(build[0],probe[0])
+        self.assertLess(probe[0],retag[0],"the retag that creates :latest comes after the probe")
+        self.assertIn(":latest",retag[1]["run"])
+        self.assertIn("REF_NAME",retag[1]["run"])
+        for step in job["steps"]:
+            if step is not retag[1]:
+                self.assertNotIn(":latest",step.get("run","")+str(step.get("with","")),"only the retag step may create :latest")
+        # What is probed is what is promoted: both name the build's own digest.
+        digest="steps."+build[1]["id"]+".outputs.digest"
+        for _,step in (probe,retag):
+            self.assertIn(digest,step["env"]["IMAGE"])
+            self.assertNotIn("if",step,"neither the probe nor the retag may be skipped")
+            self.assertNotIn("||",step["run"],"a failed probe must stop the retag")
+
+    def test_image_probe_runs_the_baked_probe_on_both_platforms(self):
+        """Named mutants, each run from a byte backup and restored, and the failure each produced:
+        IMAGE-PROBE-ONE-ARCH (the probe loop reduced to linux/amd64)
+          AssertionError: 'linux/arm64' not found in 'for platform in linux/amd64; do ...
+        IMAGE-PROBE-NOT-ASSERTED (the grep for the printed verdict deleted)
+          AssertionError: '"native_available": true' not found in 'for platform in linux/amd64 linux/arm64; do ...
+        """
+        _,_,_,_,probe,_=self.image_steps()
+        text=probe[1]["run"]
+        for platform in ("linux/amd64","linux/arm64"):
+            self.assertIn(platform,text)
+        self.assertIn("docker run",text)
+        self.assertIn("python /opt/native_probe.py",text,"the probe the Dockerfile copies into the image, run inside it")
+        self.assertIn('"native_available": true',text,"the printed verdict is asserted, not only the exit status")
+
+    def test_image_workflow_names_match_the_dockerfile(self):
+        """Named mutants DOCKER-NATIVE-STAGE-REMOVED and DOCKER-PROBE-COPY-REMOVED (a Dockerfile line deleted), each restored:
+          AssertionError: 'FROM scratch AS native' not found in [...] : the build context name `native` replaces this stage
+          AssertionError: 'COPY packaging/native_probe.py /opt/native_probe.py' not found in [...] : the path the probe step runs
+        """
+        lines=(ROOT/"Dockerfile").read_text(encoding="utf-8").splitlines()
+        self.assertIn("FROM scratch AS native",lines,"the build context name `native` replaces this stage")
+        self.assertTrue(any(l.startswith("ARG REQUIRE_NATIVE=") for l in lines),"the build argument the workflow sets")
+        self.assertIn("COPY packaging/native_probe.py /opt/native_probe.py",lines,"the path the probe step runs")
+
 if __name__=="__main__":
     unittest.main()

@@ -31,7 +31,9 @@
 //     `#/classic` - is clamped at 0.6 exactly as before.
 //   - reverse-RA / reverse-Dec flip the commanded sign at post time.
 //   - an alt-guard checks status.mount.alt every keepalive tick; below
-//     MIN_SLEW_ALT_DEG it forceStops and emits a `belowHorizon` state.
+//     MIN_SLEW_ALT_DEG it forceStops and emits a `belowHorizon` state. It is
+//     OFF while the mount says it does not know where it points
+//     (`getPositionKnown`, #144): that altitude is the mount's home reading.
 //   - forceStop() is idempotent and POSTs rate 0 (panic path for lock/blur/
 //     visibility-hidden). Calling it when already stopped is harmless.
 //   - in NINA mode hold is disabled for ALL rates (NINA move_axis raises); a tap
@@ -105,6 +107,84 @@ export function slewRatesWithCeiling(
     { id: "ceiling", label: ceilingLabel(maxRateDegS), rateDegS: maxRateDegS }];
 }
 
+/** Index of the fastest rung on a ladder: the ceiling rung when the mount
+ *  reported a ceiling (it is always last), the shipped 0.5 deg/s top stop when
+ *  it did not. The one definition of "the ceiling rung" the pad uses when it
+ *  moves the selection for an operator who has to drive a tube by eye (#144),
+ *  so the pad and a test cannot disagree about which rung that is. An empty
+ *  ladder answers 0, never -1: the caller clamps into the array. */
+export function fastestRungIndex(rates: readonly SlewRateOption[]): number {
+  return Math.max(0, rates.length - 1);
+}
+
+// ------------------------------------------------- the mount does not know (#144)
+//
+// After a power cycle the AM5 reports its home position, pointing at the pole,
+// wherever the tube physically is. The server latches `status.mount.position_known`
+// False on that signature (devices/base.py `Telescope.position_known`) and keeps
+// it so until a plate-solved sync or the operator's word (`POST
+// /api/mount/trust-position`). While it is False a step is a goto from a position
+// that is wrong, so both UIs lock the steps, and the pad stops consulting
+// anything that reads the believed position.
+//
+// ONLY AN EXPLICIT `false` LOCKS ANYTHING. The server always sends the key now,
+// so ABSENT is an engine older than #144 and reads as known; a client that read
+// absence as "unknown" would lock every pad on every older rig.
+export function positionKnown(
+  mount: { position_known?: boolean } | null | undefined,
+): boolean {
+  return mount?.position_known !== false;
+}
+
+// The copy is written once, here, because three surfaces say it (the classic
+// view, the new sheet, and the pad both of them host) and a sentence that
+// differs between them is a sentence one of them has wrong. It says "a
+// plate-solve sync" and never a button's name: the classic view's button reads
+// "Solve & Sync" and the sheet's "SOLVE + SYNC", and a sentence that named one
+// would be wrong on the other. TRUST POSITION is the one label both share.
+//
+// A MOUNT POWERED UP PARKED AT HOME READS THE POLE TOO (WP-103's design note),
+// so this state is the ORDINARY start of every night, until the first plate-solve
+// sync. The wording therefore says what the mount is doing and what clears it, and
+// does not say "error", "lost" or "reset" as though something had gone wrong.
+// Hyphens, never em-dashes: the new UI forbids them and the classic strings read
+// the same either way.
+
+/** Why a step cannot run, and what unlocks it. Shown as the lock reason on RA
+ *  STEP / DEC STEP and as the toast when a locked tap is pressed. It says "steps
+ *  and nudges" because the new sheet calls them steps and the classic pad's NINA
+ *  arrows call them nudges; both are a move measured from the believed position. */
+export const POSITION_UNKNOWN_STEPS_REASON =
+  "Steps and nudges are measured from where the mount thinks it points, and it "
+  + "does not know: it is reporting its home position. A plate-solve sync, or "
+  + "TRUST POSITION when the tube really is at home, unlocks them.";
+
+/** The note over the pad. Says what the mount is doing (ordinary after any
+ *  power-up), what still works, and what teaches it where it is. */
+export const POSITION_UNKNOWN_NOTE =
+  "The mount is reporting its home position, as it does after any power-up or "
+  + "reset, so it does not know where the tube points. That is normal at the "
+  + "start of a night. Holding a pad key still moves the tube; a plate-solve "
+  + "sync teaches the mount where it is.";
+
+/** What the pad lost with the believed position: the horizon guard reads it. */
+export const ALT_GUARD_OFF_NOTE =
+  "Horizon guard is off while the mount does not know where it points: the pad "
+  + "cannot tell how low the tube is, so watch it.";
+
+export const TRUST_POSITION_LABEL = "TRUST POSITION";
+
+/** The attestation, in full, for the confirmation: what the operator is saying,
+ *  what it changes, and what to do instead when it is not true. */
+export const TRUST_POSITION_CONFIRM_TITLE = "Is the tube at home?";
+export const TRUST_POSITION_CONFIRM_BODY =
+  "You are saying the tube is physically at the mount's home or park position, "
+  + "the one it reports after a power-up. The mount's coordinates are then taken "
+  + "as true: moves measured from them unlock, and manual moves check the Sun "
+  + "against them. If the tube is anywhere else, cancel and run a plate-solve "
+  + "sync instead.";
+export const TRUST_POSITION_CONFIRM_LABEL = "The tube is at home";
+
 export const TOUCH_MAX_RATE_DEG_S = 0.6; // mirror of server clamp (R2/R24)
 export const MIN_SLEW_ALT_DEG = 10;      // client alt-guard (R30)
 // ~½ the 1200ms server deadman (F-A2): ~3 stamps per window so one throttled/
@@ -133,6 +213,14 @@ export interface SlewControllerOpts {
   reverseRa: () => boolean;
   reverseDec: () => boolean;
   getAlt: () => number | null;                         // status.mount.alt for the guard
+  /** Does the mount know where it points (`status.mount.position_known`, #144)?
+   *  While this answers false the altitude guard is NOT consulted, at the gate
+   *  or on the keepalive: `getAlt` then reads the mount's home position, and an
+   *  altitude read at the pole is the site latitude, not the tube's height. A
+   *  guard on that number trips on nothing or waves a slew toward the horizon
+   *  through. Optional, so a caller that never passes it keeps the guard exactly
+   *  as it was. */
+  getPositionKnown?: () => boolean;
   /** How fast THIS mount will actually slew, deg/s (D-RIG-4), from
    *  `status.mount.max_rate_deg_s`. `null` means the driver did not say, which
    *  is NOT "no limit": the clamp falls back to TOUCH_MAX_RATE_DEG_S, exactly
@@ -258,12 +346,20 @@ export class SlewController {
     return this.o.isNina?.() ?? false;
   }
 
+  // The altitude the guard may act on: null when the mount cannot vouch for it.
+  // One place, so the gate and the keepalive cannot disagree about when the
+  // guard is off (the two sites that read it are startHold and keepaliveTick).
+  private guardAlt(): number | null {
+    if (this.o.getPositionKnown && !this.o.getPositionKnown()) return null;
+    return this.o.getAlt();
+  }
+
   // --------------------------------------------------------------- hold (slew)
   startHold(axis: Axis, dir: Dir): void {
     if (this.isNina()) return;                 // NINA: no continuous slew (R8)
     if (this.o.getRate().rateDegS <= 0) return; // pulse rate is tap-only
     // Alt-guard at the gate: don't even start below the horizon limit.
-    const alt = this.o.getAlt();
+    const alt = this.guardAlt();
     if (alt != null && alt < MIN_SLEW_ALT_DEG) {
       this.tripBelowHorizon();
       return;
@@ -313,7 +409,7 @@ export class SlewController {
   // re-check the alt-guard — a slew that drifts below the horizon auto-stops.
   private keepaliveTick(): void {
     if (!this.holding || !this.curAxis || !this.curDir) return;
-    const alt = this.o.getAlt();
+    const alt = this.guardAlt();
     if (alt != null && alt < MIN_SLEW_ALT_DEG) {
       this.tripBelowHorizon();
       return;

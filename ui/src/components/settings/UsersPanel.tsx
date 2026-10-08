@@ -78,6 +78,14 @@ function errText(e: unknown, fallback: string): string {
   return fallback;
 }
 
+/** Where a Google sign-in started from the CLASSIC People panel asks to come
+ *  back to (#733): the classic Settings screen, which holds this panel. A bare
+ *  hash fragment on purpose, and the whole of what the rig accepts as a return
+ *  (`[A-Za-z0-9/_-]` after `#/`): nothing here can name another origin.
+ *  `w16ClassicGoogleReturn.test.tsx` has the classic router read it, so a
+ *  renamed view fails there instead of sending the person to the home screen. */
+export const CLASSIC_PEOPLE_RETURN = "#/classic/settings";
+
 export default function UsersPanel(): JSX.Element {
   const me = usePrincipal();
   const [users, setUsers] = useState<User[] | null>(null);
@@ -691,7 +699,7 @@ function StepUpNotice({ stepUp }: { stepUp: UseStepUpResult }): JSX.Element {
                 <button
                   type="button"
                   className="btn btn-accent min-h-[44px] sm:min-h-0"
-                  onClick={stepUp.signInGoogle}
+                  onClick={() => stepUp.signInGoogle(CLASSIC_PEOPLE_RETURN)}
                   data-testid="users-stepup-google"
                 >
                   {SIGN_IN_GOOGLE}

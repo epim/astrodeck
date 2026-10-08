@@ -147,10 +147,19 @@ class TestTheDoctorsWorkedCase:
     def test_m6s_sentence_is_otherwise_unchanged(self):
         """Control: the ruling words the case, not the rule. The 4x1 at 10%
         at Dec 75, laid out at angle 0, still draws M6's one sentence, with
-        its remedy of fewer columns, and no grid size in it."""
+        its remedy of fewer columns, and no grid size in it.
+
+        RE-PINNED FOR BACKLOG WP-124 (#175, wave 16 integration): M6 prices
+        the camera that shoots every panel at ONE angle. A rotating block is
+        commanded each panel's own angle now and M6 is silent for it, so the
+        block here is the fixed camera it was always meant to be
+        (``angle="Camera fixed at PA"``, the same pin test_flows_doctor_s3.py
+        carries as ``FIXED``); a rotating block left in would draw no
+        sentence to compare."""
         g = _block(1, 4, "")
         node = g.node("t")
-        node.params.update(overlap=10, dec="+75 00 00", rotation=0)
+        node.params.update(overlap=10, dec="+75 00 00", rotation=0,
+                           angle="Camera fixed at PA")
         (issue,) = [i for i in doctor.check(g) if "convergence" in i.text]
         assert issue.level == "warn"
         assert issue.text == (

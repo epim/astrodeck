@@ -59,11 +59,100 @@ mutant text grepped out afterwards, and what each printed:
   test_a_beacon_that_cannot_be_built_never_stops_the_ping: `assert (2 == 1)`.
 
   (M7 of test_w15_rig_beacon.py, the alphabet-not-grammar gate, also fails
-  test_text_outside_the_closed_vocabulary_is_never_sent here.)"""
+  test_text_outside_the_closed_vocabulary_is_never_sent here.)
+
+#735 and #736 (WP-142) are after those. MUTANTS RUN, same procedure, and what
+each printed:
+
+  M9 (#735), the arm catches nothing that escapes (``except Exception as e:``
+  in ``_deadman_ping_now`` -> ``except ZeroDivisionError as e:``). 6 failed,
+  the exception out of ``deadman_ping`` each time: the four ids of
+  test_a_dead_man_url_httpx_cannot_build_a_request_for_warns_once_and_never_raises
+  (`httpx.InvalidURL: Invalid port: 'abc'`, `httpx.InvalidURL: Invalid
+  non-printable ASCII character in URL, '\\n' at position 62.`,
+  `idna.core.IDNAError: Malformed A-label, no Punycode eligible content found`,
+  `UnicodeEncodeError: 'utf-8' codec can't encode character '\\ud800' in
+  position 0: surrogates not allowed`), the pipelined id (`httpx.InvalidURL:
+  Invalid port: 'abc'`, out of the ping's own task) and
+  test_an_unexpected_failure_inside_the_ping_is_said_once_and_never_escapes
+  (`RuntimeError: the monitor object blew up: ...`).
+
+  M10 (#735), the arm only knows a refused url (``except Exception as e:`` ->
+  ``except (httpx.InvalidURL, ValueError) as e:``). 1 failed,
+  test_an_unexpected_failure_inside_the_ping_is_said_once_and_never_escapes:
+  `RuntimeError: the monitor object blew up: ...` out of ``deadman_ping``.
+
+  M11 (#735), the latch is never stamped (``self._deadman_warned = url``
+  dropped from the arm). 6 failed: the second ping says it again (`AssertionError:
+  ["dead-man's-switch url is not one the HTTP client can build a request for
+  (<url>): InvalidURL ... it is being SKIPPED ...", "..." ]`, four ids and the
+  unexpected-failure id) and the badge stays green (`assert True is False` on
+  ``health()["deadman"]["healthy"]``, the pipelined id).
+
+  M12 (#735), the url is not scrubbed (``self._scrub_url(url)`` -> ``url`` in
+  the refused branch). 4 failed, the four ids of the first test above:
+  `AssertionError: the warning carried the ping secret: ['3f2a9c1e',
+  'secretuuid', '/ping/']: dead-man's-switch url is not one the HTTP client
+  can build a request for (https://hc.example.org:abc/ping/3f2a9c1e-0000-4abc-9def-secretuuid): InvalidURL ...`.
+
+  M13 (#735), the exception's text rather than its type (``{type(e).__name__}``
+  -> ``{e}`` in the generic branch). 1 failed,
+  test_an_unexpected_failure_inside_the_ping_is_said_once_and_never_escapes:
+  `AssertionError: the warning carried the ping secret: [... 'RUNSECRET',
+  'QUERYSECRET', 'user:pw', 'pw@']: dead-man's-switch ping failed before it
+  could be sent (https://hc.example.org:8443/<path withheld>): the monitor
+  object blew up: https://user:pw@hc.example.org:8443/ping/...`.
+
+  M14 (#736), httpx's logger left on (``_HTTP_CLIENT_LOGGERS = ("httpx",
+  "httpcore")`` -> ``("httpcore",)``). 2 failed,
+  test_a_process_logging_at_info_never_writes_the_dead_man_path
+  (`AssertionError: the dead-man path reached a log at INFO: httpx: HTTP
+  Request: GET http://127.0.0.1:56932/ping/3f2a9c1e-0000-4abc-9def-secretuuid
+  "HTTP/1.1 200 OK"`) and test_httpcores_own_trace_stays_out_of_a_process_logging_at_debug
+  (`http client loggers wrote at DEBUG: ['httpx']`).
+
+  M15 (#736), httpcore's logger left on (``("httpx",)``). 1 failed,
+  test_httpcores_own_trace_stays_out_of_a_process_logging_at_debug:
+  `AssertionError: http client loggers wrote at DEBUG: ['httpcore.connection',
+  'httpcore.http11']: httpcore.connection: connect_tcp.started host='127.0.0.1'
+  port=61486 ...`.
+
+  M16 (#736), the level too lenient (``setLevel(logging.WARNING)`` ->
+  ``setLevel(logging.INFO)``). 2 failed, the two ids of M14, the same
+  `httpx: HTTP Request: GET http://127.0.0.1:61616/ping/...secretuuid` line.
+
+  M17 (#736), never applied (the ``_quiet_http_client_logs()`` call at import
+  removed). 2 failed, the two ids of M14 (the DEBUG one with
+  `['httpcore.connection', 'httpcore.http11', 'httpx']`).
+
+  Both #736 tests first switch the logger ON and assert the capture then holds
+  the secret path (and httpcore's trace): a harness that cannot see the line
+  would pass whatever the production code did.
+
+  Added in review: M9-M17 all failed, yet the wording of the two branches of
+  the new arm still passed under both of these:
+
+  M18 (#735), a refused url is said as an unforeseen failure (``if
+  isinstance(e, (httpx.InvalidURL, ValueError)):`` -> ``if False:``). 4 failed,
+  the four ids of
+  test_a_dead_man_url_httpx_cannot_build_a_request_for_warns_once_and_never_raises:
+  `assert 'SKIPPED' in "dead-man's-switch ping failed before it could be sent
+  (https://xn--/<path withheld>): IDNAError ... no ping left, and this is not
+  the monitor's doing"` (and the same for the other three urls).
+
+  M19 (#735), an unforeseen failure is said as a url problem (the same line ->
+  ``if True:``). 1 failed,
+  test_an_unexpected_failure_inside_the_ping_is_said_once_and_never_escapes:
+  `assert 'SKIPPED' not in "dead-man's-switch url is not one the HTTP client
+  can build a request for (https://hc.example.org:8443/<path withheld>):
+  RuntimeError ... it is being SKIPPED and no pings are being sent; check the
+  port and any stray characters in it"`."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 
 import httpx
 import pytest
@@ -766,3 +855,203 @@ async def test_the_pipelined_ping_posts_the_beacon_too():
     await disp._deadman_task
     assert seen[0][0] == "POST" and seen[0][2] == BEACON.encode(), seen
     await disp._client.aclose()
+
+
+# ----------------------------------------------- #735: a url httpx will not build a request for
+
+#: Each of these is one httpx refuses while it BUILDS the request, before any
+#: socket exists, and none is an ``httpx.HTTPError``: ``InvalidURL`` derives
+#: from ``Exception``, and the IDNA and encoding failures are ``ValueError``s.
+#: ``_url_is_safe`` passes all four (it reads the scheme and the host, never
+#: the port or the encoding), so each reaches the client. Every one carries
+#: the same path secret, so a warning that echoed the url would show it.
+_PATH_SECRET = "3f2a9c1e-0000-4abc-9def-secretuuid"
+_UNBUILDABLE = {
+    "non-numeric port": f"https://hc.example.org:abc/ping/{_PATH_SECRET}",
+    "control character": f"https://hc.example.org/ping/{_PATH_SECRET}\n",
+    "bad idna label": f"https://xn--/ping/{_PATH_SECRET}",
+    "lone surrogate": f"https://hc.example.org/ping/{_PATH_SECRET}\ud800",
+}
+
+
+@pytest.mark.parametrize("what", list(_UNBUILDABLE))
+async def test_a_dead_man_url_httpx_cannot_build_a_request_for_warns_once_and_never_raises(what):
+    """#735: ``InvalidURL`` escaped ``except (httpx.HTTPError, OSError)``, so
+    ``_deadman_warned`` stayed None and nothing was ever said: an owner who
+    pasted a url with a typo in the port believed the rig was watched, the
+    settings badge read 'waiting' forever with ``healthy`` true, and the
+    wall-clock loop's own ``except Exception: pass`` ate the error. Now the
+    ping says so ONCE, with the scrubbed url and the exception's type, marks
+    the dead-man unhealthy, never raises, and recovers when the url is fixed."""
+    url = _UNBUILDABLE[what]
+    with pytest.raises(Exception) as refused:
+        httpx.Request("GET", url)           # the precondition: httpx itself refuses it
+    assert not isinstance(refused.value, httpx.HTTPError)
+
+    seen, handler = _recorder()
+    cfg = AppConfig(deadman_url=url)
+    disp, bus = _dispatcher(cfg, handler)
+    sub = bus.subscribe()
+    await disp.deadman_ping()               # before the fix this raised
+    await disp.deadman_ping()               # a second ping must not say it again
+    warnings = _warnings(sub)
+    assert len(warnings) == 1, warnings
+    said = warnings[0]
+    leaked = [p for p in ("3f2a9c1e", "secretuuid", "/ping/") if p in said]
+    assert not leaked, f"the warning carried the ping secret: {leaked}: {said}"
+    assert "dead-man" in said and type(refused.value).__name__ in said, said
+    # The branch that tells the owner what to fix: a url httpx refuses is NOT pinged,
+    # and the line says so, where a failure nobody foresaw must not claim it is the url.
+    assert "SKIPPED" in said, said
+    assert "<path withheld>" in said or "<url>" in said, said
+    assert seen == [], "a ping left for a url that cannot be built"
+    dm = disp.health()["deadman"]
+    assert dm["configured"] is True and dm["healthy"] is False, dm
+    assert dm["last_ok_age_s"] is None, dm
+
+    cfg.deadman_url = URL                   # the owner fixes the url
+    await disp.deadman_ping()
+    dm = disp.health()["deadman"]
+    assert dm["healthy"] is True and dm["last_ok_age_s"] is not None, dm
+    assert [m for m, *_ in seen] == ["GET"], seen
+    await disp._client.aclose()
+
+
+async def test_the_pipelined_ping_of_an_unbuildable_url_warns_instead_of_raising_into_its_task():
+    """While the outbox pipeline is live the ping runs on its own task, where
+    the exception sat unretrieved: nothing awaited it, so nothing ever read it
+    and the only trace was asyncio's 'exception was never retrieved' at
+    shutdown, if the loop was still around to print it."""
+    disp, bus = _dispatcher(AppConfig(deadman_url=_UNBUILDABLE["non-numeric port"]),
+                            lambda req: httpx.Response(200))
+    sub = bus.subscribe()
+    disp._outbox_ready = asyncio.Event()      # what run() sets: the pipeline is live
+    await disp.deadman_ping()
+    task = disp._deadman_task
+    assert task is not None
+    await task                                # raised InvalidURL before the fix
+    assert task.exception() is None
+    warnings = _warnings(sub)
+    assert len(warnings) == 1 and "dead-man" in warnings[0], warnings
+    assert disp.health()["deadman"]["healthy"] is False
+    await disp._client.aclose()
+
+
+async def test_an_unexpected_failure_inside_the_ping_is_said_once_and_never_escapes(monkeypatch):
+    """The ping is the one thing this exists for, so nothing it can hit may
+    leave it silently. A failure that is neither a transport error nor a url
+    httpx refuses is still said once, by type (the text is whatever raised
+    it, and here it carries the url)."""
+    disp, bus = _dispatcher(AppConfig(deadman_url=SECRET_URL), lambda req: httpx.Response(200))
+    sub = bus.subscribe()
+
+    async def boom(client, url):
+        raise RuntimeError(f"the monitor object blew up: {url}")
+
+    monkeypatch.setattr(disp, "_send_deadman", boom)
+    await disp.deadman_ping()
+    await disp.deadman_ping()
+    warnings = _warnings(sub)
+    assert len(warnings) == 1, warnings
+    leaked = [p for p in SECRET_PIECES if p in warnings[0]]
+    assert not leaked, f"the warning carried the ping secret: {leaked}: {warnings[0]}"
+    assert "dead-man" in warnings[0] and "RuntimeError" in warnings[0], warnings
+    assert "SKIPPED" not in warnings[0], warnings   # not a url problem, and not said as one
+    assert disp.health()["deadman"]["healthy"] is False
+    await disp._client.aclose()
+
+
+# ----------------------------------------------- #736: httpx's own logger and the ping secret
+
+_LOOPBACK_PATH = f"/ping/{_PATH_SECRET}"
+
+
+@contextlib.asynccontextmanager
+async def _loopback_monitor():
+    """A real listening socket that answers 200 to whatever asks. The ping has
+    to leave through httpx's real transport and httpcore: ``MockTransport``
+    skips httpcore altogether, so its logger would never be exercised."""
+    async def serve(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    try:
+        yield server.sockets[0].getsockname()[1]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def _ping_a_loopback_monitor(caplog, level) -> list[logging.LogRecord]:
+    """One real dead-man ping while the ROOT logger is at ``level``, which is
+    what ``logging.basicConfig(level=...)`` does to a process. Returns every
+    record the capture saw."""
+    caplog.clear()
+    caplog.set_level(level)
+    async with _loopback_monitor() as port:
+        disp = AlertDispatcher(
+            EventBus(),
+            lambda: AppConfig(deadman_url=f"http://127.0.0.1:{port}{_LOOPBACK_PATH}"))
+        disp._client = httpx.AsyncClient(trust_env=False, timeout=5.0)
+        await disp.deadman_ping()
+        assert disp.health()["deadman"]["last_ok_age_s"] is not None, \
+            "the ping never reached the monitor, so there is nothing to check"
+        await disp._client.aclose()
+    return list(caplog.records)
+
+
+def _said_in(records: list[logging.LogRecord]) -> str:
+    return "\n".join(f"{r.name}: {r.getMessage()} {r.args!r}" for r in records)
+
+
+async def test_a_process_logging_at_info_never_writes_the_dead_man_path(caplog):
+    """#736: httpx writes ``HTTP Request: GET <the whole url> "HTTP/1.1 200
+    OK"`` at INFO on the ``httpx`` logger. For a healthchecks-style monitor
+    the path IS the ping secret, and whoever holds it can ping the check as
+    healthy or pause it (#694). Nothing configures a handler today, so nothing
+    is written; a ``logging.basicConfig(level=INFO)``, a debug flag or a
+    wrapper that captures root logs would put it in stderr and every log file.
+    The same line carries a Telegram bot token or a Slack/Discord webhook
+    path for every other sink, so the cure is on the logger, not the ping."""
+    logger = logging.getLogger("httpx")
+    prior = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        control = await _ping_a_loopback_monitor(caplog, logging.INFO)
+    finally:
+        logger.setLevel(prior)
+    # A check is only worth anything if its harness can SEE the line: with
+    # httpx's logger switched on, the capture must hold the secret path.
+    assert any(_LOOPBACK_PATH in r.getMessage() for r in control), _said_in(control)
+
+    records = await _ping_a_loopback_monitor(caplog, logging.INFO)
+    said = _said_in(records)
+    leaked = [p for p in (_PATH_SECRET, _LOOPBACK_PATH) if p in said]
+    assert not leaked, f"the dead-man path reached a log at INFO: {said}"
+    assert not [r for r in records if r.name == "httpx"], said
+
+
+async def test_httpcores_own_trace_stays_out_of_a_process_logging_at_debug(caplog):
+    """The same cure for ``httpcore``: its DEBUG trace names the host and port
+    of every connection it opens (and any later version may add more), so it
+    stays at WARNING with httpx's. At root DEBUG nothing from either may be
+    written, and the secret path is in no record at all."""
+    logger = logging.getLogger("httpcore")
+    prior = logger.level
+    logger.setLevel(logging.DEBUG)
+    try:
+        control = await _ping_a_loopback_monitor(caplog, logging.DEBUG)
+    finally:
+        logger.setLevel(prior)
+    assert any(r.name.startswith("httpcore") for r in control), _said_in(control)
+
+    records = await _ping_a_loopback_monitor(caplog, logging.DEBUG)
+    said = _said_in(records)
+    noisy = sorted({r.name for r in records if r.name.split(".")[0] in ("httpx", "httpcore")})
+    assert not noisy, f"http client loggers wrote at DEBUG: {noisy}: {said}"
+    assert _PATH_SECRET not in said, said

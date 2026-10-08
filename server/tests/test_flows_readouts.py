@@ -372,15 +372,18 @@ class TestTheEfficiency:
 class TestTheAngleAndTheFocus:
     def test_the_angle_tolerance_is_frameings(self):
         """The group's ``angle_tolerance_deg``, which ``to_plan`` takes from
-        ``framing.angle_tolerance_deg`` (A.2 with convergence's share first):
-        about 6.0 deg for this 3x2 at Dec 41 (A.2's 3x3 reads 5.97)."""
+        ``framing.angle_tolerance_deg``. This block rotates and turns 1.3 deg
+        at its corners, over the rotator's 1 deg, so its panels are each
+        commanded their own angle (#175) and convergence takes nothing from
+        the budget: the single-panel figure, about 6.4 deg for 2.0 x 1.33 deg
+        at 25% (A.2's k = 0.5 table), where a fixed 3x2 at Dec 41 keeps 6.0."""
         b = _block(_looped())
-        spec = {"ra_hours": framing_ra(), "dec_deg": 41.0, "rows": 2,
-                "cols": 3, "overlap": 0.25, "rotation_deg": 0.0,
+        spec = {"ra_hours": framing_ra(), "dec_deg": 41.0, "rows": 1,
+                "cols": 1, "overlap": 0.25, "rotation_deg": 0.0,
                 "fov_x_deg": 2.0, "fov_y_deg": 1.33}
         assert b["angle_tolerance_deg"] == round(
             framing.angle_tolerance_deg(spec), 3)
-        assert 5.9 < b["angle_tolerance_deg"] < 6.1
+        assert 6.3 < b["angle_tolerance_deg"] < 6.4
 
     @pytest.mark.parametrize("focus, expected", [
         ({}, FOCUS_ONCE),

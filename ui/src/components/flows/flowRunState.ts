@@ -96,6 +96,47 @@ export function isRunPhaseLive(phase: string): boolean {
   return phase === "running" || phase === "holding" || phase === "stopping";
 }
 
+/** Did this write of the sequence state END a live run, whoever's it was?
+ *
+ *  True when the run was live (`runIsLive`: running, paused, holding for cloud or
+ *  winding down from an abort) in `prev` and is not in `next`. NOT a question
+ *  about flows: no session, no open record and no `knownSessions` are read, which
+ *  is the point (#717). `onSequence`'s own test of a run's end asks whether the
+ *  ended session is one the OPEN flow knows, and `knownSessions` answers none
+ *  while no flow is open, so a run that ended with the editor closed (or with
+ *  another flow open) never reached the latch.
+ *
+ *  Only a live-to-not-live write counts. A write inside a run (a frame, a hold
+ *  starting, paused to aborting), the engine's first publish (idle to running)
+ *  and a terminal state that nothing live preceded (a reconnect's snapshot of
+ *  last night's run) end nothing: each of those can arrive just after
+ *  `flowsRun` set a latch for a start the engine has not published yet, which
+ *  is the very window the latch exists to bridge. */
+export function liveRunEnded(prev: SequenceState | null | undefined,
+                             next: SequenceState | null | undefined): boolean {
+  return runIsLive(prev) && !runIsLive(next);
+}
+
+/** Should the client's optimistic `flows.run.phase` be let go for this write of
+ *  the sequence state (#717)? `phase` is the latch now, `ownFlowRunEnded` the
+ *  slice's long-standing test (the ended run's session is one the OPEN flow
+ *  knows), `prev` and `next` the sequence before and after the write.
+ *
+ *  The latch is `flowsRun`'s guess, written the instant its POST returns and
+ *  never confirmed by anything server-side, and four readers take it raw with
+ *  no bridge of their own (`FlowEditor`, `FlowWireLayer`, `FlowWires`,
+ *  `FlowCanvasToolbar`): a stale 'running' draws a flow with no run as one with
+ *  its wires marching. So it ends when the open flow's own run ended (as before)
+ *  OR when any live run ended (`liveRunEnded`), with a flow open or not.
+ *
+ *  An already-idle latch answers false, so a subscription that runs on every
+ *  sequence write does not rewrite `flows.run` on every status tick. */
+export function runLatchEnds(phase: string, ownFlowRunEnded: boolean,
+                             prev: SequenceState | null | undefined,
+                             next: SequenceState | null | undefined): boolean {
+  return isRunPhaseLive(phase) && (ownFlowRunEnded || liveRunEnded(prev, next));
+}
+
 /** The published group of the block whose `group_id` is `groupId`, or null.
  *
  *  The engine publishes `state.group` only while the target it is on belongs

@@ -24,7 +24,8 @@ import math
 
 import pytest
 
-from astrodeck.catalog.framing import deproject, project
+from astrodeck.catalog.framing import (
+    compute_mosaic, deproject, panel_convergence_deg, project)
 from astrodeck.catalog.region import (
     WcsPlate,
     frame_geometry,
@@ -86,6 +87,110 @@ def test_project_matches_the_typescript_mirror(ra, dec, ra0, dec0, xi, eta):
     px, peta = project(ra, dec, ra0, dec0)
     assert px == pytest.approx(xi, rel=1e-12, abs=1e-15)
     assert peta == pytest.approx(eta, rel=1e-12, abs=1e-15)
+
+
+# ----------------------------------------------- the per-panel position angle
+#
+# GOLDEN VECTORS FOR ``compute_mosaic``'S TWO PER-PANEL KEYS (#175, backlog
+# WP-124), the same numbers as ``GOLDEN`` in
+# ``ui/src/lib/__tests__/w16PanelPa.test.ts``: ``convergence_deg`` (local north
+# at the panel on the grid's tangent plane, from +eta toward +xi) and
+# ``pa_deg`` (the layout angle plus it, wrapped into [0, 360)). Printed from
+# the TypeScript mirror at full precision; the two languages agree to 1.3e-10
+# deg (the trig libraries' last place, taken up by the projection's 1e-4 deg
+# probe), so both hold them to 1e-8. The sign is the rig's: image up is north
+# rotated toward WEST by CROTA2 (confirmed on a real solve, #175), which puts
+# positive convergence on the panels WEST of the centre (column 0).
+
+_PANEL_BASE = dict(ra_hours=6.0, dec_deg=75.0, rows=3, cols=3, overlap=0.25,
+                   rotation_deg=0.0, fov_x_deg=2.0, fov_y_deg=1.33)
+
+_PANEL_PA_GOLDEN = [
+    # (name, spec overrides, [(row, col, convergence_deg, pa_deg), ...])
+    ("Dec 75, layout 0 (issue #175's 5.97 deg)", {}, [
+        (0, 0, 5.9654296824786535, 5.9654296824786535),
+        (0, 1, 0, 0),
+        (0, 2, -5.9654296824786535, 354.03457031752134),
+        (1, 2, -5.580364025849719, 354.41963597415025),
+        (1, 1, 0, 0),
+        (1, 0, 5.580364025976295, 5.580364025976295),
+        (2, 0, 5.2418652672010495, 5.2418652672010495),
+        (2, 1, 0, 0),
+        (2, 2, -5.2418652672010495, 354.75813473279896),
+    ]),
+    ("Dec 41, layout 0 (issue #175's 1.32 deg)", {"dec_deg": 41.0}, [
+        (0, 0, 1.3237314315092013, 1.3237314315092013),
+        (0, 1, 0, 0),
+        (0, 2, -1.3237314315092013, 358.6762685684908),
+        (1, 2, -1.303705065822304, 358.6962949341777),
+        (1, 1, 0, 0),
+        (1, 0, 1.303705065822304, 1.303705065822304),
+        (2, 0, 1.2842755162870618, 1.2842755162870618),
+        (2, 1, 0, 0),
+        (2, 2, -1.2842755162870618, 358.71572448371296),
+    ]),
+    ("Dec 75, layout 358 (the wrap)", {"rotation_deg": 358.0}, [
+        (0, 0, 5.845261522679594, 3.845261522679607),
+        (0, 1, -0.13894296730754027, 357.8610570326925),
+        (0, 2, -6.076987218756715, 351.9230127812433),
+    ]),
+    ("Dec 60, layout 37, 2 rows by 3 columns",
+     {"dec_deg": 60.0, "rows": 2, "cols": 3, "rotation_deg": 37.0}, [
+         (0, 0, 2.5541353140949665, 39.554135314094964),
+         (0, 1, 0.5262056577787382, 37.52620565777874),
+         (0, 2, -1.6182654363403373, 35.38173456365966),
+         (1, 2, -2.6331231655053107, 34.36687683449469),
+         (1, 1, -0.5136848230263885, 36.48631517697361),
+         (1, 0, 1.4958461166961985, 38.4958461166962),
+     ]),
+    ("Dec 80, 4 columns by 1 row, 10% overlap",
+     {"dec_deg": 80.0, "rows": 1, "cols": 4, "overlap": 0.1}, [
+         (0, 0, 14.962769174968981, 14.962769174968981),
+         (0, 1, 5.0907153626880515, 5.0907153626880515),
+         (0, 2, -5.090715362751404, 354.9092846372486),
+         (0, 3, -14.962769174968981, 345.03723082503103),
+     ]),
+]
+
+
+@pytest.mark.parametrize("name,over,rows", _PANEL_PA_GOLDEN,
+                         ids=[g[0] for g in _PANEL_PA_GOLDEN])
+def test_panel_pa_matches_the_typescript_mirror(name, over, rows):
+    """``compute_mosaic``'s ``convergence_deg`` and ``pa_deg`` are the
+    numbers the TypeScript mirror prints for the same layouts, both ways
+    round: this file holds the server to them, ``w16PanelPa.test.ts`` the
+    mirror.
+
+    Mutant "n_i sign flipped" (``panel_convergence_deg`` returning the
+    negative) fails the first row of every case, e.g.:
+        AssertionError: ("Dec 75, layout 0 (issue #175's 5.97 deg)", 0, 0)
+        assert -5.965429682478653 == 5.9654296824786535 ± 1.0e-08
+    Mutant "pa_deg = rotation_deg" fails its ``pa_deg`` in every case:
+        AssertionError: ("Dec 75, layout 0 (issue #175's 5.97 deg)", 0, 0)
+        assert 0.0 == 5.9654296824786535 ± 1.0e-08
+    """
+    panels = {(p["row"], p["col"]): p
+              for p in compute_mosaic({**_PANEL_BASE, **over})["panels"]}
+    for row, col, conv, pa in rows:
+        p = panels[(row, col)]
+        assert p["convergence_deg"] == pytest.approx(conv, abs=1e-8), (
+            name, row, col)
+        assert p["pa_deg"] == pytest.approx(pa, abs=1e-8), (name, row, col)
+
+
+def test_local_north_at_the_pole_turns_by_the_ra_difference():
+    """Within ``NORTH_PROBE_DEG`` of the pole the probe goes south and its
+    answer is reversed. The vector is the one the mirror prints (to the
+    bit), and its value is the analytic one: at the pole local north is
+    rotated from the grid's up by 15 deg per hour of RA from the tangent
+    point.
+
+    Mutant "pole probe not reversed" (``sign`` fixed at 1) fails:
+        assert -165.00054541329604 == 14.999454586703967 ± 1.0e-08
+    """
+    n = panel_convergence_deg({"ra_hours": 3.0, "dec_deg": 89.99995}, 4.0, 89.5)
+    assert n == pytest.approx(14.999454586703967, abs=1e-8)
+    assert n == pytest.approx(15.0, abs=0.001)
 
 
 def test_project_is_the_inverse_of_deproject():

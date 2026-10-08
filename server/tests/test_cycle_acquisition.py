@@ -178,12 +178,20 @@ class TestCompletionAgreesWithTheCountMode:
         eng = _engine(t, count_mode="accepted")
         step = t.steps[0]
 
-        class _Ledger:
-            def __init__(self, n): self.n = n
-            def accepted(self, _sid): return self.n
+        # RE-PINNED FOR BACKLOG WP-125 (#516, wave 16 integration): the
+        # check reads the engine's one ledger memo (`_ledger_counts`, which
+        # asks `frames` and `accepted_by_step`), not `accepted(sid)`, so the
+        # ledger is a REAL session, one per count (a different session object
+        # re-keys the memo, so no reset is needed between them).
+        from astrodeck.sequence.session import Session, SessionFrame
 
-        eng._session = _Ledger(2)
+        def ledger(n: int):
+            return Session(plan=eng.plan, frames=[
+                SessionFrame(step_id=step.id, auto_accepted=True)
+                for _ in range(n)])
+
+        eng._session = ledger(2)
         eng._done[f"{t.id}:{step.id}"] = 50
         assert eng._step_complete(t, step) is False
-        eng._session = _Ledger(3)
+        eng._session = ledger(3)
         assert eng._step_complete(t, step) is True

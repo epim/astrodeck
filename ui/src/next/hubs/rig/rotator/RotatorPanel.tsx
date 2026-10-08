@@ -34,6 +34,14 @@
 //   `app.py:6152-6158`). It is single-tap: an arm/confirm on a stop button is a
 //   second tap between a person and a cable wrap.
 //
+//   A LIVE RUN LOCKS THE MOVE AND SOLVE CONTROLS, WITH THE RIG'S OWN SENTENCE
+//   (#751). The rig refuses ROTATE TO PA, SYNC TO SKY, GO and the nudges, and
+//   TEST ROTATOR with 409 `sequence_running` while a run is going (#698), because
+//   each would turn or re-calibrate the camera under the run's frames; the panel
+//   used to show that sentence only after the press. Each of those controls now
+//   carries its route's sentence as its lock reason, word for word (`SEQUENCE_*`
+//   below). HALT is not one of them, and neither is REVERSE: the rig answers both.
+//
 //   THE ARC STAYS DISPLAY-ONLY. See `RotatorArc.tsx`.
 //
 // The angle maths is shared, never re-derived: `adjustedPa` / `mod360` from
@@ -50,8 +58,9 @@
 import { useId, useMemo, useRef, useState, type JSX } from "react";
 import { api, ApiError } from "../../../../api";
 import { setRotatorConfig } from "../../../../api/backends";
-import { useConfig, useStore } from "../../../../store";
+import { useConfig, useSequence, useStore } from "../../../../store";
 import type { RotatorConfig, RotatorStatus } from "../../../../types";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { adjustedPa, mod360 } from "../../../../lib/rotation";
 import { allowedSweepDeg } from "../../../../lib/rotatorDial";
 import { useLock } from "../../../lib/gateHook";
@@ -99,6 +108,34 @@ const PREFLIGHT_DONE_NOTE =
   "this connection has already measured the rotator tonight; it measures again "
   + "on the next observing night or after the rig reconnects.";
 
+/** What the rig answers a press with while a run is live: 409 `sequence_running`,
+ *  its sentence built by `_refuse_while_sequence_runs` in `api/app.py` (#698) as
+ *  `a sequence is running; <refused> refused, because <why>. Stop the run first`.
+ *  Said BEFORE the press, as the lock reason (#751), word for word and one per
+ *  route, because `refused` and `why` differ. `w16RotatorSequenceLock.test.tsx`
+ *  reads all four out of `app.py`, so a reworded refusal breaks that test and
+ *  not the operator's trust in the panel. */
+const sequenceSentence = (refused: string, why: string): string =>
+  `a sequence is running; ${refused} refused, because ${why}. Stop the run first`;
+
+const SEQUENCE_MOVE = sequenceSentence(
+  "rotator move", "it would turn the camera under the run's frames");
+const SEQUENCE_ROTATE = sequenceSentence(
+  "rotate to PA", "it would turn the camera under the run's frames");
+const SEQUENCE_SYNC = sequenceSentence(
+  "sync to sky", "it would re-calibrate the rotator's sky angle under the run");
+const SEQUENCE_PREFLIGHT = sequenceSentence(
+  "rotator preflight",
+  "it turns the rotator about 22 degrees and takes four plate solves, which "
+  + "would ruin the run's frames");
+
+/** Said once, beside the dim buttons: which they are, and what is still live.
+ *  The per-button sentences are the rig's; this is the panel's own, and it
+ *  carries what none of them can say, that HALT stays pressable. */
+const SEQUENCE_LOCK_NOTE =
+  "A sequence is running, so GO, the nudges, ROTATE TO PA, SYNC TO SKY and "
+  + "TEST ROTATOR are locked until it stops. HALT stays live.";
+
 /** The one line of what the rig knows about this rotator: whether the sky
  *  angle's sign has been measured, and whether the camera was seen to follow a
  *  step. `null` and `undefined` (an older server) both read as "not measured",
@@ -138,6 +175,9 @@ const cfgKey = (c: RotatorConfig): string =>
 export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
   const config = useConfig();
   const cfg: RotatorConfig = { ...DEFAULT_ROTATOR_CFG, ...(config?.rotator ?? {}) };
+  // `runIsLive`: running, paused, holding for cloud and winding down from an
+  // abort are all `engine.running` on the rig, so all of them are refused.
+  const runLive = runIsLive(useSequence());
 
   // ------------------------------------------------------------------ gates
   // Motion: the capability the four motion routes require, plus the device
@@ -224,11 +264,18 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
   const motionNote = lockNote(motion.lockedReason, MOTION_LOCK_NOTE);
   const configNote = lockNote(cfgLock.lockedReason, CONFIG_LOCK_NOTE);
 
-  const moveReason = lockNote(motionLane.lockedReason, MOTION_LOCK_NOTE) ?? inFlight;
+  // The permanent half first (capability, device, link, the rotator lane), then
+  // the live run, then the local in-flight guard: a sign-in cannot lift a run, so
+  // the capability sentence, which stays true after it ends, is the one to say.
+  const moveBase = lockNote(motionLane.lockedReason, MOTION_LOCK_NOTE);
+  const moveReason = moveBase ?? (runLive ? SEQUENCE_MOVE : null) ?? inFlight;
+  // REVERSE is a move-lane control the rig does not refuse during a run, so it
+  // keeps the lock it had before the run's sentences.
+  const reverseReason = moveBase ?? inFlight;
   const haltReason = motionNote;
-  const solveReason = motionNote
-    ?? lockNote(solveLane.lockedReason, MOTION_LOCK_NOTE)
-    ?? inFlight;
+  const solveBase = motionNote ?? lockNote(solveLane.lockedReason, MOTION_LOCK_NOTE);
+  const solveReason = solveBase ?? (runLive ? SEQUENCE_ROTATE : null) ?? inFlight;
+  const syncReason = solveBase ?? (runLive ? SEQUENCE_SYNC : null) ?? inFlight;
   const goReason = moveReason ?? (paOk ? null : NO_TARGET_NOTE);
   // TEST ROTATOR exposes and turns, on the same lane and the same camera as the
   // two solving buttons, so it takes their lock; and it is locked, with the
@@ -239,7 +286,10 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
   const preflight = rotatorPreflightLine(rot);
   const preflightPassed = (rot.sky_sign === 1 || rot.sky_sign === -1)
     && rot.trusted === true;
-  const preflightReason = solveReason ?? (preflightPassed ? PREFLIGHT_DONE_NOTE : null);
+  const preflightReason = solveBase
+    ?? (runLive ? SEQUENCE_PREFLIGHT : null)
+    ?? inFlight
+    ?? (preflightPassed ? PREFLIGHT_DONE_NOTE : null);
   const romReason = configNote ?? inFlight;
   const startReason = romReason ?? (draft.range_type === "full" ? FULL_RANGE_NOTE : null);
 
@@ -412,7 +462,7 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
             kind="secondary"
             onPress={() => void run("sync", () => api.post("/api/rotator/sync-to-sky", {}))}
             busy={pending === "sync"}
-            lockedReason={solveReason}
+            lockedReason={syncReason}
             onExplain={explain}
             data-testid="rotator-sync"
           >
@@ -429,6 +479,11 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
             TEST ROTATOR
           </ActionButton>
         </div>
+        {/* Not for someone the sheet already tells they cannot move the rotator
+            (`motionNote`): the run is not what stops them. */}
+        {runLive && !motionNote && (
+          <p className="nx-rot-note" data-testid="rotator-lock-sequence">{SEQUENCE_LOCK_NOTE}</p>
+        )}
         <p className="nx-rot-note" data-testid="rotator-sync-note">{SYNC_NOTE}</p>
         <p
           className={preflight.failed ? "nx-rot-err" : "nx-rot-note"}
@@ -447,7 +502,7 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
               () => api.post("/api/rotator/reverse", { reverse }))}
             label="REVERSE"
             note="turn this on once if the sky angle counts the opposite way to the camera's frame"
-            lockedReason={moveReason}
+            lockedReason={reverseReason}
             onExplain={explain}
             data-testid="rotator-reverse"
           />

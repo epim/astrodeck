@@ -43,10 +43,11 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..config import config_store
@@ -71,6 +72,30 @@ _SESSION_TTL_S = 8 * 3600
 # Where to land the browser after a successful login / after logout. Kept to the
 # SPA root; the app re-reads /auth/me on load.
 _POST_LOGIN_PATH = "/"
+
+# The ONE shape a return hint may take (#733): a bare in-app hash route. ``#/``,
+# then one or more segments of letters, digits, ``_`` and ``-`` joined by single
+# ``/`` (a trailing ``/`` allowed). No scheme, host, path, query, ``..``, space or
+# control character can match, so the hint can only ever be APPENDED to the base
+# ``_post_login_path`` chose, and the redirect cannot leave the origin or the
+# relay mount. ``fullmatch``, so a trailing newline does not slip past ``$``.
+_RETURN_RE = re.compile(r"#/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*/?")
+_RETURN_MAX_LEN = 200
+
+
+def _safe_return_fragment(value: object) -> str:
+    """``value`` if it is a return hint this rig will follow, else ``""``.
+
+    The Settings > People step-up (SIGN IN WITH GOOGLE) sends
+    ``/auth/login?return=%23%2Fsettings%2Fusers%2Fusers`` so the callback can land
+    back on People instead of the home screen. The hint is untrusted input, and
+    a redirect target taken from a request is the textbook open redirect, so the
+    only thing accepted is a bare in-app hash route (``_RETURN_RE``). Anything
+    else, a non-string and an over-long value included, is ``""``, which is the
+    old behaviour (the base alone): a sign-in must never fail on a hint."""
+    if not isinstance(value, str) or len(value) > _RETURN_MAX_LEN:
+        return ""
+    return value if _RETURN_RE.fullmatch(value) else ""
 
 
 # --------------------------------------------------------- AuthConfig access
@@ -171,8 +196,14 @@ def _clear_cookie(resp: Response, name: str, *, secure: bool,
 # ------------------------------------------------------------------- /auth/login
 
 @router.get("/auth/login")
-async def auth_login(request: Request):
-    """Start the OIDC login: set the signed pre-auth cookie + 302 to Google."""
+async def auth_login(request: Request,
+                     return_to: str = Query("", alias="return")):
+    """Start the OIDC login: set the signed pre-auth cookie + 302 to Google.
+
+    ``?return=`` (#733) is where the callback should land the browser: a bare
+    in-app hash route, validated by ``_safe_return_fragment`` and carried in the
+    signed pre-auth cookie (never in the URL Google sees). A hint that is not
+    such a route is dropped, not refused."""
     auth_cfg = _auth_cfg()
     if not _google_enabled(auth_cfg):
         raise HTTPException(status_code=404, detail="google auth not enabled")
@@ -191,7 +222,11 @@ async def auth_login(request: Request):
                                 code_challenge=challenge)
 
     resp = RedirectResponse(url=url, status_code=302)
-    preauth = _sign_preauth({"state": state, "nonce": nonce, "cv": verifier})
+    payload = {"state": state, "nonce": nonce, "cv": verifier}
+    back = _safe_return_fragment(return_to)
+    if back:
+        payload["rt"] = back
+    preauth = _sign_preauth(payload)
     # SameSite=Lax: the callback is a top-level GET navigation back from Google,
     # so Lax delivers the cookie; Strict would drop it on that cross-site hop.
     _set_cookie(resp, PREAUTH_COOKIE, preauth, max_age=_PREAUTH_TTL_S,
@@ -272,7 +307,12 @@ async def auth_callback(request: Request, code: str = "", state: str = "",
         account_epoch=account.session_epoch if account is not None else None,
     )
 
-    resp = RedirectResponse(url=_post_login_path(auth_cfg), status_code=302)
+    # The base the rig chose, plus the hint the login carried if it is still a
+    # bare in-app route. Checked AGAIN here, where it is used: the cookie is
+    # signed, but a callback only as strong as the one line that skips the
+    # check would be no stronger than that line.
+    target = _post_login_path(auth_cfg) + _safe_return_fragment(pre.get("rt"))
+    resp = RedirectResponse(url=target, status_code=302)
     secure = _is_secure(request)
     # Session cookie: SameSite=Strict (never needed cross-site) + HttpOnly.
     _set_cookie(resp, SESSION_COOKIE, token, max_age=_SESSION_TTL_S,

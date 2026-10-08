@@ -243,7 +243,7 @@ DATA: dict[str, dict] = {
     },
     "ngc_extras.tsv": {
         "name": "OpenNGC deep-sky catalogue — extra columns (Hubble type, "
-                "minor axis, redshift, NED notes)",
+                "minor axis, axis ratio, position angle, redshift, NED notes)",
         "version": "extract of 12,013 objects",
         "spdx": "CC-BY-SA-4.0",
         "url": "https://github.com/mattiaverga/OpenNGC",
@@ -266,8 +266,14 @@ DATA: dict[str, dict] = {
             "families (honest \"nothing here\" / doubtful-identification "
             "admissions, and Magellanic Cloud placements); everything else in "
             "that column, mostly HIPASS/SDSS survey cross-match trivia, was "
-            "dropped rather than shipped wholesale. Rows with none of these "
-            "four fields populated were not written at all. See "
+            "dropped rather than shipped wholesale. We also COMPUTED two "
+            "columns the upstream does not publish: the axis ratio, MinAx "
+            "divided by MajAx (blank where either axis is missing), and the "
+            "position angle, PosAng FOLDED onto 0 to 180 degrees (an "
+            "ellipse's long axis has no direction, so an angle and that "
+            "angle plus 180 are one angle); the Atlas draws a galaxy's "
+            "ellipse from them. Rows with none of the four kept fields and "
+            "no ratio or angle were not written at all. See "
             "server/astrodeck/catalog/build_ngc_extras.py for the exact "
             "logic and the allow-list regexes.\n\n"
             "SHARE-ALIKE: this extract is itself CC BY-SA 4.0, same as "

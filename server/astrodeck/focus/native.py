@@ -316,7 +316,10 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     set for the probe, read against a frame it was never set for). A clipped
     probe is never gated, whatever its count: its stars are merged, not
     missing, and waiting for a thicker sky would wait for the wrong thing
-    (the same reasoning as ``_failed``'s).
+    (the same reasoning as ``_failed``'s). A gated sweep also does not start
+    its first point's move and exposure under the probe's measurement, as an
+    ungated one does, so a declined probe costs the probe alone: no extra
+    exposure and no focuser move (#722).
 
     Raises ``DeviceError`` (user-presentable) when the wheel is absent or the
     engine rejects an input; ALWAYS restores the focuser to its start position on
@@ -631,21 +634,48 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         # prevents is not a crash: it is five minutes of moving the focuser to
         # reach "not_enough_spread", with nothing on screen saying the field was
         # too sparse to measure before it started.
+        #: Whether the first point's move and exposure have been started. A
+        #: declined probe restores the focuser only if this is True: with no
+        #: speculation there is nothing to put back (#722).
+        speculated = False
+
+        def _speculate_first_point() -> None:
+            """Start the engine's first move and its exposure running ahead of
+            the measurement, if it is a move and inside the leash."""
+            nonlocal prefetch, speculated
+            if (first.get("action") == "move_to"
+                    and leash_lo <= int(first["position"]) <= leash_hi):
+                nxt = int(first["position"])
+                # Seeded, not guessed: the accounting must not read the run's
+                # one certain move as a miss and turn speculation off before
+                # the first point (see `SweepPredictor.seed`).
+                predictor.seed(nxt)
+                prefetch = Prefetch(
+                    nxt, asyncio.create_task(_move_and_expose(nxt)))
+                speculated = True
+
         _activity("exposing")
         probe = await _expose()
         # AFTER the shutter closes, never before: the probe's star count is the
         # count AT THE START POSITION, and it sizes the measurement window for
         # the whole run. Starting the first move under the probe's EXPOSURE
         # would make it a count of somewhere else.
-        if (first.get("action") == "move_to"
-                and leash_lo <= int(first["position"]) <= leash_hi):
-            nxt = int(first["position"])
-            # Seeded, not guessed: the accounting must not read the run's one
-            # certain move as a miss and turn speculation off before the first
-            # point (see `SweepPredictor.seed`).
-            predictor.seed(nxt)
-            prefetch = Prefetch(
-                nxt, asyncio.create_task(_move_and_expose(nxt)))
+        #
+        # A SWEEP THAT WAS HANDED A GATE DOES NOT SPECULATE UNTIL THE PROBE HAS
+        # PASSED IT (#722). The overlap is worth about ten seconds on a rich
+        # field, but a gated sweep is the owed re-sweep, asked again every
+        # `SPARSE_RESWEEP_EVERY_S` for as long as the sky stays thin, and a
+        # probe that declines had already paid for a first-point move and a
+        # whole exposure, and then for the move back, on EVERY one of those
+        # asks. Only the last ask ever sweeps, so giving the overlap up once
+        # there buys back a move, a move and an exposure on each of the rest.
+        # An ungated sweep (the initial autofocus, every plan refocus) cannot
+        # be declined and keeps the overlap. The cheaper-looking alternative,
+        # cancelling the speculation on a decline, still pays whatever had
+        # begun and interrupts a camera exposure in flight to do it.
+        gated = min_probe_stars is not None
+        if not gated:
+            _speculate_first_point()
         _activity("measuring")
         _s, pstats = await asyncio.to_thread(
             _native.detect_and_measure, probe.data, params)
@@ -662,19 +692,26 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 and probe_sat < OVEREXPOSED_FRAC):
             # DECLINED, NOT FAILED. The owed sparse-field re-sweep asked
             # whether the field is rich enough to focus on by the probe's
-            # own count, and it is not yet. Same cleanup as the refusal
-            # below, since the speculative move is in flight here too, and
-            # the same device-side result (the focuser where it started),
-            # but the verdict is neither published nor returned as a
-            # failure: this will be asked again every few minutes for as
-            # long as the sky stays thin, and a panel that said "failed"
-            # each time would be crying wolf at a run that is doing what it
-            # promised.
+            # own count, and it is not yet. The device-side result is the
+            # refusal's below (the focuser where it started), but the
+            # verdict is neither published nor returned as a failure: this
+            # will be asked again every few minutes for as long as the sky
+            # stays thin, and a panel that said "failed" each time would be
+            # crying wolf at a run that is doing what it promised.
+            #
+            # NOTHING IS IN FLIGHT AND NOTHING HAS MOVED: a gated sweep does
+            # not speculate until it is past this branch (#722), so a decline
+            # costs the probe and nothing else. The settle and the guarded
+            # restore stay for the invariant the settle's docstring states,
+            # that every path out goes through it: a later change that
+            # started the speculation sooner would find the cleanup here
+            # rather than a task nobody awaits.
             reason = (f"only {n0} stars at the current focus, under the "
                       f"{floor} the re-sweep owed after a sparse-field "
                       f"failure waits for; not sweeping yet")
             await _settle()
-            await _approach(start_pos)
+            if speculated:
+                await _approach(start_pos)
             bus.publish("focus", state="idle", points=[], best=None,
                         message=reason)
             return AutofocusResult(False, start_pos, None, [], reason,
@@ -707,18 +744,26 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # sky. Built here rather than by _advice, which speaks only
                 # from what a SWEEP measured and this run has not swept.
                 advice = "Try " + levers + "."
-            # THE SPECULATIVE MOVE IS ALREADY IN FLIGHT. It was started under
-            # the probe's measurement, and it owns the focuser until it
-            # finishes, so restoring the start position without settling first
-            # is two moves on one focuser — on the sim, two loops chasing each
-            # other's target for ever.
+            # THE SPECULATIVE MOVE MAY ALREADY BE IN FLIGHT. On an ungated
+            # sweep it was started under the probe's measurement, and it owns
+            # the focuser until it finishes, so restoring the start position
+            # without settling first is two moves on one focuser — on the sim,
+            # two loops chasing each other's target for ever. A gated sweep
+            # has not started it yet (#722: it waits for the gate), so there
+            # is nothing to wait for and nothing to put back.
             await _settle()
-            await _approach(start_pos)
+            if speculated:
+                await _approach(start_pos)
             bus.publish("focus", state="failed", points=[], best=None,
                         message=reason, advice=advice)
             bus.log("warning",
                     f"autofocus not attempted: {reason}. {advice}", "focus")
             return _failed(reason, [], advice)
+        # PAST BOTH REFUSALS, so the first point is worth its move: a gated
+        # sweep starts it now, where an ungated one started it under the
+        # probe's measurement (see above).
+        if gated:
+            _speculate_first_point()
         if probe_sat >= OVEREXPOSED_FRAC:
             # Measurable, but on borrowed time: clipped cores read fat and
             # flat, so the curve's tip is distorted even when the fit succeeds.
