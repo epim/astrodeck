@@ -1227,11 +1227,11 @@ class GroupRun:
         # A STREAK OF GUIDE-START FAILURES AND NOTHING ELSE is named for what
         # it is, GUIDE_START, and no longer "deferred" (#180 part A, backlog
         # WP-131): the Campaign's sentence about a panel set aside night after
-        # night says "no guide star" for it, and "failed to centre or guide"
-        # only for a mixed streak. Nothing else reads the word, so this
-        # changes no behaviour: it does not expire (only CENTRING does,
-        # ``_may_expire``), and the published group state and the session
-        # record carry the new word.
+        # night says "no guide star" for it, and names only the streak (no
+        # cause, no advice, #836) for a mixed one. Nothing else reads the
+        # word, so this changes no behaviour: it does not expire (only
+        # CENTRING does, ``_may_expire``), and the published group state and
+        # the session record carry the new word.
         streak = self._streak_kinds[panel]
         self.set_aside_kind[panel] = (
             CENTRING if streak == {CENTRING}

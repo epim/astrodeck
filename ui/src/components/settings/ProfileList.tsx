@@ -35,6 +35,7 @@ import type { Profile, ProfileRow } from "../../types";
 import {
   listProfiles,
   getProfile,
+  type RedactedProfile,
   captureProfile,
   renameProfile,
   deleteProfile,
@@ -55,10 +56,11 @@ import {
   profileConnectsNothing,
   profileResolvesRealMotion,
 } from "../../lib/equipment";
-import { useCanConfigBackend } from "../../lib/caps";
+import { accessPhrase, useCan, useCanConfigBackend } from "../../lib/caps";
 import { profileOverrideSummary } from "../../lib/effective";
 import {
-  forceActivateConfirm, forceNeedsLan, isLaneConflict, isRunningConflict, sentenceFrom,
+  PROFILES_CAP, RECONNECT_CAP, forceActivateConfirm, forceNeedsBackend, forceNeedsLan,
+  isLaneConflict, isRunningConflict, sentenceFrom,
 } from "../../next/hubs/rig/profiles/profilesModel";
 import { onRelay } from "../../next/lib/relay";
 
@@ -147,15 +149,32 @@ export type ActivateFailureOutcome =
  *  press. The outcome is the toast `forceNeedsLan` words (the #/next profiles
  *  sheet says the same), verbatim for the reason `wasForced`'s toast is: it is
  *  long enough for the toast's log-line shortener to cut it. `viaRelay` is read
- *  at call time; a test passes it. */
+ *  at call time; a test passes it.
+ *
+ *  A CALLER WHO MAY RECONNECT AND MAY NOT FORCE IS NOT OFFERED THE FORCE EITHER
+ *  (#759, #839). An operator holds `control.reconnect` and not `config.backend`,
+ *  and a forced activate (it aborts the running sequence and disarms auto-resume)
+ *  is the `config.backend` half, answered 403 by the rig. The dialog whose yes
+ *  would send it is a button that cannot work, so the outcome is the toast
+ *  `forceNeedsBackend` words (the #/next profiles sheet says the same), naming
+ *  who can. `canForce` is the caller's `config.backend`, read by the component
+ *  at call time; the relay is checked first, because over the relay nobody can
+ *  force and the sentence about the LAN is the one that is true for everyone. */
 export function activateFailureOutcome(
   e: unknown, wasForced: boolean, viaRelay: boolean = onRelay(),
+  canForce: boolean = true,
 ): ActivateFailureOutcome {
   if (isRunningConflict(e)) {
     const detail = (e as ApiError).message;
     if (!wasForced) {
       if (viaRelay) {
         return { kind: "toast", level: "warning", message: forceNeedsLan(detail), verbatim: true };
+      }
+      if (!canForce) {
+        return {
+          kind: "toast", level: "warning", verbatim: true,
+          message: forceNeedsBackend(detail, accessPhrase(PROFILES_CAP)),
+        };
       }
       return { kind: "force", confirm: forceActivateConfirm(detail) };
     }
@@ -177,11 +196,24 @@ export function activateFailureOutcome(
 
 export default function ProfileList(): JSX.Element {
   const showToast = useStore((s) => s.showToast);
-  // Every write on this panel is CAP_CONFIG_BACKEND server-side. SettingsView
-  // already hides the whole panel from a principal without it, so this is
-  // defence in depth — but it is also what keeps Delete honest if the panel is
-  // ever mounted elsewhere, or a session is downgraded while it is open.
+  // Every write on this panel is CAP_CONFIG_BACKEND server-side EXCEPT an
+  // unforced ACTIVATE, which is CAP_CONTROL_RECONNECT (#759, owner ruling
+  // 2026-10-07: "permitted for Admin and operator roles"; #839 for this panel).
+  // SettingsView shows the panel to a principal holding EITHER, so for an
+  // operator every control but Activate renders as a stated lock, and the lock
+  // is also what keeps the writes honest if a session is downgraded while the
+  // panel is open.
   const canConfig = useCanConfigBackend();
+  const canReconnect = useCan(RECONNECT_CAP);
+  // ONE sentence for the edit controls (Rename, Update, Export, Import, Save
+  // Rig), derived from the role table so it names the policy the server
+  // enforces. Delete keeps `profileDeleteLock`'s own, which a test pins.
+  const editLock = canConfig
+    ? null
+    : `Changing profiles needs ${accessPhrase(PROFILES_CAP)}.`;
+  const activateLock = canReconnect
+    ? null
+    : `Activating a profile needs ${accessPhrase(RECONNECT_CAP)}.`;
   const [rows, setRows] = useState<ProfileRow[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -223,20 +255,28 @@ export default function ProfileList(): JSX.Element {
     // live. On touch that gap is one double-tap wide, and the second tap's
     // reward was the server's raw "'profile' is already running".
     if (busyId === row.id) return;
+    if (activateLock) {
+      // The control is a stated lock for this principal, so this is reachable
+      // only by a token downgraded while the panel was open. Say the reason;
+      // never fire the call.
+      showToast("error", activateLock);
+      return;
+    }
     setBusyId(row.id);
     try {
       // Pull the full profile: it is the only way to know whether anything
       // reconnects afterwards, and "ask the server, don't trust the render" is
       // already this panel's rule for the actions that can hurt.
-      let full: Profile | null = null;
+      let full: RedactedProfile | null = null;
       try {
         // `getProfile` is typed RedactedProfile because a VIEWER or OPERATOR
         // receives a PARTIAL record -- no host/port, no nina_*/phd2_*, no
-        // site_name (#186 B). Every action in this panel is config.backend-gated
-        // and every profile WRITE requires that capability, so a caller who
-        // reaches here holds it and the server sends the whole record. The cast
-        // asserts the capability the type cannot see; it is not a shortcut.
-        full = await getProfile(row.id) as Profile;
+        // site_name (#186 B). An OPERATOR reaches this line since #759
+        // (control.reconnect) and gets that partial record, so there is no cast
+        // to `Profile` (#840): the judgements below take a structural parameter
+        // and read only `primary_backend`, `devices[].role/backend` and the NINA
+        // host, each failing toward asking.
+        full = await getProfile(row.id);
       } catch {
         /* fall back to the row's mode heuristic below */
       }
@@ -291,7 +331,9 @@ export default function ProfileList(): JSX.Element {
   };
 
   const onActivateFailed = async (e: unknown, row: ProfileRow, wasForced: boolean) => {
-    const outcome = activateFailureOutcome(e, wasForced);
+    // `undefined` for the origin keeps `viaRelay`'s default (`onRelay()`) as the
+    // wiring; only the caller's own capability is passed.
+    const outcome = activateFailureOutcome(e, wasForced, undefined, canConfig);
     if (outcome.kind === "force") {
       const ok = await confirmDialog(outcome.confirm);
       if (ok) await activateAndWait(row, true);
@@ -420,8 +462,11 @@ export default function ProfileList(): JSX.Element {
     setBusyId(row.id);
     let scratchId: string | null = null;
     try {
-      // Both casts: see the note above -- this read-modify-write can only run
-      // for a config.backend holder, who is served the unredacted profile.
+      // Both casts assert the capability the type cannot see: this
+      // read-modify-write runs only for a config.backend holder (the Update
+      // control is a stated lock for anyone else), who is served the
+      // unredacted profile. `onActivate` above has no cast, because an
+      // operator reaches it (#840).
       const target = await getProfile(row.id) as Profile;
       const captured = await captureProfile(`__update_scratch__${row.id}`);
       scratchId = captured.id;
@@ -520,15 +565,24 @@ export default function ProfileList(): JSX.Element {
         title="Profiles"
         right={
           <div className="inline-flex items-center gap-1.5">
-            <button
-              type="button"
-              className="btn !py-1 !px-2 text-[10px]"
-              onClick={() => fileRef.current?.click()}
-              title="Import a profile from file"
-            >
-              <Icon name="upload" size={12} className="inline -mt-0.5 mr-1" />
-              Import
-            </button>
+            {editLock ? (
+              <LockedChip reason={editLock} className="text-[10px]">
+                <span className="inline-flex items-center gap-1">
+                  <Icon name="upload" size={12} />
+                  Import
+                </span>
+              </LockedChip>
+            ) : (
+              <button
+                type="button"
+                className="btn !py-1 !px-2 text-[10px]"
+                onClick={() => fileRef.current?.click()}
+                title="Import a profile from file"
+              >
+                <Icon name="upload" size={12} className="inline -mt-0.5 mr-1" />
+                Import
+              </button>
+            )}
             <input
               ref={fileRef}
               type="file"
@@ -553,6 +607,20 @@ export default function ProfileList(): JSX.Element {
           </div>
         }
       >
+        {/* ONE sentence for a principal who may reconnect and may not change a
+            profile (#759, #839): an operator. A viewer gets Activate's own lock
+            on every row, so the note is for the half-open panel only. */}
+        {canReconnect && editLock && (
+          <p
+            className="text-[11px] text-dim mb-3 inline-flex items-start gap-1.5 leading-snug"
+            data-testid="profiles-locknote"
+          >
+            <Icon name="lock" size={11} className="shrink-0 mt-0.5" />
+            <span>
+              You can activate a saved profile to reconnect the rig. {editLock}
+            </span>
+          </p>
+        )}
         {loadErr && (
           <EmptyState icon="alert" title="Couldn't load profiles" hint={loadErr} />
         )}
@@ -582,6 +650,8 @@ export default function ProfileList(): JSX.Element {
                 onExport={() => exportRow(row)}
                 onDelete={() => onDelete(row)}
                 deleteLock={profileDeleteLock(canConfig)}
+                activateLock={activateLock}
+                editLock={editLock}
               />
             ))}
           </div>
@@ -604,14 +674,20 @@ export default function ProfileList(): JSX.Element {
               onChange={(e) => setCaptureName(e.target.value)}
             />
           </Field>
-          <button
-            type="button"
-            className="btn btn-accent min-h-11"
-            disabled={capturing}
-            onClick={onCapture}
-          >
-            {capturing ? "Saving…" : "Save Rig"}
-          </button>
+          {editLock ? (
+            <LockedChip reason={editLock}>
+              <span className="inline-flex items-center gap-1">Save Rig</span>
+            </LockedChip>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-accent min-h-11"
+              disabled={capturing}
+              onClick={onCapture}
+            >
+              {capturing ? "Saving…" : "Save Rig"}
+            </button>
+          )}
         </div>
       </Panel>
     </div>
@@ -632,6 +708,8 @@ function ProfileCard({
   onExport,
   onDelete,
   deleteLock,
+  activateLock,
+  editLock,
 }: {
   row: ProfileRow;
   busy: boolean;
@@ -650,11 +728,19 @@ function ProfileCard({
   onDelete: () => void;
   /** Why this principal cannot delete, or null when they can (lib/profileDelete). */
   deleteLock: string | null;
+  /** Why this principal cannot ACTIVATE, or null when they can: the capability is
+   *  `control.reconnect`, which an operator holds (#759). */
+  activateLock: string | null;
+  /** Why this principal cannot rename, update or export, or null when they can:
+   *  `config.backend`, admin only. */
+  editLock: string | null;
 }): JSX.Element {
   // Which input armed the Update hold — see the caption on that button.
   const [armedByKey, setArmedByKey] = useState(false);
   return (
     <div
+      data-testid="profile-card"
+      data-profile-id={row.id}
       className={`border bg-bg/60 px-3 py-2.5 flex items-center gap-3 flex-wrap
         ${row.active ? "border-accent" : "border-line"}`}
     >
@@ -719,103 +805,142 @@ function ProfileCard({
             "Connecting…" until the controller reports this profile active,
             which on a real rig is seconds of teardown-then-connect, not the
             ~40ms the POST takes to return. */}
-        <button
-          type="button"
-          className={`btn !py-1 !px-3 text-[11px] ${row.active ? "" : "btn-accent"}`}
-          disabled={busy || otherConnecting}
-          aria-busy={connecting || undefined}
-          onClick={onActivate}
-          title={
-            otherConnecting
-              ? "Another profile is connecting — the controller does one at a time"
-              : row.active
-                ? "Reconnect this profile"
-                : "Set active and connect"
-          }
-        >
-          <Icon name="play" size={12} className="inline -mt-0.5 mr-1" />
-          {connecting ? "Connecting…" : row.active ? "Reconnect" : "Activate"}
-        </button>
-        <button
-          type="button"
-          className="btn btn-touch !py-1 !px-3 text-[11px]"
-          disabled={busy || renaming}
-          onClick={onStartRename}
-          aria-label={`Rename ${row.name}`}
-          title="Rename"
-        >
-          Rename
-        </button>
+        {activateLock ? (
+          // No control.reconnect: the house primitive, with the stated reason
+          // (§11.8) - never the native `disabled`, which would take the reason
+          // out of the accessibility tree with the control.
+          <LockedChip reason={activateLock} className="text-[11px]">
+            <span className="inline-flex items-center gap-1">
+              <Icon name="play" size={12} />
+              {row.active ? "Reconnect" : "Activate"}
+            </span>
+          </LockedChip>
+        ) : (
+          <button
+            type="button"
+            className={`btn !py-1 !px-3 text-[11px] ${row.active ? "" : "btn-accent"}`}
+            disabled={busy || otherConnecting}
+            aria-busy={connecting || undefined}
+            onClick={onActivate}
+            title={
+              otherConnecting
+                ? "Another profile is connecting — the controller does one at a time"
+                : row.active
+                  ? "Reconnect this profile"
+                  : "Set active and connect"
+            }
+          >
+            <Icon name="play" size={12} className="inline -mt-0.5 mr-1" />
+            {connecting ? "Connecting…" : row.active ? "Reconnect" : "Activate"}
+          </button>
+        )}
+        {editLock ? (
+          <LockedChip reason={editLock} className="text-[11px]">
+            <span className="inline-flex items-center gap-1">Rename</span>
+          </LockedChip>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-touch !py-1 !px-3 text-[11px]"
+            disabled={busy || renaming}
+            onClick={onStartRename}
+            aria-label={`Rename ${row.name}`}
+            title="Rename"
+          >
+            Rename
+          </button>
+        )}
         {/* "Update from current rig" (F7 #5a) — the edit affordance: overwrite
             this profile's stored devices with whatever's connected now. It
             destroys stored state (the profile's device intent), so it gets the
             SAME hold-to-confirm friction as Delete below — not a lighter
             single-click confirm. */}
-        <HoldButton
-          label={`Update ${row.name} from the current rig`}
-          onConfirm={onUpdateFromRig}
-        >
-          {(bind) => (
-            <button
-              type="button"
-              className="btn btn-touch !py-1 !px-3 text-[11px] relative overflow-hidden select-none"
-              style={{ touchAction: "none" }}
-              disabled={busy}
-              aria-label={bind["aria-label"]}
-              title="Hold to overwrite this profile's devices with the currently connected rig"
-              onPointerDown={(e) => {
-                setArmedByKey(false);
-                bind.onPointerDown(e);
-              }}
-              onPointerUp={bind.onPointerUp}
-              onPointerCancel={bind.onPointerUp}
-              onKeyDown={(e) => {
-                // The keyboard path is a two-step PRESS-AGAIN, not a hold, and
-                // `bind.armed` is one flag for both paths — so the caption
-                // below cannot tell them apart on its own. Remember which input
-                // armed it, or a keyboard user reads "HOLD TO …", holds, and
-                // watches nothing happen: HoldButton drops `e.repeat`, so the
-                // hold is literally one keypress and the arming silently lapses
-                // 3s later.
-                if (e.key === "Enter" || e.key === " " || e.key === "Spacebar")
-                  setArmedByKey(true);
-                bind.onKeyDown(e);
-              }}
-              onKeyUp={bind.onKeyUp}
-                  onBlur={bind.onBlur}
-            >
-              <span
-                aria-hidden
-                className="absolute inset-y-0 left-0 pointer-events-none"
-                style={{
-                  width: `${Math.round(bind.progress * 100)}%`,
-                  background: "color-mix(in srgb, var(--text) 60%, transparent)",
-                  transition: "width 80ms linear",
+        {editLock ? (
+          <LockedChip reason={editLock} className="text-[11px]">
+            <span className="inline-flex items-center gap-1">
+              <Icon name="refresh" size={12} />
+              Update
+            </span>
+          </LockedChip>
+        ) : (
+          <HoldButton
+            label={`Update ${row.name} from the current rig`}
+            onConfirm={onUpdateFromRig}
+          >
+            {(bind) => (
+              <button
+                type="button"
+                className="btn btn-touch !py-1 !px-3 text-[11px] relative overflow-hidden select-none"
+                style={{ touchAction: "none" }}
+                disabled={busy}
+                aria-label={bind["aria-label"]}
+                title="Hold to overwrite this profile's devices with the currently connected rig"
+                onPointerDown={(e) => {
+                  setArmedByKey(false);
+                  bind.onPointerDown(e);
                 }}
-              />
-              <span className="relative inline-flex items-center gap-1">
-                <Icon name="refresh" size={12} />
-                {bind.armed
-                  ? armedByKey
-                    ? "Press ↵ again"
-                    : "Hold…"
-                  : "Update"}
-              </span>
-            </button>
-          )}
-        </HoldButton>
+                onPointerUp={bind.onPointerUp}
+                onPointerCancel={bind.onPointerUp}
+                onKeyDown={(e) => {
+                  // The keyboard path is a two-step PRESS-AGAIN, not a hold, and
+                  // `bind.armed` is one flag for both paths — so the caption
+                  // below cannot tell them apart on its own. Remember which input
+                  // armed it, or a keyboard user reads "HOLD TO …", holds, and
+                  // watches nothing happen: HoldButton drops `e.repeat`, so the
+                  // hold is literally one keypress and the arming silently lapses
+                  // 3s later.
+                  if (e.key === "Enter" || e.key === " " || e.key === "Spacebar")
+                    setArmedByKey(true);
+                  bind.onKeyDown(e);
+                }}
+                onKeyUp={bind.onKeyUp}
+                    onBlur={bind.onBlur}
+              >
+                <span
+                  aria-hidden
+                  className="absolute inset-y-0 left-0 pointer-events-none"
+                  style={{
+                    width: `${Math.round(bind.progress * 100)}%`,
+                    background: "color-mix(in srgb, var(--text) 60%, transparent)",
+                    transition: "width 80ms linear",
+                  }}
+                />
+                <span className="relative inline-flex items-center gap-1">
+                  <Icon name="refresh" size={12} />
+                  {bind.armed
+                    ? armedByKey
+                      ? "Press ↵ again"
+                      : "Hold…"
+                    : "Update"}
+                </span>
+              </button>
+            )}
+          </HoldButton>
+        )}
         {/* Export (F7 #5b) — client-side JSON download, icon-only (same height
             as its siblings via btn + !py-1; standard download iconography). */}
-        <button
-          type="button"
-          className="btn btn-touch !py-1 !px-2 text-[11px]"
-          disabled={busy}
-          onClick={onExport}
-          aria-label={`Export ${row.name}`}
-          title="Export profile to file"
-        >
-          <Icon name="download" size={12} />
-        </button>
+        {editLock ? (
+          // Export serves the REDACTED record to a caller without config.backend
+          // (no host, port, extra), a file the Import control would refuse; the
+          // #/next sheet locks it with the rest of the writes, and so does this.
+          <LockedChip reason={editLock} className="text-[11px]">
+            <span className="inline-flex items-center gap-1">
+              <Icon name="download" size={12} />
+              Export
+            </span>
+          </LockedChip>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-touch !py-1 !px-2 text-[11px]"
+            disabled={busy}
+            onClick={onExport}
+            aria-label={`Export ${row.name}`}
+            title="Export profile to file"
+          >
+            <Icon name="download" size={12} />
+          </button>
+        )}
         {/* ------------------------------------------------------------ DELETE
             The one irreversible action on a row of otherwise-safe ones, on a
             phone, in the dark, possibly with gloves. Three deliberate choices:

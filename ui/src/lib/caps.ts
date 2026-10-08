@@ -60,10 +60,11 @@ export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
   // ROLES_CAP["operator"] = viewer caps + control.capture + control.guide +
   // control.mount (2026-07-17 decisions wave I1: operators run sequences —
   // future telescope-rental interface) + view.weather (same wave, I2: full
-  // weather incl. radar map); explicitly NOT control.power/config.*/
+  // weather incl. radar map) + control.reconnect (#759, 2026-10-07: reactivate
+  // a SAVED profile); explicitly NOT control.power/config.*/
   // view.media/view.site_precise.
   operator:
-    "Runs imaging and sequences: capture, capture loops, autofocus, guiding, mount motion, and full weather (forecast, radar map). Cannot control power or change settings.",
+    "Runs imaging and sequences: capture, capture loops, autofocus, guiding, mount motion, and full weather (forecast, radar map), and reconnects the rig by activating a saved profile. Cannot control power or change settings.",
   // ALL_CAPS: every capability, including the DESTRUCTIVE-tier ones (mount
   // motion, power, safety/solar override, admin.users, system.update).
   admin:
@@ -99,12 +100,16 @@ export const ROLE_CAPS: Record<PrincipalRole, readonly Capability[]> = {
   operator: [
     "view.status", "view.preview", "view.weather", "view.site_derived",
     "control.capture", "control.guide", "control.mount",
+    // #759 (owner ruling 2026-10-07): reconnect the rig by activating a SAVED
+    // profile, without force. Still not config.backend.
+    "control.reconnect",
   ],
   // ALL_CAPS.
   admin: [
     "view.status", "view.preview", "view.media", "view.site_precise",
     "view.site_derived", "view.weather",
     "control.capture", "control.mount", "control.guide", "control.power",
+    "control.reconnect",
     "config.safety", "config.solar_override", "config.backend",
     "config.site_optics", "config.alerts", "admin.users", "system.update",
   ],

@@ -8040,41 +8040,37 @@ def create_app(*, bind_host: str | None = None,
                             "auto-resume arms only dormant or active "
                             "sessions")
                     if body.auto_resume:
+                        # ARMING A SESSION ENDS ITS WAIT (#837, D-04). A
+                        # session armed in its own right starts by itself, so
+                        # a queue marker left on it would arm it AGAIN behind
+                        # the run it was waiting for: ``engine.start`` clears
+                        # the marker on every start path for the same reason.
+                        # Cleared here, before the save below, so the file
+                        # never holds armed-and-queued.
+                        s.queued_behind = None
                         # server-enforced singleton (spec §5): arming here
                         # disarms others, read fresh under the same lock this
                         # whole section holds, so a session armed by another
                         # request in the gap cannot survive this one's write.
-                        for other in session_store.load_all():
-                            if other.id != s.id and other.auto_resume:
-                                other.auto_resume = False
-                                # A disarm like any other, so it stops a
-                                # ladder that is recovering ``other`` (#220,
-                                # below); the next tick then recovers the
-                                # session armed here.
-                                resume_arm.stop_recovery(
-                                    "another session was armed in its place "
-                                    "while the recovery ladder was working, "
-                                    "so the ladder stopped before its next "
-                                    "step",
-                                    session_id=other.id)
-                                session_store.save(other)
-                                disarmed.append(
-                                    {"id": other.id,
-                                     "name": other.name or other.plan.name})
+                        #
+                        # NAMED, NOT SILENT (#595, backlog ruling D-04,
+                        # owner-approved 2026-09-30): ``_arm_exclusively`` is
+                        # the one loop ``engine.start`` disarms with, so it
+                        # says what it disarmed in the same warning and hands
+                        # back the same list, which this response carries as
+                        # ``disarmed``. A disarm like any other, it stops a
+                        # ladder that is recovering ``other`` (#220, below)
+                        # first; the next tick then recovers the session
+                        # armed here.
+                        disarmed = engine._arm_exclusively(
+                            s,
+                            on_disarm=lambda other: resume_arm.stop_recovery(
+                                "another session was armed in its place "
+                                "while the recovery ladder was working, "
+                                "so the ladder stopped before its next "
+                                "step",
+                                session_id=other.id))
                     s.auto_resume = body.auto_resume
-                if disarmed:
-                    # NAMED, NOT SILENT (#595, backlog ruling D-04,
-                    # owner-approved 2026-09-30). #595's own text: "the same
-                    # applies to PATCH auto_resume" -- this route runs its
-                    # own copy of the singleton `engine.start` disarms with
-                    # (above), so it owes the same warning and the same
-                    # `disarmed` field in its response, not left for a
-                    # caller to notice only by re-reading /api/sessions.
-                    names = ", ".join(d["name"] or d["id"] for d in disarmed)
-                    bus.log("warning",
-                            f"arming '{s.name or s.plan.name or s.id}' "
-                            f"disarmed auto-resume for: {names}",
-                            "sequence")
                 # THE QUEUE MARKER (#598, backlog ruling D-04, owner-approved
                 # 2026-09-30). A dormant session can WAIT BEHIND the run that
                 # is live, else the one that is armed, and be armed by that

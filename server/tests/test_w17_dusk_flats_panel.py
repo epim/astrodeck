@@ -20,7 +20,8 @@ order and not a time-of-day lottery, #682):
 * a cover that was OPEN before the stage is open again when the first light
   comes (the stage restores what it found: #601 is the general open-for-the-
   night step and has not landed, and a flat set must not turn a night of lights
-  into frames through a shut cover);
+  into frames through a shut cover), and a cover that was SHUT is left shut -
+  see the ORCHESTRATOR'S RULING on ``test_a_cover_that_was_shut_is_left_shut``;
 * a second engine the same night (a restart) finds the library holding fresh
   flats and shoots none;
 * no flat source: one warning, no flats, the scheduler still runs;
@@ -287,7 +288,31 @@ async def test_a_cover_that_was_open_is_open_for_the_first_light(
 
 async def test_a_cover_that_was_shut_is_left_shut(sim_hub, monkeypatch):
     """Control: the stage does not open a cover it found shut. Opening it for
-    the night is #601's, with the roof."""
+    the night is #601's, with the roof.
+
+    ORCHESTRATOR'S RULING (wave 17 integration, 2026-10-07; the orchestrator's,
+    NOT the owner's): the dusk-flats stage NEVER OPENS A COVER IT FOUND SHUT
+    and only RESTORES one it found open. That is what satisfies the plan's
+    condition "job B must not ship for a covered rig before #601": until #601
+    lands the stage does not decide whether the night's cover is open, it
+    hands the cover back as it found it, so a rig with a dust cover shut for
+    the night is not opened by a flat set, and one that was open is not left
+    shut over the lights. This test and
+    ``test_a_cover_that_was_open_is_open_for_the_first_light`` hold the two
+    halves; the engine's ``_dusk_flats`` docstring says the same.
+
+    RED under mutant "the stage opens a shut cover" (engine.py ``_dusk_flats``:
+    ``if cover_was_open:`` made ``if True:``, so the cover is opened after the
+    flats whatever it was), observed from a byte backup (restored, sha256
+    compared), 2 failed and 14 passed, this case among them:
+
+        AssertionError: ('scheduled', 'open', 'off')
+        assert 'open' == 'closed'
+
+    (the marker found the cover open at the first light), and
+    ``test_lamp_lit_with_the_cover_shut_and_off_after_each_filter`` on its
+    last event (``'cover:open' == 'cover:closed'``).
+    """
     assert await Watch.cover(sim_hub) == "closed"
     _, w = await _run(sim_hub, _plan(_flats()), monkeypatch)
     (marker,) = [e for e in w.events if e[0] == "scheduled"]

@@ -21,7 +21,9 @@
 
 import { api, ApiError } from "../../../../api";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
-import { activateProfile, connectRig, getProfile } from "../../../../api/backends";
+import {
+  activateProfile, connectRig, getProfile, type RedactedProfile,
+} from "../../../../api/backends";
 import { waitForProfileActive } from "../profiles/profileActive";
 import {
   buildRigSpec, hasRealMotion, profileActivateConfirm, profileConnectsNothing,
@@ -29,10 +31,11 @@ import {
   type AssignmentMap,
 } from "../../../../lib/equipment";
 import { useStore } from "../../../../store";
-import { sentenceFrom } from "../profiles/profilesModel";
+import { PROFILES_CAP, forceNeedsBackend, sentenceFrom } from "../profiles/profilesModel";
+import { accessPhrase, capAllowed } from "../../../../lib/caps";
 import { onRelay } from "../../../lib/relay";
 import type {
-  ConnectRigResult, DriverInfo, Profile, ProfileRow, RoleResult,
+  ConnectRigResult, DriverInfo, ProfileRow, RoleResult,
 } from "../../../../types";
 
 /** Busy is NAMED, not boolean (EquipmentView:192-195): the in-progress label has
@@ -169,9 +172,16 @@ export async function activateProfileRow(
 ): Promise<void> {
   hooks.setBusy("activate");
   try {
-    let full: Profile | null = null;
+    // The record is `RedactedProfile`, and it stays that: an OPERATOR reaches
+    // this line since #759 (control.reconnect) and the route strips `nina_host`,
+    // `host`, `port` and `extra` from them. The two judgements below take a
+    // structural parameter and read only `primary_backend`, `devices[].role` /
+    // `.backend` and `nina_host`, each failing toward asking, so no cast is
+    // needed and none is made (#840): a cast to `Profile` would tell the next
+    // reader of `host` or `extra` through this path that the field is there.
+    let full: RedactedProfile | null = null;
     try {
-      full = await getProfile(row.id) as Profile;
+      full = await getProfile(row.id);
     } catch {
       /* still confirm on the teardown, just without the escalation we could
          not verify */
@@ -198,7 +208,11 @@ export async function activateProfileRow(
         + "The device rows show how far it got.");
     }
   } catch (e) {
-    toast("error", activateErrorMessage(e), { verbatim: true });
+    // `canForce` is the CALLER's: an operator may reconnect (#759) and may not
+    // force, so the pointer to the sheet's force dialog is not theirs to follow.
+    toast("error", activateErrorMessage(
+      e, onRelay(), capAllowed(useStore.getState().principal, PROFILES_CAP),
+    ), { verbatim: true });
   } finally {
     hooks.setBusy(null);
   }
@@ -216,11 +230,19 @@ export async function activateProfileRow(
  *  sheet does not offer it on that origin, so the pointer would send the
  *  operator to a path that is closed. The message says to stop the run and that
  *  forcing needs the LAN. `viaRelay` is read at call time; a test passes it. */
-export function activateErrorMessage(e: unknown, viaRelay: boolean = onRelay()): string {
+export function activateErrorMessage(
+  e: unknown,
+  viaRelay: boolean = onRelay(),
+  canForce: boolean = true,
+): string {
   return e instanceof ApiError && e.code === "running"
     ? (viaRelay
       ? `${sentenceFrom(e.message)} Stop it first: forcing the switch needs the LAN, and you are connected through the relay.`
-      : `${sentenceFrom(e.message)} Stop it first, or force-activate from the profiles sheet.`)
+      : canForce
+        ? `${sentenceFrom(e.message)} Stop it first, or force-activate from the profiles sheet.`
+        // An operator may reconnect (#759) but forcing is `config.backend`, so
+        // the sheet this would point at will not offer it to them.
+        : forceNeedsBackend(e.message, accessPhrase(PROFILES_CAP)))
     : e instanceof ApiError && e.status === 409
       ? "Another profile is still connecting - wait for it to finish before switching again."
       : e instanceof Error ? e.message : "activate failed";

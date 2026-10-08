@@ -119,7 +119,14 @@ useStore.setState({
   // no real motion when nothing is connected, which is exactly the case where
   // there was nothing at all between the tap and the network.
   status: { connected: {}, looping: false, mode: "none" },
-  principal: { role: "admin", email: null, caps: ["view.status", "config.backend"] },
+  // DELIBERATE PIN CHANGE (#759, #839, wave 17 integration): this synthetic
+  // admin held `config.backend` alone, from before the capability the activate
+  // route answers to was split out of it. An unforced ACTIVATE is
+  // `control.reconnect` now (operator and admin), so the panel locks it for a
+  // principal without it; a real admin holds both (the role table's ALL_CAPS),
+  // and so does this one. What the case below pins - that the button reports the
+  // RIG and not the POST - is unchanged.
+  principal: { role: "admin", email: null, caps: ["view.status", "control.reconnect", "config.backend"] },
 } as never);
 
 const container = win.document.getElementById("root") as any;

@@ -841,8 +841,26 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     flats = None
     if automation.get("dusk_flats"):
         df = automation["dusk_flats"]
-        f0, f1 = _flats_window(str(df.get("window") or ""), lat, lon, dusk)
+        # THE FLAT-PANEL METHOD RUNS WHEN THE RUN STARTS, NOT AT THE SUN WINDOW
+        # (#744, #603 job B). A panel is a constant light source, so the stage
+        # does not wait for the node's Sun band: it runs once, when the run
+        # reaches it, before the first light. The Sun window still comes out
+        # of the node's text, and drawing a FLATS block there for a panel flow
+        # told the operator to plan the evening around an hour the engine does
+        # not use. So for a block the engine RUNS as a panel, the window times
+        # are dropped (start/end None: a client that knows nothing of the new
+        # keys draws nothing wrong) and `runs_at_start` + `at_unix` say where
+        # it happens. The other two methods are carried and not run
+        # (``_dusk_flats_runs``): they keep the window, drawn as such and
+        # worded "drawn but not run" in the story.
+        runs_at_start, _plan, _why = _dusk_flats_runs(plan_dict, graph)
+        if runs_at_start:
+            f0 = f1 = None
+        else:
+            f0, f1 = _flats_window(str(df.get("window") or ""), lat, lon, dusk)
         flats = {"start_unix": f0, "end_unix": f1,
+                 "runs_at_start": runs_at_start,
+                 "at_unix": window_start if runs_at_start else None,
                  "window": df.get("window"), "adu_target": df.get("adu_target"),
                  "count": df.get("count"), "method": df.get("method")}
 
@@ -2322,21 +2340,31 @@ def _read_progress(progress: ProgressSource) -> Mapping[str, Any] | None:
 
 
 #: Why a starved panel is starved, in the Campaign's words, by the KIND of
-#: its set-aside (#180 part A, backlog WP-131). THREE FIXED PHRASES AND NO
-#: FREE TEXT: the set-aside record's own reason can carry a solver's error,
-#: and this note is served to a viewer, so the sentence is built from the kind
-#: alone. "deferred" is a streak that failed more than one way.
-_STARVED_WHY = {
+#: its set-aside (#180 part A, backlog WP-131). FIXED PHRASES AND NO FREE
+#: TEXT: the set-aside record's own reason can carry a solver's error, and
+#: this note is served to a viewer, so the sentence is built from the kind
+#: alone.
+#:
+#: "deferred" HAS NO CAUSE TO NAME (#836). It is `GroupRun._count_failure`'s
+#: word for a streak that failed more than one way, and that includes
+#: rotation, angle, pier-side and autofocus deferrals as well as centring and
+#: guide starts, plus the mosaic's last live panel held by the D-03 rule. The
+#: first version said "failed to centre or guide" and advised a change to the
+#: panel's framing, which is wrong for a pier-side or an autofocus streak, so
+#: its entry is None: the sentence names the streak and says nothing about
+#: why or what to change. The two kinds that DO name one cause keep their
+#: sentences.
+_STARVED_WHY: dict[str, str | None] = {
     "centring": "no star to solve on",
     "guide_start": "no guide star",
-    "deferred": "failed to centre or guide",
+    "deferred": None,
 }
 
 
 def _starved_of(panel: Mapping[str, Any]) -> dict | None:
     """``{nights, kind}`` from a progress panel's ``starved`` entry, or None
     when it has none or the entry is not one the server sends: a ``kind``
-    that is none of ``_STARVED_WHY``'s three words, a ``nights`` that is no
+    that is none of ``_STARVED_WHY``'s keys, a ``nights`` that is no
     whole number of at least one. Read defensively because the progress
     answer is injected, and a word that is not one of the three must never
     reach the sentence."""
@@ -2422,7 +2450,12 @@ def _panels_clause(rows: list[dict] | None) -> str:
     and in grid order: how many nights, why in the kind's fixed words
     (``_STARVED_WHY``), and that it will not finish without a change. Said
     here because both Campaign surfaces draw the note and neither draws a
-    row."""
+    row.
+
+    A MIXED STREAK (``deferred``) GETS NEITHER THE WHY NOR THE ADVICE (#836):
+    it is one sentence that names the panel and the nights, because the cause
+    may be pier side or autofocus and "change its framing" would point the
+    operator at the wrong thing."""
     if rows is None:
         return ("No progress was read for this flow's mosaic, so no panel's "
                 "count is claimed.")
@@ -2442,10 +2475,15 @@ def _panels_clause(rows: list[dict] | None) -> str:
     for r in shot:
         if "starved" in r:
             s = r["starved"]
-            t += (f" Panel {r['name']} has been set aside on {s['nights']} "
-                  f"nights running ({_STARVED_WHY[s['kind']]}), so it will "
-                  f"not finish without a change to its framing or this "
-                  f"block's setting.")
+            why = _STARVED_WHY[s["kind"]]
+            if why is None:
+                t += (f" Panel {r['name']} has been set aside on "
+                      f"{s['nights']} nights running.")
+            else:
+                t += (f" Panel {r['name']} has been set aside on "
+                      f"{s['nights']} nights running ({why}), so it will "
+                      f"not finish without a change to its framing or this "
+                      f"block's setting.")
     return t
 
 
@@ -2470,8 +2508,8 @@ def _campaign(graph: FlowGraph | None,
     WP-131). The note says so in a sentence per panel (``_panels_clause``) and
     the answer adds ``starved: [{block, name, nights, kind}]``, present only
     when a panel is. The progress answer decides which (``progress._starved``);
-    this reads it, and its words are the kind's three fixed phrases, never the
-    set-aside record's free text.
+    this reads it, and its words are the kind's fixed phrases (none for a
+    mixed streak), never the set-aside record's free text.
 
     A CYCLE IS THE UNIT, and it is complete only when EVERY slot in the table
     has its subs. So a member's banked cycles is the MINIMUM over the slots of

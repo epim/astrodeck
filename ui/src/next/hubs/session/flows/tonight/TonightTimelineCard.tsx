@@ -206,7 +206,14 @@ export function TonightTimelineCard(props: TonightTimelineProps): JSX.Element {
           // picture does not have would send the reader looking for it.
           <LegendItem tone="accent" shape="hatch">mosaic panels&apos; peaks, lowest to highest</LegendItem>
         )}
-        <LegendItem tone="sky" shape="block">twilight / flats</LegendItem>
+        <LegendItem tone="sky" shape="block">
+          {g.flats === "window" ? "twilight / flats" : "twilight"}
+        </LegendItem>
+        {g.flats === "start" && (
+          // The flat-panel method is a tick at the run's start, not a band
+          // over the Sun window (#744): named only on a night that draws it.
+          <LegendItem tone="sky" shape="dash">flats, once before the first light</LegendItem>
+        )}
         <LegendItem tone="warn" shape="dash">meridian flip</LegendItem>
         <LegendItem tone="faint" shape="bar">
           {pct === null ? "moon up" : `moon up (${pct}%)`}

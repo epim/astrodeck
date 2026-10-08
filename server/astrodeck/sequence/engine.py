@@ -1859,26 +1859,18 @@ class SequenceEngine:
         try:
             # Server-enforced singleton, same rule as the PATCH route: the
             # active session is THE armed one, so arming it disarms the rest.
-            for other in session_store.load_all():
-                if other.id != session.id and other.auto_resume:
-                    other.auto_resume = False
-                    session_store.save(other)
-                    disarmed.append({"id": other.id,
-                                     "name": other.name or other.plan.name})
+            # ONE LOOP, shared with the PATCH route and the queue's promotion
+            # (``_arm_exclusively``, #837), which also says so, as a WARNING:
+            # this is the owner's protection against a crash or restart going
+            # away, and it happened as a side effect of starting something
+            # else. Named inside the engine, because every start path reaches
+            # this line - the Plan editor, a flow run, CONTINUE, /resume,
+            # /recover, and ResumeArm's own auto-resume - so the one place
+            # that disarms is the one place that says so, rather than trusting
+            # each caller to ask.
+            disarmed = self._arm_exclusively(session)
         except Exception:  # noqa: BLE001 - never block a run over bookkeeping
             pass
-        if disarmed:
-            # A WARNING, not info: this is the owner's protection against a
-            # crash or restart going away, and it happened as a side effect
-            # of starting something else. Named here, inside the engine,
-            # because every start path reaches this line — the Plan editor,
-            # a flow run, CONTINUE, /resume, /recover, and ResumeArm's own
-            # auto-resume — so the one place that disarms is the one place
-            # that says so, rather than trusting each caller to ask.
-            names = ", ".join(d["name"] or d["id"] for d in disarmed)
-            bus.log("warning",
-                    f"starting '{plan.name or 'Tonight'}' disarmed "
-                    f"auto-resume for: {names}", "sequence")
         self._session = session
         self._done = dict(session.done_map()) if resume else {}
         self._frames_done = sum(self._done.values())
@@ -3399,6 +3391,20 @@ class SequenceEngine:
             self._session.status = ("complete"
                                     if reason == "complete" and not unmet
                                     else "dormant")
+            # A COMPLETE SESSION HAS NOTHING LEFT TO RESUME (#838).
+            # ``start()`` arms every run, so a run that finishes the plan
+            # would otherwise leave a FINISHED session carrying
+            # ``auto_resume`` forever. ``armed()`` never returns it (it asks
+            # for a dormant one), so the flag did nothing, but it read as
+            # news everywhere else: the card drew an "armed without a
+            # monitor" chip on a night that is over, and the singleton named
+            # it when a later start switched it off. Cleared where the status
+            # is decided, so the saved file never holds complete-and-armed.
+            # ONLY a complete finish: every other ending leaves frames owed
+            # and keeps the arming that carries it through a crash or a
+            # restart (the dormant branches below decide those).
+            if self._session.status == "complete":
+                self._session.auto_resume = False
             # AN ABORT IS A DECISION, NOT A FAULT.
             #
             # `dormant` is right for a stopped run -- it still owes frames --
@@ -3504,7 +3510,10 @@ class SequenceEngine:
             self._accepted_seen = None
 
     @staticmethod
-    def _arm_exclusively(session: Session) -> list[dict]:
+    def _arm_exclusively(
+        session: Session,
+        on_disarm: Callable[[Session], None] | None = None,
+    ) -> list[dict]:
         """Arm ``session`` and disarm every OTHER armed session, saving each
         of them; the session itself is the caller's to save (it has more to
         write in the same file). Returns ``[{"id", "name"}, ...]`` for the
@@ -3512,22 +3521,33 @@ class SequenceEngine:
         warning names: a finished session's leftover flag losing its switch is
         hygiene, not news.
 
-        THE SINGLETON, ONCE (#598, D-04). ``start()`` and the PATCH route each
-        run their own copy of this loop (and say so in their own comments);
-        the promotion needed a third, so it is written once here and the other
-        two can call it. The caller holds ``session_store.write_locked()`` and
-        awaits nothing.
+        THE SINGLETON, ONCE (#598, D-04; #837). ``start()``, the PATCH route
+        and the promotion all arm one session and disarm the rest, and each
+        used to run its own copy of this loop (and say so in its own comment).
+        It is written once here and all three call it. The PATCH route and
+        the promotion hold ``session_store.write_locked()`` around it and
+        await nothing. ``start()`` does not hold it, as its own copy of the
+        loop never did (it is sync, refuses a live run, and a ladder only
+        works while none is live), so a PATCH that arms in the same instant
+        as a start is a race the shared loop did not create and does not
+        close.
 
-        No ``stop_recovery`` as the PATCH copy has: this runs from a run's own
-        finalize, and ResumeArm's ladder only works while no run is live, so
-        there is no ladder to stop at this moment (``start()``'s copy makes the
-        same call)."""
+        ``on_disarm`` is called with each session about to lose its switch,
+        BEFORE it is saved, and is the one difference between the callers: the
+        PATCH route stops a recovery ladder that is working on that session
+        (``resume_arm.stop_recovery``, #220), in the same locked section and
+        before the disarm lands, so the ladder cannot take a step in between.
+        ``start()`` and the promotion pass none: they run while no ladder can
+        be working (``start()`` refuses a live run, and a ladder only works
+        while none is live)."""
         disarmed: list[dict] = []
         session.auto_resume = True
         for other in session_store.load_all():
             if other.id == session.id or not other.auto_resume:
                 continue
             other.auto_resume = False
+            if on_disarm is not None:
+                on_disarm(other)
             session_store.save(other)
             if other.status in ("dormant", "active"):
                 disarmed.append({"id": other.id,
@@ -9345,9 +9365,12 @@ class SequenceEngine:
             if st.done:
                 break
             exp = st.exposure_s
-        if not st.converged:
-            bus.log("warning", f"{target.name}: flat exposure did not converge "
-                               f"({st.reason}); using {st.exposure_s:g}s", "sequence")
+        # THE REASON IS KEPT, AND SAID BY THE CALLER (#841). The return value
+        # is `(exposure_s, converged)` and stays so; what an unconverged solve
+        # MEANS differs by caller (the opening solve ends the step, a mid-set
+        # re-solve goes on at its best estimate), so each says its own line,
+        # once, with the solver's reason from here.
+        self._flat_solve_reason = st.reason
         return st.exposure_s, st.converged
 
     async def _run_calibration(self, ti: int, target: Target) -> None:
@@ -9425,7 +9448,30 @@ class SequenceEngine:
                                        CALIBRATOR_CMD_TIMEOUT_S, "calibrator on")
                         panel_lit = True
                     self._set_state(detail=f"{target.name}: solving flat exposure")
-                    solved_exp, _ = await self._solve_flat_exposure(step, target)
+                    solved_exp, converged = await self._solve_flat_exposure(
+                        step, target)
+                    if not converged:
+                        # A FLAT NOBODY METERED IS NOT A FLAT (#841). The
+                        # solver gives up at a rail (the source is too dim at
+                        # the longest exposure, too bright at the shortest) or
+                        # after its iteration cap, and the exposure it hands
+                        # back is then just the last number it tried. Shooting
+                        # the whole set at it banked count frames that no
+                        # ADU target describes: a panel that did not light
+                        # (a dead lamp, a cover left open) or a sky past its
+                        # window produced a library full of empty or
+                        # saturated flats, each one looking like a flat to the
+                        # matcher. None of this step's frames are shot; the
+                        # reason is said once, and the next step (the next
+                        # filter) goes on. The panel is turned off by the
+                        # finally below, as for any other way out of the step.
+                        bus.log("warning",
+                                f"{target.name}: flat exposure did not "
+                                f"converge on {step.filter or 'no filter'} "
+                                f"({self._flat_solve_reason}) - none of its "
+                                f"{step.count} flats are shot, and the next "
+                                f"step goes on", "sequence")
+                        continue
                 for i in range(self._done.get(key, 0), step.count):
                     await self._checkpoint()
                     # CALIBRATION HAS A STOP BOUNDARY TOO (§1.6). Same per-FRAME
@@ -9480,8 +9526,17 @@ class SequenceEngine:
                             and i % FLAT_RESOLVE_EVERY == 0):
                         self._set_state(detail=f"{target.name}: re-metering flat "
                                                f"(the sky has moved)")
-                        solved_exp, _ = await self._solve_flat_exposure(
+                        solved_exp, resolved = await self._solve_flat_exposure(
                             step, target, start_exposure_s=solved_exp)
+                        if not resolved:
+                            # A set already under way goes on at the best
+                            # estimate the solver has: its opening solve
+                            # converged, so these are flats, drifting. Said
+                            # once per re-solve, as the solver itself used to.
+                            bus.log("warning",
+                                    f"{target.name}: flat exposure did not "
+                                    f"converge ({self._flat_solve_reason}); "
+                                    f"using {solved_exp:g}s", "sequence")
                     exp = solved_exp if solved_exp is not None else step.exposure_s
                     self._begin_frame(ti, si, exp)
                     self._set_state(state="running",
@@ -12421,6 +12476,11 @@ class SequenceEngine:
 
     # ------------------------------------------------- DUSK FLATS (#603 job B)
 
+    #: Why the last `_solve_flat_exposure` ended, in the solver's own word
+    #: ("converged", "too_dim_at_max", "too_bright_at_min", "max_iterations").
+    #: Read by the caller that has to say what an unconverged solve means.
+    _flat_solve_reason: str = ""
+
     #: The observing night (`night_key`) on which the DUSK FLATS stage last
     #: settled: shot, or said why it would not. The stage runs once per night
     #: on this engine, so a resume the same night does not walk the filters
@@ -12629,7 +12689,7 @@ class SequenceEngine:
             return
 
         cover_was_open = False
-        shot = skipped = 0
+        shot = skipped = unmetered = 0
         try:
             recipes, missing = self._dusk_flat_recipes(df)
             for name in missing:
@@ -12685,7 +12745,14 @@ class SequenceEngine:
                         count=df.count, frame_type="Flat",
                         adu_target=df.adu_target, panel_brightness=level)])
                 await self._run_calibration(0, flat_target)
-                shot += 1
+                # A SET THE EXPOSURE WOULD NOT METER IS NOT A SET SHOT (#841):
+                # `_run_calibration` shoots none of a step whose solve did not
+                # converge, and says why, so the closing line counts it apart.
+                if self._done.get(f"{flat_target.id}:"
+                                  f"{flat_target.steps[0].id}", 0) > 0:
+                    shot += 1
+                else:
+                    unmetered += 1
         except SafetyAbort:
             raise
         except asyncio.CancelledError:
@@ -12713,7 +12780,9 @@ class SequenceEngine:
                                  f"follow would be taken through it: {exc}",
                         "sequence")
         bus.log("info", f"DUSK FLATS: {shot} set(s) shot, {skipped} skipped "
-                        f"(the library had them)", "sequence")
+                        f"(the library had them)"
+                        + (f", {unmetered} not shot (the exposure would not "
+                           f"meter)" if unmetered else ""), "sequence")
 
     async def _stand_down_guider(self) -> None:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:

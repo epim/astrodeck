@@ -216,7 +216,13 @@ export function SessionCard({
         <Mono size={10} tone={line.tone}>{line.text}</Mono>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
           <Pill tone={chip.tone}>{chip.word}</Pill>
-          {card.autoResume && !monitorConnected && (
+          {/* ONLY A DORMANT SESSION IS ARMED IN ANY SENSE THAT STARTS A RUN
+              (#838): `armed()` asks for dormant, and the chip says the rig
+              "may start in bad weather". A complete session carries no
+              switch worth warning about (the engine clears it where the
+              night completes, and a file from before that does not matter),
+              and a live one has already started. */}
+          {card.autoResume && card.status === "dormant" && !monitorConnected && (
             <Pill tone="warn">{ARMED_WITHOUT_MONITOR_CHIP}</Pill>
           )}
         </div>
