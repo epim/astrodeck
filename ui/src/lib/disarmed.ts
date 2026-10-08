@@ -29,3 +29,28 @@ export function disarmedWarningLine(disarmed: DisarmedSession[]): string {
   const names = disarmed.map((d) => (d.name && d.name.trim()) || d.id);
   return `Auto-resume was turned off for: ${names.join(", ")}.`;
 }
+
+// ------------------------------------------------------------ the queue (#598)
+//
+// The other half of the same story. A disarm is what arming a SECOND session
+// costs; a session QUEUED behind the armed one costs nothing, because the
+// armed one keeps its switch and the queued one is armed by the first one
+// COMPLETING (backlog ruling D-04, owner-approved 2026-09-30). These are the
+// words for it, beside the disarmed warning for the same reason that warning
+// is shared: two surfaces, one sentence.
+
+/** "next: <session>" beside the armed session's own line. The name falls back
+ *  to the id like `disarmedWarningLine`, for the rare row saved with none. */
+export function nextSessionLine(name: string, id: string): string {
+  return `next: ${(name && name.trim()) || id}`;
+}
+
+/** What the "next" line cannot say for a session whose wait has nothing left
+ *  to wait behind. It will NOT start by itself: only a completion arms it, and
+ *  the session it waited behind was abandoned, deleted, finished or stopped by
+ *  hand. The sentence names the way out, because a night spent expecting it to
+ *  start is the failure the queue exists to prevent. */
+export function strandedQueueLine(names: string[]): string {
+  return `Waiting behind nothing, so it will not start by itself: ${names.join(", ")}. `
+    + "Arm it from the session list.";
+}

@@ -259,6 +259,21 @@ class Session(BaseModel):
     # ``extra="forbid"`` here, so a build that predates them loads this file
     # and ignores them (it then retries set-aside panels, today's behaviour),
     # and this build reads a file without them as empty.
+    # THE SESSION THIS ONE WAITS BEHIND (#598, backlog ruling D-04,
+    # owner-approved 2026-09-30): the id of a live or armed session A, set on a
+    # DORMANT session B by ``PATCH {queue_next: true}``. Under the singleton,
+    # "run A now, then armed B" leaves one of the two unprotected whichever way
+    # it is arranged: arming B disarms A's restart resume (#595). A queued B is
+    # deliberately NOT armed (``is_armed`` is unchanged: dormant plus
+    # ``auto_resume``), so ``SessionStore.armed`` still answers A and A keeps
+    # its protection. B is armed by exactly one event, A COMPLETING
+    # (``SequenceEngine._promote_queued``), and never by a safety stop, an
+    # operator stop or a dawn cut-off of A, which leave A owing frames and
+    # armed itself. Cleared when B starts by any path, when B is abandoned,
+    # on promotion, and by ``queue_next: false``. A queue of one: a second
+    # session queued behind the same A replaces the first. Additive with
+    # SESSION_SCHEMA still 1; a build that predates it ignores the key.
+    queued_behind: str | None = None
 
     # ---- nights and arming (derived; nothing here is written) --------------
     def observing_nights(self) -> list[str]:
@@ -1481,6 +1496,10 @@ class SessionStore:
                 "accepted": s.total_accepted(),
                 "total": s.plan.total_frames(), "auto_resume": s.auto_resume,
                 "owed": s.owed(), "origin": s.origin, "origin_id": s.origin_id,
+                # The session this one waits behind (#598): the Sessions
+                # panel's "next: ..." line reads it, and a viewer cannot tell
+                # a queued session from an unarmed one without it.
+                "queued_behind": s.queued_behind,
             })
         # An id that already has a row is not an orphan: a DELETE of its
         # unreadable file can land between the walk above and the scan here,

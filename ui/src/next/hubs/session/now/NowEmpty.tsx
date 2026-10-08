@@ -59,7 +59,9 @@ import { fmtIntegration } from "../../../../api/sessionStack";
 import { getPlan, listPlans, type PlanRow } from "../../../../api/plans";
 import { listReports } from "../../../../api/reports";
 import { resumeRecoveryLine, resumeSession } from "../../../../api/sessions";
-import { disarmedWarningLine, type DisarmedSession } from "../../../../lib/disarmed";
+import {
+  disarmedWarningLine, nextSessionLine, strandedQueueLine, type DisarmedSession,
+} from "../../../../lib/disarmed";
 import { endReasonMeta } from "../../../../lib/reportChart";
 import { planUnreadableReason } from "../../../../lib/planLibrary";
 import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
@@ -85,6 +87,9 @@ import {
   FLOW_OPEN_FAILED, flowOpenFailure, libraryErrorNow, openFlowById,
 } from "../flows/openFlow";
 import { nav } from "../../../router";
+import {
+  queuedNextOf, strandedQueue, useSessionsIndex, useShelfCards,
+} from "../gallery/sessionsIndex";
 import { useCampaignFlowId } from "./useCampaign";
 import { useFlowLibrary } from "./sessionData";
 import { buildRunnables, type Runnable } from "./runnableList";
@@ -345,6 +350,23 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
 
   const armed = resumeArm?.armed ?? null;
   const hold = resumeArm?.hold ?? null;
+  // THE SESSION QUEUED BEHIND THE ARMED ONE (#598, backlog ruling D-04), and
+  // any queue that has nothing left to wait behind. Read off the shared
+  // sessions snapshot (`sessionsIndex.ts`), re-read when the armed session or
+  // the run state changes: a "next: ..." line left over from launch is the
+  // one thing this line must not be, since a completion overnight is exactly
+  // what changes it. Gated on `view.status` like the GALLERY chip, so a role
+  // without it collects no 403s and sees no line.
+  const canViewSessions = useCapability("view.status");
+  const sessionsIdx = useSessionsIndex(canViewSessions);
+  const refreshSessions = sessionsIdx.refresh;
+  const armedId = armed?.id ?? null;
+  useEffect(() => {
+    if (canViewSessions) refreshSessions();
+  }, [canViewSessions, refreshSessions, armedId, seq.state]);
+  const shelf = useShelfCards();
+  const queuedNext = canViewSessions && armedId ? queuedNextOf(shelf, armedId) : null;
+  const strandedNext = canViewSessions ? strandedQueue(shelf) : [];
   // WHILE THE RECOVERY LADDER RUNS, `hold` IS THE PREVIOUS ATTEMPT'S (#246).
   // ResumeArm clears it only after its own start or a stop, so beside
   // `recovering` it is the refusal of the attempt before this one, and
@@ -676,6 +698,16 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             {armed && (
               <Mono size={10} tone="dim">
                 {armed.name} - {armed.owed} frames remaining ({armed.accepted}/{armed.total})
+              </Mono>
+            )}
+            {armed && queuedNext && (
+              <Mono size={10} tone="accent" data-testid="now-next-session">
+                {nextSessionLine(queuedNext.name, queuedNext.id ?? queuedNext.key)}
+              </Mono>
+            )}
+            {strandedNext.length > 0 && (
+              <Mono size={10} tone="warn" data-testid="now-queue-stranded">
+                {strandedQueueLine(strandedNext.map((c) => c.name))}
               </Mono>
             )}
             {armed && hold && !recovering && (
