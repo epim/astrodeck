@@ -44,8 +44,18 @@ export interface TonightNight {
 }
 
 export interface TonightFlats {
+  /** The Sun window a lens-cap or twilight-sky block names, as two clock
+   *  times. null for the flat-panel method, which does not wait for the sky
+   *  (#744, #603 job B): the server drops them there rather than hand a client
+   *  an hour the engine does not use. */
   start_unix: number | null;
   end_unix: number | null;
+  /** True when the engine runs this block as a flat PANEL: once, when the run
+   *  reaches it, before the first light. Absent from a server that predates
+   *  #744, which reads as false (the block is drawn at its window, as it was). */
+  runs_at_start?: boolean;
+  /** Where the run starts, the instant a `runs_at_start` block happens. */
+  at_unix?: number | null;
 }
 
 export interface TonightMoon {
@@ -161,6 +171,11 @@ export interface TlGeometry {
   dashes: TlDash[];
   paths: TlPath[];
   labels: TlLabel[];
+  /** What the flats mark IS: "window" (a block over the Sun band, the lens-cap
+   *  and twilight-sky methods the engine does not run yet), "start" (a tick at
+   *  the run's start, the flat-panel method it does), or null (none drawn). The
+   *  legends read it, so a legend never names a mark the picture lacks. */
+  flats: "window" | "start" | null;
 }
 
 const isNum = (v: number | null | undefined): v is number =>
@@ -328,12 +343,27 @@ export function timelineGeometry(p: TonightTimelineProps): TlGeometry | null {
           MOON_Y, MOON_H, "faint", OP_MOON);
   }
 
-  // ── the dusk-flats window. Null start/end means the node's window text did
-  //    not name two sun altitudes; the story row says so in words, and here it
-  //    simply draws nothing.
+  // ── the dusk-flats mark. A block over the node's Sun window for the methods
+  //    the engine does not run yet; null start/end there means the window text
+  //    did not name two sun altitudes, which the story row says in words and
+  //    here draws nothing. The FLAT-PANEL method (#744, #603 job B) is NOT at
+  //    the Sun window: a panel needs no sky, so the stage runs once, when the
+  //    run starts, before the first light. Its length depends on the exposure
+  //    the metering solves for, which nothing here knows, so it is a tick at
+  //    the run's start and not a block of an invented width. A run that starts
+  //    BEFORE the axis does (an autorun offset of -30 min is the common case:
+  //    the axis opens at dusk) is already going when the axis opens, so the
+  //    tick sits at the axis's left edge; one the axis cannot hold at its far
+  //    end, or that the server could not place, draws nothing.
+  let flatsMark: TlGeometry["flats"] = null;
   if (flats && isNum(flats.start_unix) && isNum(flats.end_unix)) {
     block("flats", flats.start_unix, flats.end_unix,
           BAND_Y, BAND_H, "sky", OP_FLATS, "FLATS");
+    if (rects.some((r) => r.key === "flats")) flatsMark = "window";
+  } else if (flats && flats.runs_at_start === true && isNum(flats.at_unix)
+             && flats.at_unix <= t1) {
+    dash("flats-start", Math.max(flats.at_unix, t0), "sky", "FLATS");
+    if (dashes.some((d) => d.key === "flats-start")) flatsMark = "start";
   }
 
   // ── one block per target that actually gets a window, at its own times.
@@ -408,7 +438,7 @@ export function timelineGeometry(p: TonightTimelineProps): TlGeometry | null {
   });
   dash("dawn", night.dawn_unix, "good", "DAWN");
 
-  return { t0, t1, rects, hourTicks, dashes, paths, labels };
+  return { t0, t1, rects, hourTicks, dashes, paths, labels, flats: flatsMark };
 }
 
 /** The moon's illuminated fraction as a whole percent, or null. The design's
@@ -578,7 +608,16 @@ export function TonightTimeline(props: TonightTimelineProps): JSX.Element {
             <LegendSwatch glyph="▨" tone="accent" /> mosaic panels&apos; peaks, lowest to highest
           </span>
         )}
-        <span><LegendSwatch glyph="■" tone="sky" /> twilight / flats</span>
+        <span>
+          <LegendSwatch glyph="■" tone="sky" /> {g.flats === "window" ? "twilight / flats" : "twilight"}
+        </span>
+        {g.flats === "start" && (
+          // The flat-panel method is a tick, not a band: named only on a night
+          // that draws it (#744).
+          <span data-legend="flats-start">
+            <LegendSwatch glyph="┆" tone="sky" /> flats, once before the first light
+          </span>
+        )}
         <span><LegendSwatch glyph="┆" tone="warn" /> meridian flip</span>
         <span>
           <LegendSwatch glyph="▬" tone="faint" /> moon up

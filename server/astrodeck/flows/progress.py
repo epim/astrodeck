@@ -91,6 +91,16 @@ here is a number an operator acts on:
   ONLY, as ``skipped`` is: the panel's id, name, cell and whether it may
   still expire tonight; never the record's reason (free text, which nothing
   here can vet), its kind, its night or its time.
+* A PANEL SET ASIDE NIGHT AFTER NIGHT SAYS SO (#180 part A, backlog WP-131).
+  A panel that cannot centre or start guiding is set aside every night and
+  never completes, and every night looked like a transient failure. A panel
+  whose session has set it aside whole, for a STARVING kind, on
+  ``STARVED_AFTER_NIGHTS`` or more nights running (and shot no frame on any of
+  them) carries ``starved: {nights, kind}`` (``_starved``,
+  ``Session.set_aside_streak``): a count, and one of three fixed words, never
+  the record's reason (free text a viewer must not read) and never a time. The
+  key is absent where it is not true, as ``locked_angle`` is, so every answer
+  without one is the answer before.
 
 Pure otherwise: no devices, no store, and no clock or config of its own.
 """
@@ -101,6 +111,7 @@ from typing import TYPE_CHECKING
 
 from ..events import night_key
 from ..sequence.group_rules import CENTRING
+from ..sequence.session import STARVED_AFTER_NIGHTS
 from . import identity, tonight
 # ONE READING OF WHICH PANELS A PLAN SKIPS, CONTINUE's own (#335), so the
 # card and the dropped-steps question name one set of frames as lost.
@@ -143,6 +154,7 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
                    [locked_angle: {pa_deg, source}],
                    panels: [{target_id, name, row, col, banked, owed, total,
                              [locked_angle: {pa_deg, source}],
+                             [starved: {nights, kind}],
                              steps: [{step_id, filter, frame_type, exposure_s,
                                       count, banked, owed}]}]}],
          orphaned: {frames, steps}}
@@ -188,6 +200,11 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     ``locked_angle`` is present only where there is a lock (``_locked``,
     ``_block_lock``): ``pa_deg`` in the CROTA2 convention the session stored,
     and ``source``, ``LOCK_SOURCE``. Never the lock's times.
+
+    ``starved`` is present only on a panel set aside whole on
+    ``STARVED_AFTER_NIGHTS`` or more nights running (``_starved``): ``nights``,
+    how many, counting tonight once its run has started, and ``kind``,
+    "centring", "guide_start" or "deferred". Never the record's reason.
 
     ``now`` (#727) is the clock the ROUTE hands in, as it does for
     ``continue_night``, and with it a DORMANT session's mosaic block adds one
@@ -259,6 +276,9 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
         lock = _locked(session, target)
         if lock is not None:
             panel["locked_angle"] = lock
+        starved = _starved(session, target)
+        if starved is not None:
+            panel["starved"] = starved
         block["panels"].append(panel)
         for field in ("banked", "owed", "total"):
             block[field] += panel[field]
@@ -485,6 +505,31 @@ def _locked(session: "Session | None",
     return {"pa_deg": float(pa), "source": LOCK_SOURCE}
 
 
+def _starved(session: "Session | None",
+             target: "Target | None") -> dict | None:
+    """``{nights, kind}`` for a panel ``session`` has set aside whole, for a
+    STARVING kind, on ``STARVED_AFTER_NIGHTS`` or more nights running, or
+    None (#180 part A, backlog WP-131).
+
+    Read through ``Session.set_aside_streak``, keyed by the target id this
+    compile names, as ``_locked`` is: a re-frame re-keys the ids and the
+    records the old ids hold are then nobody's here, which is the one way a
+    streak starts again. A streak of fewer nights is no answer at all, so
+    every panel short of the threshold, and every answer for a session that
+    never set one aside, is exactly what it was before.
+
+    WORDS AND A COUNT ONLY, as ``_set_aside_tonight`` is: ``kind`` is one of
+    the closed set ``STARVING_KINDS``, so no free text can travel in it, and
+    the record's reason and times are never read here. A viewer reads this
+    answer."""
+    if session is None or target is None:
+        return None
+    nights, kind = session.set_aside_streak(target.id)
+    if nights < STARVED_AFTER_NIGHTS or kind is None:
+        return None
+    return {"nights": nights, "kind": kind}
+
+
 def _block_lock(panels: list[dict]) -> dict | None:
     """A TARGET block's locked angle: the one every panel the plan holds is
     locked to, or None. A single target is one panel, so this is that
@@ -619,6 +664,9 @@ def _mosaic(plan: "SequencePlan", entry: dict, counts: dict[str, int],
         lock = _locked(session, target)
         if lock is not None:
             panel["locked_angle"] = lock
+        starved = _starved(session, target)
+        if starved is not None:
+            panel["starved"] = starved
         block["panels"].append(panel)
         for field in ("banked", "owed", "total"):
             block[field] += panel[field]

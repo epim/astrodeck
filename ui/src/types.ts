@@ -924,13 +924,23 @@ export interface SequenceGroupState {
   panels_done: number;
   panels_total: number;
   /** Panels set aside, each with its reason in words, what kind of
-   *  set-aside it is ("centring" | "floor" | "rejects" | "group" | ...,
-   *  `GroupRun.set_aside_kind`'s word) and whether it is set aside only FOR
+   *  set-aside it is ("centring" | "guide_start" | "deferred" | "floor" |
+   *  "rejects" | "group" | ..., `GroupRun.set_aside_kind`'s word) and whether
+   *  it is set aside only FOR
    *  NOW (#573, #534 follow-up; backlog ruling D-07): a centring set-aside
    *  that may still expire tonight, with the panel tried once more before
    *  the night is over, true; one that lasts the rest of the night, false.
    *  The engine always sends both keys, so a reader cannot mistake a
-   *  for-now panel for one that is done tonight. */
+   *  for-now panel for one that is done tonight.
+   *
+   *  The kinds that say a panel was STARVED (set aside whole, night after
+   *  night, is what the Campaign names; #180 part A) are "centring" (a streak
+   *  of centring misses and nothing else), "guide_start" (a streak of failed
+   *  guide starts and nothing else) and "deferred". "deferred" is the MIXED
+   *  kind: a streak that failed more than one way (rotation, angle, pier side
+   *  and autofocus deferrals count, not only centring and guide starts), and
+   *  also the mosaic's last live panel held by the D-03 held-pass rule. It
+   *  names no single cause, so a reader must not either (#836). */
   set_aside: { panel: string; reason: string; kind: string; for_now: boolean }[];
   /** True while the group waits for a panel's meridian crossing. */
   meridian_wait: boolean;
@@ -1209,6 +1219,32 @@ export interface TargetGroup {
   geometry: Record<string, unknown>;
 }
 
+/** The flats a flow's DUSK FLATS block asks for, as the engine runs them (#603
+ *  job B, wave 17 WP-134; mirrors `sequence/models.py::DuskFlatsPlan`). ABSENT
+ *  from a plan's dump while there is no block, so a stored session and every
+ *  plan without one reads as before.
+ *
+ *  `method` is the node's "Method": "panel" (Flat panel), "cap" (Translucent
+ *  lens cap) or "sky" (Twilight sky). Only "panel" is RUN, once a night before
+ *  the first light and only with a connected panel; the other two are carried
+ *  so the plan says what the flow asked for, and the engine says out loud that
+ *  it does not run them yet. The window is the node's "Wait for" band as two
+ *  non-positive Sun altitudes (`window_hi_deg` the higher); both null for
+ *  "Now". A panel does not wait for it. `filters` null is every filter in the
+ *  wheel; "Tonight's plan only" arrives resolved to the plan's own light
+ *  filters. `panel_brightness` null is the connected panel's middle level. */
+export interface DuskFlatsPlan {
+  method: "panel" | "cap" | "sky";
+  window_hi_deg: number | null;
+  window_lo_deg: number | null;
+  filters: string[] | null;
+  /** 1..65535 */
+  adu_target: number;
+  /** 1..200 */
+  count: number;
+  panel_brightness: number | null;
+}
+
 export interface SequencePlan {
   name: string;
   targets: Target[];
@@ -1244,6 +1280,8 @@ export interface SequencePlan {
   // --- mosaic groups (S2: #189, spec 3.4; additive/optional — [] / absent ===
   //     today). One entry per TARGET block with a grid, written by the compile.
   groups?: TargetGroup[];
+  // --- DUSK FLATS (#603 job B; additive/optional - absent === no block). ---
+  dusk_flats?: DuskFlatsPlan | null;
 }
 
 // ============================================================================
@@ -2495,6 +2533,7 @@ export type Capability =
   | "control.mount"
   | "control.guide"
   | "control.power"
+  | "control.reconnect"
   | "config.safety"
   | "config.solar_override"
   | "config.backend"
@@ -2663,6 +2702,12 @@ export interface SessionRow {
   accepted: number;
   total: number;
   auto_resume: boolean;
+  /** The id of the session this one WAITS BEHIND, to be armed when that one
+   *  COMPLETES (#598, backlog ruling D-04); null or absent when it waits for
+   *  nothing. Absent from a server that predates the queue, which reads as no
+   *  wait. The shelf reads it through `rowQueuedBehind`, which accepts only a
+   *  non-empty string. */
+  queued_behind?: string | null;
 }
 
 /** A session file the store cannot read (#242): corrupt JSON, a file that is

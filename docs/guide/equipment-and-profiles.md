@@ -2,7 +2,7 @@
 
 # Equipment and profiles
 
-These procedures use the classic interface at `#/classic`. The alternative interface has its own [Rig and settings layout](next-ui.md). Connecting equipment and managing profiles require admin access (`config.backend`) and a direct connection to the controller, not the relay.
+These procedures use the classic interface at `#/classic`. The alternative interface has its own [Rig and settings layout](next-ui.md). Activating a saved profile to reconnect the rig needs `control.reconnect` (admin or operator access) and also works through the relay. Forcing the switch while a sequence is running, every other profile change and connecting equipment need admin access (`config.backend`) and a direct connection to the controller, not the relay.
 
 <a id="step-1--declare-your-drivers"></a>
 

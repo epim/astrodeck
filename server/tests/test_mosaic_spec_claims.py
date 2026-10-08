@@ -2957,12 +2957,28 @@ def test_5_9_and_6_15_say_abort_and_a_disarm_stop_the_ladder_and_it_says_so():
                          for s in n.body for c in _stops(s))]
     assert withdrawn, ("a PATCH that disarms or abandons the recovered "
                        "session no longer stops the ladder; 5.9 says both do")
-    singleton = [n for n in ast.walk(patch_tree) if isinstance(n, ast.For)
-                 and isinstance(n.target, ast.Name)
-                 and any(ast.unparse(_keyword_node(c, "session_id") or
-                                     ast.Constant(None))
-                         == f"{n.target.id}.id"
-                         for c in _stops(n))]
+    # DELIBERATE PIN CHANGE (#837, wave 17 integration): the singleton's loop
+    # used to be written out in ``patch_session`` (``for other in
+    # session_store.load_all(): ... resume_arm.stop_recovery(...,
+    # session_id=other.id)``). It is ``SequenceEngine._arm_exclusively`` now,
+    # shared with ``engine.start`` and the queue's promotion, and the route's
+    # one difference is the HOOK it hands that loop: a lambda over the session
+    # about to be disarmed that stops the ladder naming that session. The claim
+    # pinned is the same (a PATCH that arms another session stops the ladder
+    # recovering the one it disarms, naming it), read from the new shape.
+    singleton = []
+    for call in ast.walk(patch_tree):
+        if not (isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "_arm_exclusively"):
+            continue
+        hook = _keyword_node(call, "on_disarm")
+        if (isinstance(hook, ast.Lambda) and len(hook.args.args) == 1
+                and any(ast.unparse(_keyword_node(c, "session_id") or
+                                    ast.Constant(None))
+                        == f"{hook.args.args[0].arg}.id"
+                        for c in _stops(hook))):
+            singleton.append(call)
     assert singleton, ("a PATCH that arms another session no longer stops "
                        "the ladder recovering the one it disarms; 5.9 says "
                        "it does")
