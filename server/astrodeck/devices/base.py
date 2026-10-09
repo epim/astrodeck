@@ -47,6 +47,31 @@ class GotoRefused(DeviceError):
         self.reason = reason
 
 
+class GotoNotArrived(DeviceError):
+    """A mount ACCEPTED a goto and did not get there by its own report (#860),
+    or the goto command itself was lost on the link, so nobody knows whether
+    the mount took it. Either way the driver halted it, and where the tube is
+    must be measured, not assumed.
+
+    A SIBLING of ``GotoRefused``, not a subclass: the resume ladder reads a
+    ``GotoRefused`` as a limit to wait out or clear, and a goto that stalled or
+    was stopped part way is neither. A ``DeviceError`` subclass, so every
+    existing ``except DeviceError`` still catches it.
+
+    ``reason`` is fixed words for a person (no figure, no code, no
+    coordinate): it may become a log clause or a result key. ``residual_deg``
+    is the angular separation between the commanded target and the position
+    the mount reported last, or ``None`` when that could not be computed. A
+    separation is not a site oracle; the coordinates are, so neither the
+    message nor the reason carries them (#140, #166)."""
+
+    def __init__(self, message: str, *, reason: str,
+                 residual_deg: float | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.residual_deg = residual_deg
+
+
 class SyncRefused(DeviceError):
     """A mount did not take a sync: it answered with a refusal code, or it
     answered as if it had and its reported position did not move (#850).
@@ -133,6 +158,123 @@ class SyncUnverified(DeviceError):
         self.reason = reason
         self.residual_deg = residual_deg
         self.solved: tuple[float, float] | None = None
+
+
+#: Within this many degrees of either pole, a sync the read-back passed does
+#: NOT clear ``position_known`` (#867, ruling R3). Near the pole the
+#: read-back is an angular separation and cannot see the RA axis: a sync the
+#: mount ignored passes when the reported pole is within the read-back's
+#: tolerance of the solved field, and 0.05 deg at polar distance p hides an
+#: RA-axis error of 2 asin(sin(0.025 deg) / sin p): 0.57 deg at 5, 2.87 at
+#: 1, 29 at 0.1. Beyond 5 the hidden error is under 0.6 deg, which a
+#: re-centre corrects. ONE copy, for every driver: the AM5's own latch
+#: (``zwo_am5.py`` imports it) and the rig-level latch
+#: (``Telescope.note_verified_sync``) follow the same rule.
+SYNC_POLE_BLIND_DEG = 5.0
+
+#: The hub attribute that keeps the rig-level position doubt beyond ONE
+#: telescope object (#851 integration re-review, the reconnect hole). See
+#: `rig_position_known`.
+RIG_DOUBT_ATTR = "_rig_position_doubt"
+
+
+def _set_rig_doubt(hub, value) -> None:
+    try:
+        setattr(hub, RIG_DOUBT_ATTR, value)
+    except Exception:  # noqa: BLE001 - a hub that takes no attribute keeps none
+        pass
+
+
+def rig_position_known(hub) -> bool:
+    """``position_known`` of the hub's telescope, with the doubt CARRIED
+    ACROSS A REPLACED TELESCOPE OBJECT.
+
+    WHY. The doubt lives on the driver object (``Telescope._position_doubt``,
+    and the AM5's own ``_position_untrusted``). An operator's profile activate
+    (the W17 #759 reconnect, on the LAN and through the relay) tears the rig
+    down and builds NEW device objects, so without this the doubt was gone
+    after one Reconnect click and an armed session's ladder could take a
+    refused sync close enough and re-centre from the position the run had
+    just declared unknown. So every read through here records an unknown
+    position on the hub as ``(telescope object, reason)``, and a read that
+    finds a DIFFERENT telescope object marks the new one
+    (``mark_position_unknown``) before answering.
+
+    CLEARED BY THE SAME EVIDENCE, seen on the object that held it: when that
+    object reads known again (Trust position, a sync proved away from the
+    pole), the hub's record goes. The Trust position route also forgets it
+    outright (`forget_rig_position_doubt`), because its word is about the
+    tube, whichever object answers. A proved sync on a NEW object before any
+    read here is re-doubted: the conservative side, one Trust position tap.
+
+    A telescope that cannot be marked (a double without the method) answers
+    False while the record stands. No telescope: True, as every consumer's
+    own ``getattr(tel, "position_known", True)`` default. PROCESS MEMORY
+    ONLY, kept on the hub, so a server restart drops it (the
+    learned-facts-in-memory ruling) and a test's fresh hub starts clean.
+    Synchronous, touches no device, never raises."""
+    try:
+        devices = getattr(hub, "devices", None) or {}
+        tel = devices.get("telescope")
+        if tel is None:
+            return True
+        known = bool(getattr(tel, "position_known", True))
+        try:
+            held = vars(hub).get(RIG_DOUBT_ATTR)
+        except TypeError:       # no instance dict: nowhere to keep it
+            return known
+        if held is not None and held[0] is not tel:
+            if known:
+                mark = getattr(tel, "mark_position_unknown", None)
+                if callable(mark):
+                    mark(held[1])
+                    known = bool(getattr(tel, "position_known", True))
+                if known:
+                    return False        # could not carry it: still in doubt
+        if known:
+            if held is not None:
+                _set_rig_doubt(hub, None)
+            return True
+        reason = (getattr(tel, "_position_doubt", None)
+                  or (held[1] if held is not None else None)
+                  or "position unknown")
+        _set_rig_doubt(hub, (tel, reason))
+        return False
+    except Exception:  # noqa: BLE001 - a guard read must never raise
+        return False
+
+
+def position_known_for_motion(hub, tel=None) -> bool:
+    """THE ONE GATE every motion-committing path asks before it aims a goto,
+    a park or a home (#886). False while the driver about to be commanded
+    (``tel``, when the caller already holds one; a route's ``hub.require``
+    answer) says its position is unknown, or while the rig-level latch does
+    (`rig_position_known`, which also carries a doubt across a replaced
+    telescope object).
+
+    WHY ONE GATE. Each guard used to be added on the path that produced the
+    evidence (the resume ladder, setup, dawn park), so Home, the meridian
+    flip, the hold re-point, the tracking recovery, the run-end park and the
+    plain goto and park routes still aimed from the position nobody knew.
+    Every one of them asks this now; the engine through
+    ``SequenceEngine._position_unknown``, the routes through
+    ``api.app._refuse_if_position_unknown``.
+
+    A pad jog does NOT ask: it computes no destination, so a wrong position
+    cannot aim it, and it is the only way to bring the tube home by eye.
+    Synchronous, touches no device, never raises."""
+    try:
+        if tel is not None and not bool(getattr(tel, "position_known", True)):
+            return False
+    except Exception:  # noqa: BLE001 - a guard read must never raise
+        return False
+    return rig_position_known(hub)
+
+
+def forget_rig_position_doubt(hub) -> None:
+    """The operator's Trust position: drop the hub's record whichever
+    telescope object it was taken on (see `rig_position_known`)."""
+    _set_rig_doubt(hub, None)
 
 
 class PierSide(enum.Enum):
@@ -399,6 +541,16 @@ class Telescope(Device):
     #: claim the more permissive answer.
     max_rate_deg_s: float | None = None
 
+    #: capability flag (#851 integration review, finding 9) -- set True only
+    #: by backends whose mount can LOSE ITS COORDINATE FRAME with nothing on
+    #: the wire to say so: the ZWO AM5, which after a power cycle reports its
+    #: home position wherever the tube is, and whose park is a goto to its
+    #: MODEL's home. On such a mount a sync it will not take in place means
+    #: the frame itself is in doubt, so the engine ends the run without
+    #: moving it (``PositionUnknownStop``). On every other mount the same
+    #: refusal stops the TARGET and the run goes on, with the normal park.
+    frame_can_reset: bool = False
+
     #: Does this driver have a reason to TRUST the coordinates it reports (#144)?
     #: False means it has a reason to think its coordinate frame is wrong - the
     #: AM5 after a power cycle reports its home position, pointing at the pole,
@@ -407,7 +559,9 @@ class Telescope(Device):
     #: jog) is then a precise answer about nothing.
     #:
     #: A property in the driver, not a constant, because it is cleared by
-    #: evidence: a plate-solved ``sync`` re-establishes the frame, and
+    #: evidence: a plate-solved ``sync`` re-establishes the frame where the
+    #: driver can verify it took (the AM5 keeps the latch through a sync
+    #: within its ``SYNC_POLE_BLIND_DEG`` of a pole, #867), and
     #: :meth:`trust_position` is the operator's word that the tube is where the
     #: mount says. A goto does NOT clear it - it lands wherever the wrong model
     #: sends it and the mount then reads back its own opinion of the arrival.
@@ -418,7 +572,56 @@ class Telescope(Device):
     #: that cannot tell a reset from a mount that simply is where it says does
     #: not get to claim the less permissive answer, which is the same rule
     #: ``max_rate_deg_s`` keeps in the other direction.
-    position_known: bool = True
+    #:
+    #: THE RIG-LEVEL LATCH (#851 integration review, findings 0 and 5, #874).
+    #: The sequence engine ends a run with ``PositionUnknownStop`` on evidence
+    #: the driver itself may not have seen (a sync the mount would not take in
+    #: place, a reset-sized jump whose field will not solve), and marks it
+    #: here (:meth:`mark_position_unknown`). Every consumer that already reads
+    #: ``position_known`` then sees it: the resume ladder (so ANOTHER armed
+    #: session cannot slew from it either), the nudge gate, the home route,
+    #: dawn park, and both UIs' Trust position button. Cleared by the same
+    #: evidence as a driver's own latch: :meth:`trust_position`, or a sync
+    #: whose read-back passed more than ``SYNC_POLE_BLIND_DEG`` from either
+    #: pole (:meth:`note_verified_sync`). PROCESS MEMORY ONLY, never on disk:
+    #: a persisted doubt would hold a later night on a stale verdict.
+    _position_doubt: str | None = None
+
+    @property
+    def position_known(self) -> bool:
+        """False while the rig-level latch is set (see above). A driver with
+        evidence of its own (the AM5) overrides this and honours the latch
+        too."""
+        return self._position_doubt is None
+
+    @position_known.setter
+    def position_known(self, value: bool) -> None:
+        # Test doubles and older code assign the attribute. False is a doubt
+        # with no named cause, True clears it, as Trust position does.
+        self._position_doubt = None if value else (
+            self._position_doubt or "position_known set False")
+
+    def mark_position_unknown(self, reason: str) -> None:
+        """Latch :attr:`position_known` False with ``reason`` (fixed words,
+        never a coordinate). Synchronous and touches no device: the caller
+        is ending a run and must not wait on a link that may be the cause.
+        Idempotent; the first reason is kept."""
+        if self._position_doubt is None:
+            self._position_doubt = reason or "position unknown"
+
+    def note_verified_sync(self, dec_deg: float) -> None:
+        """A sync to ``dec_deg`` whose read-back PROVED it was taken: the
+        rig-level latch clears, unless the sync was within
+        ``SYNC_POLE_BLIND_DEG`` of either pole, where a read-back cannot see
+        the RA axis (#867, ruling R3). Called by the AM5's ``sync`` and by
+        ``sync_verify.verify_sync`` for the Alpaca, NINA and ASIAIR drivers.
+        Never sets the latch."""
+        try:
+            far = abs(float(dec_deg)) <= 90.0 - SYNC_POLE_BLIND_DEG
+        except (TypeError, ValueError):
+            return
+        if far:
+            self._position_doubt = None
 
     async def trust_position(self) -> None:
         """The operator says the tube is physically where this mount reports
@@ -426,10 +629,11 @@ class Telescope(Device):
         use is "I drove it to its home position by eye, and the mount's home
         read is therefore true".
 
-        Default: nothing to do. A driver with no reason to doubt its frame has
-        nothing to clear, so this does not raise - the route that reaches it is
-        offered to every mount."""
-        return None
+        Default: clear the rig-level latch (see ``_position_doubt``); a
+        driver with no other reason to doubt its frame has nothing more to
+        clear, so this does not raise - the route that reaches it is offered
+        to every mount. A driver that overrides it clears the latch too."""
+        self._position_doubt = None
 
     async def find_home(self) -> None:
         """Send the mount to its mechanical home and leave it USABLE there.
@@ -441,6 +645,12 @@ class Telescope(Device):
         homes AND parks), so a backend whose home implies a park is expected to
         unpark afterwards; ending parked would make the button a trap that looks
         like it worked.
+
+        A MOUNT WITH NO HOME SENSOR HOMES TO ITS OWN MODEL (#857). The ZWO AM5
+        drives to where its pointing model places home, so a model that is off
+        homes off by about the same amount: homing neither resets nor corrects
+        the model. A sync from a solved frame away from the pole corrects it,
+        and a power-up with the tube at true home starts it right.
 
         Default: refuse. A mount that cannot home says so rather than silently
         doing nothing."""

@@ -16,7 +16,10 @@ export const STANDARDS_DEFAULTS: StandardsConfig = {
   apply_filter_offsets: true,
   refocus_on_temp_delta_c: 0,
   min_stars: 0,
-  max_guide_rms: 0,
+  // #854 (2026-10-08): on by default at 5 arcsec. The server's own default
+  // and its schema-4 migration both say 5.0; a stale 0 here would show the
+  // gate as off on a rig where it is on.
+  max_guide_rms: 5,
   // GN-04 (2026-09-06): on by default. The server's own default and its
   // schema-2 migration both say 0.65; a stale 0 here would show the gate as
   // off on a rig where it is on.
@@ -43,7 +46,7 @@ export const STANDARDS_NUMBER_FIELDS: StandardsNumberField[] = [
     hint: "A frame with fewer stars than this is flagged. 0 turns it off. "
         + "Not the same setting as the WCS star floor under Connect." },
   { key: "max_guide_rms", label: "Reject above", unit: "″ RMS",
-    hint: "Guide error while the frame was open. 0 turns it off." },
+    hint: "Guide RMS when the frame closes, arcsec. 5 is the default; 0 turns it off." },
   { key: "max_eccentricity", label: "Maximum star elongation", unit: "ecc",
     hint: "Eccentricity runs from 0 (round) toward 1 (elongated). Reject a frame "
         + "when its median is above this limit. A frame is also rejected when "

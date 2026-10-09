@@ -25,7 +25,7 @@
 // is more useful than a refusal: you can read what a device would offer before
 // you own one.
 
-import { useCallback, useEffect, useState, type JSX } from "react";
+import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import {
   BannerCard, Card, EmptyCard, ActionButton, ListRow, Mono,
 } from "../../../ui";
@@ -36,7 +36,11 @@ import { listDrivers, listProfiles } from "../../../../api/backends";
 import { accessPhrase, useCan, useCanConfigBackend } from "../../../../lib/caps";
 import { liveRoleCount, type AssignmentMap } from "../../../../lib/equipment";
 import {
+  retryTransient, retryingLine, useRetryOnReturn, type LoadRetry,
+} from "../../../../lib/retryLoad";
+import {
   useConfig, useEquipConnected, useSafety, useSequence, useStatus, useStore,
+  useWsConnected,
 } from "../../../../store";
 import type { DriversResponse, ProfileRow as ProfileRowData } from "../../../../types";
 import { RECONNECT_CAP } from "../profiles/profilesModel";
@@ -77,19 +81,61 @@ export function DevicesScreen(): JSX.Element {
   const [profiles, setProfiles] = useState<ProfileRowData[] | null>(null);
   const [busy, setBusy] = useState<BusyWhat>(null);
 
+  // A TRANSIENT FAILURE IS ASKED AGAIN BY ITSELF (#859): a timeout, a network
+  // error or a proxy's 502/503/504 waits 2 s, 5 s, 15 s and asks again, with
+  // the retrying banner meanwhile; the newest load wins and an unmounted one
+  // writes nothing. A failure left after that is re-asked once on
+  // websocket-up or tab-visible.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+  const driversGen = useRef(0);
+  const driversPhase = useRef<"loading" | "failed" | "ok">("loading");
+  const [driversRetry, setDriversRetry] = useState<LoadRetry | null>(null);
+  const wsConnected = useWsConnected();
+
   const reloadDrivers = useCallback(async () => {
+    driversPhase.current = "loading";
+    const gen = ++driversGen.current;
+    const mine = () => alive.current && gen === driversGen.current;
     try {
-      setData(await listDrivers());
+      const answer = await retryTransient(listDrivers, {
+        stop: () => !mine(),
+        onRetry: (r) => { if (mine()) setDriversRetry(r); },
+      });
+      if (!mine()) return;
+      setData(answer);
       setLoadErr(null);
+      setDriversRetry(null);
+      driversPhase.current = "ok";
     } catch (e) {
+      if (!mine()) return;
       setLoadErr(e instanceof Error ? e.message : "couldn't load drivers");
+      setDriversRetry(null);
+      driversPhase.current = "failed";
     }
   }, []);
+  // The newest profiles read wins too: a mount read still retrying must not
+  // overwrite (or null) the rows a later reload, after an activate or a save,
+  // has already landed.
+  const profilesGen = useRef(0);
   const reloadProfiles = useCallback(() => {
-    listProfiles().then(setProfiles).catch(() => setProfiles(null));
+    const gen = ++profilesGen.current;
+    const mine = () => alive.current && gen === profilesGen.current;
+    retryTransient(listProfiles, { stop: () => !mine() })
+      .then((rows) => { if (mine()) setProfiles(rows); })
+      .catch(() => { if (mine()) setProfiles(null); });
+  }, []);
+  /** Rows handed in by an activate or a delete: newer than any read still out. */
+  const takeProfiles = useCallback((rows: ProfileRowData[]) => {
+    ++profilesGen.current;
+    setProfiles(rows);
   }, []);
 
   useEffect(() => { void reloadDrivers(); reloadProfiles(); }, [reloadDrivers, reloadProfiles]);
+  useRetryOnReturn(() => driversPhase.current === "failed", () => { void reloadDrivers(); }, wsConnected);
 
   const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
     useStore.getState().showToast(level, message, opts);
@@ -156,8 +202,9 @@ export function DevicesScreen(): JSX.Element {
   );
 
   // First load failed with nothing cached: this is the one case that replaces
-  // the tree, because there is no tree.
-  if (loadErr && !data) {
+  // the tree, because there is no tree. Reached only once the retries are
+  // spent (#859); while one is pending the tree shows the retrying banner.
+  if (loadErr && !data && !driversRetry) {
     return (
       <div data-testid="rig-devices" style={{ padding: "0 2px" }}>
         <EmptyCard
@@ -186,7 +233,11 @@ export function DevicesScreen(): JSX.Element {
         <span data-testid="rig-summary"><Mono size={10} tone={summary.tone}>{summary.text}</Mono></span>
       </div>
 
-      {loadErr && data && (
+      {driversRetry && (
+        <BannerCard tone="warn" text={retryingLine(driversRetry)} data-testid="devices-retrying" />
+      )}
+
+      {loadErr && data && !driversRetry && (
         <BannerCard
           tone="warn"
           text={`Couldn't refresh drivers: ${loadErr}`}
@@ -204,7 +255,7 @@ export function DevicesScreen(): JSX.Element {
           busy={busy != null}
           explain={explain}
           onConnectProfile={(row) => void activateProfileRow(row, liveDevices, {
-            setBusy, onRows: setProfiles, reload: reloadProfiles,
+            setBusy, onRows: takeProfiles, reload: reloadProfiles,
           })}
           // DETECT MY HARDWARE opens the sheet that owns the scan and starts it
           // there, rather than scanning behind a screen that has nowhere to
@@ -222,7 +273,7 @@ export function DevicesScreen(): JSX.Element {
         lanReason={lanReason}
         busy={busy}
         setBusy={setBusy}
-        onRows={setProfiles}
+        onRows={takeProfiles}
         reload={reloadProfiles}
       />
 

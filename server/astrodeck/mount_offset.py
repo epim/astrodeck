@@ -52,6 +52,19 @@ POSITION_UNKNOWN_DETAIL = (
     "cannot compute where that lands; use the rate-move pad to drive by eye"
 )
 
+#: The 409 detail of ``POST /api/mount/goto``, ``/park`` and ``/home`` while
+#: the position is unknown (#886), and the engine's position-unknown line
+#: (``SequenceEngine._POSITION_UNKNOWN_ACTION``). Each of those moves is
+#: aimed from the believed position: on the AM5, Home and Park are a goto to
+#: the MODEL's home, so neither recovers the position. The safe order, and
+#: nothing aimed: Trust position if the tube really is at home, otherwise a
+#: pad key by eye (the jog computes no destination), then Trust position.
+#: 131 characters, inside the UI's 137-character cut; no "goto", "slew" or
+#: "go to" in it.
+POSITION_UNKNOWN_MOTION_DETAIL = (
+    "Mount position is unknown. Tube really at home: Trust position. If "
+    "not, hold a pad key to bring it home by eye, then Trust position.")
+
 #: An RA offset is never taken further than half a turn. Past 12 hours the
 #: "shorter way round" is the other direction, so a bigger number is not a
 #: bigger move - it is the same move described the long way.

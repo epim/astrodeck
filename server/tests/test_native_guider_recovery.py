@@ -269,7 +269,12 @@ async def test_persisted_calibration_reused_across_guider_instances():
     real_pulse_guide = tel.pulse_guide
 
     async def _spy_pulse_guide(direction, ms):
-        pulses.append((direction, ms))
+        # #848: ``start_guiding`` now waits for the calibration's probation,
+        # so the guide LOOP's corrections reach the mount before it returns.
+        # What this pins is the reuse PATH: no walk, no probe, so no pulse
+        # before the loop exists.
+        if g2._loop_task is None:
+            pulses.append((direction, ms))
         return await real_pulse_guide(direction, ms)
 
     tel.pulse_guide = _spy_pulse_guide

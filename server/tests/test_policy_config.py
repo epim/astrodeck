@@ -21,8 +21,12 @@ def test_every_moved_field_defaults_to_the_plan_models_value():
     ONE HAS DELIBERATELY MOVED SINCE. `max_eccentricity` shipped at 0 = off and
     stayed off on every rig, so the 2026-09-06 night stacked in every trailed
     sub it took (GN-04). It now defaults to the measured 0.65 and an existing
-    config's 0 is raised once by the schema-2 migration. The rest still hold
-    the no-change guarantee.
+    config's 0 is raised once by the schema-2 migration.
+
+    A SECOND HAS MOVED SINCE (#854). `max_guide_rms` shipped at 0 = off, so on
+    2026-10-07 runaway frames at 1549" and 773" guide RMS were accepted. It now
+    defaults to 5.0 arcsec and an existing config's 0 is raised once by the
+    schema-4 migration. The rest still hold the no-change guarantee.
     """
     cfg = AppConfig()
     assert cfg.guide.dither_pixels == 3.0
@@ -33,7 +37,8 @@ def test_every_moved_field_defaults_to_the_plan_models_value():
     assert cfg.standards.apply_filter_offsets is True
     assert cfg.standards.refocus_on_temp_delta_c == 0.0
     assert cfg.standards.min_stars == 0
-    assert cfg.standards.max_guide_rms == 0.0
+    # DELIBERATE PIN CHANGE (#854): was 0.0; see the docstring.
+    assert cfg.standards.max_guide_rms == 5.0
     assert cfg.standards.max_eccentricity == 0.65   # was 0.0; see GN-04 above
     assert cfg.standards.max_consecutive_rejects == 10
     assert cfg.standards.max_consecutive_rejects_night == 20

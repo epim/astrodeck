@@ -299,6 +299,17 @@ class FrameRecord(BaseModel):
     #: written before the fields. Additive, like the PRO-10 fields above.
     mosaic: str | None = None
     panel: str | None = None
+    #: A LIGHT SHOT WHILE THE TARGET'S POINTING WAS NOT CONFIRMED BY A SOLVE
+    #: (#852, ruling R4): the no-light hold that ran out, a re-centre that
+    #: raised, or an in-place re-check that did not solve. Accepted and
+    #: counted toward quotas, but left out of the report's integration
+    #: (``unverified_integration_s`` holds it). Additive: every report
+    #: written before the field loads unchanged as False.
+    pointing_unverified: bool = False
+    #: #856: corrections at or over the guider's axis limit during this
+    #: exposure, by direction (``{"east": 57}``); ``{}`` when none; None when
+    #: the guider cannot say. Additive, like the fields above.
+    guide_capped: dict[str, int] | None = None
 
 
 class FilterBreakdown(BaseModel):
@@ -345,6 +356,11 @@ class SessionReport(BaseModel):
     frames_captured: int = 0             # accepted light/calibration frames
     frames_rejected: int = 0
     integration_s: float = 0.0           # accepted light integration only
+    #: Accepted light seconds shot at a pointing no solve confirmed (#852,
+    #: ruling R4, `FrameRecord.pointing_unverified`): on disk and counted
+    #: toward quotas, NOT in ``integration_s`` or the breakdowns. 0.0 on
+    #: reports written before the field.
+    unverified_integration_s: float = 0.0
     by_filter: list[FilterBreakdown] = Field(default_factory=list)   # headline
     targets: list[TargetBreakdown] = Field(default_factory=list)
     safety_events: list[dict] = Field(default_factory=list)          # {ts,reason,action}
@@ -414,17 +430,24 @@ class _Totals:
         self.captured = 0
         self.rejected = 0
         self.integ = 0.0
+        #: accepted light seconds whose pointing no solve confirmed (#852)
+        self.unverified_s = 0.0
 
     def add(self, fr: FrameRecord) -> None:
         """Fold one frame into the running totals. Integration counts **accepted
         light frames only**; rejects are counted but do not add integration.
-        Calibration frames count toward ``captured`` but not integration."""
+        Calibration frames count toward ``captured`` but not integration.
+        An accepted light shot at an unverified pointing (#852) counts as a
+        frame but adds to ``unverified_s`` instead of integration."""
         light = _is_light(fr.frame_type)
         fk = _filter_key(fr.filter)
         if fr.accepted:
             self.captured += 1
-            add_integ = fr.exposure_s if light else 0.0
+            add_integ = (fr.exposure_s
+                         if light and not fr.pointing_unverified else 0.0)
             self.integ += add_integ
+            if light and fr.pointing_unverified:
+                self.unverified_s += fr.exposure_s
         else:
             self.rejected += 1
             add_integ = 0.0
@@ -503,6 +526,7 @@ class _Totals:
         t.captured = rep.frames_captured
         t.rejected = rep.frames_rejected
         t.integ = rep.integration_s
+        t.unverified_s = rep.unverified_integration_s
         for fb in rep.by_filter:
             t.pf[fb.filter] = {"frames": fb.frames, "rejected": fb.rejected,
                                "integration_s": fb.integration_s, "hfrs": [],
@@ -1103,6 +1127,7 @@ class SessionReporter:
             id=self.id, plan_name=self.plan_name, started_at=self.started_at,
             ended_at=self._ended_at, end_reason=self._end_reason,
             frames_captured=captured, frames_rejected=rejected, integration_s=integ,
+            unverified_integration_s=self._totals.unverified_s,
             by_filter=by_filter, targets=targets,
             safety_events=list(self._safety), frames=list(self._frames),
             policy=dict(self._policy),

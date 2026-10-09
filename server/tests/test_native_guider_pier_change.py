@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import uuid
 
 import pytest
@@ -90,7 +91,11 @@ def _cal_dict(pier: str, scale: float = 2.0) -> dict:
     not the sim's: this dict has to be distinguishable, field by field, from a
     calibration the sim actually measured.
     """
-    return {"x_rate": 0.0035, "y_rate": 0.0031, "x_angle": 0.7853981634,
+    # #848: within 10 percent of the sim's measured rates (about 0.0074
+    # px/ms). The old 0.0035/0.0031 is half of them, a 2x over-correction
+    # that oscillates and grows on the sim; the calibration probation now
+    # (correctly) discards it. Still not the sim's own numbers.
+    return {"x_rate": 0.0080, "y_rate": 0.0078, "x_angle": 0.7853981634,
             "y_angle": 2.3561944902, "y_angle_error": 0.0,
             "declination": -0.0941, "pier_side": pier,
             "ra_parity": "unknown", "dec_parity": "unknown",
@@ -320,6 +325,16 @@ async def test_legacy_flip_path_behind_the_setting(
     logs = _Logs(monkeypatch)
     profile = _profile_id("legacy")
     _plant_cal(_isolated_config_dir, profile, "east")
+    # #848: the mirrored calibration is now on probation like any other, and
+    # the sim mount does not really flip, so a mirror of a calibration that
+    # was right for the sim is a reversed RA axis on it and is (correctly)
+    # discarded. Planted with its RA axis already reversed, the mirror lands
+    # it back where the sim's geometry is, which is what a real flip does.
+    _planted = json.loads(_cal_path(_isolated_config_dir, profile)
+                          .read_text(encoding="utf-8"))
+    _planted["x_angle"] = float(_planted["x_angle"]) + math.pi
+    _cal_path(_isolated_config_dir, profile).write_text(
+        json.dumps(_planted), encoding="utf-8")
     g, _tel, _fake = await _guider(
         "legacy", pier="west", profile=profile,
         cfg={"recalibrate_after_pier_change": False})

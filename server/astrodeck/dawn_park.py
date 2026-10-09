@@ -69,6 +69,7 @@ import time
 from .aio import reap
 from .catalog.coords import sun_altaz
 from .config import config_store
+from .devices.base import rig_position_known
 from .events import bus
 
 #: Tick cadence. The threshold sits ~20 minutes ahead of sunrise, so a minute of
@@ -123,6 +124,22 @@ NO_DAWN_PARK_ENV_VAR = "ASTRODECK_NO_DAWN_PARK"
 #: the abandoned-session case itself, not evidence of a human, and a frame taken
 #: into a brightening sky is worth nothing next to the mount stopping.
 HANDS_OFF_LANES = frozenset({"goto", "dome", "polar"})
+
+#: The one line when the mount's position is unknown at dawn (#874): the
+#: cause first, then the safe order (RULES.md SAFETY RULE), all inside the
+#: UI's 137-character cut (123 characters), no figure and no goto word. A
+#: park is a goto to where the mount BELIEVES home is (on the AM5 ``:hP#``
+#: goes to the MODEL's home), aimed from the position in doubt, so tracking
+#: is stopped instead.
+POSITION_UNKNOWN_LINE = (
+    "dawn park skipped, position unknown: tube at home, Trust position; "
+    "else bring it home by eye with a pad key, then Trust it. Tracking is "
+    "stopped instead, since a park is aimed from the position in doubt")
+#: ``_fail``'s reason when that stop of tracking is not confirmed: fixed
+#: words, so a streak of them coalesces like any other failure.
+POSITION_UNKNOWN_STOP_FAILED = (
+    "the mount's position is unknown, so it was not parked, and it did not "
+    "confirm a stop of tracking")
 
 
 def dawn_park_disabled() -> bool:
@@ -325,7 +342,8 @@ class DawnPark:
             self._forced_reopen_tried = True
             await self._force_reopen_quietly(tel)
 
-        parked = await self._is_parked(tel)
+        parked = await self._is_parked(
+            tel, parking=rig_position_known(self.hub))
         if parked:
             self._settled = True
             self._clear_failure()
@@ -344,6 +362,18 @@ class DawnPark:
         held = self._hands_off_reason(cfg)
         if held is not None:
             self._hold(held, alt)
+            return
+
+        # NOT A PARK WHILE THE POSITION IS UNKNOWN (#874). A park is a goto
+        # to where the mount believes home is, and a mount that reset, or
+        # whose run ended because nothing knew where it pointed
+        # (``Telescope.position_known``, the rig-level latch), would aim it
+        # from that position: a pier strike, not a stow. Tracking is stopped
+        # instead, read back, and the night is settled.
+        # Read through `rig_position_known`, so a doubt survives a profile
+        # activate that replaced the telescope object.
+        if not rig_position_known(self.hub):
+            await self._stop_tracking_instead(tel, alt)
             return
 
         if self._fail_count == 0:
@@ -737,7 +767,45 @@ class DawnPark:
         self._read_warned = None
         self._forced_reopen_tried = False
 
-    async def _is_parked(self, tel) -> bool | None:
+    async def _stop_tracking_instead(self, tel, alt: float) -> None:
+        """The dawn duty for a mount whose position is unknown (#874): make
+        sure it is not tracking, then settle the night and release the
+        cooler, as a park would have. A tracking state that is not a
+        confirmed False (still tracking, or unreadable) gets one bounded
+        ``set_tracking(False)`` and a second read; still unconfirmed, it is
+        a failed attempt (``_fail``, coalesced), retried next tick without
+        settling. Said once, in fixed words (``POSITION_UNKNOWN_LINE``)."""
+        tracking = await self._tracking_state(tel)
+        if tracking is not False:
+            try:
+                bump = getattr(self.hub, "bump_motion_epoch", None)
+                if callable(bump):
+                    bump()
+                await asyncio.wait_for(tel.set_tracking(False),
+                                       MOUNT_QUERY_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 - the read-back below decides
+                pass
+            tracking = await self._tracking_state(tel)
+        if tracking is not False:
+            self._fail(POSITION_UNKNOWN_STOP_FAILED)
+            return
+        self._settled = True
+        self._clear_failure()
+        bus.log("warning", POSITION_UNKNOWN_LINE, "safety")
+        await self._release_cooler(alt)
+
+    @staticmethod
+    async def _tracking_state(tel) -> bool | None:
+        """``tel.get_tracking()``, bounded; None when it cannot be read or
+        the answer is not a bool (unknown is not "stopped")."""
+        try:
+            state = await asyncio.wait_for(tel.get_tracking(),
+                                           MOUNT_QUERY_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 - includes the timeout
+            return None
+        return state if isinstance(state, bool) else None
+
+    async def _is_parked(self, tel, *, parking: bool = True) -> bool | None:
         """Is the mount parked? A query failure answers None -- "unknown", not
         a claimed "no" (#138).
 
@@ -761,10 +829,13 @@ class DawnPark:
             # outage, and repeating it added nothing after the first.
             if self._read_warned != str(e):
                 self._read_warned = str(e)
+                # ``parking`` False: the position is unknown, so no park
+                # follows (#874) and "parking anyway" would be false.
+                then = ("parking anyway, since parking a parked mount does "
+                        "nothing" if parking else
+                        "not parking, as its position is unknown")
                 bus.log("warning", f"dawn park could not read the mount's park "
-                                   f"state ({e}) — parking anyway, since "
-                                   f"parking a parked mount does nothing",
-                        "safety")
+                                   f"state ({e}) — {then}", "safety")
             return None
 
     def _hold(self, reason: str, alt: float) -> None:

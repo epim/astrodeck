@@ -40,7 +40,10 @@ import { BASE } from "../../../../lib/base";
 import { useCanControlCapture } from "../../../../lib/caps";
 import { parsePlanFile, planExportFilename } from "../../../../lib/planFile";
 import { planRowSummary, planSavedCue } from "../../../../lib/planLibrary";
-import { useStore } from "../../../../store";
+import {
+  retryTransient, retryingLine, useRetryOnReturn, type LoadRetry,
+} from "../../../../lib/retryLoad";
+import { useStore, useWsConnected } from "../../../../store";
 import type { PlanRow, SequencePlan } from "../../../../types";
 import { explainLock } from "../../../shell/explain";
 import {
@@ -77,15 +80,52 @@ export function PlanLibrary({ plan, setPlan, lockedReason }: {
   const writeReason = lockedReason
     ?? (canWrite ? null : "Saving, importing and deleting plans needs operator or admin access.");
 
-  const refresh = useCallback(async () => {
+  // THE LIST IS ASKED AGAIN BY ITSELF ONLY WHERE NOTHING WAITS ON IT (#859).
+  // The mount, RETRY and the re-ask pass `retry: true`: a timeout, a network
+  // error or a proxy's 502/503/504 waits 2 s, 5 s, 15 s and asks again, with
+  // the retrying line meanwhile. The refresh after a save, an overwrite, an
+  // import or a delete asks ONCE, as before: those hold SAVING and the
+  // one-save ref until it settles, and a save that already landed must not
+  // hold them through 82 s of retries. Every call takes a new generation, so a
+  // write's refresh supersedes a mount retry in flight; an unmounted or
+  // superseded call writes nothing.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+  const listGen = useRef(0);
+  const listPhase = useRef<"loading" | "failed" | "ok">("loading");
+  const [listRetry, setListRetry] = useState<LoadRetry | null>(null);
+  const wsConnected = useWsConnected();
+
+  const refresh = useCallback(async (opts?: { retry?: boolean }) => {
+    listPhase.current = "loading";
+    const gen = ++listGen.current;
+    const mine = () => alive.current && gen === listGen.current;
+    const read = () => api.get<PlanRow[]>("/api/plans");
     try {
-      setRows(await api.get<PlanRow[]>("/api/plans"));
+      const answer = opts?.retry === true
+        ? await retryTransient(read, {
+          stop: () => !mine(),
+          onRetry: (r) => { if (mine()) setListRetry(r); },
+        })
+        : await read();
+      if (!mine()) return;
+      setRows(answer);
       setLoadErr(null);
+      setListRetry(null);
+      listPhase.current = "ok";
     } catch (e) {
+      if (!mine()) return;
       setLoadErr(e instanceof Error ? e.message : "the server did not answer");
+      setListRetry(null);
+      listPhase.current = "failed";
     }
   }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh({ retry: true }); }, [refresh]);
+  useRetryOnReturn(
+    () => listPhase.current === "failed", () => { void refresh({ retry: true }); }, wsConnected);
 
   const cue = planSavedCue(editorDirty, loadedPlanId !== null, canWrite);
   const frames = planFrames(plan);
@@ -326,16 +366,19 @@ export function PlanLibrary({ plan, setPlan, lockedReason }: {
 
         <Disclosure
           summary="SAVED PLANS"
-          sub={loadErr && rows.length === 0 ? "could not load" : `${rows.length}`}
+          sub={listRetry && rows.length === 0 ? "asking again"
+            : loadErr && rows.length === 0 ? "could not load" : `${rows.length}`}
           defaultOpen={false}
           data-testid="plan-saved-list"
         >
-          {loadErr && rows.length === 0 ? (
+          {listRetry && rows.length === 0 ? (
+            <p className="nx-plan-note" data-testid="plan-saved-retrying">{retryingLine(listRetry)}</p>
+          ) : loadErr && rows.length === 0 ? (
             <div className="nx-plan-stack">
               <p className="nx-plan-note" data-tone="bad">
                 Could not load saved plans: {loadErr}
               </p>
-              <ActionButton kind="ghost" onPress={() => void refresh()}
+              <ActionButton kind="ghost" onPress={() => void refresh({ retry: true })}
                 data-testid="plan-saved-retry">RETRY</ActionButton>
             </div>
           ) : rows.length === 0 ? (

@@ -198,7 +198,6 @@ from fastapi.testclient import TestClient
 import astrodeck.api.app as app_module
 import astrodeck.devices.backends.zwo_am5 as am5
 import astrodeck.events as events_mod
-from astrodeck.devices.base import Telescope
 from astrodeck.devices.sim import SimTelescope
 from _simhub import sim_hub  # noqa: F401  (fixture import)
 from test_zwo_am5 import (FakeLink, _connect_script, _humanizer_rewrites,  # noqa: F401
@@ -261,10 +260,10 @@ def _known(tel, why: str) -> None:
 
 def test_a_driver_that_says_nothing_is_taken_to_know_where_it_is():
     """The base default is True, so every backend and every test double that
-    predates the flag behaves exactly as it did."""
-    assert Telescope.position_known is True, (
-        "the base default must be True: absent means known")
-    assert SimTelescope.position_known is True, (
+    predates the flag behaves exactly as it did. Read on an instance: the
+    base flag is a property since the rig-level latch (#851 integration
+    review), whose default, with nothing marked, is still True."""
+    assert SimTelescope("plain").position_known is True, (
         "a driver that never set the flag must read True")
 
 

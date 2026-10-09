@@ -108,14 +108,18 @@ for the night, never the urgent "gave up" line meant for a real loss.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
+import os
+import re
 import time
+import traceback
 from typing import NamedTuple
 
 from ..aio import reap
 from ..config import config_store
 from ..devices.base import (GotoRefused, SyncRefused, SyncUnverified,
-                            quotable_sync_reply)
+                            quotable_sync_reply, rig_position_known)
 from ..events import bus, night_key
 from ..hub import SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED
 from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
@@ -128,6 +132,8 @@ from .models import (Target, TargetGroup, duplicate_name_warning,
 from .panel_order import OrderSnapshot, order_panels
 from .policy import resolve_policy
 from .session import Session, SessionUnreadable, session_store
+
+_log = logging.getLogger(__name__)
 
 CHECK_INTERVAL_S = 60.0
 RETRY_INTERVAL_S = 600.0
@@ -194,9 +200,17 @@ RECOVERY_SOLVE_EXPOSURE_S = 12.0
 #: the RA axis angle: a tube at Dec +90 points at the pole whatever the hour
 #: angle, so a mount whose RA axis has turned away from home while the tube
 #: still points at the pole reads a separation near zero, and the re-centre's
-#: goto would be aimed from a wrong hour angle. The gate relies on the axis
-#: being at home, as it is after a park. A small separation is what was
+#: goto would be aimed from a wrong hour angle. A small separation is what was
 #: measured, not proof the mount knows where it points.
+#:
+#: SO THE GATE ALSO ASKS THE DRIVER (#867). The go-ahead needs the mount's
+#: driver to vouch for its coordinates (``Telescope.position_known``), the
+#: evidence the separation lacks: the AM5 latches it False whenever a
+#: (re)open reads its home pole, which is what a reset looks like, and only a
+#: sync away from the pole or the operator's Trust position clears it. The
+#: driver keeps the latch through a sync within its ``SYNC_POLE_BLIND_DEG``
+#: of the pole, where its own read-back is blind the same way, so an accepted
+#: sync at home does not vouch either. The 5.0 is unchanged.
 RECOVERY_REFUSED_SYNC_MAX_DEG = 5.0
 
 #: The hold when the blind solve's sync was refused and the mount's own
@@ -268,6 +282,106 @@ REFUSED_SYNC_UNVERIFIED_RECENTRE_WORDS = (
     "re-centering: "
     + SOLVE_REASON_SYNC_UNVERIFIED)
 
+#: Exception types that, out of the blind solve, are a fault in this
+#: program's own code, not the sky, the optics, the camera or the mount
+#: (#866): a stub or caller missing a keyword (the #850 round-3 run held 54
+#: tests as "blind plate solve failed" for a TypeError), a missing
+#: attribute, an unbound name, a missing dict key. ``NameError`` covers
+#: ``UnboundLocalError``. Every device, solver and sync error is a
+#: ``DeviceError`` (a ``RuntimeError``), so none of them is in here.
+#: One KeyError has an outside trigger: ASTAP's .ini parse reads
+#: ``kv["CRVAL1"]`` unguarded once PLTSOLVD=T (solve/astap.py), so a
+#: truncated result file raises KeyError. Held here as a bug on purpose: the
+#: unguarded parse IS a bug, and the hold's retry still recovers when the
+#: next solve writes a whole file.
+_SOFTWARE_FAULTS = (TypeError, AttributeError, NameError, KeyError)
+
+#: How many of the innermost frames the software-fault warning names (#866).
+#: ``_recover`` is always the outermost frame of the caught exception's
+#: traceback, so a fault raised in a driver called from the hub is three deep
+#: (resume_arm > hub > driver) and shows whole; a deeper fault shows its
+#: innermost three, which name the raising line.
+FAULT_SITE_FRAMES = 3
+
+#: The hold for a software fault in the blind solve (#866). Fixed words: no
+#: type name, no frames (they go to the warning beside it), no ``{e}``.
+#: Never "plate" beside "solve": the humanizer would send the operator to
+#: focus and exposure for a bug. The action ("report it as a bug") ends
+#: inside the 137-char cut of the "auto-resume held: ..." line.
+SOLVE_SOFTWARE_FAULT_WORDS = (
+    "the resume ladder hit a software fault in the blind solve, not a "
+    "sky or optics issue; not slewing: report it as a bug")
+
+#: THE SAFE ORDER, AND NO GOTO (the SAFETY RULE; #867): Trust position if
+#: the tube really is at home; otherwise bring it home by eye with a pad key,
+#: then Trust it. Ends inside the 137-char cut of the "auto-resume held:
+#: ..." line; each hold's cause comes after. Fixed words, no figures, so a
+#: hold keeps its ``since``. Named outside the ``REFUSED_SYNC_*_WORDS``
+#: family on purpose: those carry "the mount refused the sync" inside the
+#: cut, and these put the action first.
+_POSITION_UNKNOWN_ACTION = (
+    "not slewing, position unknown: tube at home, Trust position; else "
+    "bring it home by eye with a pad key, then Trust it.")
+
+#: The hold when the mount refused the blind solve's sync within
+#: RECOVERY_REFUSED_SYNC_MAX_DEG of the solved field but its driver says its
+#: position is unknown (``Telescope.position_known`` False): an AM5 that read
+#: its home pole on (re)connect, or any mount whose last run ended with
+#: ``PositionUnknownStop`` (the rig-level latch,
+#: ``Telescope.mark_position_unknown``), and has taken no sync and no Trust
+#: position since. The words name both causes, so they are true for either
+#: (integration review, finding 5). Near the pole the separation cannot see the RA axis angle, so a
+#: small one is no evidence, and a goto from a wrong hour angle can put the
+#: tube into the pier.
+POSITION_UNKNOWN_WORDS = (
+    _POSITION_UNKNOWN_ACTION + " The mount refused the sync, and "
+    "nothing has confirmed its position since a reconnect or a stopped run "
+    "put it in doubt")
+
+#: The hold when the blind solve's sync was ACCEPTED but the driver still
+#: says its position is unknown: an AM5 synced within its
+#: ``SYNC_POLE_BLIND_DEG`` of the pole, where the read-back cannot tell a
+#: sync taken from one ignored (zwo_am5.py ``sync``). The intermittent half
+#: of #867 (the bench's one ``N/A`` at home that moved nothing).
+POSITION_UNKNOWN_SYNC_WORDS = (
+    _POSITION_UNKNOWN_ACTION + " The mount accepted the sync, but its "
+    "driver still cannot vouch for the position: near the pole a sync "
+    "cannot show where the RA axis points")
+
+#: The hold when no solver is configured and the driver says its position is
+#: unknown (#867 by another route, ruling R2). The standing choice to resume
+#: a no-solver rig on the mount's model assumes the model is real; a driver
+#: that latched ``position_known`` False says it is not.
+POSITION_UNKNOWN_NO_SOLVER_WORDS = (
+    _POSITION_UNKNOWN_ACTION + " No solver is configured, so nothing here "
+    "can confirm where it points")
+
+#: The hold when step 2 passed but the driver stopped vouching before step
+#: 3's goto (#867): the slew-limit check awaits a mount read that can run to
+#: its bound, and a link that reopens in that window reads the home pole and
+#: latches the AM5 again, on the link's clock, not the ladder's.
+POSITION_UNKNOWN_RECENTRE_WORDS = (
+    _POSITION_UNKNOWN_ACTION + " Its driver stopped vouching for the "
+    "position during the resume, as a reopened link does")
+
+#: The UI humanizer's keys (ui/src/lib/humanize.ts): a line holding one of
+#: these beside its partner word ("nina" with "5", "http" or "error";
+#: "camera" with "timeout" or "disconnect"; "plate" with "solve"; "guid" with
+#: "lost") is replaced whole by the UI's own sentence. The software-fault
+#: warning interpolates exception type and frame names, which this program
+#: does not choose, beside a type name ending "Error", line numbers and the
+#: word "solve", so a fault raised in nina.py would reach the operator as
+#: "NINA reported an error" (#866). ``_unpaired`` breaks each key with a
+#: hyphen ("ni-na.py"), which a developer still reads.
+_HUMANIZER_KEYS = re.compile(r"nina|camera|plate|guid", re.IGNORECASE)
+
+
+def _unpaired(text: str) -> str:
+    """``text`` with every humanizer key broken by a hyphen after its second
+    letter, so no word pair in it can trip the UI's rewrite (#866)."""
+    return _HUMANIZER_KEYS.sub(lambda m: m.group(0)[:2] + "-" + m.group(0)[2:],
+                               text)
+
 
 def _reply_words(code: str | None) -> str:
     """`` (reply 'e11')`` for a sync's reply in a warning, or less (#850).
@@ -284,6 +398,16 @@ def _reply_words(code: str | None) -> str:
     if quoted is not None:
         return f" (reply '{quoted}')"
     return " (an unrecognised reply)"
+
+
+def _fault_site(exc: BaseException) -> str:
+    """Where ``exc`` was raised, innermost last, as ``basename:function:line``
+    joined by `` > `` (#866). Basenames only: the absolute path is kept out
+    of everything a viewer reads (``test_no_absolute_paths_externally``). No
+    message text: an exception's own words can quote any value."""
+    frames = traceback.extract_tb(exc.__traceback__)[-FAULT_SITE_FRAMES:]
+    return " > ".join(f"{os.path.basename(f.filename)}:{f.name}:{f.lineno}"
+                      for f in frames) or "no frames"
 
 #: Binning of the recovery ladder's autofocus frames. Passed to the sweep
 #: rather than left to ``run_native_autofocus``'s own default (the same 2), so
@@ -994,6 +1118,15 @@ class ResumeArm:
         #: quiet re-checks after. Cleared when nothing is armed and on a
         #: start, so a re-arm or a changed night is heard about again.
         self._nothing_tonight_said: tuple[str, str] | None = None
+        #: The warning for this tick's software-fault hold (#866), or None.
+        #: Set by ``_recover``, cleared by ``tick`` before each ladder, and
+        #: said by ``tick`` once a night per session (``_software_fault_said``).
+        self._ladder_software_fault: str | None = None
+        #: ``(session id, night key)`` whose software-fault hold has been said
+        #: (#866), the #284 latch: one warning pair a night, quiet retries
+        #: after. Cleared where ``_nothing_tonight_said`` is (nothing armed; a
+        #: start), so a re-arm or a new night hears it again.
+        self._software_fault_said: tuple[str, str] | None = None
         #: The session whose CURRENT hold is the ``NOTHING_TONIGHT`` refusal,
         #: or None (#284). Kept by ``_set_hold`` and ``_clear_hold``, so it
         #: always answers for the last refusal, which is what the window's
@@ -1435,6 +1568,11 @@ class ResumeArm:
 
     async def tick(self) -> None:
         now = self._clock()
+        # ON THE LADDER'S OWN CLOCK, not only when a ladder runs: a doubt the
+        # last telescope object held moves onto a new one (a profile
+        # activate), so the UIs' Trust position button and every plain
+        # ``position_known`` reader see it within one tick. No device I/O.
+        rig_position_known(self.hub)
         if self.engine.running:
             self._clear_hold()              # a live run is not a hold
             return                          # anything running = no interest
@@ -1447,6 +1585,7 @@ class ResumeArm:
             # A re-arm is somebody asking the rig to try again, who should
             # hear what it finds, as a no-light spell's re-alert does (#284).
             self._nothing_tonight_said = None
+            self._software_fault_said = None    # the same for a fault (#866)
             # SAY SO WHEN THERE IS AN INTERRUPTED RUN NOBODY WILL RESTART.
             #
             # This used to be a bare return, and on 2026-08-11 that cost 25
@@ -1705,6 +1844,7 @@ class ResumeArm:
         self._ladder_light = None
         self._ladder_dark_kind = None
         self._ladder_nothing_tonight = False
+        self._ladder_software_fault = None
         self._stop_why = None
         self._ladder_session = armed
         self._ladder_step = "starting"
@@ -1768,7 +1908,24 @@ class ResumeArm:
             backoff = RETRY_INTERVAL_S
             if self._ladder_light == "dark":
                 backoff = self._no_light_backoff(armed, self._ladder_dark_kind)
-            if not self._ladder_nothing_tonight:
+            if self._ladder_software_fault is not None:
+                # SAID ONCE A NIGHT, THEN QUIET (#866, the #284 pattern). A
+                # code fault is most often deterministic, so the same two
+                # warnings every ten minutes would be a push per retry to
+                # every warning sink. The retry stays, silent: a fault with an
+                # outside trigger (ASTAP's unguarded parse of a truncated
+                # result file) can clear on the next solve, and the hold
+                # stands on the Monitor all the while.
+                said = (armed.id, night_key(now))
+                if self._software_fault_said != said:
+                    self._software_fault_said = said
+                    bus.log("warning", self._ladder_software_fault,
+                            "sequence")
+                    bus.log("warning", f"auto-resume held: {refusal} — "
+                                       f"retrying every {int(backoff / 60)} "
+                                       f"min, without a word, until the "
+                                       f"night ends", "sequence")
+            elif not self._ladder_nothing_tonight:
                 bus.log("warning", f"auto-resume held: {refusal} — retrying "
                                    f"in {int(backoff / 60)} min", "sequence")
             elif self._nothing_tonight_said != (armed.id, night_key(now)):
@@ -1871,10 +2028,13 @@ class ResumeArm:
                 # acquired itself, so without this nothing watched that
                 # mount's idle time, floor or flip point until the run set
                 # a target up (#202). See ``_tracking_for``.
+                # ``operator=False``: an automatic restart keeps tonight's
+                # per-target hold and re-centre budgets (#853, ruling R5),
+                # so a runaway cannot buy a fresh budget by being resumed.
                 self.engine.start(replan_cooling(
                     fresh.plan, config_store.cfg().cooling.setpoint_c),
                     session=fresh, tracking=self._tracking_for(fresh),
-                    **handed)
+                    operator=False, **handed)
                 # Taken: a later start of this process is not stood on it.
                 if handed:
                     self._recovery_sweep = None
@@ -1890,6 +2050,7 @@ class ResumeArm:
         # A start changed the night: a later "nothing to shoot tonight" for
         # this session is new, and is said (#284).
         self._nothing_tonight_said = None
+        self._software_fault_said = None        # the same for a fault (#866)
         bus.log("info", f"auto-resume: '{fresh.name}' resumed", "sequence")
 
     def _still_startable(self, armed: Session) -> tuple[Session | None, str]:
@@ -2208,6 +2369,13 @@ class ResumeArm:
         if self._must_stop():
             return None
         if not self._can_solve():
+            # NO SOLVER, AND THE DRIVER SAYS IT DOES NOT KNOW WHERE IT POINTS
+            # (#867 by another route, ruling R2). The standing choice to
+            # resume a no-solver rig on the mount's model assumes the model
+            # is real; a driver that latched ``position_known`` False (an
+            # AM5 that read its home pole on a (re)connect) says it is not.
+            if not self._mount_position_known():
+                return POSITION_UNKNOWN_NO_SOLVER_WORDS
             bus.log("warning", "resuming after a restart WITHOUT verifying where "
                                "the telescope points — no plate solver is "
                                "configured, so the mount's own position is taken "
@@ -2268,13 +2436,15 @@ class ResumeArm:
                 # (#850). Not a failed plate solve, so never the words of
                 # the arm below. This solve syncs wherever the mount stands,
                 # and after a dawn park that is the home position, tube at
-                # the pole, where the AM5 refuses every sync with the tube at
-                # home (``e11`` on the bench, 2026-10-08). The driver read
-                # the position back after the refusal, so the question is
+                # the pole, where the AM5 refuses syncs with the tube at home
+                # (on the bench, 2026-10-08, all but one answered ``e11``;
+                # the one ``N/A`` moved nothing). The driver read the
+                # position back after the refusal, so the question is
                 # whether the mount's reported pointing is already close
-                # enough to the solved field to slew on: then step 3's
-                # re-centre goes ahead, away from the pole, where the AM5
-                # takes syncs, and corrects the rest. Near the pole that
+                # enough to the solved field to slew on, AND whether the
+                # driver vouches for its position (#867): only then does
+                # step 3's re-centre go ahead, away from the pole, where the
+                # AM5 takes syncs, and correct the rest. Near the pole that
                 # separation cannot see the RA axis angle (see
                 # RECOVERY_REFUSED_SYNC_MAX_DEG), so the warning says what
                 # was measured and nothing more.
@@ -2289,6 +2459,28 @@ class ResumeArm:
                 # it keeps its ``since`` across retries.
                 residual = e.residual_deg
                 if residual is not None and residual <= RECOVERY_REFUSED_SYNC_MAX_DEG:
+                    # The frame solved, so light reached the sensor (#251).
+                    self._ladder_light = "lit"
+                    # A SMALL SEPARATION IS NOT A KNOWN POSITION (#867). Near
+                    # the pole it cannot see the RA axis angle, so a mount
+                    # whose model reports home while its axis has turned
+                    # reads close. The driver's ``position_known`` is the
+                    # evidence the separation lacks: an AM5 latches it False
+                    # on a (re)open that reads its home pole, until a sync
+                    # away from the pole or Trust position. Without it, no
+                    # slew: the hold gives the safe order, never a goto. The
+                    # figure is the separation, which the go-ahead line
+                    # below already prints, never the read-back.
+                    if not self._mount_position_known():
+                        bus.log("warning",
+                                f"the mount refused the blind solve's sync"
+                                f"{_reply_words(e.code)}; not slewing, as "
+                                f"nothing has confirmed its position since "
+                                f"a reconnect or a stopped run put it in "
+                                f"doubt (its reported pointing is "
+                                f"within {residual:.1f} deg of the solved "
+                                f"field)", "sequence")
+                        return POSITION_UNKNOWN_WORDS
                     # What happens next first (#850): the UI cuts a long
                     # line at 137 chars.
                     bus.log("warning",
@@ -2299,8 +2491,6 @@ class ResumeArm:
                             f"pointing is within {residual:.1f} deg of the "
                             f"solved field",
                             "sequence")
-                    # The frame solved, so light reached the sensor (#251).
-                    self._ladder_light = "lit"
                 else:
                     # Light reached the sensor here too: the solve worked.
                     self._ladder_light = "lit"
@@ -2347,6 +2537,25 @@ class ResumeArm:
                         f"repeats, check the mount's link: {e.reason}",
                         "sequence")
                 return REFUSED_SYNC_UNVERIFIED_WORDS
+            except _SOFTWARE_FAULTS as e:
+                # A FAULT IN THIS PROGRAM, NOT THE SKY (#866). Held like a
+                # failed solve, since where the mount points is still
+                # unverified, but not in its words. The warning names the
+                # type and where it was raised (basenames only, no message
+                # text) and goes to the durable night log through ``tick``,
+                # once a night; the traceback goes to stderr, which the
+                # detached supervisor may not keep, so the warning is the
+                # record. Light is not judged: a fault is no evidence either
+                # way.
+                _log.error("resume ladder: software fault in the blind solve",
+                           exc_info=e)
+                # ``_unpaired``: the type and frame names are not ours to
+                # choose, and must not trip the UI's rewrite.
+                self._ladder_software_fault = _unpaired(
+                    f"the resume ladder hit a software fault in the blind "
+                    f"solve ({type(e).__name__}); not slewing. Raised at, "
+                    f"innermost last: {_fault_site(e)}")
+                return SOLVE_SOFTWARE_FAULT_WORDS
             except Exception as e:  # noqa: BLE001
                 # A FAILED SOLVE WHOSE FRAME SHOWED LIGHT ends a no-light
                 # spell: something that had covered the optic is off, and a
@@ -2359,6 +2568,14 @@ class ResumeArm:
                 return (f"blind plate solve failed after restart ({e}) — refusing "
                         "to slew a mount whose true position is unknown")
             self._ladder_light = "lit"
+            # AN ACCEPTED SYNC IS NOT ALWAYS A KNOWN POSITION (#867). Near the
+            # pole the AM5's read-back cannot tell a sync it took from one it
+            # ignored, so its driver keeps the position unknown
+            # (``SYNC_POLE_BLIND_DEG``) and says why in a "mount" warning of
+            # its own; nothing is added here. On every retry the same holds
+            # (the latch is still set), so it lasts until Trust position.
+            if not self._mount_position_known():
+                return POSITION_UNKNOWN_SYNC_WORDS
 
         # 3. RE-CENTER ON WHAT THE RUN WILL SHOOT FIRST, AT ITS ANGLE (#159,
         #    I-13; spec 5.9, ruling 9). This used to be the plan's first light
@@ -2515,6 +2732,14 @@ class ResumeArm:
             # what that does and does not do to the mount.
             if self._must_stop():
                 return None
+            # ASKED AGAIN, ON THE HAZARD'S CLOCK (#867). Step 2 asked the
+            # driver, but the limit check above awaits a mount read that can
+            # run to its bound, and a link that reopens meanwhile reads the
+            # home pole and latches the AM5 again. The latch is set by the
+            # link, not by this ladder, so it is read here, beside the stop
+            # check, with no await between it and the goto.
+            if not self._mount_position_known():
+                return POSITION_UNKNOWN_RECENTRE_WORDS
             self._ladder_step = "recentre"
             # THE ANGLE, when there is one (ruling 9): the planned angle, or
             # the locked one commanded only to a CONNECTED rotator (#295;
@@ -2630,6 +2855,14 @@ class ResumeArm:
             if dev is None or not getattr(dev, "connected", False):
                 return False
         return True
+
+    def _mount_position_known(self) -> bool:
+        """Does the mount's driver vouch for the coordinates it reports
+        (``Telescope.position_known``, #144, #867)? Absent means known, the
+        contract every consumer keeps. Read through `rig_position_known`, so
+        a doubt survives a profile activate that replaced the telescope
+        object (the re-review's reconnect hole)."""
+        return rig_position_known(self.hub)
 
     def _can_solve(self) -> bool:
         """Is a trustworthy plate solver available on this rig RIGHT NOW?

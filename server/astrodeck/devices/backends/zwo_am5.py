@@ -14,7 +14,9 @@ the first real citizen of sub-project A's discovery mechanism.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timezone
@@ -23,9 +25,9 @@ from ...catalog import coords
 from ...config import config_store
 from ...events import bus
 from .. import lx200
-from ..base import (DeviceError, GotoRefused, PierSide, SyncRefused,
-                    SyncUnverified, Telescope, TRACKING_RATES,
-                    quotable_sync_reply)
+from ..base import (SYNC_POLE_BLIND_DEG, DeviceError, GotoNotArrived,
+                    GotoRefused, PierSide, SyncRefused, SyncUnverified,
+                    Telescope, TRACKING_RATES, quotable_sync_reply)
 from ..serial_link import LinkError, SerialLink
 
 #: Seam for tests: the link factory used by ZwoAm5Session.
@@ -39,7 +41,9 @@ _make_link = SerialLink
 #: on the loop thread.
 _log = logging.getLogger(__name__)
 
-#: Wall-clock cap on a slew settle (spec: no motion path may hang).
+#: Wall-clock cap on a slew settle (spec: no motion path may hang). The
+#: stall window (``GOTO_STALL_S``) runs INSIDE it and never extends it: a goto
+#: that is neither arrived nor stalled by this deadline is halted here.
 SLEW_TIMEOUT_S = 120.0
 #: Settle criterion: coord delta below this across two consecutive polls.
 SETTLE_DEG = 0.05
@@ -70,6 +74,91 @@ SYNC_READBACK_RETRIES = 2
 #: Wait between those read-backs. Two of them span 1 s, the delay the bench
 #: did measure as enough.
 SYNC_READBACK_RETRY_S = 0.5
+#: Within this many degrees of either pole, a sync the read-back passed does
+#: NOT clear ``position_known`` (#867). Near the pole the read-back is an
+#: angular separation and cannot see the RA axis: a sync the mount ignored
+#: (the bench's one ``N/A`` at home moved nothing) passes when the reported
+#: pole is within SYNC_VERIFY_DEG of the solved field, and 0.05 deg at polar
+#: distance p hides an RA-axis error of 2 asin(sin(0.025 deg) / sin p): 0.57
+#: deg at 5, 2.87 at 1, 29 at 0.1. Beyond 5 the hidden error is under 0.6 deg,
+#: which a re-centre corrects; 5 is also where the 2026-10-08 bench saw syncs
+#: taken. Inside it only Trust position, or a sync further out,
+#: re-establishes the frame. ONE copy, in ``devices/base.py`` (imported
+#: above): the rig-level latch (``Telescope.note_verified_sync``) keeps the
+#: same rule for every driver.
+#: How far (angular separation, deg) the settled report may sit from the
+#: commanded target and still count as ARRIVED, before the drift allowance
+#: below (#860). The honest disagreement of a mount that did arrive, summed:
+#:   - ``:Sr#`` rounds the target RA to 1 s of time:   <= 0.0021 deg
+#:   - ``:Sd#`` rounds the target Dec to 1 arcsec:     <= 0.0003 deg
+#:   - ``:GR#`` reads RA back at 1 s of time:          <= 0.0021 deg
+#:   - ``:GD#`` reads Dec back at 1 arcsec:            <= 0.0003 deg
+#:   - a guide pulse still running: 1.0 s cap x 0.004178 deg/s = 0.0042 deg
+#: About 0.009 deg in all. Measured: the 2026-07-20 at-scope gotos landed with
+#: a 0.000 deg residual (docs/hardware/zwo-am5-lx200-protocol.md). 0.10 is
+#: 2 x SETTLE_DEG, an 11x margin over the budget. A goto that never started
+#: from a position less than 0.10 deg away passes as arrived; the centring
+#: solve and its stuck check see that case.
+GOTO_ARRIVE_DEG = 0.10
+#: Growth of that tolerance per second since ``:MS#`` was accepted, deg/s:
+#: the sidereal rate, 15.041 arcsec/s / 3600 = 0.0041781 deg/s. Covers a
+#: firmware that goes to a fixed hour angle with tracking off, whose reported
+#: RA then walks at the sidereal rate. At the ``SLEW_TIMEOUT_S`` deadline the
+#: tolerance is 0.10 + 0.0041781 x 120 = 0.60 deg.
+GOTO_DRIFT_DEG_S = 0.0041781
+#: How long a mount SHORT of its target must stand still AND make no progress
+#: toward it before the goto is called stalled (#860). It must outlast the
+#: ``:MS#`` start latency and any pause inside a healthy goto, neither
+#: measured. The evidence there is: a ``:hP#`` the mount took is moving
+#: within 1-2 s (see ``PARK_NOOP_DETECT_S``), and the 2026-07-20 gotos ended
+#: on target under the old 1 s still rule, so those (non-flip) gotos had no
+#: still pause of 1 s mid-way. 10 s is 5x the 2 s latency bound. Counted in
+#: polls (ceil(10.0 / 0.5) = 20 comparisons), not wall time. Too short halts
+#: a healthy goto mid-way; too long costs that many seconds on a real stall.
+#: HARDWARE-PENDING (bench, DESIGN-P4 Appendix A).
+GOTO_STALL_S = 10.0
+#: How far (deg) the residual to the target must fall across the stall
+#: window for the mount to count as still getting there (#860). A step under
+#: ``SETTLE_DEG`` is "still" for ARRIVAL, but it is not "stuck": the AM5's
+#: slow rate R5 is about 7.8x sidereal = 0.0326 deg/s = 0.016 deg per poll,
+#: under ``SETTLE_DEG``. Judged on a step alone, any slow phase starting more
+#: than 0.10 + 10 s x 0.0326 = 0.43 deg out would be halted part way.
+#: The floor is what a STUCK mount can fake across one window:
+#:   - tracking-off report drift: 0.0041781 deg/s x 10 s = 0.0418 deg
+#:   - two residuals' read quantization (RA 0.0021 + Dec 0.0003, each):
+#:     2 x 0.0024 = 0.0048 deg
+#: 0.0466 deg in all; 0.10 is 2.1x that. The slowest approach still read as
+#: progress is 0.10 deg per window = 0.01 deg/s; R5 makes 0.33 deg per window,
+#: 3.3x. A final approach at R3 (1.9x sidereal, 0.079 deg per window) would
+#: read as stuck. Nothing says a goto uses R3 (those are the jog presets,
+#: ``_RATE_TABLE``); the bench measures it, and no window can tell an
+#: approach under 2x sidereal from drift. The window is 20 polls of 0.5 s
+#: plus the reads; the 0.10 floor holds while a window lasts under
+#: (0.10 - 0.0048) / 0.0041781 = 22.8 s, i.e. a GR+GD pair under 0.64 s.
+#: Past that, a drifting stuck mount can read as progress and the
+#: ``SLEW_TIMEOUT_S`` deadline (halted, plain ``DeviceError``) ends it
+#: instead: late, never silent.
+#: HARDWARE-PENDING (the approach-speed profile, DESIGN-P4 Appendix A).
+GOTO_PROGRESS_DEG = 0.10
+#: Fixed words for ``GotoNotArrived.reason``. No figures (#618); each fits
+#: the 137-character cut in every surface that quotes it.
+GOTO_STALLED_REASON = "the mount stopped short of the target"
+GOTO_STOPPED_REASON = "a stop was sent during the goto"
+#: ``:MS#`` itself failed on the link (no reply, or the port went), so
+#: nobody knows whether the mount took the goto. It was halted, and the
+#: caller re-measures where it is: the centring loop solves there, as for
+#: any other miss. Fixed words, like the two above.
+GOTO_LINK_REASON = "the link to the mount failed during the goto"
+#: Fixed words for ``GotoRefused.reason`` when ``:MS#`` answers ``e14``.
+GOTO_E14_PARKED_REASON = "the mount is parked; unpark first"
+GOTO_E14_STATE_REASON = ("not in a state to move: a limit, or a slew "
+                         "already running")
+#: Fixed words for ``GotoRefused.reason`` when ``:MS#`` answers a code not in
+#: ``_GOTO_REFUSALS``. The code stays in the MESSAGE, which keeps
+#: ``_goto_refusal_words``'s text unchanged; the reason, which the resume
+#: ladder writes into a hold reason, carries none (#618).
+GOTO_UNKNOWN_REFUSAL_REASON = ("the mount refused the goto; its altitude, "
+                               "meridian or park limits are the usual reasons")
 #: Floor between attempts to reopen a dropped link. An abandoned exchange can
 #: leave a worker thread parked inside a blocking read on the OS handle, and
 #: Windows refuses a second open of a COM port while that handle lives — so the
@@ -156,6 +245,13 @@ def _goto_refusal_words(code: str) -> str:
         f"park limits are the usual reasons")
 
 
+def _goto_refusal_reason(code: str) -> str:
+    """Fixed words for ``GotoRefused.reason``: the known meaning, or
+    ``GOTO_UNKNOWN_REFUSAL_REASON``. Never the code: the resume ladder writes
+    this into a hold reason, and a hold reason carries no code (#618)."""
+    return _GOTO_REFUSALS.get(code) or GOTO_UNKNOWN_REFUSAL_REASON
+
+
 #: Fixed words for a sync nobody could confirm (``SyncUnverified.reason``).
 #: They become a hold reason and a ``last_error`` downstream, so they carry no
 #: figure, no reply and none of the transport's own words (the #618 contract;
@@ -219,6 +315,30 @@ def _moved_deg(a: tuple[float, float], b: tuple[float, float]) -> float:
     0.02 degrees of sidereal drift, not 360 degrees of slew."""
     d_ra = abs(a[0] - b[0]) % 24.0
     return max(min(d_ra, 24.0 - d_ra) * 15.0, abs(a[1] - b[1]))
+
+
+def _goto_residual_deg(ra_hours: float, dec_deg: float,
+                       read_ra: float, read_dec: float) -> float | None:
+    """Angular separation (deg) between a goto's commanded target and a
+    position read, or ``None`` when a value is not finite
+    (``coords.angular_sep_deg`` refuses those). Angular, so a report near the
+    pole that differs by hours of RA is still measured as the small distance
+    it is. The coordinates never leave this function (#140, #166)."""
+    try:
+        return coords.angular_sep_deg(ra_hours, dec_deg, read_ra, read_dec)
+    except ValueError:
+        return None
+
+
+def _made_progress(window) -> bool:
+    """True when the goto residual fell by at least ``GOTO_PROGRESS_DEG``
+    from the oldest to the newest entry of ``window`` (#860). An
+    unmeasurable end (``None``) is no progress: a stuck mount must not be
+    excused by a read nobody could measure."""
+    first, last = window[0], window[-1]
+    if first is None or last is None:
+        return False
+    return first - last >= GOTO_PROGRESS_DEG
 
 #: Pulse-guide emulation (fw 1.8.8, all verified at scope 2026-07-20):
 #: - The LX200 :Mg*# pulse commands PARSE but are INERT over serial.
@@ -391,6 +511,10 @@ class ZwoAm5Telescope(Telescope):
     max_pulse_ms = _PULSE_MAX_MS
     can_set_tracking_rate = True
     can_find_home = True      # :hP# homes (and parks); find_home unparks after
+    #: This mount can lose its frame with nothing on the wire to say so: after
+    #: a power cycle it reports home wherever the tube is, and its park goes
+    #: to the MODEL's home (``Telescope.frame_can_reset``, finding 9).
+    frame_can_reset = True
     #: The pre-slew pier-collision guard is armed for this mount. Not because
     #: the AM5 answers ``DestinationSideOfPier`` -- it has no such command --
     #: but because ``destination_pier_side`` below predicts it from hour-angle
@@ -431,6 +555,12 @@ class ZwoAm5Telescope(Telescope):
         #: only by evidence -- never by a clock. See _note_halt for the failure
         #: this exists for and _link_error for what it changes.
         self._halting = False
+        #: Count of whole-mount halts this driver has sent (``_note_halt``).
+        #: ``slew`` compares it across a goto, so a halt from ``stop()``, which
+        #: the hub's manual-move deadman also calls, ends the goto as stopped
+        #: instead of reading the halted mount as arrived (#860). In memory
+        #: only.
+        self._halt_gen = 0
         #: Position at the previous read taken DURING a halt window; the pair
         #: (this, the next read) is what proves the mount stopped moving.
         #: Separate from _last_pos so the proof only ever uses post-halt reads.
@@ -447,8 +577,10 @@ class ZwoAm5Telescope(Telescope):
         #: Latched True when a (re)open read the home pole (#144): the mount
         #: reports where it BELIEVES the tube is, and after a reset that belief
         #: is the home position wherever the tube physically is. Cleared only by
-        #: evidence, a successful ``sync`` or the operator's ``trust_position``,
-        #: and deliberately NOT by a goto (see ``position_known``).
+        #: evidence, a ``sync`` the read-back proved more than
+        #: ``SYNC_POLE_BLIND_DEG`` from either pole (#867) or the operator's
+        #: ``trust_position``, and deliberately NOT by a goto (see
+        #: ``position_known``).
         self._position_untrusted = False
         #: Serializes `_park_now` against `pulse_guide` (WP-18, #342). Both
         #: issue motion commands on the one serial link, and a park landing
@@ -494,24 +626,32 @@ class ZwoAm5Telescope(Telescope):
 
     @property
     def position_known(self) -> bool:
-        """False from a (re)open that read the home pole until a sync or
-        ``trust_position`` (#144; the contract is ``Telescope.position_known``).
+        """False from a (re)open that read the home pole until a sync more than
+        ``SYNC_POLE_BLIND_DEG`` from either pole (#867) or ``trust_position``
+        (#144; the contract is ``Telescope.position_known``).
 
         THE AM5 CANNOT TELL US. It has no home sensor and no brake, so after a
         power cycle (reproduced on the rig 2026-09-23) it reports its home
         position, pointing at the pole, wherever the tube is, and nothing on the
         wire says it restarted. A pole-signature read at the handshake is the
         evidence available; the cost of the false positive (a mount really
-        parked at home reads the same) is one sync, and a nudge at the pole is
-        already clamped by ``mount_offset``.
+        parked at home reads the same) is one Trust position tap, since a sync
+        at home is inside ``SYNC_POLE_BLIND_DEG`` and does not clear it
+        (#867), and a nudge at the pole is already clamped by
+        ``mount_offset``.
 
         NOT CLEARED BY A GOTO, a slew's settle or a reopen that reads somewhere
         else. A goto from a wrong model lands wherever the model sends it, the
         settle poll reads back the mount's own opinion of the arrival, and
         docs/hardware/zwo-am5-lx200-protocol.md records this mount's reported
         coordinates walking 12.9 arcmin per minute while the tube held its
-        field, so none of it is a measurement of where the tube is."""
-        return not self._position_untrusted
+        field, so none of it is a measurement of where the tube is.
+
+        THE RIG-LEVEL LATCH TOO (``Telescope._position_doubt``): the engine
+        marks it when it ends a run because the position is unknown on
+        evidence this driver did not see (a sync refused in place, a jump
+        whose field will not solve). Cleared by the same two things."""
+        return not self._position_untrusted and self._position_doubt is None
 
     # ------------------------------------------------------------ helpers
 
@@ -606,6 +746,31 @@ class ZwoAm5Telescope(Telescope):
             f"{self.name}: {what} refused in current state — check limits / "
             "that a slew isn't already running (AM5 e14)")
 
+    def _not_arrived(self, reason: str,
+                     residual: float | None) -> GotoNotArrived:
+        """``GotoNotArrived`` for ``slew`` (#860): the fixed ``reason`` and
+        the separation from the target, never a coordinate (#140, #166)."""
+        where = ("" if residual is None else
+                 f"; it reports {residual:.2f} deg from the target")
+        return GotoNotArrived(
+            f"{self.name}: goto did not arrive ({reason}){where}",
+            reason=reason, residual_deg=residual)
+
+    async def _goto_refused_e14(self) -> GotoRefused:
+        """``e14`` to ``:MS#`` as ``GotoRefused`` (#860), with the parked
+        probe ``_refused_error`` uses (best effort: a failed probe must never
+        mask the refusal). ``_refused_error`` itself is unchanged for every
+        other command. The code stays in the message, never in ``reason``."""
+        parked = False
+        try:
+            parked = await self.is_parked()
+        except Exception:  # noqa: BLE001 - probe is advisory only
+            pass
+        words = GOTO_E14_PARKED_REASON if parked else GOTO_E14_STATE_REASON
+        return GotoRefused(
+            f"{self.name}: goto rejected ({words}; reply 'e14')",
+            code=lx200.REFUSED, reason=words)
+
     def _note_halt(self) -> None:
         """Record that this driver just sent a whole-mount halt (``:Q#``).
 
@@ -639,7 +804,11 @@ class ZwoAm5Telescope(Telescope):
         this; the per-direction stops do not. That exclusion is load-bearing for
         ``pulse_guide``, which fires ``:Qn#``/``:Qw#``/... every few seconds all
         night — pinning the flag on through a guided session would leave every
-        later error carrying a stop that had nothing to do with it."""
+        later error carrying a stop that had nothing to do with it.
+
+        Every call also bumps ``_halt_gen``, which ``slew`` reads to tell a
+        goto that was halted part way from one that arrived (#860)."""
+        self._halt_gen += 1
         self._halting = True
         self._halt_ref = None      # only reads taken AFTER this halt may prove rest
 
@@ -825,11 +994,12 @@ class ZwoAm5Telescope(Telescope):
         """The operator says the tube is physically where the mount reports it
         (in practice: "I drove it to its home position by eye"), which clears
         ``position_known`` without a sync. See ``Telescope.trust_position``."""
-        if self._position_untrusted:
+        if not self.position_known:
             bus.log("info",
                     f"{self.name}: position trusted on the operator's word",
                     "mount")
         self._position_untrusted = False
+        await super().trust_position()      # the rig-level latch
 
     async def disconnect(self) -> None:
         try:
@@ -868,8 +1038,9 @@ class ZwoAm5Telescope(Telescope):
         # falls back to the plain wire text).
         if self._halting:
             prev, self._halt_ref = self._halt_ref, (ra, dec)
-            if prev is not None and max(abs(ra - prev[0]) * 15.0,
-                                        abs(dec - prev[1])) < SETTLE_DEG:
+            # Wrap-safe (#860): a halted mount reading 23:59:59 then 00:00:00
+            # is still, not 360 degrees of slew.
+            if prev is not None and _moved_deg(prev, (ra, dec)) < SETTLE_DEG:
                 self._halting = False
         return ra, dec
 
@@ -1297,22 +1468,69 @@ class ZwoAm5Telescope(Telescope):
         await self._cmd_ack(f"Sd{lx200.format_dec(dec_deg)}", "set target Dec")
 
     async def slew(self, ra_hours: float, dec_deg: float) -> None:
-        """Goto and wait until settled. AM5 moves are fire-and-forget, so the
-        ONLY completion signal is polling: settled when the coordinate delta
-        stays under SETTLE_DEG across two consecutive polls. Cancel-safe: a
-        CancelledError (or timeout) halts the mount with :Q# first."""
+        """Goto, and wait until the mount has ARRIVED (#860).
+
+        AM5 moves are fire-and-forget, so polling is the only completion
+        signal. ARRIVED is two things at once: the report is still (two
+        consecutive poll-to-poll steps under ``SETTLE_DEG``, wrap-safe through
+        ``_moved_deg``) AND it is within ``GOTO_ARRIVE_DEG + GOTO_DRIFT_DEG_S
+        x elapsed`` of the commanded target by angular separation. Still but
+        short is not an arrival: polling goes on until the mount arrives, or
+        has been STUCK for ``GOTO_STALL_S`` (``GotoNotArrived``, stalled).
+        Stuck is two things at once: every step in the window under
+        ``SETTLE_DEG`` AND the residual fallen by less than
+        ``GOTO_PROGRESS_DEG`` across it. A slow final approach is progress;
+        a fast excursion away from the target (a pier-flip swing) is not
+        still. A whole-mount halt sent while the goto runs (``_halt_gen``)
+        raises ``GotoNotArrived`` (stopped) unless the mount is already at
+        the target. The ``SLEW_TIMEOUT_S`` deadline is unchanged and still a
+        plain ``DeviceError``. Cancel-safe: any abnormal exit, these raises
+        included, halts the mount with ``:Q#`` first.
+
+        ``:MS#`` is sent once, never re-sent after a reopen: a mount that took
+        the goto and is slewing would answer a re-send ``e14`` and leave the
+        first goto unwatched. A link failure on it halts best-effort and
+        raises ``GotoNotArrived`` (``GOTO_LINK_REASON``) with the same
+        message as before: before ``retry=False`` a dropped exchange was
+        re-sent and the goto went on, so a caller that re-measures (the
+        centring loop) must not lose the run to one dropped reply now.
+
+        ``e14`` is ``GotoRefused`` with the parked probe's words, like ``e6``.
+        No message carries a coordinate; a separation is allowed."""
         await self._set_target(ra_hours, dec_deg)
+        # Snapshot BEFORE :MS#: a stop that lands while :MS# is in flight
+        # belongs to this goto.
+        halts_at_start = self._halt_gen
         try:
-            reply = await self._request("MS", reply="ack")
+            # retry=False: a resend after a reopen could reach a mount that is
+            # already slewing to the first :MS# (it answers e14 and the first
+            # goto goes unwatched) - the #850 precedent for :CM#.
+            reply = await self._request("MS", reply="ack", retry=False)
         except LinkError as exc:
             # This raw ``request`` was the one ack-class send in the driver that
             # bypassed _cmd_ack, so a silent mount here escaped as a LinkError —
             # not a DeviceError — and the API's ``except DeviceError`` handlers
             # let it through as a 500 instead of a 409. A second goto fired
             # while the first is still settling lands exactly here.
-            raise self._link_error("goto", exc) from exc
+            #
+            # Built BEFORE the halt is noted, so the words are today's (the
+            # wire truth when idle): ``_link_error`` reads ``_halting``.
+            err = self._link_error("goto", exc)
+            # The goto may have started before the link went: halt it. The
+            # :Q# send keeps the default retry, so a dropped port is reopened
+            # for it; :Q# on an idle mount is harmless.
+            self._note_halt()
+            try:
+                await self._request("Q", reply="none")
+            except Exception:  # noqa: BLE001 - halt is best-effort here
+                pass
+            # A DeviceError subclass with today's message, so every existing
+            # handler and its text are unchanged; the type lets the centring
+            # loop solve where the mount is instead of ending the run.
+            raise GotoNotArrived(str(err), reason=GOTO_LINK_REASON,
+                                 residual_deg=None) from exc
         if reply == lx200.REFUSED:
-            raise await self._refused_error("goto")
+            raise await self._goto_refused_e14()
         # LX200 :MS# convention: '0' = slew accepted; anything else = refused.
         #
         # THE CODE ALONE IS NOT A SENTENCE. This used to raise the bare reply,
@@ -1324,27 +1542,54 @@ class ZwoAm5Telescope(Telescope):
         # "the mount said no" so a caller need not read the prose to know it.
         if reply != "0":
             words = _goto_refusal_words(reply)
+            # The MESSAGE keeps the words and the code; the REASON is fixed
+            # words only, because the resume ladder makes it a hold reason.
             raise GotoRefused(
                 f"{self.name}: goto rejected ({words}; reply {reply!r})",
-                code=reply, reason=words)
+                code=reply, reason=_goto_refusal_reason(reply))
         self._slewing = True
         try:
-            deadline = asyncio.get_running_loop().time() + SLEW_TIMEOUT_S
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            deadline = started + SLEW_TIMEOUT_S
+            # Read the module constants per call so a test can patch them.
+            stall_polls = max(2, math.ceil(GOTO_STALL_S / SETTLE_POLL_S))
+            # The residuals across the last ``stall_polls`` steps (one more
+            # residual than steps). A ``None`` (unmeasurable) is no progress.
+            window: collections.deque[float | None] = collections.deque(
+                maxlen=stall_polls + 1)
             prev: tuple[float, float] | None = None
             stable = 0
             while True:
-                if asyncio.get_running_loop().time() > deadline:
+                if loop.time() > deadline:
                     raise DeviceError(
                         f"{self.name}: slew failed to settle within "
                         f"{SLEW_TIMEOUT_S:.0f}s — halted (:Q#)")
                 await asyncio.sleep(SETTLE_POLL_S)
                 ra, dec = await self.get_position()
+                off = _goto_residual_deg(ra_hours, dec_deg, ra, dec)
+                allow = (GOTO_ARRIVE_DEG
+                         + GOTO_DRIFT_DEG_S * (loop.time() - started))
+                arrived = off is not None and off <= allow
                 if prev is not None:
-                    d_deg = max(abs(ra - prev[0]) * 15.0, abs(dec - prev[1]))
-                    stable = stable + 1 if d_deg < SETTLE_DEG else 0
-                    if stable >= 2:
+                    stable = (stable + 1
+                              if _moved_deg(prev, (ra, dec)) < SETTLE_DEG
+                              else 0)
+                    # Still AND at the target. An arrived mount returns even
+                    # if a halt landed this very poll: the report is there.
+                    if stable >= 2 and arrived:
                         return
                 prev = (ra, dec)
+                window.append(off)
+                if self._halt_gen != halts_at_start:
+                    # Someone else halted the mount (stop(), the manual-move
+                    # deadman): no wait for stillness, it will not arrive.
+                    raise self._not_arrived(GOTO_STOPPED_REASON, off)
+                # stable >= stall_polls means the window is full and every
+                # step in it was small; it is a stall only if the residual
+                # did not fall by GOTO_PROGRESS_DEG across it.
+                if stable >= stall_polls and not _made_progress(window):
+                    raise self._not_arrived(GOTO_STALLED_REASON, off)
         except BaseException:
             # ANY abnormal settle exit — cancel, timeout, link/parse failure —
             # halts the mount before propagating (B review M3). :Q# is
@@ -1485,8 +1730,26 @@ class ZwoAm5Telescope(Telescope):
         # The one measurement of where the tube really points: a sync is only
         # ever asked with a solved position (or the operator's own), so it
         # re-establishes the frame a reset took away (#144). Only on a sync the
-        # read-back PROVED: every refusal above raised before this line.
-        self._position_untrusted = False
+        # read-back PROVED: every refusal above raised before this line. And
+        # NOT near the pole (#867): a read-back there cannot see the RA axis,
+        # so it proves nothing about where the tube points
+        # (SYNC_POLE_BLIND_DEG). This only stops a near-pole sync from
+        # CLEARING the latch; it never sets it.
+        if abs(dec_deg) <= 90.0 - SYNC_POLE_BLIND_DEG:
+            self._position_untrusted = False
+        # The rig-level latch, by the same rule (``note_verified_sync``).
+        self.note_verified_sync(dec_deg)
+        if not self.position_known:
+            # The action first, in the safe order and never a goto (#850),
+            # inside the UI's 137-char cut whatever the mount is called: the
+            # name is the operator's (``conn.extra["name"]``) and any length,
+            # so it goes after the action, not before it. No figure.
+            bus.log("warning",
+                    "position still unknown: tube at home, Trust position; "
+                    "else bring it home by eye with a pad key, then Trust "
+                    "it. A sync this near the pole cannot show where the RA "
+                    f"axis points, so it confirms nothing ({self.name})",
+                    "mount")
 
     async def _set_sync_target(self, ra_hours: float, dec_deg: float) -> None:
         """``:Sr#``/``:Sd#`` for ``sync``, classified the way ``sync`` must
