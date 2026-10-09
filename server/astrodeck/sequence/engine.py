@@ -39,8 +39,8 @@ from typing import Any, Callable, Mapping, NamedTuple
 from ..aio import reap
 from ..config import config_store, frames_payload
 from .. import capture_geometry, naming
-from ..devices.base import (DeviceError, DomeShutterState, PierSide,
-                            quotable_sync_reply)
+from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
+                            PierSide, quotable_sync_reply)
 from ..events import SITE_DERIVED_KEY, bus, night_key
 from ..focus import run_autofocus
 from ..focus.approach import approach, configured_overshoot
@@ -57,7 +57,8 @@ from ..guide.base import rms_total_arcsec
 # there is one copy; the `guide` package, which `hub` imports, loads it
 # already, so this costs nothing at import.
 from ..guide.native import _ENGINE_MAX_DURATION_MS as _NATIVE_PULSE_CAP_MS
-from ..hub import SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED, Hub
+from ..hub import (GOTO_NOT_ARRIVED_REASON, SOLVE_REASON_SYNC_REFUSED,
+                   SOLVE_REASON_SYNC_UNVERIFIED, Hub)
 from ..imaging.processing import to_jpeg
 from . import schedule
 from .cloudstate import CloudState, verdict_from_info
@@ -9110,8 +9111,25 @@ class SequenceEngine:
                     # this key to refuse crediting a stale rotator reading as
                     # proof the camera is at the mosaic's angle.
                     hop_centring = {"rotation_skipped": True}
-                await _bounded(tel.slew(target.ra_hours, target.dec_deg),
-                               SLEW_TIMEOUT_S, f"slew to {target.name}")
+                try:
+                    await _bounded(tel.slew(target.ra_hours, target.dec_deg),
+                                   SLEW_TIMEOUT_S, f"slew to {target.name}")
+                except GotoNotArrived as e:
+                    # THE GOTO DID NOT ARRIVE (#860). The field is not what an
+                    # uncentred slew gives, so this is not "imaging goes on":
+                    # skip the target in fixed words (D-03), with the figure in
+                    # the one warning before it. Not a run error: the driver
+                    # raises this for a stall or a stop it can name.
+                    r = e.residual_deg
+                    fig = (f", {r:.2f} deg off"
+                           if isinstance(r, (int, float))
+                           and not isinstance(r, bool) and math.isfinite(r)
+                           else "")
+                    bus.log("warning",
+                            f"{target.name}: slew at acquisition: the goto did "
+                            f"not arrive ({e.reason}{fig})", "sequence")
+                    raise StopTarget(
+                        f"slew at acquisition: {GOTO_NOT_ARRIVED_REASON}") from None
                 try:
                     await _bounded(tel.set_tracking(True),
                                    MOUNT_QUERY_TIMEOUT_S, "mount set_tracking")
