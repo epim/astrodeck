@@ -23,6 +23,7 @@ import type {
   FlowCard, FlowFolder, FlowProgress, FlowRunFlags, FlowRunSession, FlowUnmapped,
 } from "../../lib/flowsApi";
 import { runIsLive } from "../../lib/lastSessionFrame";
+import { isTransientLoadError, retryTransient, type LoadRetry } from "../../lib/retryLoad";
 import type { SequenceState, ToastLevel } from "../../types";
 import { isRunPhaseLive, knownSessions, runLatchEnds } from "./flowRunState";
 import { NODE_DEFS, createParams } from "./nodeDefs";
@@ -143,6 +144,11 @@ export interface FlowsState {
   folders: FlowFolder[];
   libraryLoaded: boolean;
   libraryError: string | null;
+  /** Set while flowsLoadLibrary waits to ask again after a transient failure (#859). */
+  libraryRetry: LoadRetry | null;
+  /** True from the start of flowsLoadLibrary to its end, waits included. Read
+   *  LIVE (getState) by the re-ask gates, so a re-ask never stacks on a load. */
+  libraryLoading: boolean;
 
   // ── the open flow
   record: FlowRecordRec | null;
@@ -200,6 +206,11 @@ export interface FlowsState {
   tonight: Record<string, unknown> | null;
   tonightLoading: boolean;
   tonightError: string | null;
+  /** The same as libraryRetry, for flowsFetchTonight's GET. */
+  tonightRetry: LoadRetry | null;
+  /** True when tonightError came from a transient failure (isTransientLoadError).
+   *  Only such an error is re-asked on websocket-up or tab-visible. */
+  tonightErrorTransient: boolean;
   calHealth: FlowCalHealth | null;
   /** The OPEN flow's `GET /api/flows/{id}/progress` answer, or null whenever
    *  none is in hand for this record: before the first answer lands, after a
@@ -278,8 +289,18 @@ export function compiledIsCurrent(f: Pick<FlowsState, "compiled" | "graph">): bo
   return f.compiled != null && f.compiled.from === f.graph;
 }
 
+/** The library load FAILED and nothing is asking now (#859): the gate the
+ *  three library screens' re-ask (websocket up, tab visible) reads. Callers
+ *  pass the LIVE state (`useStore.getState().flows`) at event time, so a
+ *  second handler in the same event sees the first one's `libraryLoading`
+ *  and does nothing. */
+export function libraryFailedIn(f: FlowsState): boolean {
+  return !!f.libraryError && !f.libraryLoaded && !f.libraryLoading;
+}
+
 export const FLOWS_INIT: FlowsState = {
   cards: [], folders: [], libraryLoaded: false, libraryError: null,
+  libraryRetry: null, libraryLoading: false,
   record: null, graph: { nodes: [], edges: [] }, dirty: false, saving: false,
   sel: null, editNode: null, history: FLOW_HISTORY_EMPTY,
   // The prototype opens at this pan/zoom; a fresh canvas that started at 1.0/0,0
@@ -292,6 +313,7 @@ export const FLOWS_INIT: FlowsState = {
   logs: [],
   compiled: null, compiling: false,
   tonight: null, tonightLoading: false, tonightError: null,
+  tonightRetry: null, tonightErrorTransient: false,
   calHealth: null,
   progress: null,
   sessionIds: NO_SESSIONS,
@@ -303,7 +325,11 @@ export const FLOWS_INIT: FlowsState = {
 };
 
 export interface FlowsActions {
-  flowsLoadLibrary: () => Promise<void>;
+  /** Reads the flow list and folders. A transient failure is asked again by
+   *  itself (#859) unless `retry: false`: a reload after a write the operator
+   *  already made (a close, a quick flow) asks once, as before, so nothing
+   *  that awaits it waits through the retries. */
+  flowsLoadLibrary: (options?: { retry?: boolean }) => Promise<void>;
   /** Opens flow `id` into the editor's state, replacing the open record.
    *
    *  A DIRTY OPEN RECORD OF ANOTHER ID IS SAVED FIRST (#450), and when that
@@ -1064,6 +1090,9 @@ export function createFlowsActions(
    *  (the Tonight surface and the Target modal's campaign line), so an
    *  answer is written only by the read that is still the newest. */
   let tonightTicket = 0;
+  /** THE NEWEST LIBRARY LOAD WINS (#859). A load that is still retrying is
+   *  superseded by a newer one: it writes nothing more and asks no more. */
+  let libraryGen = 0;
 
   /** SAVE THE CANVAS BEFORE ANYTHING READS THE STORED FLOW (#688).
    *
@@ -1369,19 +1398,48 @@ export function createFlowsActions(
 
   return {
     // ────────────────────────────────────────────────────────────── library
-    flowsLoadLibrary: async () => {
+    flowsLoadLibrary: async (options) => {
+      // A TRANSIENT FAILURE IS ASKED AGAIN BY ITSELF (#859): a timeout, a
+      // network error or a proxy's 502/503/504 waits 2 s, 5 s, 15 s and asks
+      // again, with `libraryRetry` set meanwhile, so the screen says it is
+      // retrying instead of showing the error. `libraryError` is not touched
+      // while it retries, so the screen never flickers between error and
+      // empty. A newer call supersedes this one: it then writes nothing,
+      // which is what keeps it from clearing the newer call's `libraryLoading`.
+      // `!== false`, as flowsFetchTonight's flush: an event handed in as
+      // `options` reads as the default.
+      const gen = ++libraryGen;
+      const mine = () => gen === libraryGen;
+      // `libraryError` is SHARED with saves and opens (#859 N5). The success
+      // below clears what was there when this load started (a failed load's
+      // text, or an older failure, as before #859), but not a failure another
+      // action wrote while this load was out: up to 82 s of retries is long
+      // enough for a save or an open to fail meanwhile.
+      const errorAtStart = get().flows.libraryError;
+      set((s) => patch(s, { libraryLoading: true }));
+      const load = () => Promise.all([flowsApi.list(), flowsApi.folders()]);
       try {
-        const [cards, folders] = await Promise.all([
-          flowsApi.list(), flowsApi.folders(),
-        ]);
+        const [cards, folders] = options?.retry === false ? await load() : await retryTransient(
+          load,
+          {
+            stop: () => !mine(),
+            onRetry: (r) => { if (mine()) set((s) => patch(s, { libraryRetry: r })); },
+          },
+        );
+        if (!mine()) return;
         set((s) => patch(s, {
-          cards, folders, libraryLoaded: true, libraryError: null,
+          cards, folders, libraryLoaded: true,
+          libraryError: s.flows.libraryError === errorAtStart ? null : s.flows.libraryError,
+          libraryRetry: null, libraryLoading: false,
         }));
       } catch (e) {
+        if (!mine()) return;
         // libraryLoaded stays FALSE on an error. A failed load that flipped it
         // true would render "no flows yet" over a library the server has and
         // the client could not reach - which reads as data loss.
-        set((s) => patch(s, { libraryError: errText(e) }));
+        set((s) => patch(s, {
+          libraryError: errText(e), libraryRetry: null, libraryLoading: false,
+        }));
       }
     },
 
@@ -1706,7 +1764,12 @@ export function createFlowsActions(
         countsNote: null,
         ui: { ...s.flows.ui, screen: "library", paletteOpen: false },
       }));
-      await get().flowsLoadLibrary();
+      // ONE ASK, NOT THE RETRIES (#859): `leaveFlowEditor` (openFlow.ts) holds
+      // this close as its one-at-a-time promise until it settles, and a close
+      // held through 82 s of retries would hand that stale promise to the
+      // NEXT flow's close. The library screen's own re-ask and RETRY cover a
+      // failure here.
+      await get().flowsLoadLibrary({ retry: false });
     },
 
     // ─────────────────────────────────────────────────────────── graph edits
@@ -2036,6 +2099,7 @@ export function createFlowsActions(
       const ticket = ++tonightTicket;
       set((s) => patch(s, {
         tonightLoading: true, tonightError: null,
+        tonightRetry: null, tonightErrorTransient: false,
         // THE ANSWER IN HAND IS ABOUT THE FLOW AS LAST SAVED, and an edited
         // flow is about to replace that flow (#688). Left on screen while the
         // PUT is out it is last round's story under this round's title: the
@@ -2051,7 +2115,7 @@ export function createFlowsActions(
       const superseded = (): boolean => {
         if (ticket !== tonightTicket) return true;
         if (get().flows.record?.id === id) return false;
-        set((s) => patch(s, { tonightLoading: false }));
+        set((s) => patch(s, { tonightLoading: false, tonightRetry: null }));
         return true;
       };
       try {
@@ -2070,12 +2134,24 @@ export function createFlowsActions(
           if (!compiledIsCurrent(get().flows)) await get().flowsCompile();
           if (superseded()) return;
         }
-        const tonight = await flowsApi.tonight(id);
+        // ONLY THE GET IS ASKED AGAIN (#859). The save and the compile above
+        // are a PUT and a POST, and run once.
+        const tonight = await retryTransient(() => flowsApi.tonight(id), {
+          stop: () => ticket !== tonightTicket || get().flows.record?.id !== id,
+          onRetry: (r) => {
+            if (ticket === tonightTicket && get().flows.record?.id === id) {
+              set((s) => patch(s, { tonightRetry: r }));
+            }
+          },
+        });
         if (superseded()) return;
-        set((s) => patch(s, { tonight, tonightLoading: false }));
+        set((s) => patch(s, { tonight, tonightLoading: false, tonightRetry: null }));
       } catch (e) {
         if (superseded()) return;
-        set((s) => patch(s, { tonightLoading: false, tonightError: errText(e) }));
+        set((s) => patch(s, {
+          tonightLoading: false, tonightError: errText(e), tonightRetry: null,
+          tonightErrorTransient: isTransientLoadError(e),
+        }));
       }
     },
 

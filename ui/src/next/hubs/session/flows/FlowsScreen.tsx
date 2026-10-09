@@ -54,6 +54,7 @@ import {
 } from "../../../../lib/caps";
 import { resumeSession } from "../../../../api/sessions";
 import { useSeq, useStore } from "../../../../store";
+import { retryingLine } from "../../../../lib/retryLoad";
 import { nav, useRoute } from "../../../router";
 import { useBreakpoint } from "../../../breakpoint";
 import { NxIcon } from "../../../icons";
@@ -151,6 +152,7 @@ export function FlowsScreen(): JSX.Element {
   const folders = useStore((s) => s.flows.folders);
   const libraryLoaded = useStore((s) => s.flows.libraryLoaded);
   const libraryError = useStore((s) => s.flows.libraryError);
+  const libraryRetry = useStore((s) => s.flows.libraryRetry);
   const query = useStore((s) => s.flows.ui.query);
   const folderChip = useStore((s) => s.flows.ui.folderChip);
   const screen = useStore((s) => s.flows.ui.screen);
@@ -170,7 +172,17 @@ export function FlowsScreen(): JSX.Element {
 
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  useEffect(() => { void loadLibrary(); }, [loadLibrary]);
+  // Not over a load already out (#859). `useSessionCampaign` above reaches
+  // `useFlowLibrary` (now/sessionData.ts) through useCampaign and
+  // useCampaignFlowId, and that hook's effect, declared earlier, starts a load
+  // in this same commit while the library is not loaded; a second would
+  // supersede it after its first request, an abandoned read the rig still
+  // serves. The same hook carries this screen's re-ask: a failure left after
+  // the slice's own retries is asked once more when the websocket comes back
+  // up or the tab becomes visible.
+  useEffect(() => {
+    if (!useStore.getState().flows.libraryLoading) void loadLibrary();
+  }, [loadLibrary]);
 
   const createReason = canCreate ? null : `Creating a flow needs ${accessPhrase("control.capture")}.`;
 
@@ -489,10 +501,18 @@ export function FlowsScreen(): JSX.Element {
       </div>
 
       {/* A library the client could not reach must never render as an empty one
-          - that reads as data loss. Word and glyph, never a colour alone, and a
-          RETRY beside it, because the slice deliberately leaves `libraryLoaded`
-          false on a failure so nothing retries on its own. */}
-      {libraryError && (
+          - that reads as data loss. Word and glyph, never a colour alone. The
+          slice asks again by itself after a timeout, a network error or a
+          proxy's 502/503/504 and says so meanwhile (#859); the error and RETRY
+          show only once those tries are spent, or for the home's own refusal.
+          `libraryLoaded` stays false on a failure either way. */}
+      {libraryRetry ? (
+        <div role="status">
+          <span data-testid="flows-retrying">
+            <Mono size={10.5}>{retryingLine(libraryRetry)}</Mono>
+          </span>
+        </div>
+      ) : libraryError ? (
         <div
           role="status"
           style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}
@@ -508,7 +528,7 @@ export function FlowsScreen(): JSX.Element {
             RETRY
           </ActionButton>
         </div>
-      )}
+      ) : null}
 
       {libraryLoaded && cards.length === 0 ? (
         <EmptyCard

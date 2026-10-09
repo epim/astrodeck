@@ -66,6 +66,10 @@ import { endReasonMeta } from "../../../../lib/reportChart";
 import { planUnreadableReason } from "../../../../lib/planLibrary";
 import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
 import { flowsApi } from "../../../../lib/flowsApi";
+import {
+  LOAD_RETRY_DELAYS_MS, isTransientLoadError, retryTransient, retryingLine,
+  useRetryOnReturn, type LoadRetry,
+} from "../../../../lib/retryLoad";
 import { buildPreflight } from "../../../../lib/preflight";
 import {
   accessPhrase, useCanControlMount, useCapability, useRoleConnected,
@@ -76,6 +80,7 @@ import {
 import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
   useMasters, useResumeArm, useSafety, useSeq, useSite, useStatus, useStore,
+  useWsConnected,
 } from "../../../../store";
 import type {
   CheckItem, CheckStatus, SequencePlan, SessionReportSummary, SiteInfo,
@@ -201,41 +206,81 @@ const DEFAULT_SITE: SiteInfo = {
 // (the naming-preview sample, #278, is the same class of bug).
 
 type ReportsState =
-  | { kind: "loading" }
+  | { kind: "loading"; retry?: LoadRetry }
   | { kind: "error"; message: string }
   | { kind: "ready"; rows: SessionReportSummary[] };
 
+type LoadPhase = "loading" | "failed" | "ok";
+
+/** The report archive. A transient failure is asked again by itself (#859),
+ *  with the retrying line in place of "reading the report archive..."; a
+ *  failure left after that is re-asked once on websocket-up or tab-visible. */
 function useReportList(): { state: ReportsState; retry: () => void } {
   const [state, setState] = useState<ReportsState>({ kind: "loading" });
   const [nonce, setNonce] = useState(0);
+  const phase = useRef<LoadPhase>("loading");
   useEffect(() => {
     let alive = true;
+    phase.current = "loading";
     setState({ kind: "loading" });
-    void listReports().then(
-      (rows) => { if (alive) setState({ kind: "ready", rows: Array.isArray(rows) ? rows : [] }); },
-      (e: Error) => { if (alive) setState({ kind: "error", message: e.message }); },
+    void retryTransient(listReports, {
+      stop: () => !alive,
+      onRetry: (r) => { if (alive) setState({ kind: "loading", retry: r }); },
+    }).then(
+      (rows) => {
+        if (!alive) return;
+        phase.current = "ok";
+        setState({ kind: "ready", rows: Array.isArray(rows) ? rows : [] });
+      },
+      (e: Error) => {
+        if (!alive) return;
+        phase.current = "failed";
+        setState({ kind: "error", message: e.message });
+      },
     );
     return () => { alive = false; };
   }, [nonce]);
-  return { state, retry: useCallback(() => setNonce((n) => n + 1), []) };
+  const retry = useCallback(() => { phase.current = "loading"; setNonce((n) => n + 1); }, []);
+  useRetryOnReturn(() => phase.current === "failed", retry, useWsConnected());
+  return { state, retry };
 }
 
 /** The saved-plan library. `view.status` (`app.py:4217-4221`), so every role
  *  gets the rows and only RUN is refused. A failed read leaves `rows` empty and
  *  `error` set - the flows half of the list still renders, and the line says
- *  which half is missing rather than pretending the library is empty. */
+ *  which half is missing rather than pretending the library is empty. A
+ *  transient failure is asked again by itself first (#859; the route reads off
+ *  the event loop since #858 N1), so the line appears only after the last try;
+ *  a failure left is re-asked once on websocket-up or tab-visible. */
 function usePlanLibrary(enabled: boolean): { rows: PlanRow[]; error: string | null } {
   const [rows, setRows] = useState<PlanRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const phase = useRef<LoadPhase>("ok");
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
-    void listPlans().then(
-      (r) => { if (alive) { setRows(Array.isArray(r) ? r : []); setError(null); } },
-      (e: Error) => { if (alive) setError(e.message); },
+    phase.current = "loading";
+    void retryTransient(listPlans, { stop: () => !alive }).then(
+      (r) => {
+        if (!alive) return;
+        phase.current = "ok";
+        setRows(Array.isArray(r) ? r : []);
+        setError(null);
+      },
+      (e: Error) => {
+        if (!alive) return;
+        phase.current = "failed";
+        setError(e.message);
+      },
     );
     return () => { alive = false; };
-  }, [enabled]);
+  }, [enabled, nonce]);
+  useRetryOnReturn(
+    () => phase.current === "failed",
+    () => { phase.current = "loading"; setNonce((n) => n + 1); },
+    useWsConnected(),
+  );
   return { rows, error };
 }
 
@@ -266,18 +311,33 @@ function useTonightVerdicts(
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+  const [nonce, setNonce] = useState(0);
+  const phase = useRef<LoadPhase>("ok");
 
   useEffect(() => {
     if (!enabled) return;
     const ids = key === "" ? [] : key.split(",");
     let cancelled = false;
+    const live = () => !cancelled && mounted.current;
+    phase.current = "loading";
     void (async () => {
+      // ONE RETRY BUDGET FOR THE WHOLE LOOP (#859): retries spent on one flow
+      // are gone for the next, so a stall costs at most four astropy passes,
+      // not four per flow.
+      let used = 0;
       for (const id of ids.slice(0, TONIGHT_RESOLVE_CAP)) {
-        if (cancelled || !mounted.current) return;
+        if (!live()) return;
         let verdict = tonightCache.get(id);
         if (!verdict) {
           try {
-            verdict = tonightVerdict(await flowsApi.tonight(id), Date.now());
+            const answer = await retryTransient(() => flowsApi.tonight(id), {
+              delaysMs: LOAD_RETRY_DELAYS_MS.slice(used),
+              onRetry: () => { used += 1; },
+              stop: () => !live(),
+            });
+            verdict = tonightVerdict(answer, Date.now());
+            // An ANSWER is cached for the page.
+            tonightCache.set(id, verdict);
           } catch (e) {
             // A TRANSPORT failure is not a refusal and must not be printed as
             // one: `tonightVerdict` prints the server's own `reason` for a
@@ -286,16 +346,37 @@ function useTonightVerdicts(
               tone: "warn",
               line: `tonight could not be read: ${e instanceof Error ? e.message : String(e)}`,
             };
+            if (isTransientLoadError(e)) {
+              // NOT cached: the next mount or re-ask asks again. And STOP: the
+              // home is not answering, and each further flow is one more
+              // astropy pass on its CPU (TONIGHT_RESOLVE_CAP's comment). The
+              // flows after this one keep "tonight not checked yet".
+              if (!live()) return;
+              const failed = verdict;
+              setMap((m) => ({ ...m, [id]: failed }));
+              phase.current = "failed";
+              return;
+            }
+            // An HTTP refusal is the home's answer, cached as before.
+            tonightCache.set(id, verdict);
           }
-          tonightCache.set(id, verdict);
         }
-        if (cancelled || !mounted.current) return;
+        if (!live()) return;
         const settled = verdict;
         setMap((m) => (m[id] === settled ? m : { ...m, [id]: settled }));
       }
+      if (live()) phase.current = "ok";
     })();
     return () => { cancelled = true; };
-  }, [key, enabled]);
+  }, [key, enabled, nonce]);
+
+  // A loop stopped by a transient failure resumes on websocket-up or
+  // tab-visible, reusing every cached answer, with a fresh budget.
+  useRetryOnReturn(
+    () => phase.current === "failed",
+    () => { phase.current = "loading"; setNonce((n) => n + 1); },
+    useWsConnected(),
+  );
 
   return map;
 }
@@ -723,7 +804,11 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             {recovering && stopRecovery.error && (
               <Mono size={10} tone="bad" data-testid="now-stop-recovery-error">{stopRecovery.error}</Mono>
             )}
-            {state.kind === "loading" && <Mono size={10} tone="dim">reading the report archive...</Mono>}
+            {state.kind === "loading" && (
+              <Mono size={10} tone="dim">
+                {state.retry ? retryingLine(state.retry) : "reading the report archive..."}
+              </Mono>
+            )}
             {state.kind === "error" && (
               <Mono size={10} tone="warn">
                 Couldn&apos;t read the list of session reports: {state.message}
