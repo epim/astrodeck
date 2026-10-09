@@ -39,7 +39,8 @@ from typing import Any, Callable, Mapping, NamedTuple
 from ..aio import reap
 from ..config import config_store, frames_payload
 from .. import capture_geometry, naming
-from ..devices.base import DeviceError, DomeShutterState, PierSide
+from ..devices.base import (DeviceError, DomeShutterState, PierSide,
+                            quotable_sync_reply)
 from ..events import SITE_DERIVED_KEY, bus, night_key
 from ..focus import run_autofocus
 from ..focus.approach import approach, configured_overshoot
@@ -56,7 +57,7 @@ from ..guide.base import rms_total_arcsec
 # there is one copy; the `guide` package, which `hub` imports, loads it
 # already, so this costs nothing at import.
 from ..guide.native import _ENGINE_MAX_DURATION_MS as _NATIVE_PULSE_CAP_MS
-from ..hub import Hub
+from ..hub import SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED, Hub
 from ..imaging.processing import to_jpeg
 from . import schedule
 from .cloudstate import CloudState, verdict_from_info
@@ -8464,6 +8465,155 @@ class SequenceEngine:
                 max(1.0, min(CENTRING_HOLD_RETRY_S,
                              window["start_unix"] - time.time())))
 
+    #: The outcome the sync-not-taken warning carries when the target opted
+    #: out of centring and so is NOT stopped (#850): without it the operator
+    #: reads "the mount refused the sync" and then sees the run carry on, with
+    #: nothing saying why. It comes straight after the cause and BEFORE the
+    #: figure and the reply (`_sync_not_taken_line`), so humanizeLog's cut at
+    #: 137 takes the figure and the reply first and never this.
+    _SYNC_NOT_TAKEN_GOES_ON = "; centring is off, so imaging goes on"
+
+    @staticmethod
+    def _sync_not_taken(result) -> str | None:
+        """The fixed sentence for a centring whose sync the mount did NOT
+        take (#850), or ``None`` for every other result.
+
+        Two cases, read the same way everywhere the engine reads a centring:
+        the mount REFUSED the sync (``sync_refused``, the driver's
+        ``SyncRefused``) gives ``SOLVE_REASON_SYNC_REFUSED``; nobody could
+        confirm it (``sync_unverified``, the driver's ``SyncUnverified``: the
+        link failed around the sync, or the position read-back never
+        answered) gives ``SOLVE_REASON_SYNC_UNVERIFIED``. Either way the
+        solve worked and the pointing was not corrected, so neither is a
+        failed solve, a "no light" or a "continuing"."""
+        if not isinstance(result, dict):
+            return None
+        if result.get("sync_refused"):
+            return SOLVE_REASON_SYNC_REFUSED
+        if result.get("sync_unverified"):
+            return SOLVE_REASON_SYNC_UNVERIFIED
+        return None
+
+    @classmethod
+    def _sync_not_taken_line(cls, result: dict, target: Target,
+                             where: str, *, goes_on: bool = False) -> str:
+        """The ONE warning logged just before the stop (#850): the target,
+        where it happened, how far off the field is and the mount's reply,
+        for example "M31: centring at acquisition: the mount refused the
+        sync, 152.3' off target (reply 'e11')".
+
+        A TARGET THAT OPTED OUT OF CENTRING (``goes_on`` True, nothing is
+        stopped) gets the outcome BEFORE the figure: "M31: re-centring after
+        the meridian flip: the mount refused the sync; centring is off, so
+        imaging goes on (152.3' off, reply 'e11')". The outcome is why the
+        run carries on, so it must survive the cut at 137 (FIXES4 H3); the
+        figure and the reply share one bracket after it, each left out when
+        there is nothing to say, and the bracket too when both are.
+
+        The figure and the reply live here and never in the ``StopTarget``
+        text, which is fixed words (the #618 contract, hub.py's
+        ``SOLVE_REASON_*`` comment): a panel's TARGET_STOP deferral makes
+        that text its ``last_error``, and D-03 matches two held passes only
+        on identical text.
+
+        NO COORDINATES (#850, the orchestrator brief's privacy ruling, #140,
+        #166). ``error_arcmin`` is the angular separation between the solve
+        and the target, which says nothing about where the rig is; the solve
+        itself and the mount's read-back stay out, because at the home
+        position the read-back is the pole and its RA follows local sidereal
+        time. The reply is quoted only when it is a short code
+        (`devices.base.quotable_sync_reply`, the one copy of the driver's
+        rule); any other reply is "an unrecognised reply", and an empty one
+        says nothing.
+
+        THE FIGURE COMES BEFORE THE REPLY, because humanizeLog cuts a line
+        longer than 140 characters to 137 and an ellipsis: with a long name
+        and the longest ``where`` the reply is what goes, never half a
+        number. No figure clause when the figure is unknown.
+
+        THE UI'S HUMANIZER (ui/src/lib/humanize.ts) replaces a line carrying
+        "plate" and "solve", or "guid" and "lost", with its own words, so
+        neither pair appears here or in any ``where``."""
+        refused = bool(result.get("sync_refused"))
+        what = ("the mount refused the sync" if refused
+                else "the mount did not confirm the sync")
+        reply = result.get("sync_reply")
+        quotable = quotable_sync_reply(reply) if isinstance(reply, str) else None
+        if quotable is not None:
+            reply_words = f"reply {quotable!r}"
+        elif reply:
+            reply_words = "an unrecognised reply"
+        else:
+            reply_words = ""
+        err = result.get("error_arcmin")
+        fig = (f"{float(err):.1f}'"
+               if isinstance(err, (int, float)) and not isinstance(err, bool)
+               and math.isfinite(err) else "")
+        if goes_on:
+            parts = [p for p in ((f"{fig} off" if fig else ""), reply_words)
+                     if p]
+            detail = f" ({', '.join(parts)})" if parts else ""
+            return (f"{target.name}: {where}: {what}"
+                    f"{cls._SYNC_NOT_TAKEN_GOES_ON}{detail}")
+        off = f", {fig} off target" if fig else ""
+        said_reply = f" ({reply_words})" if reply_words else ""
+        return f"{target.name}: {where}: {what}{off}{said_reply}"
+
+    def _stop_if_sync_not_taken(self, result, target: Target, where: str, *,
+                                centring_wanted: bool = True) -> None:
+        """Raise ``StopTarget`` when a centring result says the mount did not
+        take the sync (`_sync_not_taken`: refused or unverified, #850), and
+        do nothing otherwise.
+
+        A TARGET THAT OPTED OUT OF CENTRING IS NOT STOPPED
+        (``centring_wanted`` False): the warning is logged, saying imaging
+        goes on (`_SYNC_NOT_TAKEN_GOES_ON`) before the figure and the reply,
+        and nothing is raised. The flip's re-centre (`hub.meridian_flip`)
+        and the tracking recovery's (`_do_tracking_recovery`) run whatever
+        the target says, so their callers pass the same test the three mid-run
+        re-centres gate their whole re-centre on (``target.center`` and not
+        ``target.calibration``): such a target's field is what an uncentred
+        slew would have given, which is all it asked for, exactly as setup's
+        centring-off branch tolerates the same refusal.
+        The default is True, so a site that forgets the gate stops rather
+        than images a field it was asked to centre.
+
+        WHY A STOP AND NOT A HOLD OR A "CONTINUING". On 2026-10-07 three
+        centring syncs of 2.2 to 2.8 degrees "changed nothing": the hub
+        logged "solved & synced", the next goto was zero length, the next
+        solve showed the field unmoved, and the run imaged the wrong field
+        for hours (#852). The driver now reads every sync back and raises
+        ``SyncRefused`` when the mount did not take it, or ``SyncUnverified``
+        when nobody could tell, and ``hub.goto_and_center`` turns those into
+        ``sync_refused`` / ``sync_unverified`` when the solve is NOT within
+        tolerance of the target (one within tolerance is a centred field and
+        comes back as one). Another slew lands in the same place, so the only
+        honest answers are to stop this target or, for a mosaic panel that
+        requires centring, defer it (the caller's business, `_setup_target`).
+
+        A REFUSED SYNC IS NOT A FAILED SOLVE (#850, the orchestrator brief's
+        ruling 5): the solve worked, and the no-light hold
+        (`_hold_for_light`) waits for light that is already there. Every
+        caller asks this BEFORE any branch that reads a non-centred result as
+        "no light" or "continuing".
+
+        THE STOP IS FIXED WORDS, ``f"{where}: {const}"``: no target name (the
+        scheduler's skip line prefixes "<name>: skipped — "), no figure and
+        no reply, so a panel deferred on it twice reads as one rig-side
+        reason (D-03, `group_rules._held_pass_reason_code`). The figure and
+        the reply go in the one warning logged just before
+        (`_sync_not_taken_line`)."""
+        const = self._sync_not_taken(result)
+        if const is None:
+            return
+        line = self._sync_not_taken_line(result, target, where,
+                                         goes_on=not centring_wanted)
+        if not centring_wanted:
+            bus.log("warning", line, "sequence")
+            return
+        bus.log("warning", line, "sequence")
+        raise StopTarget(f"{where}: {const}")
+
     async def _centre_once(self, target: Target, rotation: float | None) -> dict:
         """One centring attempt — the SAME goto+solve+sync call
         `_setup_target` makes inline for its first attempt at a
@@ -8546,7 +8696,15 @@ class SequenceEngine:
             window = None
         said = False
         attempts = 0
+        # A RETRY WHOSE SYNC THE MOUNT DID NOT TAKE ENDS THE HOLD (#850, the
+        # orchestrator brief's ruling 5), refused or unverified alike
+        # (`_sync_not_taken`). The hub reports one with ``error_arcmin``
+        # None when it carried no solve to measure from, and the condition
+        # below would read that as "still no light" and keep retrying a
+        # solve that worked, under a sentence about waiting for light.
+        # Returned to the caller, which stops the target (`_setup_target`).
         while (not hop_centring["centered"]
+              and self._sync_not_taken(hop_centring) is None
               and hop_centring.get("error_arcmin") is None
               and attempts < self._NO_LIGHT_MAX_RETRIES
               and (window is None or time.time() < window["end_unix"])):
@@ -8700,6 +8858,11 @@ class SequenceEngine:
         # What this hop's centring said, for a group member's checks below.
         hop_centring: dict | None = None
         hop_miss: str | None = None
+        # A centring whose sync the mount refused or did not confirm, for a
+        # target that is not a panel requiring centring: it stops this target
+        # once the mount's bookkeeping below is done (#850,
+        # `_stop_if_sync_not_taken`).
+        sync_stop: dict | None = None
         # The sky angle as it stood when the goto returned (ruling 9, spec
         # 5.6 step 4), or None.
         hop_angle: dict | None = None
@@ -8819,7 +8982,21 @@ class SequenceEngine:
                     result = centring
                     via_recovery = True
                 hop_centring = result
-                if not result["centered"]:
+                # THE MOUNT DID NOT TAKE THE SYNC (#850: refused, or nobody
+                # could confirm it, `_sync_not_taken`), asked BEFORE every
+                # branch below, the recovery's copied ``centring`` included
+                # (it is the hub's own answer, ``sync_refused`` /
+                # ``sync_unverified`` and all). Not a failed solve, so never
+                # the no-light hold (the orchestrator brief's ruling 5), and not
+                # "continuing" either: another slew lands where this one did,
+                # and on 2026-10-07 the run imaged the wrong field for hours
+                # (#852). A panel that requires centring is deferred with the
+                # fixed sentence (D-03 matches two held passes on it); every
+                # other target stops, AFTER the idle and sky-angle
+                # bookkeeping below, so the park-hold watches the target the
+                # mount was left tracking (#165) and the solve keeps its row.
+                sync_reason = self._sync_not_taken(result)
+                if sync_reason is None and not result["centered"]:
                     # error_arcmin is None on the solve-failure and motion-fence
                     # abort paths (hub.goto_and_center degrades to a raw GoTo) —
                     # formatting None with :.1f would raise TypeError and kill the
@@ -8855,7 +9032,11 @@ class SequenceEngine:
                         result = await self._hold_for_light(
                             target, rotation, result)
                         hop_centring = result
-                        if not result["centered"]:
+                        # A retry that got light and a solve, and whose
+                        # sync the mount refused or did not confirm (#850),
+                        # is the stop below, not "still no light".
+                        sync_reason = self._sync_not_taken(result)
+                        if sync_reason is None and not result["centered"]:
                             bus.log(
                                 "warning",
                                 f"{target.name}: still no light after "
@@ -8865,6 +9046,18 @@ class SequenceEngine:
                     else:
                         bus.log("warning", f"{target.name}: centering {detail} — "
                                            "continuing", "sequence")
+                if sync_reason is not None:
+                    member = self._group_of(target)
+                    if member is not None and member.require_centred:
+                        # Deferred by `_group_hop_checks` below, kind
+                        # CENTRING, with the hub's fixed sentence as its
+                        # ``last_error`` (``SOLVE_REASON_SYNC_REFUSED`` or
+                        # ``SOLVE_REASON_SYNC_UNVERIFIED``): words with no
+                        # figure in them, so two passes that failed the same
+                        # way read as the same rig-side reason (D-03).
+                        hop_miss = sync_reason
+                    else:
+                        sync_stop = result
             else:
                 tel = self.hub.require("telescope")
                 if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
@@ -8979,6 +9172,13 @@ class SequenceEngine:
             self._record_sky_angle(target, since=hop_wall0,
                                    commanded=rotation if target.center else None,
                                    result=hop_centring, rec=hop_angle)
+            # THE SYNC NOT TAKEN STOPS THE TARGET HERE (#850), after the idle
+            # clock has learned what the mount is tracking and the solve has
+            # its row, before the focus sweep and the guider start that a
+            # field nobody could centre would waste.
+            if sync_stop is not None:
+                self._stop_if_sync_not_taken(sync_stop, target,
+                                             "centring at acquisition")
 
         # [group] THE HOP'S OWN CHECKS (#189 S2, spec 5.6 step 4). After the
         # idle watch has learned the mount is on this panel, so a deferral
@@ -15140,6 +15340,31 @@ class SequenceEngine:
         # this frame to exclude it from the per-frame overhead EMA — matching the
         # dither/AF blocks (P2-1).
         self._frame_had_event = True
+        # THE FLIP'S RE-CENTRE WAS REFUSED BY THE MOUNT, OR NOT CONFIRMED
+        # (#850): the hub's `meridian_flip` carries ``sync_refused`` /
+        # ``sync_unverified`` up from its
+        # `goto_and_center`, and this result used to be read for the pier
+        # side alone, so a field the solve had just measured off target was
+        # shot on. Asked AFTER every piece of flip bookkeeping above (the
+        # side learned, the latch, the pre-flip record, the cost), which is
+        # true whatever the centring said, and BEFORE the post-flip sweep,
+        # which a field nobody could centre would waste. The StopTarget goes
+        # to the frame loop's caller and the scheduler skips the target (a
+        # panel's visit is deferred); the flip-owed hold and the cloud hold's
+        # flip watch both let StopTarget through. The hub restarted guiding
+        # inside the flip, as a frame loop StopTarget always leaves it, and
+        # the next setup stands it down before its slew.
+        #
+        # A TARGET THAT OPTED OUT OF CENTRING IS NOT STOPPED: the hub's flip
+        # re-centres whatever ``target.center`` says, so the gate is the one
+        # the three mid-run re-centres take before re-centring at all. Such a
+        # target gets the warning and goes on imaging the uncentred field it
+        # asked for.
+        self._stop_if_sync_not_taken(
+            flip_result, target, "re-centring after the meridian flip",
+            centring_wanted=bool(
+                getattr(target, "center", False)
+                and not getattr(target, "calibration", False)))
         if "focuser" in self.hub.devices:
             if nothing_flipped:
                 # 7.5 MINUTES FOR NOTHING, 2026-09-08. The lead-time
@@ -15643,6 +15868,19 @@ class SequenceEngine:
             # is unknown, records nothing.
             self._record_sky_angle(target, since=t0, commanded=commanded,
                                    result=res, rec=self._sky_angle_now())
+            # A RE-CENTRE WHOSE SYNC THE MOUNT REFUSED OR DID NOT CONFIRM
+            # (#850) is no "failed
+            # re-centre" that leaves the mount where it was: the solve says
+            # the field is off, and every later slew lands in the same place.
+            # Raised here, in the `else` and so past the broad `except`
+            # above, out of `_setup_target` (the only caller, after its
+            # initial sweep and before the guider start), whose StopTarget
+            # the scheduler skips on. Nothing is left half done: the engine's
+            # guider was stood down before setup's slew, a sweep that stayed
+            # guided returned above before any re-centre, and the guider
+            # start this would have preceded simply does not happen.
+            self._stop_if_sync_not_taken(
+                res, target, "re-centring after the unguided sweep")
 
     async def _sky_closed_before_recovery(self, target, *, why: str,
                                           after_failure: bool = False) -> bool:
@@ -15948,6 +16186,22 @@ class SequenceEngine:
                 # failed re-centre.
                 self._record_sky_angle(target, since=t0, commanded=commanded,
                                        result=res, rec=self._sky_angle_now())
+                # A RE-CENTRE WHOSE SYNC THE MOUNT REFUSED OR DID NOT CONFIRM
+                # (#850): the field the
+                # star was lost on is still off, and resuming guiding there
+                # guides the wrong field (#852 imaged one for hours). Raised
+                # before the guider restart, from the frame loop
+                # (`_run_step`, unwrapped), so the scheduler skips the target
+                # (a panel's visit is deferred, `_visit_panel`). The guider
+                # is already inactive, which is how this was reached, so
+                # nothing is left running; the attempt counter is the next
+                # hop's to reset (`_hop`, #329).
+                self._stop_if_sync_not_taken(
+                    res, target,
+                    # Not "guiding was lost": the UI's humanizer rewrites any
+                    # line carrying "guid" and "lost" as "Guiding was lost -
+                    # recovering", and the operator would never read the stop.
+                    "re-centring after the guide star went missing")
 
         try:
             await g.start_guiding()
@@ -16148,6 +16402,18 @@ class SequenceEngine:
                 # failed re-centre.
                 self._record_sky_angle(target, since=t0, commanded=commanded,
                                        result=res, rec=self._sky_angle_now())
+                # A RE-CENTRE WHOSE SYNC THE MOUNT REFUSED OR DID NOT CONFIRM
+                # (#850): the hold
+                # exists because the field walked, and the solve says it is
+                # still off, so recalibrating and guiding there would hold
+                # the wrong field. Raised before the restart, out of the
+                # frame loop's detectors (`_maybe_hold_for_relocks`,
+                # `_maybe_hold_for_dither_failures`, both unwrapped), so the
+                # scheduler skips the target. Guiding was stopped and the
+                # calibration cleared above, which is the state the next
+                # target's setup expects to start from.
+                self._stop_if_sync_not_taken(
+                    res, target, "re-centring after the guided field walked")
         try:
             await g.start_guiding()
         except Exception as e:
@@ -17212,6 +17478,28 @@ class SequenceEngine:
                 f"{target.name}: recovered in {time.time() - _t0:.0f}s — the "
                 f"mount is tracking again {centred_clause}",
                 "sequence")
+        # THE RECOVERY'S RE-CENTRE WAS REFUSED BY THE MOUNT, OR NOT
+        # CONFIRMED (#850), for a
+        # caller that does not act on the centring itself: the flip
+        # (`_maybe_meridian_flip`) and the frame loop's tracking enforcement
+        # (`_enforce_tracking`), both of which already raise StopTarget on
+        # their own failures and hand it to the scheduler. Raised HERE and
+        # not inside `_do_tracking_recovery`, whose broad catch above would
+        # turn it into "the recovery failed" and the caller's re-raise of the
+        # original tracking error. The mount is measurably tracking and the
+        # latch is spent, as for any finished recovery. A caller that passes
+        # ``centring`` reads it (`_sync_not_taken`) and decides: target
+        # setup stops or defers; a target with centring off asked for no
+        # centring, so its field is what an uncentred slew would have given.
+        # The same holds here: the recovery re-centres whatever
+        # ``target.center`` says, so a target that opted out (the gate the
+        # three mid-run re-centres take) gets the warning and is not stopped.
+        if centring is None:
+            self._stop_if_sync_not_taken(
+                found, target, "re-centring after the tracking recovery",
+                centring_wanted=bool(
+                    getattr(target, "center", False)
+                    and not getattr(target, "calibration", False)))
         return True
 
     async def _do_tracking_recovery(self, tel, target: Target, *,
@@ -17295,7 +17583,14 @@ class SequenceEngine:
         centred = bool(result.get("centered"))
         centring = dict(result)
         centring["centered"] = centred
-        if not centred and report_centring:
+        # A SYNC NOT TAKEN (refused or unverified, `_sync_not_taken`) IS NOT
+        # REPORTED HERE AS "CONTINUING" (#850): the
+        # caller that does not take the result has it stopped by
+        # `_recover_from_tracking_refusal`, outside this sequence's broad
+        # catch, in the stop's own words; the caller that takes it
+        # (`_setup_target`) stops or defers on it itself.
+        if (not centred and report_centring
+                and self._sync_not_taken(centring) is None):
             err = result.get("error_arcmin")
             bus.log("warning",
                     f"{target.name}: re-centring after the recovery "

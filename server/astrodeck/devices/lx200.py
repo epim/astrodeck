@@ -9,9 +9,19 @@ one-byte ack ``1`` (set/unpark commands) and the fire-and-forget motion class
 space (``:SC07/19/26#``). ``:SMGE`` longitude is W-positive — AstroDeck stores
 East-positive, so the sign is negated here. ``e14#`` is the mount's
 "refused in current state" reply (parked).
+
+``:CM#`` (sync) answers ``N/A#`` when the AM5 takes it (bench, 2026-10-08,
+fw 1.8.8: every accepted sync away from the pole, 0.5 to 5 deg offsets). At
+the HOME position (tube at the pole) it answered ``e11#`` and took nothing,
+sync-to-self included. NEITHER REPLY IS PROOF: once, at home, a 5 deg sync
+answered ``N/A`` and the reported position did not move, so the driver reads
+the position back after every sync and that read-back is the test (#850).
+``is_error_reply`` below only recognises the ``eNN`` refusal family; it
+assigns no meaning to any code.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -19,6 +29,25 @@ from datetime import datetime
 ACK_OK = "1"
 #: The refusal reply (stripped of '#'): motion/config refused in current state.
 REFUSED = "e14"
+#: The AM5's ``:CM#`` acceptance (stripped of '#'), seen on every accepted sync
+#: on the bench 2026-10-08. A HINT, not a proof: see the module docstring.
+SYNC_ACCEPTED = "N/A"
+
+_ERROR_REPLY = re.compile(r"[eE]\d+")
+
+
+def is_error_reply(reply: str | None) -> bool:
+    """True for the mount's ``eNN`` refusal family (``e11``, ``E14#``, ...).
+
+    Pure shape match on the reply stripped of ``#`` and whitespace. It says
+    "the mount said no", nothing about why: ZWO publishes no e-code table, and
+    the meanings this project has are the few seen on the wire (see
+    docs/hardware/zwo-am5-lx200-protocol.md). Everything that is NOT this shape
+    (``N/A``, an empty reply, some other firmware's words) is NOT a refusal by
+    this test, and a caller that needs to know whether the command worked must
+    measure it (``ZwoAm5Telescope.sync`` reads the position back, #850)."""
+    return _ERROR_REPLY.fullmatch(
+        (reply or "").strip().rstrip("#").strip()) is not None
 
 
 def build(cmd: str) -> bytes:

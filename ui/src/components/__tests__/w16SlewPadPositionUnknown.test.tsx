@@ -57,6 +57,11 @@
 //     instead of `enqueueToast`. "x NINA: a tap is a relative goto from the
 //     believed position, so it is refused: the refusal did not say why:
 //     Plate-solve failed - check focus/exposure, or solve manually."
+//   h1m1_reason_goto_back -- (lib/slewController.ts) POSITION_UNKNOWN_STEPS_REASON
+//     back to the round-3 "Go to a target away from the pole and solve and sync
+//     there, ..." (#850). 12/13: "x NINA: a tap is a relative goto from
+//     the believed position, so it is refused: the refusal advises a goto
+//     (/go to a target/i): Steps and nudges are measured ...".
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -317,11 +322,18 @@ await testAsync("NINA: a tap is a relative goto from the believed position, so i
   // The WHOLE sentence, not a prefix: `showToast` runs a message through
   // `humanizeLog`, which truncates past 140 characters and rewrites anything
   // containing both "plate" and "solve" to "Plate-solve failed - check focus",
-  // the opposite of what the refusal says. This reason has both problems.
+  // the opposite of what the refusal says. This reason runs past 140
+  // characters; since #850 it no longer holds "plate", but the second assert
+  // stays so a reword that brings the word back is caught here too.
   assert(toasts().includes(POSITION_UNKNOWN_STEPS_REASON),
     `the refusal is not the shared reason, whole: ${toasts()}`);
   assert(!/Plate-solve failed/.test(toasts()),
     "the refusal was rewritten into a plate-solve failure by the toast humanizer");
+  // #850: the pad refused a relative goto because the position is unknown, so
+  // its reason must not then advise a goto or a slew as the way out.
+  for (const re of [/go to a target/i, /target away from the pole/i, /goto/i, /go-to/i, /slew/i]) {
+    assert(!re.test(toasts()), `the refusal advises a goto (${re}): ${toasts()}`);
+  }
 });
 
 await testAsync("NINA: with the position known the same tap is the goto it always was (the control)", async () => {

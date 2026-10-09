@@ -24,7 +24,7 @@ _TARGET_DEC = 10.0
 def _fixed_solver(dec_offset_deg: float):
     """A solve_and_sync that always reports the same place — what an honest
     solver on an inert mount produces."""
-    async def solve_and_sync(exposure_s):
+    async def solve_and_sync(exposure_s, refusal_level: str = "warning"):
         return {"ra_hours": _TARGET_RA, "dec_deg": _TARGET_DEC + dec_offset_deg}
     return solve_and_sync
 
@@ -70,7 +70,7 @@ async def test_a_converging_center_never_carries_the_flag(sim_hub):
 def _nan_solver():
     """A solve_and_sync that reports a non-finite coordinate — the shape a
     garbled solve result takes (#324 follow-on, WP-45)."""
-    async def solve_and_sync(exposure_s):
+    async def solve_and_sync(exposure_s, refusal_level: str = "warning"):
         return {"ra_hours": float("nan"), "dec_deg": _TARGET_DEC}
     return solve_and_sync
 

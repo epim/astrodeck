@@ -5,6 +5,7 @@ framework integration. All coordinates fictional (site privacy)."""
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 
 import pytest
@@ -99,6 +100,77 @@ class FakeLink:
         self.closed = True
         self._open = False
         self._abandoned = False
+
+
+from astrodeck.devices import lx200 as _lx200  # noqa: E402
+
+
+class _Am5Model(FakeLink):
+    """A ``FakeLink`` that keeps a POSITION, for the sync read-back (#850).
+
+    ``:Sr#``/``:Sd#`` set a pending target (parsed with the real codec) and
+    ack ``1``. ``:CM#`` replies ``cm_reply`` and, when ``moves`` is true,
+    moves the reported position to the pending target (or to ``move_to`` when
+    given, to model a mount that lands a rounding step away). With
+    ``late_reads`` > 0 the move shows only after that many position reads
+    (``:GR#`` counts one read), which is the unmeasured update latency.
+    ``:GR#``/``:GD#`` report the current position formatted by the real codec.
+
+    Everything else is the plain script, so ``_connect_script()`` still drives
+    the handshake, whose ``:GD#`` reads this model's starting position.
+    Coordinates are fictional."""
+
+    def __init__(self, script: dict | None = None, *,
+                 pos: tuple[float, float] = (9.5, 20.0),
+                 cm_reply: str = "N/A", moves: bool = True,
+                 move_to: tuple[float, float] | None = None,
+                 late_reads: int = 0):
+        super().__init__(script)
+        self.pos = pos
+        self.cm_reply = cm_reply
+        self.moves = moves
+        self.move_to = move_to
+        self.late_reads = late_reads
+        self.pending: list[float | None] = [None, None]
+        self._staged: tuple[float, float] | None = None
+        self._staged_left = 0
+        self.script["CM"] = self._cm
+        self.script["GR"] = self._gr
+        self.script["GD"] = self._gd
+
+    def _exchange(self, cmd: str, reply: str):
+        # The set-target commands carry the value in the verb, so they cannot
+        # be scripted by key ahead of time; route every one to the model.
+        if cmd[:2] in ("Sr", "Sd") and cmd not in self.script:
+            self.script[cmd] = self._set_pending
+        return super()._exchange(cmd, reply)
+
+    def _set_pending(self, cmd: str) -> str:
+        if cmd.startswith("Sr"):
+            self.pending[0] = _lx200.parse_ra(cmd[2:])
+        else:
+            self.pending[1] = _lx200.parse_dec(cmd[2:])
+        return "1"
+
+    def _cm(self, cmd: str) -> str:
+        if self.moves:
+            dest = self.move_to or (self.pending[0], self.pending[1])
+            if self.late_reads:
+                self._staged, self._staged_left = dest, self.late_reads
+            else:
+                self.pos = dest
+        return self.cm_reply
+
+    def _gr(self, cmd: str) -> str:
+        if self._staged is not None:
+            if self._staged_left == 0:
+                self.pos, self._staged = self._staged, None
+            else:
+                self._staged_left -= 1
+        return _lx200.format_ra(self.pos[0])
+
+    def _gd(self, cmd: str) -> str:
+        return _lx200.format_dec(self.pos[1])
 
 
 # ------------------------------------------------------------- link double
@@ -593,11 +665,15 @@ async def test_slew_while_parked_is_honest(fixed_env):
 
 
 async def test_sync_sets_target_then_cm(fixed_env):
-    s = _connect_script()
-    s["Sr10:00:00"] = "1"; s["Sd+40*00:00"] = "1"; s["CM"] = "Synced"
-    fl, tel = await _connected_tel(s)
+    """The order on the wire: target RA, target Dec, ``:CM#``, then the
+    read-back that proves it (#850). The double accepts AND moves, as the AM5
+    did for every sync away from the pole on the 2026-10-08 bench."""
+    fl = _Am5Model(_connect_script(), pos=(9.5, 20.0))
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    fl.sent.clear()
     await tel.sync(10.0, 40.0)
-    assert fl.sent == ["Sr10:00:00", "Sd+40*00:00", "CM"]
+    assert fl.sent == ["Sr10:00:00", "Sd+40*00:00", "CM", "GR", "GD"]
 
 
 async def test_move_axis_rate_map_and_stop(fixed_env):
@@ -1291,3 +1367,1004 @@ async def test_goto_accepted_reply_is_unchanged(fixed_env, monkeypatch):
     fl, tel = await _connected_tel(s)
     await tel.slew(11.0, 45.0)
     assert fl.sent[:3] == ["Sr11:00:00", "Sd+45*00:00", "MS"]
+
+
+# ------------------------------------------- the sync is verified, not trusted
+#
+# #850. On 2026-10-07 three centring syncs of 2.2 to 2.8 deg "changed nothing":
+# the driver treated any ``:CM#`` reply but ``e14`` as success and never read
+# the position back, and the run imaged the wrong field for hours (#852). On
+# the bench on 2026-10-08 the AM5 answered ``N/A`` and moved to the synced
+# coordinates away from the pole; at the home position every sync was refused:
+# all but one answered ``e11`` (sync-to-self included), and one answered
+# ``N/A`` and did not move. Every coordinate below is made up.
+
+from astrodeck.devices.base import SyncRefused, SyncUnverified  # noqa: E402
+import astrodeck.events as _events_mod  # noqa: E402
+
+#: The made-up sync target every case below asks for, and its wire spelling.
+_T_RA, _T_DEC = 10.0, 40.0
+_T_CMDS = ["Sr10:00:00", "Sd+40*00:00", "CM"]
+
+
+async def _model_tel(**kw) -> tuple[_Am5Model, am5.ZwoAm5Telescope]:
+    script = kw.pop("script", None) or _connect_script()
+    fl = _Am5Model(script, **kw)
+    tel = am5.ZwoAm5Telescope(fl, name="Mount")
+    await tel.connect()
+    fl.sent.clear()
+    return fl, tel
+
+
+def _bus_lines(monkeypatch) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+    monkeypatch.setattr(_events_mod.bus, "log",
+                        lambda level, message, source="hub", **_kw:
+                        lines.append((level, message)))
+    return lines
+
+
+@pytest.fixture
+def fast_readback(monkeypatch):
+    monkeypatch.setattr(am5, "SYNC_READBACK_RETRY_S", 0.0)
+
+
+@pytest.mark.parametrize("reply, expect", [
+    ("e11", True), ("E14", True), ("e6#", True), (" e11# ", True),
+    ("e123", True),
+    ("N/A", False), ("N/A#", False), ("", False), (None, False),
+    ("e", False), ("e11x", False), ("1e1", False), ("1", False),
+    ("Coordinates matched", False),
+])
+def test_is_error_reply_matches_only_the_enn_family(reply, expect):
+    """The shape the driver calls a refusal. Anything else is judged by the
+    read-back, never by the word (ruling 2: no "accept only N/A")."""
+    assert _lx200.is_error_reply(reply) is expect, reply
+
+
+async def test_an_accepted_sync_that_moves_clears_the_latch(fixed_env):
+    """``N/A`` and the report moves to the target: the sync is taken, and only
+    then is the reset latch cleared. The handshake read the pole (``pos`` dec
+    +90), so the mount started out not knowing where it pointed."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0))
+    assert tel.position_known is False, "precondition: the pole read latched"
+
+    await tel.sync(_T_RA, _T_DEC)
+
+    assert fl.sent == _T_CMDS + ["GR", "GD"], fl.sent
+    assert tel.position_known is True, (
+        "a sync the read-back proved must clear the latch")
+
+
+async def test_e11_at_home_is_a_sync_refused_with_its_residual(fixed_env):
+    """The bench: at the home position every sync was refused, all but one
+    with ``e11``, and nothing moved. A refusal, with the separation between
+    what was asked and
+    what the mount still reports (the pole: 50 deg from Dec +40), the latch
+    left alone, and the sync not re-sent."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0), cm_reply="e11", moves=False)
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert e.code == "e11", e.code
+    assert e.residual_deg is not None and abs(e.residual_deg - 50.0) < 0.01, (
+        f"the residual must be the 50 deg from the pole, got {e.residual_deg}")
+    assert e.reason == am5.SYNC_E11_ELSEWHERE_REASON, (
+        f"50 deg off the sky must get the home-by-eye words: {e.reason!r}")
+    assert tel.position_known is False, "a refused sync established nothing"
+    assert fl.sent.count("CM") == 1, f"the sync was re-sent: {fl.sent}"
+    assert fl.sent.count("GR") == 1, (
+        f"a refusal reads back once, best effort, not with retries: {fl.sent}")
+
+
+async def test_e11_refuses_even_when_the_read_back_agrees(fixed_env):
+    """Sync-to-self at home answered ``e11`` on the bench. The position then
+    matches the request (nothing had to move), and it is still a refusal: an
+    ``eNN`` reply is never overruled by a read-back."""
+    fl, tel = await _model_tel(pos=(_T_RA, _T_DEC), cm_reply="e11",
+                               moves=False)
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert exc.value.code == "e11"
+    assert exc.value.residual_deg is not None and exc.value.residual_deg < 0.01
+    assert exc.value.reason == am5.SYNC_E11_AT_HOME_REASON, exc.value.reason
+
+
+async def test_an_e11_whose_read_back_fails_is_still_a_sync_refused(fixed_env):
+    """Best effort means exactly that: the refusal is what we came to report,
+    and a dead read after it leaves the residual unknown, nothing more."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0), cm_reply="e11", moves=False)
+    fl.script["GR"] = _silent_read()
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert exc.value.code == "e11" and exc.value.residual_deg is None
+    assert exc.value.reason == am5.SYNC_E11_AT_HOME_REASON, (
+        f"no read-back must take the Trust-first words: {exc.value.reason!r}")
+
+
+async def test_an_accept_that_does_not_move_is_a_sync_refused(
+        fixed_env, fast_readback):
+    """The bench's one ``N/A`` at home that moved nothing, and the shape of
+    2026-10-07: the reply says yes, the read-back says no. Re-read twice more
+    in case the report is merely late, then refuse with the reply verbatim and
+    the measured offset."""
+    start = (9.5, 20.0)
+    fl, tel = await _model_tel(pos=start, moves=False)
+    offset = am5.coords.angular_sep_deg(_T_RA, _T_DEC, *start)
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert e.code == "N/A", e.code
+    assert abs(e.residual_deg - offset) < 0.01, (e.residual_deg, offset)
+    assert fl.sent.count("GR") == 1 + am5.SYNC_READBACK_RETRIES, fl.sent
+    assert fl.sent.count("CM") == 1
+
+
+async def test_a_small_unmoved_sync_is_still_caught(fixed_env, fast_readback):
+    """The 2026-10-07 syncs were 2.2 to 2.8 deg. Half a degree, the smallest
+    bench offset, is ten times ``SYNC_VERIFY_DEG`` and must not pass."""
+    fl, tel = await _model_tel(pos=(_T_RA, _T_DEC - 0.5), moves=False)
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert abs(exc.value.residual_deg - 0.5) < 0.01, exc.value.residual_deg
+
+
+async def test_a_late_update_on_the_second_read_is_accepted(
+        fixed_env, fast_readback):
+    """How soon the report moves is unmeasured (the bench read at 1 s). A
+    mount whose first read is stale and whose second is right took the sync."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0), late_reads=1)
+
+    await tel.sync(_T_RA, _T_DEC)
+
+    assert fl.sent.count("GR") == 2, fl.sent
+    assert tel.position_known is True
+
+
+async def test_the_read_back_waits_between_tries(fixed_env, monkeypatch):
+    """The retries are spaced, not back to back: three reads in the same
+    millisecond would not give a late report any time to arrive."""
+    slept: list[float] = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+    monkeypatch.setattr(am5.asyncio, "sleep", fake_sleep)
+    fl, tel = await _model_tel(pos=(9.5, 20.0), moves=False)
+
+    with pytest.raises(SyncRefused):
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert slept == [am5.SYNC_READBACK_RETRY_S] * am5.SYNC_READBACK_RETRIES
+
+
+@pytest.mark.parametrize("gps, words", [
+    ("2", "parked"), ("0", "refused in current state"),
+])
+async def test_e14_is_a_sync_refused_with_the_parked_words(fixed_env, gps,
+                                                           words):
+    """``e14`` keeps the honest parked probe, and is now a ``SyncRefused``,
+    never a bare ``DeviceError`` (ruling 3)."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0), cm_reply="e14", moves=False)
+    fl.script["Gps"] = gps
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert exc.value.code == "e14"
+    assert words in str(exc.value) and words in exc.value.reason, exc.value
+    if gps != "2":
+        assert "parked" not in str(exc.value)
+    assert tel.position_known is False
+
+
+async def test_an_unknown_error_code_is_quoted_without_a_meaning(fixed_env):
+    fl, tel = await _model_tel(pos=(9.5, 20.0), cm_reply="e3", moves=False)
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert exc.value.code == "e3"
+    assert "no meaning is known" in exc.value.reason, exc.value.reason
+
+
+async def test_every_read_back_failing_is_unverified_not_refused(
+        fixed_env, fast_readback):
+    """F1.1. The sync went out and the mount said ``N/A``; every read-back
+    failed, the retries included. That is ``SyncUnverified``, carrying the
+    reply and fixed words: calling it a refusal would stop a target the mount
+    may well have synced, and a plain ``DeviceError`` sends the hub down its
+    "plate solve failed" arm. The latch stays where it was."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0))
+    fl.script["GR"] = _silent_read()
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert not isinstance(e, SyncRefused), e
+    assert e.code == "N/A" and e.residual_deg is None, (e.code, e.residual_deg)
+    assert e.reason == am5.SYNC_UNVERIFIED_READBACK, e.reason
+    assert fl.sent.count("GR") == 1 + am5.SYNC_READBACK_RETRIES, (
+        f"a failed read is retried like a mismatch: {fl.sent}")
+    assert tel.position_known is False, (
+        "an unverified sync must not clear the latch")
+
+
+async def test_cm_failing_twice_on_a_live_link_is_unverified(fixed_env):
+    """F1.3. Nothing is known about a sync whose ``:CM#`` got no answer, so
+    it is not a refusal. The target is set again and the sync sent once more;
+    when that fails too it is ``SyncUnverified`` with no reply. The port stays
+    open here, so ``_request`` never reopens and this case cannot tell
+    ``retry=False`` from ``retry=True`` on the second ``:CM#``: the case that
+    can is ``test_cm_dropping_the_link_twice_never_sends_a_third_cm``."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0))
+    fl.script["CM"] = _silent_read()
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert e.code == "" and e.reason == am5.SYNC_UNVERIFIED_LINK_DURING, e
+    assert fl.sent == _T_CMDS + _T_CMDS, fl.sent
+    assert tel.position_known is False
+
+
+async def test_an_unparseable_read_back_is_not_a_refusal_and_quotes_nothing(
+        fixed_env):
+    fl, tel = await _model_tel(pos=(7.0, 90.0))
+    fl.script["GD"] = "+40*0X:00"
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert "unreadable answer" in str(exc.value), exc.value
+    assert "0X" not in str(exc.value) and exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+
+
+async def test_a_non_finite_read_back_is_not_a_refusal(fixed_env, monkeypatch):
+    """``angular_sep_deg`` refuses a NaN (#324) and quotes all four
+    coordinates in its text; that text must not ride out on this error."""
+    fl, tel = await _model_tel(pos=(9.5, 20.0))
+
+    async def nan_position():
+        return (float("nan"), 20.0)
+    monkeypatch.setattr(tel, "get_position", nan_position)
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert "not finite" in str(exc.value), exc.value
+    assert exc.value.__cause__ is None and "20" not in str(exc.value)
+    assert exc.value.__context__ is None
+
+
+async def test_an_unexpected_reply_that_moves_is_accepted_and_recorded(
+        fixed_env, monkeypatch):
+    """A firmware that accepts with some other word: the read-back says it
+    worked, so it is taken, and the word goes in the log once so the next
+    firmware's acceptance is known, when it has the safe short shape (F1.5).
+    A long or punctuated reply is taken all the same, and recorded only as
+    "an unrecognised reply"."""
+    lines = _bus_lines(monkeypatch)
+    fl, tel = await _model_tel(pos=(7.0, 90.0), cm_reply="Matched")
+
+    await tel.sync(_T_RA, _T_DEC)
+
+    said = [(lvl, m) for (lvl, m) in lines if "'Matched'" in m]
+    assert len(said) == 1 and said[0][0] == "info", lines
+    assert tel.position_known is True
+
+    lines.clear()
+    fl, tel = await _model_tel(pos=(7.0, 90.0),
+                               cm_reply="Coordinates     matched.")
+    await tel.sync(_T_RA, _T_DEC)
+    said = [(lvl, m) for (lvl, m) in lines if "took a sync" in m]
+    assert len(said) == 1 and "an unrecognised reply" in said[0][1], lines
+    assert not any("matched" in m for (_l, m) in lines), lines
+    assert tel.position_known is True
+
+
+async def test_the_usual_n_a_writes_no_reply_line(fixed_env, monkeypatch):
+    """The control: the known acceptance is not worth a line per sync."""
+    lines = _bus_lines(monkeypatch)
+    fl, tel = await _model_tel(pos=(9.5, 20.0))
+
+    await tel.sync(_T_RA, _T_DEC)
+
+    assert [m for (_l, m) in lines if "reply" in m] == [], lines
+
+
+async def test_ra_wrap_is_measured_as_an_angle(fixed_env):
+    """Asked for 23:59:59, the report lands at 00:00:01: two seconds of time,
+    not 24 hours. A per-axis difference would call this a 360 deg refusal."""
+    t_ra = 23 + 59 / 60 + 59 / 3600
+    fl, tel = await _model_tel(pos=(9.5, 20.0),
+                               move_to=(1 / 3600, 20.0))
+
+    await tel.sync(t_ra, 20.0)
+
+    assert fl.sent[:2] == ["Sr23:59:59", "Sd+20*00:00"]
+    assert tel.position_known is True
+
+
+async def test_near_the_pole_twelve_hours_of_ra_can_be_within_tolerance(
+        fixed_env):
+    """At Dec +89.99 a report 12 h away in RA is 0.015 deg away on the sky
+    (across the pole). The test is the separation, never the raw RA."""
+    fl, tel = await _model_tel(pos=(9.5, 20.0),
+                               move_to=(15.0, 89.995))
+
+    await tel.sync(3.0, 89.99)
+
+    assert tel.position_known is True
+
+
+async def test_no_refusal_text_carries_the_read_back_coordinates(
+        fixed_env, fast_readback):
+    """Ruling 8. At home the read-back is the pole and its RA follows the local
+    sidereal time: both are site oracles (#140, #166). Neither the message nor
+    the reason may carry them, in any spelling the codec produces; a
+    separation in degrees is allowed."""
+    home = (7 + 23 / 60 + 41 / 3600, 90.0)
+    away = (8 + 47 / 60 + 13 / 3600, 33 + 17 / 60 + 29 / 3600)
+    for pos, reply in ((home, "e11"), (home, "N/A"), (away, "N/A"),
+                       (away, "e14")):
+        fl, tel = await _model_tel(pos=pos, cm_reply=reply, moves=False)
+        fl.script["Gps"] = "0"
+        with pytest.raises(SyncRefused) as exc:
+            await tel.sync(_T_RA, _T_DEC)
+        ra_s, dec_s = _lx200.format_ra(pos[0]), _lx200.format_dec(pos[1])
+        for text in (str(exc.value), exc.value.reason):
+            for needle in (ra_s, ra_s[:5], dec_s, dec_s[:6], dec_s[1:6],
+                           f"{pos[0]:.2f}", f"{pos[1]:.2f}"):
+                assert needle not in text, (
+                    f"{reply} at a made-up position put {needle!r} in {text!r}")
+
+
+# ------------------------------------------- #850 fix round 2: the driver half
+#
+# Every case below was shown RED under a named mutant of the driver, run from
+# a byte backup and restored by sha256 (the report lists each pairing).
+
+
+def _humanizer_rewrites(text: str) -> bool:
+    """True when the UI's ``humanizeLog`` (ui/src/lib/humanize.ts) would
+    replace this line with its own sentence, so the operator never reads ours.
+    The four rules, in its order, as lower-cased substring tests."""
+    m = text.lower()
+    return (("camera" in m and any(k in m for k in
+                                   ("not responding", "timeout", "disconnect")))
+            or ("nina" in m and any(k in m for k in ("5", "http", "error")))
+            or ("plate" in m and "solve" in m)
+            or ("guid" in m and "lost" in m))
+
+
+def test_the_humanizer_mirror_fires_on_each_rule():
+    """The helper is only worth its assertions if it can say True."""
+    for line in ("camera timeout", "NINA http 500", "plate solve failed",
+                 "guiding lost"):
+        assert _humanizer_rewrites(line), line
+    assert not _humanizer_rewrites("the mount did not confirm the sync")
+
+
+#: A half-received ``:GR#`` and ``:GD#``, in the wording serial_link used
+#: before this round. The driver must not repeat transport words, whatever
+#: they hold. Made-up values.
+_PARTIAL = {"GR": "07:23:4", "GD": "+89*59:"}
+
+
+def _chain_texts(e: BaseException) -> list[str]:
+    out = [str(e), repr(e), str(getattr(e, "reason", ""))]
+    for link in (e.__cause__, e.__context__):
+        if link is not None:
+            out += [str(link), repr(link)]
+    return out
+
+
+@pytest.mark.parametrize("cmd", ["GR", "GD"])
+async def test_a_partial_coordinate_timeout_is_unverified_and_quotes_nothing(
+        fixed_env, fast_readback, monkeypatch, cmd):
+    """F1.1 + F1.2. Every read-back times out part-way through a coordinate.
+    The sync is ``SyncUnverified``, and the half coordinate is in none of its
+    texts, its cause or its context, nor in any log line. Mutants:
+    ``m_readback_interpolates_exc`` (the transport words appended to the
+    message) and ``m_raise_inside_handler`` (the raise moved into the
+    ``except``, which chains the transport error as ``__context__``)."""
+    lines = _bus_lines(monkeypatch)
+    fl, tel = await _model_tel(pos=(7.0, 90.0))
+    partial = _PARTIAL[cmd]
+
+    def _half(_cmd):
+        raise LinkError(f"timeout waiting for '#' on COM3 (got "
+                        f"{partial.encode()!r})")
+    fl.script[cmd] = _half
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert e.code == "N/A" and e.residual_deg is None
+    assert e.__suppress_context__ is True, "raised without 'from None'"
+    for text in _chain_texts(e) + [m for (_l, m) in lines]:
+        for needle in (partial, partial[:5], "got b"):
+            assert needle not in text, f"{needle!r} leaked into {text!r}"
+    assert tel.position_known is False
+
+
+async def test_a_transport_failure_then_a_good_read_is_taken(
+        fixed_env, fast_readback):
+    """F1.1. The first read goes out milliseconds after the reply, which the
+    bench never tried. One timeout there followed by a read that agrees is a
+    sync the mount took. Mutant ``m_readback_fail_raises_at_once`` (a failed
+    read raises instead of retrying)."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0))
+    good = fl.script["GR"]
+    calls = {"n": 0}
+
+    def _once_silent(c):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LinkError("timeout waiting for '#' on COM3 (got 0 bytes)")
+        return good(c)
+    fl.script["GR"] = _once_silent
+
+    await tel.sync(_T_RA, _T_DEC)
+
+    assert fl.sent.count("GR") == 2, fl.sent
+    assert tel.position_known is True
+
+
+async def test_a_far_read_then_a_failed_last_read_is_unverified(
+        fixed_env, fast_readback):
+    """F1.1: only the LAST read decides. Two reads that disagree, then a read
+    that fails: nobody knows what the mount did after that, so it is
+    unverified, not refused. Mutant ``m_any_far_read_refuses`` (the verdict
+    keyed on "some read disagreed" instead of the last read)."""
+    fl, tel = await _model_tel(pos=(7.0, 90.0), moves=False)
+    good = fl.script["GR"]
+    calls = {"n": 0}
+
+    def _third_silent(c):
+        calls["n"] += 1
+        if calls["n"] == 1 + am5.SYNC_READBACK_RETRIES:
+            raise LinkError("timeout waiting for '#' on COM3 (got 0 bytes)")
+        return good(c)
+    fl.script["GR"] = _third_silent
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert not isinstance(exc.value, SyncRefused)
+    assert exc.value.residual_deg is None
+    assert tel.position_known is False
+
+
+async def test_a_failed_read_then_a_far_last_read_is_refused(
+        fixed_env, fast_readback):
+    """The mirror: a failed read early, and the last read succeeds and still
+    disagrees. The mount answered, and its answer says it did not move."""
+    fl, tel = await _model_tel(pos=(9.5, 20.0), moves=False)
+    good = fl.script["GR"]
+    calls = {"n": 0}
+
+    def _first_silent(c):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LinkError("timeout waiting for '#' on COM3 (got 0 bytes)")
+        return good(c)
+    fl.script["GR"] = _first_silent
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert exc.value.code == "N/A" and exc.value.residual_deg > 1.0
+
+
+class _LosesTargetOnDrop(_Am5Model):
+    """The review's probe: ``:CM#`` drops the link, and the mount restarts and
+    loses its pending target. A ``:CM#`` with no target set does not move the
+    report (the mount syncs to whatever it holds, here nothing useful)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.cm_calls = 0
+
+    def _cm(self, cmd: str) -> str:
+        self.cm_calls += 1
+        if self.cm_calls == 1:
+            self.pending = [None, None]
+            self.drop()
+            raise LinkError("the link was dropped after a stalled exchange")
+        if None in self.pending:
+            return self.cm_reply
+        return super()._cm(cmd)
+
+
+async def test_cm_dropping_the_link_resends_the_target_before_the_sync(
+        fixed_env, fast_readback):
+    """F1.3. ``:CM#`` drops the link and the mount loses its target. The
+    driver must not reopen and resend a bare ``:CM#``: it sets the target
+    again (the reopen happens there) and only then syncs. Mutant
+    ``m_cm_auto_retry`` (``:CM#`` sent with the default ``retry=True``)."""
+    fl = _LosesTargetOnDrop(_connect_script(), pos=(7.0, 90.0))
+    tel = am5.ZwoAm5Telescope(fl, name="Mount")
+    await tel.connect()
+    handshake = list(fl.sent)
+    fl.sent.clear()
+    assert tel.position_known is False, "precondition: the pole read latched"
+
+    await tel.sync(_T_RA, _T_DEC)
+
+    assert fl.sent == _T_CMDS + handshake + _T_CMDS + ["GR", "GD"], fl.sent
+    assert tel.position_known is True, "the re-sent sync was taken and proved"
+
+
+async def test_cm_failing_once_on_a_live_link_is_retried_with_the_target(
+        fixed_env, fast_readback):
+    """The reply of the first ``:CM#`` is lost but the port is fine: target
+    and sync again, then the normal verdict."""
+    fl, tel = await _model_tel(pos=(9.5, 20.0))
+    model_cm = fl.script["CM"]
+    calls = {"n": 0}
+
+    def _first_lost(c):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LinkError("timeout waiting for '#' on COM3 (got 0 bytes)")
+        return model_cm(c)
+    fl.script["CM"] = _first_lost
+
+    await tel.sync(_T_RA, _T_DEC)
+
+    assert fl.sent == _T_CMDS + _T_CMDS + ["GR", "GD"], fl.sent
+    assert tel.position_known is True
+
+
+# ------------------------------------------- #850 fix round 3: the driver half
+#
+# Each case below was shown RED under the named mutant of the driver, run from
+# a byte backup and restored by sha256.
+
+class _DropsOnEveryCm(_Am5Model):
+    """Every ``:CM#`` drops the port (``is_open`` False afterwards) and the
+    mount loses its pending target, so a reopen that resent ``:CM#`` bare
+    would sync a restarted mount to whatever it holds."""
+
+    def _cm(self, cmd: str) -> str:
+        self.pending = [None, None]
+        self.drop()
+        raise LinkError("the link was dropped after a stalled exchange")
+
+
+async def test_cm_dropping_the_link_twice_never_sends_a_third_cm(
+        fixed_env, fast_readback):
+    """G1.1 (review D4c). The first ``:CM#`` drops the link: the target is set
+    again (the reopen happens there) and ``:CM#`` goes once more. That one
+    drops the link too, and the driver stops: ``SyncUnverified`` with no
+    reply, and no reopen followed by a third, bare ``:CM#``. Mutant
+    ``second_cm_retry_true`` (the second ``:CM#`` sent with the default
+    ``retry=True``, which reopens and resends it with no target)."""
+    fl = _DropsOnEveryCm(_connect_script(), pos=(7.0, 90.0))
+    tel = am5.ZwoAm5Telescope(fl, name="Mount")
+    await tel.connect()
+    handshake = list(fl.sent)
+    fl.sent.clear()
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert e.code == "" and e.reason == am5.SYNC_UNVERIFIED_LINK_DURING, e
+    assert fl.sent.count("CM") == 2, fl.sent
+    assert fl.sent == _T_CMDS + handshake + _T_CMDS, (
+        f"the wire must end on the second :CM#, with no reopen and third "
+        f":CM# after it: {fl.sent}")
+    assert tel.position_known is False
+
+
+#: Words of the transport or of ``_cmd_ack``'s errors, none of which may ride
+#: out on a sync's ``SyncUnverified``.
+_TRANSPORT_WORDS = ("COM3", "timeout", "waiting", "cannot open", "port busy",
+                    "dropped", "set target", "parked", "e14", "AM5")
+
+
+def _resend_reopen_fails(fl: _Am5Model) -> None:
+    """``:CM#`` drops the port, and the port then will not reopen."""
+    def _cm(_cmd):
+        fl.drop()
+        raise LinkError("the link was dropped after a stalled exchange")
+
+    async def _refuse():
+        raise LinkError("cannot open COM3: port busy")
+    fl.script["CM"] = _cm
+    fl.open = _refuse
+
+
+def _resend_target(second):
+    """``:CM#`` gets no answer on a live port, and the RE-SENT ``:Sr#`` then
+    gets ``second`` (a reply, or a callable that raises)."""
+    def _arrange(fl: _Am5Model) -> None:
+        calls = {"n": 0}
+
+        def _sr(cmd):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "1"
+            return second(cmd) if callable(second) else second
+        fl.script["Sr10:00:00"] = _sr
+        fl.script["CM"] = _silent_read()
+    return _arrange
+
+
+@pytest.mark.parametrize("arrange", [
+    _resend_reopen_fails,
+    _resend_target(_silent_ack()),
+    _resend_target("e14"),
+], ids=["reopen_fails", "resent_sr_times_out", "resent_sr_answers_e14"])
+async def test_the_resent_target_failing_is_unverified_in_fixed_words(
+        fixed_env, arrange):
+    """G1.2 (review D18). ``:CM#`` fails on the link, and then setting the
+    target again fails: the port will not reopen, the re-sent ``:Sr#`` times
+    out, or it answers ``e14``. ``_set_target`` reports every one of those as
+    a ``DeviceError`` (through ``_cmd_ack``), carrying the port name or the
+    parked words. ``sync`` must still raise ``SyncUnverified`` in fixed words,
+    with nothing chained, and send no second ``:CM#``. Mutant
+    ``resend_except_linkerror_only`` (``except (LinkError, DeviceError)``
+    narrowed to ``except LinkError``, so a plain ``DeviceError`` escapes)."""
+    fl, tel = await _model_tel(pos=(9.5, 20.0))
+    arrange(fl)
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert type(e) is SyncUnverified, type(e)
+    assert e.code == "" and e.reason == am5.SYNC_UNVERIFIED_LINK_DURING, e
+    assert fl.sent.count("CM") == 1, fl.sent
+    assert e.__context__ is None and e.__cause__ is None, (
+        e.__context__, e.__cause__)
+    for text in _chain_texts(e):
+        for word in _TRANSPORT_WORDS:
+            assert word not in text, f"{word!r} leaked into {text!r}"
+
+
+@pytest.mark.parametrize("gr_answers", [True, False])
+async def test_an_enn_on_the_target_is_read_back_once_for_its_residual(
+        fixed_env, gr_answers):
+    """G1.3. An ``eNN`` answer to the first ``:Sr#`` takes the same one
+    best-effort read-back as an ``eNN`` answer to ``:CM#``, so the refusal
+    says how far off the mount is, and the resume ladder is not told the
+    position "could not be read back" when nobody tried. A read that fails
+    leaves the residual unknown and the refusal intact. Mutant
+    ``target_enn_residual_none`` (``_sync_refused(ack, None)`` again)."""
+    start = (9.5, 20.0)
+    fl, tel = await _model_tel(pos=start)
+    fl.script["Sr10:00:00"] = "e14"
+    fl.script["Gps"] = "0"
+    if not gr_answers:
+        fl.script["GR"] = _silent_read()
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert e.code == "e14", e.code
+    assert "CM" not in fl.sent, fl.sent
+    assert fl.sent.count("GR") == 1, (
+        f"one read, best effort, no retries: {fl.sent}")
+    if gr_answers:
+        offset = am5.coords.angular_sep_deg(_T_RA, _T_DEC, *start)
+        assert e.residual_deg is not None, "the read-back was not taken"
+        assert abs(e.residual_deg - offset) < 0.01, (e.residual_deg, offset)
+        assert "deg from the synced coordinates" in str(e), e
+    else:
+        assert e.residual_deg is None, e.residual_deg
+        assert e.__context__ is None, e.__context__
+
+
+@pytest.mark.parametrize("moves", [True, False])
+async def test_a_digit_run_cm_reply_is_never_quoted(
+        fixed_env, fast_readback, monkeypatch, moves):
+    """G1.5. ``072341`` fits the old ``[A-Za-z0-9/]{1,8}`` shape, but it is a
+    ``:GR#`` answer with its separators lost, which at home is the local
+    sidereal time. ``base.quotable_sync_reply`` refuses any run of three or
+    more digits, so it is never quoted: not in the code, the message, the
+    reason or the info line. Mutant ``reply_without_digit_run_rule``
+    (``_sync_reply`` back on the bare shape test)."""
+    lines = _bus_lines(monkeypatch)
+    fl, tel = await _model_tel(pos=(9.5, 20.0), cm_reply="072341",
+                               moves=moves)
+    if moves:
+        await tel.sync(_T_RA, _T_DEC)
+        texts = [m for (_l, m) in lines]
+        assert any("an unrecognised reply" in m for m in texts), texts
+    else:
+        with pytest.raises(SyncRefused) as exc:
+            await tel.sync(_T_RA, _T_DEC)
+        assert exc.value.code == "unrecognised", exc.value.code
+        assert "an unrecognised reply" in str(exc.value), exc.value
+        texts = [m for (_l, m) in lines] + _chain_texts(exc.value)
+    for text in texts:
+        for needle in ("072341", "0723", "2341"):
+            assert needle not in text, f"{needle!r} in {text!r}"
+
+
+@pytest.mark.parametrize("gps, words", [
+    ("2", "mount is parked; unpark first"),
+    ("0", "refused in current state"),
+])
+async def test_e14_on_the_target_is_a_sync_refused(fixed_env, gps, words):
+    """F1.3. The first ``:Sr#`` answers ``e14``: a refusal, code ``e14``,
+    with the same parked probe as the sync's own e14, and no ``:CM#`` sent.
+    Mutant ``m_target_errors_plain`` (``sync`` back on ``_set_target``,
+    whose e14 is a plain ``DeviceError``)."""
+    fl, tel = await _model_tel(pos=(9.5, 20.0))
+    fl.script["Sr10:00:00"] = "e14"
+    fl.script["Gps"] = gps
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert exc.value.code == "e14"
+    assert exc.value.reason.startswith(words.split(";")[0]), exc.value.reason
+    assert "CM" not in fl.sent, fl.sent
+
+
+async def test_a_link_failure_on_the_target_is_unverified(fixed_env):
+    """F1.3. The link fails while the target is set: the sync was never sent,
+    and nothing is known. Same mutant as above."""
+    fl, tel = await _model_tel(pos=(9.5, 20.0))
+    fl.script["Sr10:00:00"] = _silent_ack()
+
+    with pytest.raises(SyncUnverified) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    e = exc.value
+    assert e.code == "" and e.reason == am5.SYNC_UNVERIFIED_LINK_BEFORE, e
+    assert e.__suppress_context__ is True and e.__context__ is None
+    assert "COM3" not in str(e), str(e)
+    assert "CM" not in fl.sent, fl.sent
+
+
+async def test_a_rejected_target_is_a_sync_refused(fixed_env):
+    """Neither ``1`` nor ``eNN``: the mount would not take the target, and
+    ``sync`` still raises one of its two types, never a plain error."""
+    fl, tel = await _model_tel(pos=(9.5, 20.0))
+    fl.script["Sd+40*00:00"] = "0"
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert exc.value.code == "0" and "CM" not in fl.sent
+
+
+@pytest.mark.parametrize("moves", [True, False])
+async def test_a_gr_shaped_cm_reply_is_never_quoted(
+        fixed_env, fast_readback, monkeypatch, moves):
+    """F1.5. A desynchronised link hands ``:CM#`` a ``:GR#``-shaped answer,
+    which at home is the local sidereal time. It is never quoted: not in the
+    code, the message, the reason or the info line. Mutant
+    ``m_reply_unsanitised`` (``_sync_reply`` returns the reply verbatim)."""
+    lines = _bus_lines(monkeypatch)
+    fl, tel = await _model_tel(pos=(9.5, 20.0), cm_reply="07:23:41",
+                               moves=moves)
+    texts = [m for (_l, m) in lines]
+    if moves:
+        await tel.sync(_T_RA, _T_DEC)
+        texts = [m for (_l, m) in lines]
+        assert any("an unrecognised reply" in m for m in texts), texts
+    else:
+        with pytest.raises(SyncRefused) as exc:
+            await tel.sync(_T_RA, _T_DEC)
+        assert exc.value.code == "unrecognised", exc.value.code
+        assert "an unrecognised reply" in str(exc.value), exc.value
+        texts = [m for (_l, m) in lines] + _chain_texts(exc.value)
+    for text in texts:
+        for needle in ("07:23:41", "07:23", "23:41"):
+            assert needle not in text, f"{needle!r} in {text!r}"
+
+
+@pytest.mark.parametrize("raw, code, words", [
+    ("N/A", "N/A", "reply 'N/A'"),
+    ("e11", "e11", "reply 'e11'"),
+    ("", "", "an empty reply"),
+    ("07:23:41", "unrecognised", "an unrecognised reply"),
+    ("072341", "unrecognised", "an unrecognised reply"),
+    ("e123", "unrecognised", "an unrecognised reply"),
+    ("abcdefghi", "unrecognised", "an unrecognised reply"),
+    ("N/A x", "unrecognised", "an unrecognised reply"),
+])
+def test_the_reply_is_quoted_only_in_its_safe_shape(raw, code, words):
+    assert am5._sync_reply(raw) == (code, words)
+
+
+async def test_an_empty_reply_that_does_not_move_is_refused_with_no_code(
+        fixed_env, fast_readback):
+    fl, tel = await _model_tel(pos=(9.5, 20.0), cm_reply="", moves=False)
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+
+    assert exc.value.code == "" and "an empty reply" in str(exc.value)
+
+
+#: The e11 texts must never tell the operator to slew or go anywhere (#850
+#: round 5): a goto is aimed from the position the mount believes, the very
+#: thing an e11 puts in doubt. The UI's GOTO_ADVICE list
+#: (w16MountPositionUnknown.test.tsx) plus "head to".
+_E11_GOTO_WORDS = ("slew", "go to", "go-to", "goto",
+                   "target away from the pole", "head to")
+_E11_TEXTS = (am5.SYNC_E11_AT_HOME_REASON, am5.SYNC_E11_ELSEWHERE_REASON)
+
+
+@pytest.mark.parametrize("residual, expected", [
+    (None, "at_home"),
+    (0.0, "at_home"),
+    (4.99, "at_home"),
+    (5.0, "at_home"),          # the threshold itself is still "near"
+    (5.01, "elsewhere"),
+    (10.0, "elsewhere"),
+    (50.0, "elsewhere"),
+])
+async def test_the_e11_words_are_chosen_from_the_read_back(
+        fixed_env, residual, expected):
+    """J1.1. With the mount's opinion within ``SYNC_E11_ELSEWHERE_DEG`` (5.0)
+    of the sky, or unread, the tube may be at home, so Trust position comes
+    first behind its condition. Further out the tube is not where the mount
+    thinks, so it comes home by eye first. Mutants ``mj1_threshold_ge`` (``>``
+    made ``>=``, 5.0 takes the far words), ``mj2_never_elsewhere`` (always the
+    near words), ``mj3_none_is_elsewhere`` (an unread residual takes the far
+    words) and ``mj6_threshold_fifty`` (the constant 5.0 made 50.0)."""
+    assert am5.SYNC_E11_ELSEWHERE_DEG == 5.0
+    tel = am5.ZwoAm5Telescope(FakeLink(_connect_script()))
+    e = await tel._sync_refused("e11", residual)
+    want = (am5.SYNC_E11_AT_HOME_REASON if expected == "at_home"
+            else am5.SYNC_E11_ELSEWHERE_REASON)
+    assert e.reason == want, (residual, e.reason)
+    assert e.code == "e11" and e.residual_deg == residual
+
+
+def test_each_e11_text_fits_and_carries_no_digit():
+    """J1.1. At most 90 characters each, so the hub's refused line still fits
+    in 140, and no digit (the reply is quoted beside them, and a figure in a
+    hold reason breaks the #618 contract). Mutant ``mj5_figure_in_words``
+    (the far words say "more than 5 deg")."""
+    for text in _E11_TEXTS:
+        assert len(text) <= 90, (len(text), text)
+        assert not any(ch.isdigit() for ch in text), text
+        assert not _humanizer_rewrites(text), text
+
+
+def test_no_e11_text_advises_a_goto():
+    """J1.1. Both texts give the safe order: Trust position, and home by eye
+    with a pad key when the tube is elsewhere. Neither says the tube IS at
+    home. Mutant ``mj4_round4_words`` (the round-4 "slew away from the pole
+    or use Trust position" reason restored as the near words)."""
+    for text in _E11_TEXTS:
+        low = text.lower()
+        for banned in _E11_GOTO_WORDS:
+            assert banned not in low, (
+                f"the e11 words advise a goto ({banned!r}): {text!r}")
+        assert "trust position" in low, text
+        assert "e11 was seen there" not in low, (
+            f"the words invite reading e11 as proof of home: {text!r}")
+    near, far = (t.lower() for t in _E11_TEXTS)
+    assert near.startswith("if the tube really is at home"), near
+    assert near.index("trust position") < near.index("away from the pole"), (
+        f"Trust position must come before the sync away from the pole: "
+        f"{near!r}")
+    assert "pad key" in far and "home by eye" in far, far
+    assert far.index("home by eye") < far.index("trust position"), (
+        f"home by eye must come before Trust position: {far!r}")
+
+
+def test_both_e11_texts_are_pinned_exactly():
+    """The two e11 texts reach the operator whenever the mount refuses a sync
+    at home, so any rewording must come through this test, the way w15 pins
+    the two position-unknown warnings. A ban list alone let a goto paraphrase
+    through (round-5 verifier mutants v8: "if not, aim away from the pole";
+    v8b: "aim at a star, or home by eye ..."), so the words are pinned, and
+    "aim" and "star" are banned as whole words besides."""
+    assert am5.SYNC_E11_AT_HOME_REASON == (
+        "if the tube really is at home, use Trust position; "
+        "a sync away from the pole then works")
+    assert am5.SYNC_E11_ELSEWHERE_REASON == (
+        "tube not where the mount thinks: bring it home "
+        "by eye with a pad key, then Trust position")
+    for text in _E11_TEXTS:
+        assert not re.search(r"\b(aim|aimed|aiming|star|stars)\b",
+                             text.lower()), (
+            f"the e11 words point the tube at something: {text!r}")
+
+
+@pytest.mark.parametrize("pos, reason", [
+    ((_T_RA, _T_DEC + 1.0), "SYNC_E11_AT_HOME_REASON"),
+    ((7.0, 90.0), "SYNC_E11_ELSEWHERE_REASON"),
+])
+async def test_the_e11_words_lead_the_route_refusal_inside_the_cut(
+        fixed_env, pos, reason):
+    """J1.1. The Solve & Sync route toasts ``"sync not taken: " + str(e)``,
+    and the UI cuts a long line to 137 characters. With the backend's default
+    name both e11 texts end inside it. Mutant ``mj7_reason_after_where``
+    (the reason moved behind the reply and the residual in the message)."""
+    want = getattr(am5, reason)
+    fl = _Am5Model(_connect_script(), pos=pos, cm_reply="e11", moves=False)
+    tel = am5.ZwoAm5Telescope(fl)            # the backend's default name
+    assert tel.name == "ZWO AM5"
+    await tel.connect()
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(_T_RA, _T_DEC)
+    assert exc.value.reason == want, exc.value.reason
+    toast = "sync not taken: " + str(exc.value)
+    at = toast.find(want)
+    assert at >= 0, toast
+    assert at + len(want) <= 137, (
+        f"the e11 words end at char {at + len(want)}, past the cut: "
+        f"{toast[:137]!r}")
+    assert "reply 'e11'" in toast, toast     # G1.4, review D5d
+
+
+async def test_no_surfaced_driver_text_trips_the_humanizer(
+        fixed_env, fast_readback, monkeypatch):
+    """Rule 2: every line and error text the sync path can produce, read by
+    the four humanizer rules, plus the two reset-latch warnings (F1.6).
+    Mutant ``m_plate_solve_words`` (the latch warning back to "a plate-solve
+    sync")."""
+    lines = _bus_lines(monkeypatch)
+    texts: list[str] = [am5.SYNC_E11_AT_HOME_REASON,
+                        am5.SYNC_E11_ELSEWHERE_REASON,
+                        am5.SYNC_UNVERIFIED_READBACK,
+                        am5.SYNC_UNVERIFIED_LINK_DURING,
+                        am5.SYNC_UNVERIFIED_LINK_BEFORE]
+
+    async def _raised(**kw) -> None:
+        script = kw.pop("script_over", {})
+        fl, tel = await _model_tel(**kw)
+        fl.script.update(script)
+        try:
+            await tel.sync(_T_RA, _T_DEC)
+        except (SyncRefused, SyncUnverified) as e:
+            texts.extend([str(e), e.reason])
+
+    home = (7.0, 90.0)
+    await _raised(pos=home, cm_reply="e11", moves=False)
+    await _raised(pos=home, cm_reply="e14", moves=False,
+                  script_over={"Gps": "2"})
+    await _raised(pos=home, cm_reply="e14", moves=False,
+                  script_over={"Gps": "0"})
+    await _raised(pos=home, cm_reply="e3", moves=False)
+    await _raised(pos=home, cm_reply="N/A", moves=False)
+    await _raised(pos=home, cm_reply="07:23:41", moves=False)
+    await _raised(pos=home, cm_reply="Matched")
+    await _raised(pos=home, script_over={"GR": _silent_read()})
+    await _raised(pos=home, script_over={"GD": "+40*0X:00"})
+    await _raised(pos=home, script_over={"CM": _silent_read()})
+    await _raised(pos=home, script_over={"Sr10:00:00": _silent_ack()})
+    await _raised(pos=home, script_over={"Sr10:00:00": "e14", "Gps": "2"})
+    await _raised(pos=home, script_over={"Sd+40*00:00": "0"})
+    # the two reset-latch warnings: a reopen at the pole, and Home on it
+    fl, tel = await _model_tel(pos=home, script=_connect_script(Gps="0"))
+    fl.script["hP"] = ""
+
+    async def _no_park() -> None:
+        return None
+    monkeypatch.setattr(tel, "_park_now", _no_park)
+    await tel.find_home()
+
+    texts += [m for (_l, m) in lines]
+    assert any("solved frame" in t for t in texts), (
+        "the latch warnings were not produced, so they were not checked")
+    assert len(texts) > 25, len(texts)
+    for t in texts:
+        assert not _humanizer_rewrites(t), f"the UI would replace: {t!r}"

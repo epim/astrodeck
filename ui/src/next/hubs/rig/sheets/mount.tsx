@@ -236,9 +236,9 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // altitude pins the observer to a circle on the Earth. RA/Dec stay, so
   // `m` itself is still truthy; only the two derived fields go missing.
   const altAzKnown = !!m && typeof m.alt === "number" && typeof m.az === "number";
-  // #144: false after a power-up or reset, until a plate-solve sync or the
-  // operator's word. Only an explicit false counts (an engine older than the
-  // flag sends none). Everything below that is computed from "where the mount
+  // #144: false after a power-up or reset, until the operator trusts the
+  // position or a sync from a solved frame. Only an explicit false counts (an
+  // engine older than the flag sends none). Everything below that is computed from "where the mount
   // points" - a step, the ALT / AZ tile - reads this first.
   const positionIsKnown = positionKnown(m);
 
@@ -610,7 +610,8 @@ export function MountSheet(_props: SheetProps): JSX.Element {
       // sheet unlocks on the next status frame, never on this press.
       if (res?.position_known === false) {
         showToast("warning",
-          "The mount did not accept that its position is known. Run SOLVE + SYNC instead.",
+          "The mount did not accept that its position is known. Solve and sync where "
+            + "the tube points now instead.",
           { verbatim: true });
         return;
       }
@@ -759,8 +760,9 @@ export function MountSheet(_props: SheetProps): JSX.Element {
       {/* WHY THE STEPS ARE LOCKED, at the top where it is read first. Information
           tone, not a warning: a mount powered up parked at home reads the same
           pole as a reset one, so this is the ORDINARY start of every night until
-          the first plate-solve sync. The button says what it attests on the line
-          under it; the confirmation says it again in full. */}
+          the operator trusts the position or a sync from a solved frame. The
+          button says what it attests on the line under it; the confirmation
+          says it again in full. */}
       {!positionIsKnown && (
         <div data-testid="mount-position">
           <BannerCard tone="info" text={POSITION_UNKNOWN_NOTE} data-testid="mount-position-note" />
