@@ -172,7 +172,8 @@ def _no_hold(e) -> list:
     that gave up would."""
     calls: list = []
 
-    async def hold(target, rotation, result):
+    async def hold(target, rotation, result, *, announce=True,
+                   position_gate=None):
         calls.append(dict(result))
         return result
     e._hold_for_light = hold

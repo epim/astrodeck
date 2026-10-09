@@ -386,18 +386,22 @@ async def test_position_unknown_gates_every_hold_re_centre(recentre, bus_lines):
 
 @pytest.mark.parametrize("exc", [SyncRefused, SyncUnverified])
 async def test_a_refused_in_place_sync_stops_the_run(exc, bus_lines):
-    """The field solved and the mount would not take where it is, after its
-    report moved without a slew: the model is the thing in doubt, so the run
-    ends rather than letting the scheduler's next goto aim from it (ruling
-    R10).
+    """The field solved and a mount that CAN LOSE ITS FRAME (the AM5,
+    ``frame_can_reset``) would not take where it is, after its report moved
+    without a slew: the model is the thing in doubt, so the run ends rather
+    than letting the scheduler's next goto aim from it (ruling R10).
 
     MUTANT "a refusal is a failed solve" (the ``except (SyncRefused,
     SyncUnverified)`` arm removed, so both fall to the generic arm): RED,
     both -
         Failed: DID NOT RAISE <class '...PositionUnknownStop'>
+    MUTANT F9b "never a frame reset" (``if self._frame_can_reset():`` in
+    that arm made ``if False:``): RED, both -
+        Failed: DID NOT RAISE <class '...PositionUnknownStop'>
     """
     e, hub, t = _engine(moved=1.9,
                         solve=exc("refused", code="e11", reason="no sync here"))
+    hub.tel.frame_can_reset = True
     with pytest.raises(PositionUnknownStop):
         await e._maybe_recheck_pointing(t)
     assert hub.gotos == []
@@ -406,6 +410,38 @@ async def test_a_refused_in_place_sync_stops_the_run(exc, bus_lines):
     for _l, m, _s in bus_lines:
         assert not _humanizer_rewrites(m), m
         assert "goto" not in m.lower() and "go to" not in m.lower(), m
+
+
+@pytest.mark.parametrize("exc", [SyncRefused, SyncUnverified])
+async def test_a_refused_in_place_sync_on_another_mount_stops_the_target(
+        exc, bus_lines):
+    """Finding 9: on a mount that cannot lose its frame (Alpaca, NINA,
+    ASIAIR: ``frame_can_reset`` False), a refused or unverified in-place
+    sync, often a transport hiccup on those drivers, stops the TARGET in the
+    hub's fixed words and marks its pointing unverified. The run goes on,
+    with its normal park and roof close, and nothing is moved.
+
+    MUTANT F9a "every mount ends the run" (``if self._frame_can_reset():``
+    in the ``except (SyncRefused, SyncUnverified)`` arm made ``if True:``):
+    RED, both -
+        astrodeck.sequence.engine.PositionUnknownStop: the mount's position
+        is unknown, so the run stopped without moving it
+    """
+    from astrodeck.sequence.engine import (SOLVE_REASON_SYNC_REFUSED,
+                                           SOLVE_REASON_SYNC_UNVERIFIED)
+    e, hub, t = _engine(moved=1.9,
+                        solve=exc("refused", code="e11", reason="no sync here"))
+    assert not getattr(hub.tel, "frame_can_reset", False), "premise"
+    with pytest.raises(StopTarget) as ei:
+        await e._maybe_recheck_pointing(t)
+    assert not isinstance(ei.value, SafetyAbort)
+    assert str(ei.value) == (SOLVE_REASON_SYNC_REFUSED if exc is SyncRefused
+                             else SOLVE_REASON_SYNC_UNVERIFIED)
+    assert e._pointing_unverified_for == t.id
+    assert hub.gotos == []
+    for _l, m, _s in bus_lines:
+        assert "Trust position" not in m, m
+        assert not _humanizer_rewrites(m), m
 
 
 @pytest.mark.parametrize("moved, stops", [(6.0, True), (1.9, False)])
@@ -423,6 +459,7 @@ async def test_a_large_move_that_will_not_solve_stops_the_run(moved, stops,
         is unknown, so the run stopped without moving it
     """
     e, hub, t = _engine(moved=moved, solve=DeviceError("no solution"))
+    hub.tel.frame_can_reset = True      # the AM5: a jump can be a reset
     if stops:
         with pytest.raises(PositionUnknownStop):
             await e._maybe_recheck_pointing(t)
@@ -432,6 +469,28 @@ async def test_a_large_move_that_will_not_solve_stops_the_run(moved, stops,
     assert hub.gotos == []
     for _l, m, _s in bus_lines:
         assert not _humanizer_rewrites(m), m
+
+
+async def test_a_large_unsolved_move_on_another_mount_stops_the_target(
+        bus_lines):
+    """Finding 9: a reset-sized jump whose field will not solve is a lost
+    frame only on a mount that can lose one. Elsewhere the target stops in
+    fixed words (``POINTING_JUMP_UNSOLVED``), unverified, nothing moved.
+
+    MUTANT F9c "every jump is a reset" (``if self._frame_can_reset():`` in
+    the generic arm made ``if True:``): RED -
+        astrodeck.sequence.engine.PositionUnknownStop: ...
+    """
+    from astrodeck.sequence.engine import POINTING_JUMP_UNSOLVED
+    e, hub, t = _engine(moved=6.0, solve=DeviceError("no solution"))
+    with pytest.raises(StopTarget) as ei:
+        await e._maybe_recheck_pointing(t)
+    assert not isinstance(ei.value, SafetyAbort)
+    assert str(ei.value) == POINTING_JUMP_UNSOLVED
+    assert not any(ch.isdigit() for ch in str(ei.value))
+    assert e._pointing_unverified_for == t.id
+    assert hub.gotos == []
+    assert not _humanizer_rewrites(POINTING_JUMP_UNSOLVED)
 
 
 async def test_the_position_unknown_stop_does_not_park_or_close(
@@ -511,13 +570,16 @@ async def test_a_position_unknown_run_end_is_not_resumed_by_itself(
                           timeout=30), e.state
     assert e.state.get("end_reason") == "unsafe", e.state
     stored = session_store.load(sid)
-    said = [m for _l, m, _s in bus_lines if "auto-resume is disarmed" in m]
+    said = [m for _l, m, _s in bus_lines
+            if m.startswith("auto-resume disarmed, position unknown")]
     if position_unknown:
         assert stored.auto_resume is False, (
             "a position-unknown stop left the session armed")
         assert len(said) == 1, said
-        assert said[0].endswith("the mount's position is unknown. Once it "
-                                "is known, arm it from the session list."), said
+        assert said[0].startswith(
+            "auto-resume disarmed, position unknown: once Trust position or "
+            "a sync away from the pole clears it, arm it from the session "
+            "list ("), said
         for word in ("goto", "slew", "go to"):
             assert word not in said[0].lower(), said[0]
     else:

@@ -43,6 +43,7 @@ from .devices.base import (
     SyncUnverified,
     Telescope,
     quotable_sync_reply,
+    rig_position_known,
 )
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
@@ -627,6 +628,12 @@ class _FieldSolve:
     #: The computed answer -- identification, placed objects, notes -- cached so
     #: a cone query runs once per solve rather than once per published preview.
     frame: dict
+    #: Other spellings of the plate centre the mount's report may be in, as
+    #: ``(ra_hours, dec_deg)`` pairs: the centre's JNOW when the mount's
+    #: report is not brought to J2000 by ``from_mount_frame`` (#851,
+    #: integration re-review). Empty when the report is converted or the
+    #: transform failed. Read only by ``_field_block``'s disagreement note.
+    center_alternates: tuple = ()
 
 
 def external_preview(info: dict) -> dict:
@@ -4315,6 +4322,81 @@ class Hub:
             return
         self._last_pointing = (float(ra_hours), float(dec_deg), time.time())
 
+    #: Bound on the one position read after a sync (s): 2x the hub's 2.0 s
+    #: status period, the same bound ``sync_verify.SYNC_READ_TIMEOUT_S`` puts
+    #: on each read-back. Without it the read is bounded only by the
+    #: transport (up to 60 s for an Alpaca get_position).
+    _POST_SYNC_READ_TIMEOUT_S = 4.0
+
+    async def _note_pointing_after_sync(self, tel, solved_ra: float,
+                                        solved_dec: float) -> None:
+        """Record the pointing baseline right after a sync the mount took,
+        from a FRESH read of its report brought to J2000 by
+        ``from_mount_frame``: the same read, in the same frame, that the
+        capture snapshot records (#851, integration finding 8).
+
+        The drivers that verify a sync have already waited for the report to
+        show it (``sync_verify.verify_sync``; NINA's read-back refreshes the
+        info cache this read is served from), so this read is the post-sync
+        report and not a stale one.
+
+        Falls back to the solved position when the read fails, does not
+        answer in time, or is not a number. That is the old baseline: exact
+        on every mount that reports in J2000 or is converted, and only an
+        epoch off on a NINA or ASIAIR mount. Keeping the PRE-sync report
+        instead would be off by the whole sync, which can be degrees."""
+        ra = dec = None
+        try:
+            ra, dec = await asyncio.wait_for(
+                tel.get_position(), self._POST_SYNC_READ_TIMEOUT_S)
+            if ra is not None and dec is not None:
+                ra, dec = await self.from_mount_frame(tel, ra, dec)
+        except Exception:  # noqa: BLE001 - a baseline read never fails a sync
+            ra = dec = None
+        try:
+            usable = (ra is not None and dec is not None
+                      and math.isfinite(ra) and math.isfinite(dec))
+        except TypeError:
+            usable = False
+        if not usable:
+            ra, dec = solved_ra, solved_dec
+        self._note_pointing(ra, dec)
+
+    async def _report_frame_alternates(self, center) -> tuple:
+        """The plate centre's JNOW, as a one-pair tuple, when the mount's
+        report is NOT brought to J2000 by ``from_mount_frame``; else ``()``.
+
+        The disagreement note in ``_field_block`` compares the mount's last
+        report with the plate centre, which is J2000. ``from_mount_frame``
+        converts only an Alpaca mount (backend ``"alpaca"``: a JNOW one is
+        precessed, a J2000 one already reports J2000). Every other mount's
+        report is recorded raw, and a NINA or ASIAIR mount reports the JNOW
+        of the J2000 it was synced to, 0.3 to 0.4 deg away in 2026. On a
+        field under about 0.7 deg wide that is over the stale threshold, so
+        the note fired after every centring (#851, integration re-review).
+        The note therefore accepts the report in either frame, the same
+        acceptance ``sync_verify.jnow_alternates`` gives those drivers'
+        sync read-backs. On a mount that does report J2000 this loosens the
+        note by at most that 0.4 deg; the condition it exists for (a lost
+        mount) is degrees.
+
+        Computed once per adopted solve, because ``_field_block`` runs on
+        the event loop for every published preview and the transform is
+        astropy. Bounded and never raises (``jnow_alternates``)."""
+        tel = self.devices.get("telescope")
+        if tel is None or getattr(tel, "backend", "") == "alpaca":
+            return ()
+        try:
+            c_ra = float(center["ra_hours"])
+            c_dec = float(center["dec_deg"])
+        except (TypeError, KeyError, ValueError):
+            return ()
+        if not (math.isfinite(c_ra) and math.isfinite(c_dec)):
+            return ()
+        from .devices.sync_verify import jnow_alternates
+
+        return tuple(await jnow_alternates(c_ra, c_dec))
+
     def invalidate_field_solve(self, reason: str) -> None:
         """Drop the current identification because the sky under the camera may
         have changed.
@@ -4422,10 +4504,12 @@ class Hub:
         ra = dec = None
         if self._last_pointing is not None:
             ra, dec, _at = self._last_pointing
+        alternates = await self._report_frame_alternates(frame.get("center"))
         self.field_solve = _FieldSolve(
             wcs=wcs, solved_at=time.time(), preview_id=preview_id,
             data_w=int(data_w), data_h=int(data_h),
-            mount_ra=ra, mount_dec=dec, frame=frame)
+            mount_ra=ra, mount_dec=dec, frame=frame,
+            center_alternates=alternates)
         self._pointing_field_cache = None
         ident = frame.get("identification")
         if ident:
@@ -4533,6 +4617,10 @@ class Hub:
             c = frame["center"]
             try:
                 off = angular_sep_deg(ra, dec, c["ra_hours"], c["dec_deg"])
+                # In whichever frame the report is in (#851): a NINA or
+                # ASIAIR mount reports the centre's JNOW after a centring.
+                for a_ra, a_dec in fs.center_alternates:
+                    off = min(off, angular_sep_deg(ra, dec, a_ra, a_dec))
             except ValueError:
                 # Cannot be judged (#324): say nothing rather than invent a
                 # degree figure for a comparison that could not be made.
@@ -7472,7 +7560,17 @@ class Hub:
         # change in the mount's report, and a sync can move that report by degrees
         # (measured: 4 degrees, after a restart) — recording the pointing before
         # it would make this solve stale the instant it was adopted.
-        self._note_pointing(result.ra_hours, result.dec_deg)
+        #
+        # AND FROM THE MOUNT'S OWN REPORT, NOT FROM THE SOLVE (#851,
+        # integration finding 8). The baseline is what ``_current_field_solve``
+        # measures the next capture's report against, so it must be the same
+        # quantity in the same frame: the report, through ``from_mount_frame``.
+        # The solved J2000 is not that. A NINA or ASIAIR mount reports the
+        # JNOW of the J2000 it was synced to, and ``from_mount_frame`` leaves
+        # those mounts alone, so a J2000 baseline sat 0.3 to 0.4 deg from the
+        # very next report and counted a disagreement after every centring.
+        await self._note_pointing_after_sync(tel, result.ra_hours,
+                                             result.dec_deg)
         # GN-07: this IS a plate-solve result (ASTAP/SimSolver), the same kind
         # of measurement goto_and_center's success branch records -- keep it
         # even when this call did not run through goto_and_center (rotator
@@ -9675,8 +9773,12 @@ class Hub:
                     # has to tell "absent" from "known"; a driver with no such
                     # flag reads True through the same ``getattr`` the nudge
                     # route uses. Both UIs lock the step controls and pick the
-                    # ceiling rung off it.
-                    "position_known": bool(getattr(tel, "position_known", True)),
+                    # ceiling rung off it. Read THROUGH THE RIG-LEVEL LATCH
+                    # (`rig_position_known`), which also carries a doubt onto
+                    # the new telescope object a profile activate builds, so
+                    # Trust position is on screen on the first poll after a
+                    # reconnect, not on the resume ladder's next tick.
+                    "position_known": rig_position_known(self),
                     # Was this pointing CONFIRMED against the sky, or is it the
                     # mount's own opinion? See `note_pointing_verified`.
                     "pointing": {

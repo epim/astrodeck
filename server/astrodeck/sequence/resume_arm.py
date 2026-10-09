@@ -119,7 +119,7 @@ from typing import NamedTuple
 from ..aio import reap
 from ..config import config_store
 from ..devices.base import (GotoRefused, SyncRefused, SyncUnverified,
-                            quotable_sync_reply)
+                            quotable_sync_reply, rig_position_known)
 from ..events import bus, night_key
 from ..hub import SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED
 from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
@@ -326,13 +326,17 @@ _POSITION_UNKNOWN_ACTION = (
 #: The hold when the mount refused the blind solve's sync within
 #: RECOVERY_REFUSED_SYNC_MAX_DEG of the solved field but its driver says its
 #: position is unknown (``Telescope.position_known`` False): an AM5 that read
-#: its home pole on (re)connect and has taken no sync and no Trust position
-#: since. Near the pole the separation cannot see the RA axis angle, so a
+#: its home pole on (re)connect, or any mount whose last run ended with
+#: ``PositionUnknownStop`` (the rig-level latch,
+#: ``Telescope.mark_position_unknown``), and has taken no sync and no Trust
+#: position since. The words name both causes, so they are true for either
+#: (integration review, finding 5). Near the pole the separation cannot see the RA axis angle, so a
 #: small one is no evidence, and a goto from a wrong hour angle can put the
 #: tube into the pier.
 POSITION_UNKNOWN_WORDS = (
     _POSITION_UNKNOWN_ACTION + " The mount refused the sync, and "
-    "nothing has confirmed its position since it reconnected")
+    "nothing has confirmed its position since a reconnect or a stopped run "
+    "put it in doubt")
 
 #: The hold when the blind solve's sync was ACCEPTED but the driver still
 #: says its position is unknown: an AM5 synced within its
@@ -1564,6 +1568,11 @@ class ResumeArm:
 
     async def tick(self) -> None:
         now = self._clock()
+        # ON THE LADDER'S OWN CLOCK, not only when a ladder runs: a doubt the
+        # last telescope object held moves onto a new one (a profile
+        # activate), so the UIs' Trust position button and every plain
+        # ``position_known`` reader see it within one tick. No device I/O.
+        rig_position_known(self.hub)
         if self.engine.running:
             self._clear_hold()              # a live run is not a hold
             return                          # anything running = no interest
@@ -2467,7 +2476,8 @@ class ResumeArm:
                                 f"the mount refused the blind solve's sync"
                                 f"{_reply_words(e.code)}; not slewing, as "
                                 f"nothing has confirmed its position since "
-                                f"it reconnected (its reported pointing is "
+                                f"a reconnect or a stopped run put it in "
+                                f"doubt (its reported pointing is "
                                 f"within {residual:.1f} deg of the solved "
                                 f"field)", "sequence")
                         return POSITION_UNKNOWN_WORDS
@@ -2849,9 +2859,10 @@ class ResumeArm:
     def _mount_position_known(self) -> bool:
         """Does the mount's driver vouch for the coordinates it reports
         (``Telescope.position_known``, #144, #867)? Absent means known, the
-        contract every consumer keeps."""
-        tel = self.hub.devices.get("telescope")
-        return bool(getattr(tel, "position_known", True))
+        contract every consumer keeps. Read through `rig_position_known`, so
+        a doubt survives a profile activate that replaced the telescope
+        object (the re-review's reconnect hole)."""
+        return rig_position_known(self.hub)
 
     def _can_solve(self) -> bool:
         """Is a trustworthy plate solver available on this rig RIGHT NOW?

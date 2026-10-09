@@ -42,7 +42,9 @@ from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
 from .. import capture_geometry, naming
 from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
                             PierSide, SyncRefused, SyncUnverified,
-                            quotable_sync_reply)
+                            position_known_for_motion, quotable_sync_reply,
+                            rig_position_known)
+from ..mount_offset import POSITION_UNKNOWN_MOTION_DETAIL
 from ..events import SITE_DERIVED_KEY, bus, night_key
 from ..focus import run_autofocus
 from ..focus.approach import approach, configured_overshoot
@@ -820,12 +822,23 @@ L_PAUSE_MOVED = ("resumed, but the mount is not where it was when the run "
 #: (arcminutes of tracking error), while a goto, a home or a park moves it by
 #: degrees. Either side unreadable counts as moved.
 PAUSE_MOVED_DEG = 1.0
+#: `SequenceEngine._read_pose`'s answer when the rig has NO telescope device
+#: (a camera plus a guider that drives its own mount connection, PHD2 on
+#: ST-4 for one). Not None, which means "a mount that could not be read":
+#: no mount at both ends of a pause is nothing AstroDeck controls having
+#: moved, while an unreadable one still counts as moved (integration
+#: review, finding 10).
+POSE_NO_MOUNT = "no mount"
 
 #: #848: a frame whose guider was guiding at the top of the iteration and is
 #: not guiding at the shutter (it stopped itself during the dither, or while
 #: the quiet gate waited) is not taken; recovery restarts guiding first.
+#: Recovery re-centres only a target that centres and is not a calibration
+#: target (`_maybe_recover_guiding`'s ``recentres``), so the line says so,
+#: as L_RESUME_RESTART does (integration review, finding 7).
 L_SKIP = ("guiding stopped before this frame, so the frame was not taken; "
-          "recovery re-centres and restarts guiding first")
+          "recovery restarts guiding first, re-centring if this target "
+          "centres")
 
 #: The longest exposure of the sky reading taken before a guiding recovery
 #: (#621, `_sky_closed_before_recovery`), seconds. The interrupted step's own
@@ -924,6 +937,28 @@ RECOVERY_RECENTRES_SPENT = ("the guide star kept going missing; tonight's "
                             "re-centres for it are spent")
 POSITION_UNKNOWN_STOP = ("the mount's position is unknown, so the run "
                          "stopped without moving it")
+#: The StopTarget reason when the in-place re-check found the report jumped
+#: further than ``POINTING_RESET_PLAUSIBLE_DEG`` and the field will not
+#: solve, on a mount that cannot lose its frame (``frame_can_reset`` False,
+#: integration review finding 9): the pointing is in doubt for this target,
+#: not the mount's frame, so the target stops and the run goes on.
+POINTING_JUMP_UNSOLVED = ("the mount's report jumped without a slew and the "
+                          "field did not solve, so the pointing is unknown")
+#: How many times, at most, a run that ended with ``PositionUnknownStop``
+#: asks the mount again to stop tracking when the first stop was not
+#: confirmed (integration review, finding 2), one ask per
+#: ``IDLE_STOP_RETRY_S``: 60 x 60 s = one hour. Each ask goes through the
+#: driver's own reopen of a dropped link (the AM5 tries one at most every
+#: ``RELINK_MIN_INTERVAL_S`` = 5 s, on the next command), so a link a reopen
+#: can save answers within the first asks; the 2026-08-09 dead link was
+#: cured by a single reopen. A mount still unconfirmed after an hour is not
+#: coming back by being asked, and with its position unknown nothing
+#: automatic may move it: the escalation is one error line to the operator.
+POSITION_UNKNOWN_STOP_ASKS = 60
+#: The safe order (RULES.md SAFETY RULE) in the short form the resume ladder
+#: and the AM5 driver use, for a line whose cause must come first.
+_SAFE_ORDER_SHORT = ("tube at home, Trust position; else bring it home by "
+                     "eye with a pad key, then Trust it.")
 
 
 class SafetyAbort(DeviceError):
@@ -1008,9 +1043,18 @@ class PositionUnknownStop(SafetyAbort):
     model). Not a StopTarget: the scheduler's next goto would be aimed from
     the same unknown position.
 
-    NOT COVERED HERE: `dawn_park` parks any unparked mount once no run is
-    active, with no check on the position (a park on the AM5 is a goto to
-    the model's home). Filed as a new finding for its owner."""
+    THE DOUBT OUTLIVES THE RUN (integration review findings 0 and 5,
+    #874). `_run`'s arm marks it on the telescope
+    (``Telescope.mark_position_unknown``, process memory only), so
+    ``position_known`` reads False until Trust position or a sync proved
+    away from the pole. Every consumer of that flag then holds: the resume
+    ladder for ANY armed session (not only this one, which is also
+    disarmed), dawn park (which stops tracking instead of parking), the
+    nudge gate, and both UIs' Trust position button appears.
+
+    ONLY ON A MOUNT THAT CAN LOSE ITS FRAME for a sync refused in place
+    or an unsolved reset-sized jump (``Telescope.frame_can_reset``, finding
+    9): on any other mount those stop the target, and the run goes on."""
 
 
 class RecoverySweep(NamedTuple):
@@ -3061,22 +3105,23 @@ class SequenceEngine:
                 and await self._guiding_active_now()):
             if await self._stand_down_guider():
                 self._guiding_off_for_pause = True
-                self._pause_pose = await self._read_pose()
+                self._pause_pose = await self._read_pose_twice()
                 bus.log("info", L_PAUSE_STOP, "sequence")
                 self._set_state(detail=PAUSE_DETAIL)
             else:
                 bus.log("warning", L_PAUSE_NOSTOP, "sequence")
         await self._paused.wait()
 
-    async def _read_pose(self) -> tuple | None:
-        """``(ra_hours, dec_deg, pier)`` as the mount reports them, or None on
-        any failure. Compared across a pause only: NEVER logged or published,
+    async def _read_pose(self) -> tuple | str | None:
+        """``(ra_hours, dec_deg, pier)`` as the mount reports them, None on
+        any failure, or ``POSE_NO_MOUNT`` when the rig has no telescope
+        device. Compared across a pause only: NEVER logged or published,
         because a homed or stationary mount's position gives the site away
         (#140, #166)."""
         try:
             tel = self.hub.devices.get("telescope")
             if tel is None:
-                return None
+                return POSE_NO_MOUNT
             ra_h, dec_deg = await asyncio.wait_for(tel.get_position(),
                                                    MOUNT_QUERY_TIMEOUT_S)
             pier = await asyncio.wait_for(tel.pier_side(), MOUNT_QUERY_TIMEOUT_S)
@@ -3087,12 +3132,27 @@ class SequenceEngine:
         except Exception:               # noqa: BLE001 - unreadable is None
             return None
 
+    async def _read_pose_twice(self) -> tuple | str | None:
+        """`_read_pose`, read once more when the first read failed: one
+        transient error (a NINA ``DeviceError``, an ASIAIR read timeout)
+        must not read as a moved mount and skip the target (integration
+        review, finding 10). Two failures still answer None."""
+        pose = await self._read_pose()
+        if pose is None:
+            pose = await self._read_pose()
+        return pose
+
     @staticmethod
-    def _pose_moved(a: tuple | None, b: tuple | None) -> bool:
+    def _pose_moved(a: tuple | str | None, b: tuple | str | None) -> bool:
         """Whether the mount moved between two `_read_pose` readings: either
-        unreadable, a different pier side, or more than ``PAUSE_MOVED_DEG``
-        apart on the sky."""
-        if a is None or b is None or a[2] != b[2]:
+        unreadable, a mount at one end and none at the other, a different
+        pier side, or more than ``PAUSE_MOVED_DEG`` apart on the sky. No
+        telescope device at BOTH ends is not a move: nothing AstroDeck
+        controls was there to move (finding 10)."""
+        if a == POSE_NO_MOUNT and b == POSE_NO_MOUNT:
+            return False
+        if (not isinstance(a, tuple) or not isinstance(b, tuple)
+                or a[2] != b[2]):
             return True
         ra1, d1 = math.radians(a[0] * 15.0), math.radians(a[1])
         ra2, d2 = math.radians(b[0] * 15.0), math.radians(b[1])
@@ -3116,7 +3176,7 @@ class SequenceEngine:
         the moved-mount test counts as moved, as at the pause. Read, never
         logged (#140, #166)."""
         if getattr(self, "_guiding_off_for_pause", False):
-            self._pause_pose = await self._read_pose()
+            self._pause_pose = await self._read_pose_twice()
 
     def _get_dispatcher(self):
         """Resolve the AlertDispatcher (injected on the engine or the hub). Returns
@@ -3532,6 +3592,11 @@ class SequenceEngine:
             # it: a ResumeArm restart would aim its ladder, and the next
             # setup's goto, from the position this stop says nobody knows.
             self._ended_position_unknown = isinstance(e, PositionUnknownStop)
+            # THE DOUBT IS THE RIG'S, NOT THIS SESSION'S (finding 0): marked
+            # on the telescope before the finalize and with no await between,
+            # so no ResumeArm tick can see the engine idle with it unmarked.
+            if self._ended_position_unknown:
+                self._mark_rig_position_unknown()
             self._finalize_report("unsafe")
             # THE MOUNT'S POSITION IS UNKNOWN (#851, ruling R9): nothing may
             # be aimed from it. No park (on the AM5 a park goes to the MODEL's
@@ -3548,8 +3613,17 @@ class SequenceEngine:
                 await self._wind_down(
                     park=not quiet,
                     warm=(self._cfg is not None and self._cfg.safety.on_unsafe == "abort_park_warm"),
+                    # A roof that needs no parked tube still closes on a
+                    # position-unknown stop (#886 round 2): it never asks
+                    # where the tube points.
                     close_dome=(bool(self._cfg and self._cfg.safety.close_dome_on_unsafe)
-                                and not quiet))
+                                and (not quiet
+                                     or not self._roof_needs_a_parked_tube())))
+                if quiet:
+                    # READ BACK, NOT ASSUMED (finding 2). After the wind-down,
+                    # so the guider stop it reaped is over: an AM5 east pulse
+                    # ends in ``:Te#``, which would turn tracking back on.
+                    await self._confirm_quiet_stop()
             wind = asyncio.ensure_future(_unsafe_wind_down())
             cancelled = False
             while not wind.done():
@@ -3787,18 +3861,24 @@ class SequenceEngine:
             # below keeps an `unsafe` stop armed, and ResumeArm restarts any
             # armed dormant session once the engine is idle: its ladder can
             # slew on a refused sync it judges close enough, and the next
-            # setup's goto is aimed from the same model. Only two of the
-            # three ways in latch the driver's ``position_known`` (a sync the
-            # mount would not take and a large unsolved jump leave it True),
-            # so the ladder's own gate cannot be relied on. Keyed on the
+            # setup's goto is aimed from the same model. `_run`'s arm has
+            # also marked the rig-level latch (``mark_position_unknown``), so
+            # the ladder holds every OTHER armed session on its own gate;
+            # this session is disarmed besides, so that clearing the latch
+            # does not by itself restart the run that stopped. Keyed on the
             # exception's type (`_run`'s unsafe arm), never its text.
             if reason == "unsafe" and getattr(
                     self, "_ended_position_unknown", False):
                 self._session.auto_resume = False
+                # THE ACTION FIRST, THE NAME LAST: with the name in front, a
+                # name over 15 characters pushed "arm it from the session
+                # list" past the UI's 137-character cut. Both things that
+                # clear the doubt are named (``Telescope.position_known``).
                 bus.log("info",
-                        f"'{self._session.name}': auto-resume is disarmed: "
-                        f"the mount's position is unknown. Once it is known, "
-                        f"arm it from the session list.", "sequence")
+                        f"auto-resume disarmed, position unknown: once Trust "
+                        f"position or a sync away from the pole clears it, "
+                        f"arm it from the session list "
+                        f"('{self._session.name}')", "sequence")
             # A FLOW THAT ASKED FOR NO AUTOMATIC RESUME ON LATER NIGHTS IS
             # DISARMED WHERE ITS NIGHT ENDS (#195, owner ruling 7 on #189).
             # `start()` arms every run, and keeps arming an Off plan's, so a
@@ -9168,7 +9248,89 @@ class SequenceEngine:
         without the flag is "known", the contract's own default."""
         devices = getattr(self.hub, "devices", None) or {}
         tel = devices.get("telescope")
-        return tel is not None and not getattr(tel, "position_known", True)
+        return tel is not None and not position_known_for_motion(self.hub, tel)
+
+    def _frame_can_reset(self) -> bool:
+        """Whether the mount can lose its coordinate frame with nothing on
+        the wire to say so (``Telescope.frame_can_reset``, finding 9). A
+        driver or a double without the flag cannot."""
+        devices = getattr(self.hub, "devices", None) or {}
+        tel = devices.get("telescope")
+        return bool(getattr(tel, "frame_can_reset", False))
+
+    async def _gate_position_known(self, target, where: str) -> None:
+        """End the run without moving the mount when the driver says its
+        position is unknown (`_stop_run_position_unknown`); otherwise
+        nothing."""
+        if self._position_unknown():
+            await self._stop_run_position_unknown(target, where)
+
+    def _mark_rig_position_unknown(self) -> None:
+        """Latch the telescope's ``position_known`` False for the rig
+        (``Telescope.mark_position_unknown``, findings 0 and 5), in fixed
+        words. Synchronous and never raises: it runs in `_run`'s unsafe arm.
+        A driver or double without the method is left alone."""
+        devices = getattr(self.hub, "devices", None) or {}
+        mark = getattr(devices.get("telescope"), "mark_position_unknown", None)
+        if callable(mark):
+            try:
+                mark(POSITION_UNKNOWN_STOP)
+            except Exception:  # noqa: BLE001 - never into the unsafe arm
+                pass
+        # Recorded on the hub too, so a profile activate that builds a NEW
+        # telescope object does not drop it (`rig_position_known`).
+        rig_position_known(self.hub)
+
+    async def _confirm_quiet_stop(self) -> None:
+        """Read back the tracking stop a ``PositionUnknownStop`` made
+        (finding 2). Confirmed off: nothing more. Otherwise one error line,
+        the cause first and then the safe order with no goto in it, and the
+        stop is asked again on its own task and clock
+        (`_quiet_stop_retry`), in the idle stop's slot so the next run's
+        start cancels it as it cancels any idle stop. No telescope: nothing
+        to read."""
+        if "telescope" not in (getattr(self.hub, "devices", None) or {}):
+            return
+        tracking = await self._tracking_now()
+        if tracking is False:
+            return
+        detail = ("it still reports tracking" if tracking
+                  else "its tracking state cannot be read")
+        bus.log("error",
+                f"tracking not confirmed off, position unknown: "
+                f"{_SAFE_ORDER_SHORT} The run asked the mount to stop "
+                f"tracking and {detail}; asking again about once a minute",
+                "sequence")
+        old = self._idle_stop_task
+        if old is not None and not old.done():
+            old.cancel()
+        self._idle_stop_epoch += 1
+        self._idle_stop_first_made = True
+        self._idle_stop_task = asyncio.create_task(
+            self._quiet_stop_retry(self._idle_stop_epoch),
+            name="position-unknown-stop-retry")
+
+    async def _quiet_stop_retry(self, fence: int) -> None:
+        """Ask the mount to stop tracking once per ``IDLE_STOP_RETRY_S``,
+        read it back, at most ``POSITION_UNKNOWN_STOP_ASKS`` times (finding
+        2: a bound, then an escalation). Ends early, silently, once the
+        position is known again: the operator has the mount then, and a
+        tracking they turn on is theirs. Every ask is held by ``fence``."""
+        for _ in range(POSITION_UNKNOWN_STOP_ASKS):
+            await asyncio.sleep(IDLE_STOP_RETRY_S)
+            if not self._position_unknown():
+                return
+            await self._stop_tracking_quietly(fence=fence)
+            if fence != self._idle_stop_epoch:
+                return
+            if await self._tracking_now() is False:
+                bus.log("info", "the mount has now confirmed it stopped "
+                                "tracking", "sequence")
+                return
+        bus.log("error",
+                f"tracking never confirmed off, position unknown: "
+                f"{_SAFE_ORDER_SHORT} Nothing will ask the mount again, so "
+                f"it may still be tracking", "sequence")
 
     #: The position-unknown line's action, FIRST and with no name in front,
     #: so it ends at character 131 whatever the target is called. The safe
@@ -9176,9 +9338,8 @@ class SequenceEngine:
     #: is at home, otherwise a pad key by eye, then Trust position. Never a
     #: goto, a slew or a "go to": every one of those is aimed from the
     #: position nobody knows.
-    _POSITION_UNKNOWN_ACTION = (
-        "Mount position is unknown. Tube really at home: Trust position. If "
-        "not, hold a pad key to bring it home by eye, then Trust position.")
+    #: One copy, shared with the routes' 409 (``mount_offset``, #886).
+    _POSITION_UNKNOWN_ACTION = POSITION_UNKNOWN_MOTION_DETAIL
 
     async def _stop_run_position_unknown(self, target, where: str) -> NoReturn:
         """End the RUN without moving the mount (#851, ruling R9): one
@@ -9481,6 +9642,15 @@ class SequenceEngine:
         # wait is the sky's, not this acquisition's.
         await self._await_target_window(target)
 
+        # NOTHING IS AIMED FROM A POSITION THE DRIVER CALLS UNKNOWN
+        # (integration review finding 1, DESIGN-P2 N6). This is every hop's
+        # acquisition, the one after a StopTarget included: the resume ladder
+        # used to go ahead with the position unknown, which is why setup was
+        # left ungated, and it no longer does (P7 ruling R1). Before the
+        # rotator self-test, which moves the mount, and again before the
+        # acquisition's own goto below.
+        await self._gate_position_known(target, "acquiring the target")
+
         # D-05 (#648): the first rotating group's first hop of a night
         # measures whether the camera follows the rotator BEFORE anything
         # asks it to turn. After the gates above, since it moves the mount,
@@ -9566,6 +9736,10 @@ class SequenceEngine:
             # now persists it only on the stop that ends a live session (#210).
             if self.plan.guide:
                 await self._stand_down_guider()
+            # The window wait, the rotator test and the guider stop above can
+            # each take minutes, and an AM5 link reopen latches the flag on
+            # the link's clock.
+            await self._gate_position_known(target, "acquiring the target")
             if target.center:
                 # GOTO+center is the slew + iterated solve→sync→re-slew loop —
                 # bounded so a hung solve/slew can't stall the night (P0-2).
@@ -9691,7 +9865,9 @@ class SequenceEngine:
                         # require it falls to "continuing" below exactly as
                         # it always has, unchanged by this).
                         result = await self._hold_for_light(
-                            target, rotation, result)
+                            target, rotation, result,
+                            position_gate="holding for light at "
+                                          "acquisition")
                         hop_centring = result
                         # A retry that got light and a solve, and whose
                         # sync the mount refused or did not confirm (#850),
@@ -14190,6 +14366,10 @@ class SequenceEngine:
         tel = self.hub.devices.get("telescope")
         if tel is None or not getattr(tel, "connected", False):
             return "the mount is not connected"
+        # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886). The re-point is a
+        # goto from the believed position, so the RUN ends without moving the
+        # mount, before the gate, the unpark and the slew, as setup does.
+        await self._gate_position_known(target, "re-pointing after the hold")
         behind = self._acquisition_behind_gate
         self._acquisition_behind_gate = target
         try:
@@ -14232,6 +14412,11 @@ class SequenceEngine:
         # it has just said it is tracking. Cancelled and awaited before the
         # mount moves.
         await self._cancel_idle_stop_retry()
+        # ASKED AGAIN AFTER THE GATE (#886 round 2). The safety gate can
+        # pause for up to max_pause_min and return into this re-point, and a
+        # reopen in that pause can latch the position unknown. The flip and
+        # the recovery re-gate after their gates for the same reason.
+        await self._gate_position_known(target, "re-pointing after the hold")
         getattr(self.hub, "note_pointing_moved", lambda: None)()
         try:
             if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
@@ -15898,6 +16083,12 @@ class SequenceEngine:
         # SlewRefused-vs-StopTarget decision is one small, independently
         # callable unit rather than inline here.
         await self._flip_safety_gate(target)
+        # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886). The flip is a goto
+        # from the believed position, so the RUN ends without moving the
+        # mount. After the hold and the gate, either of which can wait while
+        # an AM5 link reopen latches it, and before the idle stop is
+        # cancelled: a quiet stop's retry lives in that slot.
+        await self._gate_position_known(target, "the meridian flip")
         # The flip's goto turns tracking on, so nothing may still be asking
         # for an idle stop (`_idle_stop_retry`): a cloud hold looks for the
         # flip point before any setup has cancelled that retry. A no-op in the
@@ -17096,7 +17287,12 @@ class SequenceEngine:
         # Ahead of the re-centre below; `recentres` is the same test the
         # re-centre uses, so exactly one of the two applies to a resume.
         if resumed and not recentres:
-            if self._pose_moved(self._pause_pose, await self._read_pose()):
+            # POSITION UNKNOWN FIRST (finding 1). A mount power-cycled in the
+            # pause reads as moved, and a StopTarget would hand the next
+            # target's setup a goto aimed from that same unknown position.
+            await self._gate_position_known(target, "resuming after the pause")
+            if self._pose_moved(self._pause_pose,
+                                await self._read_pose_twice()):
                 bus.log("warning", L_PAUSE_MOVED, "sequence")
                 raise StopTarget(PAUSE_MOVED_REASON)
 
@@ -17641,22 +17837,36 @@ class SequenceEngine:
             raise
         except SafetyAbort:
             raise
-        except (SyncRefused, SyncUnverified):
-            # The field solved and the mount would not take where it is: the
-            # model is the thing in doubt, so the scheduler's next goto would
-            # be aimed from it too (ruling R10).
+        except (SyncRefused, SyncUnverified) as exc:
+            # The field solved and the mount would not take where it is. On
+            # a mount that can lose its frame (the AM5) the model is the
+            # thing in doubt, so the scheduler's next goto would be aimed
+            # from it too, and the RUN ends (ruling R10). On any other mount
+            # the refusal, or a link hiccup around the sync, says nothing
+            # about its frame: this target stops in the hub's fixed words,
+            # and the run goes on with its normal park (finding 9).
             bus.log("warning",
                     f"{name}: re-checking in place: the mount's report moved "
                     f"{fig} without a slew and the mount did not take the "
                     f"sync", "sequence")
-            await self._stop_run_position_unknown(target, where)
+            if self._frame_can_reset():
+                await self._stop_run_position_unknown(target, where)
+            self._mark_pointing_unverified(target)
+            raise StopTarget(
+                SOLVE_REASON_SYNC_REFUSED if isinstance(exc, SyncRefused)
+                else SOLVE_REASON_SYNC_UNVERIFIED) from None
         except Exception:               # noqa: BLE001 - no solution, no stars
             if moved is not None and moved > POINTING_RESET_PLAUSIBLE_DEG:
                 bus.log("warning",
                         f"{name}: re-checking in place: the mount's report "
                         f"moved {fig} without a slew and the field did not "
                         f"solve", "sequence")
-                await self._stop_run_position_unknown(target, where)
+                # A reset-sized jump is a lost frame only on a mount that
+                # can lose one (finding 9); elsewhere the target stops.
+                if self._frame_can_reset():
+                    await self._stop_run_position_unknown(target, where)
+                self._mark_pointing_unverified(target)
+                raise StopTarget(POINTING_JUMP_UNSOLVED) from None
             bus.log("warning",
                     f"{name}: nothing was moved; re-checking in place after "
                     f"the mount's report moved {fig}, the field did not "
@@ -18650,6 +18860,14 @@ class SequenceEngine:
         tel = self.hub.devices.get("telescope")
         if tel is None or not getattr(tel, "connected", False):
             return False
+        # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886). The recovery is a
+        # park (on the AM5 a goto to the MODEL's home), an unpark and a goto
+        # back to the target. A False return would hand the caller's
+        # set-aside-and-park path the same aimed park, so the RUN ends here
+        # without moving the mount, before the gate and before the one
+        # attempt is spent.
+        await self._gate_position_known(
+            target, "recovering the mount from its limit")
         # --- the refusals, before anything moves -----------------------------
         # `dark_enough` FAILS OPEN on an unset site, deliberately and correctly:
         # its own docstring says "we cannot tell" must not stand every
@@ -18791,6 +19009,11 @@ class SequenceEngine:
         when it is not (#171). ``report_centring`` says whether this logs a
         re-centre that missed; False when the caller reports it itself. No
         default, so no caller can inherit a choice it did not make."""
+        # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886), asked again here:
+        # the caller's safety gate can pause for as long as its bound while
+        # an AM5 link reopen latches it. Before the park.
+        where = "recovering the mount from its limit"
+        await self._gate_position_known(target, where)
         # Stop guiding first: the guider must not be pulsing a mount that is
         # about to park. Remembered so it can be put back afterwards — a
         # recovered mount that is no longer guided just fails more quietly.
@@ -18834,6 +19057,9 @@ class SequenceEngine:
         # target left the rotator, with nothing checking it, because the lock
         # is checked only on a rig with no rotator (`_settle_locked_angle`).
         rotation = self._commanded_rotation(target)
+        # AND BEFORE THE RE-SLEW (ruling R9, before every goto): the park and
+        # the unpark took minutes, long enough for a link reopen to latch it.
+        await self._gate_position_known(target, where)
         t0 = time.time()
         result = await _bounded(
             self.hub.goto_and_center(target.ra_hours, target.dec_deg,
@@ -20638,13 +20864,37 @@ class SequenceEngine:
                     "a second park", "sequence")
         return False
 
-    async def _wind_down_park(self, tel) -> bool:
+    async def _quiet_stop_for_unknown_position(self) -> None:
+        """The wind-down's park replaced, for a mount whose position is
+        unknown (#886, `_wind_down_park`): one warning, the action first and
+        inside the UI's cut, then the tracking stop, read back and asked
+        again on its own bounded clock when it does not take
+        (`_confirm_quiet_stop`). Nothing aimed, never raises."""
+        bus.log("warning",
+                f"{self._POSITION_UNKNOWN_ACTION} The run ends without "
+                f"parking: a park is aimed from that position, so tracking "
+                f"is stopped instead", "sequence")
+        await self._stop_tracking_quietly()
+        try:
+            await self._confirm_quiet_stop()
+        except Exception:  # noqa: BLE001 - a wind-down step never raises
+            pass
+
+    async def _wind_down_park(self, tel) -> bool | None:
         """The wind-down's park, run on a task of its own so that a cancel of
         the wind-down cannot cut it (#305, `_wind_down_park_and_close`):
         reopen a dropped link, fence and lock the motion, then park and read
         it back (`_park_and_read_back`). Returns whether the mount parked.
         Never raises for a park that failed or timed out: that is logged, and
-        the caller stops the mount instead."""
+        the caller stops the mount instead.
+
+        None: NOT PARKED BECAUSE THE POSITION IS UNKNOWN (#886). A park is
+        aimed from the believed position (on the AM5 a goto to the MODEL's
+        home), so whenever the rig-level latch is set, whatever set it, the
+        mount is asked to stop tracking instead and the stop is read back and
+        asked again on its own clock (`_quiet_stop_for_unknown_position`).
+        Asked after the reopen, which can latch it (an AM5 that reads the
+        home pole), and on this same task, so a cancel cannot cut the stop."""
         if not getattr(tel, "connected", False):
             # A telescope OBJECT that reports not-connected is a link
             # that died under us, and since ``connected`` became a
@@ -20656,6 +20906,9 @@ class SequenceEngine:
             # and the wind-down is the last thing that runs
             # before hours of unattended tracking.
             await self._reopen_mount_for_park(tel)
+        if self._position_unknown():
+            await self._quiet_stop_for_unknown_position()
+            return None
         bus.log("info", "parking mount", "sequence")
         # Motion fence (W3.7): the wind-down park is an abort -- BUMP the
         # hub motion epoch FIRST so any in-flight (or just-accepted) slew is
@@ -20670,8 +20923,23 @@ class SequenceEngine:
         lock = getattr(self.hub, "_motion_lock", None)
         if lock is not None:
             async with lock:
+                # ASKED AGAIN UNDER THE LOCK (#886 round 2), as the routes
+                # ask: the park can wait here behind a bounded move while an
+                # AM5 reopen latches the position unknown.
+                if self._position_unknown():
+                    await self._quiet_stop_for_unknown_position()
+                    return None
                 return await self._park_and_read_back(tel)
         return await self._park_and_read_back(tel)
+
+    def _roof_needs_a_parked_tube(self) -> bool:
+        """Whether the roof travels through the mount's volume
+        (``Dome.requires_park_before_close``), the one case where a tube
+        nobody parked keeps it open (#886 round 2). No dome, or a dome
+        without the flag: True, the flag's own fail-safe default."""
+        devices = getattr(self.hub, "devices", None) or {}
+        return bool(getattr(devices.get("dome"),
+                            "requires_park_before_close", True))
 
     async def _wind_down_park_and_close(
             self, park: bool, close_dome: bool, *,
@@ -20702,6 +20970,9 @@ class SequenceEngine:
         ``MOUNT_QUERY_TIMEOUT_S``. Awaited through `asyncio.wait`, which
         leaves the park running when the waiter is cancelled."""
         parked: bool | None = None   # None: no park asked, or no mount to park
+        # The park was skipped because the position is unknown (#886,
+        # `_wind_down_park` answers None): tracking was stopped instead.
+        unknown = False
         if park:
             tel = self.hub.devices.get("telescope")
             if tel is None:
@@ -20722,6 +20993,7 @@ class SequenceEngine:
                     except asyncio.CancelledError:
                         cancelled = True
                 parked = parking.result()
+                unknown = parked is None
                 if parked:
                     # #696: the sun watch's blind fallback projects from the
                     # last position IT read, which this park has made stale.
@@ -20735,10 +21007,17 @@ class SequenceEngine:
                     except Exception:      # noqa: BLE001
                         pass
                 if cancelled:
-                    if not parked:
+                    # Not after a skipped park: its own stop has run.
+                    if parked is False:
                         await self._stop_after_a_failed_park()
                     raise asyncio.CancelledError()
-        elif self._frames_done:
+        elif self._frames_done and not getattr(
+                self, "_ended_position_unknown", False):
+            # A position-unknown stop is not a run "set not to park": it
+            # stopped tracking on purpose and says so itself
+            # (`_confirm_quiet_stop`), and "Dawn park will park it" would be
+            # false (dawn park skips a mount whose position is unknown, #874).
+            #
             # A run that deliberately leaves the mount live must SAY so. On
             # 2026-08-09 a 150-frame unattended run ended "complete: 150 frames"
             # with park_when_done off, and nothing anywhere recorded
@@ -20766,7 +21045,25 @@ class SequenceEngine:
         # the park above did not complete. Best-effort like every other wind-down
         # step: it never raises (returns False), and a failed/refused close pages
         # loudly via an error-level bus.log.
-        if close_dome:
+        #
+        # NOT OVER A TUBE NOBODY PARKED (#886): with the park skipped for an
+        # unknown position, a mount that still reads "parked" (an AM5 after a
+        # reset reads home wherever the tube is) is no proof the roof clears
+        # it, so the roof is left alone, as `_run`'s position-unknown arm
+        # leaves it, and said at error level so it pages.
+        #
+        # ONLY A ROOF THAT NEEDS A PARKED TUBE (#886 round 2). A roof with
+        # ``requires_park_before_close`` False closes over the tube wherever
+        # it points (`close_observatory` never asks the mount), so the doubt
+        # gives no reason to leave it open, in the rain least of all.
+        if close_dome and unknown and self._roof_needs_a_parked_tube():
+            bus.log("error",
+                    "the roof was not closed: the mount's position is "
+                    "unknown, so nothing parked the tube under it", "safety")
+            self._record_safety(
+                "ROOF NOT CLOSED - mount position unknown, tube not parked",
+                "close_roof_failed")
+        elif close_dome:
             dome = self.hub.devices.get("dome")
             if dome is not None and getattr(dome, "connected", False):
                 from .roof import close_observatory
