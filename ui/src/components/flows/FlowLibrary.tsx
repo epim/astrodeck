@@ -16,7 +16,9 @@
 // which is why `stages`/`wires` are read off the card rather than counted.
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { FlowCard } from "../../lib/flowsApi";
-import { useStore } from "../../store";
+import { useStore, useWsConnected } from "../../store";
+import { retryingLine, useRetryOnReturn } from "../../lib/retryLoad";
+import { libraryFailedIn } from "./flowsSlice";
 import { EmptyState } from "../ui";
 import { Icon } from "../icons";
 import { FlowLibraryCard, NewFlowCard, QuickFlowCard } from "./FlowLibraryCard";
@@ -92,12 +94,17 @@ interface Section {
 // split down the middle on this — BottomNav.tsx is a default export, Gated.tsx
 // is named — and FlowsView.tsx is another author's file, so the import it
 // happens to write should not be a build break.
+/** Read at EVENT time by the re-ask (#859), never at render. */
+const libraryFailedNow = () => libraryFailedIn(useStore.getState().flows);
+
 export function FlowLibrary() {
   // Narrow selectors, one field each: a keystroke in the filter box must not
   // re-render anything that does not read `query`.
   const cards = useStore((s) => s.flows.cards);
   const folders = useStore((s) => s.flows.folders);
   const libraryError = useStore((s) => s.flows.libraryError);
+  const libraryRetry = useStore((s) => s.flows.libraryRetry);
+  const wsConnected = useWsConnected();
   const query = useStore((s) => s.flows.ui.query);
   const folderChip = useStore((s) => s.flows.ui.folderChip);
   const highlightId = useStore((s) => s.flows.ui.highlightId);
@@ -108,13 +115,17 @@ export function FlowLibrary() {
   // Fetch once per mount. Guarded by a ref, not by `libraryLoaded`: the slice
   // leaves that flag FALSE on a failed load (so an unreachable library never
   // renders as an empty one), and a flag-guarded effect would then retry on
-  // every render. Recovery is the explicit RETRY below.
+  // every render. The slice asks again by itself after a timeout, a network
+  // error or a proxy's 502/503/504 (#859); a failure left after that is
+  // re-asked once when the websocket comes back up or the tab becomes visible,
+  // and RETRY below is for what is left.
   const asked = useRef(false);
   useEffect(() => {
     if (asked.current) return;
     asked.current = true;
     void flowsLoadLibrary();
   }, [flowsLoadLibrary]);
+  useRetryOnReturn(libraryFailedNow, () => { void flowsLoadLibrary(); }, wsConnected);
 
   // Stable identity, or FlowLibraryCard's React.memo buys nothing: a fresh
   // arrow per render is a changed prop, and every card re-renders on every
@@ -238,7 +249,14 @@ export function FlowLibrary() {
 
         {/* A library the client could not reach must never render as an empty
             one — that reads as data loss. Glyph + word, not colour alone. */}
-        {libraryError && (
+        {libraryRetry ? (
+          // Asking again by itself (#859): no error and no button while it does.
+          <div role="status" data-flows-retrying
+               className="mt-6 flex flex-wrap items-center gap-2 font-mono text-[11px] text-dim">
+            <Icon name="alert" size={14} />
+            <span>{retryingLine(libraryRetry)}</span>
+          </div>
+        ) : libraryError ? (
           <div role="status"
                className="mt-6 flex flex-wrap items-center gap-2 font-mono text-[11px] text-bad">
             <Icon name="alert" size={14} />
@@ -248,7 +266,7 @@ export function FlowLibrary() {
               RETRY
             </button>
           </div>
-        )}
+        ) : null}
 
         {noMatch && (
           <div className="mt-10 flex flex-col items-center gap-2 text-center">

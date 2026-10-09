@@ -60,6 +60,8 @@ export class ApiError extends Error {
 // Per-endpoint budgets: the synchronous connect path does real device I/O
 // (build_nina_rig handshake; NINA read timeout is 120s) — a blanket 15s aborts a
 // legitimately-slow bridge and desyncs UI vs backend.
+// Keep in step with server/astrodeck/api/slow_requests.py (UI_REQUEST_BUDGET_S
+// and _UI_LONG_BUDGETS), which logs a request past these budgets as a warning.
 function timeoutFor(path: string): number {
   if (/\/api\/connect\/(nina|alpaca|phd2)/.test(path)) return 130000;
   if (/\/api\/discover/.test(path)) return 30000;

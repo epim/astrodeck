@@ -66,6 +66,7 @@ from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at m
                      _redact_switch_ports_for, _redact_ws_event,
                      redact_bundle_csv_for, redact_bundle_manifest_for,
                      report_csv_columns)
+from .slow_requests import SlowRequestLog
 from ..persist import safe_id_path, safe_subpath, secure_private_tree
 from ..catalog import search          # rows AND the reasons for what is missing
 from ..catalog import panel_csv            # the mosaic panel CSV (#178)
@@ -3553,6 +3554,12 @@ def create_app(*, bind_host: str | None = None,
                 "Strict-Transport-Security", "max-age=31536000")
         return response
 
+    # Slow-request log (#858). Added LAST so it is the OUTERMOST user middleware
+    # (Starlette inserts each add at index 0): it times the auth and header
+    # layers too, and sees a relay-tunnelled request exactly as it sees a LAN one,
+    # because the relay client replays into this same app.
+    app.add_middleware(SlowRequestLog)
+
     @app.exception_handler(RequestValidationError)
     async def _request_validation_error(request, exc: RequestValidationError):
         """A 422 that can actually be SERIALISED, with a machine code on it.
@@ -6343,7 +6350,9 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/plans", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def list_plans():
-        return plan_library.list()
+        # Off the loop (#858 N1): one open+parse per plan file, and P6's UI
+        # retries this read by itself during a disk stall (#859).
+        return await asyncio.to_thread(plan_library.list)
 
     @app.get("/api/plans/{plan_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
