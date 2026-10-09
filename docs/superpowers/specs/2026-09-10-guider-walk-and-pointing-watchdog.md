@@ -590,6 +590,17 @@ plate-solve centre. **This is the sequence that actually recovered the rig at
 0.44'), so it is proven on this hardware rather than proposed. It costs a few
 minutes and it is the only thing that worked.
 
+> **Erratum (2026-10-08, #857).** Homing does not reset the AM5's pointing
+> model: `:hP#` drives to where the model places home, so an off model
+> homes off by about the same amount. The 2026-09-10 recovery most likely
+> worked because the goto-and-centre's sync, about 1.25 deg and away from the
+> pole, corrected the model (inferred; #857 says the sync "probably fixed
+> it"). Away from the pole the AM5 has taken syncs of up to at least 5 deg on
+> the bench (#850/#857), so level 2's re-centre is the recovery unless the
+> mount refuses the sync, as it did on 2026-10-07 for a cause not yet
+> captured; the #850 read-back now stops the target then. Level 3 as written
+> rests on a false premise. Do not implement it.
+
 Level 3 must be gated on horizon and sun safety like any other slew, and it
 must refuse while a polar alignment session is active.
 
