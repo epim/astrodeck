@@ -337,6 +337,11 @@ async def test_stats_reset_per_session(monkeypatch):
     fake.GuideEngine = lambda cfg: _ScriptEngine([])
     fake.positions = [(30.0, 30.0)]
     g.cam = _Cam(4, g._stop)
+    # #848: the start would wait for the calibration's probation, which this
+    # four-frame camera ends before any verdict. The budget is spent at once,
+    # so the start returns and the counters it reset can be read.
+    from astrodeck.guide import native as _native_mod
+    monkeypatch.setattr(_native_mod, "_START_MARGIN_S", 1.0e9)
 
     await g.start_guiding()
     assert g.stats().relocks == 0

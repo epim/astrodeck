@@ -82,6 +82,20 @@ def _fast_sim_delays(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_calibration_settle(monkeypatch):
+    """Runtime seam (test-suite fast-path), the native guider's half of
+    ``_fast_sim_delays``: zero ``guide.native._CAL_SETTLE_S`` (#848's settle
+    before a calibration walk, 5 s on a rig) for the WHOLE suite. About twenty
+    files start a fresh native calibration, and a real 5 s wait in each buys
+    nothing a simulator can show. The tests of the settle itself
+    (test_oct08_guider_observability.py) opt back in with their own
+    ``monkeypatch.setattr``."""
+    import astrodeck.guide.native as native_mod
+    monkeypatch.setattr(native_mod, "_CAL_SETTLE_S", 0.0)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _skip_target_holds(monkeypatch):
     """Runtime seam (test-suite fast-path), the engine's own half of
     ``_fast_sim_delays`` above (WP-31 integration follow-up, backlog wave
