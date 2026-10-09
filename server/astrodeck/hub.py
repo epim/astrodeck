@@ -34,6 +34,7 @@ from .devices.base import (
     DeviceError,
     FilterWheel,
     Focuser,
+    GotoNotArrived,
     PierSide,
     SafetyMonitor,
     SafetyReading,
@@ -844,6 +845,23 @@ SOLVE_REASON_SYNC_REFUSED = (
 SOLVE_REASON_SYNC_UNVERIFIED = (
     "the mount did not confirm the sync, so its pointing could not be "
     "corrected")
+# A goto the mount accepted and did not finish (``GotoNotArrived``, #860):
+# fixed words, the same rules as the two lines above. The engine stops a
+# centring-off target with it (``f"slew at acquisition: {...}"``).
+GOTO_NOT_ARRIVED_REASON = ("the goto did not arrive, so the tube is not on "
+                           "the target")
+
+
+def _goto_missed_line(attempt: int, e: GotoNotArrived) -> str:
+    """The ONE warning for a centring slew that did not arrive (#860). The
+    driver's fixed words and the separation, never a coordinate; no "plate"
+    (the UI humanizer pair). At most 126 characters."""
+    r = e.residual_deg
+    fig = (f", {r:.2f} deg off"
+           if isinstance(r, (int, float)) and not isinstance(r, bool)
+           and math.isfinite(r) else "")
+    return (f"centering attempt {attempt}: the goto did not arrive "
+            f"({e.reason}{fig}); solving where it stopped")
 
 
 def _sync_reply_words(code: str) -> str:
@@ -8380,6 +8398,27 @@ class Hub:
         self._pointing_reason = "the mount has moved since the last plate solve"
         self._solved_pointing = None
 
+    async def _retrack_after_missed_goto(self, tel: Telescope,
+                                         where: str) -> None:
+        """Turn tracking back on after a goto that did not arrive (#860).
+
+        The AM5 driver ends such a goto with a whole-mount halt (``:Q#``),
+        and whether ``:Q#`` also stops sidereal tracking on this firmware is
+        not measured (HARDWARE-PENDING, DESIGN-P4 HP-1). ``goto_and_center``
+        turns tracking on once, before its first slew, and a centred return
+        goes straight to imaging with no read-back, so a halt that stopped
+        tracking would trail every frame. Tracking on is idempotent, so this
+        holds whichever way the bench answers. Best effort: a refusal is one
+        warning, and the solve that follows still decides "centred"."""
+        try:
+            await tel.set_tracking(True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - re-asserting is best-effort
+            bus.log("warning",
+                    f"{where}: tracking could not be turned back on after "
+                    f"the halted goto ({e})", "mount")
+
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
                               max_attempts: int = 3,
@@ -8454,7 +8493,21 @@ class Hub:
         sentence as its reason. Both carry ``centring_solve_transient:
         False`` even when a rotate-phase transient put ``solve_transient`` in
         the rotation keys: the centring solve worked, so the miss must never
-        be read as a solve that could not run."""
+        be read as a solve that could not run.
+
+        ``goto_not_arrived: True`` (#860), beside ``goto_reason`` (the
+        driver's fixed words), on a not-centred return means the LATEST
+        centring slew raised ``GotoNotArrived``: the mount accepted the goto
+        and stopped short, or a stop was sent during it. It is never a raise
+        out of this method. A stall degrades like any other miss: the field
+        is solved where the mount stopped, synced, and the next attempt
+        re-slews; the stuck check and ``max_attempts`` bound it. Tracking is
+        turned back on first (``_retrack_after_missed_goto``): the driver's
+        halt may have stopped it. A slew
+        whose miss came with the motion epoch moved (a STOP or the deadman)
+        returns the aborted shape with the keys. A miss on the rotate
+        pre-slew skips the rotation (``rotation_skipped``) and centres.
+        There is no ``solve_failed`` key for it."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -8536,6 +8589,8 @@ class Hub:
             # attempts slew there anyway.
             rotation_result = await self._rotation_already_set(rot, rotation_deg)
             if rotation_result is None:
+                # A pre-slew the mount accepted and did not finish (#860).
+                pre_missed: GotoNotArrived | None = None
                 async with self._motion_lock:
                     if not self._motion_committed_clean(epoch):
                         bus.log("warning", "goto abandoned: aborted before rotation",
@@ -8544,26 +8599,52 @@ class Hub:
                         return {"centered": False, "error_arcmin": None,
                                 "attempts": 0, "aborted": True, "rotation": None}
                     slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
-                    await tel.slew(slew_ra, slew_dec)
+                    try:
+                        await tel.slew(slew_ra, slew_dec)
+                    except GotoNotArrived as e:
+                        pre_missed = e
                     self.goto_settled_at = time.time()
-                try:
-                    # THE ROTATOR PREFLIGHT (WP-88; #145, #594), here and not
-                    # above the shortcut: the branch that moves nothing must
-                    # not buy a 22 degree calibration. It runs after the slew,
-                    # with the target's field on the sensor, measures only
-                    # what this connect has not measured, and a failure of it
-                    # degrades below like any other rotate failure.
-                    await self.ensure_rotator_ready()
-                    rotation_result = await self.rotate_to_pa(
-                        rotation_deg, exposure_s=solve_exposure_s)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
+                if pre_missed is not None:
+                    # A miss that came with the epoch moved was a STOP or the
+                    # manual-move deadman: abandon, as the fence above does.
+                    if not self._motion_committed_clean(epoch):
+                        bus.log("warning", "goto abandoned: aborted before rotation",
+                                "mount")
+                        self.note_pointing_verified(False, reason=str("centering did not converge"))
+                        return {"centered": False, "error_arcmin": None,
+                                "attempts": 0, "aborted": True, "rotation": None,
+                                "goto_not_arrived": True,
+                                "goto_reason": pre_missed.reason}
+                    await self._retrack_after_missed_goto(
+                        tel, "rotation pre-slew")
+                    # The field on the sensor is not the target's, so the
+                    # rotate loop would solve the wrong sky: skip it and let
+                    # the centring attempts below re-slew.
                     bus.log("warning",
-                            f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
-                            f"continuing without rotation", "rotator")
+                            f"rotation to PA {rotation_deg:.0f}° skipped: the goto "
+                            f"did not arrive ({pre_missed.reason}); centring "
+                            f"without rotating", "rotator")
                     rotation_skipped = True
-                    rotation_solve_transient = isinstance(e, SolveFrameTransient)
+                else:
+                    try:
+                        # THE ROTATOR PREFLIGHT (WP-88; #145, #594), here and
+                        # not above the shortcut: the branch that moves nothing
+                        # must not buy a 22 degree calibration. It runs after
+                        # the slew, with the target's field on the sensor,
+                        # measures only what this connect has not measured,
+                        # and a failure of it degrades below like any other
+                        # rotate failure.
+                        await self.ensure_rotator_ready()
+                        rotation_result = await self.rotate_to_pa(
+                            rotation_deg, exposure_s=solve_exposure_s)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        bus.log("warning",
+                                f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
+                                f"continuing without rotation", "rotator")
+                        rotation_skipped = True
+                        rotation_solve_transient = isinstance(e, SolveFrameTransient)
         elif rotation_deg is not None:
             rotation_unavailable = True
             # Logged here, once, not per attempt: the answer cannot change
@@ -8589,6 +8670,10 @@ class Hub:
                          "solve_transient": True}
                         if rotation_solve_transient else {})}
         last_err = None
+        # What became of the LATEST centring slew (#860): empty when it
+        # arrived, else ``goto_not_arrived`` and the driver's words. Merged
+        # into every not-centred return from here on.
+        arrival_keys: dict = {}
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)
             # Re-acquire the motion lock per slew and re-check the fence at the
@@ -8602,19 +8687,43 @@ class Hub:
                     self.note_pointing_verified(False, reason=str("centering did not converge"))
                     return {"centered": False,
                             "error_arcmin": (last_err or 0) * 60 if last_err else None,
-                            "attempts": attempt - 1, "aborted": True} | _rot_keys
+                            "attempts": attempt - 1, "aborted": True} | _rot_keys | arrival_keys
                 # Slew in the mount's own frame: a JNOW Alpaca mount would
                 # otherwise interpret the J2000 target as JNOW and land ~20 arcmin
                 # off. Converting inside the loop (not once up front) keeps the
                 # apparent place current across a long multi-attempt center; a
                 # no-op for sim/NINA. The centering error below stays in J2000.
                 slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
-                await tel.slew(slew_ra, slew_dec)
+                missed: GotoNotArrived | None = None
+                try:
+                    await tel.slew(slew_ra, slew_dec)
+                except GotoNotArrived as e:
+                    # The mount took the goto and stopped short, or a stop was
+                    # sent during it (#860). Never a raise out of here: the
+                    # field is solved where it stopped, like any other miss.
+                    missed = e
                 # THE GOTO CAME TO REST HERE, as far as anything can tell
-                # (#402): ``tel.slew`` returns once the mount stops
-                # reporting that it slews. The solve below stamps its own
-                # exposure start against this.
+                # (#402): ``tel.slew`` returns once the mount has arrived, or
+                # raised after the driver halted a goto that did not. The
+                # solve below stamps its own exposure start against this.
                 self.goto_settled_at = time.time()
+            arrival_keys = ({} if missed is None else
+                            {"goto_not_arrived": True,
+                             "goto_reason": missed.reason})
+            if missed is not None:
+                # A miss that came with the epoch moved was a STOP or the
+                # manual-move deadman: abandon unsolved, as the fence does.
+                if not self._motion_committed_clean(epoch):
+                    bus.log("warning",
+                            f"goto re-slew abandoned at attempt {attempt}: aborted",
+                            "mount")
+                    self.note_pointing_verified(False, reason=str("centering did not converge"))
+                    return {"centered": False,
+                            "error_arcmin": (last_err or 0) * 60 if last_err else None,
+                            "attempts": attempt, "aborted": True} | _rot_keys | arrival_keys
+                bus.log("warning", _goto_missed_line(attempt, missed), "mount")
+                await self._retrack_after_missed_goto(
+                    tel, f"centering attempt {attempt}")
             # A plate-solve failure or timeout must DEGRADE to a raw GoTo, not
             # hang or propagate (live bug): the mount has already slewed, so we
             # return the un-centered result with a warning rather than aborting.
@@ -8719,7 +8828,7 @@ class Hub:
                             "sync_reply": e.code,
                             "sync_reason": e.reason,
                             "solve_reason": sync_const,
-                            } | _rot_keys | {
+                            } | _rot_keys | arrival_keys | {
                                 "centring_solve_transient": False}
             except (DeviceError, Exception) as e:
                 bus.log("warning",
@@ -8744,7 +8853,8 @@ class Hub:
                             "solve_transient": True}
                            if isinstance(e, SolveFrameTransient) else {})
                         | ({"solve_reason": reason}
-                           if reason is not None else {}))
+                           if reason is not None else {})
+                        | arrival_keys)
             from .catalog.coords import angular_sep_deg
             try:
                 err = angular_sep_deg(solved["ra_hours"], solved["dec_deg"],
@@ -8767,7 +8877,7 @@ class Hub:
                 self.note_pointing_verified(
                     False, reason=str("centering did not converge"))
                 return {"centered": False, "error_arcmin": None,
-                        "attempts": attempt, "solve_failed": True} | _rot_keys
+                        "attempts": attempt, "solve_failed": True} | _rot_keys | arrival_keys
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
                 bus.publish("mount", action="centered", error_arcmin=err * 60)
@@ -8800,11 +8910,11 @@ class Hub:
                             error_arcmin=err * 60)
                 self.note_pointing_verified(False, reason=str("centering did not converge"))
                 return {"centered": False, "error_arcmin": err * 60,
-                        "attempts": attempt, "did_not_move": True} | _rot_keys
+                        "attempts": attempt, "did_not_move": True} | _rot_keys | arrival_keys
             last_err = err
         self.note_pointing_verified(False, reason=str("centering did not converge"))
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
-                "attempts": max_attempts} | _rot_keys
+                "attempts": max_attempts} | _rot_keys | arrival_keys
 
     def _note_solve_exposure(self) -> None:
         """Record that a plate solve's shutter is opening now, beside the
