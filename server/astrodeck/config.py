@@ -1048,6 +1048,18 @@ class DriverEntry(BaseModel):
 #: to write the SAME number the model defaults to. See StandardsConfig below.
 DEFAULT_MAX_ECCENTRICITY = 0.65
 
+#: The shipped guide-RMS ceiling, arcsec, named because the schema-4
+#: migration has to write the SAME number the model defaults to. 3.4x the
+#: healthy 1.45" measured on this rig, 155x under the mildest recorded
+#: runaway (#854: 1549" and 773" accepted at eccentricity 0.647 and 0.645,
+#: a dotted trail the eccentricity statistic reads as round knots). Dither
+#: transients sit in the same rolling window: a rig dithering more than about
+#: 24" (dither pixels x guide scale) every 60 s sub reads over 5.0 after each
+#: dither and should raise this (100-sample window: 100 x 1.45^2 = 210
+#: healthy, plus about 1.3125 d^2 per dither of d arcsec; three dithers of
+#: 24" bring it to about 2500, an RMS of 5.0).
+DEFAULT_MAX_GUIDE_RMS = 5.0
+
 
 class StandardsConfig(BaseModel):
     """The operator's standards for a usable frame, and the focus policy that
@@ -1075,8 +1087,12 @@ class StandardsConfig(BaseModel):
     #: Reject a light frame with fewer than this many stars. 0 = off.
     #: NOT `wcs_stamp.min_stars` - see the class docstring.
     min_stars: int = Field(0, ge=0, le=100000)
-    #: Reject a light frame taken while guide RMS exceeded this, arcsec. 0 = off.
-    max_guide_rms: float = Field(0.0, ge=0, le=60)
+    #: Reject a light frame whose guide RMS when the shutter closes exceeds
+    #: this, arcsec. 0 = off. It shipped at 0 and so 1549" and 773" runaway
+    #: frames were accepted on 2026-10-07 (#854). A stored 0 written before
+    #: schema 4 is raised to this default exactly once (see
+    #: `_apply_migrations`); after that a 0 is the operator saying "off".
+    max_guide_rms: float = Field(DEFAULT_MAX_GUIDE_RMS, ge=0, le=60)
     #: Reject a light frame whose median star eccentricity exceeds this, 0..1,
     #: or whose elongated-star fraction exceeds the companion limit derived
     #: from it (see `sequence.policy.ECC_ELONGATED_FRACTION`). 0 = off.
@@ -1363,7 +1379,12 @@ class PlanningConfig(BaseModel):
 #: default had already flipped in W7 with no migration behind it, so every
 #: config on disk still said False. Same shape as 1 -> 2: the raise happens
 #: once, on the way past 2, and a False written at 3 is the operator's.
-CONFIG_SCHEMA = 3
+#:
+#: 4 (2026-10-08, #854): `standards.max_guide_rms` gained a real default
+#: (DEFAULT_MAX_GUIDE_RMS). Every config on disk carries the old built-in 0,
+#: so the raise happens once, on the way past 3, and a 0 written at 4 is the
+#: operator turning frame rejection on guide RMS off.
+CONFIG_SCHEMA = 4
 
 
 def _stored_schema(raw: dict) -> int:
@@ -2023,6 +2044,14 @@ def _apply_migrations(cfg: AppConfig, stored: int) -> None:
     part of this step: whether a rain trip should close a connected roof by default is the
     owner's open question (b) on #657, and nothing here may decide it. Both
     flags are inert on a rig with no dome.
+
+    3 -> 4 (#854, 2026-10-08). `standards.max_guide_rms` shipped at 0 = no
+    guide-RMS gate, and on the night of 2026-10-07 runaway frames at 1549"
+    and 773" guide RMS were accepted because of it. The default is now
+    DEFAULT_MAX_GUIDE_RMS, and the same GN-04 shape applies: a 0 written
+    under schema 3 or earlier is the old built-in, so it is raised ONCE here.
+    A nonzero stored value is an operator's choice and is left alone; from
+    schema 4 on, a 0 is the operator turning the gate off.
     """
     if stored < 2 and cfg.standards.max_eccentricity == 0:
         cfg.standards.max_eccentricity = DEFAULT_MAX_ECCENTRICITY
@@ -2044,6 +2073,15 @@ def _apply_migrations(cfg: AppConfig, stored: int) -> None:
                 "dome will now close at a normal end of night; turn 'Close "
                 "roof at end-of-night' off in Settings > Safety to leave it "
                 "open.",
+                "config")
+
+    if stored < 4 and cfg.standards.max_guide_rms == 0:
+        cfg.standards.max_guide_rms = DEFAULT_MAX_GUIDE_RMS
+        bus.log("info",
+                'guide RMS rejection is now on at '
+                + f'{DEFAULT_MAX_GUIDE_RMS:.1f}"'
+                + ' (this config had it off, the old built-in). Settings > '
+                  'Standards > Reject above: 0 turns it off.',
                 "config")
 
 
