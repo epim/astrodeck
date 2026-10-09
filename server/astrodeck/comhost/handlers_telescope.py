@@ -29,6 +29,10 @@ def register() -> None:
     g, p = t["get"], t["put"]
     g["rightascension"] = lambda o, _: float(o.RightAscension)
     g["declination"] = lambda o, _: float(o.Declination)
+    # #861 N5: the hub's frame probe (``Hub._mount_expects_jnow``) asks for
+    # this; unserved, every ASCOM-local mount was treated as JNOW, so a COM
+    # driver working in J2000 was precessed on every slew and sync.
+    g["equatorialsystem"] = lambda o, _: int(o.EquatorialSystem)
     g["slewing"] = lambda o, _: bool(o.Slewing)
     g["tracking"] = lambda o, _: bool(o.Tracking)
     g["atpark"] = lambda o, _: bool(o.AtPark)
