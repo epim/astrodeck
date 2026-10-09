@@ -843,7 +843,11 @@ async def test_the_read_back_waits_between_reads(monkeypatch):
         return 10.0, 40.0
 
     residual = await verify_sync("Fictional Mount", read, 10.0, 42.5)
-    assert residual == pytest.approx(0.0, abs=1e-9)
+    # coords.angular_sep_deg is the spherical law of cosines: for identical
+    # points it returns exactly 0.0 on Windows but up to ~1e-6 deg (0.003")
+    # on Linux, where acos(1 - ulp) is not 0 (#892). The case's question is
+    # 0 against 2.5 deg, so a 1e-5 deg tolerance loses nothing.
+    assert residual == pytest.approx(0.0, abs=1e-5)
 
 
 async def test_a_read_back_that_hangs_is_unverified_within_the_bound(
