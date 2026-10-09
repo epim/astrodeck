@@ -25,9 +25,9 @@ from ...catalog import coords
 from ...config import config_store
 from ...events import bus
 from .. import lx200
-from ..base import (DeviceError, GotoNotArrived, GotoRefused, PierSide,
-                    SyncRefused, SyncUnverified, Telescope,
-                    TRACKING_RATES, quotable_sync_reply)
+from ..base import (SYNC_POLE_BLIND_DEG, DeviceError, GotoNotArrived,
+                    GotoRefused, PierSide, SyncRefused, SyncUnverified,
+                    Telescope, TRACKING_RATES, quotable_sync_reply)
 from ..serial_link import LinkError, SerialLink
 
 #: Seam for tests: the link factory used by ZwoAm5Session.
@@ -83,8 +83,9 @@ SYNC_READBACK_RETRY_S = 0.5
 #: deg at 5, 2.87 at 1, 29 at 0.1. Beyond 5 the hidden error is under 0.6 deg,
 #: which a re-centre corrects; 5 is also where the 2026-10-08 bench saw syncs
 #: taken. Inside it only Trust position, or a sync further out,
-#: re-establishes the frame.
-SYNC_POLE_BLIND_DEG = 5.0
+#: re-establishes the frame. ONE copy, in ``devices/base.py`` (imported
+#: above): the rig-level latch (``Telescope.note_verified_sync``) keeps the
+#: same rule for every driver.
 #: How far (angular separation, deg) the settled report may sit from the
 #: commanded target and still count as ARRIVED, before the drift allowance
 #: below (#860). The honest disagreement of a mount that did arrive, summed:
@@ -510,6 +511,10 @@ class ZwoAm5Telescope(Telescope):
     max_pulse_ms = _PULSE_MAX_MS
     can_set_tracking_rate = True
     can_find_home = True      # :hP# homes (and parks); find_home unparks after
+    #: This mount can lose its frame with nothing on the wire to say so: after
+    #: a power cycle it reports home wherever the tube is, and its park goes
+    #: to the MODEL's home (``Telescope.frame_can_reset``, finding 9).
+    frame_can_reset = True
     #: The pre-slew pier-collision guard is armed for this mount. Not because
     #: the AM5 answers ``DestinationSideOfPier`` -- it has no such command --
     #: but because ``destination_pier_side`` below predicts it from hour-angle
@@ -640,8 +645,13 @@ class ZwoAm5Telescope(Telescope):
         settle poll reads back the mount's own opinion of the arrival, and
         docs/hardware/zwo-am5-lx200-protocol.md records this mount's reported
         coordinates walking 12.9 arcmin per minute while the tube held its
-        field, so none of it is a measurement of where the tube is."""
-        return not self._position_untrusted
+        field, so none of it is a measurement of where the tube is.
+
+        THE RIG-LEVEL LATCH TOO (``Telescope._position_doubt``): the engine
+        marks it when it ends a run because the position is unknown on
+        evidence this driver did not see (a sync refused in place, a jump
+        whose field will not solve). Cleared by the same two things."""
+        return not self._position_untrusted and self._position_doubt is None
 
     # ------------------------------------------------------------ helpers
 
@@ -984,11 +994,12 @@ class ZwoAm5Telescope(Telescope):
         """The operator says the tube is physically where the mount reports it
         (in practice: "I drove it to its home position by eye"), which clears
         ``position_known`` without a sync. See ``Telescope.trust_position``."""
-        if self._position_untrusted:
+        if not self.position_known:
             bus.log("info",
                     f"{self.name}: position trusted on the operator's word",
                     "mount")
         self._position_untrusted = False
+        await super().trust_position()      # the rig-level latch
 
     async def disconnect(self) -> None:
         try:
@@ -1726,7 +1737,9 @@ class ZwoAm5Telescope(Telescope):
         # CLEARING the latch; it never sets it.
         if abs(dec_deg) <= 90.0 - SYNC_POLE_BLIND_DEG:
             self._position_untrusted = False
-        elif self._position_untrusted:
+        # The rig-level latch, by the same rule (``note_verified_sync``).
+        self.note_verified_sync(dec_deg)
+        if not self.position_known:
             # The action first, in the safe order and never a goto (#850),
             # inside the UI's 137-char cut whatever the mount is called: the
             # name is the operator's (``conn.extra["name"]``) and any length,

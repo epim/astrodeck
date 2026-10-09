@@ -504,3 +504,79 @@ async def test_an_open_stream_is_not_counted_in_flight(bus_lines):
                                          "http.response.body"]
     assert _slow(bus_lines) == [
         ("info", "slow request GET /items/{item_id}: 200 after 4.0 s", "http")]
+
+
+# ------------------------------------------- int-review finding 6 (humanizer)
+
+def _humanizer_rewrite(line: str) -> str | None:
+    """The humanizeLog rule (ui/src/lib/humanize.ts) that would replace
+    ``line`` whole, or None. A copy of its word-pair tests as they stand,
+    for a line from source "http" (the camera rule's source arm is "capture",
+    so it never applies here)."""
+    m = line.lower()
+    if "camera" in m and any(w in m for w in
+                             ("not responding", "timeout", "disconnect")):
+        return "camera"
+    if "nina" in m and any(w in m for w in ("5", "http", "error")):
+        return "nina"
+    if "plate" in m and "solve" in m:
+        return "plate"
+    if "guid" in m and "lost" in m:
+        return "guid"
+    return None
+
+
+def _every_route_label() -> list[str]:
+    """Every label ``route_label`` can return in the real app: each route
+    template ``create_app()`` serves (behind include_router too) plus the two
+    fixed labels."""
+    from astrodeck.auth.rbac import iter_app_routes
+    paths = {getattr(r, "path", None)
+             for r in iter_app_routes(app_module.create_app())}
+    labels = {p for p in paths if isinstance(p, str) and p}
+    labels |= {slow_requests.UNROUTED_LABEL, "/assets/*"}
+    return sorted(labels)
+
+
+def test_no_slow_line_trips_a_humanizer_pair_on_any_route():
+    """Finding 6: a slow line for a NINA route held "nina" beside the 5 in
+    its own figures, so the UI showed "NINA reported an error" for a connect
+    that answered 200. Every route template of the real app, every outcome,
+    with figures full of 5s and a 500 status: no line may hold a humanizer
+    pair. Mutant H6: format_slow_line interpolates ``label`` instead of
+    ``unpaired_label(label)``. Mutant H6b: drop ``nina`` from _HUMANIZER_KEYS."""
+    labels = _every_route_label()
+    # The harness still sees the routes it was built for, and its copy of the
+    # rule still fires on the line that was shown wrongly.
+    assert {"/api/connect/nina", "/api/nina/health",
+            "/api/discover/nina"} <= set(labels), labels
+    assert _humanizer_rewrite(
+        "slow request POST /api/connect/nina: 200 after 15.2 s") == "nina"
+    tripped = []
+    for label in labels:
+        for method in sorted(slow_requests._METHODS | {"OTHER"}):
+            for outcome in ("500", "200", "still waiting", "no answer",
+                            "cancelled", "failed"):
+                line = slow_requests.format_slow_line(
+                    method=method, label=label, outcome=outcome,
+                    elapsed_s=155.5, stall_s=5.5, remote=True, others=5,
+                    earlier=55)
+                assert "5" in line, line
+                rule = _humanizer_rewrite(line)
+                if rule is not None:
+                    tripped.append((rule, line))
+    assert tripped == [], tripped[:5]
+
+
+async def test_a_slow_nina_connect_reads_as_a_slow_request(bus_lines):
+    """Finding 6, through the middleware: the 15.5 s NINA connect that
+    answered 200 is logged with the route key broken, at info (inside its
+    130 s UI budget). Mutant H6 turns this red too."""
+    t, clock = _fake_clock()
+    mw = SlowRequestLog(_inner(t, route="/api/connect/nina", elapsed=15.5),
+                        clock=clock)
+    await _drive(mw, _scope(path="/api/connect/nina", method="POST"))
+    assert _slow(bus_lines) == [
+        ("info", "slow request POST /api/connect/ni-na: 200 after 15.5 s",
+         "http")]
+    assert _humanizer_rewrite(bus_lines[-1][1]) is None

@@ -475,6 +475,30 @@ async def test_a_stale_rms_from_an_idle_guider_rejects_nothing_on_an_unguided_pl
 
 # ------------------------------------------- the stopped-guider sentence
 
+#: 2026-06-14 12:00 UTC. The Sun is then 28.7 deg from M42 (RA 5.5881h,
+#: Dec -5.3911), inside the 30 deg default cone.
+_JUNE_NOON = 1781438400.0
+
+
+def _sun_on_m42_every_day(monkeypatch) -> None:
+    """Pin the Sun to its June place, only inside the real
+    ``Hub._check_solar``; ``sun_altaz`` and the scheduler keep the clock."""
+    from astrodeck.catalog import coords
+    june = coords.sun_radec(_JUNE_NOON)
+    cone = hub_module.config_store.cfg().safety.solar_exclusion_deg
+    assert coords.angular_sep_deg(5.5881, -5.3911, *june) < cone, (
+        "the pinned Sun no longer sits in the cone, so the pin proves nothing "
+        "about the calendar")
+    real = Hub._check_solar
+
+    def _check_solar_in_june(self, ra_hours, dec_deg, *, force=False):
+        with monkeypatch.context() as m:
+            m.setattr(coords, "sun_radec", lambda unix_time=None: june)
+            return real(self, ra_hours, dec_deg, force=force)
+
+    monkeypatch.setattr(Hub, "_check_solar", _check_solar_in_june)
+
+
 async def test_the_stopped_guider_sentence_says_what_to_do(tmp_path,
                                                            monkeypatch):
     """With the gate on by default, a guided plan's frame shot with the guider
@@ -484,11 +508,23 @@ async def test_the_stopped_guider_sentence_says_what_to_do(tmp_path,
     Mutant M21 "old sentence" (restore ``"guide RMS ceiling is set, but this
     frame was shot with the guider stopped — rejected"``), observed:
     ``AssertionError: no stopped-guider sentence: [...]``, the list being the
-    run's log lines with the old sentence among them."""
+    run's log lines with the old sentence among them.
+
+    The plan's target is M42, which sits in the 30 deg sun-exclusion cone
+    from about June 4 to June 23. The cone is disarmed here as the file's
+    ``sim_hub`` fixture does, and the real ``_check_solar`` sees the June Sun
+    every day, so the case cannot pass or fail by the calendar.
+
+    Mutant C-M2 "cone armed" (the ``solar_avoidance`` line below deleted),
+    observed on any date: ``AssertionError: rejected=0``, the setup slew
+    refused by the cone before any frame was shot."""
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(hub_module.config_store, "_path",
                         tmp_path / "astrodeck.json")
     monkeypatch.setattr(hub_module.config_store, "_cfg", None)
+    _sun_on_m42_every_day(monkeypatch)
+    monkeypatch.setattr(hub_module.config_store.cfg().safety,
+                        "solar_avoidance", False)
     hub = Hub()
     await hub.connect_sim()
     try:

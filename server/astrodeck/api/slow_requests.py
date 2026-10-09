@@ -60,6 +60,12 @@ stall" does not mean the route's own code is slow.
 The line is a log line only (drawer and night file). It carries no figures in
 any fixed-words field, names no operator action and no movement, and never
 contains a raw path, a query string, a client address or any coordinate.
+
+The route in the line has every UI humanizer key broken by a hyphen
+(``/api/connect/ni-na``). ``humanizeLog`` (ui/src/lib/humanize.ts) replaces a
+whole line holding "nina" beside any "5", so a NINA connect that answered 200
+after 15.2 s was shown as "NINA reported an error" (int-review finding 6).
+The figures are this module's to print; the route name is what gets broken.
 """
 from __future__ import annotations
 
@@ -122,11 +128,31 @@ def route_label(scope: dict) -> str:
     return UNROUTED_LABEL
 
 
+#: The UI humanizer's keys (ui/src/lib/humanize.ts ``humanizeLog``). Every
+#: rewrite there needs one of these words beside a partner ("nina" with "5",
+#: "http" or "error"; "camera" with "not responding", "timeout" or
+#: "disconnect"; "plate" with "solve"; "guid" with "lost"), so a line with no
+#: whole key in it cannot trip any of them. The same rule as
+#: ``sequence.resume_arm._unpaired``, kept here so the HTTP layer does not
+#: import the sequence package.
+_HUMANIZER_KEYS = re.compile(r"nina|camera|plate|guid", re.IGNORECASE)
+
+
+def unpaired_label(label: str) -> str:
+    """``label`` with every humanizer key broken by a hyphen after its second
+    letter (``/api/nina/health`` -> ``/api/ni-na/health``), which a developer
+    still reads and the UI never rewrites."""
+    return _HUMANIZER_KEYS.sub(lambda m: m.group(0)[:2] + "-" + m.group(0)[2:],
+                               label)
+
+
 def format_slow_line(*, method: str, label: str, outcome: str, elapsed_s: float,
                      stall_s: float, remote: bool, others: int,
                      earlier: int) -> str:
-    """One slow-request log line."""
-    head = f"slow request {method} {label}: {outcome} after {elapsed_s:.1f} s"
+    """One slow-request log line. The route is the only text this module
+    does not choose, so it is the part made pair-free (``unpaired_label``)."""
+    head = (f"slow request {method} {unpaired_label(label)}: {outcome} "
+            f"after {elapsed_s:.1f} s")
     tail: list[str] = []
     if stall_s >= LOOP_STALL_REPORT_S:
         tail.append(f"loop stall {stall_s:.1f} s")

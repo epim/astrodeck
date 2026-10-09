@@ -149,7 +149,8 @@ async def test_a_near_refusal_with_the_position_unknown_holds(
     assert arm._ladder_light == "lit", "the frame solved; light reached it"
     warns = _warnings(bus_lines)
     said = [m for m in warns
-            if "nothing has confirmed its position since it reconnected" in m]
+            if "nothing has confirmed its position since a reconnect or a "
+               "stopped run put it in doubt" in m]
     assert len(said) == 1, warns
     assert f"{residual:.1f} deg" in said[0], said
     assert "(reply 'e11')" in said[0], said

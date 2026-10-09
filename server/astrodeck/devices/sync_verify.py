@@ -26,6 +26,9 @@ This module is the ONE copy of the read-back those three drivers share:
   opinion is from the sky (the resume ladder weighs ``residual_deg``).
 * ``jnow_alternates`` lets a driver whose reporting frame is not known (NINA,
   the ASIAIR) accept a read-back in either J2000 or JNOW.
+* A sync ``verify_sync`` PROVED is the evidence that clears the rig-level
+  "position unknown" latch (``Telescope.note_verified_sync``: not within
+  ``SYNC_POLE_BLIND_DEG`` of a pole), as the AM5's own sync clears its latch.
 
 Every constant is a module global read at CALL time, never a default
 argument, so a test can monkeypatch it.
@@ -176,15 +179,33 @@ async def _residual(ra_hours: float, dec_deg: float, ra: float, dec: float,
     return residual
 
 
+def _note_proved(telescope, dec_deg: float) -> None:
+    """Tell the driver its sync to ``dec_deg`` was proved
+    (``Telescope.note_verified_sync``, which keeps the pole rule). A driver
+    or double without the method, or one whose method raises, is left as it
+    was: this is bookkeeping, and the sync itself was taken."""
+    note = getattr(telescope, "note_verified_sync", None)
+    if callable(note):
+        try:
+            note(dec_deg)
+        except Exception:  # noqa: BLE001 - bookkeeping, never a sync failure
+            pass
+
+
 async def verify_sync(name: str, read_position: ReadPosition,
                       ra_hours: float, dec_deg: float, *,
                       alternates: Alternates | None = None,
                       not_moved_reason: str = SYNC_NOT_MOVED_REASON,
-                      read_timeout_s: float | None = None) -> float:
+                      read_timeout_s: float | None = None,
+                      telescope=None) -> float:
     """Return the residual (deg) of the read that proved the sync, or raise
     ``SyncRefused`` / ``SyncUnverified``. Raises nothing else;
     CancelledError propagates. ``read_timeout_s`` None means
     ``SYNC_READ_TIMEOUT_S``, read at call time (the ASIAIR passes its own).
+
+    A PROVED SYNC CLEARS THE RIG-LEVEL LATCH (``_note_proved``). The driver
+    is ``telescope``, or by default the object ``read_position`` is bound
+    to: all three drivers pass a bound method of themselves.
 
     A read that FAILS quickly (an HTTP 500, a missing field) counts as one
     failed read and the loop goes on; a read that does not answer within its
@@ -216,6 +237,9 @@ async def verify_sync(name: str, read_position: ReadPosition,
         residual = await _residual(ra_hours, dec_deg, parsed[0], parsed[1],
                                    alternates, alt_box)
         if residual <= SYNC_VERIFY_DEG:
+            _note_proved(telescope if telescope is not None
+                         else getattr(read_position, "__self__", None),
+                         dec_deg)
             return residual
     if last_failed is not None:
         raise SyncUnverified(

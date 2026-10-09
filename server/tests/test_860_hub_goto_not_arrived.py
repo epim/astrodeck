@@ -25,12 +25,50 @@ from _simhub import sim_hub  # noqa: F401 (fixture import)
 from test_850_hub_sync_refused import (FAR_DEC, FAR_RA, NEAR_DEC, NEAR_RA, DEC,
                                        RA, _assert_surfaced_ok)
 
+from astrodeck.catalog import coords
+from astrodeck.config import config_store
 from astrodeck.devices.base import GotoNotArrived
+from astrodeck.hub import Hub
 from astrodeck.solve.base import SolveResult
 
 #: Stand-ins for the driver's fixed words (no figure, no code).
 _STALLED = "the mount stopped short of the target"
 _STOPPED = "a stop was sent during the goto"
+
+#: 2026-06-14 12:00 UTC. The Sun is then 13.0 deg from (RA, DEC), inside the
+#: 30 deg default cone; the target sits in the cone from about May 15 to
+#: Jul 10 every year.
+_JUNE_NOON = 1781438400.0
+
+
+@pytest.fixture(autouse=True)
+def _cone_disarmed_with_the_sun_on_the_target(sim_hub, monkeypatch):
+    """The sun-exclusion cone is disarmed, and the real ``_check_solar`` sees
+    the June Sun every day, so the file cannot pass by the calendar.
+
+    ``sim_hub`` leaves ``solar_avoidance`` at its default True, and
+    ``goto_and_center`` checks the cone first, so from mid-May to early July
+    every case here raised "target is within 13 deg of the Sun" before any
+    scripted slew ran (the #682 class keyed on the date). The Sun is pinned
+    only inside ``_check_solar``; ``sun_altaz`` and the rest keep the clock.
+
+    NAMED MUTANT C-M1 "cone armed" (the ``solar_avoidance`` line below
+    deleted): RED on any date, all 14 cases, ``DeviceError: target is within
+    13 deg of the Sun (exclusion 30 deg)``."""
+    june = coords.sun_radec(_JUNE_NOON)
+    cone = config_store.cfg().safety.solar_exclusion_deg
+    assert coords.angular_sep_deg(RA, DEC, *june) < cone, (
+        "the pinned Sun no longer sits in the cone, so this fixture proves "
+        "nothing about the calendar")
+    real = Hub._check_solar
+
+    def _check_solar_in_june(self, ra_hours, dec_deg, *, force=False):
+        with monkeypatch.context() as m:
+            m.setattr(coords, "sun_radec", lambda unix_time=None: june)
+            return real(self, ra_hours, dec_deg, force=force)
+
+    monkeypatch.setattr(Hub, "_check_solar", _check_solar_in_june)
+    monkeypatch.setattr(config_store.cfg().safety, "solar_avoidance", False)
 
 
 class _CountingSolver:
