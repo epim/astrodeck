@@ -51,9 +51,10 @@ HOLDING EVERYTHING ELSE STILL, which is the caller's half of that rule:
 * No wall-clock racers: the hub's two-second status poller (whose payload
   the WS redaction already strips of the site, and whose cadence is real
   time) and the gallery's thumbnail worker (a thread whose line lands before
-  or after the horizon by chance) are off. The frame preview's ``ts`` is left
-  out, and not because it is safe: it is the test machine's wall clock, which
-  moves between the two nights for no site reason.
+  or after the horizon by chance) are off. The frame preview's ``ts`` and
+  the guider snapshot's ``as_of`` (#856) are left out, and not because they
+  are safe: each is the test machine's wall clock, which moves between the
+  two nights for no site reason.
 
 A COUNTDOWN CANNOT MOVE ON ITS OWN HERE, and one family says so. For the
 flip point the site's longitude and the target's RA enter only through the
@@ -214,6 +215,8 @@ class _Seen:
         for _t, ty, data in self.published:
             if ty == "preview":
                 data = {k: v for k, v in data.items() if k != "ts"}
+            if ty == "guide":
+                data = {k: v for k, v in data.items() if k != "as_of"}
             ev = _redact_ws_event({"type": ty, "data": data}, VIEWER)
             if ev is not None:
                 out.append(json.dumps(ev, sort_keys=True))

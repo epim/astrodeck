@@ -38,7 +38,8 @@ class GuideStats:
     calibration_image_scale: float | None = None
     image_scale_known: bool = False
     #: Plain-language narration phase (NOV-7 design doc §1.3):
-    #: ``"idle" | "finding" | "calibrating" | "settling" | "guiding" | "lost"``,
+    #: ``"idle" | "finding" | "calibrating" | "settling" | "guiding" | "lost"``
+    #: ``| "stopped"`` (the guider stopped ITSELF; ``stop_reason`` says why),
     #: or ``""`` when unknown. Only ``NativeGuider`` fills this richly; the
     #: PHD2/NINA bridge guider leaves it ``""`` and the UI narration falls back
     #: to the ``guiding`` bool (honest — the bridge doesn't expose these
@@ -61,6 +62,16 @@ class GuideStats:
     relocks: int = 0
     relock_arcsec_total: float = 0.0
     relock_events: list[dict] = field(default_factory=list)
+    #: #856.3: when this snapshot was composed (epoch s); 0.0 = not stamped.
+    #: Two reads that disagree are two moments, and this says which.
+    as_of: float = 0.0
+    #: #856.3: the first and last sample time of the window ``rms_*`` is
+    #: computed over, or None when the guider cannot say.
+    rms_from: float | None = None
+    rms_to: float | None = None
+    #: #848/#849: why the guider stopped ITSELF (a runaway, a calibration that
+    #: did not hold the star), in fixed words with no figures, or "".
+    stop_reason: str = ""
 
 
 def rms_total_arcsec(stats: "GuideStats | None") -> float | None:
@@ -175,6 +186,13 @@ class Guider(ABC):
         declination, pier side) and any human-readable advisories. Vendor-neutral
         default: None — a guider that owns its calibration opaquely (PHD2/NINA
         surface it their own way) exposes none, and the UI simply omits the panel."""
+        return None
+
+    def saturated_pulses(self) -> dict[str, int] | None:
+        """Corrections at or over the guider's axis limit, by direction
+        (``{"east": 57, ...}``), cumulative over this guider object's life
+        (#856.1). The sequence engine diffs two reads across an exposure.
+        Vendor-neutral default: None, "this guider cannot say"."""
         return None
 
     async def is_active(self) -> bool:

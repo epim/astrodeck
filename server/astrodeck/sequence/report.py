@@ -299,6 +299,10 @@ class FrameRecord(BaseModel):
     #: written before the fields. Additive, like the PRO-10 fields above.
     mosaic: str | None = None
     panel: str | None = None
+    #: #856: corrections at or over the guider's axis limit during this
+    #: exposure, by direction (``{"east": 57}``); ``{}`` when none; None when
+    #: the guider cannot say. Additive, like the fields above.
+    guide_capped: dict[str, int] | None = None
 
 
 class FilterBreakdown(BaseModel):

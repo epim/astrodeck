@@ -309,7 +309,11 @@ def cal_dir(tmp_path, monkeypatch):
 
 
 def _cal_dict(pier: str, scale: float = 2.0) -> dict:
-    return {"x_rate": 0.0035, "y_rate": 0.0031, "x_angle": 0.7853981634,
+    # #848: within 10 percent of the sim's measured rates (about 0.0074
+    # px/ms). The old 0.0035/0.0031 is half of them, a 2x over-correction
+    # that oscillates and grows on the sim; the calibration probation now
+    # (correctly) discards it. Still not the sim's own numbers.
+    return {"x_rate": 0.0080, "y_rate": 0.0078, "x_angle": 0.7853981634,
             "y_angle": 2.3561944902, "y_angle_error": 0.0,
             "declination": -0.0941, "pier_side": pier,
             "ra_parity": "unknown", "dec_parity": "unknown",
