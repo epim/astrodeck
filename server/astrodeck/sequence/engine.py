@@ -38,7 +38,7 @@ from typing import Any, Callable, Mapping, NamedTuple, NoReturn
 
 from ..aio import reap
 from ..catalog.coords import angular_sep_deg
-from ..config import config_store, frames_payload
+from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
 from .. import capture_geometry, naming
 from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
                             PierSide, SyncRefused, SyncUnverified,
@@ -46,7 +46,8 @@ from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
 from ..events import SITE_DERIVED_KEY, bus, night_key
 from ..focus import run_autofocus
 from ..focus.approach import approach, configured_overshoot
-from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN, TrackingLost
+from ..focus.autofocus import (SWEEP_EXPOSURE_S, SWEEP_GAIN, FieldTrailing,
+                               TrackingLost)
 from ..focus.native import SPARSE_FIELD_WARN
 from ..focus.filter_offsets import narrowband_sweep_settings, solve_filter_slot
 from ..focus.tempcomp import (
@@ -79,7 +80,8 @@ from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
 from .models import ExposureStep, SequencePlan, Target, TargetGroup
 from .panel_order import OrderSnapshot, order_panels
 from .report import FrameRecord, SessionReporter
-from .policy import resolve_policy
+from .policy import (MIN_GUIDE_SCALE_ARCSEC_PX, guide_rms_floor_arcsec,
+                     resolve_policy)
 from .session import Session, SessionFrame, session_store
 
 # --- Monitor / ETA shared constants (single source of truth) ---------------
@@ -259,6 +261,41 @@ SPARSE_RESWEEP_EVERY_S = 600.0
 #: bury the night log in the same sentence, and the native sweep already logs
 #: each probe's count.
 SPARSE_RESWEEP_LOG_EVERY_S = 30 * 60.0
+
+#: How often a VETOED sweep is said in words, after the first (#855), seconds,
+#: monotonic. A vetoed cadence or temperature refocus is re-asked at every
+#: frame boundary, and a re-armed triggered rule fires at every frame. Frames
+#: are 60-300 s, so one line per 600 s is one line per 2-10 frames; the
+#: 56-minute runaway of 2026-10-07 (F+7 to F+63) gives 6 lines. The first veto
+#: of a run, and the first after a 600 s quiet spell, always logs. The
+#: mid-sweep abandon line is NOT rate limited: MAX_TRAIL_ABANDONS bounds the
+#: abandons, so it bounds the lines too.
+TRAIL_VETO_LOG_EVERY_S = 600.0
+#: Hysteresis between STARTING a sweep and ABANDONING one (#855). A sweep
+#: starts only while the guide RMS is at or under the ceiling (the line the
+#: frame gate keeps frames under); once running it is abandoned only above
+#: this factor x the ceiling (6.25" at the 5.0" default). The gate reads an
+#: RMS over n = 100 guide samples, whose relative standard deviation for
+#: independent Gaussian samples is 1/sqrt(2n) = 1/sqrt(200) = 0.0707, so a
+#: steady guider sitting exactly at the ceiling reaches 1.25 x only at
+#: 0.25 / 0.0707 = 3.5 standard deviations (1.8 at a correlated n_eff = 25:
+#: 0.25 / (1/sqrt(50)) = 0.25 / 0.141). The band cuts how often a steady
+#: guider crosses; MAX_TRAIL_ABANDONS is the bound. It sits ABOVE the ceiling
+#: on purpose: a start line below it would open a band where frames are kept
+#: but sweeps are vetoed, and dither transients can hold a rig there all
+#: night (a 19.5" dither at three per window reads sqrt((210 + 3.9375 x 380)
+#: / 100) = 4.13", under 5.0 and over a 4.0 start line).
+TRAIL_SWEEP_ABORT_FACTOR = 1.25
+#: The bound on CONSECUTIVE mid-sweep abandons on a trailing field (#855; a
+#: recovery loop needs an exit). Abandon 1 is free: `_autofocus` returns None
+#: and the trigger re-arms, so one sweep's cost buys a retry once guiding
+#: recovers. Abandon 2 and every later one in the same run counts as a FAILED
+#: attempt (False, `_frames_since_focus = 0`, temperature re-anchor), so the
+#: triggered rule's failure budget (MAX_REARM_AFTER_FAILURE = 3) caps a
+#: watchdog episode at 1 + 3 = 4 sweeps, and a cadence refocus at one per
+#: cadence after the first pair. A sweep that runs to its end, and `start`,
+#: reset the count; an entry veto neither counts nor resets.
+MAX_TRAIL_ABANDONS = 2
 
 #: An autofocus longer than this, run UNGUIDED, earns a re-centre before guiding
 #: starts. Seconds.
@@ -1313,6 +1350,13 @@ class SequenceEngine:
         #: None until the first, so the first says it and the rest at most
         #: every ``SPARSE_RESWEEP_LOG_EVERY_S``. Reset when a debt is made.
         self._sparse_gated_logged_at: float | None = None
+        #: ``time.monotonic()`` of the last "sweep skipped: guide RMS over the
+        #: ceiling" line (#855), None until the first, so the first says it and
+        #: the rest at most every ``TRAIL_VETO_LOG_EVERY_S``.
+        self._trail_veto_logged_at: float | None = None
+        #: CONSECUTIVE sweeps abandoned mid-way on a trailing field (#855).
+        #: A sweep that runs to its end resets it; see MAX_TRAIL_ABANDONS.
+        self._trail_abandons = 0
         #: ``(session, frames seen, accepted map)``: the memo behind
         #: `_ledger_counts` (#516), or None until it is first asked, and
         #: again after `start` and once the run's session is let go.
@@ -2046,6 +2090,8 @@ class SequenceEngine:
         self._sparse_resweep_due = False
         self._sparse_resweep_next = None
         self._sparse_gated_logged_at = None
+        self._trail_veto_logged_at = None
+        self._trail_abandons = 0
         self._accepted_seen = None
         self._focus_groups_acquired = set()
         # THE LADDER'S SWEEP IS THIS RUN'S GOOD SWEEP (#402), on a resume
@@ -17715,6 +17761,24 @@ class SequenceEngine:
                         self._frame_had_event = True
                         if ok is False:
                             self._rearm_failed_rule(fa)
+                        elif ok is None:
+                            # NOT TRIED (#855): the stars were trailing. The
+                            # fire did not happen, so undo what it spent: the
+                            # rule goes back on its edge WITHOUT spending the
+                            # failure budget, a `once` rule gets its one shot
+                            # back, and a cooldown does not start. A runaway
+                            # cannot retire the watchdog; it fires again next
+                            # frame and the sweep runs once guiding is back
+                            # under the ceiling. `last_fire_ts = 0.0` gives the
+                            # same cooldown answer as the timestamp the fire
+                            # overwrote: the vetoed fire had already passed
+                            # the cooldown test against it, and every later
+                            # boundary is later still.
+                            rec = self._fire_state.get(fa.instruction_id)
+                            if rec is not None:
+                                rec.armed = True
+                                rec.fired_count = max(0, rec.fired_count - 1)
+                                rec.last_fire_ts = 0.0
                         else:
                             # CONSECUTIVE, not lifetime. Without this the budget
                             # counted every failure of the night, so two sweeps
@@ -18743,6 +18807,25 @@ class SequenceEngine:
             pass
         return None
 
+    def _guide_rms_judged(self) -> tuple[float | None, bool]:
+        """``(arcsec, exact)`` for the guide-RMS gate and the sweep veto (#854).
+
+        ``_guide_rms()`` first, unchanged, so a value in arcsec is exact. When
+        it cannot convert (raw pixels, no scale), the floor from
+        `policy.guide_rms_floor_arcsec`: the smallest arcsec the pixels can be
+        at any guide scale, which can only ever reject a runaway. (None, False)
+        when no guider is connected or nothing can be read."""
+        rms = self._guide_rms()
+        if rms is not None:
+            return rms, True
+        try:
+            g = self.hub.guider
+            if g and g.connected:
+                return guide_rms_floor_arcsec(g.stats()), False
+        except Exception:      # noqa: BLE001 - unreadable is "cannot say"
+            pass
+        return None, False
+
     def _guiding_now(self) -> bool:
         """True when a guider is connected and actually guiding (so an unreadable
         RMS is a UNIT problem worth reporting, not simply 'unguided')."""
@@ -18752,6 +18835,60 @@ class SequenceEngine:
         except Exception:
             return False
 
+    def _field_trailing_now(self, *, aborting: bool = False
+                            ) -> tuple[float, float, float, bool] | None:
+        """``(rms, limit, ceiling, exact)`` while the guider is guiding and its
+        RMS is over ``limit``, else None (#855). The stars are trailing then,
+        and a focus sweep would measure the trail.
+
+        HYSTERESIS: a sweep STARTS only at or under the ceiling (``limit`` is
+        the ceiling), and a running sweep is ABANDONED only above
+        TRAIL_SWEEP_ABORT_FACTOR x the ceiling (``aborting=True``). One number
+        for both let a guider wandering around the ceiling start, abandon and
+        restart a sweep at every frame boundary.
+
+        THE CEILING FALLS BACK TO DEFAULT_MAX_GUIDE_RMS WHEN THE STANDARD IS 0.
+        Deliberate, and the one place `or` is right (see policy.py's module
+        docstring for why it is wrong elsewhere): a 0 turns off FRAME
+        rejection, which costs at most the frames; a sweep on trails moves the
+        focuser and stores a slope that outlives the night. A guider that is
+        not guiding (stopped, settling, lost) vetoes nothing: an unguided
+        2-6 s focus frame on this mount drifts under 2" (about 15"/min
+        unguided, so 6 s is 1.5")."""
+        if not self._guiding_now():
+            return None
+        ceiling = self._policy.max_guide_rms or DEFAULT_MAX_GUIDE_RMS
+        limit = ceiling * TRAIL_SWEEP_ABORT_FACTOR if aborting else ceiling
+        rms, exact = self._guide_rms_judged()
+        if rms is None or rms <= limit:
+            return None
+        return rms, limit, ceiling, exact
+
+    @staticmethod
+    def _trail_phrase(rms: float, limit: float, ceiling: float,
+                      exact: bool) -> str:
+        """The start-line and abort-line phrases of the #855 veto, for
+        example 'guide RMS 773.0" is over the 5.0" ceiling'."""
+        over = (f'the {ceiling:.1f}" ceiling' if limit <= ceiling else
+                f'{limit:.2f}", {TRAIL_SWEEP_ABORT_FACTOR:.0%} of the '
+                f'{ceiling:.1f}" ceiling')
+        return f'guide RMS {"" if exact else "at least "}{rms:.1f}" is over {over}'
+
+    async def _sweep_probe(self) -> bool | None:
+        """The sweep's per-point probe: tracking first, then trailing (#855).
+
+        Tracking first because a stopped mount also blows up the guide RMS,
+        and the mount's own gate owns that case and its recovery. A trailing
+        field raises FieldTrailing, which `assert_tracking` lets through, so
+        the sweep unwinds through its own teardown."""
+        state = await self._tracking_now()
+        if state is False:
+            return False
+        trail = self._field_trailing_now(aborting=True)
+        if trail is not None:
+            raise FieldTrailing(self._trail_phrase(*trail), limit=trail[1])
+        return state
+
     def _warn_rms_unit_once(self) -> None:
         """Say ONCE per run why an armed max-guide-RMS gate isn't judging frames,
         instead of silently passing everything (the failure mode that made #11
@@ -18759,11 +18896,15 @@ class SequenceEngine:
         if getattr(self, "_rms_unit_warned", False):
             return
         self._rms_unit_warned = True
+        # #854: the gate still judges pixels through the floor
+        # (`policy.guide_rms_floor_arcsec`), so only a runaway is caught. The
+        # action comes first so the humanizer's 137 characters keep it.
+        ceiling = self._policy.max_guide_rms
         bus.log("warning",
-                "max guide RMS is set in arcsec, but the guider is reporting "
-                "guide-camera pixels with no image scale — set the guide scope's "
-                "focal length in Settings so this gate can be judged. Frames are "
-                "NOT being rejected on guide RMS.", "sequence")
+                "Set the guide scope focal length in Settings > Optics: the "
+                "guider reports pixels, so guide RMS rejects only a runaway "
+                f"over {ceiling / MIN_GUIDE_SCALE_ARCSEC_PX:.0f} px.",
+                "sequence")
 
     def _check_quality(self, info: dict, *, record: bool = True,
                        calibration: bool = False) -> bool:
@@ -18813,18 +18954,40 @@ class SequenceEngine:
             # observed the guider stopped is held to the stricter rule.
             if self._frame_guided is False:
                 self._rejected += 1
+                # #854: the ceiling is on by default now, so the sentence
+                # names the action rather than a choice the operator made.
                 bus.log("warning",
-                        "guide RMS ceiling is set, but this frame was shot "
-                        "with the guider stopped — rejected", "sequence")
+                        "Rejected: shot with the guider stopped. Start guiding, "
+                        "or set Reject above (guide RMS) to 0 in the plan or "
+                        "Settings > Standards.", "sequence")
                 accepted = False
+            elif not (plan and plan.guide) and not self._guiding_now():
+                # AN IDLE GUIDER'S RMS IS STALE (#854). This plan does not
+                # guide, so `_frame_was_guided` answered True without asking
+                # the guider and the D-06 branch above cannot see it. PHD2
+                # keeps its last 300 samples after it stops (`guide/phd2.py`,
+                # never cleared) and `stats()` keeps returning their RMS with
+                # guiding=False. Judged, one stale runaway figure would reject
+                # every frame of an unguided night and the reject guards
+                # would end it. Nothing is guiding this frame, so there is no
+                # guide RMS to judge.
+                pass
             else:
-                rms = self._guide_rms()
-                if rms is None and self._guiding_now():
+                # #854: pixels with no scale are judged through a FLOOR (the
+                # smallest arcsec they can be at any guide scale), so a
+                # runaway is rejected whether or not the focal length is set.
+                rms, exact = self._guide_rms_judged()
+                if not exact and self._guiding_now():
                     self._warn_rms_unit_once()
-                if rms is not None and rms > self._policy.max_guide_rms:
+                ceiling = self._policy.max_guide_rms
+                if rms is not None and rms > ceiling:
                     self._rejected += 1
-                    bus.log("warning", f'guide RMS {rms:.2f}" above ceiling '
-                                       f'{self._policy.max_guide_rms:.2f}"', "sequence")
+                    bus.log("warning",
+                            f'guide RMS {rms:.2f}" above ceiling {ceiling:.2f}"'
+                            if exact else
+                            f'guide RMS {rms / MIN_GUIDE_SCALE_ARCSEC_PX:.1f} px '
+                            f'is at least {rms:.1f}" at any guide scale, above '
+                            f'ceiling {ceiling:.2f}"', "sequence")
                     accepted = False
         if accepted and not calibration and self._policy.max_eccentricity > 0:
             # TWO statistics, ONE dial: the median ceiling plus the
@@ -18832,7 +18995,14 @@ class SequenceEngine:
             # faint stars drag the median back under it. The rule and the
             # measured margins that chose it live on RunPolicy
             # (`eccentricity_reject_reason`), beside the setting they read.
-            reason = self._policy.eccentricity_reject_reason(info)
+            # The guide RMS is quoted beside the verdict (#854): exact arcsec
+            # only, a pixel floor is not a figure worth quoting. And only while
+            # the guider is GUIDING: an idle guider's RMS is stale (see the
+            # E6b arm above), and quoting a stale runaway figure would send
+            # the operator to the mount for a fault in focus.
+            reason = self._policy.eccentricity_reject_reason(
+                info, guide_rms=(self._guide_rms() if self._guiding_now()
+                                 else None))
             if reason:
                 self._rejected += 1
                 bus.log("warning", reason, "sequence")
@@ -19233,8 +19403,12 @@ class SequenceEngine:
 
     async def _autofocus(self, label: str, *, step=None,
                          target: Target | None = None,
-                         resweep: bool = False) -> bool:
-        """Run one autofocus. Returns True if it found focus.
+                         resweep: bool = False) -> bool | None:
+        """Run one autofocus. Returns True if it found focus, False if it tried
+        and did not (including a second consecutive sweep abandoned on a
+        trailing field, see MAX_TRAIL_ABANDONS), None if it did not try, or
+        abandoned a first sweep, because the guider was trailing the stars
+        (#855).
 
         The return exists for the instruction dispatcher: an edge-triggered rule
         has to know whether its action actually addressed the condition, or a
@@ -19275,17 +19449,16 @@ class SequenceEngine:
         that cannot gate (a backend's own autofocus, the legacy numpy
         sweep) runs the owed sweep on the cadence ungated, bounded by the
         failure that owes nothing more.
+
+        A SWEEP IS NOT STARTED ON A TRAILING FIELD (#855). On 2026-10-07 a
+        guider runaway inflated the HFR, the relative watchdog fired a sweep,
+        and the sweep measured the trails, moved the focuser 22 steps and
+        stored their slope. While the guider is guiding over the guide-RMS
+        ceiling this returns None BEFORE any state changes; a sweep that is
+        running probes for a runaway at every point (`_sweep_probe`, over
+        TRAIL_SWEEP_ABORT_FACTOR x the ceiling) and is abandoned through its
+        own teardown, bounded by MAX_TRAIL_ABANDONS.
         """
-        self._set_state(detail=label)
-        _t0 = time.time()
-        failed_reason: str | None = None
-        # WHATEVER RUNS NOW ANSWERS A SWEEP OWED SINCE THE SPARSE-FIELD
-        # FAILURES (#507): the debt was for a sweep, not for this label.
-        self._sparse_resweep_owed = False
-        self._sparse_resweep_due = False
-        #: The failed retry's result, when a sparse-field failure was retried
-        #: and failed again; None otherwise.
-        sparse_retry: Any = None
         # A SWEEP IS TEN EXPOSURES OVER FIVE MINUTES AND USED TO ASK NOBODY.
         # On 2026-08-21 one ran to completion on a mount that had stopped four
         # minutes earlier, consumed the drift as data, returned HFR 8.40 px
@@ -19293,6 +19466,28 @@ class SequenceEngine:
         # the light-frame gate uses, so the two cannot disagree.
         needs_tracking = self._is_light(step) and not getattr(
             target, "calibration", False)
+        if needs_tracking:
+            # THE STARS ARE TRAILING (#855): a sweep would measure the trail.
+            # Asked first, so a veto changes no state at all (no detail, no
+            # sparse debt, no abandon count). Calibration targets and
+            # dark/bias/flat steps are exempt as from the tracking probe.
+            trail = self._field_trailing_now()
+            if trail is not None:
+                self._say_sweep_vetoed(label, trail)
+                return None
+        self._set_state(detail=label)
+        _t0 = time.time()
+        failed_reason: str | None = None
+        # Held for the #855 abandon arm: a debt this entry clears and no
+        # sweep answers is owed again.
+        owed_before = self._sparse_resweep_owed
+        # WHATEVER RUNS NOW ANSWERS A SWEEP OWED SINCE THE SPARSE-FIELD
+        # FAILURES (#507): the debt was for a sweep, not for this label.
+        self._sparse_resweep_owed = False
+        self._sparse_resweep_due = False
+        #: The failed retry's result, when a sparse-field failure was retried
+        #: and failed again; None otherwise.
+        sparse_retry: Any = None
         restore_filter: str | None = None
         try:
             cam = self.hub.require("camera")
@@ -19319,7 +19514,7 @@ class SequenceEngine:
                 return await run_autofocus(
                     cam, foc, hub=self.hub, exposure_s=seconds, gain=gain,
                     binning=binning, expose_guard=self.hub.exposure_guard,
-                    tracking_check=self._tracking_now if needs_tracking
+                    tracking_check=self._sweep_probe if needs_tracking
                     else None, **kw)
 
             result = await _sweep(exposure_s, gate=resweep)
@@ -19384,10 +19579,46 @@ class SequenceEngine:
                     (int(pos), time.monotonic())
                     if isinstance(pos, (int, float)) else None)
             self._frames_since_focus = 0
+            # A SWEEP THAT RAN TO ITS END, success or failure, is evidence the
+            # field held still through it (#855): the abandon run is over.
+            self._trail_abandons = 0
             self._record_event_cost("autofocus", time.time() - _t0)
             await self._capture_focus_temp()
         except SafetyAbort:
             raise
+        except FieldTrailing as e:
+            # NOT AN AUTOFOCUS FAILURE (#855): the sweep was measuring trails,
+            # its teardown put the focuser back, and nothing was stored. No
+            # af_failure_action, and `_last_focus_at` stays: the focuser is
+            # where the last good focus left it, and the fault is the
+            # guider's, which its own recovery owns. A sparse-field debt this
+            # entry cleared is owed again, one cadence on, since no sweep
+            # answered it.
+            self._record_event_cost("autofocus", time.time() - _t0)
+            if owed_before:
+                self._sparse_resweep_owed = True
+                self._sparse_resweep_next = (time.monotonic()
+                                             + SPARSE_RESWEEP_EVERY_S)
+            self._trail_abandons += 1
+            if self._trail_abandons < MAX_TRAIL_ABANDONS:
+                bus.log("warning",
+                        f"{label} abandoned: {e}; focuser back, nothing "
+                        f"stored", "sequence")
+                return None
+            # BOUNDED (RULES: a recovery loop needs an exit; #72, #134). Two
+            # sweeps in a row abandoned on a trailing field: this one counts
+            # as a FAILED ATTEMPT, so the trigger's failure budget and the
+            # cadence bookkeeping bound the retries. The same two lines the
+            # failed-sweep path runs (`_frames_since_focus = 0` and the
+            # temperature re-anchor); not `_last_focus_at = None`, for the
+            # reason above.
+            self._frames_since_focus = 0
+            await self._capture_focus_temp()
+            bus.log("warning",
+                    f"{label} abandoned {self._trail_abandons} times running: "
+                    f'guide RMS over {e.limit:.2f}"; counted as a failed '
+                    f"refocus. Steady the guiding first.", "sequence")
+            return False
         except TrackingLost as e:
             # A STOPPED MOUNT IS NOT AN AUTOFOCUS FAILURE. It has its own
             # detector, its own escalation and — since 2026-08-22 — its own
@@ -19609,6 +19840,19 @@ class SequenceEngine:
                 f"autofocus owed since then will take a probe at the next "
                 f"frame boundary and sweep only if it finds at least "
                 f"{SPARSE_FIELD_WARN} stars", "sequence")
+
+    def _say_sweep_vetoed(self, label: str,
+                          trail: tuple[float, float, float, bool]) -> None:
+        """Say why a sweep was not started (#855), at most once per
+        TRAIL_VETO_LOG_EVERY_S after the first."""
+        now = time.monotonic()
+        last = self._trail_veto_logged_at
+        if last is not None and now - last < TRAIL_VETO_LOG_EVERY_S:
+            return
+        self._trail_veto_logged_at = now
+        bus.log("warning",
+                f"{label} skipped: {self._trail_phrase(*trail)}; a sweep "
+                f"would measure star trails", "sequence")
 
     def _say_probe_declined(self, label: str, result) -> None:
         """The owed sweep's probe did not clear the line (#558): say so in

@@ -147,11 +147,14 @@ def _config_lines(monkeypatch) -> list[tuple[str, str]]:
     return seen
 
 
-def test_the_schema_is_3():
+def test_the_schema_reaches_3():
     # DELIBERATE PIN CHANGE (WP-95): this is the stamp the migration is keyed
     # on. The 2 -> 3 step is `stored < 3`; with CONFIG_SCHEMA left at 2 a
     # stamped-2 file is "current" and the step could never run.
-    assert CONFIG_SCHEMA == 3
+    # DELIBERATE PIN CHANGE (#854): `>= 3`, since the 3 -> 4 guide-RMS step
+    # moved the stamp on; what this guards is that the 2 -> 3 step can run.
+    # The number 4 is pinned once, in test_guide_rms_ceiling_default.py.
+    assert CONFIG_SCHEMA >= 3
 
 
 def test_a_schema_2_false_is_raised_to_true_once_and_stamped(tmp_path):
@@ -165,9 +168,10 @@ def test_a_schema_2_false_is_raised_to_true_once_and_stamped(tmp_path):
                   "safety": {"close_dome_when_done": False}})
     cfg = ConfigStore(path=path).cfg()
     assert cfg.safety.close_dome_when_done is True
-    assert cfg.schema_version == 3
+    # DELIBERATE PIN CHANGE (#854): the current stamp, not 3.
+    assert cfg.schema_version == CONFIG_SCHEMA
     on_disk = _read(path)
-    assert on_disk["schema_version"] == 3
+    assert on_disk["schema_version"] == CONFIG_SCHEMA
     assert on_disk["safety"]["close_dome_when_done"] is True, (
         "the raise has to be persisted, or every boot re-runs it for ever")
 
@@ -245,7 +249,9 @@ def test_the_raise_is_said_once_and_only_when_it_changed_something(
                    "safety": {"close_dome_when_done": True}})
     assert ConfigStore(path=other).cfg().safety.close_dome_when_done is True
     assert not [1 for _l, m in seen if "close_dome_when_done" in m], seen
-    assert _read(other)["schema_version"] == 3, "still stamped, so it never re-checks"
+    # DELIBERATE PIN CHANGE (#854): the current stamp, not 3.
+    assert _read(other)["schema_version"] == CONFIG_SCHEMA, (
+        "still stamped, so it never re-checks")
 
 
 def test_the_steps_compose_from_schema_1(tmp_path):
@@ -257,7 +263,8 @@ def test_the_steps_compose_from_schema_1(tmp_path):
     cfg = ConfigStore(path=path).cfg()
     assert cfg.standards.max_eccentricity == 0.65
     assert cfg.safety.close_dome_when_done is True
-    assert cfg.schema_version == 3
+    # DELIBERATE PIN CHANGE (#854): the current stamp, not 3.
+    assert cfg.schema_version == CONFIG_SCHEMA
 
 
 def test_a_config_restored_from_its_backup_is_migrated_as_well(tmp_path):
@@ -275,5 +282,6 @@ def test_a_config_restored_from_its_backup_is_migrated_as_well(tmp_path):
     cfg = ConfigStore(path=path).cfg()
     assert cfg.version == 4, "the backup was used"
     assert cfg.safety.close_dome_when_done is True
-    assert _read(path)["schema_version"] == 3
+    # DELIBERATE PIN CHANGE (#854): the current stamp, not 3.
+    assert _read(path)["schema_version"] == CONFIG_SCHEMA
     assert _read(path)["safety"]["close_dome_when_done"] is True

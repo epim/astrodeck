@@ -245,7 +245,8 @@ def test_a_stored_zero_from_before_the_default_is_raised_once(tmp_path):
     # and is written at the current schema. What this case grades is
     # unchanged: the 1 -> 2 raise of the eccentricity ceiling still happens,
     # once, and is persisted.
-    assert on_disk["schema_version"] == CONFIG_SCHEMA == 3
+    # DELIBERATE PIN CHANGE (#854): 4 now, after the 3 -> 4 guide-RMS step.
+    assert on_disk["schema_version"] == CONFIG_SCHEMA == 4
     assert on_disk["standards"]["max_eccentricity"] == 0.65, (
         "the raise has to be persisted, or every boot re-migrates for ever")
 
