@@ -445,7 +445,9 @@ class _StubEngine:
         self.tracking: list = []
         self.limit_checks: list = []
 
-    def start(self, plan, *, session=None, tracking=None):
+    def start(self, plan, *, session=None, tracking=None, operator=True):
+        # ``operator``: ResumeArm passes False (#853, ruling R5); without it
+        # this stub would raise TypeError, logged as a refusal.
         # ``tracking`` because ResumeArm passes the target its ladder
         # re-centred (#202). Without it this stub raised TypeError, which
         # the tick logs as a refusal: a test asserting only on the ladder

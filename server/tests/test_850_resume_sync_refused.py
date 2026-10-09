@@ -267,7 +267,8 @@ class _Engine:
                                 projected=True):
         return None
 
-    def start(self, plan, *, session=None, tracking=None):
+    def start(self, plan, *, session=None, tracking=None, operator=True):
+        # ``operator``: ResumeArm passes False (#853, ruling R5).
         return None
 
 

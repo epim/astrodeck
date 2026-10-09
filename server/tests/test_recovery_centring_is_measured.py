@@ -137,7 +137,8 @@ def _assert_recovered(st: dict) -> None:
 
 @pytest.mark.parametrize("error_arcmin, said", [
     (None, "plate solve failed"),
-    (3.2, "converged to 3.2'"),
+    # "ended", not "converged" (#852).
+    (3.2, "ended 3.2' off target"),
 ])
 async def test_a_recovery_that_did_not_converge_leaves_centered_false(
         sim_hub, monkeypatch, bus_lines, error_arcmin, said):
@@ -214,6 +215,66 @@ async def test_the_other_callers_still_hear_the_recovery_report_its_miss(
     assert len(misses) == 1 and "re-centring after the recovery" in misses[0], (
         f"the recovery no longer reports its own miss to the callers that do "
         f"not: {misses}")
+
+
+async def test_a_recovery_whose_re_centre_missed_never_says_continuing(
+        sim_hub, monkeypatch, bus_lines):
+    """#852: the recovery's re-centre did not move the mount and the field is
+    255' off. That is a miss: the target stops (`_recover_from_tracking_
+    refusal`, in the miss's own words), and the recovery's report line does
+    not also say "— continuing" just before it.
+
+    Mutant "the report ignores a miss" (the ``and
+    self._centring_miss(centring, target) is None`` condition removed from
+    `_do_tracking_recovery`'s report line): RED -
+        AssertionError: a miss was also reported as continuing: ["Alpha:
+        re-centring after the recovery ended 255.0' off target — continuing"]
+    """
+    from astrodeck.sequence.engine import CENTRING_DID_NOT_MOVE, StopTarget
+    st = _pinned_mount(sim_hub, monkeypatch, [
+        {"centered": False, "error_arcmin": 255.0, "attempts": 2,
+         "did_not_move": True}])
+    e, t = _engine(sim_hub)
+    with pytest.raises(StopTarget) as ei:
+        await e._enforce_tracking(t.steps[0], t)
+    assert "park" in st["events"] and "goto" in st["events"], (
+        f"premise: the recovery must run: {st['events']}")
+    assert str(ei.value) == (
+        f"re-centring after the tracking recovery: {CENTRING_DID_NOT_MOVE}")
+    assert _misses(bus_lines) == [], (
+        f"a miss was also reported as continuing: {_misses(bus_lines)}")
+
+
+async def test_an_unmoved_recovery_inside_the_ceiling_says_one_line(
+        sim_hub, monkeypatch, bus_lines):
+    """#852, ruling R3: the recovery's re-centre did not move the mount and
+    the field is 8' off, inside the 11.25' ceiling (a 67.4' x 45' field), so
+    imaging goes on. Exactly one line says so, with the figure; the
+    recovery's own report does not add a second, contradicting "— continuing"
+    line about the same result.
+
+    MUTANT "the report ignores R3" (the ``and self._unmoved_inside_line(
+    centring, target) is None`` condition removed from
+    `_do_tracking_recovery`'s report line): RED -
+        AssertionError: a second line about the same result: ["Alpha:
+        re-centring after the recovery ended 8.0' off target — continuing"]
+    """
+    st = _pinned_mount(sim_hub, monkeypatch, [
+        {"centered": False, "error_arcmin": 8.0, "attempts": 2,
+         "did_not_move": True}])
+    monkeypatch.setattr(sim_hub, "effective_optics",
+                        lambda: {"fov_w_deg": 1.123, "fov_h_deg": 0.75})
+    e, t = _engine(sim_hub)
+    await e._enforce_tracking(t.steps[0], t)       # imaged on, no StopTarget
+    assert "park" in st["events"] and "goto" in st["events"], (
+        f"premise: the recovery must run: {st['events']}")
+    assert _misses(bus_lines) == [], (
+        f"a second line about the same result: {_misses(bus_lines)}")
+    said = [m for _l, m, _s in bus_lines if "8.0' off target" in m]
+    assert said == ["Alpha: re-centring after the tracking recovery: the "
+                    "correction slew did not move the mount, so imaging goes "
+                    "on: the field is 8.0' off target, inside the 11.2' "
+                    "limit"], said
 
 
 # ------------------------------------------------ the target's centring (#170)

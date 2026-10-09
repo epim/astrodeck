@@ -81,6 +81,18 @@ import test_recovery_centring_is_measured as rcm
 import test_the_flip_stops_paying_for_itself as flp
 
 
+@pytest.fixture
+def _the_window_is_open(monkeypatch):
+    """The no-light hold bounds itself by the target's own window, computed
+    for the hour the suite runs: on the base tree at 00:25 and 00:57 PDT the
+    fictional target's window had closed, so the hold never looped and the
+    test failed by the clock (the #682 shape). "Unknown" here, so the hold's
+    retries depend on its own count."""
+    import astrodeck.flows.tonight as tonight_mod
+    monkeypatch.setattr(tonight_mod, "target_own_window",
+                        lambda *a, **kw: None)
+
+
 def _refused(error_arcmin: float | None = 150.0, reply: str = "e11") -> dict:
     """The hub's answer for a refused sync whose solve is off target (F2's
     exact keys; the rotation keys are irrelevant to the engine here)."""
@@ -344,7 +356,8 @@ async def test_an_unrecognised_reply_is_never_quoted(reply, bus_lines):
 
 
 @pytest.mark.parametrize("answer, said", [
-    ({"centered": False, "error_arcmin": 4.0}, "converged to 4.0'"),
+    # "ended", not "converged" (#852): the hub ran out of attempts.
+    ({"centered": False, "error_arcmin": 4.0}, "ended 4.0' off target"),
 ])
 async def test_control_a_plain_miss_still_continues(answer, said, bus_lines):
     """CONTROL. A centring that missed without a sync not taken keeps
@@ -381,6 +394,7 @@ async def test_control_a_solve_failure_still_holds_for_light(bus_lines):
 
 
 @_BY_KIND
+@pytest.mark.usefixtures("_the_window_is_open")
 async def test_a_hold_retry_whose_sync_was_not_taken_ends_the_hold_and_stops(
         kind, bus_lines):
     """The REAL no-light hold: the first centring found nothing to solve, the
@@ -599,12 +613,13 @@ def test_premise_only_the_flip_and_the_recovery_can_go_on():
 
 
 def test_premise_every_stop_site_is_found():
-    """PREMISE for the two tests below: the scan finds all six sites
+    """PREMISE for the two tests below: the scan finds all seven sites
     (acquisition, the flip, the three mid-run re-centres, the tracking
-    recovery), so neither can pass on an empty list.
+    recovery, and the pointing re-check's miss hold, #851), so neither can
+    pass on an empty list.
 
     RED under each "the site ignores the result" mutant (a call removed)
-    and under "raise before the bookkeeping" (a seventh call added).
+    and under "raise before the bookkeeping" (an eighth call added).
     """
     assert sorted(_wheres()) == sorted([
         "centring at acquisition",
@@ -613,6 +628,8 @@ def test_premise_every_stop_site_is_found():
         "re-centring after the guide star went missing",
         "re-centring after the guided field walked",
         "re-centring after the tracking recovery",
+        # #851: the pointing re-check's miss hold re-centres too.
+        "re-centring after the pointing re-check",
     ]), _wheres()
 
 
