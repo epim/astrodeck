@@ -1871,10 +1871,13 @@ class ResumeArm:
                 # acquired itself, so without this nothing watched that
                 # mount's idle time, floor or flip point until the run set
                 # a target up (#202). See ``_tracking_for``.
+                # ``operator=False``: an automatic restart keeps tonight's
+                # per-target hold and re-centre budgets (#853, ruling R5),
+                # so a runaway cannot buy a fresh budget by being resumed.
                 self.engine.start(replan_cooling(
                     fresh.plan, config_store.cfg().cooling.setpoint_c),
                     session=fresh, tracking=self._tracking_for(fresh),
-                    **handed)
+                    operator=False, **handed)
                 # Taken: a later start of this process is not stood on it.
                 if handed:
                     self._recovery_sweep = None
