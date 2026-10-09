@@ -8,9 +8,15 @@ wherever the tube really is, and believes it is already home, so ``:hP#`` moves
 nothing. WP-103 made the driver say so (``position_known`` False, and a warning
 that "the tube may not have moved"), but the route's own success line followed
 that warning unconditionally: a night log that said the mount was homed beside a
-line saying it may not have moved. The route now reads ``position_known`` BEFORE
-it sends the home, and logs the line only for a known position. With an unknown
-one it logs nothing; the driver's warning is the whole truth.
+line saying it may not have moved. The route then read ``position_known`` BEFORE
+it sent the home, and logged the line only for a known position.
+
+#886 goes further: a home is not SENT while the position is unknown. On the
+AM5 ``:hP#`` is a goto to the MODEL's home, aimed from the believed position,
+so the route answers 409 ``position_unknown`` in the safe order, and the same
+gate is asked again under the motion lock right before ``find_home`` (a
+position can turn unknown while the home waits for the lock). A home is then
+only ever sent from a known position, which is what makes the line honest.
 
 A real ``create_app()`` and TestClient over a fake telescope, as
 test_mount_routes_retire_solved_pointing.py does for the same routes.
@@ -19,15 +25,20 @@ Named mutants, each run from a byte backup of ``api/app.py`` and restored
 byte-identically (sha256 compared, the mutant text grepped absent). The failing
 assertion is quoted:
 
-* "logged regardless" -- ``if known:`` made ``if True:``:
-  ``test_a_mount_whose_position_is_unknown_logs_no_homed_line``,
-  ``AssertionError: a mount whose position was unknown was reported as homed:
-  [('info', 'mount homed', 'mount')]``.
-* "known read after the home" -- ``known = getattr(t, "position_known", True)``
-  moved below ``await t.find_home()``:
-  ``test_a_driver_that_clears_the_flag_as_it_homes_still_logs_nothing``,
-  ``AssertionError: a mount whose position was unknown when the home was sent
-  was reported as homed: [('info', 'mount homed', 'mount')]``.
+* H1 "home ungated" -- the ``_refuse_if_position_unknown(tel)`` call in the
+  home route removed:
+  ``test_a_mount_whose_position_is_unknown_is_not_homed``,
+  ``AssertionError: (200, '{"started":"goto"}')``.
+* M0 "the gate ignores the commanded driver" -- in
+  ``devices.base.position_known_for_motion`` the ``tel`` read (``if tel is
+  not None and not bool(getattr(tel, "position_known", True)): return
+  False``) made ``pass``; the hub here holds no telescope of its own, so only
+  the driver the route commands knows: the same test,
+  ``AssertionError: (200, '{"started":"goto"}')``.
+* H2 "home ungated at the seam" -- ``if _abandon_if_position_unknown(t,
+  "home"): return`` in ``_home`` removed:
+  ``test_a_position_lost_while_the_home_waits_sends_nothing``,
+  ``AssertionError: a home was sent from an unknown position: ['home']``.
 * "never logs" -- the ``bus.log("info", "mount homed", "mount")`` line deleted:
   ``test_a_mount_whose_position_is_known_is_logged_as_homed``,
   ``AssertionError: a known-position home wrote no 'mount homed' line: []``.
@@ -73,16 +84,6 @@ class _Tel:
         self.did.append("home")
 
 
-class _ClearsAsItHomes(_Tel):
-    """A driver that flips ``position_known`` to True once its home returns."""
-
-    position_known = False
-
-    async def find_home(self) -> None:
-        await super().find_home()
-        self.position_known = True
-
-
 def _home(client, monkeypatch, tel) -> None:
     """POST the route, then wait (against a wall-clock deadline, #669) for the
     spawned task to finish, so the line that follows the device call has either
@@ -116,28 +117,66 @@ def test_a_mount_whose_position_is_known_is_logged_as_homed(
             f"a known-position home wrote no 'mount homed' line: {bus_lines}")
 
 
-def test_a_mount_whose_position_is_unknown_logs_no_homed_line(
+def test_a_mount_whose_position_is_unknown_is_not_homed(
         client, monkeypatch, bus_lines):
+    """#886. The route refuses with 409 ``position_unknown``, its detail in
+    the safe order with no goto word, and nothing reaches the driver."""
+    from astrodeck.mount_offset import (POSITION_UNKNOWN_CODE,
+                                        POSITION_UNKNOWN_MOTION_DETAIL)
     tel = _Tel(position_known=False)
+    monkeypatch.setattr(app_module.hub, "require", lambda role: tel)
 
-    _home(client, monkeypatch, tel)
+    r = client.post("/api/mount/home")
 
-    assert tel.did == ["home"], "premise: the home was sent all the same"
-    assert _homed(bus_lines) == [], (
-        f"a mount whose position was unknown was reported as homed: "
-        f"{_homed(bus_lines)}")
+    assert r.status_code == 409, (r.status_code, r.text)
+    body = r.json()["detail"]
+    assert body == {"detail": POSITION_UNKNOWN_MOTION_DETAIL,
+                    "code": POSITION_UNKNOWN_CODE}, body
+    time.sleep(0.2)     # a spawned home, had there been one, has run
+    assert tel.did == [], f"a home was sent from an unknown position: {tel.did}"
+    assert _homed(bus_lines) == [], _homed(bus_lines)
 
 
-def test_a_driver_that_clears_the_flag_as_it_homes_still_logs_nothing(
+class _LostWhileQueued(_Tel):
+    """A driver whose position turns unknown after the route's gate answered
+    and before the spawned home runs (an AM5 link reopen that reads the home
+    pole while the home waits for the motion lock)."""
+
+    position_known = True
+
+
+def test_a_position_lost_while_the_home_waits_sends_nothing(
         client, monkeypatch, bus_lines):
-    """The answer is the one that held when the home was SENT. A driver that
-    marks its position known when the home returns has not shown that the tube
-    moved, so reading the flag afterwards would turn "unknown" into a claim."""
-    tel = _ClearsAsItHomes()
+    """#886, the gate at the seam. The route's gate passed, the latch was set
+    before the home's turn at the motion lock: nothing is sent, no "homed"
+    line, and one warning in the safe order says nothing was moved."""
+    hub = app_module.hub
+    tel = _LostWhileQueued()
+    calls = {"n": 0}
 
-    _home(client, monkeypatch, tel)
+    def require(role):
+        calls["n"] += 1
+        if calls["n"] >= 2:          # the spawned task's own require
+            tel.position_known = False
+        return tel
+    monkeypatch.setattr(hub, "require", require)
 
-    assert tel.position_known is True, "premise: the driver cleared the flag"
-    assert _homed(bus_lines) == [], (
-        f"a mount whose position was unknown when the home was sent was "
-        f"reported as homed: {_homed(bus_lines)}")
+    r = client.post("/api/mount/home")
+    assert r.status_code == 200, r.text
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        task = hub._busy.get("goto")
+        if calls["n"] >= 2 and (task is None or task.done()):
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("the home task never ran")
+
+    assert tel.did == [], f"a home was sent from an unknown position: {tel.did}"
+    assert _homed(bus_lines) == [], _homed(bus_lines)
+    said = [m for _l, m, _s in bus_lines if m.endswith("Nothing was moved (home)")]
+    assert len(said) == 1, bus_lines
+    head = said[0][:137]
+    assert "Trust position" in head and "pad key" in head, head
+    for word in ("goto", "go to", "slew"):
+        assert word not in said[0].lower(), (word, said[0])

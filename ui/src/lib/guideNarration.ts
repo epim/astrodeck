@@ -9,7 +9,8 @@
 // GuideView render is a thin binding — see §1.6.
 
 export type GuidePhase =
-  | "idle" | "finding" | "calibrating" | "settling" | "guiding" | "lost";
+  | "idle" | "finding" | "calibrating" | "settling" | "guiding" | "lost"
+  | "stopped";
 
 export interface GuideNarrationInput {
   connected: boolean;    // !!status?.guider || !!guide  (GuideView.tsx:44)
@@ -73,6 +74,17 @@ export function guideNarration(i: GuideNarrationInput): GuideNarration {
       tone: "bad",
       verdict: "Nothing is guiding now — the event log says what went wrong. "
         + "Fix it, then Start Guiding again.",
+    };
+  }
+  if (p === "stopped") {
+    // The guider stopped ITSELF because its calibration was not holding the
+    // star (a runaway, or a calibration that failed its check: #848/#849),
+    // and discarded that calibration. Not a lost star, so not "lost".
+    return {
+      phaseText: "Guiding stopped itself and discarded its calibration",
+      tone: "bad",
+      verdict: "Its corrections were not holding the star. Start Guiding walks "
+        + "a new calibration; the event log has the figures.",
     };
   }
   if (p === "finding") {

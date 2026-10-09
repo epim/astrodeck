@@ -78,7 +78,9 @@ def test_a_bare_plan_resolves_to_the_old_model_defaults():
 
     With one deliberate exception since GN-04: `max_eccentricity` was 0 (gate
     off) on every rig, which is how a whole night of trailed subs was accepted,
-    so it now resolves to the measured 0.65."""
+    so it now resolves to the measured 0.65. And a second since #854:
+    `max_guide_rms` was 0 (gate off), which is how 1549" and 773" runaway
+    frames were accepted on 2026-10-07, so it now resolves to 5.0."""
     p = resolve_policy(SequencePlan(), AppConfig())
     assert p.dither_pixels == 3.0
     assert p.recover_guiding is True
@@ -88,7 +90,8 @@ def test_a_bare_plan_resolves_to_the_old_model_defaults():
     assert p.apply_filter_offsets is True
     assert p.refocus_on_temp_delta_c == 0.0
     assert p.min_stars == 0
-    assert p.max_guide_rms == 0.0
+    # DELIBERATE PIN CHANGE (#854): was 0.0; see the docstring.
+    assert p.max_guide_rms == 5.0
     assert p.max_eccentricity == 0.65   # was 0.0; see the docstring
     assert p.max_consecutive_rejects == 10
     assert p.max_consecutive_rejects_night == 20

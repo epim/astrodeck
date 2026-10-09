@@ -191,6 +191,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../../store");
 const { FlowTonightSheet } = await import("../TonightSheet");
+const { setRetrySleepForTests } = await import("../../../../../../lib/retryLoad");
 const { TONIGHT_LOCK_REASON, resumesLine, storyStamp } = await import("../tonightModel");
 
 // ------------------------------------------------------------------ harness
@@ -388,23 +389,31 @@ await testAsync("PLAN says why there is no plan, and reads the calibration libra
 // ======================================= 5. a transport failure, and RETRY
 
 await testAsync("tonightError renders the server's message and RETRY re-asks", async () => {
-  tonightFails = true;
-  seed(ADMIN);
-  await mount();
+  try {
+    tonightFails = true;
+    // A 503 is a PROXY's answer, which the read now asks again by itself after
+    // 2 s, 5 s and 15 s (#859). The waits run at once here, so the error below
+    // is the one left after the fourth try.
+    setRetrySleepForTests(async () => {});
+    seed(ADMIN);
+    await mount();
 
-  const err = tid("tonight-error");
-  assert(err != null, "a failed request must render its own state");
-  assert(/could not be read from the rig/.test(err.textContent),
-    "the transport failure has to say the request did not arrive");
-  assert(/503|not answering/.test(err.textContent),
-    `the server's own message has to survive: "${err.textContent}"`);
+    const err = tid("tonight-error");
+    assert(err != null, "a failed request must render its own state");
+    assert(/could not be read from the rig/.test(err.textContent),
+      "the transport failure has to say the request did not arrive");
+    assert(/503|not answering/.test(err.textContent),
+      `the server's own message has to survive: "${err.textContent}"`);
 
-  tonightFails = false;
-  const before = tonightGets();
-  click(tid("tonight-retry"));
-  await settle();
-  eq(tonightGets(), before + 1, "RETRY must actually re-ask the rig");
-  assert(tid("tonight-timeline") != null, "and the answer has to replace the error");
+    tonightFails = false;
+    const before = tonightGets();
+    click(tid("tonight-retry"));
+    await settle();
+    eq(tonightGets(), before + 1, "RETRY must actually re-ask the rig");
+    assert(tid("tonight-timeline") != null, "and the answer has to replace the error");
+  } finally {
+    setRetrySleepForTests(null);
+  }
 });
 
 // ============================= 6. a missing dusk drops the clause, not the line

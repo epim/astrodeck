@@ -34,11 +34,16 @@ from .devices.base import (
     DeviceError,
     FilterWheel,
     Focuser,
+    GotoNotArrived,
     PierSide,
     SafetyMonitor,
     SafetyReading,
     Switch,
+    SyncRefused,
+    SyncUnverified,
     Telescope,
+    quotable_sync_reply,
+    rig_position_known,
 )
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
@@ -248,6 +253,17 @@ CAPTURE_DIR = Path(_CAPTURE_ENV) if _CAPTURE_ENV else (Path(__file__).resolve().
 #: returns the same answer rather than a stale one. Short anyway, because a
 #: cheap number that is right is worth more than a free number that might not be.
 _PRECESS_MEMO_TTL_S = 60.0
+#: After an EquatorialSystem probe that got no definite answer, how long the
+#: READ path (``Hub.from_mount_frame``: the 2.0 s status poll, the capture
+#: snapshot, the solve hints) assumes JNOW for that same mount without asking
+#: again (seconds; #861 N6). Without it a mount that never answers (a V1 COM
+#: driver behind the comhost, an Alpaca server answering 500) paid one extra
+#: GET per status poll, 60 / 2.0 = 30 a minute, each one more call on the
+#: comhost's serialised STA thread; with it, one a minute. ``to_mount_frame``
+#: (a slew or a sync) ignores the hold-off and always asks, so a transient
+#: failure never sends a J2000 mount a precessed target; at worst the status
+#: RA and the solve hint read up to 0.38 deg off for one minute.
+_JNOW_REPROBE_HOLDOFF_S = 60.0
 
 #: rate cap (the server clamp in ``/api/mount/move`` imports this) and the
 #: move-axis deadman window. Defined ONCE here so the touch surface and the
@@ -523,6 +539,28 @@ def precess_jnow_to_j2000(ra_hours: float, dec_deg: float,
     return icrs.ra.hourangle % 24.0, float(icrs.dec.deg)
 
 
+async def slew_in_mount_frame(hub, tel, ra_hours: float, dec_deg: float) -> None:
+    """Slew ``tel`` to a J2000 target, in the frame the mount expects (#861).
+
+    Everything above the device layer is J2000; a JNOW Alpaca mount needs the
+    target precessed first, and ``Hub.to_mount_frame`` does that (a no-op for
+    every other mount). The engine's uncentred setup slew and its hold
+    re-point slewed the J2000 pair straight to the mount, so a JNOW mount
+    landed 0.04 to 0.38 deg off. One helper, so the two cannot drift apart.
+
+    The caller wraps THIS coroutine in its bound (``engine._bounded``), so
+    the conversion's one device read (the cached EquatorialSystem probe)
+    shares the slew's bound.
+
+    ``getattr``: the engine's own tests drive it with bare hub doubles that
+    have no ``to_mount_frame``; those slew unchanged, as every non-Alpaca
+    mount does."""
+    convert = getattr(hub, "to_mount_frame", None)
+    if convert is not None:
+        ra_hours, dec_deg = await convert(tel, ra_hours, dec_deg)
+    await tel.slew(ra_hours, dec_deg)
+
+
 @dataclass
 class PreviewEntry:
     """One ring slot. Replaces the old ``tuple[bytes, str]`` — carries the bytes
@@ -590,6 +628,12 @@ class _FieldSolve:
     #: The computed answer -- identification, placed objects, notes -- cached so
     #: a cone query runs once per solve rather than once per published preview.
     frame: dict
+    #: Other spellings of the plate centre the mount's report may be in, as
+    #: ``(ra_hours, dec_deg)`` pairs: the centre's JNOW when the mount's
+    #: report is not brought to J2000 by ``from_mount_frame`` (#851,
+    #: integration re-review). Empty when the report is converted or the
+    #: transform failed. Read only by ``_field_block``'s disagreement note.
+    center_alternates: tuple = ()
 
 
 def external_preview(info: dict) -> dict:
@@ -795,6 +839,58 @@ SOLVE_REASON_SOLVER_MISSING = (
     "plate solve failed: no plate solver is available on this rig")
 SOLVE_REASON_FILE_LOCKED = (
     "plate solve failed: another program held the solve frame's file open")
+# Not a failed solve: the solve worked and the MOUNT refused to take it (#850).
+# Rig-side and it does not clear by itself, so D-03 may match it. Kept free of
+# the words "plate" and "solve" together: the UI's humanizer turns any text
+# carrying both into "Plate-solve failed - check focus/exposure", which would
+# send the operator to the wrong part of the rig.
+SOLVE_REASON_SYNC_REFUSED = (
+    "the mount refused the sync, so its pointing could not be corrected")
+# The sync was not refused but could not be confirmed (``SyncUnverified``,
+# #850): the link failed around it or the position read-back never answered.
+# The same fixed-words rules as the line above.
+SOLVE_REASON_SYNC_UNVERIFIED = (
+    "the mount did not confirm the sync, so its pointing could not be "
+    "corrected")
+# A goto the mount accepted and did not finish (``GotoNotArrived``, #860):
+# fixed words, the same rules as the two lines above. The engine stops a
+# centring-off target with it (``f"slew at acquisition: {...}"``).
+GOTO_NOT_ARRIVED_REASON = ("the goto did not arrive, so the tube is not on "
+                           "the target")
+
+
+def _goto_missed_line(attempt: int, e: GotoNotArrived) -> str:
+    """The ONE warning for a centring slew that did not arrive (#860). The
+    driver's fixed words and the separation, never a coordinate; no "plate"
+    (the UI humanizer pair). At most 126 characters."""
+    r = e.residual_deg
+    fig = (f", {r:.2f} deg off"
+           if isinstance(r, (int, float)) and not isinstance(r, bool)
+           and math.isfinite(r) else "")
+    return (f"centering attempt {attempt}: the goto did not arrive "
+            f"({e.reason}{fig}); solving where it stopped")
+
+
+def _sync_reply_words(code: str) -> str:
+    """The mount's sync reply as a log line may quote it (#850).
+
+    Quoted ONLY when ``devices.base.quotable_sync_reply`` says it may be,
+    the one copy of the rule: 1 to 8 letters, digits or ``/`` with no run of
+    three digits (``'e11'``, ``'N/A'``). The driver applies the same rule to
+    ``code``; the hub applies it again to its own lines, because a
+    desynchronised link can hand back a ``:GR#``-shaped string such as
+    ``07:23:41`` (or ``072341`` with its separators lost) as the "reply", and
+    at the home position that is the pole's RA, a site oracle (#140, #166).
+    Empty is "an empty reply", and anything else, the driver's
+    ``"unrecognised"`` sentinel included, is "an unrecognised reply", never
+    quoted. Short on purpose: the refusal line in ``solve_and_sync`` has to
+    fit 140 characters around the driver's 90-character e11 advice."""
+    if not code:
+        return "an empty reply"
+    quoted = quotable_sync_reply(code)
+    if quoted is not None:
+        return repr(quoted)
+    return "an unrecognised reply"
 
 
 def solve_failure_reason(exc: BaseException) -> str | None:
@@ -1039,6 +1135,14 @@ class Hub:
         # reads other code was already paying for (the capture header, the solve
         # hint) so identification never adds a device round-trip to the hot path.
         self._last_pointing: tuple[float, float, float] | None = None
+        #: How many times the mount's report has moved more than the staleness
+        #: threshold away from the last solve with no slew having cleared it
+        #: (#851), and the latest such move (``{"moved_deg", "at"}``: a
+        #: separation and a timestamp, nothing that locates the rig). Read by
+        #: the engine's pointing re-check (`_maybe_recheck_pointing`), which
+        #: acts on each new one once.
+        self.pointing_disagreements: int = 0
+        self.last_pointing_disagreement: dict | None = None
         # GN-07: (ra_hours, dec_deg, unix) of the last PLATE SOLVE result, kept
         # separate from `_last_pointing` above (the mount's own, possibly-lying
         # report -- GN-10 measured it walking 50' across a run while the star
@@ -1196,6 +1300,11 @@ class Hub:
         # J2000<->JNOW at the slew/sync boundary. None until first probed; reset on
         # teardown. Only consulted in native ("alpaca") mode.
         self._mount_wants_jnow: bool | None = None
+        # (telescope, monotonic time) before which the read path does not ask
+        # a mount whose EquatorialSystem probe failed again (#861 N6); None
+        # when no probe has failed. Keyed on the telescope OBJECT, so a mount
+        # swap asks at once. See ``_JNOW_REPROBE_HOLDOFF_S``.
+        self._mount_jnow_reprobe: tuple[Any, float] | None = None
         # boot auto-connect background task (boot-serves-immediately fix): the
         # lifespan spawns connect_active here instead of awaiting it inline, so the
         # HTTP/WS surface comes up at once even against an unreachable rig.
@@ -1382,6 +1491,7 @@ class Hub:
         old_session = self._alpaca_sessions.get(role)
         self.devices[role] = dev
         self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
+        self._mount_jnow_reprobe = None
         # retain the session so its httpx client is aclosed when this role is later
         # replaced or the rig torn down (session-leak fix); close the one we are
         # replacing so its keep-alive sockets don't accumulate per reconnect.
@@ -1873,6 +1983,7 @@ class Hub:
                                           lambda dev=dev: dev.disconnect())
             self.devices.clear()
             self._mount_wants_jnow = None
+            self._mount_jnow_reprobe = None
             if self.guider:
                 guider = self.guider
                 await self._teardown_step("the guider's disconnect",
@@ -3157,7 +3268,10 @@ class Hub:
         reset on device placement in ``_connect_alpaca_device_unlocked`` and
         on teardown in ``_teardown`` (invoked via ``disconnect_all``).
 
-        Best-effort EquatorialSystem probe (cached): ASCOM ``EquatorialSystem`` is
+        Best-effort EquatorialSystem probe (only a definite answer is cached;
+        a failed probe is JNOW without caching, and the read path waits
+        ``_JNOW_REPROBE_HOLDOFF_S`` before asking that mount again, while
+        ``to_mount_frame`` always asks): ASCOM ``EquatorialSystem`` is
         0=other, 1=topocentric(local/JNOW), 2=J2000, 3=B1950. Default to JNOW when
         unreadable — real ASCOM mounts are overwhelmingly topocentric, and a mount
         that already reports J2000 (==2) is left un-precessed so we never double-
@@ -3169,12 +3283,29 @@ class Hub:
         wants = True
         get = getattr(tel, "_get", None)
         if get is not None:
+            # ``getattr``: hub doubles in the tests bind this method onto a
+            # bare namespace.
+            held = getattr(self, "_mount_jnow_reprobe", None)
+            if (held is not None and held[0] is tel
+                    and time.monotonic() < held[1]):
+                return True
             try:
-                equ = await get("equatorialsystem")
-                # only a definitive J2000 (2) / B1950 (3) report disables it.
-                wants = int(equ) not in (2, 3)
+                equ = int(await get("equatorialsystem"))
             except Exception:
-                wants = True
+                # No definite answer (a timeout, an HTTP 500, an ASCOM error,
+                # a value that is not a number): JNOW, the overwhelmingly
+                # common case, and NOT cached (#861 N6), so a transient
+                # failure on the first probe no longer precesses a J2000
+                # mount for the whole connection. ``from_mount_frame`` runs
+                # on every 2 s status poll, so the read path waits
+                # ``_JNOW_REPROBE_HOLDOFF_S`` before asking this mount again;
+                # ``to_mount_frame`` clears the hold-off, so every slew or
+                # sync asks.
+                self._mount_jnow_reprobe = (
+                    tel, time.monotonic() + _JNOW_REPROBE_HOLDOFF_S)
+                return True
+            # only a definitive J2000 (2) / B1950 (3) report disables it.
+            wants = equ not in (2, 3)
         self._mount_wants_jnow = wants
         return wants
 
@@ -3187,7 +3318,13 @@ class Hub:
         offline Pi), fall back to the raw coordinates and log — a precession
         failure must never abort an unattended slew. The plate-solve center loop
         still corrects the residual, so worst case is one slightly-off first slew,
-        not a dead night."""
+        not a dead night.
+
+        A slew or a sync always asks a mount whose frame probe failed (the
+        read path's hold-off is cleared first, #861 N6): one fast GET beside
+        a slew, and a J2000 mount is never sent a precessed target because
+        an earlier probe failed."""
+        self._mount_jnow_reprobe = None
         if not await self._mount_expects_jnow(tel):
             return ra_hours, dec_deg
         try:
@@ -4185,6 +4322,81 @@ class Hub:
             return
         self._last_pointing = (float(ra_hours), float(dec_deg), time.time())
 
+    #: Bound on the one position read after a sync (s): 2x the hub's 2.0 s
+    #: status period, the same bound ``sync_verify.SYNC_READ_TIMEOUT_S`` puts
+    #: on each read-back. Without it the read is bounded only by the
+    #: transport (up to 60 s for an Alpaca get_position).
+    _POST_SYNC_READ_TIMEOUT_S = 4.0
+
+    async def _note_pointing_after_sync(self, tel, solved_ra: float,
+                                        solved_dec: float) -> None:
+        """Record the pointing baseline right after a sync the mount took,
+        from a FRESH read of its report brought to J2000 by
+        ``from_mount_frame``: the same read, in the same frame, that the
+        capture snapshot records (#851, integration finding 8).
+
+        The drivers that verify a sync have already waited for the report to
+        show it (``sync_verify.verify_sync``; NINA's read-back refreshes the
+        info cache this read is served from), so this read is the post-sync
+        report and not a stale one.
+
+        Falls back to the solved position when the read fails, does not
+        answer in time, or is not a number. That is the old baseline: exact
+        on every mount that reports in J2000 or is converted, and only an
+        epoch off on a NINA or ASIAIR mount. Keeping the PRE-sync report
+        instead would be off by the whole sync, which can be degrees."""
+        ra = dec = None
+        try:
+            ra, dec = await asyncio.wait_for(
+                tel.get_position(), self._POST_SYNC_READ_TIMEOUT_S)
+            if ra is not None and dec is not None:
+                ra, dec = await self.from_mount_frame(tel, ra, dec)
+        except Exception:  # noqa: BLE001 - a baseline read never fails a sync
+            ra = dec = None
+        try:
+            usable = (ra is not None and dec is not None
+                      and math.isfinite(ra) and math.isfinite(dec))
+        except TypeError:
+            usable = False
+        if not usable:
+            ra, dec = solved_ra, solved_dec
+        self._note_pointing(ra, dec)
+
+    async def _report_frame_alternates(self, center) -> tuple:
+        """The plate centre's JNOW, as a one-pair tuple, when the mount's
+        report is NOT brought to J2000 by ``from_mount_frame``; else ``()``.
+
+        The disagreement note in ``_field_block`` compares the mount's last
+        report with the plate centre, which is J2000. ``from_mount_frame``
+        converts only an Alpaca mount (backend ``"alpaca"``: a JNOW one is
+        precessed, a J2000 one already reports J2000). Every other mount's
+        report is recorded raw, and a NINA or ASIAIR mount reports the JNOW
+        of the J2000 it was synced to, 0.3 to 0.4 deg away in 2026. On a
+        field under about 0.7 deg wide that is over the stale threshold, so
+        the note fired after every centring (#851, integration re-review).
+        The note therefore accepts the report in either frame, the same
+        acceptance ``sync_verify.jnow_alternates`` gives those drivers'
+        sync read-backs. On a mount that does report J2000 this loosens the
+        note by at most that 0.4 deg; the condition it exists for (a lost
+        mount) is degrees.
+
+        Computed once per adopted solve, because ``_field_block`` runs on
+        the event loop for every published preview and the transform is
+        astropy. Bounded and never raises (``jnow_alternates``)."""
+        tel = self.devices.get("telescope")
+        if tel is None or getattr(tel, "backend", "") == "alpaca":
+            return ()
+        try:
+            c_ra = float(center["ra_hours"])
+            c_dec = float(center["dec_deg"])
+        except (TypeError, KeyError, ValueError):
+            return ()
+        if not (math.isfinite(c_ra) and math.isfinite(c_dec)):
+            return ()
+        from .devices.sync_verify import jnow_alternates
+
+        return tuple(await jnow_alternates(c_ra, c_dec))
+
     def invalidate_field_solve(self, reason: str) -> None:
         """Drop the current identification because the sky under the camera may
         have changed.
@@ -4248,8 +4460,23 @@ class Hub:
                 "cannot be trusted as current")
             return None
         if moved > self._field_stale_threshold_deg():
+            # COUNTED, NOT ONLY CLEARED (#851). On 2026-10-07 this fired three
+            # times (2.03, 2.34, 2.77 degrees) and did nothing but drop a
+            # caption while the run imaged the wrong field. The engine reads
+            # the count at its next frame boundary and checks the pointing in
+            # place. The invalidation just below is what makes one move count
+            # once across the two readers of a saved light
+            # (`field_identification`, `_field_block`): the second finds no
+            # field solve and returns early.
+            self.pointing_disagreements += 1
+            self.last_pointing_disagreement = {"moved_deg": float(moved),
+                                               "at": time.time()}
+            # In words the UI's humanizer leaves alone: the old reason
+            # carried "plate" and "solve", which it rewrites into a solve
+            # failure.
             self.invalidate_field_solve(
-                f"the mount has moved {moved:.2f}° since the last plate solve")
+                f"the mount's reported position moved {moved:.2f}° from the "
+                f"last solved field")
             return None
         return fs
 
@@ -4277,10 +4504,12 @@ class Hub:
         ra = dec = None
         if self._last_pointing is not None:
             ra, dec, _at = self._last_pointing
+        alternates = await self._report_frame_alternates(frame.get("center"))
         self.field_solve = _FieldSolve(
             wcs=wcs, solved_at=time.time(), preview_id=preview_id,
             data_w=int(data_w), data_h=int(data_h),
-            mount_ra=ra, mount_dec=dec, frame=frame)
+            mount_ra=ra, mount_dec=dec, frame=frame,
+            center_alternates=alternates)
         self._pointing_field_cache = None
         ident = frame.get("identification")
         if ident:
@@ -4388,6 +4617,10 @@ class Hub:
             c = frame["center"]
             try:
                 off = angular_sep_deg(ra, dec, c["ra_hours"], c["dec_deg"])
+                # In whichever frame the report is in (#851): a NINA or
+                # ASIAIR mount reports the centre's JNOW after a centring.
+                for a_ra, a_dec in fs.center_alternates:
+                    off = min(off, angular_sep_deg(ra, dec, a_ra, a_dec))
             except ValueError:
                 # Cannot be judged (#324): say nothing rather than invent a
                 # degree figure for a comparison that could not be made.
@@ -7103,8 +7336,20 @@ class Hub:
         return out
 
     async def solve_and_sync(self, exposure_s: float = 3.0, *,
-                             blind: bool = False) -> dict:
+                             blind: bool = False,
+                             refusal_level: str = "warning") -> dict:
         """Plate-solve the current pointing and sync the mount to it.
+
+        ``refusal_level`` is the level of the ONE line logged when the mount
+        refuses the sync or does not confirm it (``SyncRefused`` /
+        ``SyncUnverified``, #850): ``"warning"`` by default, ``"info"`` for a
+        caller that decides on the refusal itself and logs its own line next:
+        the resume ladder, which recovers from an ``e11`` at home without
+        anyone touching the rig, so a warning telling the operator to act
+        would be wrong; and ``goto_and_center``, whose centring loop logs the
+        one warning itself when it stops on the refusal, and only an info
+        line when the field is already within tolerance. Anything else is a
+        ``ValueError``, raised before the camera is touched.
 
         ONE real-solver path for every backend (P0-1). The old NINA branch called
         NINA's ``/prepared-image/solve``, which HANGS on the live rig and left the
@@ -7114,6 +7359,10 @@ class Hub:
         resolution now happens UP FRONT via ``providers.pick_solver`` (spec §3.4),
         so a rig nothing can trustworthily solve for fails in <1 ms with a clear
         ``DeviceError`` instead of wasting an exposure first."""
+        if refusal_level not in ("warning", "info"):
+            raise ValueError(
+                f"refusal_level must be 'warning' or 'info', not "
+                f"{refusal_level!r}")
         cam: Camera = self.require("camera")
         tel: Telescope = self.require("telescope")
         # Resolver-routed (spec §3.4): honors the user's solve override and the
@@ -7230,9 +7479,77 @@ class Hub:
         # J2000 — the caller's centering error math compares against a J2000 target.
         sync_ra, sync_dec = await self.to_mount_frame(
             tel, result.ra_hours, result.dec_deg)
-        await tel.sync(sync_ra, sync_dec)
-        bus.log("info", f"solved & synced: RA {result.ra_hours:.4f}h "
-                        f"Dec {result.dec_deg:+.3f}° (J2000)", "solve")
+        try:
+            await tel.sync(sync_ra, sync_dec)
+        except (SyncRefused, SyncUnverified) as e:
+            # THE SOLVE WORKED AND THE MOUNT WOULD NOT TAKE IT (#850). On
+            # 2026-10-07 three centring syncs of 2.2 to 2.8 degrees changed
+            # nothing, this method logged "solved & synced" for each, and the
+            # run imaged the wrong field for hours. The driver now reads the
+            # position back and raises ``SyncRefused`` when the mount refused
+            # (an ``eNN`` reply) or answered as if it had and did not move,
+            # and ``SyncUnverified`` when nobody could tell: the link failed
+            # around ``:CM#`` or the read-back never answered. Both are
+            # siblings under ``DeviceError``, so naming both here is what
+            # keeps an unverified sync out of the callers' "plate solve
+            # failed" arms. A plain ``DeviceError`` is neither and goes past
+            # this arm untouched, with no line of its own.
+            #
+            # The solve is attached so a caller can still say how far the
+            # field is from its target: ``goto_and_center`` stops on it
+            # rather than re-slewing into the same place, and the resume
+            # ladder weighs ``residual_deg``. J2000, as the solver returned it.
+            e.solved = (result.ra_hours, result.dec_deg)
+            # ONE warning, and NO COORDINATES in it: the driver's read-back at
+            # the home position is the pole, and the solve there is too (#140,
+            # #166). Worded without "plate" beside "solve": the UI's log
+            # humanizer turns any line carrying both into "Plate-solve failed -
+            # check focus/exposure", which sends the operator to the optics
+            # when the cause is the mount. And never "solved & synced": both
+            # mount UIs read that line as a completed sync.
+            #
+            # The driver's reason goes EARLY and the line stays short: the
+            # UI cuts a line over 140 characters to 137 plus an ellipsis, and
+            # the e11 reason (at most 90 characters) carries the operator's
+            # action (the driver's e11 words, in the safe order). The
+            # prefix is 48 characters with a three-character reply, so the
+            # e11 line is at most 138 and nothing is cut.
+            #
+            # At ``refusal_level``: a warning unless the caller said it
+            # decides on the refusal itself and its own line follows.
+            if isinstance(e, SyncRefused):
+                bus.log(refusal_level,
+                        f"solved, but the mount refused the sync "
+                        f"({_sync_reply_words(e.code)}): {e.reason}", "solve")
+            else:
+                bus.log(refusal_level,
+                        f"solved, but the mount did not confirm the sync: "
+                        f"{e.reason}", "solve")
+            # Everything below is bookkeeping for a mount that now agrees with
+            # the sky. The field identity is keyed to the mount's report and
+            # the solved centre is recorded as the mount's pointing: neither
+            # is true of a mount that refused the correction. The rotator's
+            # sky angle from this solve would still be a fair measurement, but
+            # it is skipped with the rest so a refused sync has one shape (the
+            # #850 brief's interface): the caller is about to stop on it.
+            raise
+        # NOT "solved & synced" WHEN THE DRIVER STILL CANNOT VOUCH (#867). Both
+        # mount UIs toast that prefix as "the mount's model now agrees with
+        # where the camera is pointing", and a goto does not read
+        # ``position_known``, so the toast would invite a slew from a
+        # position the driver has just said it does not know (an AM5 synced
+        # near the pole, where its read-back is blind). The driver's own
+        # warning carries the safe order; this line only says the sync
+        # vouched for nothing. No figure either way (#864).
+        if getattr(tel, "position_known", True):
+            bus.log("info",
+                    "solved & synced: the mount accepted the solved position",
+                    "solve")
+        else:
+            bus.log("info",
+                    "solved; the mount accepted the sync, but it still cannot "
+                    "vouch for its position (see the mount's warning)",
+                    "solve")
         # THE SOLVE THAT WAS ALREADY BEING PAID FOR (#182). Every goto centres by
         # calling this, so adopting its WCS here identifies the field for free on
         # a rig with per-frame solving still off — which is the default and, on a
@@ -7243,7 +7560,17 @@ class Hub:
         # change in the mount's report, and a sync can move that report by degrees
         # (measured: 4 degrees, after a restart) — recording the pointing before
         # it would make this solve stale the instant it was adopted.
-        self._note_pointing(result.ra_hours, result.dec_deg)
+        #
+        # AND FROM THE MOUNT'S OWN REPORT, NOT FROM THE SOLVE (#851,
+        # integration finding 8). The baseline is what ``_current_field_solve``
+        # measures the next capture's report against, so it must be the same
+        # quantity in the same frame: the report, through ``from_mount_frame``.
+        # The solved J2000 is not that. A NINA or ASIAIR mount reports the
+        # JNOW of the J2000 it was synced to, and ``from_mount_frame`` leaves
+        # those mounts alone, so a J2000 baseline sat 0.3 to 0.4 deg from the
+        # very next report and counted a disagreement after every centring.
+        await self._note_pointing_after_sync(tel, result.ra_hours,
+                                             result.dec_deg)
         # GN-07: this IS a plate-solve result (ASTAP/SimSolver), the same kind
         # of measurement goto_and_center's success branch records -- keep it
         # even when this call did not run through goto_and_center (rotator
@@ -8192,6 +8519,27 @@ class Hub:
         self._pointing_reason = "the mount has moved since the last plate solve"
         self._solved_pointing = None
 
+    async def _retrack_after_missed_goto(self, tel: Telescope,
+                                         where: str) -> None:
+        """Turn tracking back on after a goto that did not arrive (#860).
+
+        The AM5 driver ends such a goto with a whole-mount halt (``:Q#``),
+        and whether ``:Q#`` also stops sidereal tracking on this firmware is
+        not measured (HARDWARE-PENDING, DESIGN-P4 HP-1). ``goto_and_center``
+        turns tracking on once, before its first slew, and a centred return
+        goes straight to imaging with no read-back, so a halt that stopped
+        tracking would trail every frame. Tracking on is idempotent, so this
+        holds whichever way the bench answers. Best effort: a refusal is one
+        warning, and the solve that follows still decides "centred"."""
+        try:
+            await tel.set_tracking(True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - re-asserting is best-effort
+            bus.log("warning",
+                    f"{where}: tracking could not be turned back on after "
+                    f"the halted goto ({e})", "mount")
+
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
                               max_attempts: int = 3,
@@ -8237,7 +8585,50 @@ class Hub:
         only then: a cloud verdict, a no-light verdict, a timeout or an
         unknown error leave it out, and the engine reads its absence as the
         generic failure. It is the centring solve's alone, not the rotate
-        loop's, and it never carries a number, a path or a site datum."""
+        loop's, and it never carries a number, a path or a site datum.
+
+        ``sync_refused: True`` (#850) means the field SOLVED and the mount
+        refused the sync (``SyncRefused``), with the field further than
+        ``tolerance_deg`` from the target. The loop stops there, because a
+        correction slew through the same uncorrected model lands in the same
+        place. Beside it: ``sync_reply`` (the mount's reply as the driver
+        sanitised it: a short code such as ``"e11"``, ``""`` or
+        ``"unrecognised"``),
+        ``sync_reason`` (the driver's words), ``error_arcmin`` (the solve
+        against the target, None when no solve was attached) and
+        ``solve_reason`` = ``SOLVE_REASON_SYNC_REFUSED``. There is NO
+        ``solve_failed`` key: it is not a failed solve, and must never reach
+        the engine's no-light hold. A refused sync whose solve is already
+        within tolerance is simply centred.
+
+        ``sync_unverified: True`` (#850) is its sibling for a sync the mount
+        did NOT refuse but nobody could confirm (``SyncUnverified``: the link
+        failed around ``:CM#``, or the position read-back never answered),
+        again with the field further than ``tolerance_deg`` off. Same stop,
+        same keys beside it, except that ``solve_reason`` is
+        ``SOLVE_REASON_SYNC_UNVERIFIED`` and there is NO ``sync_refused`` key
+        (a caller that must stop on either reads both keys). ``sync_reply``
+        is the reply when one came back, else ``""``. Within tolerance it is
+        centred, like a refusal. Neither shape ever carries ``solve_failed``,
+        and the pointing is marked unverified with the matching fixed
+        sentence as its reason. Both carry ``centring_solve_transient:
+        False`` even when a rotate-phase transient put ``solve_transient`` in
+        the rotation keys: the centring solve worked, so the miss must never
+        be read as a solve that could not run.
+
+        ``goto_not_arrived: True`` (#860), beside ``goto_reason`` (the
+        driver's fixed words), on a not-centred return means the LATEST
+        centring slew raised ``GotoNotArrived``: the mount accepted the goto
+        and stopped short, or a stop was sent during it. It is never a raise
+        out of this method. A stall degrades like any other miss: the field
+        is solved where the mount stopped, synced, and the next attempt
+        re-slews; the stuck check and ``max_attempts`` bound it. Tracking is
+        turned back on first (``_retrack_after_missed_goto``): the driver's
+        halt may have stopped it. A slew
+        whose miss came with the motion epoch moved (a STOP or the deadman)
+        returns the aborted shape with the keys. A miss on the rotate
+        pre-slew skips the rotation (``rotation_skipped``) and centres.
+        There is no ``solve_failed`` key for it."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -8319,6 +8710,8 @@ class Hub:
             # attempts slew there anyway.
             rotation_result = await self._rotation_already_set(rot, rotation_deg)
             if rotation_result is None:
+                # A pre-slew the mount accepted and did not finish (#860).
+                pre_missed: GotoNotArrived | None = None
                 async with self._motion_lock:
                     if not self._motion_committed_clean(epoch):
                         bus.log("warning", "goto abandoned: aborted before rotation",
@@ -8327,26 +8720,52 @@ class Hub:
                         return {"centered": False, "error_arcmin": None,
                                 "attempts": 0, "aborted": True, "rotation": None}
                     slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
-                    await tel.slew(slew_ra, slew_dec)
+                    try:
+                        await tel.slew(slew_ra, slew_dec)
+                    except GotoNotArrived as e:
+                        pre_missed = e
                     self.goto_settled_at = time.time()
-                try:
-                    # THE ROTATOR PREFLIGHT (WP-88; #145, #594), here and not
-                    # above the shortcut: the branch that moves nothing must
-                    # not buy a 22 degree calibration. It runs after the slew,
-                    # with the target's field on the sensor, measures only
-                    # what this connect has not measured, and a failure of it
-                    # degrades below like any other rotate failure.
-                    await self.ensure_rotator_ready()
-                    rotation_result = await self.rotate_to_pa(
-                        rotation_deg, exposure_s=solve_exposure_s)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
+                if pre_missed is not None:
+                    # A miss that came with the epoch moved was a STOP or the
+                    # manual-move deadman: abandon, as the fence above does.
+                    if not self._motion_committed_clean(epoch):
+                        bus.log("warning", "goto abandoned: aborted before rotation",
+                                "mount")
+                        self.note_pointing_verified(False, reason=str("centering did not converge"))
+                        return {"centered": False, "error_arcmin": None,
+                                "attempts": 0, "aborted": True, "rotation": None,
+                                "goto_not_arrived": True,
+                                "goto_reason": pre_missed.reason}
+                    await self._retrack_after_missed_goto(
+                        tel, "rotation pre-slew")
+                    # The field on the sensor is not the target's, so the
+                    # rotate loop would solve the wrong sky: skip it and let
+                    # the centring attempts below re-slew.
                     bus.log("warning",
-                            f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
-                            f"continuing without rotation", "rotator")
+                            f"rotation to PA {rotation_deg:.0f}° skipped: the goto "
+                            f"did not arrive ({pre_missed.reason}); centring "
+                            f"without rotating", "rotator")
                     rotation_skipped = True
-                    rotation_solve_transient = isinstance(e, SolveFrameTransient)
+                else:
+                    try:
+                        # THE ROTATOR PREFLIGHT (WP-88; #145, #594), here and
+                        # not above the shortcut: the branch that moves nothing
+                        # must not buy a 22 degree calibration. It runs after
+                        # the slew, with the target's field on the sensor,
+                        # measures only what this connect has not measured,
+                        # and a failure of it degrades below like any other
+                        # rotate failure.
+                        await self.ensure_rotator_ready()
+                        rotation_result = await self.rotate_to_pa(
+                            rotation_deg, exposure_s=solve_exposure_s)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        bus.log("warning",
+                                f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
+                                f"continuing without rotation", "rotator")
+                        rotation_skipped = True
+                        rotation_solve_transient = isinstance(e, SolveFrameTransient)
         elif rotation_deg is not None:
             rotation_unavailable = True
             # Logged here, once, not per attempt: the answer cannot change
@@ -8372,6 +8791,10 @@ class Hub:
                          "solve_transient": True}
                         if rotation_solve_transient else {})}
         last_err = None
+        # What became of the LATEST centring slew (#860): empty when it
+        # arrived, else ``goto_not_arrived`` and the driver's words. Merged
+        # into every not-centred return from here on.
+        arrival_keys: dict = {}
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)
             # Re-acquire the motion lock per slew and re-check the fence at the
@@ -8385,27 +8808,149 @@ class Hub:
                     self.note_pointing_verified(False, reason=str("centering did not converge"))
                     return {"centered": False,
                             "error_arcmin": (last_err or 0) * 60 if last_err else None,
-                            "attempts": attempt - 1, "aborted": True} | _rot_keys
+                            "attempts": attempt - 1, "aborted": True} | _rot_keys | arrival_keys
                 # Slew in the mount's own frame: a JNOW Alpaca mount would
                 # otherwise interpret the J2000 target as JNOW and land ~20 arcmin
                 # off. Converting inside the loop (not once up front) keeps the
                 # apparent place current across a long multi-attempt center; a
                 # no-op for sim/NINA. The centering error below stays in J2000.
                 slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
-                await tel.slew(slew_ra, slew_dec)
+                missed: GotoNotArrived | None = None
+                try:
+                    await tel.slew(slew_ra, slew_dec)
+                except GotoNotArrived as e:
+                    # The mount took the goto and stopped short, or a stop was
+                    # sent during it (#860). Never a raise out of here: the
+                    # field is solved where it stopped, like any other miss.
+                    missed = e
                 # THE GOTO CAME TO REST HERE, as far as anything can tell
-                # (#402): ``tel.slew`` returns once the mount stops
-                # reporting that it slews. The solve below stamps its own
-                # exposure start against this.
+                # (#402): ``tel.slew`` returns once the mount has arrived, or
+                # raised after the driver halted a goto that did not. The
+                # solve below stamps its own exposure start against this.
                 self.goto_settled_at = time.time()
+            arrival_keys = ({} if missed is None else
+                            {"goto_not_arrived": True,
+                             "goto_reason": missed.reason})
+            if missed is not None:
+                # A miss that came with the epoch moved was a STOP or the
+                # manual-move deadman: abandon unsolved, as the fence does.
+                if not self._motion_committed_clean(epoch):
+                    bus.log("warning",
+                            f"goto re-slew abandoned at attempt {attempt}: aborted",
+                            "mount")
+                    self.note_pointing_verified(False, reason=str("centering did not converge"))
+                    return {"centered": False,
+                            "error_arcmin": (last_err or 0) * 60 if last_err else None,
+                            "attempts": attempt, "aborted": True} | _rot_keys | arrival_keys
+                bus.log("warning", _goto_missed_line(attempt, missed), "mount")
+                await self._retrack_after_missed_goto(
+                    tel, f"centering attempt {attempt}")
             # A plate-solve failure or timeout must DEGRADE to a raw GoTo, not
             # hang or propagate (live bug): the mount has already slewed, so we
             # return the un-centered result with a warning rather than aborting.
             # CancelledError is re-raised so a user/engine abort still stops us.
+            #
+            # ``refusal_level="info"`` (#850 round 4): the arm below logs its
+            # own line for a sync that was not taken, a warning when it stops
+            # and an info line when the field is already within tolerance.
+            # At the default level a refused centring logged the hub's
+            # refusal warning AND the stop warning, two hub warnings for one
+            # event; this way the stop line is the only warning.
             try:
-                solved = await self.solve_and_sync(solve_exposure_s)
+                solved = await self.solve_and_sync(solve_exposure_s,
+                                                   refusal_level="info")
             except asyncio.CancelledError:
                 raise
+            except (SyncRefused, SyncUnverified) as e:
+                # THE MOUNT REFUSED THE SYNC, OR DID NOT CONFIRM IT (#850).
+                # Not a failed plate solve: the field solved, and the arm
+                # below would call it one and send the engine to its no-light
+                # hold (ruling 5). Caught FIRST because both are
+                # ``DeviceError``s. ``SyncUnverified`` (the link failed around
+                # the sync, or the read-back never answered) is not a refusal
+                # and gets its own key and words, but it stops the loop the
+                # same way: a correction slew planned from a pointing nobody
+                # could confirm is a guess.
+                refused = isinstance(e, SyncRefused)
+                if refused:
+                    what = ("the mount refused the sync "
+                            f"({_sync_reply_words(e.code)})")
+                    sync_const = SOLVE_REASON_SYNC_REFUSED
+                    sync_key = "sync_refused"
+                else:
+                    what = "the mount did not confirm the sync"
+                    sync_const = SOLVE_REASON_SYNC_UNVERIFIED
+                    sync_key = "sync_unverified"
+                #
+                # How far the FIELD is from the target comes from the solve
+                # the hub attached (``e.solved``), the same J2000 comparison
+                # the success path makes below. None when nothing was attached
+                # or the solve is non-finite: still a refusal, never the
+                # solve-failed arm.
+                from .catalog.coords import angular_sep_deg as _sep
+                refused_err: float | None = None
+                if e.solved is not None:
+                    try:
+                        refused_err = _sep(e.solved[0], e.solved[1],
+                                           ra_hours, dec_deg)
+                    except ValueError:
+                        refused_err = None
+                if refused_err is not None and refused_err <= tolerance_deg:
+                    # The goto already landed on the field: the mount's model
+                    # is right to within tolerance here, so a refused
+                    # correction costs nothing. Fall through to the normal
+                    # centred verdict below with the solve as ``solved``,
+                    # after one line saying what the mount did.
+                    bus.log("info",
+                            f"centering attempt {attempt}: {what}, but the "
+                            f"field is already {refused_err * 60:.1f}' from "
+                            f"the target, within tolerance", "solve")
+                    solved = {"ra_hours": e.solved[0], "dec_deg": e.solved[1]}
+                else:
+                    # STOP HERE. A refused sync: the correction slew below
+                    # would command the same target through the same
+                    # uncorrected model and land in the same place (on
+                    # 2026-10-07 this loop's next goto was zero length and the
+                    # field did not move). An unverified one: nobody knows
+                    # which model the slew would go through.
+                    #
+                    # In words, without coordinates (the solve and the mount's
+                    # report are site oracles at the pole, #140), and CAUSE
+                    # FIRST: the UI cuts a line over 140 characters to 137
+                    # plus an ellipsis, and "stopped" and the reason are what
+                    # the operator needs. With a three-digit arcmin figure the
+                    # refused line is 123 characters and the unverified one
+                    # 113 (both pinned in test_850_hub_sync_refused.py).
+                    off = (f"the field is {refused_err * 60:.1f}' off target"
+                           if refused_err is not None
+                           else "the field's offset was not measured")
+                    if refused:
+                        line = (f"centering stopped: {what}; {off} and a "
+                                f"re-slew lands in the same place")
+                    else:
+                        line = (f"centering stopped: {what}, so its pointing "
+                                f"is unknown; {off}")
+                    bus.log("warning", line, "solve")
+                    self.note_pointing_verified(False, reason=sync_const)
+                    # ``centring_solve_transient`` False, stated outright and
+                    # merged LAST: the centring solve ran and worked, so this
+                    # miss is the mount's. Without the key the engine's
+                    # ``_group_hop_checks`` falls back to the union
+                    # ``solve_transient``, which a rotate-phase transient in
+                    # ``_rot_keys`` sets, and it would defer a require_centred
+                    # panel as "the centring solve could not run" for a mount
+                    # refusal.
+                    return {"centered": False,
+                            "error_arcmin": (refused_err * 60
+                                             if refused_err is not None
+                                             else None),
+                            "attempts": attempt,
+                            sync_key: True,
+                            "sync_reply": e.code,
+                            "sync_reason": e.reason,
+                            "solve_reason": sync_const,
+                            } | _rot_keys | arrival_keys | {
+                                "centring_solve_transient": False}
             except (DeviceError, Exception) as e:
                 bus.log("warning",
                         f"centering: plate solve failed ({e}); using raw GoTo", "solve")
@@ -8429,7 +8974,8 @@ class Hub:
                             "solve_transient": True}
                            if isinstance(e, SolveFrameTransient) else {})
                         | ({"solve_reason": reason}
-                           if reason is not None else {}))
+                           if reason is not None else {})
+                        | arrival_keys)
             from .catalog.coords import angular_sep_deg
             try:
                 err = angular_sep_deg(solved["ra_hours"], solved["dec_deg"],
@@ -8452,7 +8998,7 @@ class Hub:
                 self.note_pointing_verified(
                     False, reason=str("centering did not converge"))
                 return {"centered": False, "error_arcmin": None,
-                        "attempts": attempt, "solve_failed": True} | _rot_keys
+                        "attempts": attempt, "solve_failed": True} | _rot_keys | arrival_keys
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
                 bus.publish("mount", action="centered", error_arcmin=err * 60)
@@ -8485,11 +9031,11 @@ class Hub:
                             error_arcmin=err * 60)
                 self.note_pointing_verified(False, reason=str("centering did not converge"))
                 return {"centered": False, "error_arcmin": err * 60,
-                        "attempts": attempt, "did_not_move": True} | _rot_keys
+                        "attempts": attempt, "did_not_move": True} | _rot_keys | arrival_keys
             last_err = err
         self.note_pointing_verified(False, reason=str("centering did not converge"))
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
-                "attempts": max_attempts} | _rot_keys
+                "attempts": max_attempts} | _rot_keys | arrival_keys
 
     def _note_solve_exposure(self) -> None:
         """Record that a plate solve's shutter is opening now, beside the
@@ -8629,6 +9175,14 @@ class Hub:
         # recalibration above: unreadable is not evidence that nothing moved.
         bus.log("info", "meridian flip complete" if flipped else
                 "meridian flip attempt finished: nothing flipped", "sequence")
+        # The re-centre's own keys ride through UNCHANGED, and that is the
+        # contract the engine reads (#850): ``sync_refused``,
+        # ``sync_unverified``, ``sync_reply``, ``sync_reason``,
+        # ``error_arcmin`` and ``solve_reason`` from a re-centre whose sync
+        # the mount refused, or did not confirm, reach the flip step as
+        # ``goto_and_center`` returned them, so it can stop the target rather
+        # than image a field it could not centre. The three flip keys are
+        # added beside them and never overwrite one.
         return dict(result or {}, flipped=flipped,
                     pier_side_before=side_before, pier_side_after=side_after)
 
@@ -8977,16 +9531,23 @@ class Hub:
         if not seq:
             seq = {"state": "idle"}
         guide_recent: list = []
+        guide_as_of = None
         if self.guider and self.guider.connected:
             try:
-                guide_recent = list(getattr(self.guider.stats(), "recent", []) or [])
+                # ONE read (#856.3): the trace and its stamp from the same
+                # snapshot, so the stamp says when THIS trace was true.
+                st = self.guider.stats()
+                guide_recent = list(getattr(st, "recent", []) or [])
+                guide_as_of = getattr(st, "as_of", None) or None
             except Exception:
                 guide_recent = []
+                guide_as_of = None
         return {
             "sequence": seq,
             "status": await self.poll_status(),
             "preview_id": self.preview_seq or None,
             "guide_recent": guide_recent,
+            "guide_as_of": guide_as_of,
             # The long-running operations actually in flight RIGHT NOW, by name
             # ("autofocus", "goto", "polar", ...). Without this the client has no
             # way to learn that something it saw start has since ended: progress
@@ -9212,8 +9773,12 @@ class Hub:
                     # has to tell "absent" from "known"; a driver with no such
                     # flag reads True through the same ``getattr`` the nudge
                     # route uses. Both UIs lock the step controls and pick the
-                    # ceiling rung off it.
-                    "position_known": bool(getattr(tel, "position_known", True)),
+                    # ceiling rung off it. Read THROUGH THE RIG-LEVEL LATCH
+                    # (`rig_position_known`), which also carries a doubt onto
+                    # the new telescope object a profile activate builds, so
+                    # Trust position is on screen on the first poll after a
+                    # reconnect, not on the resume ladder's next tick.
+                    "position_known": rig_position_known(self),
                     # Was this pointing CONFIRMED against the sky, or is it the
                     # mount's own opinion? See `note_pointing_verified`.
                     "pointing": {

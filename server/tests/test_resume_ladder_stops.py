@@ -139,7 +139,8 @@ class _ParkedHub:
         return self.focuser if role == "focuser" else object()
 
     async def solve_and_sync(self, exposure_s: float = 3.0, *,
-                             blind: bool = False):
+                             blind: bool = False,
+                             refusal_level: str = "warning"):
         self.calls.append("solve")
         await self.steps["solve"]()
         return {"ok": True}

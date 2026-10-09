@@ -1925,6 +1925,12 @@ def test_5_8_says_a_repoint_unparks_and_arms_only_the_held_targets_latch():
     tel = {n.func.attr: n.lineno for n in ast.walk(repoint)
            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
            and isinstance(n.func.value, ast.Name) and n.func.value.id == "tel"}
+    # #861: the re-point slews through ``slew_in_mount_frame(self.hub, tel,
+    # ...)``, which converts to the mount's frame and then calls tel.slew.
+    for n in ast.walk(repoint):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "slew_in_mount_frame"):
+            tel.setdefault("slew", n.lineno)
     unparks = "unpark" in tel and "slew" in tel and tel["unpark"] < tel["slew"]
     assert unparks, (f"_hold_repoint no longer unparks before it slews "
                      f"(mount calls {sorted(tel)}); 5.8 says it does")

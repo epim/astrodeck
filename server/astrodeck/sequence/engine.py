@@ -34,16 +34,22 @@ import time
 from pathlib import Path
 from statistics import median
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, NamedTuple
+from typing import Any, Callable, Mapping, NamedTuple, NoReturn
 
 from ..aio import reap
-from ..config import config_store, frames_payload
+from ..catalog.coords import angular_sep_deg
+from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
 from .. import capture_geometry, naming
-from ..devices.base import DeviceError, DomeShutterState, PierSide
+from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
+                            PierSide, SyncRefused, SyncUnverified,
+                            position_known_for_motion, quotable_sync_reply,
+                            rig_position_known)
+from ..mount_offset import POSITION_UNKNOWN_MOTION_DETAIL
 from ..events import SITE_DERIVED_KEY, bus, night_key
 from ..focus import run_autofocus
 from ..focus.approach import approach, configured_overshoot
-from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN, TrackingLost
+from ..focus.autofocus import (SWEEP_EXPOSURE_S, SWEEP_GAIN, FieldTrailing,
+                               TrackingLost)
 from ..focus.native import SPARSE_FIELD_WARN
 from ..focus.filter_offsets import narrowband_sweep_settings, solve_filter_slot
 from ..focus.tempcomp import (
@@ -56,7 +62,8 @@ from ..guide.base import rms_total_arcsec
 # there is one copy; the `guide` package, which `hub` imports, loads it
 # already, so this costs nothing at import.
 from ..guide.native import _ENGINE_MAX_DURATION_MS as _NATIVE_PULSE_CAP_MS
-from ..hub import Hub
+from ..hub import (GOTO_NOT_ARRIVED_REASON, SOLVE_REASON_SYNC_REFUSED,
+                   SOLVE_REASON_SYNC_UNVERIFIED, Hub, slew_in_mount_frame)
 from ..imaging.processing import to_jpeg
 from . import schedule
 from .cloudstate import CloudState, verdict_from_info
@@ -75,7 +82,8 @@ from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
 from .models import ExposureStep, SequencePlan, Target, TargetGroup
 from .panel_order import OrderSnapshot, order_panels
 from .report import FrameRecord, SessionReporter
-from .policy import resolve_policy
+from .policy import (MIN_GUIDE_SCALE_ARCSEC_PX, guide_rms_floor_arcsec,
+                     resolve_policy)
 from .session import Session, SessionFrame, session_store
 
 # --- Monitor / ETA shared constants (single source of truth) ---------------
@@ -255,6 +263,41 @@ SPARSE_RESWEEP_EVERY_S = 600.0
 #: bury the night log in the same sentence, and the native sweep already logs
 #: each probe's count.
 SPARSE_RESWEEP_LOG_EVERY_S = 30 * 60.0
+
+#: How often a VETOED sweep is said in words, after the first (#855), seconds,
+#: monotonic. A vetoed cadence or temperature refocus is re-asked at every
+#: frame boundary, and a re-armed triggered rule fires at every frame. Frames
+#: are 60-300 s, so one line per 600 s is one line per 2-10 frames; the
+#: 56-minute runaway of 2026-10-07 (F+7 to F+63) gives 6 lines. The first veto
+#: of a run, and the first after a 600 s quiet spell, always logs. The
+#: mid-sweep abandon line is NOT rate limited: MAX_TRAIL_ABANDONS bounds the
+#: abandons, so it bounds the lines too.
+TRAIL_VETO_LOG_EVERY_S = 600.0
+#: Hysteresis between STARTING a sweep and ABANDONING one (#855). A sweep
+#: starts only while the guide RMS is at or under the ceiling (the line the
+#: frame gate keeps frames under); once running it is abandoned only above
+#: this factor x the ceiling (6.25" at the 5.0" default). The gate reads an
+#: RMS over n = 100 guide samples, whose relative standard deviation for
+#: independent Gaussian samples is 1/sqrt(2n) = 1/sqrt(200) = 0.0707, so a
+#: steady guider sitting exactly at the ceiling reaches 1.25 x only at
+#: 0.25 / 0.0707 = 3.5 standard deviations (1.8 at a correlated n_eff = 25:
+#: 0.25 / (1/sqrt(50)) = 0.25 / 0.141). The band cuts how often a steady
+#: guider crosses; MAX_TRAIL_ABANDONS is the bound. It sits ABOVE the ceiling
+#: on purpose: a start line below it would open a band where frames are kept
+#: but sweeps are vetoed, and dither transients can hold a rig there all
+#: night (a 19.5" dither at three per window reads sqrt((210 + 3.9375 x 380)
+#: / 100) = 4.13", under 5.0 and over a 4.0 start line).
+TRAIL_SWEEP_ABORT_FACTOR = 1.25
+#: The bound on CONSECUTIVE mid-sweep abandons on a trailing field (#855; a
+#: recovery loop needs an exit). Abandon 1 is free: `_autofocus` returns None
+#: and the trigger re-arms, so one sweep's cost buys a retry once guiding
+#: recovers. Abandon 2 and every later one in the same run counts as a FAILED
+#: attempt (False, `_frames_since_focus = 0`, temperature re-anchor), so the
+#: triggered rule's failure budget (MAX_REARM_AFTER_FAILURE = 3) caps a
+#: watchdog episode at 1 + 3 = 4 sweeps, and a cadence refocus at one per
+#: cadence after the first pair. A sweep that runs to its end, and `start`,
+#: reset the count; an entry veto neither counts nor resets.
+MAX_TRAIL_ABANDONS = 2
 
 #: An autofocus longer than this, run UNGUIDED, earns a re-centre before guiding
 #: starts. Seconds.
@@ -756,6 +799,47 @@ def _frame_altitude(target, site: dict, when: float) -> float | None:
 #: hours the same night.
 _MAX_GUIDING_RECOVERIES = 2
 
+#: #849 (RULING R1): A PAUSE STOPS GUIDING. On 2026-10-07 a paused run's
+#: guider pulsed the AM5 for an hour, and on that mount every east pulse
+#: desynchronises the pointing model. The pause stands the guider down at the
+#: frame boundary (`_checkpoint`); the frame loop restarts it after its own
+#: gates, through the guiding-recovery path, re-centring first and without
+#: charging a recovery attempt.
+L_PAUSE_STOP = ("paused: guiding stopped, so the guider does not move the "
+                "mount while the run waits; it restarts when you resume")
+PAUSE_DETAIL = ("paused by you — guiding stopped; it waits here until you "
+                "resume it")
+L_PAUSE_NOSTOP = ("paused, but guiding did not stop, so the guider is still "
+                  "moving the mount; stop guiding by hand")
+L_RESUME_RESTART = ("resumed: re-centring if this target centres, then "
+                    "restarting guiding")
+L_RESUME_FAIL = ("resumed, but guiding did not restart; recovery takes over "
+                 "at the next frame if this plan recovers guiding")
+PAUSE_MOVED_REASON = "the mount is not where it was when the run paused"
+L_PAUSE_MOVED = ("resumed, but the mount is not where it was when the run "
+                 "paused and this target does not re-centre, so it is skipped")
+#: A tracking mount's reported position barely moves across a pause
+#: (arcminutes of tracking error), while a goto, a home or a park moves it by
+#: degrees. Either side unreadable counts as moved.
+PAUSE_MOVED_DEG = 1.0
+#: `SequenceEngine._read_pose`'s answer when the rig has NO telescope device
+#: (a camera plus a guider that drives its own mount connection, PHD2 on
+#: ST-4 for one). Not None, which means "a mount that could not be read":
+#: no mount at both ends of a pause is nothing AstroDeck controls having
+#: moved, while an unreadable one still counts as moved (integration
+#: review, finding 10).
+POSE_NO_MOUNT = "no mount"
+
+#: #848: a frame whose guider was guiding at the top of the iteration and is
+#: not guiding at the shutter (it stopped itself during the dither, or while
+#: the quiet gate waited) is not taken; recovery restarts guiding first.
+#: Recovery re-centres only a target that centres and is not a calibration
+#: target (`_maybe_recover_guiding`'s ``recentres``), so the line says so,
+#: as L_RESUME_RESTART does (integration review, finding 7).
+L_SKIP = ("guiding stopped before this frame, so the frame was not taken; "
+          "recovery restarts guiding first, re-centring if this target "
+          "centres")
+
 #: The longest exposure of the sky reading taken before a guiding recovery
 #: (#621, `_sky_closed_before_recovery`), seconds. The interrupted step's own
 #: exposure, capped here: a narrowband science exposure is three minutes or
@@ -764,6 +848,117 @@ _MAX_GUIDING_RECOVERIES = 2
 #: science-length frames, and a frame of a few seconds reads clear or cloudy
 #: on how many stars it could reach rather than on the sky.
 SKY_PRECHECK_MAX_S = 60.0
+
+#: A centring that ended further from its target than this fraction of the
+#: field's SHORT side is a miss that must not be imaged on (#852). A target
+#: whose centre is e from the frame centre keeps a disc of radius
+#: short/2 - e inside the frame; at e = short/4 that disc is short/4, so any
+#: target up to half the short side across stays whole. The rig of
+#: 2026-10-07: 67' x 45' field -> 45 * 0.25 = 11.25'. Its misses (130.1',
+#: 151.6', 166.1', 255.0') are all past it; ordinary non-converged results
+#: (2-4' after three attempts) are not. Ruling R8.
+CENTRING_CEILING_FOV_FRAC = 0.25
+#: The same ceiling when the optics are unknown (no fov). Equal to the hub's
+#: `_FIELD_STALE_MIN_DEG` (0.25 deg = 15'), the hub's own "comfortably above
+#: dither and centring nudges, far below any real slew", so the engine and
+#: the hub agree on what a real displacement is when nobody knows the field.
+CENTRING_CEILING_NO_OPTICS_ARCMIN = 15.0
+#: `hub.goto_and_center`'s default tolerance (0.02 deg) in arcmin, the floor
+#: of the ceiling for a target that set none.
+_HUB_DEFAULT_TOLERANCE_ARCMIN = 0.02 * 60.0      # 1.2'
+
+#: Walking-field holds (`_hold_recentre_recalibrate`: the re-lock and
+#: dither-settle detectors, and a pointing re-check whose in-place solve
+#: found the field past the ceiling) allowed per target per observing night
+#: (#853, ruling R1). 2026-09-10: one hold recovered a 3.19 deg walk (0
+#: settle failures after it), so one hold is the case that works; a second
+#: allows one independent later event. Each costs a re-centre (~1.5 min)
+#: plus a calibration walk (4.7 min measured 2026-09-08), so the bound caps
+#: a runaway at about 2 x 6.2 = 12.4 min of holds.
+MAX_FIELD_HOLDS_PER_TARGET_NIGHT = 2
+
+#: Re-centring guide-star recoveries (`_maybe_recover_guiding` on a target
+#: with centring on) allowed per target per observing night (#853, ruling
+#: R1b). The #72 bound allows `_MAX_GUIDING_RECOVERIES` = 2 attempts per
+#: spell and a guided frame starts a new spell, so per night it is
+#: unbounded. Two whole spells: 2 x 2 = 4. Cost per attempt: a re-centre
+#: (~1.5 min) plus a guider restart on the kept calibration; if the guider
+#: discards it, a calibration walk too (4.7 min), so the cap is
+#: 4 x 1.5 = 6 min to 4 x 6.2 = 24.8 min.
+MAX_RECOVERY_RECENTRES_PER_TARGET_NIGHT = 4
+
+#: Seconds of in-place pointing re-checks (#851: a solve and sync where the
+#: mount points, no motion) allowed per target per night, MEASURED as the
+#: time each check took, not as a count (ruling R6). The same sky-time cap
+#: as the walking-field bound: 2 x (90 s re-centre + 282 s calibration walk)
+#: = 744 s. Why time and not a count: how often the detector fires depends
+#: on the plan's refocus cadence (each autofocus walks the report 7-9 min x
+#: 12.9'/min = 90-116', past this rig's 33.7' threshold, so every refocus
+#: fires one), and the blind solve's duration on this rig is unmeasured.
+#: Expected use: an hourly refocus over 8 h = 8 checks; at ~20 s a check
+#: (3 s exposure + a 5-15 s solve) that is 160 s, 22 % of the budget.
+#: Spent, a disagreement is logged once and not acted on.
+POINTING_INPLACE_BUDGET_S = 744.0
+
+#: A report that moved further than this without a slew, where the field
+#: will not solve in place, is treated as "position unknown" (the run stops
+#: without moving the mount). Mirrors `resume_arm.RECOVERY_REFUSED_SYNC_MAX_DEG`
+#: (5.0, the resume ladder's "close enough to slew on") and the driver's
+#: `SYNC_E11_ELSEWHERE_DEG` (5.0); kept here rather than imported because
+#: resume_arm imports the engine. Change all three together. A reset AM5
+#: reports its home pole: the move is then 90 deg minus the target's Dec,
+#: far past 5. The autofocus walk (90-116' = 1.5-1.9 deg) is inside it.
+POINTING_RESET_PLAUSIBLE_DEG = 5.0
+
+#: Seconds a hold waits before solving a second time after the first solve
+#: failed (#853). NOT derived from a mechanism. The hold stops guiding before
+#: its goto, so by the second solve no guide pulse can be in flight (the AM5
+#: per-pulse cap is 1000 ms, so 5 s is five caps). Why the first solve on
+#: 2026-10-07 trailed is not known (candidates: the runaway's last pulses,
+#: or a tracking suspend left on); the second attempt is a repeat with a
+#: short pause, and a sky that stays unsolvable is the light hold's job
+#: (`_recentre_for_hold`), not this wait's. HARDWARE-PENDING H2.
+HOLD_RESOLVE_SETTLE_S = 5.0
+
+# FIXED WORDS (#618, D-03): the StopTarget and abort texts below carry no
+# figure, code or reply, so two passes that failed the same way read as one
+# rig-side reason. None carries a pair the UI's humanizer rewrites ("plate"
+# with "solve", "guid" with "lost", "camera", "nina"). The figures go in the
+# one warning logged beside each.
+CENTRING_DID_NOT_MOVE = "the mount did not move to correct the pointing"
+CENTRING_TOO_FAR = "the field is too far off target to image"
+CENTRING_NOT_ARRIVED = "the mount did not reach the target"
+CENTRING_UNSOLVED_TWICE = ("the field did not solve twice, so the pointing is "
+                           "unknown")
+CENTRING_NO_LIGHT = "the field never solved while holding for light"
+FIELD_HOLDS_SPENT = ("the field kept moving off target and tonight's holds "
+                     "for it are spent")
+RECOVERY_RECENTRES_SPENT = ("the guide star kept going missing; tonight's "
+                            "re-centres for it are spent")
+POSITION_UNKNOWN_STOP = ("the mount's position is unknown, so the run "
+                         "stopped without moving it")
+#: The StopTarget reason when the in-place re-check found the report jumped
+#: further than ``POINTING_RESET_PLAUSIBLE_DEG`` and the field will not
+#: solve, on a mount that cannot lose its frame (``frame_can_reset`` False,
+#: integration review finding 9): the pointing is in doubt for this target,
+#: not the mount's frame, so the target stops and the run goes on.
+POINTING_JUMP_UNSOLVED = ("the mount's report jumped without a slew and the "
+                          "field did not solve, so the pointing is unknown")
+#: How many times, at most, a run that ended with ``PositionUnknownStop``
+#: asks the mount again to stop tracking when the first stop was not
+#: confirmed (integration review, finding 2), one ask per
+#: ``IDLE_STOP_RETRY_S``: 60 x 60 s = one hour. Each ask goes through the
+#: driver's own reopen of a dropped link (the AM5 tries one at most every
+#: ``RELINK_MIN_INTERVAL_S`` = 5 s, on the next command), so a link a reopen
+#: can save answers within the first asks; the 2026-08-09 dead link was
+#: cured by a single reopen. A mount still unconfirmed after an hour is not
+#: coming back by being asked, and with its position unknown nothing
+#: automatic may move it: the escalation is one error line to the operator.
+POSITION_UNKNOWN_STOP_ASKS = 60
+#: The safe order (RULES.md SAFETY RULE) in the short form the resume ladder
+#: and the AM5 driver use, for a line whose cause must come first.
+_SAFE_ORDER_SHORT = ("tube at home, Trust position; else bring it home by "
+                     "eye with a pad key, then Trust it.")
 
 
 class SafetyAbort(DeviceError):
@@ -826,6 +1021,40 @@ class SlewRefused(SafetyAbort):
         self.words = words
         self.site_detail = site_detail
         self.kind = kind
+
+
+class PositionUnknownStop(SafetyAbort):
+    """The mount's position is unknown mid-run (#851, #144, ruling R9): the
+    driver says so (``position_known`` False), the mount would not take the
+    sky's position in an in-place sync, or its report jumped further than a
+    reset-plausible bound and the field will not solve.
+
+    THE RUN ENDS WITHOUT MOVING THE MOUNT: no park (on the AM5 ``:hP#`` goes
+    to the MODEL's home, aimed from the position in doubt), no roof close (a
+    roof closing on a tube nobody has parked), tracking stopped (it computes
+    no destination; a wrong model must not track the tube into the pier).
+    `_run`'s ``except SafetyAbort`` arm reads the type, never the text.
+
+    A SafetyAbort so every ``except SafetyAbort: raise`` passes it through
+    and no hold swallows it; the run ends with end_reason "unsafe". An
+    `unsafe` stop otherwise stays armed for a same-night restart, so
+    `_finalize_report` DISARMS the session's auto-resume for this type
+    (ResumeArm would otherwise restart it and aim its ladder from the same
+    model). Not a StopTarget: the scheduler's next goto would be aimed from
+    the same unknown position.
+
+    THE DOUBT OUTLIVES THE RUN (integration review findings 0 and 5,
+    #874). `_run`'s arm marks it on the telescope
+    (``Telescope.mark_position_unknown``, process memory only), so
+    ``position_known`` reads False until Trust position or a sync proved
+    away from the pole. Every consumer of that flag then holds: the resume
+    ladder for ANY armed session (not only this one, which is also
+    disarmed), dawn park (which stops tracking instead of parking), the
+    nudge gate, and both UIs' Trust position button appears.
+
+    ONLY ON A MOUNT THAT CAN LOSE ITS FRAME for a sync refused in place
+    or an unsolved reset-sized jump (``Telescope.frame_can_reset``, finding
+    9): on any other mount those stop the target, and the run goes on."""
 
 
 class RecoverySweep(NamedTuple):
@@ -1114,6 +1343,39 @@ class SequenceEngine:
         #: the star again minutes later, so a counter keyed on the exception
         #: path would have read zero through the entire loop.
         self._guiding_recoveries = 0
+        #: PER-TARGET PER-NIGHT BUDGETS (#853, #851; rulings R1, R1b, R5, R6),
+        #: keyed ``(night_key(now), _hold_key(target))``. Process memory and
+        #: never persisted: a learned count on disk would make a later night
+        #: behave differently because of an invisible file. Cleared by an
+        #: operator-started run (`start`'s ``operator``), kept across an
+        #: automatic ResumeArm start, so a runaway cannot buy a fresh budget
+        #: by being resumed; the night in the key starts every count clean
+        #: tomorrow. Walking-field holds taken, re-centring guide-star
+        #: recoveries taken, and seconds spent on in-place pointing re-checks.
+        self._field_holds: dict[tuple[str, str | None], int] = {}
+        self._recovery_recentres: dict[tuple[str, str | None], int] = {}
+        self._inplace_spent_s: dict[tuple[str, str | None], float] = {}
+        #: The budget key whose "re-check time is spent" line was said, so it
+        #: is said once.
+        self._recheck_spent_said: tuple[str, str | None] | None = None
+        #: How many of the hub's pointing disagreements (#851,
+        #: ``hub.pointing_disagreements``) the engine has already consumed.
+        self._disagreements_seen: int = 0
+        #: The id of the target whose pointing no solve has confirmed since
+        #: its last centring evidence (#852): its lights are left out of the
+        #: report's integration (ruling R4). None when the pointing is known.
+        self._pointing_unverified_for: str | None = None
+        #: Whether the sky reading before the last recovery or hold SAW STARS
+        #: (`_sky_closed_before_recovery`): an unsolved re-centre after it is
+        #: the pointing's fault, not the sky's (ruling R2).
+        self._pre_recovery_saw_stars: bool = False
+        #: #849: the pause stood the guider down, so the frame loop's next
+        #: `_maybe_recover_guiding` restarts it (uncharged); and where the
+        #: mount was when it did, for a target that will not re-centre.
+        self._guiding_off_for_pause = False
+        self._pause_pose: tuple | None = None
+        #: #856: (guider id, saturated counts) when the shutter opened.
+        self._capped_at_open: tuple | None = None
         self._last_focus_temp: float | None = None
         #: The temperature-compensation reference (#D-RIG-2): ``(temp_c, pos)``
         #: or None for "not anchored yet".
@@ -1172,6 +1434,13 @@ class SequenceEngine:
         #: None until the first, so the first says it and the rest at most
         #: every ``SPARSE_RESWEEP_LOG_EVERY_S``. Reset when a debt is made.
         self._sparse_gated_logged_at: float | None = None
+        #: ``time.monotonic()`` of the last "sweep skipped: guide RMS over the
+        #: ceiling" line (#855), None until the first, so the first says it and
+        #: the rest at most every ``TRAIL_VETO_LOG_EVERY_S``.
+        self._trail_veto_logged_at: float | None = None
+        #: CONSECUTIVE sweeps abandoned mid-way on a trailing field (#855).
+        #: A sweep that runs to its end resets it; see MAX_TRAIL_ABANDONS.
+        self._trail_abandons = 0
         #: ``(session, frames seen, accepted map)``: the memo behind
         #: `_ledger_counts` (#516), or None until it is first asked, and
         #: again after `start` and once the run's session is let go.
@@ -1561,6 +1830,10 @@ class SequenceEngine:
         # --- automation / safety collaborators (Batch 4b §1.9) ---------------
         self.reporter: SessionReporter | None = None
         self._report_finalized = False      # idempotency guard (P3-18)
+        #: Whether this run ended in a `PositionUnknownStop` (#851, ruling
+        #: R9), set by `_run`'s unsafe arm for `_finalize_report`, which
+        #: disarms the session's auto-resume on it. Read by type, never text.
+        self._ended_position_unknown = False
         self._unsafe_streak = 0
         self._safe_streak = 0
         # "armed safety, no monitor" is said once per RUN; initialised here too
@@ -1747,7 +2020,8 @@ class SequenceEngine:
     def start(self, plan: SequencePlan, *, session: Session | None = None,
               origin: str = "", origin_id: str = "",
               tracking: Target | None = None,
-              focus_sweep: RecoverySweep | None = None) -> list[dict]:
+              focus_sweep: RecoverySweep | None = None,
+              operator: bool = True) -> list[dict]:
         """Start a run. EVERY start owns a Session (spec §2): a fresh one when
         ``session`` is None (ids were backfilled by pydantic during plan
         validation — the server-side backfill seam), or a re-opened dormant one
@@ -1786,7 +2060,14 @@ class SequenceEngine:
         of ``/api/sessions`` caught it. The caller (an API route) folds this
         into its response as ``disarmed``; a rig-side starter or a resume
         path that ignores the return still gets the warning below, logged
-        here rather than left to every caller to notice and say."""
+        here rather than left to every caller to notice and say.
+
+        ``operator`` SAYS WHO STARTED THIS RUN (#853, ruling R5). True, the
+        default, for every API route: an operator who fixed something and
+        restarted gets fresh per-target budgets (walking-field holds,
+        re-centring recoveries, in-place re-check time). ResumeArm passes
+        False, so an automatic restart tonight keeps tonight's counts and a
+        runaway cannot buy a fresh budget by being resumed."""
         if self.running:
             raise DeviceError("a sequence is already running")
         if getattr(getattr(self.hub, "dusk_arm", None), "connecting", False):
@@ -1806,6 +2087,14 @@ class SequenceEngine:
             refusal = schedule.sun_window_needs_a_site(plan.targets)
             if refusal is not None:
                 raise DeviceError(refusal)
+        if operator:
+            # Fresh budgets for an operator's start (ruling R5); a ResumeArm
+            # start keeps tonight's. After every refusal above, so a start
+            # that is refused clears nothing.
+            self._field_holds.clear()
+            self._recovery_recentres.clear()
+            self._inplace_spent_s.clear()
+            self._recheck_spent_said = None
         self.plan = plan
         resume = session is not None
         if session is None:
@@ -1885,6 +2174,8 @@ class SequenceEngine:
         self._sparse_resweep_due = False
         self._sparse_resweep_next = None
         self._sparse_gated_logged_at = None
+        self._trail_veto_logged_at = None
+        self._trail_abandons = 0
         self._accepted_seen = None
         self._focus_groups_acquired = set()
         # THE LADDER'S SWEEP IS THIS RUN'S GOOD SWEEP (#402), on a resume
@@ -1969,6 +2260,10 @@ class SequenceEngine:
         self._last_visit_ts = {}
         self._group_unguided = set()
         self._hop_guide_started = False
+        # #849: the engine outlives the run, and a run aborted while paused
+        # would hand its pause's stand-down to the next one.
+        self._guiding_off_for_pause = False
+        self._pause_pose = None
         self._meridian_wait = {}
         self._follower_group_active = None
         self._group_side = {}
@@ -2045,6 +2340,7 @@ class SequenceEngine:
         self.reporter.record_policy(self._policy.as_record())
         session_store.save(session)
         self._report_finalized = False
+        self._ended_position_unknown = False
         self._unsafe_streak = 0
         self._safe_streak = 0
         self._warned_no_safety_source = False
@@ -2788,8 +3084,99 @@ class SequenceEngine:
         return live or None
 
     async def _checkpoint(self) -> None:
-        """Frame-boundary gate: honors pause and cancellation."""
+        """Frame-boundary gate: honors pause and cancellation.
+
+        A PAUSE STOPS GUIDING (#849, RULING R1). On 2026-10-07 a paused run's
+        guider went on pulsing the mount for an hour, until it was stopped by
+        hand before a re-home; on the AM5 each east pulse desyncs the pointing
+        model. So at the paused boundary (the in-flight exposure has finished
+        guided) the guider is stood down, and where the mount was is noted.
+        Nothing restarts it here: the frame loop does, after its stop
+        boundary, altitude floor, safety, reconnect and flip gates, through
+        `_maybe_recover_guiding`, re-centring first. An engine-made pause
+        (`_pause_unsafe`) waits on the same event and is the same hazard.
+
+        Not gated on an earlier stand-down: whatever the flag says, a guider
+        that is guiding now (restarted by hand, or by a path that did not
+        consume the flag) is pulsing the mount through this pause, and once
+        stood down it reads inactive, so nothing is stopped twice."""
+        if (not self._paused.is_set() and self.plan is not None
+                and getattr(self.plan, "guide", False)
+                and await self._guiding_active_now()):
+            if await self._stand_down_guider():
+                self._guiding_off_for_pause = True
+                self._pause_pose = await self._read_pose_twice()
+                bus.log("info", L_PAUSE_STOP, "sequence")
+                self._set_state(detail=PAUSE_DETAIL)
+            else:
+                bus.log("warning", L_PAUSE_NOSTOP, "sequence")
         await self._paused.wait()
+
+    async def _read_pose(self) -> tuple | str | None:
+        """``(ra_hours, dec_deg, pier)`` as the mount reports them, None on
+        any failure, or ``POSE_NO_MOUNT`` when the rig has no telescope
+        device. Compared across a pause only: NEVER logged or published,
+        because a homed or stationary mount's position gives the site away
+        (#140, #166)."""
+        try:
+            tel = self.hub.devices.get("telescope")
+            if tel is None:
+                return POSE_NO_MOUNT
+            ra_h, dec_deg = await asyncio.wait_for(tel.get_position(),
+                                                   MOUNT_QUERY_TIMEOUT_S)
+            pier = await asyncio.wait_for(tel.pier_side(), MOUNT_QUERY_TIMEOUT_S)
+            pier = getattr(pier, "value", pier)
+            return float(ra_h), float(dec_deg), str(pier)
+        except asyncio.CancelledError:
+            raise
+        except Exception:               # noqa: BLE001 - unreadable is None
+            return None
+
+    async def _read_pose_twice(self) -> tuple | str | None:
+        """`_read_pose`, read once more when the first read failed: one
+        transient error (a NINA ``DeviceError``, an ASIAIR read timeout)
+        must not read as a moved mount and skip the target (integration
+        review, finding 10). Two failures still answer None."""
+        pose = await self._read_pose()
+        if pose is None:
+            pose = await self._read_pose()
+        return pose
+
+    @staticmethod
+    def _pose_moved(a: tuple | str | None, b: tuple | str | None) -> bool:
+        """Whether the mount moved between two `_read_pose` readings: either
+        unreadable, a mount at one end and none at the other, a different
+        pier side, or more than ``PAUSE_MOVED_DEG`` apart on the sky. No
+        telescope device at BOTH ends is not a move: nothing AstroDeck
+        controls was there to move (finding 10)."""
+        if a == POSE_NO_MOUNT and b == POSE_NO_MOUNT:
+            return False
+        if (not isinstance(a, tuple) or not isinstance(b, tuple)
+                or a[2] != b[2]):
+            return True
+        ra1, d1 = math.radians(a[0] * 15.0), math.radians(a[1])
+        ra2, d2 = math.radians(b[0] * 15.0), math.radians(b[1])
+        c = (math.sin(d1) * math.sin(d2)
+             + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
+        sep = math.degrees(math.acos(max(-1.0, min(1.0, c))))
+        return sep > PAUSE_MOVED_DEG
+
+    async def _repose_for_pause(self) -> None:
+        """The engine itself just placed the mount (a meridian flip's
+        re-slew, the end of a setup) while a pause's stand-down is still
+        unconsumed (#849). The pose noted at the pause no longer says where
+        the mount belongs, and left as it was the resumed recovery's
+        moved-mount test (`_maybe_recover_guiding`) would skip a target that
+        does not re-centre with PAUSE_MOVED_REASON for a move the engine made
+        on purpose: a flip changes the pier side, which reads as moved.
+
+        So the new placement becomes the pose to compare with. The flag
+        stays set, so the restart is still the resume's: uncharged, and also
+        with ``recover_guiding`` off. An unreadable mount reads None, which
+        the moved-mount test counts as moved, as at the pause. Read, never
+        logged (#140, #166)."""
+        if getattr(self, "_guiding_off_for_pause", False):
+            self._pause_pose = await self._read_pose_twice()
 
     def _get_dispatcher(self):
         """Resolve the AlertDispatcher (injected on the engine or the hub). Returns
@@ -3201,11 +3588,43 @@ class SequenceEngine:
             bus.log("error", f"sequence stopped (unsafe): {e}", "sequence")
             self._set_state(state="aborted", detail=str(e), end_reason="unsafe",
                             schedule=None, session=None)
+            # Before the finalize, which disarms the session's auto-resume on
+            # it: a ResumeArm restart would aim its ladder, and the next
+            # setup's goto, from the position this stop says nobody knows.
+            self._ended_position_unknown = isinstance(e, PositionUnknownStop)
+            # THE DOUBT IS THE RIG'S, NOT THIS SESSION'S (finding 0): marked
+            # on the telescope before the finalize and with no await between,
+            # so no ResumeArm tick can see the engine idle with it unmarked.
+            if self._ended_position_unknown:
+                self._mark_rig_position_unknown()
             self._finalize_report("unsafe")
-            wind = asyncio.ensure_future(self._wind_down(
-                park=True,
-                warm=(self._cfg is not None and self._cfg.safety.on_unsafe == "abort_park_warm"),
-                close_dome=bool(self._cfg and self._cfg.safety.close_dome_on_unsafe)))
+            # THE MOUNT'S POSITION IS UNKNOWN (#851, ruling R9): nothing may
+            # be aimed from it. No park (on the AM5 a park goes to the MODEL's
+            # home, which is the thing in doubt) and no roof close (onto a
+            # tube nobody parked); tracking is stopped instead, which
+            # computes no destination. Told apart by type, never by text.
+            # Inside the shielded task, so a UI abort cannot cut the stop off
+            # from the rest of the wind-down.
+            quiet = isinstance(e, PositionUnknownStop)
+
+            async def _unsafe_wind_down() -> None:
+                if quiet:
+                    await self._stop_tracking_quietly()
+                await self._wind_down(
+                    park=not quiet,
+                    warm=(self._cfg is not None and self._cfg.safety.on_unsafe == "abort_park_warm"),
+                    # A roof that needs no parked tube still closes on a
+                    # position-unknown stop (#886 round 2): it never asks
+                    # where the tube points.
+                    close_dome=(bool(self._cfg and self._cfg.safety.close_dome_on_unsafe)
+                                and (not quiet
+                                     or not self._roof_needs_a_parked_tube())))
+                if quiet:
+                    # READ BACK, NOT ASSUMED (finding 2). After the wind-down,
+                    # so the guider stop it reaped is over: an AM5 east pulse
+                    # ends in ``:Te#``, which would turn tracking back on.
+                    await self._confirm_quiet_stop()
+            wind = asyncio.ensure_future(_unsafe_wind_down())
             cancelled = False
             while not wind.done():
                 try:
@@ -3437,6 +3856,29 @@ class SequenceEngine:
                         f"'{self._session.name}': stopped by hand, so "
                         f"auto-resume is disarmed for it. Arm it from the "
                         f"session list to pick it up again.", "sequence")
+            # A RUN THAT ENDED BECAUSE THE MOUNT'S POSITION IS UNKNOWN IS NOT
+            # RESUMED BY ITSELF (#851, ruling R9). The continuity promise
+            # below keeps an `unsafe` stop armed, and ResumeArm restarts any
+            # armed dormant session once the engine is idle: its ladder can
+            # slew on a refused sync it judges close enough, and the next
+            # setup's goto is aimed from the same model. `_run`'s arm has
+            # also marked the rig-level latch (``mark_position_unknown``), so
+            # the ladder holds every OTHER armed session on its own gate;
+            # this session is disarmed besides, so that clearing the latch
+            # does not by itself restart the run that stopped. Keyed on the
+            # exception's type (`_run`'s unsafe arm), never its text.
+            if reason == "unsafe" and getattr(
+                    self, "_ended_position_unknown", False):
+                self._session.auto_resume = False
+                # THE ACTION FIRST, THE NAME LAST: with the name in front, a
+                # name over 15 characters pushed "arm it from the session
+                # list" past the UI's 137-character cut. Both things that
+                # clear the doubt are named (``Telescope.position_known``).
+                bus.log("info",
+                        f"auto-resume disarmed, position unknown: once Trust "
+                        f"position or a sync away from the pole clears it, "
+                        f"arm it from the session list "
+                        f"('{self._session.name}')", "sequence")
             # A FLOW THAT ASKED FOR NO AUTOMATIC RESUME ON LATER NIGHTS IS
             # DISARMED WHERE ITS NIGHT ENDS (#195, owner ruling 7 on #189).
             # `start()` arms every run, and keeps arming an Off plan's, so a
@@ -8377,6 +8819,13 @@ class SequenceEngine:
         leaves this one as it is.
         """
         self._hop_guide_started = False
+        # #849: a pause that stood the guider down belongs to the target it
+        # paused. A hop is a new acquisition, so a flag a StopTarget left
+        # unconsumed (the window closed, or the floor or safety gate stopped
+        # the target before its recovery ran) must not make this target's
+        # recovery compare its pose with the old target's.
+        self._guiding_off_for_pause = False
+        self._pause_pose = None
         await self._setup_target(ti, target)
         if self._hop_guide_started:
             self._guiding_recoveries = 0
@@ -8464,6 +8913,491 @@ class SequenceEngine:
                 max(1.0, min(CENTRING_HOLD_RETRY_S,
                              window["start_unix"] - time.time())))
 
+    #: The outcome the sync-not-taken warning carries when the target opted
+    #: out of centring and so is NOT stopped (#850): without it the operator
+    #: reads "the mount refused the sync" and then sees the run carry on, with
+    #: nothing saying why. It comes straight after the cause and BEFORE the
+    #: figure and the reply (`_sync_not_taken_line`), so humanizeLog's cut at
+    #: 137 takes the figure and the reply first and never this.
+    _SYNC_NOT_TAKEN_GOES_ON = "; centring is off, so imaging goes on"
+
+    @staticmethod
+    def _sync_not_taken(result) -> str | None:
+        """The fixed sentence for a centring whose sync the mount did NOT
+        take (#850), or ``None`` for every other result.
+
+        Two cases, read the same way everywhere the engine reads a centring:
+        the mount REFUSED the sync (``sync_refused``, the driver's
+        ``SyncRefused``) gives ``SOLVE_REASON_SYNC_REFUSED``; nobody could
+        confirm it (``sync_unverified``, the driver's ``SyncUnverified``: the
+        link failed around the sync, or the position read-back never
+        answered) gives ``SOLVE_REASON_SYNC_UNVERIFIED``. Either way the
+        solve worked and the pointing was not corrected, so neither is a
+        failed solve, a "no light" or a "continuing"."""
+        if not isinstance(result, dict):
+            return None
+        if result.get("sync_refused"):
+            return SOLVE_REASON_SYNC_REFUSED
+        if result.get("sync_unverified"):
+            return SOLVE_REASON_SYNC_UNVERIFIED
+        return None
+
+    @classmethod
+    def _sync_not_taken_line(cls, result: dict, target: Target,
+                             where: str, *, goes_on: bool = False) -> str:
+        """The ONE warning logged just before the stop (#850): the target,
+        where it happened, how far off the field is and the mount's reply,
+        for example "M31: centring at acquisition: the mount refused the
+        sync, 152.3' off target (reply 'e11')".
+
+        A TARGET THAT OPTED OUT OF CENTRING (``goes_on`` True, nothing is
+        stopped) gets the outcome BEFORE the figure: "M31: re-centring after
+        the meridian flip: the mount refused the sync; centring is off, so
+        imaging goes on (152.3' off, reply 'e11')". The outcome is why the
+        run carries on, so it must survive the cut at 137 (FIXES4 H3); the
+        figure and the reply share one bracket after it, each left out when
+        there is nothing to say, and the bracket too when both are.
+
+        The figure and the reply live here and never in the ``StopTarget``
+        text, which is fixed words (the #618 contract, hub.py's
+        ``SOLVE_REASON_*`` comment): a panel's TARGET_STOP deferral makes
+        that text its ``last_error``, and D-03 matches two held passes only
+        on identical text.
+
+        NO COORDINATES (#850, the orchestrator brief's privacy ruling, #140,
+        #166). ``error_arcmin`` is the angular separation between the solve
+        and the target, which says nothing about where the rig is; the solve
+        itself and the mount's read-back stay out, because at the home
+        position the read-back is the pole and its RA follows local sidereal
+        time. The reply is quoted only when it is a short code
+        (`devices.base.quotable_sync_reply`, the one copy of the driver's
+        rule); any other reply is "an unrecognised reply", and an empty one
+        says nothing.
+
+        THE FIGURE COMES BEFORE THE REPLY, because humanizeLog cuts a line
+        longer than 140 characters to 137 and an ellipsis: with a long name
+        and the longest ``where`` the reply is what goes, never half a
+        number. No figure clause when the figure is unknown.
+
+        THE UI'S HUMANIZER (ui/src/lib/humanize.ts) replaces a line carrying
+        "plate" and "solve", or "guid" and "lost", with its own words, so
+        neither pair appears here or in any ``where``."""
+        refused = bool(result.get("sync_refused"))
+        what = ("the mount refused the sync" if refused
+                else "the mount did not confirm the sync")
+        reply = result.get("sync_reply")
+        quotable = quotable_sync_reply(reply) if isinstance(reply, str) else None
+        if quotable is not None:
+            reply_words = f"reply {quotable!r}"
+        elif reply:
+            reply_words = "an unrecognised reply"
+        else:
+            reply_words = ""
+        err = result.get("error_arcmin")
+        fig = (f"{float(err):.1f}'"
+               if isinstance(err, (int, float)) and not isinstance(err, bool)
+               and math.isfinite(err) else "")
+        if goes_on:
+            parts = [p for p in ((f"{fig} off" if fig else ""), reply_words)
+                     if p]
+            detail = f" ({', '.join(parts)})" if parts else ""
+            return (f"{target.name}: {where}: {what}"
+                    f"{cls._SYNC_NOT_TAKEN_GOES_ON}{detail}")
+        off = f", {fig} off target" if fig else ""
+        said_reply = f" ({reply_words})" if reply_words else ""
+        return f"{target.name}: {where}: {what}{off}{said_reply}"
+
+    def _stop_if_sync_not_taken(self, result, target: Target, where: str, *,
+                                centring_wanted: bool = True) -> None:
+        """Raise ``StopTarget`` when a centring result says the mount did not
+        take the sync (`_sync_not_taken`: refused or unverified, #850), and
+        do nothing otherwise.
+
+        A TARGET THAT OPTED OUT OF CENTRING IS NOT STOPPED
+        (``centring_wanted`` False): the warning is logged, saying imaging
+        goes on (`_SYNC_NOT_TAKEN_GOES_ON`) before the figure and the reply,
+        and nothing is raised. The flip's re-centre (`hub.meridian_flip`)
+        and the tracking recovery's (`_do_tracking_recovery`) run whatever
+        the target says, so their callers pass the same test the three mid-run
+        re-centres gate their whole re-centre on (``target.center`` and not
+        ``target.calibration``): such a target's field is what an uncentred
+        slew would have given, which is all it asked for, exactly as setup's
+        centring-off branch tolerates the same refusal.
+        The default is True, so a site that forgets the gate stops rather
+        than images a field it was asked to centre.
+
+        WHY A STOP AND NOT A HOLD OR A "CONTINUING". On 2026-10-07 three
+        centring syncs of 2.2 to 2.8 degrees "changed nothing": the hub
+        logged "solved & synced", the next goto was zero length, the next
+        solve showed the field unmoved, and the run imaged the wrong field
+        for hours (#852). The driver now reads every sync back and raises
+        ``SyncRefused`` when the mount did not take it, or ``SyncUnverified``
+        when nobody could tell, and ``hub.goto_and_center`` turns those into
+        ``sync_refused`` / ``sync_unverified`` when the solve is NOT within
+        tolerance of the target (one within tolerance is a centred field and
+        comes back as one). Another slew lands in the same place, so the only
+        honest answers are to stop this target or, for a mosaic panel that
+        requires centring, defer it (the caller's business, `_setup_target`).
+
+        A REFUSED SYNC IS NOT A FAILED SOLVE (#850, the orchestrator brief's
+        ruling 5): the solve worked, and the no-light hold
+        (`_hold_for_light`) waits for light that is already there. Every
+        caller asks this BEFORE any branch that reads a non-centred result as
+        "no light" or "continuing".
+
+        THE STOP IS FIXED WORDS, ``f"{where}: {const}"``: no target name (the
+        scheduler's skip line prefixes "<name>: skipped — "), no figure and
+        no reply, so a panel deferred on it twice reads as one rig-side
+        reason (D-03, `group_rules._held_pass_reason_code`). The figure and
+        the reply go in the one warning logged just before
+        (`_sync_not_taken_line`)."""
+        const = self._sync_not_taken(result)
+        if const is None:
+            return
+        line = self._sync_not_taken_line(result, target, where,
+                                         goes_on=not centring_wanted)
+        if not centring_wanted:
+            bus.log("warning", line, "sequence")
+            return
+        bus.log("warning", line, "sequence")
+        raise StopTarget(f"{where}: {const}")
+
+    # ------------------------------------------------ the miss rule (#852)
+
+    @staticmethod
+    def _hold_key(target) -> str | None:
+        """The target half of a per-night budget key: its id, else its name."""
+        return getattr(target, "id", None) or getattr(target, "name", None)
+
+    def _budget_key(self, target) -> tuple[str, str | None]:
+        """``(the observing night, the target)``: every per-target per-night
+        budget is keyed on this, so a new night starts each count clean."""
+        return (night_key(time.time()), self._hold_key(target))
+
+    @staticmethod
+    def _arcmin(value) -> float | None:
+        """A finite real number of arcminutes, or None (a bool is not one)."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        v = float(value)
+        return v if math.isfinite(v) else None
+
+    def _centring_ceiling_arcmin(self, target) -> float:
+        """How far off target a centring may end and still be imaged (#852,
+        ruling R8): ``CENTRING_CEILING_FOV_FRAC`` of the field's SHORT side,
+        ``CENTRING_CEILING_NO_OPTICS_ARCMIN`` when the optics are unknown,
+        and never below the target's own centring tolerance (a target that
+        asked for 20' is not stopped at 15')."""
+        w = h = 0.0
+        try:
+            opt = self.hub.effective_optics()
+            w = float(opt.get("fov_w_deg") or 0.0)
+            h = float(opt.get("fov_h_deg") or 0.0)
+        except Exception:               # noqa: BLE001 - a test hub has none
+            w = h = 0.0
+        if w > 0 and h > 0 and math.isfinite(w) and math.isfinite(h):
+            ceiling = min(w, h) * 60.0 * CENTRING_CEILING_FOV_FRAC
+        else:
+            ceiling = CENTRING_CEILING_NO_OPTICS_ARCMIN
+        tol = self._arcmin(getattr(target, "center_tolerance_arcmin", None))
+        if tol is None:
+            tol = _HUB_DEFAULT_TOLERANCE_ARCMIN
+        return max(ceiling, tol)
+
+    @staticmethod
+    def _unmoved(result) -> str | None:
+        """The fixed sentence for a centring the MOUNT did not carry out:
+        the goto never arrived (``goto_not_arrived``, P4's key, which the
+        driver measured and so is named first, even when the hub's stuck
+        check also fired on the solves after it) or the correction slew
+        changed nothing (``did_not_move``), else None."""
+        if not isinstance(result, dict):
+            return None
+        if result.get("goto_not_arrived"):
+            return CENTRING_NOT_ARRIVED
+        if result.get("did_not_move"):
+            return CENTRING_DID_NOT_MOVE
+        return None
+
+    def _centring_miss(self, result, target) -> str | None:
+        """The fixed sentence for a centring that must not be imaged on
+        (#852), or None.
+
+        None for anything that is not a dict, a centred result, an aborted
+        one (its own cancellation handles it) and a sync the mount did not
+        take (#850's stop owns it). A mount that did not carry out the
+        correction (`_unmoved`) is a miss only when the field is OUTSIDE the
+        ceiling or was not measured: inside it the target still frames, so
+        it is imaged (ruling R3, overridden by the orchestrator), and a later
+        re-centre that fails the same way is bounded by the hold budgets.
+        Otherwise a measured field past `_centring_ceiling_arcmin` is
+        ``CENTRING_TOO_FAR``; exactly at the ceiling goes on."""
+        if not isinstance(result, dict):
+            return None
+        if result.get("centered") or result.get("aborted"):
+            return None
+        if self._sync_not_taken(result) is not None:
+            return None
+        err = self._arcmin(result.get("error_arcmin"))
+        inside = err is not None and err <= self._centring_ceiling_arcmin(target)
+        unmoved = self._unmoved(result)
+        if unmoved is not None:
+            return None if inside else unmoved
+        if err is not None and not inside:
+            return CENTRING_TOO_FAR
+        return None
+
+    def _centring_miss_line(self, result, target, where: str, *,
+                            goes_on: bool) -> str:
+        """The ONE warning beside a centring miss: the outcome FIRST and the
+        figures last, because the UI cuts a line at 137 characters plus an
+        ellipsis, so the cut can only ever take a figure. No coordinates:
+        the figures are a separation from the target and a field limit."""
+        name = getattr(target, "name", "this target")
+        err = self._arcmin(result.get("error_arcmin")) \
+            if isinstance(result, dict) else None
+        if goes_on:
+            fig = f", {err:.1f}' off target" if err is not None else ""
+            return f"{name}: {where}: centring is off, so imaging goes on{fig}"
+        head = f"{name}: stopping this target; {where}: "
+        still = f", still {err:.1f}' off target" if err is not None else ""
+        const = self._centring_miss(result, target)
+        if const == CENTRING_DID_NOT_MOVE:
+            return f"{head}the mount did not move{still}"
+        if const == CENTRING_NOT_ARRIVED:
+            return f"{head}the mount did not reach the target{still}"
+        ceiling = self._centring_ceiling_arcmin(target)
+        return (f"{head}still {err:.1f}' off target, past the "
+                f"{ceiling:.1f}' limit")
+
+    def _unmoved_inside_line(self, result, target,
+                             where: str | None = None) -> str | None:
+        """Ruling R3's one warning: the mount did not carry out the
+        correction and the solved field is INSIDE the ceiling, so imaging
+        goes on and the figure says how far off. None for every other
+        result."""
+        unmoved = self._unmoved(result)
+        if unmoved is None or result.get("centered") \
+                or result.get("aborted") \
+                or self._sync_not_taken(result) is not None:
+            return None
+        err = self._arcmin(result.get("error_arcmin"))
+        if err is None or self._centring_miss(result, target) is not None:
+            return None
+        what = ("the correction slew did not move the mount"
+                if unmoved == CENTRING_DID_NOT_MOVE
+                else "the mount did not reach the target")
+        at = f"{where}: " if where else ""
+        name = getattr(target, "name", "this target")
+        return (f"{name}: {at}{what}, so imaging goes on: the field is "
+                f"{err:.1f}' off target, inside the "
+                f"{self._centring_ceiling_arcmin(target):.1f}' limit")
+
+    def _stop_if_centring_missed(self, result, target, where: str, *,
+                                 centring_wanted: bool = True) -> None:
+        """Raise ``StopTarget(f"{where}: {const}")`` when a centring missed
+        (`_centring_miss`, #852), after one warning with the figures, and do
+        nothing otherwise. The mirror of `_stop_if_sync_not_taken`: called
+        right after it at every site that centres, so a sync the mount did
+        not take keeps its own stop.
+
+        A TARGET THAT OPTED OUT OF CENTRING (``centring_wanted`` False: the
+        flip and the tracking recovery re-centre whatever the target says)
+        gets the warning, saying imaging goes on, and is not stopped.
+
+        A MOUNT THAT DID NOT CARRY OUT THE CORRECTION WITH THE FIELD INSIDE
+        THE CEILING is not a miss (ruling R3): one warning carries the
+        figure and imaging goes on."""
+        const = self._centring_miss(result, target)
+        if const is None:
+            line = self._unmoved_inside_line(result, target, where)
+            if line is not None:
+                bus.log("warning", line, "sequence")
+            return
+        bus.log("warning",
+                self._centring_miss_line(result, target, where,
+                                         goes_on=not centring_wanted),
+                "sequence")
+        if not centring_wanted:
+            return
+        raise StopTarget(f"{where}: {const}")
+
+    def _say_centring_ended(self, target, result) -> None:
+        """Setup's line for a centring that did not centre and is NOT a miss
+        (#852): it replaces "converged to X'", which was false (the hub ran
+        out of attempts or the mount did not move). Ruling R3's line when
+        the mount did not carry out the correction inside the ceiling."""
+        line = self._unmoved_inside_line(result, target)
+        if line is not None:
+            bus.log("warning", line, "sequence")
+            return
+        err = self._arcmin(result.get("error_arcmin"))
+        n = result.get("attempts")
+        after = (f" after {n} attempt{'s' if n != 1 else ''}"
+                 if isinstance(n, int) and not isinstance(n, bool) and n > 0
+                 else "")
+        fig = f"{err:.1f}' " if err is not None else ""
+        bus.log("warning",
+                f"{target.name}: centering ended {fig}off target{after}, "
+                f"inside the {self._centring_ceiling_arcmin(target):.1f}' "
+                f"limit — continuing", "sequence")
+
+    def _position_unknown(self) -> bool:
+        """Whether the mount's driver says its position is unknown
+        (``position_known`` False, devices/base.py). A driver or a double
+        without the flag is "known", the contract's own default."""
+        devices = getattr(self.hub, "devices", None) or {}
+        tel = devices.get("telescope")
+        return tel is not None and not position_known_for_motion(self.hub, tel)
+
+    def _frame_can_reset(self) -> bool:
+        """Whether the mount can lose its coordinate frame with nothing on
+        the wire to say so (``Telescope.frame_can_reset``, finding 9). A
+        driver or a double without the flag cannot."""
+        devices = getattr(self.hub, "devices", None) or {}
+        tel = devices.get("telescope")
+        return bool(getattr(tel, "frame_can_reset", False))
+
+    async def _gate_position_known(self, target, where: str) -> None:
+        """End the run without moving the mount when the driver says its
+        position is unknown (`_stop_run_position_unknown`); otherwise
+        nothing."""
+        if self._position_unknown():
+            await self._stop_run_position_unknown(target, where)
+
+    def _mark_rig_position_unknown(self) -> None:
+        """Latch the telescope's ``position_known`` False for the rig
+        (``Telescope.mark_position_unknown``, findings 0 and 5), in fixed
+        words. Synchronous and never raises: it runs in `_run`'s unsafe arm.
+        A driver or double without the method is left alone."""
+        devices = getattr(self.hub, "devices", None) or {}
+        mark = getattr(devices.get("telescope"), "mark_position_unknown", None)
+        if callable(mark):
+            try:
+                mark(POSITION_UNKNOWN_STOP)
+            except Exception:  # noqa: BLE001 - never into the unsafe arm
+                pass
+        # Recorded on the hub too, so a profile activate that builds a NEW
+        # telescope object does not drop it (`rig_position_known`).
+        rig_position_known(self.hub)
+
+    async def _confirm_quiet_stop(self) -> None:
+        """Read back the tracking stop a ``PositionUnknownStop`` made
+        (finding 2). Confirmed off: nothing more. Otherwise one error line,
+        the cause first and then the safe order with no goto in it, and the
+        stop is asked again on its own task and clock
+        (`_quiet_stop_retry`), in the idle stop's slot so the next run's
+        start cancels it as it cancels any idle stop. No telescope: nothing
+        to read."""
+        if "telescope" not in (getattr(self.hub, "devices", None) or {}):
+            return
+        tracking = await self._tracking_now()
+        if tracking is False:
+            return
+        detail = ("it still reports tracking" if tracking
+                  else "its tracking state cannot be read")
+        bus.log("error",
+                f"tracking not confirmed off, position unknown: "
+                f"{_SAFE_ORDER_SHORT} The run asked the mount to stop "
+                f"tracking and {detail}; asking again about once a minute",
+                "sequence")
+        old = self._idle_stop_task
+        if old is not None and not old.done():
+            old.cancel()
+        self._idle_stop_epoch += 1
+        self._idle_stop_first_made = True
+        self._idle_stop_task = asyncio.create_task(
+            self._quiet_stop_retry(self._idle_stop_epoch),
+            name="position-unknown-stop-retry")
+
+    async def _quiet_stop_retry(self, fence: int) -> None:
+        """Ask the mount to stop tracking once per ``IDLE_STOP_RETRY_S``,
+        read it back, at most ``POSITION_UNKNOWN_STOP_ASKS`` times (finding
+        2: a bound, then an escalation). Ends early, silently, once the
+        position is known again: the operator has the mount then, and a
+        tracking they turn on is theirs. Every ask is held by ``fence``."""
+        for _ in range(POSITION_UNKNOWN_STOP_ASKS):
+            await asyncio.sleep(IDLE_STOP_RETRY_S)
+            if not self._position_unknown():
+                return
+            await self._stop_tracking_quietly(fence=fence)
+            if fence != self._idle_stop_epoch:
+                return
+            if await self._tracking_now() is False:
+                bus.log("info", "the mount has now confirmed it stopped "
+                                "tracking", "sequence")
+                return
+        bus.log("error",
+                f"tracking never confirmed off, position unknown: "
+                f"{_SAFE_ORDER_SHORT} Nothing will ask the mount again, so "
+                f"it may still be tracking", "sequence")
+
+    #: The position-unknown line's action, FIRST and with no name in front,
+    #: so it ends at character 131 whatever the target is called. The safe
+    #: order (the driver's own latch line): Trust position if the tube really
+    #: is at home, otherwise a pad key by eye, then Trust position. Never a
+    #: goto, a slew or a "go to": every one of those is aimed from the
+    #: position nobody knows.
+    #: One copy, shared with the routes' 409 (``mount_offset``, #886).
+    _POSITION_UNKNOWN_ACTION = POSITION_UNKNOWN_MOTION_DETAIL
+
+    async def _stop_run_position_unknown(self, target, where: str) -> NoReturn:
+        """End the RUN without moving the mount (#851, ruling R9): one
+        warning with the action, guiding stood down (bounded, never raises),
+        then `PositionUnknownStop`, whose terminal arm in `_run` stops
+        tracking and neither parks nor closes the roof."""
+        name = getattr(target, "name", "this target")
+        bus.log("warning",
+                f"{self._POSITION_UNKNOWN_ACTION} {name}: the run stops "
+                f"without moving the mount ({where})", "sequence")
+        await self._stand_down_guider()
+        raise PositionUnknownStop(POSITION_UNKNOWN_STOP)
+
+    @staticmethod
+    def _centring_unsolved(res) -> bool:
+        """A centring whose solve failed (``solve_failed``): the hub then
+        fell back to a raw GoTo, which on a desynced mount is no motion at
+        all (#853), so nothing about the pointing is known."""
+        return isinstance(res, dict) and bool(res.get("solve_failed"))
+
+    def _mark_pointing_unverified(self, target) -> None:
+        """From now on this target's lights are shot at a pointing no solve
+        confirmed (#852, ruling R4): the report leaves them out of its
+        integration until good centring evidence clears it."""
+        if target is not None and getattr(target, "center", False) \
+                and not getattr(target, "calibration", False):
+            self._pointing_unverified_for = getattr(target, "id", None)
+
+    def _note_centring_evidence(self, result, target) -> None:
+        """Read one centring result as evidence about the pointing (#852,
+        #851). Good evidence (centred, or a measured field that is not a
+        miss) clears the unverified mark and re-bases the pointing re-check,
+        so a disagreement counted just before this centring is retired by
+        it. A result with no figure that did not centre marks the pointing
+        unverified. A dict with no ``centered`` key (a flip that did not
+        re-centre) is no centring and says nothing."""
+        if not isinstance(result, dict) or "centered" not in result \
+                or result.get("aborted"):
+            return
+        err = self._arcmin(result.get("error_arcmin"))
+        good = bool(result.get("centered")) or (
+            err is not None and self._centring_miss(result, target) is None)
+        if good:
+            if getattr(self, "_pointing_unverified_for", None) == getattr(
+                    target, "id", None):
+                self._pointing_unverified_for = None
+            self._disagreements_seen = self._hub_disagreements()
+        elif err is None:
+            self._mark_pointing_unverified(target)
+
+    def _hub_disagreements(self) -> int:
+        """The hub's count of pointing disagreements (#851), 0 when the hub
+        keeps none."""
+        try:
+            return int(getattr(self.hub, "pointing_disagreements", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     async def _centre_once(self, target: Target, rotation: float | None) -> dict:
         """One centring attempt — the SAME goto+solve+sync call
         `_setup_target` makes inline for its first attempt at a
@@ -8509,7 +9443,9 @@ class SequenceEngine:
     _NO_LIGHT_MAX_RETRIES = 6
 
     async def _hold_for_light(self, target: Target, rotation: float | None,
-                              hop_centring: dict) -> dict:
+                              hop_centring: dict, *,
+                              announce: bool = True,
+                              position_gate: str | None = None) -> dict:
         """#596 (backlog shape b): a centring result that is not centred AND
         carries no ``error_arcmin`` at all is ``GENERIC_SOLVE_FAILURE`` — the
         solver found nothing to measure, not a mount a few arcminutes off.
@@ -8535,7 +9471,14 @@ class SequenceEngine:
 
         Returns the newest centring result once one centres, so the caller's
         ``hop_centring``/``hop_angle`` bookkeeping is this acquisition's
-        real one and not the dark first attempt's."""
+        real one and not the dark first attempt's.
+
+        ``position_gate`` (the mid-run caller's ``where``, #851, ruling R9):
+        before EVERY retry goto, a driver that says its position is unknown
+        ends the run without moving the mount (`_stop_run_position_unknown`).
+        The hold can run for an hour, and the AM5 latches the flag on a link
+        reopen at any point in it. None (setup) leaves the retries as they
+        were."""
         try:
             from ..flows.tonight import target_own_window
             window = target_own_window(
@@ -8544,9 +9487,20 @@ class SequenceEngine:
                 now=time.time())
         except Exception:      # noqa: BLE001 - best-effort only
             window = None
-        said = False
+        # ``announce`` False: a mid-run hold (`_recentre_for_hold`) has said
+        # its own line, and this one names autofocus and calibration, which
+        # is setup's wording and wrong mid-run.
+        said = not announce
         attempts = 0
+        # A RETRY WHOSE SYNC THE MOUNT DID NOT TAKE ENDS THE HOLD (#850, the
+        # orchestrator brief's ruling 5), refused or unverified alike
+        # (`_sync_not_taken`). The hub reports one with ``error_arcmin``
+        # None when it carried no solve to measure from, and the condition
+        # below would read that as "still no light" and keep retrying a
+        # solve that worked, under a sentence about waiting for light.
+        # Returned to the caller, which stops the target (`_setup_target`).
         while (not hop_centring["centered"]
+              and self._sync_not_taken(hop_centring) is None
               and hop_centring.get("error_arcmin") is None
               and attempts < self._NO_LIGHT_MAX_RETRIES
               and (window is None or time.time() < window["end_unix"])):
@@ -8578,6 +9532,10 @@ class SequenceEngine:
             await asyncio.sleep(
                 0.0 if _SKIP_TARGET_HOLDS_FOR_TEST else CENTRING_HOLD_RETRY_S)
             attempts += 1
+            # Right before the goto, after the wait: the flag can turn
+            # False during a ten-minute sleep.
+            if position_gate is not None and self._position_unknown():
+                await self._stop_run_position_unknown(target, position_gate)
             hop_centring = await self._centre_once(target, rotation)
         return hop_centring
 
@@ -8585,6 +9543,11 @@ class SequenceEngine:
         # A slew + plate-solve + initial autofocus legitimately produces no frames
         # for minutes; keep the no-progress watchdog quiet until capture begins.
         self._progress_expected = False
+        # A NEW ACQUISITION IS ITS OWN EVIDENCE (#851, #852): its centring
+        # below says where this target's field is, so neither an unverified
+        # mark nor a pointing disagreement counted before it carries over.
+        self._pointing_unverified_for = None
+        self._disagreements_seen = self._hub_disagreements()
         # THE WAIT SPELL ENDS HERE (#221). A cloudy sky met from now on has a
         # target, and the pre-slew gate below opens a hold for it; the wait's
         # "no target to hold for" must not be published over that hold, and
@@ -8679,6 +9642,15 @@ class SequenceEngine:
         # wait is the sky's, not this acquisition's.
         await self._await_target_window(target)
 
+        # NOTHING IS AIMED FROM A POSITION THE DRIVER CALLS UNKNOWN
+        # (integration review finding 1, DESIGN-P2 N6). This is every hop's
+        # acquisition, the one after a StopTarget included: the resume ladder
+        # used to go ahead with the position unknown, which is why setup was
+        # left ungated, and it no longer does (P7 ruling R1). Before the
+        # rotator self-test, which moves the mount, and again before the
+        # acquisition's own goto below.
+        await self._gate_position_known(target, "acquiring the target")
+
         # D-05 (#648): the first rotating group's first hop of a night
         # measures whether the camera follows the rotator BEFORE anything
         # asks it to turn. After the gates above, since it moves the mount,
@@ -8700,6 +9672,16 @@ class SequenceEngine:
         # What this hop's centring said, for a group member's checks below.
         hop_centring: dict | None = None
         hop_miss: str | None = None
+        # A centring whose sync the mount refused or did not confirm, for a
+        # target that is not a panel requiring centring: it stops this target
+        # once the mount's bookkeeping below is done (#850,
+        # `_stop_if_sync_not_taken`).
+        sync_stop: dict | None = None
+        # A centring that MISSED (#852, `_centring_miss`), for a target that
+        # is not a panel requiring centring: it stops this target after the
+        # same bookkeeping as ``sync_stop``, before the angle lock, the focus
+        # sweep and the guider start that a field off target would waste.
+        miss_stop: dict | None = None
         # The sky angle as it stood when the goto returned (ruling 9, spec
         # 5.6 step 4), or None.
         hop_angle: dict | None = None
@@ -8754,6 +9736,10 @@ class SequenceEngine:
             # now persists it only on the stop that ends a live session (#210).
             if self.plan.guide:
                 await self._stand_down_guider()
+            # The window wait, the rotator test and the guider stop above can
+            # each take minutes, and an AM5 link reopen latches the flag on
+            # the link's clock.
+            await self._gate_position_known(target, "acquiring the target")
             if target.center:
                 # GOTO+center is the slew + iterated solve→sync→re-slew loop —
                 # bounded so a hung solve/slew can't stall the night (P0-2).
@@ -8819,7 +9805,21 @@ class SequenceEngine:
                     result = centring
                     via_recovery = True
                 hop_centring = result
-                if not result["centered"]:
+                # THE MOUNT DID NOT TAKE THE SYNC (#850: refused, or nobody
+                # could confirm it, `_sync_not_taken`), asked BEFORE every
+                # branch below, the recovery's copied ``centring`` included
+                # (it is the hub's own answer, ``sync_refused`` /
+                # ``sync_unverified`` and all). Not a failed solve, so never
+                # the no-light hold (the orchestrator brief's ruling 5), and not
+                # "continuing" either: another slew lands where this one did,
+                # and on 2026-10-07 the run imaged the wrong field for hours
+                # (#852). A panel that requires centring is deferred with the
+                # fixed sentence (D-03 matches two held passes on it); every
+                # other target stops, AFTER the idle and sky-angle
+                # bookkeeping below, so the park-hold watches the target the
+                # mount was left tracking (#165) and the solve keeps its row.
+                sync_reason = self._sync_not_taken(result)
+                if sync_reason is None and not result["centered"]:
                     # error_arcmin is None on the solve-failure and motion-fence
                     # abort paths (hub.goto_and_center degrades to a raw GoTo) —
                     # formatting None with :.1f would raise TypeError and kill the
@@ -8833,7 +9833,10 @@ class SequenceEngine:
                     # passes in a row" matches on. Every other failure has
                     # no ``solve_reason`` and keeps the generic text, which
                     # that rule reads as no code at all.
-                    detail = (f"converged to {err:.1f}'" if err is not None
+                    # "ENDED", NOT "CONVERGED" (#852): the hub returns here
+                    # when it ran out of attempts or the correction slew
+                    # changed nothing, and neither is convergence.
+                    detail = (f"ended {err:.1f}' off target" if err is not None
                               else (result.get("solve_reason")
                                     or GENERIC_SOLVE_FAILURE))
                     member = self._group_of(target)
@@ -8842,6 +9845,15 @@ class SequenceEngine:
                         # deferred (`_group_hop_checks`), never shot off its
                         # tile (spec 5.6 step 4).
                         hop_miss = detail
+                    elif self._centring_miss(result, target) is not None:
+                        # A MISS IS NOT IMAGED ON (#852): on 2026-10-07 a lone
+                        # target logged "centering converged to 255.0' —
+                        # continuing" and shot a field 4.25 degrees away. Asked
+                        # BEFORE the no-light arm, so a goto that never arrived
+                        # (no figure, no failed solve) is a stop and not a
+                        # hold for light. Stopped below, after the bookkeeping,
+                        # as a sync not taken is.
+                        miss_stop = result
                     elif member is None and err is None and not via_recovery:
                         # #596 shape b: a SOLVE FAILURE (not a mount a few
                         # arcminutes off) on a target with no other panel to
@@ -8853,18 +9865,52 @@ class SequenceEngine:
                         # require it falls to "continuing" below exactly as
                         # it always has, unchanged by this).
                         result = await self._hold_for_light(
-                            target, rotation, result)
+                            target, rotation, result,
+                            position_gate="holding for light at "
+                                          "acquisition")
                         hop_centring = result
-                        if not result["centered"]:
-                            bus.log(
-                                "warning",
-                                f"{target.name}: still no light after "
-                                f"holding — continuing at the starting "
-                                f"focus, unguided if the guider cannot "
-                                f"start either", "sequence")
+                        # A retry that got light and a solve, and whose
+                        # sync the mount refused or did not confirm (#850),
+                        # is the stop below, not "still no light".
+                        sync_reason = self._sync_not_taken(result)
+                        if sync_reason is None and not result["centered"]:
+                            if result.get("error_arcmin") is None:
+                                bus.log(
+                                    "warning",
+                                    f"{target.name}: still no light after "
+                                    f"holding — continuing at the starting "
+                                    f"focus, unguided if the guider cannot "
+                                    f"start either", "sequence")
+                            elif self._centring_miss(result, target) \
+                                    is not None:
+                                # A retry that got light and SOLVED, and
+                                # missed (#852 N1): not "still no light".
+                                miss_stop = result
+                            else:
+                                self._say_centring_ended(target, result)
+                    elif err is not None:
+                        self._say_centring_ended(target, result)
                     else:
                         bus.log("warning", f"{target.name}: centering {detail} — "
                                            "continuing", "sequence")
+                if sync_reason is None and miss_stop is None:
+                    # What this acquisition says about the pointing: good
+                    # evidence re-bases the pointing re-check; a
+                    # continuation with no figure (the no-light hold ran
+                    # out) marks this target's lights unverified (ruling R4).
+                    self._note_centring_evidence(result, target)
+                if sync_reason is not None:
+                    member = self._group_of(target)
+                    if member is not None and member.require_centred:
+                        # Deferred by `_group_hop_checks` below, kind
+                        # CENTRING, with the hub's fixed sentence as its
+                        # ``last_error`` (``SOLVE_REASON_SYNC_REFUSED`` or
+                        # ``SOLVE_REASON_SYNC_UNVERIFIED``): words with no
+                        # figure in them, so two passes that failed the same
+                        # way read as the same rig-side reason (D-03).
+                        hop_miss = sync_reason
+                    else:
+                        sync_stop = result
             else:
                 tel = self.hub.require("telescope")
                 if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
@@ -8888,6 +9934,12 @@ class SequenceEngine:
                 # writer was carrying (GN-07); the centering that follows
                 # records a fresh one. Guarded: test hubs are bare doubles.
                 getattr(self.hub, "note_pointing_moved", lambda: None)()
+                # ...and the field solve, explicitly (#851): left standing,
+                # this commanded slew would read to the hub's moved-since-
+                # solve detector as an uncommanded move of the mount's report
+                # and buy an in-place re-check at the first frame.
+                getattr(self.hub, "invalidate_field_solve",
+                        lambda _r: None)("the mount is slewing to a new target")
                 if rotation is not None:
                     # SAID, NOT DROPPED (#160). Only `goto_and_center` turns
                     # the rotator, and this branch never calls it, so a
@@ -8917,8 +9969,27 @@ class SequenceEngine:
                     # this key to refuse crediting a stale rotator reading as
                     # proof the camera is at the mosaic's angle.
                     hop_centring = {"rotation_skipped": True}
-                await _bounded(tel.slew(target.ra_hours, target.dec_deg),
-                               SLEW_TIMEOUT_S, f"slew to {target.name}")
+                try:
+                    await _bounded(slew_in_mount_frame(self.hub, tel,
+                                                       target.ra_hours,
+                                                       target.dec_deg),
+                                   SLEW_TIMEOUT_S, f"slew to {target.name}")
+                except GotoNotArrived as e:
+                    # THE GOTO DID NOT ARRIVE (#860). The field is not what an
+                    # uncentred slew gives, so this is not "imaging goes on":
+                    # skip the target in fixed words (D-03), with the figure in
+                    # the one warning before it. Not a run error: the driver
+                    # raises this for a stall or a stop it can name.
+                    r = e.residual_deg
+                    fig = (f", {r:.2f} deg off"
+                           if isinstance(r, (int, float))
+                           and not isinstance(r, bool) and math.isfinite(r)
+                           else "")
+                    bus.log("warning",
+                            f"{target.name}: slew at acquisition: the goto did "
+                            f"not arrive ({e.reason}{fig})", "sequence")
+                    raise StopTarget(
+                        f"slew at acquisition: {GOTO_NOT_ARRIVED_REASON}") from None
                 try:
                     await _bounded(tel.set_tracking(True),
                                    MOUNT_QUERY_TIMEOUT_S, "mount set_tracking")
@@ -8979,6 +10050,23 @@ class SequenceEngine:
             self._record_sky_angle(target, since=hop_wall0,
                                    commanded=rotation if target.center else None,
                                    result=hop_centring, rec=hop_angle)
+            # THE SYNC NOT TAKEN STOPS THE TARGET HERE (#850), after the idle
+            # clock has learned what the mount is tracking and the solve has
+            # its row, before the focus sweep and the guider start that a
+            # field nobody could centre would waste.
+            if sync_stop is not None:
+                self._stop_if_sync_not_taken(sync_stop, target,
+                                             "centring at acquisition")
+            # A CENTRING THAT MISSED STOPS THE TARGET HERE (#852), at the
+            # same point and for the same reasons: after the idle clock and
+            # the solve's row, and before the angle lock below
+            # (`_settle_locked_angle`), which must never be taken from a
+            # solve of the wrong field, and before the focus sweep and the
+            # guider start. A group member that does not require centring
+            # reaches it too, and its visit defers it (TARGET_STOP).
+            if miss_stop is not None:
+                self._stop_if_centring_missed(miss_stop, target,
+                                              "centring at acquisition")
 
         # [group] THE HOP'S OWN CHECKS (#189 S2, spec 5.6 step 4). After the
         # idle watch has learned the mount is on this panel, so a deferral
@@ -9205,6 +10293,14 @@ class SequenceEngine:
         # alike -- exactly like a dither or an autofocus sweep, see
         # `_begin_frame`'s NB.
         self._frame_had_event = True
+
+        # A RE-SETUP AFTER A PAUSE (#849): a safety pause's resume, a roof
+        # reopen or a cloud hold's release re-runs this setup inside the
+        # visit, and it placed the mount on the target. `_hop` clears the
+        # pause flag before its own setup, but these do not, so a pause's
+        # pose would read the setup's slew as "moved" when its guide start
+        # failed and the resumed recovery ran.
+        await self._repose_for_pause()
 
         # setup complete — capture is about to begin. Arm the no-progress watchdog
         # and anchor its clock to NOW so a slow slew/solve/AF that just finished
@@ -9880,6 +10976,14 @@ class SequenceEngine:
             # re-locks within a frame never reports itself inactive, so a field
             # walking one re-lock at a time reaches here with a healthy RMS.
             await self._maybe_hold_for_relocks(target)
+            # ...and the mount's REPORT moving off the last solve with no
+            # slew to explain it (#851): checked in place, by a solve that
+            # moves nothing, before another frame is shot on it.
+            await self._maybe_recheck_pointing(target)
+            # #848: was the guider guiding at the top of this iteration? Read
+            # once here, after every recovery above (the re-check's hold can
+            # restart guiding too), compared at the shutter below.
+            guided_at_top = await self._frame_was_guided()
             await self._enforce_tracking(step, target)
             await self._enforce_cooling()
 
@@ -9966,6 +11070,32 @@ class SequenceEngine:
             # path can see coming. Cheap to ask, and the frame it saves is one
             # nobody would have known to look for.
             await self._await_guider_quiet("this frame")
+
+            # #848: THE SKIP GATE. A guider that was guiding at the top of
+            # this iteration and is not guiding now stopped during it (a
+            # runaway or a failed first dither during the dither above, or a
+            # calibration check failing while the quiet gate waited), and its
+            # calibration was discarded with it. On 2026-10-07 the run shot a
+            # 180 s frame on exactly that. The frame is not taken; the next
+            # iteration's recovery re-centres and restarts guiding first.
+            # Bounded: each skip needs a fresh active-to-inactive transition,
+            # which needs a successful start, and recovery starts are capped by
+            # _MAX_GUIDING_RECOVERIES; once recovery is spent the guider is
+            # inactive at the top and the frame is shot as the operator's
+            # guiding_action says. With recover_guiding off nothing would
+            # restart guiding, so nothing is skipped, UNLESS a pause stood the
+            # guider down after the top read (a pause met in the cooling gate,
+            # the second flip gate or an owed-flip hold): the next
+            # iteration's `_maybe_recover_guiding` restarts guiding for a
+            # resumed run whatever recover_guiding says, so the skip costs
+            # nothing and the frame is shot guided.
+            if (self.plan.guide
+                    and (self._policy.recover_guiding
+                         or self._guiding_off_for_pause)
+                    and guided_at_top
+                    and not await self._frame_was_guided()):
+                bus.log("warning", L_SKIP, "sequence")
+                continue
 
             self._begin_frame(ti, si, step.exposure_s)
             shown = (self._ledger_counts().get(step.id, 0) + 1
@@ -10200,7 +11330,23 @@ class SequenceEngine:
 
     def _reporter_record(self, target: Target, step, info: dict, *, accepted: bool) -> None:
         """Record one frame to the session report (every frame, with its accepted
-        flag). Best-effort; never lets a report-write hiccup break the run."""
+        flag). Best-effort; never lets a report-write hiccup break the run.
+
+        #856.1: first, and whether or not there is a reporter, the night log
+        says how many guide corrections hit the limit during this exposure: a
+        runaway's thousands of exactly-at-cap pulses left no trace before."""
+        capped = None
+        try:
+            capped = self._capped_during_frame()
+            if capped:
+                dirs = ", ".join(f"{d} {n}" for d, n in sorted(
+                    capped.items(), key=lambda kv: -kv[1]))
+                bus.log("warning",
+                        f"{sum(capped.values())} guide pulse(s) at the pulse "
+                        f"limit during this exposure of {target.name} ({dirs})",
+                        "sequence")
+        except Exception:               # noqa: BLE001 - never break the run
+            capped = None
         if self.reporter is None:
             return
         hfr = info.get("hfr") if isinstance(info, dict) else None
@@ -10216,6 +11362,10 @@ class SequenceEngine:
         if frame is not None:
             temp = getattr(frame, "temperature_c", None)
         saved = info.get("saved_path") if isinstance(info, dict) else None
+        # SHOT AT A POINTING NO SOLVE CONFIRMED (#852, ruling R4): kept and
+        # counted toward quotas, left out of the report's integration.
+        mark = getattr(self, "_pointing_unverified_for", None)
+        unverified = mark is not None and mark == getattr(target, "id", None)
         try:
             # WHICH MOSAIC AND WHICH PANEL (#188): a group member's LIGHT
             # frame says, as the FITS cards it was written with do; every
@@ -10232,7 +11382,9 @@ class SequenceEngine:
                 binning=getattr(step, "binning", None), ecc=ecc,
                 altitude_deg=_frame_altitude(target, self.hub.site, time.time()),
                 mosaic=labels.get("mosaic") or None,
-                panel=labels.get("panel") or None))
+                panel=labels.get("panel") or None,
+                pointing_unverified=unverified,
+                guide_capped=capped))
         except Exception as e:
             bus.log("warning", f"report record failed: {e}", "sequence")
 
@@ -12784,15 +13936,21 @@ class SequenceEngine:
                         + (f", {unmetered} not shot (the exposure would not "
                            f"meter)" if unmetered else ""), "sequence")
 
-    async def _stand_down_guider(self) -> None:
+    async def _stand_down_guider(self) -> bool:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:
-        a wedged guider must not be able to prevent a weather hold."""
+        a wedged guider must not be able to prevent a weather hold.
+
+        True when ``stop_guiding`` returned without raising (#849: the pause
+        says whether it really stopped the guider); existing callers ignore
+        it."""
         try:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
+                return True
         except (asyncio.TimeoutError, Exception):
             pass
+        return False
 
     async def _cloud_probe(self, target: Target | None) -> bool | None:
         """One unsaved science-length exposure, judged. Returns cloudy / clear / unknown.
@@ -13208,6 +14366,10 @@ class SequenceEngine:
         tel = self.hub.devices.get("telescope")
         if tel is None or not getattr(tel, "connected", False):
             return "the mount is not connected"
+        # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886). The re-point is a
+        # goto from the believed position, so the RUN ends without moving the
+        # mount, before the gate, the unpark and the slew, as setup does.
+        await self._gate_position_known(target, "re-pointing after the hold")
         behind = self._acquisition_behind_gate
         self._acquisition_behind_gate = target
         try:
@@ -13250,12 +14412,19 @@ class SequenceEngine:
         # it has just said it is tracking. Cancelled and awaited before the
         # mount moves.
         await self._cancel_idle_stop_retry()
+        # ASKED AGAIN AFTER THE GATE (#886 round 2). The safety gate can
+        # pause for up to max_pause_min and return into this re-point, and a
+        # reopen in that pause can latch the position unknown. The flip and
+        # the recovery re-gate after their gates for the same reason.
+        await self._gate_position_known(target, "re-pointing after the hold")
         getattr(self.hub, "note_pointing_moved", lambda: None)()
         try:
             if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
                               "mount is_parked query"):
                 await _bounded(tel.unpark(), PARK_TIMEOUT_S, "mount unpark")
-            await _bounded(tel.slew(target.ra_hours, target.dec_deg),
+            await _bounded(slew_in_mount_frame(self.hub, tel,
+                                               target.ra_hours,
+                                               target.dec_deg),
                            SLEW_TIMEOUT_S, f"slew to {target.name}")
             await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
                            "mount set_tracking")
@@ -13827,6 +14996,49 @@ class SequenceEngine:
         self._active_step = (ti, si)
         self._cur_exposure_s = float(exposure_s)
         self._frame_started_at = time.time()
+        # #856.1: the guider's saturated-correction counts as the shutter
+        # opens, so the frame record can say how many fell inside it.
+        self._capped_at_open = (id(self.hub.guider),
+                                self._guider_saturated_counts())
+
+    def _guider_saturated_counts(self) -> dict[str, int] | None:
+        """The guider's lifetime counts of corrections at its axis limit, by
+        direction (#856.1), or None when it cannot say. Never raises."""
+        try:
+            g = self.hub.guider
+            if g is None or not getattr(g, "connected", False):
+                return None
+            fn = getattr(g, "saturated_pulses", None)
+            if not callable(fn):
+                return None
+            raw = fn()
+            if not isinstance(raw, dict):
+                return None
+            out: dict[str, int] = {}
+            for k, v in raw.items():
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                out[str(k)] = int(v)
+            return out
+        except Exception:               # noqa: BLE001 - cannot say
+            return None
+
+    def _capped_during_frame(self) -> dict[str, int] | None:
+        """Corrections at the guider's axis limit since the shutter opened, by
+        direction, non-zero ones only; None when the guider cannot say. The
+        base is zero when the guider object changed or a count went backwards
+        (a new guider), so nothing is ever negative."""
+        now = self._guider_saturated_counts()
+        if now is None:
+            return None
+        base: dict[str, int] = {}
+        at_open = getattr(self, "_capped_at_open", None)
+        if at_open is not None and at_open[0] == id(self.hub.guider) \
+                and isinstance(at_open[1], dict) \
+                and all(now.get(k, 0) >= v for k, v in at_open[1].items()):
+            base = at_open[1]
+        diff = {d: now[d] - base.get(d, 0) for d in now}
+        return {d: n for d, n in diff.items() if n > 0}
 
     def _record_frame(self, key: str, i: int, target: Target, step, info: dict,
                       *, accepted: bool = True, guided: bool = True) -> None:
@@ -14871,6 +16083,12 @@ class SequenceEngine:
         # SlewRefused-vs-StopTarget decision is one small, independently
         # callable unit rather than inline here.
         await self._flip_safety_gate(target)
+        # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886). The flip is a goto
+        # from the believed position, so the RUN ends without moving the
+        # mount. After the hold and the gate, either of which can wait while
+        # an AM5 link reopen latches it, and before the idle stop is
+        # cancelled: a quiet stop's retry lives in that slot.
+        await self._gate_position_known(target, "the meridian flip")
         # The flip's goto turns tracking on, so nothing may still be asking
         # for an idle stop (`_idle_stop_retry`): a cloud hold looks for the
         # flip point before any setup has cancelled that retry. A no-op in the
@@ -14955,6 +16173,8 @@ class SequenceEngine:
             # owed.
             self._record_event_cost("flip", time.time() - _t0)
             self._frame_had_event = True
+            # The engine placed the mount, so a pause's pose is stale (#849).
+            await self._repose_for_pause()
             return
         # THE FLIP'S GOTO IS A FRESH POINTING (#248, H3 orchestrator ruling
         # 6), whichever side it landed on: the mount is on this target and
@@ -14968,6 +16188,14 @@ class SequenceEngine:
         self._record_sky_angle(target, since=_t0, commanded=flip_angle,
                                result=flip_result, rec=self._sky_angle_now())
         side_after = await self._pier_side_now()
+        # A FLIP AFTER A PAUSE (#849): the run paused, the target passed its
+        # flip point, and this re-slew moved the mount on purpose (the pier
+        # side too, for a flip that flipped). The guider is still down from
+        # the pause, so the hub's flip did not restart it, and the resumed
+        # recovery would compare the pause's pose with this one and skip a
+        # target that does not re-centre as "moved". Read after the side
+        # read, so the sky angle above stays the flip's own record.
+        await self._repose_for_pause()
         unchanged = (side_before not in (None, "unknown")
                      and side_after == side_before)
         # THE HUB NOW ANSWERS THE SAME QUESTION, and it answers it from INSIDE
@@ -15140,6 +16368,41 @@ class SequenceEngine:
         # this frame to exclude it from the per-frame overhead EMA — matching the
         # dither/AF blocks (P2-1).
         self._frame_had_event = True
+        # THE FLIP'S RE-CENTRE WAS REFUSED BY THE MOUNT, OR NOT CONFIRMED
+        # (#850): the hub's `meridian_flip` carries ``sync_refused`` /
+        # ``sync_unverified`` up from its
+        # `goto_and_center`, and this result used to be read for the pier
+        # side alone, so a field the solve had just measured off target was
+        # shot on. Asked AFTER every piece of flip bookkeeping above (the
+        # side learned, the latch, the pre-flip record, the cost), which is
+        # true whatever the centring said, and BEFORE the post-flip sweep,
+        # which a field nobody could centre would waste. The StopTarget goes
+        # to the frame loop's caller and the scheduler skips the target (a
+        # panel's visit is deferred); the flip-owed hold and the cloud hold's
+        # flip watch both let StopTarget through. The hub restarted guiding
+        # inside the flip, as a frame loop StopTarget always leaves it, and
+        # the next setup stands it down before its slew.
+        #
+        # A TARGET THAT OPTED OUT OF CENTRING IS NOT STOPPED: the hub's flip
+        # re-centres whatever ``target.center`` says, so the gate is the one
+        # the three mid-run re-centres take before re-centring at all. Such a
+        # target gets the warning and goes on imaging the uncentred field it
+        # asked for.
+        flip_centring_wanted = bool(
+            getattr(target, "center", False)
+            and not getattr(target, "calibration", False))
+        self._stop_if_sync_not_taken(
+            flip_result, target, "re-centring after the meridian flip",
+            centring_wanted=bool(
+                getattr(target, "center", False)
+                and not getattr(target, "calibration", False)))
+        # A FLIP RE-CENTRE THAT MISSED (#852) stops the same way, at the same
+        # point, and spares a target that opted out of centring the same way.
+        self._stop_if_centring_missed(
+            flip_result, target, "re-centring after the meridian flip",
+            centring_wanted=flip_centring_wanted)
+        if flip_centring_wanted:
+            self._note_centring_evidence(flip_result, target)
         if "focuser" in self.hub.devices:
             if nothing_flipped:
                 # 7.5 MINUTES FOR NOTHING, 2026-09-08. The lead-time
@@ -15613,6 +16876,13 @@ class SequenceEngine:
         if not (getattr(target, "center", False)
                 and not getattr(target, "calibration", False)):
             return
+        # A GOTO IS AIMED FROM THE MOUNT'S OWN POSITION (#851, #144): with the
+        # driver saying that position is unknown, the run ends here without
+        # moving the mount. Before the `try`, whose broad catch would read
+        # the stop as a failed re-centre and carry on.
+        if self._position_unknown():
+            await self._stop_run_position_unknown(
+                target, "re-centring after the unguided sweep")
         bus.log("info",
                 f"{target.name}: the initial autofocus ran {elapsed_s / 60:.1f} "
                 f"min unguided — re-centring before guiding starts, because "
@@ -15635,6 +16905,8 @@ class SequenceEngine:
                     f"{target.name}: re-centring after the autofocus failed "
                     f"({e}); starting guiding at the current pointing",
                     "sequence")
+            # Nobody measured where that pointing is (#852, ruling R4).
+            self._mark_pointing_unverified(target)
         else:
             # THE SKY ANGLE THIS RE-CENTRE'S SOLVE MEASURED (#526 part a),
             # recorded when it left the rotator untouched. In the `else`, not
@@ -15643,6 +16915,25 @@ class SequenceEngine:
             # is unknown, records nothing.
             self._record_sky_angle(target, since=t0, commanded=commanded,
                                    result=res, rec=self._sky_angle_now())
+            # A RE-CENTRE WHOSE SYNC THE MOUNT REFUSED OR DID NOT CONFIRM
+            # (#850) is no "failed
+            # re-centre" that leaves the mount where it was: the solve says
+            # the field is off, and every later slew lands in the same place.
+            # Raised here, in the `else` and so past the broad `except`
+            # above, out of `_setup_target` (the only caller, after its
+            # initial sweep and before the guider start), whose StopTarget
+            # the scheduler skips on. Nothing is left half done: the engine's
+            # guider was stood down before setup's slew, a sweep that stayed
+            # guided returned above before any re-centre, and the guider
+            # start this would have preceded simply does not happen.
+            self._stop_if_sync_not_taken(
+                res, target, "re-centring after the unguided sweep")
+            # A RE-CENTRE THAT MISSED (#852) stops the same way, from the same
+            # place: the first frame would be shot at it. No second solve
+            # here: setup's centring verified the field minutes ago.
+            self._stop_if_centring_missed(
+                res, target, "re-centring after the unguided sweep")
+            self._note_centring_evidence(res, target)
 
     async def _sky_closed_before_recovery(self, target, *, why: str,
                                           after_failure: bool = False) -> bool:
@@ -15701,8 +16992,15 @@ class SequenceEngine:
         `_hold_recentre_recalibrate` does not call a field "walking" on a
         frame that could not show one. False when no reading was asked of the
         sky (nothing contradicts the detector's own claim) or the frame found
-        stars."""
+        stars.
+
+        Sets ``_pre_recovery_saw_stars`` True only when a reading was taken,
+        judged not cloudy, and counted stars: then a re-centre whose field
+        will not solve is the pointing's fault, not the sky's
+        (`_recentre_for_hold`, #853 ruling R2). Every other return leaves it
+        False."""
         self._pre_recovery_blind = False
+        self._pre_recovery_saw_stars = False
         cfg = self._cfg
         if (target is None or getattr(target, "calibration", False)
                 or self._holding_for_clear
@@ -15759,6 +17057,9 @@ class SequenceEngine:
             stars = info.get("stars")
             self._pre_recovery_blind = not (
                 isinstance(stars, (int, float)) and stars > 0)
+            self._pre_recovery_saw_stars = (
+                isinstance(stars, (int, float))
+                and not isinstance(stars, bool) and stars > 0)
             # The detector's reason already opens with its own verdict
             # ("clear (200 bright stars, 17x noise)"), so it is not wrapped
             # in a second "clear (...)".
@@ -15775,7 +17076,14 @@ class SequenceEngine:
         return True
 
     async def _maybe_recover_guiding(self, target=None) -> None:
-        if not (self.plan.guide and self._policy.recover_guiding):
+        # #849 (RULING R1): a pause stood the guider down (`_checkpoint`), so
+        # this, the first recovery point after the frame loop's gates, gives
+        # back what the pause took away: re-centre if the target centres, then
+        # restart, uncharged, and also for a plan with recover_guiding off
+        # (which gets nothing beyond that). Consumed here whatever follows.
+        resumed = bool(getattr(self, "_guiding_off_for_pause", False))
+        self._guiding_off_for_pause = False
+        if not (self.plan.guide and (self._policy.recover_guiding or resumed)):
             return
         g = self.hub.guider
         if not g or not g.connected:
@@ -15807,7 +17115,9 @@ class SequenceEngine:
         # forgotten whenever the attempts are not spent, so the next spell,
         # the next target (the key has the target in it) and the next run
         # (it has the run's start) each read once.
-        spent = self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES
+        # A resume is not a recovery attempt, so it never meets the bound.
+        spent = ((not resumed)
+                 and self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES)
         here = (self._started_at, id(target))
         if not spent:
             self._sky_read_at_bound = None
@@ -15815,7 +17125,8 @@ class SequenceEngine:
             self._stand_down_said_at = None
         if not (spent and getattr(self, "_sky_read_at_bound", None) == here):
             if await self._sky_closed_before_recovery(
-                    target, why="guiding was lost"):
+                    target, why=("the run resumed with guiding stopped"
+                                 if resumed else "guiding was lost")):
                 return
             if spent:
                 self._sky_read_at_bound = here
@@ -15834,7 +17145,7 @@ class SequenceEngine:
         # ALREADY chose for "guiding is unavailable" rather than inventing a
         # second policy for the same situation: a guider that cannot be kept
         # is a guider that is unavailable.
-        if self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES:
+        if spent:
             cfg = self._cfg
             require_guiding = bool(cfg and cfg.escalation.require_guiding)
             action = (cfg.escalation.guiding_action if cfg else "warn")
@@ -15907,12 +17218,83 @@ class SequenceEngine:
             self._set_state(detail="guiding lost; recovery stood down")
             return
 
-        self._guiding_recoveries += 1
-        bus.log("warning",
-                f"guiding lost — attempting recovery "
-                f"({self._guiding_recoveries}/{_MAX_GUIDING_RECOVERIES})",
-                "sequence")
-        self._set_state(detail="recovering guiding")
+        # BOUNDED PER TARGET PER NIGHT TOO (#853, ruling R1b). The #72 bound
+        # above counts attempts without a frame, and a guided banked frame
+        # clears it (`_record_frame`), so on a field that walks between
+        # losses, with frames banking in between, it never bites and the
+        # recovery re-centres once per loss all night. Charged only for a
+        # recovery that will re-centre, after the sky reading (a cloudy one
+        # charges nothing) and after the #72 bound (a spent spell keeps the
+        # operator's `guiding_action` answer). The guider is already
+        # inactive, which is how this was reached, so a stop leaves nothing
+        # running.
+        #
+        # A MOSAIC PANEL WHOSE GUIDING LOSS DEFERS (#303) IS CHARGED TOO, and
+        # spent, it is DEFERRED as ``guide_lost`` rather than stopped. Its
+        # #72 spell ends each visit with that deferral (above), and the
+        # group's ``max_failed_visits`` counts only consecutive FAILED
+        # visits, so a visit whose recovery re-centres and banks frames is
+        # not failed and the panel's re-centres were bounded by nothing
+        # across the night. A TARGET_STOP here would rename why the group
+        # set the panel aside; the ``guide_lost`` kind keeps the group's
+        # reason and the night still has a bound. A panel of a group sent on
+        # unguided takes the escalation like any target, so it is stopped
+        # like one.
+        #
+        # A RESUME IS NOT CHARGED HERE EITHER (#849, ruling R1): the pause
+        # took guiding away and nothing failed, so it neither spends nor
+        # meets this bound, as it never meets the #72 one above. Its
+        # re-centre still goes through `_recentre_for_hold` below, whose
+        # position gate runs before every goto (P2 ruling R9).
+        recentres = (target is not None and getattr(target, "center", False)
+                     and not getattr(target, "calibration", False))
+        member = self._group_of(target) if target is not None else None
+        defers = member is not None and member.id not in self._group_unguided
+        charged_key = None
+        if recentres and not resumed:
+            key = self._budget_key(target)
+            n = self._recovery_recentres.get(key, 0)
+            if n >= MAX_RECOVERY_RECENTRES_PER_TARGET_NIGHT:
+                if defers:
+                    raise PanelDeferred("guiding was lost and did not recover",
+                                        kind="guide_lost",
+                                        last_error=RECOVERY_RECENTRES_SPENT)
+                bus.log("warning",
+                        f"{target.name}: stopping this target; the guide star "
+                        f"went missing again and tonight's {n} re-centres for "
+                        f"it are spent", "sequence")
+                raise StopTarget(RECOVERY_RECENTRES_SPENT)
+            self._recovery_recentres[key] = n + 1
+            charged_key = key
+
+        if resumed:
+            # Not charged: the pause took guiding away, nothing failed.
+            bus.log("info", L_RESUME_RESTART, "sequence")
+            self._set_state(detail="resuming: restarting guiding")
+        else:
+            self._guiding_recoveries += 1
+            bus.log("warning",
+                    f"guiding lost — attempting recovery "
+                    f"({self._guiding_recoveries}/{_MAX_GUIDING_RECOVERIES})",
+                    "sequence")
+            self._set_state(detail="recovering guiding")
+
+        # A RESUMED TARGET THAT WILL NOT BE RE-CENTRED must still be where it
+        # was when the run paused: an operator may have homed, parked or
+        # slewed it in between, and guiding restarted there would guide the
+        # wrong field. A re-centred one needs no such test, since the solve
+        # puts it back. Positions are compared, never printed (#140, #166).
+        # Ahead of the re-centre below; `recentres` is the same test the
+        # re-centre uses, so exactly one of the two applies to a resume.
+        if resumed and not recentres:
+            # POSITION UNKNOWN FIRST (finding 1). A mount power-cycled in the
+            # pause reads as moved, and a StopTarget would hand the next
+            # target's setup a goto aimed from that same unknown position.
+            await self._gate_position_known(target, "resuming after the pause")
+            if self._pose_moved(self._pause_pose,
+                                await self._read_pose_twice()):
+                bus.log("warning", L_PAUSE_MOVED, "sequence")
+                raise StopTarget(PAUSE_MOVED_REASON)
 
         # RE-CENTRE BEFORE RESUMING, not after. While guiding was down the field
         # was free to walk, and on 2026-08-10 it walked 128 ARCMIN (2.1°) — the
@@ -15925,34 +17307,53 @@ class SequenceEngine:
         # no new policy and no new plan field. A target that opted out of
         # centring still opts out. The re-centre goes FIRST because it slews, and
         # a slew would tear down guiding we had just paid to restart.
-        if target is not None and getattr(target, "center", False) \
-                and not getattr(target, "calibration", False):
-            t0 = time.time()
-            commanded = None
-            try:
-                self._set_state(detail="re-centring after guiding loss")
-                commanded = self._commanded_rotation(target)
-                res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                                     rotation_deg=commanded,
-                                                     **self._centring_kwargs(target))
-            except Exception as e:
-                # Non-fatal by design: a failed re-centre leaves the mount where
-                # it was, which is exactly where it would have been without this
-                # block. Recovery still proceeds.
-                bus.log("warning",
-                        f"re-centring after guiding loss failed ({e}); "
-                        f"resuming guiding at the current pointing", "sequence")
-            else:
-                # The sky angle this re-centre's solve measured (#526 part a),
-                # outside the `try` so a recording error is not logged as a
-                # failed re-centre.
-                self._record_sky_angle(target, since=t0, commanded=commanded,
-                                       result=res, rec=self._sky_angle_now())
+        #
+        # Through the one hold re-centre (`_recentre_for_hold`): the position
+        # gate, the #850 sync stop, the #852 miss stop, and a second solve
+        # before anything is read as a raw GoTo (#853). A stop it raises
+        # comes from the frame loop (`_run_step`, unwrapped), so the
+        # scheduler skips the target (a panel's visit is deferred,
+        # `_visit_panel`). The guider is already inactive, which is how this
+        # was reached, so nothing is left running; the attempt counter is the
+        # next hop's to reset (`_hop`, #329).
+        #
+        # A RESUMED TARGET THAT CENTRES (#849) takes this same path, so the
+        # position gate runs before its goto too: a pause is exactly when an
+        # operator may re-home or power-cycle the mount, and a goto aimed
+        # from a position the driver calls unknown must not be sent.
+        if recentres:
+            self._set_state(detail="re-centring after guiding loss")
+            await self._recentre_for_hold(
+                # Not "guiding was lost": the UI's humanizer rewrites any
+                # line carrying "guid" and "lost" as "Guiding was lost -
+                # recovering", and the operator would never read the stop.
+                # (A literal: test_850's scan grades every site's fixed
+                # words, and a resume shares this site, #849.)
+                target, "re-centring after the guide star went missing",
+                sync_check=lambda r: self._stop_if_sync_not_taken(
+                    r, target,
+                    "re-centring after the guide star went missing"),
+                failed_prefix="re-centring after guiding loss failed",
+                failed_tail="resuming guiding at the current pointing")
 
         try:
             await g.start_guiding()
         except Exception as e:
-            bus.log("warning", f"guiding recovery failed: {e}", "sequence")
+            if resumed:
+                # Nothing was charged, so nothing is given back below. The
+                # exception text has its own line, so that L_RESUME_FAIL, the
+                # operator's line, carries no raw text and always reaches the
+                # UI whole. The evidence line itself is NOT protected: every
+                # native guider error starts "native guider:", and one that
+                # also says "lost" (a walk that lost its star) is shown by the
+                # UI's humanizer as a lost guide star, as the existing
+                # "guiding recovery failed: ..." line always was. Its raw
+                # text stays in the night log and the log drawer.
+                bus.log("warning", L_RESUME_FAIL, "sequence")
+                bus.log("warning", f"resume: the restart failed with: {e}",
+                        "sequence")
+            else:
+                bus.log("warning", f"guiding recovery failed: {e}", "sequence")
             # A CALIBRATION THAT FOUND NO STAR is the one thing the reading
             # above could not have seen: the sky may have closed since (#621:
             # "the last 14 frame(s) found no star" was cloud). Asked again,
@@ -15964,7 +17365,16 @@ class SequenceEngine:
             if await self._sky_closed_before_recovery(
                     target, why="guiding recovery failed",
                     after_failure=True):
-                self._guiding_recoveries = max(0, self._guiding_recoveries - 1)
+                # A resume charged nothing (#849), so nothing is given back.
+                if not resumed:
+                    self._guiding_recoveries = max(
+                        0, self._guiding_recoveries - 1)
+                # ...and the per-night re-centre it charged (#853): cloud
+                # charges nothing, before or after the fact. None for a
+                # resume, which was never charged.
+                if charged_key is not None:
+                    self._recovery_recentres[charged_key] = max(
+                        0, self._recovery_recentres.get(charged_key, 0) - 1)
             return
         # ...and do not hand control back until the guider has stopped pulsing.
         await self._await_guider_quiet("the next frame")
@@ -16055,44 +17465,82 @@ class SequenceEngine:
             f"guiding re-locked {len(recent)} times in {window_min:.0f} min",
             target)
 
-    async def _hold_recentre_recalibrate(self, why: str, target=None) -> None:
+    async def _hold_recentre_recalibrate(self, why: str, target=None, *,
+                                         after_inplace_miss: bool = False
+                                         ) -> None:
         """Stop, throw the calibration away, re-centre by plate solve, guide again.
 
         The HOLD/RESUME checklist the operator runs by hand, and the one
-        response to "the field is no longer where the plan believes it is". Two
-        detectors reach it -- the GN-03 re-lock rate above, and the dither
-        settle-failure gate below -- and they share this body deliberately: a
-        second copy of a path that stops guiding, clears a calibration and
-        slews the mount is a second place for those to diverge.
+        response to "the field is no longer where the plan believes it is".
+        Three things reach it: the GN-03 re-lock rate above, the dither
+        settle-failure gate below, and the pointing re-check
+        (`_maybe_recheck_pointing`, ``after_inplace_miss`` True) when its
+        in-place solve found the field past the centring ceiling. They share
+        this body deliberately: a second copy of a path that stops guiding,
+        clears a calibration and slews the mount is a second place for those
+        to diverge.
 
-        ``why`` is the detector's own sentence, logged as the reason. Every
-        step is best-effort and non-fatal in the same way recovery is: a failed
-        re-centre leaves the mount where it already was, which is strictly
-        better than abandoning the run over it.
+        ``why`` is the detector's own sentence, logged as the reason.
 
         The sky is read first (`_sky_closed_before_recovery`, #621): neither
-        detector can tell a walking field from a closed sky, so under cloud
-        this is the cloud hold and nothing below runs, and a calibration that
-        then finds no star asks the sky once more before giving up.
+        walking detector can tell a walking field from a closed sky, so under
+        cloud this is the cloud hold and nothing below runs, and a
+        calibration that then finds no star asks the sky once more before
+        giving up. After an in-place miss there is no reading: the solve that
+        found the miss saw stars.
+
+        NOT EVERY STEP IS NON-FATAL ANY MORE (#852, #853). Bounded per target
+        per night (`_charge_field_hold`, ruling R1): past the bound the target
+        stops with ``FIELD_HOLDS_SPENT``. The re-centre (`_recentre_for_hold`)
+        stops the target on a sync the mount did not take (#850), on a miss
+        (#852), and on a field that will not solve twice after a reading that
+        saw stars (#853, ruling R2); after a reading that saw none it holds
+        for light, and stops only when that hold ends unsolved. It ends the
+        RUN, without moving the mount, when the driver says the position is
+        unknown (ruling R9), checked before every goto. A first re-centre
+        attempt that raised still leaves the mount where it was and the
+        hold goes on, with the pointing marked unverified; a second one
+        that raised after an unsolved first is an unsolved re-centre. A
+        SafetyAbort from the goto (a refused slew, the sun, the horizon)
+        passes through. Only a guider that was running is stopped, cleared
+        and restarted.
         """
         g = self.hub.guider
-        if not g or not g.connected:
-            return
-        # THE SKY BEFORE THE FIELD (#621). Both detectors are blind to cloud:
-        # a guide loop that cannot see its star fails its settles and re-locks
-        # exactly as a walking field's does, and a recalibration against a
-        # closed sky finds no star and throws a good calibration away. A
-        # cloudy reading holds for clear sky instead and returns here before
-        # anything below is touched.
-        if await self._sky_closed_before_recovery(target, why=why):
-            return
-        # "WALKING" IS A DIAGNOSIS OF DISPLACED STARS, so it is not said on a
-        # reading that found none to measure (#621: a field the guide camera
-        # could not see a star in was called walking for eighteen minutes). The
-        # hold goes ahead either way, as the detector asked; only the claim
-        # changes. With no reading asked of the sky (a simulator, the switch
-        # off) the detector's own claim stands.
-        if getattr(self, "_pre_recovery_blind", False):
+        if after_inplace_miss:
+            # Read BEFORE anything is stopped: a guider the engine stood down,
+            # or one whose start failed under ``guiding_action = warn``, is
+            # inactive, and is neither stopped, nor cleared, nor restarted.
+            guided = await self._guiding_active_now()
+            # The in-place solve that found the miss saw stars.
+            self._pre_recovery_blind = False
+            self._pre_recovery_saw_stars = True
+        else:
+            if not g or not g.connected:
+                return
+            # Both walking detectors fire only on an active guide loop's own
+            # events.
+            guided = True
+            # THE SKY BEFORE THE FIELD (#621). Both detectors are blind to
+            # cloud: a guide loop that cannot see its star fails its settles
+            # and re-locks exactly as a walking field's does, and a
+            # recalibration against a closed sky finds no star and throws a
+            # good calibration away. A cloudy reading holds for clear sky
+            # instead and returns here before anything below is touched, and
+            # charges no hold.
+            if await self._sky_closed_before_recovery(target, why=why):
+                return
+        # BOUNDED PER TARGET PER NIGHT (#853, ruling R1). May raise StopTarget.
+        await self._charge_field_hold(why, target)
+        if after_inplace_miss:
+            # The re-check logged the hold's own line.
+            self._set_state(detail="holding: the field is off target")
+        elif getattr(self, "_pre_recovery_blind", False):
+            # "WALKING" IS A DIAGNOSIS OF DISPLACED STARS, so it is not said on
+            # a reading that found none to measure (#621: a field the guide
+            # camera could not see a star in was called walking for eighteen
+            # minutes). The hold goes ahead either way, as the detector
+            # asked; only the claim changes. With no reading asked of the sky
+            # (a simulator, the switch off) the detector's own claim stands.
             bus.log("warning",
                     f"{why}: guiding is not holding and the sky could not say "
                     f"why; holding to re-centre and recalibrate", "sequence")
@@ -16103,51 +17551,57 @@ class SequenceEngine:
                     f"recalibrate", "sequence")
             self._set_state(detail="holding: the guided field is walking")
 
-        try:
-            await g.stop_guiding()
-        except Exception as e:
-            bus.log("warning",
-                    f"could not stop guiding for the re-lock hold ({e}); "
-                    "continuing", "sequence")
-        # Throw the calibration away so the restart MEASURES one. A field that
-        # walks under guiding is the signature of a calibration that no longer
-        # describes the mount (GN-01: every runaway that night started from a
-        # reused or mirrored one), and start_guiding would otherwise reuse it.
-        clear = getattr(g, "clear_calibration", None)
-        if callable(clear):
+        if guided:
             try:
-                res = clear()
-                if asyncio.iscoroutine(res):
-                    await res
+                await g.stop_guiding()
             except Exception as e:
                 bus.log("warning",
-                        f"could not clear the guider calibration ({e}); the "
-                        "restart may reuse it", "sequence")
+                        f"could not stop guiding for the re-lock hold ({e}); "
+                        "continuing", "sequence")
+            # Throw the calibration away so the restart MEASURES one. A field
+            # that walks under guiding is the signature of a calibration that
+            # no longer describes the mount (GN-01: every runaway that night
+            # started from a reused or mirrored one), and start_guiding would
+            # otherwise reuse it. A field the re-check found past the ceiling
+            # under active guiding is the same signature.
+            clear = getattr(g, "clear_calibration", None)
+            if callable(clear):
+                try:
+                    res = clear()
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as e:
+                    bus.log("warning",
+                            f"could not clear the guider calibration ({e}); "
+                            "the restart may reuse it", "sequence")
         # Re-centre FIRST, for the same reason recovery does: it slews, and a
         # slew would tear down guiding just paid for. ``target.center`` is the
-        # existing statement of intent, honoured here exactly as there.
+        # existing statement of intent, honoured here exactly as there. Every
+        # stop it raises comes out of the frame loop's detectors (unwrapped),
+        # so the scheduler skips the target; guiding was stopped and the
+        # calibration cleared above, which is the state the next target's
+        # setup expects to start from.
         if target is not None and getattr(target, "center", False) \
                 and not getattr(target, "calibration", False):
-            t0 = time.time()
-            commanded = None
-            try:
-                self._set_state(detail="re-centring: the guided field walked")
-                commanded = self._commanded_rotation(target)
-                res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                                     rotation_deg=commanded,
-                                                     **self._centring_kwargs(target))
-            except Exception as e:
-                # Non-fatal by design (same as recovery): a failed re-centre
-                # leaves the mount where it already was.
-                bus.log("warning",
-                        f"re-centring after the re-lock hold failed ({e}); "
-                        f"recalibrating at the current pointing", "sequence")
+            if after_inplace_miss:
+                self._set_state(detail="re-centring after the pointing re-check")
+                await self._recentre_for_hold(
+                    target, "re-centring after the pointing re-check",
+                    sync_check=lambda r: self._stop_if_sync_not_taken(
+                        r, target, "re-centring after the pointing re-check"),
+                    failed_prefix="re-centring after the pointing re-check "
+                                  "failed",
+                    failed_tail="carrying on at the current pointing")
             else:
-                # The sky angle this re-centre's solve measured (#526 part a),
-                # outside the `try` so a recording error is not logged as a
-                # failed re-centre.
-                self._record_sky_angle(target, since=t0, commanded=commanded,
-                                       result=res, rec=self._sky_angle_now())
+                self._set_state(detail="re-centring: the guided field walked")
+                await self._recentre_for_hold(
+                    target, "re-centring after the guided field walked",
+                    sync_check=lambda r: self._stop_if_sync_not_taken(
+                        r, target, "re-centring after the guided field walked"),
+                    failed_prefix="re-centring after the re-lock hold failed",
+                    failed_tail="recalibrating at the current pointing")
+        if not guided:
+            return
         try:
             await g.start_guiding()
         except Exception as e:
@@ -16165,6 +17619,283 @@ class SequenceEngine:
         # from here; leaving it set would hold on every frame afterwards.
         self._dither_settle_fails = 0
         await self._await_guider_quiet("the next frame")
+
+    async def _charge_field_hold(self, why: str, target) -> None:
+        """Charge one walking-field hold to this target's budget for tonight
+        (#853, ruling R1), or stop the target when the budget is spent:
+        guiding stood down (bounded, never raises), then
+        ``StopTarget(FIELD_HOLDS_SPENT)``. On 2026-10-07 the run took five
+        holds in 46 minutes, each ending in a fresh calibration on a field
+        that kept walking, with no exit."""
+        key = self._budget_key(target)
+        n = self._field_holds.get(key, 0)
+        if n >= MAX_FIELD_HOLDS_PER_TARGET_NIGHT:
+            name = getattr(target, "name", "this target")
+            bus.log("warning",
+                    f"{name}: stopping this target; it has held {n} times "
+                    f"tonight to re-centre, and now {why}", "sequence")
+            await self._stand_down_guider()
+            raise StopTarget(FIELD_HOLDS_SPENT)
+        self._field_holds[key] = n + 1
+
+    async def _recentre_for_hold(self, target, where: str, *,
+                                 sync_check: Callable[[Any], None],
+                                 failed_prefix: str,
+                                 failed_tail: str) -> dict | None:
+        """The ONE re-centre every mid-run hold makes (#851, #852, #853): the
+        walking-field hold, the pointing re-check's miss hold and the guide
+        star recovery. Returns the centring result, or None when the FIRST
+        attempt raised (logged as ``f"{failed_prefix} ({e}); {failed_tail}"``,
+        the pointing marked unverified, and the caller carries on: the mount
+        is where it already was). A second attempt that raises after the
+        first one's field did not solve is an unsolved re-centre (3 below).
+
+        1. THE POSITION BEFORE EVERY GOTO (#851, #144, ruling R9): both
+           attempts here and each retry of the light hold. A goto is aimed
+           from the mount's own position; with the driver saying that is
+           unknown, the run ends without moving the mount.
+        2. Each attempt's result is read in order: ``sync_check`` (the
+           caller's `_stop_if_sync_not_taken` with its own literal ``where``,
+           #850), then `_stop_if_centring_missed` (#852).
+        3. A FAILED SOLVE IS NOT A RAW GOTO THAT WORKED (#853). On 2026-10-07
+           the hold's solve failed on a trailed field, the hub fell back to a
+           raw GoTo the desynced mount did not move for, and a calibration
+           was walked on a field nobody had located. So a failed solve is
+           solved once more after ``HOLD_RESOLVE_SETTLE_S``; failed twice,
+           and the reading before the hold SAW STARS, the target stops with
+           the hub's named reason or ``CENTRING_UNSOLVED_TWICE``. After a
+           reading that saw none (cloud the one reading missed, a
+           narrowband-only wheel, the gap, a simulator) it holds for light
+           instead (`_hold_for_light`, bounded by the window or six retries,
+           with the safety gate and the stop boundary armed), and stops with
+           ``CENTRING_NO_LIGHT`` only if that hold ends unsolved (ruling R2).
+        4. Good evidence clears the unverified mark and re-bases the pointing
+           re-check (`_note_centring_evidence`).
+
+        The goto keeps setup's exact call shape (``goto_and_center(ra, dec,
+        rotation_deg=..., **self._centring_kwargs(target))``), the target's
+        own tolerance and attempts (#170)."""
+        name = getattr(target, "name", "this target")
+        res = None
+        commanded = None
+        for attempt in (1, 2):
+            # BEFORE EVERY GOTO, not once (ruling R9): the AM5 latches
+            # ``position_known`` False on a link reopen, which can happen
+            # between two attempts, and neither the driver nor the hub
+            # refuses a goto while it is False.
+            if self._position_unknown():
+                await self._stop_run_position_unknown(target, where)
+            t0 = time.time()
+            try:
+                commanded = self._commanded_rotation(target)
+                res = await self.hub.goto_and_center(
+                    target.ra_hours, target.dec_deg, rotation_deg=commanded,
+                    **self._centring_kwargs(target))
+            except SafetyAbort:
+                raise
+            except Exception as e:      # noqa: BLE001 - reported, non-fatal
+                if attempt > 1:
+                    # THE FIRST ATTEMPT'S FIELD DID NOT SOLVE, and this one
+                    # raised: the field has still never been located, so
+                    # this is an unsolved re-centre like any other (below),
+                    # never a "carry on" that restarts guiding on a field
+                    # nobody found (#853).
+                    bus.log("warning", f"{failed_prefix} ({e})", "sequence")
+                    res = {"centered": False, "error_arcmin": None,
+                           "solve_failed": True}
+                    break
+                # A failed re-centre leaves the mount where it already was,
+                # which is where it would have been without this call; nobody
+                # measured where that is.
+                bus.log("warning", f"{failed_prefix} ({e}); {failed_tail}",
+                        "sequence")
+                self._mark_pointing_unverified(target)
+                return None
+            # The sky angle this re-centre's solve measured (#526 part a),
+            # outside the `try` so a recording error is not logged as a
+            # failed re-centre.
+            self._record_sky_angle(target, since=t0, commanded=commanded,
+                                   result=res, rec=self._sky_angle_now())
+            sync_check(res)
+            self._stop_if_centring_missed(res, target, where)
+            if not self._centring_unsolved(res):
+                self._note_centring_evidence(res, target)
+                return res
+            if attempt == 1:
+                bus.log("warning",
+                        f"{name}: {where}: the field did not solve; solving "
+                        f"once more in {HOLD_RESOLVE_SETTLE_S:.0f} s",
+                        "sequence")
+                self._set_state(detail="re-centring: solving once more")
+                # PACING ONLY, the `_hold_for_light` convention: the attempt
+                # count is real, only the wait collapses under the test seam.
+                await asyncio.sleep(
+                    0.0 if _SKIP_TARGET_HOLDS_FOR_TEST else HOLD_RESOLVE_SETTLE_S)
+        if getattr(self, "_pre_recovery_saw_stars", False):
+            bus.log("warning",
+                    f"{name}: stopping this target; {where}: the field did "
+                    f"not solve twice", "sequence")
+            self._mark_pointing_unverified(target)
+            raise StopTarget(
+                f"{where}: {res.get('solve_reason') or CENTRING_UNSOLVED_TWICE}")
+        bus.log("warning",
+                f"{name}: holding for light, retrying every "
+                f"{CENTRING_HOLD_RETRY_S / 60:.0f} min; the re-centre's field "
+                f"did not solve twice and the sky reading saw no stars",
+                "sequence")
+        self._set_state(detail="holding for light")
+        try:
+            res = await self._hold_for_light(target, commanded, res,
+                                             announce=False,
+                                             position_gate=where)
+        except (SafetyAbort, StopTarget):
+            raise
+        except Exception as e:          # noqa: BLE001 - reported, then a stop
+            # A retry that raised: the field has still never solved, so this
+            # is the same stop as a hold that ran out.
+            bus.log("warning", f"{failed_prefix} ({e})", "sequence")
+            res = {"centered": False, "error_arcmin": None,
+                   "solve_failed": True}
+        sync_check(res)
+        self._stop_if_centring_missed(res, target, where)
+        if self._centring_unsolved(res) or (
+                isinstance(res, dict) and not res.get("centered")
+                and res.get("error_arcmin") is None
+                and not res.get("aborted")):
+            bus.log("warning",
+                    f"{name}: stopping this target; {where}: the field never "
+                    f"solved while holding for light", "sequence")
+            self._mark_pointing_unverified(target)
+            raise StopTarget(
+                f"{where}: {res.get('solve_reason') or CENTRING_NO_LIGHT}")
+        self._note_centring_evidence(res, target)
+        return res
+
+    async def _maybe_recheck_pointing(self, target=None) -> None:
+        """Act on the mount's report moving off the last solve with no slew to
+        explain it (#851, rulings R6, R9, R10).
+
+        The hub counts each such move (``hub.pointing_disagreements``, from
+        `Hub._current_field_solve` on the frame clock); this acts on each new
+        one ONCE, at a frame boundary. The report is the thing in doubt, so
+        nothing is aimed from it: the check SOLVES AND SYNCS IN PLACE first
+        (`hub.solve_and_sync`, blind, which moves nothing), and
+
+        - the field within the centring ceiling: synced, carry on (the
+          autofocus case: the tube held and the report walked);
+        - past it: the walking-field hold re-centres from the model the sync
+          just corrected, charged to the same nightly budget (ruling R1);
+        - the driver says the position is unknown, the mount would not take
+          the in-place sync, or the report jumped further than
+          ``POINTING_RESET_PLAUSIBLE_DEG`` and the field will not solve: the
+          RUN ends without moving the mount (`PositionUnknownStop`);
+        - a smaller move whose field will not solve: nothing is moved, the
+          target's lights are marked unverified.
+
+        Bounded by the measured time the checks took, per target per night
+        (``POINTING_INPLACE_BUDGET_S``); spent, a disagreement is said once
+        and not acted on. Centring-off and calibration targets are not
+        checked (their disagreements are consumed all the same)."""
+        gen = self._hub_disagreements()
+        if gen <= getattr(self, "_disagreements_seen", 0):
+            return
+        self._disagreements_seen = gen
+        if target is None or not getattr(target, "center", False) \
+                or getattr(target, "calibration", False) \
+                or "telescope" not in (getattr(self.hub, "devices", None) or {}):
+            return
+        where = "re-checking the pointing"
+        if self._position_unknown():
+            await self._stop_run_position_unknown(target, where)
+        name = getattr(target, "name", "this target")
+        rec = getattr(self.hub, "last_pointing_disagreement", None) or {}
+        moved = self._arcmin(rec.get("moved_deg")) \
+            if isinstance(rec, dict) else None
+        fig = f"{moved:.2f}°" if moved is not None else "more than half a field"
+        key = self._budget_key(target)
+        spent = self._inplace_spent_s.get(key, 0.0)
+        if spent >= POINTING_INPLACE_BUDGET_S:
+            if self._recheck_spent_said != key:
+                bus.log("warning",
+                        f"{name}: the mount's reported position moved {fig} "
+                        f"from the last solved field; not re-checked, "
+                        f"tonight's re-check time is spent", "sequence")
+                self._recheck_spent_said = key
+            return
+        t0 = time.monotonic()
+        self._set_state(detail="re-checking the pointing in place")
+        try:
+            exp = float(frames_payload()["solve"]["exposure_s"])
+            # BLIND: the mount's hint is the thing in doubt (a 4 degree wrong
+            # hint made the near search fail where a hintless solve worked).
+            # "info": the engine logs its own line for a refusal.
+            solved = await self.hub.solve_and_sync(
+                exp, blind=True, refusal_level="info")
+            err = angular_sep_deg(solved["ra_hours"], solved["dec_deg"],
+                                  target.ra_hours, target.dec_deg) * 60.0
+        except asyncio.CancelledError:
+            raise
+        except SafetyAbort:
+            raise
+        except (SyncRefused, SyncUnverified) as exc:
+            # The field solved and the mount would not take where it is. On
+            # a mount that can lose its frame (the AM5) the model is the
+            # thing in doubt, so the scheduler's next goto would be aimed
+            # from it too, and the RUN ends (ruling R10). On any other mount
+            # the refusal, or a link hiccup around the sync, says nothing
+            # about its frame: this target stops in the hub's fixed words,
+            # and the run goes on with its normal park (finding 9).
+            bus.log("warning",
+                    f"{name}: re-checking in place: the mount's report moved "
+                    f"{fig} without a slew and the mount did not take the "
+                    f"sync", "sequence")
+            if self._frame_can_reset():
+                await self._stop_run_position_unknown(target, where)
+            self._mark_pointing_unverified(target)
+            raise StopTarget(
+                SOLVE_REASON_SYNC_REFUSED if isinstance(exc, SyncRefused)
+                else SOLVE_REASON_SYNC_UNVERIFIED) from None
+        except Exception:               # noqa: BLE001 - no solution, no stars
+            if moved is not None and moved > POINTING_RESET_PLAUSIBLE_DEG:
+                bus.log("warning",
+                        f"{name}: re-checking in place: the mount's report "
+                        f"moved {fig} without a slew and the field did not "
+                        f"solve", "sequence")
+                # A reset-sized jump is a lost frame only on a mount that
+                # can lose one (finding 9); elsewhere the target stops.
+                if self._frame_can_reset():
+                    await self._stop_run_position_unknown(target, where)
+                self._mark_pointing_unverified(target)
+                raise StopTarget(POINTING_JUMP_UNSOLVED) from None
+            bus.log("warning",
+                    f"{name}: nothing was moved; re-checking in place after "
+                    f"the mount's report moved {fig}, the field did not "
+                    f"solve", "sequence")
+            self._mark_pointing_unverified(target)
+            return
+        finally:
+            self._inplace_spent_s[key] = spent + (time.monotonic() - t0)
+        ceiling = self._centring_ceiling_arcmin(target)
+        if err <= ceiling:
+            bus.log("info",
+                    f"{name}: re-checked in place after the mount's report "
+                    f"moved {fig}: {err:.1f}' off target, synced, carrying on",
+                    "sequence")
+            tol = self._arcmin(getattr(target, "center_tolerance_arcmin", None))
+            if tol is None:
+                tol = _HUB_DEFAULT_TOLERANCE_ARCMIN
+            self._note_centring_evidence(
+                {"centered": err <= tol, "error_arcmin": err}, target)
+            return
+        bus.log("warning",
+                f"{name}: holding to re-centre: the field is {err:.1f}' off "
+                f"target, past the {ceiling:.1f}' limit, after the mount's "
+                f"report moved {fig}", "sequence")
+        # No name in ``why``: `_charge_field_hold`'s line already puts it in
+        # front, and a second copy carries nothing.
+        await self._hold_recentre_recalibrate(
+            f"the field is off target after the mount's report moved "
+            f"{fig}", target, after_inplace_miss=True)
 
     def _dither_settle_override(self) -> dict[str, float] | None:
         """The persisted SETTLE overrides for every dither THIS RUN sends
@@ -16541,6 +18272,24 @@ class SequenceEngine:
                         self._frame_had_event = True
                         if ok is False:
                             self._rearm_failed_rule(fa)
+                        elif ok is None:
+                            # NOT TRIED (#855): the stars were trailing. The
+                            # fire did not happen, so undo what it spent: the
+                            # rule goes back on its edge WITHOUT spending the
+                            # failure budget, a `once` rule gets its one shot
+                            # back, and a cooldown does not start. A runaway
+                            # cannot retire the watchdog; it fires again next
+                            # frame and the sweep runs once guiding is back
+                            # under the ceiling. `last_fire_ts = 0.0` gives the
+                            # same cooldown answer as the timestamp the fire
+                            # overwrote: the vetoed fire had already passed
+                            # the cooldown test against it, and every later
+                            # boundary is later still.
+                            rec = self._fire_state.get(fa.instruction_id)
+                            if rec is not None:
+                                rec.armed = True
+                                rec.fired_count = max(0, rec.fired_count - 1)
+                                rec.last_fire_ts = 0.0
                         else:
                             # CONSECUTIVE, not lifetime. Without this the budget
                             # counted every failure of the night, so two sweeps
@@ -17111,6 +18860,14 @@ class SequenceEngine:
         tel = self.hub.devices.get("telescope")
         if tel is None or not getattr(tel, "connected", False):
             return False
+        # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886). The recovery is a
+        # park (on the AM5 a goto to the MODEL's home), an unpark and a goto
+        # back to the target. A False return would hand the caller's
+        # set-aside-and-park path the same aimed park, so the RUN ends here
+        # without moving the mount, before the gate and before the one
+        # attempt is spent.
+        await self._gate_position_known(
+            target, "recovering the mount from its limit")
         # --- the refusals, before anything moves -----------------------------
         # `dark_enough` FAILS OPEN on an unset site, deliberately and correctly:
         # its own docstring says "we cannot tell" must not stand every
@@ -17212,6 +18969,34 @@ class SequenceEngine:
                 f"{target.name}: recovered in {time.time() - _t0:.0f}s — the "
                 f"mount is tracking again {centred_clause}",
                 "sequence")
+        # THE RECOVERY'S RE-CENTRE WAS REFUSED BY THE MOUNT, OR NOT
+        # CONFIRMED (#850), for a
+        # caller that does not act on the centring itself: the flip
+        # (`_maybe_meridian_flip`) and the frame loop's tracking enforcement
+        # (`_enforce_tracking`), both of which already raise StopTarget on
+        # their own failures and hand it to the scheduler. Raised HERE and
+        # not inside `_do_tracking_recovery`, whose broad catch above would
+        # turn it into "the recovery failed" and the caller's re-raise of the
+        # original tracking error. The mount is measurably tracking and the
+        # latch is spent, as for any finished recovery. A caller that passes
+        # ``centring`` reads it (`_sync_not_taken`) and decides: target
+        # setup stops or defers; a target with centring off asked for no
+        # centring, so its field is what an uncentred slew would have given.
+        # The same holds here: the recovery re-centres whatever
+        # ``target.center`` says, so a target that opted out (the gate the
+        # three mid-run re-centres take) gets the warning and is not stopped.
+        if centring is None:
+            self._stop_if_sync_not_taken(
+                found, target, "re-centring after the tracking recovery",
+                centring_wanted=bool(
+                    getattr(target, "center", False)
+                    and not getattr(target, "calibration", False)))
+            # ...and a recovery re-centre that MISSED (#852), the same way.
+            self._stop_if_centring_missed(
+                found, target, "re-centring after the tracking recovery",
+                centring_wanted=bool(
+                    getattr(target, "center", False)
+                    and not getattr(target, "calibration", False)))
         return True
 
     async def _do_tracking_recovery(self, tel, target: Target, *,
@@ -17224,6 +19009,11 @@ class SequenceEngine:
         when it is not (#171). ``report_centring`` says whether this logs a
         re-centre that missed; False when the caller reports it itself. No
         default, so no caller can inherit a choice it did not make."""
+        # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886), asked again here:
+        # the caller's safety gate can pause for as long as its bound while
+        # an AM5 link reopen latches it. Before the park.
+        where = "recovering the mount from its limit"
+        await self._gate_position_known(target, where)
         # Stop guiding first: the guider must not be pulsing a mount that is
         # about to park. Remembered so it can be put back afterwards — a
         # recovered mount that is no longer guided just fails more quietly.
@@ -17267,6 +19057,9 @@ class SequenceEngine:
         # target left the rotator, with nothing checking it, because the lock
         # is checked only on a rig with no rotator (`_settle_locked_angle`).
         rotation = self._commanded_rotation(target)
+        # AND BEFORE THE RE-SLEW (ruling R9, before every goto): the park and
+        # the unpark took minutes, long enough for a link reopen to latch it.
+        await self._gate_position_known(target, where)
         t0 = time.time()
         result = await _bounded(
             self.hub.goto_and_center(target.ra_hours, target.dec_deg,
@@ -17295,12 +19088,28 @@ class SequenceEngine:
         centred = bool(result.get("centered"))
         centring = dict(result)
         centring["centered"] = centred
-        if not centred and report_centring:
+        # A SYNC NOT TAKEN (refused or unverified, `_sync_not_taken`) IS NOT
+        # REPORTED HERE AS "CONTINUING" (#850): the
+        # caller that does not take the result has it stopped by
+        # `_recover_from_tracking_refusal`, outside this sequence's broad
+        # catch, in the stop's own words; the caller that takes it
+        # (`_setup_target`) stops or defers on it itself.
+        # NOR A MISS (#852): `_recover_from_tracking_refusal` stops it, or for
+        # a target with centring off says imaging goes on, in its own line
+        # (`_stop_if_centring_missed`); a mount that did not carry out the
+        # correction inside the ceiling gets ruling R3's line there. Said
+        # here too, it would be a second line contradicting the first.
+        # "Ended", not "converged", and no "plate" beside "solve": the UI's
+        # humanizer rewrites that pair into a solve failure of its own.
+        if (not centred and report_centring
+                and self._sync_not_taken(centring) is None
+                and self._centring_miss(centring, target) is None
+                and self._unmoved_inside_line(centring, target) is None):
             err = result.get("error_arcmin")
             bus.log("warning",
                     f"{target.name}: re-centring after the recovery "
-                    + (f"converged to {err:.1f}'" if err is not None
-                       else "could not plate solve")
+                    + (f"ended {err:.1f}' off target" if err is not None
+                       else "found that the field did not solve")
                     + " — continuing", "sequence")
         # A PARK SENDS THE TUBE HOME AND THE RE-SLEW PICKS A SIDE AGAIN, and
         # this recovery runs AT THE MERIDIAN, which is the one place the side
@@ -17525,6 +19334,25 @@ class SequenceEngine:
             pass
         return None
 
+    def _guide_rms_judged(self) -> tuple[float | None, bool]:
+        """``(arcsec, exact)`` for the guide-RMS gate and the sweep veto (#854).
+
+        ``_guide_rms()`` first, unchanged, so a value in arcsec is exact. When
+        it cannot convert (raw pixels, no scale), the floor from
+        `policy.guide_rms_floor_arcsec`: the smallest arcsec the pixels can be
+        at any guide scale, which can only ever reject a runaway. (None, False)
+        when no guider is connected or nothing can be read."""
+        rms = self._guide_rms()
+        if rms is not None:
+            return rms, True
+        try:
+            g = self.hub.guider
+            if g and g.connected:
+                return guide_rms_floor_arcsec(g.stats()), False
+        except Exception:      # noqa: BLE001 - unreadable is "cannot say"
+            pass
+        return None, False
+
     def _guiding_now(self) -> bool:
         """True when a guider is connected and actually guiding (so an unreadable
         RMS is a UNIT problem worth reporting, not simply 'unguided')."""
@@ -17534,6 +19362,60 @@ class SequenceEngine:
         except Exception:
             return False
 
+    def _field_trailing_now(self, *, aborting: bool = False
+                            ) -> tuple[float, float, float, bool] | None:
+        """``(rms, limit, ceiling, exact)`` while the guider is guiding and its
+        RMS is over ``limit``, else None (#855). The stars are trailing then,
+        and a focus sweep would measure the trail.
+
+        HYSTERESIS: a sweep STARTS only at or under the ceiling (``limit`` is
+        the ceiling), and a running sweep is ABANDONED only above
+        TRAIL_SWEEP_ABORT_FACTOR x the ceiling (``aborting=True``). One number
+        for both let a guider wandering around the ceiling start, abandon and
+        restart a sweep at every frame boundary.
+
+        THE CEILING FALLS BACK TO DEFAULT_MAX_GUIDE_RMS WHEN THE STANDARD IS 0.
+        Deliberate, and the one place `or` is right (see policy.py's module
+        docstring for why it is wrong elsewhere): a 0 turns off FRAME
+        rejection, which costs at most the frames; a sweep on trails moves the
+        focuser and stores a slope that outlives the night. A guider that is
+        not guiding (stopped, settling, lost) vetoes nothing: an unguided
+        2-6 s focus frame on this mount drifts under 2" (about 15"/min
+        unguided, so 6 s is 1.5")."""
+        if not self._guiding_now():
+            return None
+        ceiling = self._policy.max_guide_rms or DEFAULT_MAX_GUIDE_RMS
+        limit = ceiling * TRAIL_SWEEP_ABORT_FACTOR if aborting else ceiling
+        rms, exact = self._guide_rms_judged()
+        if rms is None or rms <= limit:
+            return None
+        return rms, limit, ceiling, exact
+
+    @staticmethod
+    def _trail_phrase(rms: float, limit: float, ceiling: float,
+                      exact: bool) -> str:
+        """The start-line and abort-line phrases of the #855 veto, for
+        example 'guide RMS 773.0" is over the 5.0" ceiling'."""
+        over = (f'the {ceiling:.1f}" ceiling' if limit <= ceiling else
+                f'{limit:.2f}", {TRAIL_SWEEP_ABORT_FACTOR:.0%} of the '
+                f'{ceiling:.1f}" ceiling')
+        return f'guide RMS {"" if exact else "at least "}{rms:.1f}" is over {over}'
+
+    async def _sweep_probe(self) -> bool | None:
+        """The sweep's per-point probe: tracking first, then trailing (#855).
+
+        Tracking first because a stopped mount also blows up the guide RMS,
+        and the mount's own gate owns that case and its recovery. A trailing
+        field raises FieldTrailing, which `assert_tracking` lets through, so
+        the sweep unwinds through its own teardown."""
+        state = await self._tracking_now()
+        if state is False:
+            return False
+        trail = self._field_trailing_now(aborting=True)
+        if trail is not None:
+            raise FieldTrailing(self._trail_phrase(*trail), limit=trail[1])
+        return state
+
     def _warn_rms_unit_once(self) -> None:
         """Say ONCE per run why an armed max-guide-RMS gate isn't judging frames,
         instead of silently passing everything (the failure mode that made #11
@@ -17541,11 +19423,15 @@ class SequenceEngine:
         if getattr(self, "_rms_unit_warned", False):
             return
         self._rms_unit_warned = True
+        # #854: the gate still judges pixels through the floor
+        # (`policy.guide_rms_floor_arcsec`), so only a runaway is caught. The
+        # action comes first so the humanizer's 137 characters keep it.
+        ceiling = self._policy.max_guide_rms
         bus.log("warning",
-                "max guide RMS is set in arcsec, but the guider is reporting "
-                "guide-camera pixels with no image scale — set the guide scope's "
-                "focal length in Settings so this gate can be judged. Frames are "
-                "NOT being rejected on guide RMS.", "sequence")
+                "Set the guide scope focal length in Settings > Optics: the "
+                "guider reports pixels, so guide RMS rejects only a runaway "
+                f"over {ceiling / MIN_GUIDE_SCALE_ARCSEC_PX:.0f} px.",
+                "sequence")
 
     def _check_quality(self, info: dict, *, record: bool = True,
                        calibration: bool = False) -> bool:
@@ -17595,18 +19481,40 @@ class SequenceEngine:
             # observed the guider stopped is held to the stricter rule.
             if self._frame_guided is False:
                 self._rejected += 1
+                # #854: the ceiling is on by default now, so the sentence
+                # names the action rather than a choice the operator made.
                 bus.log("warning",
-                        "guide RMS ceiling is set, but this frame was shot "
-                        "with the guider stopped — rejected", "sequence")
+                        "Rejected: shot with the guider stopped. Start guiding, "
+                        "or set Reject above (guide RMS) to 0 in the plan or "
+                        "Settings > Standards.", "sequence")
                 accepted = False
+            elif not (plan and plan.guide) and not self._guiding_now():
+                # AN IDLE GUIDER'S RMS IS STALE (#854). This plan does not
+                # guide, so `_frame_was_guided` answered True without asking
+                # the guider and the D-06 branch above cannot see it. PHD2
+                # keeps its last 300 samples after it stops (`guide/phd2.py`,
+                # never cleared) and `stats()` keeps returning their RMS with
+                # guiding=False. Judged, one stale runaway figure would reject
+                # every frame of an unguided night and the reject guards
+                # would end it. Nothing is guiding this frame, so there is no
+                # guide RMS to judge.
+                pass
             else:
-                rms = self._guide_rms()
-                if rms is None and self._guiding_now():
+                # #854: pixels with no scale are judged through a FLOOR (the
+                # smallest arcsec they can be at any guide scale), so a
+                # runaway is rejected whether or not the focal length is set.
+                rms, exact = self._guide_rms_judged()
+                if not exact and self._guiding_now():
                     self._warn_rms_unit_once()
-                if rms is not None and rms > self._policy.max_guide_rms:
+                ceiling = self._policy.max_guide_rms
+                if rms is not None and rms > ceiling:
                     self._rejected += 1
-                    bus.log("warning", f'guide RMS {rms:.2f}" above ceiling '
-                                       f'{self._policy.max_guide_rms:.2f}"', "sequence")
+                    bus.log("warning",
+                            f'guide RMS {rms:.2f}" above ceiling {ceiling:.2f}"'
+                            if exact else
+                            f'guide RMS {rms / MIN_GUIDE_SCALE_ARCSEC_PX:.1f} px '
+                            f'is at least {rms:.1f}" at any guide scale, above '
+                            f'ceiling {ceiling:.2f}"', "sequence")
                     accepted = False
         if accepted and not calibration and self._policy.max_eccentricity > 0:
             # TWO statistics, ONE dial: the median ceiling plus the
@@ -17614,7 +19522,14 @@ class SequenceEngine:
             # faint stars drag the median back under it. The rule and the
             # measured margins that chose it live on RunPolicy
             # (`eccentricity_reject_reason`), beside the setting they read.
-            reason = self._policy.eccentricity_reject_reason(info)
+            # The guide RMS is quoted beside the verdict (#854): exact arcsec
+            # only, a pixel floor is not a figure worth quoting. And only while
+            # the guider is GUIDING: an idle guider's RMS is stale (see the
+            # E6b arm above), and quoting a stale runaway figure would send
+            # the operator to the mount for a fault in focus.
+            reason = self._policy.eccentricity_reject_reason(
+                info, guide_rms=(self._guide_rms() if self._guiding_now()
+                                 else None))
             if reason:
                 self._rejected += 1
                 bus.log("warning", reason, "sequence")
@@ -18015,8 +19930,12 @@ class SequenceEngine:
 
     async def _autofocus(self, label: str, *, step=None,
                          target: Target | None = None,
-                         resweep: bool = False) -> bool:
-        """Run one autofocus. Returns True if it found focus.
+                         resweep: bool = False) -> bool | None:
+        """Run one autofocus. Returns True if it found focus, False if it tried
+        and did not (including a second consecutive sweep abandoned on a
+        trailing field, see MAX_TRAIL_ABANDONS), None if it did not try, or
+        abandoned a first sweep, because the guider was trailing the stars
+        (#855).
 
         The return exists for the instruction dispatcher: an edge-triggered rule
         has to know whether its action actually addressed the condition, or a
@@ -18057,17 +19976,16 @@ class SequenceEngine:
         that cannot gate (a backend's own autofocus, the legacy numpy
         sweep) runs the owed sweep on the cadence ungated, bounded by the
         failure that owes nothing more.
+
+        A SWEEP IS NOT STARTED ON A TRAILING FIELD (#855). On 2026-10-07 a
+        guider runaway inflated the HFR, the relative watchdog fired a sweep,
+        and the sweep measured the trails, moved the focuser 22 steps and
+        stored their slope. While the guider is guiding over the guide-RMS
+        ceiling this returns None BEFORE any state changes; a sweep that is
+        running probes for a runaway at every point (`_sweep_probe`, over
+        TRAIL_SWEEP_ABORT_FACTOR x the ceiling) and is abandoned through its
+        own teardown, bounded by MAX_TRAIL_ABANDONS.
         """
-        self._set_state(detail=label)
-        _t0 = time.time()
-        failed_reason: str | None = None
-        # WHATEVER RUNS NOW ANSWERS A SWEEP OWED SINCE THE SPARSE-FIELD
-        # FAILURES (#507): the debt was for a sweep, not for this label.
-        self._sparse_resweep_owed = False
-        self._sparse_resweep_due = False
-        #: The failed retry's result, when a sparse-field failure was retried
-        #: and failed again; None otherwise.
-        sparse_retry: Any = None
         # A SWEEP IS TEN EXPOSURES OVER FIVE MINUTES AND USED TO ASK NOBODY.
         # On 2026-08-21 one ran to completion on a mount that had stopped four
         # minutes earlier, consumed the drift as data, returned HFR 8.40 px
@@ -18075,6 +19993,28 @@ class SequenceEngine:
         # the light-frame gate uses, so the two cannot disagree.
         needs_tracking = self._is_light(step) and not getattr(
             target, "calibration", False)
+        if needs_tracking:
+            # THE STARS ARE TRAILING (#855): a sweep would measure the trail.
+            # Asked first, so a veto changes no state at all (no detail, no
+            # sparse debt, no abandon count). Calibration targets and
+            # dark/bias/flat steps are exempt as from the tracking probe.
+            trail = self._field_trailing_now()
+            if trail is not None:
+                self._say_sweep_vetoed(label, trail)
+                return None
+        self._set_state(detail=label)
+        _t0 = time.time()
+        failed_reason: str | None = None
+        # Held for the #855 abandon arm: a debt this entry clears and no
+        # sweep answers is owed again.
+        owed_before = self._sparse_resweep_owed
+        # WHATEVER RUNS NOW ANSWERS A SWEEP OWED SINCE THE SPARSE-FIELD
+        # FAILURES (#507): the debt was for a sweep, not for this label.
+        self._sparse_resweep_owed = False
+        self._sparse_resweep_due = False
+        #: The failed retry's result, when a sparse-field failure was retried
+        #: and failed again; None otherwise.
+        sparse_retry: Any = None
         restore_filter: str | None = None
         try:
             cam = self.hub.require("camera")
@@ -18101,7 +20041,7 @@ class SequenceEngine:
                 return await run_autofocus(
                     cam, foc, hub=self.hub, exposure_s=seconds, gain=gain,
                     binning=binning, expose_guard=self.hub.exposure_guard,
-                    tracking_check=self._tracking_now if needs_tracking
+                    tracking_check=self._sweep_probe if needs_tracking
                     else None, **kw)
 
             result = await _sweep(exposure_s, gate=resweep)
@@ -18166,10 +20106,46 @@ class SequenceEngine:
                     (int(pos), time.monotonic())
                     if isinstance(pos, (int, float)) else None)
             self._frames_since_focus = 0
+            # A SWEEP THAT RAN TO ITS END, success or failure, is evidence the
+            # field held still through it (#855): the abandon run is over.
+            self._trail_abandons = 0
             self._record_event_cost("autofocus", time.time() - _t0)
             await self._capture_focus_temp()
         except SafetyAbort:
             raise
+        except FieldTrailing as e:
+            # NOT AN AUTOFOCUS FAILURE (#855): the sweep was measuring trails,
+            # its teardown put the focuser back, and nothing was stored. No
+            # af_failure_action, and `_last_focus_at` stays: the focuser is
+            # where the last good focus left it, and the fault is the
+            # guider's, which its own recovery owns. A sparse-field debt this
+            # entry cleared is owed again, one cadence on, since no sweep
+            # answered it.
+            self._record_event_cost("autofocus", time.time() - _t0)
+            if owed_before:
+                self._sparse_resweep_owed = True
+                self._sparse_resweep_next = (time.monotonic()
+                                             + SPARSE_RESWEEP_EVERY_S)
+            self._trail_abandons += 1
+            if self._trail_abandons < MAX_TRAIL_ABANDONS:
+                bus.log("warning",
+                        f"{label} abandoned: {e}; focuser back, nothing "
+                        f"stored", "sequence")
+                return None
+            # BOUNDED (RULES: a recovery loop needs an exit; #72, #134). Two
+            # sweeps in a row abandoned on a trailing field: this one counts
+            # as a FAILED ATTEMPT, so the trigger's failure budget and the
+            # cadence bookkeeping bound the retries. The same two lines the
+            # failed-sweep path runs (`_frames_since_focus = 0` and the
+            # temperature re-anchor); not `_last_focus_at = None`, for the
+            # reason above.
+            self._frames_since_focus = 0
+            await self._capture_focus_temp()
+            bus.log("warning",
+                    f"{label} abandoned {self._trail_abandons} times running: "
+                    f'guide RMS over {e.limit:.2f}"; counted as a failed '
+                    f"refocus. Steady the guiding first.", "sequence")
+            return False
         except TrackingLost as e:
             # A STOPPED MOUNT IS NOT AN AUTOFOCUS FAILURE. It has its own
             # detector, its own escalation and — since 2026-08-22 — its own
@@ -18391,6 +20367,19 @@ class SequenceEngine:
                 f"autofocus owed since then will take a probe at the next "
                 f"frame boundary and sweep only if it finds at least "
                 f"{SPARSE_FIELD_WARN} stars", "sequence")
+
+    def _say_sweep_vetoed(self, label: str,
+                          trail: tuple[float, float, float, bool]) -> None:
+        """Say why a sweep was not started (#855), at most once per
+        TRAIL_VETO_LOG_EVERY_S after the first."""
+        now = time.monotonic()
+        last = self._trail_veto_logged_at
+        if last is not None and now - last < TRAIL_VETO_LOG_EVERY_S:
+            return
+        self._trail_veto_logged_at = now
+        bus.log("warning",
+                f"{label} skipped: {self._trail_phrase(*trail)}; a sweep "
+                f"would measure star trails", "sequence")
 
     def _say_probe_declined(self, label: str, result) -> None:
         """The owed sweep's probe did not clear the line (#558): say so in
@@ -18875,13 +20864,37 @@ class SequenceEngine:
                     "a second park", "sequence")
         return False
 
-    async def _wind_down_park(self, tel) -> bool:
+    async def _quiet_stop_for_unknown_position(self) -> None:
+        """The wind-down's park replaced, for a mount whose position is
+        unknown (#886, `_wind_down_park`): one warning, the action first and
+        inside the UI's cut, then the tracking stop, read back and asked
+        again on its own bounded clock when it does not take
+        (`_confirm_quiet_stop`). Nothing aimed, never raises."""
+        bus.log("warning",
+                f"{self._POSITION_UNKNOWN_ACTION} The run ends without "
+                f"parking: a park is aimed from that position, so tracking "
+                f"is stopped instead", "sequence")
+        await self._stop_tracking_quietly()
+        try:
+            await self._confirm_quiet_stop()
+        except Exception:  # noqa: BLE001 - a wind-down step never raises
+            pass
+
+    async def _wind_down_park(self, tel) -> bool | None:
         """The wind-down's park, run on a task of its own so that a cancel of
         the wind-down cannot cut it (#305, `_wind_down_park_and_close`):
         reopen a dropped link, fence and lock the motion, then park and read
         it back (`_park_and_read_back`). Returns whether the mount parked.
         Never raises for a park that failed or timed out: that is logged, and
-        the caller stops the mount instead."""
+        the caller stops the mount instead.
+
+        None: NOT PARKED BECAUSE THE POSITION IS UNKNOWN (#886). A park is
+        aimed from the believed position (on the AM5 a goto to the MODEL's
+        home), so whenever the rig-level latch is set, whatever set it, the
+        mount is asked to stop tracking instead and the stop is read back and
+        asked again on its own clock (`_quiet_stop_for_unknown_position`).
+        Asked after the reopen, which can latch it (an AM5 that reads the
+        home pole), and on this same task, so a cancel cannot cut the stop."""
         if not getattr(tel, "connected", False):
             # A telescope OBJECT that reports not-connected is a link
             # that died under us, and since ``connected`` became a
@@ -18893,6 +20906,9 @@ class SequenceEngine:
             # and the wind-down is the last thing that runs
             # before hours of unattended tracking.
             await self._reopen_mount_for_park(tel)
+        if self._position_unknown():
+            await self._quiet_stop_for_unknown_position()
+            return None
         bus.log("info", "parking mount", "sequence")
         # Motion fence (W3.7): the wind-down park is an abort -- BUMP the
         # hub motion epoch FIRST so any in-flight (or just-accepted) slew is
@@ -18907,8 +20923,23 @@ class SequenceEngine:
         lock = getattr(self.hub, "_motion_lock", None)
         if lock is not None:
             async with lock:
+                # ASKED AGAIN UNDER THE LOCK (#886 round 2), as the routes
+                # ask: the park can wait here behind a bounded move while an
+                # AM5 reopen latches the position unknown.
+                if self._position_unknown():
+                    await self._quiet_stop_for_unknown_position()
+                    return None
                 return await self._park_and_read_back(tel)
         return await self._park_and_read_back(tel)
+
+    def _roof_needs_a_parked_tube(self) -> bool:
+        """Whether the roof travels through the mount's volume
+        (``Dome.requires_park_before_close``), the one case where a tube
+        nobody parked keeps it open (#886 round 2). No dome, or a dome
+        without the flag: True, the flag's own fail-safe default."""
+        devices = getattr(self.hub, "devices", None) or {}
+        return bool(getattr(devices.get("dome"),
+                            "requires_park_before_close", True))
 
     async def _wind_down_park_and_close(
             self, park: bool, close_dome: bool, *,
@@ -18939,6 +20970,9 @@ class SequenceEngine:
         ``MOUNT_QUERY_TIMEOUT_S``. Awaited through `asyncio.wait`, which
         leaves the park running when the waiter is cancelled."""
         parked: bool | None = None   # None: no park asked, or no mount to park
+        # The park was skipped because the position is unknown (#886,
+        # `_wind_down_park` answers None): tracking was stopped instead.
+        unknown = False
         if park:
             tel = self.hub.devices.get("telescope")
             if tel is None:
@@ -18959,6 +20993,7 @@ class SequenceEngine:
                     except asyncio.CancelledError:
                         cancelled = True
                 parked = parking.result()
+                unknown = parked is None
                 if parked:
                     # #696: the sun watch's blind fallback projects from the
                     # last position IT read, which this park has made stale.
@@ -18972,10 +21007,17 @@ class SequenceEngine:
                     except Exception:      # noqa: BLE001
                         pass
                 if cancelled:
-                    if not parked:
+                    # Not after a skipped park: its own stop has run.
+                    if parked is False:
                         await self._stop_after_a_failed_park()
                     raise asyncio.CancelledError()
-        elif self._frames_done:
+        elif self._frames_done and not getattr(
+                self, "_ended_position_unknown", False):
+            # A position-unknown stop is not a run "set not to park": it
+            # stopped tracking on purpose and says so itself
+            # (`_confirm_quiet_stop`), and "Dawn park will park it" would be
+            # false (dawn park skips a mount whose position is unknown, #874).
+            #
             # A run that deliberately leaves the mount live must SAY so. On
             # 2026-08-09 a 150-frame unattended run ended "complete: 150 frames"
             # with park_when_done off, and nothing anywhere recorded
@@ -19003,7 +21045,25 @@ class SequenceEngine:
         # the park above did not complete. Best-effort like every other wind-down
         # step: it never raises (returns False), and a failed/refused close pages
         # loudly via an error-level bus.log.
-        if close_dome:
+        #
+        # NOT OVER A TUBE NOBODY PARKED (#886): with the park skipped for an
+        # unknown position, a mount that still reads "parked" (an AM5 after a
+        # reset reads home wherever the tube is) is no proof the roof clears
+        # it, so the roof is left alone, as `_run`'s position-unknown arm
+        # leaves it, and said at error level so it pages.
+        #
+        # ONLY A ROOF THAT NEEDS A PARKED TUBE (#886 round 2). A roof with
+        # ``requires_park_before_close`` False closes over the tube wherever
+        # it points (`close_observatory` never asks the mount), so the doubt
+        # gives no reason to leave it open, in the rain least of all.
+        if close_dome and unknown and self._roof_needs_a_parked_tube():
+            bus.log("error",
+                    "the roof was not closed: the mount's position is "
+                    "unknown, so nothing parked the tube under it", "safety")
+            self._record_safety(
+                "ROOF NOT CLOSED - mount position unknown, tube not parked",
+                "close_roof_failed")
+        elif close_dome:
             dome = self.hub.devices.get("dome")
             if dome is not None and getattr(dome, "connected", False):
                 from .roof import close_observatory

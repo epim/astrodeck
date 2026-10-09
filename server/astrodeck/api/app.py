@@ -66,6 +66,7 @@ from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at m
                      _redact_switch_ports_for, _redact_ws_event,
                      redact_bundle_csv_for, redact_bundle_manifest_for,
                      report_csv_columns)
+from .slow_requests import SlowRequestLog
 from ..persist import safe_id_path, safe_subpath, secure_private_tree
 from ..catalog import search          # rows AND the reasons for what is missing
 from ..catalog import panel_csv            # the mosaic panel CSV (#178)
@@ -111,7 +112,9 @@ from ..sun_watch import SunWatch
 from ..catalog.ephemeris.elements import ephemeris_store
 from ..dew import DewController
 from ..devices import alpaca as alpaca_backend
-from ..devices.base import DeviceError, TRACKING_RATES
+from ..devices.base import (DeviceError, SyncRefused, SyncUnverified,
+                            TRACKING_RATES, forget_rig_position_doubt,
+                            position_known_for_motion, rig_position_known)
 from ..devices.nina import discover_nina
 from ..events import LOG_READ_MAX, bus, night_key
 from ..focus import run_autofocus
@@ -135,7 +138,8 @@ from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
 from ..mount_offset import nudge as nudge_offset
 from ..mount_offset import parse_nudge
-from ..mount_offset import POSITION_UNKNOWN_CODE, POSITION_UNKNOWN_DETAIL
+from ..mount_offset import (POSITION_UNKNOWN_CODE, POSITION_UNKNOWN_DETAIL,
+                            POSITION_UNKNOWN_MOTION_DETAIL)
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, PlanUnreadable, plan_library
 from .. import power_guard
@@ -827,6 +831,44 @@ def _refuse_if_lane_blocked(name: str) -> None:
         raise _lane_409(_LANE_BLOCK_REASON.get(
             blocker, f"'{blocker}' is running and '{name}' cannot run with it"),
             code="lane_blocked", lane=name, blocked_by=blocker)
+
+
+def _refuse_if_position_unknown(
+        tel, detail: str = POSITION_UNKNOWN_MOTION_DETAIL) -> None:
+    """Raise 409 ``position_unknown`` while the mount's position is unknown,
+    or return (#886).
+
+    ONE GATE FOR EVERY ROUTE THAT AIMS A MOVE FROM THE BELIEVED POSITION:
+    goto (plain and centred), park, home and nudge. On the AM5 Home and Park
+    are each a goto to the MODEL's home, so neither recovers the position;
+    the detail gives the safe order instead (Trust position if the tube
+    really is at home, otherwise a pad key by eye, then Trust position).
+    Taken before the route bumps the motion fence, for the reason
+    `_refuse_if_lane_blocked` is: a refusal after the bump would abandon an
+    in-flight move and leave the rig with neither. ``/api/mount/move`` (the
+    pad jog) never asks: it computes no destination, and it is the way home
+    by eye.
+
+    ``tel`` is the route's own ``hub.require`` answer; the rig-level latch
+    is read beside it (`position_known_for_motion`), so a doubt carried
+    across a profile activate refuses too."""
+    if not position_known_for_motion(hub, tel):
+        raise HTTPException(409, detail={"detail": detail,
+                                         "code": POSITION_UNKNOWN_CODE})
+
+
+def _abandon_if_position_unknown(tel, what: str) -> bool:
+    """The same gate asked again at the motion seam: under ``_motion_lock``,
+    right before the device command (#886). A spawned move can wait for the
+    lock behind another, and the latch can be set meanwhile (an AM5 link
+    reopen that reads the home pole). True means the caller sends nothing
+    and returns; one warning says so, the safe order first."""
+    if position_known_for_motion(hub, tel):
+        return False
+    bus.log("warning",
+            f"{POSITION_UNKNOWN_MOTION_DETAIL} Nothing was moved ({what})",
+            "mount")
+    return True
 
 
 #: The one sentence a route refuses with when a .ser recording holds the camera.
@@ -1553,6 +1595,35 @@ def _spawn(name: str, coro, *, replace: bool = False) -> dict:
 
     hub._busy[name] = asyncio.create_task(wrapped())
     return {"started": name}
+
+
+async def _sync_not_taken_is_not_a_failed_solve(solve_and_sync) -> None:
+    """Run a Solve & Sync, and report a sync the mount did not take in its
+    own words (#850).
+
+    ``_spawn`` words every failure "<lane> failed: ...", which for the
+    ``solve`` lane is "solve failed: ...". For ``SyncRefused`` (the mount
+    refused the sync: ``e11`` at its home position) and ``SyncUnverified``
+    (nobody could confirm it) that is false: the field solved, and the
+    operator toasted "solve failed" goes to the optics when the cause is the
+    mount. Those two are logged here at ERROR level, so the UI still toasts
+    them, as "sync not taken: <the driver's words>" on source "solve", and
+    they end here. Every other exception, ``CancelledError`` included, goes
+    on to ``_spawn``'s own handling unchanged.
+
+    The driver's message carries no coordinates and no raw link bytes, and
+    its action (for ``e11``, the driver's e11 words, in the safe order)
+    comes early, so the 16-character prefix still leaves it before the UI's
+    137-character cut.
+
+    Takes the method, not its coroutine: ``_spawn`` closes the coroutine it
+    is handed when it refuses the lane (409), and closing this wrapper
+    before it starts could not close an inner coroutine already made, which
+    would then log "coroutine ... was never awaited"."""
+    try:
+        await solve_and_sync()
+    except (SyncRefused, SyncUnverified) as e:
+        bus.log("error", f"sync not taken: {e}", "solve")
 
 
 # In-flight connect-by-profile/rig driver task (see _spawn_connect). Tracked here
@@ -3522,6 +3593,12 @@ def create_app(*, bind_host: str | None = None,
             response.headers.setdefault(
                 "Strict-Transport-Security", "max-age=31536000")
         return response
+
+    # Slow-request log (#858). Added LAST so it is the OUTERMOST user middleware
+    # (Starlette inserts each add at index 0): it times the auth and header
+    # layers too, and sees a relay-tunnelled request exactly as it sees a LAN one,
+    # because the relay client replays into this same app.
+    app.add_middleware(SlowRequestLog)
 
     @app.exception_handler(RequestValidationError)
     async def _request_validation_error(request, exc: RequestValidationError):
@@ -5890,7 +5967,13 @@ def create_app(*, bind_host: str | None = None,
              "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path",
              # A mosaic's panel labels (#188, WP-127), appended so a reader
              # of the columns by position reads what it always read.
-             "mosaic", "panel"],
+             "mosaic", "panel",
+             # A light shot at a pointing no solve confirmed (#852), appended
+             # for the same reason.
+             "pointing_unverified",
+             # #856: guide corrections at the limit during the exposure, by
+             # direction ("east:57 north:2"), appended the same way.
+             "guide_capped"],
             principal)
         import csv
         w = csv.writer(buf)
@@ -5901,6 +5984,9 @@ def create_app(*, bind_host: str | None = None,
         for d in rows:
             d = dict(d)
             d["ts_utc"] = _iso_utc(d.get("ts"))
+            if isinstance(d.get("guide_capped"), dict):
+                d["guide_capped"] = " ".join(
+                    f"{k}:{v}" for k, v in sorted(d["guide_capped"].items()))
             w.writerow(["" if d.get(c) is None else d.get(c) for c in cols])
         # Use the sanitized slug (not the raw path param) so the response header
         # can never carry CR/LF/quotes from attacker-controlled input.
@@ -6304,7 +6390,9 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/plans", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def list_plans():
-        return plan_library.list()
+        # Off the loop (#858 N1): one open+parse per plan file, and P6's UI
+        # retries this read by itself during a disk stall (#859).
+        return await asyncio.to_thread(plan_library.list)
 
     @app.get("/api/plans/{plan_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -9091,7 +9179,8 @@ def create_app(*, bind_host: str | None = None,
     # ---------------------------------------------------------------- mount
 
     async def _plain_goto(ra_hours: float, dec_deg: float) -> None:
-        """Slew to an absolute J2000 target with NO centring pass.
+        """Slew to an absolute J2000 target with NO centring pass, in the frame
+        the mount expects (#861).
 
         HOISTED out of the goto handler so a second route can spawn the same
         lane. It was a closure over ``body``; a nudge computes its own
@@ -9104,9 +9193,17 @@ def create_app(*, bind_host: str | None = None,
         # so a STOP/abort that lands while this is awaiting (e.g. a stale
         # REMOTE goto racing a LOCAL abort) is fenced out at the mount.
         epoch = hub._motion_epoch
+        # #861: the target is J2000, the mount may want JNOW. Converted AFTER
+        # the epoch is read, so a STOP that lands while the conversion awaits
+        # (its EquatorialSystem probe is a device read) is still fenced out
+        # below. The nudge route hands this J2000 too (it converts its READ
+        # back with from_mount_frame), so nothing converts twice.
+        slew_ra, slew_dec = await hub.to_mount_frame(tel, ra_hours, dec_deg)
         async with hub._motion_lock:
             if not hub._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")
+                return
+            if _abandon_if_position_unknown(tel, "pointing"):
                 return
             if await tel.is_parked():
                 await tel.unpark()
@@ -9124,16 +9221,18 @@ def create_app(*, bind_host: str | None = None,
             # A commanded move is what retires a plate-solved centre
             # (GN-07); the mount's own drifting report is not.
             hub.note_pointing_moved()
-            await tel.slew(ra_hours, dec_deg)
+            await tel.slew(slew_ra, slew_dec)
         bus.publish("mount", action="slew_complete")
 
     @app.post("/api/mount/goto", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.slew"})
     async def goto(body: GotoBody):
         try:
-            hub.require("telescope")
+            tel = hub.require("telescope")
         except DeviceError as e:
             raise _err(e)
+        # #886: a goto, plain or centred, is aimed from the believed position.
+        _refuse_if_position_unknown(tel)
         # Below-horizon guard — only when the user actually configured a site
         # (is_default off) and the target is below the horizon, and only at the
         # GOTO entry (goto_and_center re-slews internally without re-checking).
@@ -9177,10 +9276,11 @@ def create_app(*, bind_host: str | None = None,
         # wherever the mount GUESSES it last was -- exactly the state right
         # after a reset. ``position_known`` defaults True (``getattr``, not a
         # required attribute): a driver, or a test double, that predates this
-        # flag nudges exactly as it always has.
-        if not getattr(tel, "position_known", True):
-            raise HTTPException(409, detail={"detail": POSITION_UNKNOWN_DETAIL,
-                                             "code": POSITION_UNKNOWN_CODE})
+        # flag nudges exactly as it always has. The hub's record is read
+        # too (`rig_position_known`), so a doubt survives a profile activate
+        # that replaced the telescope object. The one route gate (#886), with
+        # the nudge's own words.
+        _refuse_if_position_unknown(tel, POSITION_UNKNOWN_DETAIL)
         try:
             arcmin = parse_nudge(body.axis, body.arcmin)
         except ValueError as e:
@@ -9261,7 +9361,10 @@ def create_app(*, bind_host: str | None = None,
             hub.require("telescope"), hub.require("camera")
         except DeviceError as e:
             raise _err(e)
-        return _spawn("solve", hub.solve_and_sync())
+        # A sync the mount refused or did not confirm is not a failed solve
+        # (#850): worded as "sync not taken", never "solve failed".
+        return _spawn("solve", _sync_not_taken_is_not_a_failed_solve(
+            hub.solve_and_sync))
 
     # Monotonic stamp of the last "position unknown" warning /api/mount/move
     # wrote (None before the first). A one-slot list, not a global: the rate
@@ -9301,7 +9404,8 @@ def create_app(*, bind_host: str | None = None,
             # refusing it would take away the only way to drive a reset mount
             # home by eye.
             position_unknown = (rate != 0.0
-                                and not getattr(tel, "position_known", True))
+                                and (not getattr(tel, "position_known", True)
+                                     or not rig_position_known(hub)))
             if position_unknown:
                 # ONCE A MINUTE: the hold-to-move pad re-asserts its rate about
                 # every 600 ms (``KEEPALIVE_MS``) to feed the deadman, so a line
@@ -9412,13 +9516,19 @@ def create_app(*, bind_host: str | None = None,
         The answer carries the driver's OWN verdict afterwards
         (``position_known``), not an assumption: a driver that keeps its own
         evidence and declines to clear must not be reported as cleared, since
-        the client unlocks off this answer. A driver with nothing to trust
-        (``Telescope.trust_position`` is a no-op by default) answers true."""
+        the client unlocks off this answer. A driver with nothing else to
+        trust answers true once ``Telescope.trust_position`` has cleared the
+        rig-level latch a ``PositionUnknownStop`` sets on ANY mount
+        (``Telescope.mark_position_unknown``), so the button the stop's line
+        names is on screen for every driver, not only the AM5."""
         try:
             tel = hub.require("telescope")
             await tel.trust_position()
         except DeviceError as e:
             raise _err(e)
+        # The word is about the TUBE, whichever telescope object answers: the
+        # hub's record of a doubt carried across a profile activate goes too.
+        forget_rig_position_doubt(hub)
         # WHO SAID IT. No coordinate and no angle in the line: the home position
         # is the pole, so any number read from it is a latitude oracle (#140).
         from ..auth import audit as auth_audit   # lazy, as auth/deps.py does
@@ -9456,9 +9566,12 @@ def create_app(*, bind_host: str | None = None,
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.park"})
     async def park():
         try:
-            hub.require("telescope")
+            tel = hub.require("telescope")
         except DeviceError as e:
             raise _err(e)
+        # #886: on the AM5 a park is a goto to the MODEL's home, aimed from
+        # the believed position. Before the bump, as the lane refusal is.
+        _refuse_if_position_unknown(tel)
         # Park is a motion-committing abort: bump the fence FIRST so an in-flight
         # goto is abandoned, then run park under the motion lock (serialized with
         # every other device-touching motion path). replace=True CANCELS a prior
@@ -9473,6 +9586,8 @@ def create_app(*, bind_host: str | None = None,
         async def _park():
             tel = hub.require("telescope")
             async with hub._motion_lock:
+                if _abandon_if_position_unknown(tel, "park"):
+                    return
                 hub.invalidate_field_solve("the mount is parking")
                 hub.note_pointing_moved()
                 await tel.park()
@@ -9514,27 +9629,29 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(
                 status_code=400,
                 detail=f"{getattr(tel, 'name', 'this mount')} has no home position")
+        # #886: NOT SENT WHILE THE POSITION IS UNKNOWN. On the AM5 ``:hP#`` is
+        # a goto to the MODEL's home, aimed from the believed position, so it
+        # neither finds the tube nor recovers the position (#857, #725); the
+        # detail gives the safe order. Before the bump, as the lane refusal.
+        _refuse_if_position_unknown(tel)
         _refuse_if_lane_blocked("goto")     # before the bump; see park
         hub.bump_motion_epoch()
 
         async def _home():
             t = hub.require("telescope")
-            # READ BEFORE THE HOME IS SENT (#725, #133's second finding). After
-            # an AM5 reset the mount believes it is already at home, so ``:hP#``
-            # moves nothing and "homed" would be a success line written by the
-            # caller regardless of what the callee proved. A mount whose
-            # position is unknown gets NO line here: the driver has already
-            # warned that the tube may not have moved, and a quiet log is more
-            # honest than that warning followed by this claim. Read first so a
-            # driver that clears the flag as it homes cannot turn the answer
-            # into "known" after the fact.
-            known = getattr(t, "position_known", True)
             async with hub._motion_lock:
+                # THE SAME GATE AT THE SEAM (#886), and the reason "mount
+                # homed" below is honest (#725, #133's second finding): a home
+                # is now only ever sent from a position the driver vouched for
+                # as it was sent. After an AM5 reset the mount believes it is
+                # already home, so ``:hP#`` moves nothing, and the line used to
+                # be written regardless of what the callee proved.
+                if _abandon_if_position_unknown(t, "home"):
+                    return
                 hub.invalidate_field_solve("the mount is homing")
                 hub.note_pointing_moved()
                 await t.find_home()
-            if known:
-                bus.log("info", "mount homed", "mount")   # see park, above
+            bus.log("info", "mount homed", "mount")   # see park, above
         return _spawn("goto", _home(), replace=True)
 
     @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])

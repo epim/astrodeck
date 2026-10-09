@@ -96,6 +96,22 @@ test('phase "lost" reads correctly with guiding:false (i.e. after a Stop)', () =
   eq(r.tone, "bad");
 });
 
+// #848/#849 (U1): the native guider stopped ITSELF because its calibration was
+// not holding the star, and discarded that calibration. Not a lost star, and
+// not "Ready to guide" (the fallback for an idle phase), which is what it read
+// before this branch. Mutant: the "stopped" branch removed -> "Ready to guide".
+test('phase "stopped" -> the self-stop, not a lost star and not ready', () => {
+  const r = guideNarration(baseInput({ phase: "stopped", guiding: false }));
+  eq(r.phaseText, "Guiding stopped itself and discarded its calibration");
+  eq(r.tone, "bad");
+  if (/lost/i.test(r.phaseText) || /lost/i.test(r.verdict ?? "")) {
+    throw new Error("a self-stop must not read as a lost star");
+  }
+  if (!r.verdict || !/Start Guiding/.test(r.verdict)) {
+    throw new Error(`terminal phase must say what to do next, got ${String(r.verdict)}`);
+  }
+});
+
 // ---------------------------------------------------------------- headline case
 test("headline case: rms 1.1 / scale 1.5714 -> 0.7 px ≈ 1.1″ — good for 3-minute subs", () => {
   const r = guideNarration(baseInput());

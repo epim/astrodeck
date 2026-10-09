@@ -98,6 +98,7 @@ transfer; e.g. `:Sr10:37:16#` = 12 B in a single transfer, ack on bulk-IN):
 | `:Mn/s/e/w#` … `:Q#` | Manual move / stop | see note below |
 | `:Te#` / `:Td#` | Enable / disable tracking | see note below |
 | `:hR#` | Unpark | see note below |
+| `:CM#` | Sync to the set target | `N/A#` when taken (away from the pole); with the tube at the home position (bench, 2026-10-08) every sync was refused, all but one with `e11#`. **The reply is not proof**: see "Sync (`:CM#`) is verified by reading back" below |
 
 **The LX200 serial port is telemetry + config only — it cannot command motion.**
 With the mount confirmed **fully powered**, it answered every info query and accepted
@@ -120,6 +121,18 @@ e-code list, and `e14` and `e6` are the only two this project has seen on the wi
 driver (`_GOTO_REFUSALS` in `server/astrodeck/devices/backends/zwo_am5.py`) puts words to
 those two and says only "altitude, meridian or park limits are the usual reasons" for any
 other code. Do not add a meaning here without a capture to back it.
+
+**`e11#` = seen in answer to `:CM#` (sync) at the HOME position (bench, 2026-10-08,
+fw 1.8.8).** Every sync sent with the tube at home was refused: all but one answered
+`e11#` and moved nothing, sync-to-self included, tracking on or off; one answered `N/A#`
+and did not move. Its meaning beyond "where it was seen" is unknown, so the driver never
+reads it as proof that the tube is at home, and never answers it with a slew. It picks its
+words from the refusal's read-back: with the mount's opinion within 5 deg of the synced
+coordinates (or unread), "if the tube really is at home, use Trust position; a sync away
+from the pole then works"; further out, "tube not where the mount thinks: bring it home by
+eye with a pad key, then Trust position" (`SYNC_E11_ELSEWHERE_DEG`, which mirrors the
+resume ladder's `RECOVERY_REFUSED_SYNC_MAX_DEG`). The codes seen on the wire are now
+`e6`, `e11` and `e14`.
 
 The reason: **the mount was PARKED, and the unpark command is ZWO-specific — `:Spu#`, not
 the LX200/OnStep `:hR#`/`:hU#`/`:hP#` I had tried.** This was confirmed by capturing ZWO's
@@ -178,6 +191,10 @@ Verified live via `devices/backends/zwo_am5.py` over COM3 (no ZWO software):
   field**: `+90*00:00#` = 0.90× sidereal (NOT 90°).
 - **`:CM#` sync accepted** (sync-to-self round-trip clean). UTC-init scheme
   validated: `:GS#` sidereal matched computed LST within minutes.
+  > **Caveat (2026-10-08):** this held away from the pole only. With the tube
+  > at the HOME position (bench) sync-to-self answered `e11#` and the mount took
+  > nothing; see
+  > "Sync (`:CM#`) is verified by reading back" below.
 - **Pulse guide `:Mg{n,s,e,w}<ms>#` parses but produces NO motion** on this
   firmware over serial (tried 5–10 s pulses, upper+lowercase directions,
   tracking on, GR-monitored: 0.0″). `:GFR1#`/`:GFD1#` are NOT live encoders
@@ -197,7 +214,8 @@ Verified live via `devices/backends/zwo_am5.py` over COM3 (no ZWO software):
   raw coordinate deltas, near the pole.
 
 Other ZWO-specific gets seen: `:GMA#` → BT/MAC address (`48ca4357cab1#`), `:GP08#` → `0#`,
-`:GAT#` → `0#` (at-target flag), `:GFR1#`/`:GFD1#` → `22438#` (axis encoder counts).
+`:GAT#` → `0#` (tracking flag; see the validation results above; NOT an at-target or
+arrival signal), `:GFR1#`/`:GFD1#` → `22438#` (axis encoder counts).
 
 **Conclusion:** the AM5N is **fully drivable by a native USB/LX200 driver.** Every motion
 command I earlier saw refused with `e14#` was refused solely because the mount was parked;
@@ -257,6 +275,209 @@ Sample captures on the box: `C:\Users\James\AstroDeck\mountprobe.pcap` (the LX20
 
 > Site latitude/longitude returned by `:Gt#`/`:Gg#` are redacted here (the mount reports
 > the observatory's precise location); the live values are visible only on the rig.
+
+## Sync (`:CM#`) is verified by reading back (#850, bench 2026-10-08)
+
+**The incident, 2026-10-07.** Three centring syncs of 2.2 to 2.8 degrees at Dec +34,
+near the meridian, changed nothing. The hub logged "solved & synced", the next goto
+was zero length, the next solve showed the field unmoved, and the run imaged the wrong
+field for hours (#852). The driver of the day treated every `:CM#` reply except `e14`
+as success, threw the reply away and never read the position back, so **what the mount
+answered that night is unknown**.
+
+**The bench, real AM5N, fw 1.8.8, 2026-10-08:**
+
+| Where the tube was | `:CM#` reply (the link strips the `#`) | `:GR#`/`:GD#` read 1 s later |
+|---|---|---|
+| Away from the pole (Dec +35, hour angle +2.5 h, tracking on); 0.5 to 5 deg offsets in Dec and in RA | `N/A` every time | exactly the synced coordinates, within 0.002 deg |
+| HOME position (tube at the pole), tracking on or off | every sync there was refused: all but one answered `e11`, sync-to-self included | did not move |
+| HOME position, the one exception: a 5 deg sync | `N/A` | did NOT move |
+
+So the reply is a hint and the read-back is the test. How soon after the reply the
+report updates has not been measured: every read on the bench was taken 1 s after.
+
+**What the driver does** (`ZwoAm5Telescope.sync`, `server/astrodeck/devices/backends/zwo_am5.py`):
+
+1. `:Sr#`, `:Sd#`, `:CM#`. An `eNN` (or any answer but `1`) to the target is a refusal
+   (`SyncRefused`, `e14` with the parked probe); a link failure there is
+   `SyncUnverified` ("the link failed before the sync was sent"). `:CM#` is never
+   resent blind after a reopen: a mount that restarted under the dropped link has lost
+   its target and would sync to whatever it holds. On a link failure the driver sets
+   the target again and sends `:CM#` once more (harmless if the first was taken and
+   only its reply lost); a second failure is `SyncUnverified`.
+2. A reply matching `[eE]\d+` is a refusal (`SyncRefused`). The position is read
+   back once anyway, best effort, so the refusal carries how far the mount's own
+   opinion is from the synced coordinates (`residual_deg`).
+3. Any other reply (`N/A`, or anything a firmware might say instead) is judged by the
+   read-back: within `SYNC_VERIFY_DEG` (0.05 deg) of the synced coordinates, by angular
+   separation, it is taken; otherwise the driver re-reads up to twice more, 0.5 s
+   apart. A read that fails (no answer, unreadable, not finite) is retried the same
+   way. The LAST read decides: a good read still outside the tolerance raises
+   `SyncRefused` with the reply; a failed one raises `SyncUnverified` ("the mount did
+   not answer the position read after the sync"), not a refusal. A reply other than
+   `N/A` that the read-back confirms is logged once.
+4. The reply is quoted in a text only when it matches `[A-Za-z0-9/]{1,8}`. An empty
+   reply is "an empty reply" and anything else "an unrecognised reply", never quoted:
+   a desynchronised link can hand the sync a `:GR#`-shaped answer, and at home that
+   is local sidereal time. The link's own timeout text reports how many bytes arrived,
+   never the bytes.
+5. Only a verified sync clears the reset latch (`position_known`, #144).
+
+No message carries the read-back's RA or Dec: at home it is the pole, and its RA
+follows local sidereal time, so either is a site oracle (#140, #166). Separations
+in degrees are allowed.
+
+**Consequence for a reset mount.** After a power cycle the mount reports home wherever
+the tube is, so its position is unknown, and with the tube at home the bench saw every
+sync refused. Do not slew or go to a target from there: a goto is aimed from the position
+the mount believes, and with the tube elsewhere it lands somewhere unknown. The safe
+order is:
+
+1. If the tube really is at home, use Trust position.
+2. If it is not, hold a pad key and bring it home by eye (hold-to-move computes no
+   destination), then use Trust position.
+3. Only then does a goto away from the pole, followed by a solve and sync there, refine
+   the pointing.
+
+A mount whose own position disagrees with the sky and refuses the correction stops the
+target (the read-back above). Away from the pole the bench has since seen syncs taken up
+to at least 5 deg (#857), so a refusal there has a cause nobody has captured yet; the
+driver now keeps the reply.
+
+**An observation, cause unknown (2026-10-08 run).** The run's four centring syncs, of
+167.7', 167.9', 168.4' and 168.4', again "changed nothing". In all four the target had
+just crossed the meridian and the solved field had not: the two lay on opposite sides of
+it. The refused syncs of 2026-10-07 did NOT fit that pattern; there the target and the
+field were on the same side. Recorded only; nothing in the driver is built on it.
+
+## GoTo (`:MS#`) arrival is verified, not assumed (#860)
+
+**The old rule, and why it was a claim nothing kept.** `ZwoAm5Telescope.slew` used to
+return when two consecutive 0.5 s position reads differed by less than `SETTLE_DEG`
+(0.05 deg). It never compared the settled report with the commanded target. A mount that
+never started read as settled at its third read, about 1.5 s after `:MS#`; a mount halted
+part way (a Stop, or the hub's manual-move deadman sending `:Q#`) read as arrived. The step
+also had no RA wrap, so a still mount reading 23:59:59 then 00:00:00 looked like 360 deg
+of slew.
+
+**The new rule** (`server/astrodeck/devices/backends/zwo_am5.py`). ARRIVED is two things
+at once:
+
+- the report is still: two consecutive poll-to-poll steps under `SETTLE_DEG`, measured
+  the short way round in RA (`_moved_deg`);
+- the report is within `GOTO_ARRIVE_DEG + GOTO_DRIFT_DEG_S x elapsed` of the commanded
+  target, by angular separation (`coords.angular_sep_deg`), so a report near the pole
+  that differs by hours of RA is measured as the small distance it is.
+
+Still but short is not an arrival. Polling goes on until the mount arrives or is STUCK
+for `GOTO_STALL_S`, which raises `GotoNotArrived` with the fixed reason "the mount
+stopped short of the target". Stuck is also two things at once: every step across the
+window under `SETTLE_DEG`, AND the separation fallen by less than `GOTO_PROGRESS_DEG`
+across it. Each half alone fails:
+
+- small steps alone would halt a healthy slow final approach: the AM5's R5 rate, about
+  7.8x sidereal = 0.0326 deg/s, steps 0.016 deg per poll, under `SETTLE_DEG`;
+- no progress alone would halt a healthy pier-flip goto, whose separation GROWS at slew
+  speed for some seconds while the Dec axis swings through the pole; those steps are far
+  over `SETTLE_DEG`, so the small-step half keeps the stall from being declared.
+
+A whole-mount halt sent while the goto runs (the driver counts them in `_halt_gen`)
+raises `GotoNotArrived` with the reason "a stop was sent during the goto", unless the
+mount is already at the target. The `SLEW_TIMEOUT_S` deadline (120 s) is unchanged and
+still a plain `DeviceError`; the stall window runs inside it. Every abnormal exit halts
+the mount with `:Q#` first. No message carries a coordinate; the separation in degrees
+is allowed.
+
+**The constants, with their arithmetic:**
+
+| constant | value | derivation |
+|---|---|---|
+| `GOTO_ARRIVE_DEG` | 0.10 deg | `:Sr#` RA rounding 0.0021 + `:Sd#` Dec rounding 0.0003 + `:GR#` read 0.0021 + `:GD#` read 0.0003 + a guide pulse still running (1.0 s cap x 0.004178 deg/s) 0.0042 = about 0.009 deg; 0.10 is 2 x `SETTLE_DEG`, an 11x margin |
+| `GOTO_DRIFT_DEG_S` | 0.0041781 deg/s | the sidereal rate, 15.041 arcsec/s / 3600; covers a firmware that goes to a fixed hour angle with tracking off. At the 120 s deadline the tolerance is 0.10 + 0.0041781 x 120 = 0.60 deg |
+| `GOTO_STALL_S` | 10 s | outlasts the `:MS#` start latency and any pause in a healthy goto, neither measured; a `:hP#` the mount took is moving within 1-2 s, so 10 s is 5x that bound. Counted as ceil(10 / 0.5) = 20 poll comparisons |
+| `GOTO_PROGRESS_DEG` | 0.10 deg | what a stuck mount can fake across one window: tracking-off drift 0.0041781 x 10 = 0.0418 + two residuals' read quantization 2 x 0.0024 = 0.0048, 0.0466 deg in all; 0.10 is 2.1x that. R5 makes 0.33 deg per window, 3.3x the floor |
+
+Limits stated: a final approach under 2x sidereal (R3 is 1.9x, 0.079 deg per window)
+cannot be told from drift by any window, and would read as stuck. Nothing says a goto
+uses R3 (those are the jog presets); the bench below measures it. The 0.10 deg floor
+holds while a window lasts under (0.10 - 0.0048) / 0.0041781 = 22.8 s, i.e. a `:GR#` plus
+`:GD#` pair under 0.64 s; past that a drifting stuck mount can read as progress and the
+deadline ends it instead: late, never silent.
+
+**Refusals.** `e14` to `:MS#` is now `GotoRefused`, like `e6`, with the parked probe
+choosing the words ("the mount is parked; unpark first", or "not in a state to move: a
+limit, or a slew already running"). The code stays in the message, never in the reason,
+because the resume ladder writes the reason into a hold reason (#618). An `eN` code not in
+the driver's table keeps today's message, code included, and its reason is fixed words
+with no code.
+
+**`:MS#` is sent once.** It is never re-sent after a reopen: a mount that took the goto
+and is slewing would answer a re-send `e14` and leave the first goto unwatched. A link
+failure on `:MS#` halts the mount best-effort (`:Q#`, which may reopen the port) and
+raises `GotoNotArrived` ("the link to the mount failed during the goto") with the same
+message as before. Before `retry=False` a dropped exchange was re-sent and the goto went
+on; the typed raise keeps that one dropped reply from ending a run, because the centring
+loop solves where the mount is instead. The 120 s deadline stays a plain `DeviceError`: a
+goto that neither arrives nor stalls in that time ends the run with a named error.
+
+**Tracking after a halted goto.** Every `GotoNotArrived` comes after a `:Q#`, and whether
+`:Q#` stops sidereal tracking on this firmware is not measured (item 3 of the at-scope
+checks below). After a miss, `goto_and_center` turns tracking back on (best effort,
+idempotent) before it solves, so a centred return never images on a mount the halt left
+untracked, whichever way the bench answers.
+
+**A re-sent `:MS#` to a power-cycled mount is not a hazard.** The AM5 powers up PARKED
+and refuses every motion command with `e14` until `:Spu#`, and the driver's connect and
+reopen never unpark, so a re-send would be answered `e14` and raise `GotoRefused` with the
+parked words.
+
+**Measured fact the constants rest on:** the 2026-07-20 at-scope gotos landed Dec +40
+targets with a 0.000 deg residual (validation results above).
+
+**Bench questions still open (HARDWARE-PENDING, #860).** With the server stopped, at night
+(Sun below -6 deg), with the script's own Sun-cone and horizon gates and the position known:
+the `:MS#` start latency; any still pause inside a healthy goto, a pier-flip goto included;
+how long a flip goto's separation grows; the final residual with tracking on; where the
+report sits after a goto with tracking off; and the approach-speed profile from 1.0 deg
+in, including the least fall of the separation across any 10 s window, the exact quantity
+the stall rule tests; and, with tracking on, whether `:GAT#` still reads tracking after a
+`:Q#`. Print separations, rates, elapsed seconds and the tracking flag only.
+
+## Home (`:hP#`) is not a pointing-model reset (#857)
+
+`:hP#` homes AND parks. The AM5 has no home sensor: it drives to where its pointing MODEL
+places home, so a model that is off homes off by about the same amount. On 2026-10-07 the
+model was about 2.8 deg off before a home, and about 4.25 deg off at the next centring,
+after it had kept walking on a paused guided run. Homing neither resets nor corrects the
+model.
+
+What does set the frame:
+
+- a verified sync from a solved frame away from the pole (the read-back above);
+- a power-up with the tube at true home (a powered-up AM5 reports home wherever the tube
+  is, so the report is right only if the tube really is there).
+
+The bench, 2026-10-08: at home every sync was refused (`e11`, and one `N/A` that moved
+nothing). Away from the pole (Dec +35, hour angle +2.5 h) syncs of up to at least 5 deg on
+both axes read back exactly and undid cleanly.
+
+Recovery:
+
+- **position known:** the normal goto-and-centre away from the pole (goto, solve, one
+  sync read back). That repairs a model off by up to at least 5 deg, home or no home.
+- **position unknown:** the safe order. If the tube really is at home, Trust position.
+  If not, bring it home by eye with a pad key, then Trust position. Only then a goto away
+  from the pole, a solve and a sync.
+
+**A set-home or zero command:** none is captured and the driver uses none. Its only home
+command is `:hP#`. The 2026-07-19 sweep tried `:hR#`/`:hU#`/`:hN#`/`:hF#`/`:hW#`/`:hS#`/`:hP#`/
+`:I#`/`:PO#`/`:MP#` only while PARKED, where all answered `e14`, so nothing is known about
+them unparked. Untested candidate: `:hF#`, which in the OnStep family (whose `:GU#` style
+this firmware follows) is "reset the mount at the home position". Its meaning on the AM5
+is unknown and no code sends it (HARDWARE-PENDING, #857: read the ZWO ASIMount driver's
+trace logs for `:h` commands first, then a supervised bench with a hand on the power
+switch). The ZWO app's zero-position function runs over Bluetooth/Wi-Fi and has not been
+seen on this serial port. Sync acceptance above 5 deg away from the pole is unmeasured.
 
 ## The reported RA/Dec walks during a run (measured 2026-08-21 and 2026-09-06)
 

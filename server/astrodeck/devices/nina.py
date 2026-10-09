@@ -55,7 +55,19 @@ from .base import (
     Rotator,
     Switch,
     SwitchPort,
+    SyncRefused,
+    SyncUnverified,
     Telescope,
+)
+from .sync_verify import (
+    SYNC_REPLY_ERROR,
+    SYNC_UNVERIFIED_LINK_DURING,
+    SYNC_UNVERIFIED_UNCLEAR,
+    jnow_alternates,
+    refused_message,
+    refused_residual_deg,
+    unverified_message,
+    verify_sync,
 )
 from ..guide.base import Guider, GuideStats
 
@@ -134,6 +146,26 @@ def _decode_gray16(data: bytes) -> np.ndarray:
 
 # ---------------------------------------------------------------------- client
 
+class NinaReplyError(DeviceError):
+    """NINA ANSWERED, and the answer was an error (#862): ``http_status``
+    != 200, or HTTP 200 with ``Success: false``. A DeviceError subclass, so
+    every existing catch is unchanged; it exists so a sync can tell "NINA
+    said no" from "no answer came" and from "an answer that is not a
+    refusal"."""
+
+    def __init__(self, message: str, *, http_status: int):
+        super().__init__(message)
+        self.http_status = http_status
+
+
+#: A sync NINA reported as failed (HTTP 200 with ``Success: false``, or 4xx).
+#: Never contains the word "nina": beside the code 'error' the UI humanizer's
+#: "nina"+"error" pair would replace the whole line. NINA's own ``Error`` text
+#: is never quoted (it may hold the target).
+NINA_SYNC_FAILED_REASON = ("the mount's control software reported the sync "
+                           "as failed; its log says why")
+
+
 class NinaClient:
     """Thin async wrapper over NINA's Advanced API.
 
@@ -173,13 +205,17 @@ class NinaClient:
             r = await self.http.get(f"{self.base}{path}", params=self._params(params),
                                     timeout=timeout)
             if r.status_code != 200:
-                raise DeviceError(f"NINA HTTP {r.status_code} on {path}: {r.text[:160]}")
+                raise NinaReplyError(
+                    f"NINA HTTP {r.status_code} on {path}: {r.text[:160]}",
+                    http_status=r.status_code)
             try:
                 body = r.json()
             except ValueError:
                 raise DeviceError(f"NINA returned non-JSON on {path}")
             if not body.get("Success", True):
-                raise DeviceError(pick(body, "Error", default=f"NINA error on {path}"))
+                raise NinaReplyError(
+                    pick(body, "Error", default=f"NINA error on {path}"),
+                    http_status=200)
         except Exception as e:
             self.last_error = str(e)[:200]
             raise
@@ -478,9 +514,66 @@ class NinaTelescope(_NinaDevice, Telescope):
                 stable = 0
             last = (ra, dec)
 
+    async def _read_position_strict(self) -> tuple[float, float]:
+        """The mount's position from a FRESH /equipment/mount/info
+        (force=True: the 0.4 s info cache would hand back the pre-sync
+        position). Raises DeviceError when either field is missing:
+        ``get_position``'s default of 0 would read a missing field as RA 0h
+        Dec 0, which a sync to (0, 0) would then "confirm"."""
+        info = await self.info(force=True)
+        ra = pick(info, "RightAscension", "RA")
+        dec = pick(info, "Declination", "Dec")
+        if ra is None or dec is None:
+            raise DeviceError(f"{self.name}: mount info carried no position")
+        return float(ra), float(dec)
+
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
-        # RA in DEGREES, same convention as the slew endpoint (see slew()).
-        await self.client.get("/equipment/mount/sync", ra=ra_hours * 15.0, dec=dec_deg)
+        """Sync, then READ THE POSITION BACK (#862, the #850 class).
+
+        ``Success: true`` is NINA's word, not a measurement, so the position
+        is read back from a fresh mount info and a sync it does not prove
+        raises. Raises only ``SyncRefused`` or ``SyncUnverified`` (the AM5's
+        contract after #850).
+
+        A refusal is only what is positively known to be one: HTTP 200 with
+        ``Success: false``, or HTTP 4xx. HTTP 5xx (a wedged or restarting
+        NINA), a body that is not JSON, and no answer at all are unverified,
+        the conservative arm.
+
+        Both frames count: NINA transforms a sync to the mount's epoch
+        (usually JNOW) and reports in it, while AstroDeck sends J2000, so the
+        read-back is accepted within tolerance of the target or of its JNOW
+        (``sync_verify.jnow_alternates``)."""
+        kind: str | None = None
+        try:
+            # RA in DEGREES, same convention as the slew endpoint (see slew()).
+            await self.client.get("/equipment/mount/sync", ra=ra_hours * 15.0,
+                                  dec=dec_deg)
+        except NinaReplyError as e:
+            kind = ("refused" if e.http_status == 200
+                    or 400 <= e.http_status < 500 else "unclear")
+        except DeviceError:
+            kind = "unclear"
+        except Exception:  # noqa: BLE001 - the httpx transport family, raw
+            kind = "link"
+        if kind == "link":
+            raise SyncUnverified(
+                unverified_message(self.name, SYNC_UNVERIFIED_LINK_DURING),
+                code="", reason=SYNC_UNVERIFIED_LINK_DURING)
+        if kind == "unclear":
+            raise SyncUnverified(
+                unverified_message(self.name, SYNC_UNVERIFIED_UNCLEAR),
+                code="", reason=SYNC_UNVERIFIED_UNCLEAR)
+        if kind == "refused":
+            residual = await refused_residual_deg(
+                self._read_position_strict, ra_hours, dec_deg,
+                alternates=jnow_alternates)
+            raise SyncRefused(
+                refused_message(self.name, NINA_SYNC_FAILED_REASON, residual),
+                code=SYNC_REPLY_ERROR, reason=NINA_SYNC_FAILED_REASON,
+                residual_deg=residual)
+        await verify_sync(self.name, self._read_position_strict, ra_hours,
+                          dec_deg, alternates=jnow_alternates)
 
     async def set_tracking(self, on: bool) -> None:
         # NINA Advanced API exposes this as `/equipment/mount/tracking` (verified

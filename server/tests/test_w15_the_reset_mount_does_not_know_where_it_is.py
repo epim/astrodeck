@@ -144,9 +144,52 @@ and killed by the cases that now follow them:
   jog on an unknown position (the one jog nobody is checking) could have lost
   its deadman unseen. ``test_manual_move_does_not_compute_the_solar_cone_from_an_unknown_position``,
   ``AssertionError: a jog on an unknown position must still arm the deadman``.
+
+Six more for #850 round 4, which reworded both position-unknown lines to the
+safety rule: no goto advice while the position is unknown (a goto is aimed
+from the position the mount believes), Trust position if the tube really is
+at home, otherwise bring it home by eye first, and the no-sync-at-home fact
+said as seen with the tube at home. Each run from a byte backup, restored and
+sha256-checked:
+
+* m24_round3_latch_line -- the round-3 latch line put back. Four cases fail,
+  among them ``test_neither_line_advises_a_goto`` (it says "slewing away").
+* m25_round3_home_line -- the round-3 ``find_home`` line put back. Three
+  cases fail, among them ``test_both_lines_put_the_safe_action_inside_the_cut``.
+* m26_latch_action_after_explanation -- the reset explanation moved in front
+  of the action. ``test_both_lines_put_the_safe_action_inside_the_cut``.
+* m27_latch_fact_unqualified -- "the mount refuses every sync at home" put
+  back in the latch line.
+  ``test_the_no_sync_at_home_fact_is_qualified_as_seen_with_the_tube_at_home``.
+* m28_home_line_advises_a_slew -- "Or slew away first." added to the home
+  line. ``test_neither_line_advises_a_goto``.
+* m29_home_condition_weakened -- "really" dropped from the home line's
+  condition. ``test_both_lines_put_the_safe_action_inside_the_cut``.
+
+#850 round 5 shortened the front of both lines so the WHOLE safe action (Trust
+position if the tube really is at home; if not, hold a pad key to bring it home
+by eye, then Trust position) ends inside the cut, pinned both lines exactly,
+and widened the goto ban to the UI's ``GOTO_ADVICE`` plus "head to" and
+"star". The round-4 review's two survivors, re-run from a byte backup:
+
+* s5_latch_go_to_paraphrase -- the latch line's "After that, a sync from a
+  solved frame away from the pole refines the pointing." made "Or use a go-to
+  to a star away from the pole and sync there."
+  ``test_neither_line_advises_a_goto`` and
+  ``test_both_lines_are_pinned_exactly``.
+* s5b_home_head_to_star -- the home line's "then Trust position." made "then
+  Trust position, or head to a bright star away from the pole and sync from a
+  solved frame there." ``test_neither_line_advises_a_goto``,
+  ``test_both_lines_are_pinned_exactly`` and
+  ``test_both_lines_put_the_safe_action_inside_the_cut``.
+* m30_latch_front_lengthened -- "the mount reports home." put back in front
+  of the latch line's action, which pushes its end to char 159.
+  ``test_both_lines_put_the_safe_action_inside_the_cut`` and
+  ``test_both_lines_are_pinned_exactly``.
 """
 from __future__ import annotations
 
+import re
 import time as real_time
 
 import pytest
@@ -155,10 +198,10 @@ from fastapi.testclient import TestClient
 import astrodeck.api.app as app_module
 import astrodeck.devices.backends.zwo_am5 as am5
 import astrodeck.events as events_mod
-from astrodeck.devices.base import Telescope
 from astrodeck.devices.sim import SimTelescope
 from _simhub import sim_hub  # noqa: F401  (fixture import)
-from test_zwo_am5 import FakeLink, _connect_script, fixed_env  # noqa: F401
+from test_zwo_am5 import (FakeLink, _connect_script, _humanizer_rewrites,  # noqa: F401
+                          fixed_env)
 
 #: A made-up mid-latitude declination; not anybody's site and not the pole.
 _AWAY = "+40*00:00"
@@ -187,6 +230,19 @@ def _record_logs(monkeypatch) -> list[tuple[str, str, str]]:
     return lines
 
 
+def _accept_and_move(link: FakeLink, ra: str = "10:00:00",
+                     dec: str = "+40*00:00") -> None:
+    """Script a sync the AM5 TAKES: target acks, ``:CM#`` answers ``N/A`` and
+    the reported position then reads the synced coordinates, which is what the
+    driver's read-back checks since #850 (the 2026-10-08 bench, away from the
+    pole). Made-up coordinates."""
+    def cm(_cmd):
+        link.script["GR"] = ra
+        link.script["GD"] = dec
+        return "N/A"
+    link.script.update({f"Sr{ra}": "1", f"Sd{dec}": "1", "CM": cm})
+
+
 def _unknown(tel, why: str) -> None:
     assert tel.position_known is False, (
         f"position_known must read False {why}, and it read True")
@@ -204,10 +260,10 @@ def _known(tel, why: str) -> None:
 
 def test_a_driver_that_says_nothing_is_taken_to_know_where_it_is():
     """The base default is True, so every backend and every test double that
-    predates the flag behaves exactly as it did."""
-    assert Telescope.position_known is True, (
-        "the base default must be True: absent means known")
-    assert SimTelescope.position_known is True, (
+    predates the flag behaves exactly as it did. Read on an instance: the
+    base flag is a property since the rig-level latch (#851 integration
+    review), whose default, with nothing marked, is still True."""
+    assert SimTelescope("plain").position_known is True, (
         "a driver that never set the flag must read True")
 
 
@@ -286,8 +342,15 @@ async def test_the_latch_logs_one_line_that_carries_no_coordinates(
     assert level == "warning"
     assert "sync" in message and "at home" in message, (
         f"the line must say what clears it: {message!r}")
+    assert "Trust position" in message and "home by eye" in message, (
+        "the line must give the safe way out (#850): Trust position if the "
+        "tube really is at home, otherwise bring it home by eye first: "
+        f"{message!r}")
     assert not any(ch.isdigit() for ch in message), (
         f"a coordinate reached the log: {message!r}")
+    assert not _humanizer_rewrites(message), (
+        "the UI would replace this line with its own sentence (#850 F1.6), "
+        f"so the operator would never read it: {message!r}")
 
 
 async def test_a_second_reopen_at_the_pole_does_not_say_it_again(
@@ -367,7 +430,7 @@ async def test_a_sync_clears_it(fixed_env):
     """m2. A plate-solved sync is the one measurement of where the tube really
     points, so it is what re-establishes the frame."""
     link, tel = await _connect(_POLE)
-    link.script.update({"Sr10:00:00": "1", "Sd+40*00:00": "1", "CM": "Synced"})
+    _accept_and_move(link)
     _unknown(tel, "before the sync (precondition)")
 
     await tel.sync(10.0, 40.0)
@@ -384,6 +447,38 @@ async def test_a_refused_sync_does_not_clear_it(fixed_env):
         await tel.sync(10.0, 40.0)
 
     _unknown(tel, "after a sync the mount refused")
+
+
+async def test_e11_at_home_leaves_the_position_unknown(fixed_env):
+    """#850, the 2026-10-08 bench: at the home position the AM5 refused every
+    sync, all but one with ``e11``, and took nothing, sync-to-self included
+    (the one exception answered ``N/A`` and did not move). The driver
+    reads that as a refusal (``SyncRefused``), and a sync that was refused
+    proves nothing about where the tube points, so the latch stays."""
+    from astrodeck.devices.base import SyncRefused
+    link, tel = await _connect(_POLE)
+    link.script.update({"Sr10:00:00": "1", "Sd+40*00:00": "1", "CM": "e11"})
+
+    with pytest.raises(SyncRefused) as exc:
+        await tel.sync(10.0, 40.0)
+
+    assert exc.value.code == "e11"
+    _unknown(tel, "after the mount answered e11 at home")
+
+
+async def test_an_n_a_that_does_not_move_leaves_the_position_unknown(
+        fixed_env, monkeypatch):
+    """The bench's other home-position answer: ``N/A`` once, and the report
+    did not move. The reply is not the proof, so the latch stays."""
+    from astrodeck.devices.base import SyncRefused
+    monkeypatch.setattr(am5, "SYNC_READBACK_RETRY_S", 0.0)
+    link, tel = await _connect(_POLE)
+    link.script.update({"Sr10:00:00": "1", "Sd+40*00:00": "1", "CM": "N/A"})
+
+    with pytest.raises(SyncRefused):
+        await tel.sync(10.0, 40.0)
+
+    _unknown(tel, "after an N/A the read-back disproved")
 
 
 async def test_trust_position_clears_it(fixed_env):
@@ -432,6 +527,12 @@ async def test_home_on_an_unknown_position_says_the_tube_may_not_have_moved(
         f"homing an unknown position wrote {len(said)} 'may not have moved' "
         "warnings, not one")
     assert not any(ch.isdigit() for ch in said[0]), said[0]
+    assert not _humanizer_rewrites(said[0]), (
+        f"the UI would replace this line with its own sentence: {said[0]!r}")
+    assert "Trust position" in said[0] and "home by eye" in said[0], (
+        "the line must give the safe way out (#850): Trust position if the "
+        "tube really is at home, otherwise bring it home by eye first: "
+        f"{said[0]!r}")
     _unknown(tel, "after homing, which proved nothing about the tube")
 
 
@@ -448,6 +549,132 @@ async def test_home_on_a_known_position_says_nothing_extra(
 
 async def _no_op() -> None:
     return None
+
+
+# ===========================================================================
+# #850 round 4: what the two position-unknown lines tell the operator to do
+# ===========================================================================
+
+#: The UI cuts a line longer than 140 chars to 137 plus an ellipsis.
+_CUT = 137
+
+#: Goto advice, as the UI's ``GOTO_ADVICE`` bans it
+#: (w16MountPositionUnknown.test.tsx), plus "head to". A star is checked as a
+#: word on its own, so "restart" is not mistaken for one.
+_GOTO_WORDS = ("slew", "go to a target", "goto", "go-to",
+               "target away from the pole", "head to")
+
+
+async def _both_position_unknown_lines(monkeypatch, name=None) -> list[str]:
+    """The latch line and the find_home warning, from the real driver. With no
+    ``name`` the driver keeps its default ("ZWO AM5"), the name the 137-char
+    cut has to be measured with."""
+    logs = _record_logs(monkeypatch)
+    link = FakeLink(_connect_script(GD=_POLE, Gps="0"))
+    tel = (am5.ZwoAm5Telescope(link) if name is None
+           else am5.ZwoAm5Telescope(link, name=name))
+    await tel.connect()
+    link.script["hP"] = ""
+    monkeypatch.setattr(tel, "_park_now", _no_op)
+    await tel.find_home()
+    latch = [m for (lvl, m, _s) in logs
+             if lvl == "warning" and "position is unknown" in m]
+    home = [m for (lvl, m, _s) in logs
+            if lvl == "warning" and "may not have moved" in m]
+    assert len(latch) == 1 and len(home) == 1, (
+        f"expected one latch line and one home line, got {logs!r}")
+    return [latch[0], home[0]]
+
+
+#: The whole safe action, in order (#850 round 5): the condition that guards
+#: Trust position, and HOW to bring the tube home when it is not there.
+_SAFE_ACTION = ("tube really at home: trust position. if not, hold a pad key "
+                "to bring it home by eye, then trust position.")
+
+
+async def test_both_lines_put_the_safe_action_inside_the_cut(
+        fixed_env, monkeypatch):
+    """THE SAFETY RULE (#850 rounds 4 and 5). With the position unknown the
+    way out is Trust position if the tube really is at home, and otherwise
+    holding a pad key to bring it home by eye, then Trust position. All of it
+    has to survive the UI's cut with the default device name: the condition
+    that guards Trust position (or the operator reads "Trust position" without
+    the "if"), the pad key (or "bring it home" reads as the Home button, which
+    moves nothing on a reset mount), and the second Trust position."""
+    for line in await _both_position_unknown_lines(monkeypatch):
+        low = line.lower()
+        at = low.find(_SAFE_ACTION)
+        assert at >= 0, f"the line does not give the safe action: {line!r}"
+        assert at + len(_SAFE_ACTION) <= _CUT, (
+            f"the safe action ends at char {at + len(_SAFE_ACTION)}, past the "
+            f"{_CUT}-char cut: {line[:_CUT]!r}")
+
+
+async def test_neither_line_advises_a_goto(fixed_env, monkeypatch):
+    """A goto is aimed from the position the mount believes. With the tube not
+    really at home it lands somewhere unknown, which is how a tube meets a
+    pier, so neither line may tell the operator to slew or go to a target.
+    The list is the UI's ``GOTO_ADVICE`` (w16MountPositionUnknown.test.tsx)
+    plus "head to" and "star" (#850 round 5; mutants s5 and s5b)."""
+    for name in (None, "Mount"):
+        for line in await _both_position_unknown_lines(monkeypatch, name):
+            low = line.lower()
+            for banned in _GOTO_WORDS:
+                assert banned not in low, (
+                    f"the line advises a goto ({banned!r}) while the position "
+                    f"is unknown: {line!r}")
+            assert not re.search(r"\bstars?\b", low), (
+                f"the line sends the operator to a star while the position is "
+                f"unknown: {line!r}")
+            assert not _humanizer_rewrites(line), (
+                f"the UI would replace this line with its own sentence: "
+                f"{line!r}")
+
+
+def _latch_line(name: str) -> str:
+    return (f"{name}: position is unknown. Tube really at home: Trust "
+            "position. If not, hold a pad key to bring it home by eye, then "
+            "Trust position. After that, a sync from a solved frame away from "
+            "the pole refines the pointing. A reset makes the mount report "
+            "home after (re)connecting, wherever the tube is; with the tube "
+            "at home it refused every sync on the bench")
+
+
+def _home_line(name: str) -> str:
+    return (f"{name}: home sent. Tube really at home: Trust position. If not, "
+            "hold a pad key to bring it home by eye, then Trust position. "
+            "After that, a sync from a solved frame away from the pole refines "
+            "the pointing. The tube may not have moved: a reset mount believes "
+            "it is already at home, so home moves nothing and its position "
+            "stays unknown; with the tube at home it refused every sync on the "
+            "bench")
+
+
+@pytest.mark.parametrize("name", [None, "Mount"])
+async def test_both_lines_are_pinned_exactly(fixed_env, monkeypatch, name):
+    """#850 round 5, the way the UI pins its three strings: any rewording of
+    either position-unknown line has to come through here, so goto advice
+    cannot slip in under words the ban list does not know."""
+    latch, home = await _both_position_unknown_lines(monkeypatch, name)
+    shown = name or "ZWO AM5"
+    assert latch == _latch_line(shown), latch
+    assert home == _home_line(shown), home
+
+
+async def test_the_no_sync_at_home_fact_is_qualified_as_seen_with_the_tube_at_home(
+        fixed_env, monkeypatch):
+    """The bench refused every sync WITH THE TUBE AT HOME. A mount that merely
+    reports home may have its tube anywhere, so the lines say what was seen
+    and do not state a rule about the report."""
+    for line in await _both_position_unknown_lines(monkeypatch, name="Mount"):
+        assert "with the tube at home" in line and "refused every sync" in line, (
+            f"the no-sync-at-home fact must be said as seen with the tube at "
+            f"home: {line!r}")
+        assert "refuses every sync" not in line, (
+            f"the line states a categorical rule about a mount that reports "
+            f"home: {line!r}")
+        assert not any(ch.isdigit() for ch in line), (
+            f"a coordinate reached the log: {line!r}")
 
 
 # ===========================================================================
@@ -589,7 +816,7 @@ async def test_a_sync_puts_the_cone_check_back(jog):
     """The check is gated on the flag, not removed: once a sync has cleared the
     latch the very next jog is checked again."""
     tel = await jog.connect(_POLE)
-    jog.link.script.update({"Sr10:00:00": "1", "Sd+40*00:00": "1", "CM": "ok"})
+    _accept_and_move(jog.link)
     _post_move(0.3)
     assert jog.solar == [], "the unknown-position jog computed the cone (precondition)"
 
@@ -691,7 +918,7 @@ async def test_the_status_frame_publishes_position_known_false_for_a_reset_mount
     this key, so it is always present in the mount block, and it follows the
     driver both ways (a sync takes it back)."""
     link, tel = await _connect(_POLE)
-    link.script.update({"Sr10:00:00": "1", "Sd+40*00:00": "1", "CM": "ok"})
+    _accept_and_move(link)
     sim_hub.devices["telescope"] = tel
 
     before = (await sim_hub.poll_status())["mount"]

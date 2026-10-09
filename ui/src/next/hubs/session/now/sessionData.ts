@@ -21,7 +21,9 @@
 
 import { useEffect, useState } from "react";
 import { getSession, listSessions } from "../../../../api/sessions";
-import { useStore } from "../../../../store";
+import { useStore, useWsConnected } from "../../../../store";
+import { useRetryOnReturn } from "../../../../lib/retryLoad";
+import { libraryFailedIn } from "../../../../components/flows/flowsSlice";
 import type { FlowCard } from "../../../../lib/flowsApi";
 import type { Session, SessionRow } from "../../../../types";
 
@@ -99,16 +101,28 @@ export function useActiveSession(): ActiveSession {
   return id ? snapshot : EMPTY;
 }
 
+/** Read at EVENT time by the re-ask (#859), never at render. */
+const libraryFailedNow = () => libraryFailedIn(useStore.getState().flows);
+
 /** The saved-flow library, loaded once. `libraryLoaded` stays FALSE on an
  *  error on purpose (flowsSlice), so "no flows yet" is never painted over a
- *  library the server has. */
+ *  library the server has.
+ *
+ *  Now and the compact SessionColumn mount this together: the second effect
+ *  in the same commit sees the first call's synchronous `libraryLoading` and
+ *  does not start a second load (#859). The slice retries a transient failure
+ *  by itself; a failure left after that is re-asked once on websocket-up or
+ *  tab-visible, and the second handler of the same event sees the first
+ *  one's load and does nothing. */
 export function useFlowLibrary(): { cards: FlowCard[]; loaded: boolean; error: string | null } {
   const cards = useStore((s) => s.flows.cards);
   const loaded = useStore((s) => s.flows.libraryLoaded);
   const error = useStore((s) => s.flows.libraryError);
   const loadLibrary = useStore((s) => s.flowsLoadLibrary);
+  const wsConnected = useWsConnected();
   useEffect(() => {
-    if (!loaded) void loadLibrary();
+    if (!loaded && !useStore.getState().flows.libraryLoading) void loadLibrary();
   }, [loaded, loadLibrary]);
+  useRetryOnReturn(libraryFailedNow, () => { void loadLibrary(); }, wsConnected);
   return { cards, loaded, error };
 }

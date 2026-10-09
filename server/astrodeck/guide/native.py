@@ -48,6 +48,8 @@ import math
 import random
 import threading
 import time
+from collections import deque
+from dataclasses import dataclass, field
 
 from ..aio import reap
 from ..devices.base import Camera, DeviceError, Telescope
@@ -361,6 +363,140 @@ _RATE_ADVISORY_MARK = "rates vary by an unexpected amount"
 #: exactly where the engine's own check declines.
 _DEC_COMP_LIMIT_RAD = math.pi / 3.0
 
+#: engine.rs DEC_COMP_MAX_DEC: the current declination is clamped to +-89 deg
+#: before the RA rate is compensated. Mirrored so the capability below is the
+#: engine's own number.
+_DEC_COMP_MAX_DEC_RAD = math.radians(89.0)
+
+
+# ---------------------------------------------------------------------------
+# #848 / #849: the runaway gate and the calibration probation.
+#
+# Both judge a guide frame by two per-axis quantities. CAPABILITY is how far
+# one correction at the axis limit moves the star by the engine's own model:
+# the limit (ms) times the calibrated rate (px/ms), with the RA rate
+# compensated for declination exactly as engine.rs ``effective_x_rate`` does.
+# NOISE is a fixed, pessimistic per-axis frame noise (seeing plus centroid),
+# 3.0 arcsec per axis, or 1.0 px when the image scale is unknown. It is NOT
+# measured: a frame-to-frame measurement taken while the error grows reads
+# the growth as noise and inflates itself by exactly the runaway it judges.
+#
+# A STREAK, per axis, is the run of consecutive measured frames whose
+# requested correction is at the axis limit in one direction. The gate trips,
+# before the frame's pulse is sent, once a streak has sent RUNAWAY_PULSES
+# pulses AND the error on that axis has grown by G since the streak began,
+# G = max(2 x capability, 3 x sqrt(2) x noise). At 5.5 arcsec/px on the AM5N
+# (RA 15.04 arcsec/s, 1000 ms cap): RA capability 2.26 px at dec +34.4, so G
+# is 4.51 px and it trips after 5 pulses (62 arcsec of travel); at +85 the
+# capability is 0.24 px, G is 2.31 px (the noise floor), and it trips once
+# the error has grown 2.31 px (13 arcsec), however small each pulse is.
+# The arithmetic for every declination is in DESIGN-P1 section 3.
+RUNAWAY_PULSES = 5
+#: A fresh or reused calibration guides this many MEASURED frames before it
+#: is claimed or saved; the verdict looks at the last PROBATION_TAIL of them.
+PROBATION_FRAMES = 10
+PROBATION_TAIL = 5
+#: ...and gives up when that many loop frames pass without enough measured
+#: ones: three times the frames needed, so a one-in-three miss rate passes.
+PROBATION_MAX_LOOP_FRAMES = 3 * PROBATION_FRAMES
+#: The latest a verdict may come after the probation is armed. Checked once
+#: per loop frame, and the longest loop frame is the 15 s maximum guide
+#: exposure + 2.5 s of pulse + about 1 s, so the verdict lands by 218.5 s,
+#: inside the engine's 240 s quiet gate (GUIDE_QUIET_TIMEOUT_S).
+PROBATION_WALL_S = 200.0
+#: Mirrors of sequence/engine.py GUIDE_START_TIMEOUT_S,
+#: GUIDE_CALIBRATE_TIMEOUT_S and GUIDE_QUIET_TIMEOUT_S, pinned by test: the
+#: guider must not import the engine.
+_GUIDE_START_BOUND_S = 180.0
+_GUIDE_CALIBRATE_BOUND_S = 660.0
+_GUIDE_QUIET_BOUND_S = 240.0
+#: Headroom left in the engine's start bound after the probation wait: the
+#: work after it (persist, publish) is synchronous.
+_START_MARGIN_S = 30.0
+#: How old a ``needs_calibration`` answer may be and still name the bound the
+#: engine picked for this start: the engine asks immediately before the start,
+#: under MOUNT_QUERY_TIMEOUT_S (30 s).
+_BOUND_HINT_S = 60.0
+#: Settle after the preceding goto before the calibration's star-find.
+#: Mirrors polar/native.py _SETTLE_AFTER_SLEW_S (this mount's settle loop
+#: says "stopped" in about 1.5 s). HARDWARE-PENDING: measure the real figure.
+_CAL_SETTLE_S = 5.0
+_GUIDE_NOISE_ARCSEC = 3.0
+_GUIDE_NOISE_PX_UNSCALED = 1.0
+_MEANINGFUL_NOISE_RATIO = 3.0
+_GROWTH_NOISE_SIGMAS = 3.0
+_GROWTH_CAPS = 2.0
+
+#: Fixed words (#618 D-03): no figures. The figures go in the log line beside.
+RUNAWAY_STOP_REASON = "guiding drove the star away from the lock"
+PROBATION_STOP_REASON = "the calibration did not hold the star"
+PROBATION_FAILED_MSG = ("native guider: the calibration did not hold the "
+                        "star, so it was discarded; the next start walks a "
+                        "new one")
+PROBATION_LOOP_DIED_MSG = ("native guider: guiding stopped while the "
+                           "calibration was being checked")
+DITHER_REFUSED = ("native guider: the calibration is still being checked; "
+                  "dither once it has passed")
+_DIRECTIONS = ("north", "south", "east", "west")
+
+_PROB_FAIL_HEAD = ("native guider: the calibration did not hold the star "
+                   "and was discarded; the next start walks a new one")
+L_FIRST_DITHER = ("native guider stopped, calibration discarded: the first "
+                  "dither after the calibration check did not settle")
+L_CONTINUES = ("native guider: the start's time is spent, so the calibration "
+               "check continues while guiding; nothing is claimed until it "
+               "passes")
+L_CANCEL = ("native guider: the start was cancelled while the calibration was "
+            "being checked, so guiding stopped and nothing was saved")
+L_WALK_LEGS_HEAD = "native guider calibration walk before it stopped: "
+L_GEOMETRY_HEAD = "native guider calibration geometry: "
+
+
+@dataclass
+class _Probation:
+    """One calibration on probation (#848): armed when the guide loop starts
+    on a calibration nothing has yet proven, judged per frame by
+    ``NativeGuider._judge_frame``, and ended by a verdict."""
+    discard_epoch: int                 # NativeGuider._discard_epoch when armed
+    armed_at: float                    # time.monotonic() when armed
+    frames: int = 0                    # measured frames judged
+    loop_frames: int = 0               # every loop frame judged
+    #: A correction has reached the mount since this was armed. Frames are
+    #: judged only from then on: a star that needs no correction exercises
+    #: nothing the calibration claims, and on a quiet field a walk with a
+    #: reversed axis "held" ten frames before its first pulse.
+    pulsed: bool = False
+    tail: deque = field(default_factory=lambda: deque(maxlen=PROBATION_TAIL))
+    errs_px: list = field(default_factory=list)
+    verdict: str | None = None         # None running, "pass", or the failure line
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+def _leg_name(leg) -> str:
+    """A calibration leg as a reader says it: "go_west" -> "west",
+    "clear_backlash" -> "backlash", "nudge_south" -> "nudge south"."""
+    name = str(leg or "?")
+    if name.startswith("go_"):
+        name = name[3:]
+    if name.startswith("clear_"):
+        name = name[6:]
+    return name.replace("_", " ")
+
+
+def _legs_summary(legs: list[dict]) -> str:
+    """Each leg of a calibration walk as "<name> <steps> steps <s> s
+    <travel> px", joined by ", " (#848, #856.2)."""
+    out = []
+    for e in legs:
+        start, end = e.get("start"), e.get("end")
+        if start is None or end is None:
+            travel = "?"
+        else:
+            travel = f"{math.hypot(end[0] - start[0], end[1] - start[1]):.1f}"
+        out.append(f"{_leg_name(e.get('leg'))} {int(e.get('steps', 0))} steps "
+                   f"{int(e.get('ms', 0)) / 1000.0:.1f} s {travel} px")
+    return ", ".join(out) if out else "no legs"
+
 
 def regrade_rate_advisory(msg: str, cal: dict,
                           rates: tuple[float, float] | None,
@@ -622,6 +758,21 @@ class NativeGuider(Guider):
     #: only ones that may drop it. Class-level for the same ``__new__`` reason.
     _engine_thread: int | None = None
     _engine_loop: "asyncio.AbstractEventLoop | None" = None
+    #: #848/#849/#856 state, class-level for the same ``__new__`` reason.
+    #: Instances assign their own dicts; ``_streaks`` None reads as "no
+    #: streaks" and ``_saturated`` is created on first use.
+    _probation: "_Probation | None" = None
+    _streaks: dict | None = None
+    _stop_reason: str = ""
+    _first_dither_pending: bool = False
+    _discard_epoch: int = 0
+    _axis_limit_ms: dict = {"ra": _ENGINE_MAX_DURATION_MS,
+                            "dec": _ENGINE_MAX_DURATION_MS}
+    _blc_ms: int = 0
+    _last_dec_dir_sent: str | None = None
+    _scope_dec_rad: float = _UNKNOWN_DECLINATION
+    _caps: dict | None = None
+    _needs_cal_said: tuple | None = None
 
     def __init__(self, guide_camera: Camera, telescope: Telescope, *,
                  config: dict, profile_id: str | None = None,
@@ -798,6 +949,36 @@ class NativeGuider(Guider):
         # established — a fresh walk, or a persisted cal genuinely reused.
         self._cal_discarded = False
 
+        # #848: the calibration on probation (None when nothing is being
+        # checked), and how many times the calibration has been discarded,
+        # so a pass can tell whether a clear came in since it was armed.
+        self._probation: _Probation | None = None
+        self._discard_epoch = 0
+        # #849: the per-axis capped streaks the runaway gate judges.
+        self._streaks: dict[str, dict | None] = {"ra": None, "dec": None}
+        #: Why the guider stopped ITSELF (runaway, failed probation, failed
+        #: first dither), in fixed words, or "".
+        self._stop_reason = ""
+        #: The first dither after a calibration passed its probation decides
+        #: whether that calibration is kept (#848, the issue's clause).
+        self._first_dither_pending = False
+        # #856.1: corrections at or over the axis limit, by direction, over the
+        # guider's LIFETIME (never reset by a start: the engine diffs them
+        # across each exposure).
+        self._saturated = {d: 0 for d in _DIRECTIONS}
+        # The engine's per-axis correction limits and BLC add-on, as
+        # ``_build_engine_config`` last configured them.
+        self._axis_limit_ms = {"ra": _ENGINE_MAX_DURATION_MS,
+                               "dec": _ENGINE_MAX_DURATION_MS}
+        self._blc_ms = 0
+        self._last_dec_dir_sent: str | None = None
+        # The declination last handed to the engine's ``set_scope_pointing``.
+        self._scope_dec_rad = _UNKNOWN_DECLINATION
+        self._caps: dict | None = None
+        # (answer, monotonic time) of the last ``needs_calibration``: the
+        # engine picked its start bound from it.
+        self._needs_cal_said: tuple[bool, float] | None = None
+
     # ------------------------------------------------------- camera settings
 
     def camera_settings(self) -> dict:
@@ -970,7 +1151,18 @@ class NativeGuider(Guider):
         and exposing the guide camera, so a calibration walk started on top of
         it would measure nonsense rates. Checked BEFORE the lock so the common
         case fails fast and loud (a direct sequence-engine call would otherwise
-        simply block behind the assistant's lock for minutes)."""
+        simply block behind the assistant's lock for minutes).
+
+        #848: the calibration this start guides on, whether freshly walked or
+        reused off disk, is ON PROBATION until it has guided
+        ``PROBATION_FRAMES`` measured frames and passed the checks in
+        ``_judge_frame``. This waits for that verdict inside the
+        bound the engine wrapped this call in (``_await_probation``), so no
+        frame is shot on an unproven calibration; a failed one is discarded
+        and the start raises ``PROBATION_FAILED_MSG``. The claim "calibrated
+        and guiding" and the persisted write both wait for the pass."""
+        # The engine's bound runs from here, so the probation budget does too.
+        t0 = time.monotonic()
         if self._assistant_active:
             raise DeviceError(
                 "native guider: the Guiding Assistant is using the mount — "
@@ -1020,6 +1212,28 @@ class NativeGuider(Guider):
                 self._relock_unconfirmed = 0
                 self._lock_moved_px = 0.0
                 self._lock_xy_brightest = None
+                # #848/#849: a start is a new session for the probation, the
+                # runaway streaks, the self-stop reason and the first-dither
+                # clause, and the engine below starts with no memory of the
+                # last Dec direction (``reset_guiding_state``), so neither
+                # does the host. NOT the saturated counters: the engine diffs
+                # those across each exposure, a restart included.
+                self._probation = None
+                self._streaks = {"ra": None, "dec": None}
+                self._stop_reason = ""
+                self._first_dither_pending = False
+                self._last_dec_dir_sent = None
+                self._caps = None
+                # The bound the engine wrapped this start in: the short one
+                # when ``needs_calibration`` just told it no walk was coming
+                # (that is what made it pick 180 s), else the long one. One
+                # answer serves one start.
+                said = self._needs_cal_said
+                self._needs_cal_said = None
+                bound_s = (_GUIDE_START_BOUND_S
+                           if (said is not None and said[0] is False
+                               and t0 - said[1] <= _BOUND_HINT_S)
+                           else _GUIDE_CALIBRATE_BOUND_S)
                 # #210: the engine is rebuilt just below, so nothing has fed
                 # ITS model yet. A reuse-path restore re-seeds this.
                 self._gp_fed_at = None
@@ -1059,6 +1273,9 @@ class NativeGuider(Guider):
                     _ra_now, _dec_now = await self.tel.get_position()
                     current_dec_rad = math.radians(float(_dec_now))
                 if persisted is not None and self._cal_reusable(persisted, current_dec_rad):
+                    # A start that reuses was bounded as one (the engine's
+                    # needs_calibration asked the same questions).
+                    bound_s = _GUIDE_START_BOUND_S
                     # WP-15 (#135): PROVE the mount is reachable before
                     # anything below claims a reuse. ``current_dec_rad`` just
                     # above, and every read inside
@@ -1144,9 +1361,12 @@ class NativeGuider(Guider):
                             await self._apply_scope_pointing()
                             self._engine.begin_guiding()
                             reused = True
-                            # This session now HAS a calibration again, so a clear or a
-                            # flip-discard that preceded it is spent (GN-01).
-                            self._cal_discarded = False
+                            # #848 (2026-10-08 ruling): a REUSED calibration is
+                            # not trusted on the strength of the file either.
+                            # On 2026-10-08 one ran RA away to 100 arcsec within
+                            # a minute of "reusing persisted calibration". It
+                            # goes through the same probation as a fresh walk,
+                            # whose pass clears the GN-01 latch and re-saves it.
                             bus.log("info",
                                     f"native guider: reusing persisted calibration "
                                     f"for profile {self.profile_id}", "guide")
@@ -1171,32 +1391,24 @@ class NativeGuider(Guider):
                                     f"native guider: could not reuse persisted "
                                     f"calibration ({e}); recalibrating", "guide")
                 if not reused:
-                    await self._calibrate()           # blocks; raises on failure
-                    # A calibration was actually MEASURED, so whatever was
-                    # discarded before it no longer has anything to resurrect
-                    # (GN-01) and the persist below is allowed to write again.
-                    self._cal_discarded = False
+                    # blocks; raises on failure. The GN-01 latch is cleared
+                    # only by the probation's pass (#848): an unproven walk
+                    # has nothing it may write back yet.
+                    await self._calibrate()
                 # HOST CONTRACT (T8 / upstream mount.cpp:1338-1344): auto-flip the
                 # calibration at guiding start if the mount's pier side differs from
                 # the stored calibration's. A no-op for a fresh calibration (the
                 # scope pointing already stamped the current pier); load-bearing
                 # for a reused persisted calibration across a pier-side change.
                 await self._maybe_flip_for_pier()
-                # WP-15 (#135) ORCHESTRATOR RULING. A FRESH calibration's walk
-                # already sent dozens of real pulses to earn this -- persist
-                # and claim now, as always. A REUSED one has only proved the
-                # mount answers a READ (the gate above); the claim and the
-                # persisted-calibration write are deferred to the guide
-                # loop's own first real pulse succeeding (`_reuse_pulse_pending`,
-                # `_guide_loop`), which falls back to a fresh calibration with
-                # a warning if that pulse fails instead. Not deferred: this
-                # does NOT send a standalone probe pulse here (that would
-                # regress test_native_guider_recovery.py's zero-pulse
-                # reuse-start invariant, a real property of the P2-T2
-                # fast-restart contract) -- it waits for the FIRST PULSE THE
-                # LOOP WOULD HAVE SENT ANYWAY.
-                if not reused:
-                    self._persist_calibration()
+                # #848: neither a fresh walk nor a reused file is persisted or
+                # claimed here any more. Both are on probation in the guide
+                # loop (``_judge_frame``), and ``_probation_passed`` does both
+                # once the calibration has held the star. A REUSED one also
+                # keeps WP-15's (#135) first-pulse proof: the loop's first real
+                # pulse must reach the mount, or it falls back to a fresh walk
+                # (``_prove_reuse_with_first_pulse``). Neither path sends a
+                # standalone probe pulse here.
 
                 # LAST GATE. A Stop that landed during the walk is caught by the
                 # walk's own polling; one that landed in the reuse path, the pier
@@ -1211,9 +1423,13 @@ class NativeGuider(Guider):
                 self._phase_hint = None
                 self._active = True
                 self._reuse_pulse_pending = reused
+                self._probation = _Probation(discard_epoch=self._discard_epoch,
+                                             armed_at=time.monotonic())
                 self._loop_task = asyncio.create_task(self._guide_loop())
-                if not reused:
-                    bus.log("info", "native guider calibrated and guiding", "guide")
+                # The verdict, inside the engine's bound for this start. A
+                # failure raises from here; a spent budget leaves the check
+                # running in the loop, which claims nothing until it passes.
+                await self._await_probation(t0, bound_s)
                 bus.publish("guide", **self.stats().__dict__)
             except BaseException:
                 # A START THAT NEVER REACHED THE LOOP OWNS ITS OWN
@@ -1256,6 +1472,12 @@ class NativeGuider(Guider):
         # because `stats()`/`_current_phase()` read it with no loop running.
         self._lost = False
         self._phase_hint = None
+        # #848/#849: the same goes for a self-stop's reason, a probation in
+        # progress (an unproven calibration is never written by a stop) and
+        # the first-dither clause.
+        self._probation = None
+        self._stop_reason = ""
+        self._first_dither_pending = False
         self._stop.set()
         task = self._loop_task
         self._loop_task = None
@@ -1339,6 +1561,20 @@ class NativeGuider(Guider):
             # before its first await, and the rate read + engine build +
             # persistence read all run between that and here.
             self._abort_if_stopped("while starting the calibration")
+            # #848: SETTLE BEFORE THE WALK. Every start that walks follows a
+            # goto (target setup, a re-centre, a flip), and this mount's settle
+            # loop says "stopped" about 1.5 s into a goto's tail. The polar arc
+            # waits _SETTLE_AFTER_SLEW_S for the same reason; the walk waited
+            # nothing, so its first legs could measure the mount's own settle
+            # as guide-pulse motion. Stop-aware, so a Stop here is prompt.
+            if _CAL_SETTLE_S > 0:
+                self._phase_hint = "calibrating"
+                bus.publish("guide", **self.stats().__dict__)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(),
+                                           timeout=_CAL_SETTLE_S)
+                self._abort_if_stopped(
+                    "while the mount settled before the calibration")
             # NOV-7: one "finding" tick before the star-find (D2 — one tick per
             # phase transition; the guide loop already publishes per frame once
             # guiding).
@@ -1388,75 +1624,113 @@ class NativeGuider(Guider):
             starless = 0
             last_leg: str | None = None
             last_dir: str | None = None
-            while True:
-                # THE WALK IS INTERRUPTIBLE. This runs before the deadline test
-                # and before the next exposure, and every leg loops back through
-                # it, so a Stop costs at most the one pulse already in flight —
-                # the mount stops moving and no guide loop is ever armed.
-                self._abort_if_stopped("during the calibration walk")
-                if time.monotonic() > deadline:
-                    raise DeviceError(
-                        "native guider: calibration timed out — "
-                        + self._cal_evidence(cal_steps, walk, starless,
-                                             last_leg, last_dir))
-                frame = await self._expose()
-                action = self._engine.process(
-                    frame.data, frame.timestamp, self._exposure_s)
-                kind = action["action"]
-                if kind == "cal_step":
-                    cal_steps += 1
-                    last_progress = time.monotonic()
-                    starless = 0
-                    last_leg = action.get("leg") or last_leg
-                    last_dir = action.get("dir") or last_dir
-                    with contextlib.suppress(Exception):
-                        found, _m = _native.guide_star_find(frame.data)
-                        if found:
-                            sx, sy = min(
-                                ((float(s["x"]), float(s["y"])) for s in found),
-                                key=lambda p: (p[0] - cal_x) ** 2
-                                              + (p[1] - cal_y) ** 2)
-                            cal_x, cal_y = sx, sy
-                            walk.append([round(sx - x0, 2), round(sy - y0, 2)])
-                    bus.publish("guide", **self.stats().__dict__,
-                                cal={"leg": action.get("leg"),
-                                     "dir": action.get("dir"),
-                                     "ms": int(action.get("ms") or 0),
-                                     "step": cal_steps,
-                                     "walk": walk[-160:]})
-                    await self.tel.pulse_guide(action["dir"], int(action["ms"]))
-                    continue
-                if kind == "lock_lost":
-                    reason = action.get("reason") or "calibration failed"
-                    raise DeviceError(
-                        f"native guider: calibration failed ({reason})")
-                # Idle (or any non-cal action): calibration is complete once a valid
-                # Cal is stored — the engine has already transitioned into its
-                # guiding phase (continuous star tracking is kept across the
-                # boundary). An Idle with no valid Cal is a momentary lost star
-                # mid-leg; keep exposing, but only for _CAL_STARLESS_S.
-                cal = self._engine.dump_calibration()
-                if cal and cal.get("is_valid"):
-                    break
-                starless += 1
-                stalled = time.monotonic() - last_progress
-                # Narrate the wait as it happens. A calibration that is standing
-                # still looked exactly like one that was working: the walk plot
-                # kept its last point and no tick said otherwise.
-                if starless == 1 or starless % 5 == 0:
-                    bus.publish("guide", **self.stats().__dict__,
-                                cal={"leg": last_leg, "dir": last_dir,
-                                     "ms": 0, "step": cal_steps,
-                                     "starless": starless,
-                                     "walk": walk[-160:]})
-                if stalled > _CAL_STARLESS_S:
-                    raise DeviceError(
-                        "native guider: lost the calibration star — "
-                        + self._cal_evidence(cal_steps, walk, starless,
-                                             last_leg, last_dir)
-                        + ". A longer guide exposure or more gain is the usual "
-                          "fix; check the guide scope's focus if raising both "
-                          "does not find one")
+            # #848/#856.2: the walk per leg, for the geometry line a bad walk
+            # is post-mortemed from: steps, pulse time, and where the star
+            # stood when the leg began and ended.
+            legs: list[dict] = []
+            try:
+                while True:
+                    # THE WALK IS INTERRUPTIBLE. This runs before the deadline test
+                    # and before the next exposure, and every leg loops back through
+                    # it, so a Stop costs at most the one pulse already in flight —
+                    # the mount stops moving and no guide loop is ever armed.
+                    self._abort_if_stopped("during the calibration walk")
+                    if time.monotonic() > deadline:
+                        raise DeviceError(
+                            "native guider: calibration timed out — "
+                            + self._cal_evidence(cal_steps, walk, starless,
+                                                 last_leg, last_dir))
+                    frame = await self._expose()
+                    action = self._engine.process(
+                        frame.data, frame.timestamp, self._exposure_s)
+                    kind = action["action"]
+                    if kind == "cal_step":
+                        cal_steps += 1
+                        last_progress = time.monotonic()
+                        starless = 0
+                        last_leg = action.get("leg") or last_leg
+                        last_dir = action.get("dir") or last_dir
+                        here: tuple[float, float] | None = None
+                        with contextlib.suppress(Exception):
+                            found, _m = _native.guide_star_find(frame.data)
+                            if found:
+                                sx, sy = min(
+                                    ((float(s["x"]), float(s["y"])) for s in found),
+                                    key=lambda p: (p[0] - cal_x) ** 2
+                                                  + (p[1] - cal_y) ** 2)
+                                cal_x, cal_y = sx, sy
+                                here = (sx, sy)
+                                walk.append([round(sx - x0, 2), round(sy - y0, 2)])
+                        leg_now = action.get("leg") or last_leg
+                        if not legs or legs[-1]["leg"] != leg_now:
+                            if legs:
+                                legs[-1]["end"] = here
+                            legs.append({"leg": leg_now, "steps": 0, "ms": 0,
+                                         "start": here, "end": None})
+                        legs[-1]["steps"] += 1
+                        legs[-1]["ms"] += int(action.get("ms") or 0)
+                        bus.publish("guide", **self.stats().__dict__,
+                                    cal={"leg": action.get("leg"),
+                                         "dir": action.get("dir"),
+                                         "ms": int(action.get("ms") or 0),
+                                         "step": cal_steps,
+                                         "walk": walk[-160:]})
+                        await self.tel.pulse_guide(action["dir"], int(action["ms"]))
+                        continue
+                    if kind == "lock_lost":
+                        reason = action.get("reason") or "calibration failed"
+                        raise DeviceError(
+                            f"native guider: calibration failed ({reason})")
+                    # Idle (or any non-cal action): calibration is complete once a valid
+                    # Cal is stored — the engine has already transitioned into its
+                    # guiding phase (continuous star tracking is kept across the
+                    # boundary). An Idle with no valid Cal is a momentary lost star
+                    # mid-leg; keep exposing, but only for _CAL_STARLESS_S.
+                    cal = self._engine.dump_calibration()
+                    if cal and cal.get("is_valid"):
+                        break
+                    starless += 1
+                    stalled = time.monotonic() - last_progress
+                    # Narrate the wait as it happens. A calibration that is standing
+                    # still looked exactly like one that was working: the walk plot
+                    # kept its last point and no tick said otherwise.
+                    if starless == 1 or starless % 5 == 0:
+                        bus.publish("guide", **self.stats().__dict__,
+                                    cal={"leg": last_leg, "dir": last_dir,
+                                         "ms": 0, "step": cal_steps,
+                                         "starless": starless,
+                                         "walk": walk[-160:]})
+                    if stalled > _CAL_STARLESS_S:
+                        raise DeviceError(
+                            "native guider: lost the calibration star — "
+                            + self._cal_evidence(cal_steps, walk, starless,
+                                                 last_leg, last_dir)
+                            + ". A longer guide exposure or more gain is the usual "
+                              "fix; check the guide scope's focus if raising both "
+                              "does not find one")
+            except GuidingStopped:
+                raise
+            except DeviceError:
+                # A walk that failed says what it did before it stopped
+                # (#848): the legs it walked and how far each moved the star.
+                if legs and legs[-1]["end"] is None:
+                    legs[-1]["end"] = (cal_x, cal_y)
+                bus.log("warning", L_WALK_LEGS_HEAD + _legs_summary(legs),
+                        "guide")
+                raise
+            # The completing frame shows where the last leg's pulses left the
+            # star.
+            if legs:
+                end = None
+                with contextlib.suppress(Exception):
+                    found, _m = _native.guide_star_find(frame.data)
+                    if found:
+                        end = min(((float(s["x"]), float(s["y"]))
+                                   for s in found),
+                                  key=lambda p: (p[0] - cal_x) ** 2
+                                                + (p[1] - cal_y) ** 2)
+                legs[-1]["end"] = end if end is not None else (cal_x, cal_y)
+            self._caps = None
             cal_now = {}
             with contextlib.suppress(Exception):
                 cal_now = self._engine.dump_calibration() or {}
@@ -1467,6 +1741,7 @@ class NativeGuider(Guider):
                     continue
                 level, text = graded
                 bus.log(level, f"native guider calibration: {text}", "guide")
+            self._log_cal_geometry(cal_now, legs)
             bus.log("info", "native guider calibration complete", "guide")
         finally:
             # The hint names a step that is over the moment this returns or
@@ -1498,6 +1773,41 @@ class NativeGuider(Guider):
                 f"where it started, and the last {starless} frame(s) found no "
                 f"star")
 
+    def _log_cal_geometry(self, cal: dict, legs: list[dict]) -> None:
+        """One info line per completed walk with the geometry the engine
+        measured (#848, #856.2): both axis angles, both rates (beside the
+        rates the mount's own guide rates predict), the orthogonality error,
+        the declination and pier it was walked at, and the legs. Five bad
+        walks on 2026-10-07 left only an advisory sentence each, so why they
+        were bad could not be read back. Declination only (a catalog
+        coordinate): never RA, altitude or azimuth. Never raises."""
+        with contextlib.suppress(Exception):
+            xa = math.degrees(float(cal.get("x_angle", 0.0)))
+            ya = math.degrees(float(cal.get("y_angle", 0.0)))
+            arcsec = self._image_scale_known and self._image_scale > 0
+            per = (1000.0 * self._image_scale) if arcsec else 1000.0
+            unit = "arcsec" if arcsec else "px"
+            xr = abs(float(cal.get("x_rate", 0.0))) * per
+            yr = abs(float(cal.get("y_rate", 0.0))) * per
+            dec_rad = float(cal.get("declination", _UNKNOWN_DECLINATION))
+            dec_known = dec_rad != _UNKNOWN_DECLINATION and abs(dec_rad) <= math.pi
+            pra = pdec = ""
+            rates = self._axis_guide_rates
+            if arcsec and dec_known and rates:
+                with contextlib.suppress(Exception):
+                    ra_deg_s, dec_deg_s = (abs(float(r)) for r in rates)
+                    pra = (f" (mount predicts "
+                           f"{ra_deg_s * 3600.0 * math.cos(dec_rad):.2f})")
+                    pdec = f" (mount predicts {dec_deg_s * 3600.0:.2f})"
+            dec = f"{math.degrees(dec_rad):+.1f}" if dec_known else "unknown"
+            bus.log("info",
+                    f"{L_GEOMETRY_HEAD}RA axis {xa:+.1f} deg at {xr:.2f} "
+                    f"{unit}/s{pra}, Dec axis {ya:+.1f} deg at {yr:.2f} "
+                    f"{unit}/s{pdec}, orthogonality error "
+                    f"{_folded_ortho_deg(cal):.1f} deg, dec {dec}, pier "
+                    f"{cal.get('pier_side') or 'unknown'}; legs: "
+                    f"{_legs_summary(legs)}", "guide")
+
     async def _apply_scope_pointing(self) -> None:
         """Discharge OBLIGATION (e): stamp the mount's real declination + pier
         side onto the engine so the completing calibration carries them (and RA
@@ -1522,6 +1832,10 @@ class NativeGuider(Guider):
             pier = (await self.tel.pier_side()).value
         self._engine.set_scope_pointing(
             dec_rad, pier, "unknown", "unknown", 0.0, self._binning)
+        # #849: the capability the runaway gate judges against follows the
+        # engine's own RA compensation, which reads this declination.
+        self._scope_dec_rad = dec_rad
+        self._caps = None
 
     async def _pier_changed_since(self, cal: dict, *,
                                   announce: bool = True) -> bool:
@@ -1569,21 +1883,39 @@ class NativeGuider(Guider):
         the 180 s that cut a fresh walk in half on 2026-09-07 (see
         ``Guider.needs_calibration``). Never raises — the caller reads a raised
         exception as "cannot say", which lands on the roomier bound anyway.
+
+        #848: it reads the LIVE declination, as ``start_guiding`` does, so the
+        #18 cos(dec) arm of ``_cal_reusable`` runs in both. Without it a file
+        walked at +34.4 was "reuse" here (180 s bound) and "walk" in the start,
+        and a walk that overran 180 s was a SafetyAbort that ended the night.
+        The answer is remembered for the start that follows
+        (``_needs_cal_said``), which bounds its probation wait by it.
         """
         if self._cal_discarded:
-            return True
+            return self._said_needs(True)
         persisted = self._load_persisted_calibration()
         if persisted is None:
-            return True
-        if not self._cal_reusable(persisted):
-            return True
+            return self._said_needs(True)
+        # The same suppressed read start_guiding makes: a failed read skips
+        # the declination arm in both.
+        current_dec_rad: float | None = None
+        with contextlib.suppress(Exception):
+            _ra_now, _dec_now = await self.tel.get_position()
+            current_dec_rad = math.radians(float(_dec_now))
+        if not self._cal_reusable(persisted, current_dec_rad, announce=False):
+            return self._said_needs(True)
         if (self._recalibrate_after_pier_change
                 and await self._pier_changed_since(persisted, announce=False)):
-            return True
+            return self._said_needs(True)
         # A REUSE STILL EXPOSES ONE FRAME AND RUNS A STAR-FIND before it loads
         # the calibration, and that is inside the 180 s bound by a wide margin
         # (one guide exposure). No walk.
-        return False
+        return self._said_needs(False)
+
+    def _said_needs(self, answer: bool) -> bool:
+        """Remember a ``needs_calibration`` answer and when it was given."""
+        self._needs_cal_said = (answer, time.monotonic())
+        return answer
 
     async def _maybe_flip_for_pier(self) -> None:
         """Guiding-start auto-flip host contract (T8; upstream
@@ -1641,7 +1973,13 @@ class NativeGuider(Guider):
 
         Never sends a standalone probe pulse of its own: ``action`` is the
         SAME action the engine already computed for this frame, the one
-        `_guide_loop` would have dispatched anyway."""
+        `_guide_loop` would have dispatched anyway.
+
+        #848: the claim and the write no longer follow the first pulse. The
+        reused calibration is on probation like any other, and
+        ``_probation_passed`` claims and saves it. A fallback walk restarts
+        that probation in place (the start may be waiting on it), so the walk
+        is judged from its own first guided frame."""
         self._reuse_pulse_pending = False
         try:
             await self._dispatch(action)
@@ -1651,15 +1989,20 @@ class NativeGuider(Guider):
                     f"pulse on a reused calibration ({e}); recalibrating "
                     f"instead", "guide")
             await self._calibrate()
-            # A calibration was actually MEASURED, so whatever was
-            # discarded before it no longer has anything to resurrect
-            # (GN-01) and the persist below is allowed to write again --
-            # the same bookkeeping `start_guiding`'s own fresh-calibration
-            # branch does.
-            self._cal_discarded = False
             await self._maybe_flip_for_pier()
-        self._persist_calibration()
-        bus.log("info", "native guider calibrated and guiding", "guide")
+            self._streaks = {"ra": None, "dec": None}
+            p = self._probation
+            if p is None:
+                p = self._probation = _Probation(
+                    discard_epoch=self._discard_epoch,
+                    armed_at=time.monotonic())
+            else:
+                p.discard_epoch = self._discard_epoch
+                p.armed_at = time.monotonic()
+                p.frames = p.loop_frames = 0
+                p.pulsed = False
+                p.tail.clear()
+                p.errs_px.clear()
 
     async def _guide_loop(self) -> None:
         """Per-frame guide loop: expose → ``process`` → dispatch the Action →
@@ -1724,8 +2067,17 @@ class NativeGuider(Guider):
                 mark = self._measurement_mark()
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
-                if self._measurement_mark() not in (mark, None):
+                measured = self._measurement_mark() not in (mark, None)
+                if measured:
                     self._gp_fed_at = time.time()
+                # #849/#848: THE GUIDER JUDGES ITS OWN CORRECTIONS, on its own
+                # cadence, before this frame's pulse goes out: the runaway
+                # gate and the calibration probation. It runs whether or not a
+                # sequence is running or paused, which is the point (#849: the
+                # only detectors rode the engine's frame loop). True means it
+                # stopped itself and the pulse is NOT sent.
+                if self._judge_frame(action, measured):
+                    break
                 # BEFORE the dispatch: a pulse action resets ``_reacquire``,
                 # and the re-lock this is looking for is exactly the frame on
                 # which that happens (GN-03).
@@ -1786,6 +2138,329 @@ class NativeGuider(Guider):
         except Exception:  # pragma: no cover - defensive; no evidence either way
             return None
 
+    # ------------------------------------------- runaway gate and probation
+
+    def _noise_px(self) -> float:
+        """The fixed, pessimistic per-axis frame noise, in engine px."""
+        if self._image_scale_known and self._image_scale > 0:
+            return _GUIDE_NOISE_ARCSEC / self._image_scale
+        return _GUIDE_NOISE_PX_UNSCALED
+
+    def _axis_caps_px(self) -> dict[str, float] | None:
+        """How far one correction at each axis limit moves the star, in engine
+        px, by the engine's own model: the limit times the calibrated rate,
+        RA compensated for declination exactly as engine.rs
+        ``effective_x_rate`` does (``x_rate / cos(cal_dec) * cos(cur_dec)``
+        with the current dec clamped to +-89 deg, or plain ``x_rate`` when
+        either dec is unknown or the calibration is past 60 deg). Cached until
+        its inputs change; None when it cannot be computed. Never raises."""
+        if self._caps is not None:
+            return self._caps
+        try:
+            cal = self._engine.dump_calibration() or {}
+            x_rate = abs(float(cal["x_rate"]))
+            y_rate = abs(float(cal["y_rate"]))
+            cal_dec = float(cal.get("declination", _UNKNOWN_DECLINATION))
+            cur_dec = float(self._scope_dec_rad)
+            x_eff = x_rate
+            if (cal_dec != _UNKNOWN_DECLINATION
+                    and cur_dec != _UNKNOWN_DECLINATION
+                    and abs(cal_dec) <= _DEC_COMP_LIMIT_RAD):
+                cur = max(-_DEC_COMP_MAX_DEC_RAD,
+                          min(_DEC_COMP_MAX_DEC_RAD, cur_dec))
+                x_eff = abs(x_rate / math.cos(cal_dec) * math.cos(cur))
+            limits = self._axis_limit_ms or {}
+            caps = {"ra": float(limits.get("ra", _ENGINE_MAX_DURATION_MS)) * x_eff,
+                    "dec": float(limits.get("dec", _ENGINE_MAX_DURATION_MS)) * y_rate}
+            if not all(math.isfinite(v) and v > 0 for v in caps.values()):
+                return None
+        except Exception:
+            return None
+        self._caps = caps
+        return caps
+
+    def _meaningful(self, axis: str) -> bool:
+        """Whether a capped request on ``axis`` is evidence by itself: only
+        when one capped correction moves the star at least three noise
+        sigmas. On a weaker axis seeing alone can ask for the limit."""
+        caps = self._axis_caps_px()
+        return (caps is not None
+                and caps[axis] >= _MEANINGFUL_NOISE_RATIO * self._noise_px())
+
+    def _growth_px(self, axis: str) -> float:
+        """G: how much the error on ``axis`` must grow over a capped streak
+        before the guider calls it a runaway. Two capped pulses' worth (so the
+        guider's own pulses are plausibly the cause), and never under three
+        sigmas of a two-frame difference (so seeing alone makes it with
+        p = 0.0013)."""
+        floor = _GROWTH_NOISE_SIGMAS * math.sqrt(2.0) * self._noise_px()
+        caps = self._axis_caps_px()
+        if caps is None:
+            return floor
+        return max(_GROWTH_CAPS * caps[axis], floor)
+
+    def _saturated_axes(self, action: dict) -> dict[str, str]:
+        """``{axis: direction}`` for each correction this action asks for at
+        or over its axis limit."""
+        kind = action.get("action")
+        out: dict[str, str] = {}
+        with contextlib.suppress(Exception):
+            if kind == "pulse":
+                d, ms = action["dir"], int(action["ms"])
+                if d in _DIRECTIONS and self._at_limit(d, ms):
+                    out[self._axis_of(d)] = d
+            elif kind == "pulse_pair":
+                for key in ("ra", "dec"):
+                    p = action.get(key)
+                    if p and p.get("dir") in _DIRECTIONS \
+                            and self._at_limit(p["dir"], int(p["ms"])):
+                        out[self._axis_of(p["dir"])] = p["dir"]
+        return out
+
+    def _latest_axis_errors_px(self) -> tuple[float, float] | None:
+        """|RA| and |Dec| error of the engine's newest accepted measurement,
+        in ENGINE px (not the arcsec ``GuideStats``), or None."""
+        try:
+            r = self._engine.stats()["recent"][-1]
+            return abs(float(r[1])), abs(float(r[2]))
+        except Exception:
+            return None
+
+    def _unit(self) -> tuple[float, str]:
+        if self._image_scale_known and self._image_scale > 0:
+            return self._image_scale, "arcsec"
+        return (self._image_scale if self._image_scale > 0 else 1.0), "px"
+
+    def _judge_frame(self, action: dict, measured: bool) -> bool:
+        """Judge one guide frame BEFORE its correction is sent (#849, #848).
+        True when the guider has stopped itself and the pulse must not go out.
+
+        1. The runaway gate, per axis. A streak is the run of consecutive
+           measured frames asking for a correction at the axis limit in one
+           direction; it trips when the streak has already sent
+           ``RUNAWAY_PULSES`` pulses and the error on that axis has grown by
+           at least ``_growth_px`` since the streak began. A direction change
+           or an uncapped frame ends the streak; an unmeasured frame neither
+           counts nor resets it.
+        2. The probation, while one is armed, counting frames from the first
+           correction that reached the mount: at ``PROBATION_FRAMES``
+           measured frames it fails if any of the last ``PROBATION_TAIL``
+           asked for the limit on an axis where that is evidence
+           (``_meaningful``), or if an open streak has grown by G; else it
+           passes. It also fails past ``PROBATION_WALL_S`` or
+           ``PROBATION_MAX_LOOP_FRAMES`` loop frames without a verdict."""
+        sat = self._saturated_axes(action)
+        p = self._probation
+        errs = self._latest_axis_errors_px() if measured else None
+        if self._streaks is None:
+            self._streaks = {"ra": None, "dec": None}
+        streaks = self._streaks
+        if errs is not None:
+            for i, axis in enumerate(("ra", "dec")):
+                e = errs[i]
+                s = streaks.get(axis)
+                if axis in sat:
+                    if s is not None and s["dir"] == sat[axis]:
+                        s["len"] += 1
+                    else:
+                        s = streaks[axis] = {"dir": sat[axis], "len": 1,
+                                             "e0": e}
+                    if (s["len"] >= RUNAWAY_PULSES + 1
+                            and e - s["e0"] >= self._growth_px(axis)):
+                        self._stop_for_runaway(axis, s, e)
+                        return True
+                else:
+                    streaks[axis] = None
+        if p is None or p.verdict is not None:
+            return False
+        if p.pulsed:
+            p.loop_frames += 1
+            if errs is not None:
+                p.frames += 1
+                p.tail.append(any(self._meaningful(a) for a in sat))
+                p.errs_px.append(errs)
+        if time.monotonic() - p.armed_at >= PROBATION_WALL_S:
+            self._probation_failed(
+                f"{_PROB_FAIL_HEAD} (not proven within "
+                f"{PROBATION_WALL_S:.0f} s: {p.frames} of {PROBATION_FRAMES} "
+                f"frames checked)")
+            return True
+        if p.frames >= PROBATION_FRAMES:
+            k = sum(1 for t in p.tail if t)
+            if k:
+                limit = max((int((self._axis_limit_ms or {}).get(a, 0))
+                             for a in ("ra", "dec")), default=0)
+                self._probation_failed(
+                    f"{_PROB_FAIL_HEAD} ({k} of the last {PROBATION_TAIL} "
+                    f"corrections at the {limit} ms limit)")
+                return True
+            grown = self._grown_streak(errs)
+            if grown is not None:
+                axis, g, n = grown
+                scale, unit = self._unit()
+                self._probation_failed(
+                    f"{_PROB_FAIL_HEAD} (the {axis.upper() if axis == 'ra' else 'Dec'} "
+                    f"error grew {g * scale:.1f} {unit} over {n} corrections "
+                    f"at the limit)")
+                return True
+            # Frames count only from the first correction that REACHED the
+            # mount (``_Probation.pulsed``), which also discharges WP-15's
+            # (#135) rule for a reused calibration: no claim before the loop's
+            # first real pulse has gone through.
+            self._probation_passed()
+            return False
+        if p.loop_frames >= PROBATION_MAX_LOOP_FRAMES:
+            self._probation_failed(
+                f"{_PROB_FAIL_HEAD} (only {p.frames} of {p.loop_frames} "
+                f"frames measured the star)")
+            return True
+        return False
+
+    def _grown_streak(self, errs) -> tuple[str, float, int] | None:
+        """An open streak whose axis error has grown by G: ``(axis, growth,
+        pulses)``, or None."""
+        if errs is None or not self._streaks:
+            return None
+        for i, axis in enumerate(("ra", "dec")):
+            s = self._streaks.get(axis)
+            if s is None:
+                continue
+            g = errs[i] - s["e0"]
+            if g >= self._growth_px(axis):
+                return axis, g, s["len"]
+        return None
+
+    def _probation_passed(self) -> None:
+        """The calibration held the star: claim it, save it (unless a clear
+        came in since it was armed) and arm the first-dither clause."""
+        p, self._probation = self._probation, None
+        if p is None:
+            return
+        if p.discard_epoch == self._discard_epoch:
+            self._cal_discarded = False
+            self._persist_calibration()
+        self._first_dither_pending = True
+        scale, unit = self._unit()
+        n = len(p.errs_px) or 1
+        rms_ra = math.sqrt(sum(e[0] ** 2 for e in p.errs_px) / n) * scale
+        rms_dec = math.sqrt(sum(e[1] ** 2 for e in p.errs_px) / n) * scale
+        bus.log("info",
+                f"native guider: the calibration held the star for {p.frames} "
+                f"cycles ({rms_ra:.1f}/{rms_dec:.1f} {unit} RMS RA/Dec, no "
+                f"correction at the limit on a strong axis)", "guide")
+        bus.log("info", "native guider calibrated and guiding", "guide")
+        p.verdict = "pass"
+        p.done.set()
+
+    def _probation_failed(self, line: str) -> None:
+        self._stop_for_bad_calibration(PROBATION_STOP_REASON, line)
+
+    def _stop_for_runaway(self, axis: str, streak: dict, e: float) -> None:
+        scale, unit = self._unit()
+        limit = int((self._axis_limit_ms or {}).get(axis,
+                                                    _ENGINE_MAX_DURATION_MS))
+        line = (f"native guider stopped, calibration discarded: its "
+                f"corrections drove the star away ({streak['len'] - 1} in a "
+                f"row at the {limit} ms limit, {streak['dir']}, "
+                f"{streak['e0'] * scale:.0f} to {e * scale:.0f} {unit})")
+        self._stop_for_bad_calibration(RUNAWAY_STOP_REASON, line)
+
+    def _stop_for_bad_calibration(self, reason: str, line: str) -> None:
+        """The guider stops ITSELF because its calibration is not holding the
+        star (runaway, failed probation, failed first dither), and discards
+        that calibration (R2). Not ``_lost``: this is not a lost star, and the
+        phase says "stopped" with ``stop_reason``. ``is_active()`` goes false,
+        so the sequence engine's recovery re-centres and walks a new one. A
+        dither waiting on the settle window fails now, not in 90 s."""
+        bus.log("error", line, "guide")
+        self._stop_reason = reason
+        self._first_dither_pending = False
+        self.clear_calibration()
+        self._active = False
+        self._stop.set()
+        if not self._settle_done.is_set():
+            self._settle_error = self._settle_error or "guiding stopped itself"
+            self._settle_done.set()
+        p, self._probation = self._probation, None
+        if p is not None and p.verdict is None:
+            p.verdict = line
+            p.done.set()
+        self._last_stats = self.stats()
+        bus.publish("guide", **self._last_stats.__dict__)
+
+    async def _await_probation(self, t0: float, bound_s: float) -> None:
+        """Wait for the probation's verdict inside the bound the engine
+        wrapped ``start_guiding`` in (``bound_s``, from ``t0``), less
+        ``_START_MARGIN_S``. A pass returns; a failure raises
+        ``PROBATION_FAILED_MSG``; a Stop raises ``GuidingStopped``; a loop that
+        died without a verdict raises ``PROBATION_LOOP_DIED_MSG``. A spent
+        budget returns with the check still running in the loop, which claims
+        nothing until it passes. A cancel stops the loop before it propagates:
+        a loop must not outlive a start that did not finish."""
+        p, task = self._probation, self._loop_task
+        if p is None or task is None:
+            return
+        budget = bound_s - _START_MARGIN_S - (time.monotonic() - t0)
+        if budget <= 0:
+            bus.log("info", L_CONTINUES, "guide")
+            return
+        waiter = asyncio.ensure_future(p.done.wait())
+        try:
+            await asyncio.wait({waiter, task}, timeout=budget,
+                               return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            if p.verdict != "pass":
+                self._abandon_probation(task)
+                bus.log("info", L_CANCEL, "guide")
+                await reap(task)
+            raise
+        finally:
+            if not waiter.done():
+                waiter.cancel()
+        if p.verdict == "pass":
+            return
+        # Read BEFORE _end_failed_start, which sets _stop itself. _stop alone
+        # cannot tell a Stop from a crash: the loop's own generic except sets
+        # it too. stop_guiding is the only thing that takes the task away or
+        # cancels it.
+        user_stopped = task.cancelled() or self._loop_task is not task
+        if p.verdict is not None:
+            await self._end_failed_start(task)
+            raise DeviceError(PROBATION_FAILED_MSG)
+        if task.done() or user_stopped:
+            await self._end_failed_start(task)
+            if user_stopped:
+                self._abort_if_stopped("while the calibration was being checked")
+            raise DeviceError(PROBATION_LOOP_DIED_MSG)
+        bus.log("info", L_CONTINUES, "guide")
+
+    def _abandon_probation(self, task: asyncio.Task) -> None:
+        """Synchronous half of a cancelled start: nothing here can be
+        interrupted."""
+        self._active = False
+        self._probation = None
+        self._phase_hint = None
+        self._stop.set()
+        task.cancel()
+        if self._loop_task is task:
+            self._loop_task = None
+
+    async def _end_failed_start(self, task: asyncio.Task) -> None:
+        self._active = False
+        self._probation = None
+        self._stop.set()
+        if self._loop_task is task:
+            self._loop_task = None
+        await reap(task)
+
+    def _first_dither_failed(self) -> None:
+        """The first dither after a probation pass did not settle: the
+        calibration is not trusted (#848, the issue's own criterion)."""
+        if self._first_dither_pending and self._active:
+            self._stop_for_bad_calibration(PROBATION_STOP_REASON,
+                                           L_FIRST_DITHER)
+        self._first_dither_pending = False
+
     async def _dispatch(self, action: dict) -> None:
         kind = action["action"]
         reason = action.get("reason")
@@ -1843,6 +2518,16 @@ class NativeGuider(Guider):
         and this fetches its own when it actually needs the ``guiding`` key."""
         if self._lost:
             return "lost"
+        # #848/#849: the guider stopped ITSELF (runaway, failed probation,
+        # failed first dither). Not a lost star, and not idle either:
+        # ``GuideStats.stop_reason`` says which, and nothing moves the mount.
+        if not self._active and self._stop_reason:
+            return "stopped"
+        # A calibration on probation is still being proven. "calibrating" is
+        # one of the engine's GUIDE_MOUNT_BUSY_PHASES, so a run holds its
+        # shutter while the check runs.
+        if self._active and self._probation is not None:
+            return "calibrating"
         # Gated on _active for the same reason `stop_guiding` clears `_lost`:
         # the settle window is engine state that only the guide LOOP closes
         # (`_sync_settle_window`), so a Stop pressed mid-dither cancels the one
@@ -1893,20 +2578,68 @@ class NativeGuider(Guider):
     async def _pulse(self, action: dict) -> None:
         """Apply a single-axis pulse or a (RA, Dec) pulse pair (dossier §7:
         up to two pulse-guides per accepted frame). A pulse longer than the
-        mount's cap is limited to it here (``_limit_to_mount_cap``)."""
+        mount's cap is limited to it here (``_limit_to_mount_cap``).
+
+        #856.1: every correction at or over the axis limit is COUNTED here, by
+        direction, before the cap is applied, so a runaway's exactly-at-cap
+        pulses are no longer invisible (``_note_saturated``)."""
         if action["action"] == "pulse":
-            await self.tel.pulse_guide(
-                action["dir"],
-                self._limit_to_mount_cap(action["dir"], int(action["ms"])))
+            await self._send_pulse(action["dir"], int(action["ms"]))
             return
         ra = action.get("ra")
         dec = action.get("dec")
         if ra:
-            await self.tel.pulse_guide(
-                ra["dir"], self._limit_to_mount_cap(ra["dir"], int(ra["ms"])))
+            await self._send_pulse(ra["dir"], int(ra["ms"]))
         if dec:
-            await self.tel.pulse_guide(
-                dec["dir"], self._limit_to_mount_cap(dec["dir"], int(dec["ms"])))
+            await self._send_pulse(dec["dir"], int(dec["ms"]))
+
+    async def _send_pulse(self, direction: str, ms: int) -> None:
+        """Count, cap and send one guide correction; remember the last Dec
+        direction SENT (the BLC judgement reads it)."""
+        self._note_saturated(direction, ms)
+        await self.tel.pulse_guide(direction,
+                                   self._limit_to_mount_cap(direction, ms))
+        if direction in ("north", "south"):
+            self._last_dec_dir_sent = direction
+        p = self._probation
+        if p is not None:
+            p.pulsed = True
+
+    @staticmethod
+    def _axis_of(direction: str) -> str:
+        return "ra" if direction in ("east", "west") else "dec"
+
+    def _judged_ms(self, axis: str, direction: str, ms: int) -> int:
+        """The correction the engine's ALGORITHM asked for, in ms. On a Dec
+        reversal against the last Dec pulse sent, the engine adds the static
+        backlash pulse (engine.rs BLC) and clamps to max(limit, blc), so that
+        add-on is taken out before the request is judged at the limit."""
+        if (axis == "dec" and self._blc_ms > 0
+                and self._last_dec_dir_sent not in (None, direction)):
+            return max(0, int(ms) - self._blc_ms)
+        return int(ms)
+
+    def _at_limit(self, direction: str, ms: int) -> bool:
+        axis = self._axis_of(direction)
+        limits = self._axis_limit_ms or {}
+        limit = int(limits.get(axis, _ENGINE_MAX_DURATION_MS))
+        return self._judged_ms(axis, direction, ms) >= limit
+
+    def _note_saturated(self, direction: str, ms: int) -> None:
+        """Count one dispatched correction at or over its axis limit."""
+        if direction not in _DIRECTIONS or not self._at_limit(direction, ms):
+            return
+        counts = getattr(self, "_saturated", None)
+        if counts is None:
+            counts = self._saturated = {d: 0 for d in _DIRECTIONS}
+        counts[direction] = counts.get(direction, 0) + 1
+
+    def saturated_pulses(self) -> dict[str, int]:
+        """Corrections at or over the axis limit this guider has sent, by
+        direction, over its lifetime (#856.1). The engine diffs two reads
+        across an exposure."""
+        counts = getattr(self, "_saturated", None) or {}
+        return {d: int(counts.get(d, 0)) for d in _DIRECTIONS}
 
     def _mount_pulse_cap_ms(self) -> int | None:
         """The longest single pulse the mount delivers
@@ -2524,6 +3257,25 @@ class NativeGuider(Guider):
                 bus.log("info",
                         f"native guider: per-axis correction cap clamped to "
                         f"the mount's {cap} ms pulse cap", "guide")
+        # #849/#856.1: the limits the engine will clamp each correction to,
+        # and the BLC add-on it puts on a Dec reversal, as configured here:
+        # what "a correction at the limit" means to the runaway gate, the
+        # probation and the saturated counters.
+        try:
+            self._axis_limit_ms = {
+                "ra": int(engine_cfg.get("max_ra_duration_ms",
+                                         _ENGINE_MAX_DURATION_MS)),
+                "dec": int(engine_cfg.get("max_dec_duration_ms",
+                                          _ENGINE_MAX_DURATION_MS))}
+            # The engine adds BLC only in the auto Dec mode.
+            auto = str(engine_cfg.get("dec_guide_mode", "auto")).lower() == "auto"
+            self._blc_ms = (int(engine_cfg.get("blc_pulse_ms", 0) or 0)
+                            if auto else 0)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            self._axis_limit_ms = {"ra": _ENGINE_MAX_DURATION_MS,
+                                   "dec": _ENGINE_MAX_DURATION_MS}
+            self._blc_ms = 0
+        self._caps = None
         return engine_cfg
 
     # ------------------------------------------------------- guiding assistant
@@ -2775,6 +3527,11 @@ class NativeGuider(Guider):
                 "cannot dither")
         if self._engine is None or not self._active:
             raise DeviceError("native guider: cannot dither when not guiding")
+        # #848: a calibration still on probation is not dithered on: the move
+        # would be judged as the calibration's own failure to hold the star.
+        # No "settle" in the text, so the engine does not count it as one.
+        if self._probation is not None:
+            raise DeviceError(DITHER_REFUSED)
         timeout_s = _SETTLE_TIMEOUT_S
         if settle and settle.get("timeout"):
             try:
@@ -2790,18 +3547,33 @@ class NativeGuider(Guider):
         # `stats()["settling"]`, not from this call — do NOT set it here (a
         # pulse frame already in flight must not prematurely wake us).
         self._engine.dither(dx, dy)
+        # #849: A STREAK NEVER SPANS A LOCK MOVE. A capped streak open now
+        # measured its starting error against the old lock, so the dither's
+        # own step would read as growth and trip the runaway gate on a good
+        # calibration (near the pole G is its 2.31 px noise floor, under a
+        # 3 px dither). The next capped frame starts a fresh streak, measured
+        # from the new lock, so a calibration that drives the star away from
+        # it is still caught.
+        self._streaks = {"ra": None, "dec": None}
         # #219: the engine's lock just moved by this much, in a camera-frame
         # direction only the engine knows. Widen the re-lock radius by it until
         # the first settled frame re-measures the lock (``_note_lock``).
         self._lock_moved_px += math.hypot(dx, dy)
+        # #848: the FIRST dither after a calibration passed its probation is
+        # the issue's own convergence test. If it does not settle, the
+        # calibration is discarded and the guider stops itself
+        # (``_first_dither_failed``); a later dither's failure is just that.
         try:
             await asyncio.wait_for(self._settle_done.wait(),
                                    timeout=timeout_s)
         except asyncio.TimeoutError:
+            self._first_dither_failed()
             raise DeviceError("native guider: dither settle timed out") from None
         if self._settle_error:
+            self._first_dither_failed()
             raise DeviceError(
                 f"native guider: dither settle failed ({self._settle_error})")
+        self._first_dither_pending = False
         bus.log("info", f"native guider dithered {pixels:.1f}px and settled",
                 "guide")
 
@@ -2876,6 +3648,8 @@ class NativeGuider(Guider):
             return GuideStats(guiding=False, phase=self._current_phase(),
                               calibration_image_scale=self._image_scale,
                               image_scale_known=self._image_scale_known,
+                              as_of=time.time(),
+                              stop_reason=self._stop_reason,
                               **self._relock_fields())
         try:
             s = self._engine.stats()
@@ -2886,9 +3660,18 @@ class NativeGuider(Guider):
         # scale==1.0 leaves the engine's raw pixels unchanged and calling them
         # arcsec would mislead (UX-15).
         arcsec = self._image_scale_known and self._image_scale > 0
+        raw_recent = s.get("recent", []) or []
         recent = [{"t": round(float(t), 3), "ra": round(float(ra) * scale, 3),
                    "dec": round(float(dec) * scale, 3)}
-                  for t, ra, dec in s.get("recent", [])]
+                  for t, ra, dec in raw_recent]
+        # #856.3: the window the engine's RMS is computed over, by its first
+        # and last sample time. Two reads of one window that disagree are two
+        # moments, and these say which.
+        rms_from = rms_to = None
+        with contextlib.suppress(Exception):
+            if raw_recent:
+                rms_from = float(raw_recent[0][0])
+                rms_to = float(raw_recent[-1][0])
         guiding = bool(self._active and not self._lost and s.get("guiding"))
         return GuideStats(
             guiding=guiding,
@@ -2902,6 +3685,10 @@ class NativeGuider(Guider):
             calibration_image_scale=self._image_scale,
             image_scale_known=self._image_scale_known,
             phase=self._current_phase(s),
+            as_of=time.time(),
+            rms_from=rms_from,
+            rms_to=rms_to,
+            stop_reason=self._stop_reason,
             **self._relock_fields(),
         )
 
@@ -3026,8 +3813,12 @@ class NativeGuider(Guider):
         ``_persist_calibration`` — the stop, or the meridian flip — wrote it
         straight back, so the operator's clear on 2026-09-06 was silently undone and
         the next start reused the very calibration the operator had thrown
-        away. Cleared again only by a calibration this session establishes."""
+        away. Cleared again only by a calibration this session establishes
+        (since #848: one whose probation passed with no clear in between,
+        which ``_discard_epoch`` tells)."""
         self._cal_discarded = True
+        self._discard_epoch = getattr(self, "_discard_epoch", 0) + 1
+        self._caps = None
         if not self.profile_id:
             return False
         removed = False
@@ -3270,7 +4061,8 @@ class NativeGuider(Guider):
                     f"native guider: could not restore PPEC model ({e}); "
                     f"starting fresh", "guide")
 
-    def _cal_reusable(self, cal: dict, current_dec_rad: float | None = None) -> bool:
+    def _cal_reusable(self, cal: dict, current_dec_rad: float | None = None,
+                      *, announce: bool = True) -> bool:
         """P2 reuse-compatibility gate (dossier §8.4 calibration data model +
         §9 items 3/4/6 "calibration adjustments at guide start"): a persisted
         calibration is safe to hand straight to
@@ -3349,22 +4141,24 @@ class NativeGuider(Guider):
             if cal_dec is not None and float(cal_dec) != _UNKNOWN_DECLINATION:
                 ratio = _ra_rate_ratio(float(cal_dec), current_dec_rad)
                 if ratio is None or abs(ratio - 1.0) > _MAX_CAL_RA_RATE_DRIFT:
-                    bus.log("warning",
-                            f"native guider: refusing a persisted calibration "
-                            f"walked at declination "
-                            f"{math.degrees(float(cal_dec)):.1f} deg for a "
-                            f"target at {math.degrees(current_dec_rad):.1f} deg "
-                            f"- the RA rate there is "
-                            f"{'unusable' if ratio is None else f'{ratio:.0%}'} "
-                            f"of what was measured - calibrating afresh", "guide")
+                    if announce:
+                        bus.log("warning",
+                                f"native guider: refusing a persisted calibration "
+                                f"walked at declination "
+                                f"{math.degrees(float(cal_dec)):.1f} deg for a "
+                                f"target at {math.degrees(current_dec_rad):.1f} deg "
+                                f"- the RA rate there is "
+                                f"{'unusable' if ratio is None else f'{ratio:.0%}'} "
+                                f"of what was measured - calibrating afresh", "guide")
                     return False
         ortho = _folded_ortho_deg(cal)
         if ortho > _MAX_CAL_ORTHO_ERROR_DEG:
-            bus.log("warning",
-                    f"native guider: refusing a persisted calibration whose "
-                    f"axes are {ortho:.1f} deg from orthogonal (limit "
-                    f"{_MAX_CAL_ORTHO_ERROR_DEG:.1f}) - calibrating afresh",
-                    "guide")
+            if announce:
+                bus.log("warning",
+                        f"native guider: refusing a persisted calibration whose "
+                        f"axes are {ortho:.1f} deg from orthogonal (limit "
+                        f"{_MAX_CAL_ORTHO_ERROR_DEG:.1f}) - calibrating afresh",
+                        "guide")
             return False
         return True
 

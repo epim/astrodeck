@@ -309,6 +309,7 @@ const { useStore } = await import("../../../../../store");
 const { runBlockedReason } = await import("../../../../../components/flows/flowRunControls");
 const { buildHash, nav, resetRouterCacheForTests } = await import("../../../../router");
 const { FLOW_OPEN_FAILED } = await import("../openFlow");
+const { setRetrySleepForTests } = await import("../../../../../lib/retryLoad");
 const { RUN_IN_PROGRESS_REASON } = await import("../FlowsScreen");
 const {
   FlowsScreen, CANVAS_PHONE_REASON, FLOWS_FOOTER, NO_MATCH_HINT, FILTER_PLACEHOLDER,
@@ -673,22 +674,30 @@ await testAsync("the two creation cells open their sheets", async () => {
 });
 
 await testAsync("a library that could not be read says so and offers a RETRY that refetches", async () => {
-  libraryFails = true;
-  seed("admin", ADMIN);
-  await mountAt("#/session/flows");
+  try {
+    libraryFails = true;
+    // A 503 is a PROXY's answer, which the slice now asks again by itself after
+    // 2 s, 5 s and 15 s (#859). The waits run at once here, so the error below
+    // is the one left after the fourth try.
+    setRetrySleepForTests(async () => {});
+    seed("admin", ADMIN);
+    await mountAt("#/session/flows");
 
-  const err = tid("flows-error");
-  assert(err != null, "a failed library load rendered no error line");
-  assert(/the flow store is not mounted/.test(err.textContent),
-    "the server's own message, not a generic one");
+    const err = tid("flows-error");
+    assert(err != null, "a failed library load rendered no error line");
+    assert(/the flow store is not mounted/.test(err.textContent),
+      "the server's own message, not a generic one");
 
-  libraryFails = false;
-  const before = asked.filter((a) => a.url === "/api/flows").length;
-  click(tid("flows-retry"));
-  await settle();
-  eq(asked.filter((a) => a.url === "/api/flows").length, before + 1,
-    "RETRY must actually re-ask - the slice leaves libraryLoaded false so nothing retries on its own");
-  assert(tid("flow-row-quick-m31") != null, "and the rows must come back");
+    libraryFails = false;
+    const before = asked.filter((a) => a.url === "/api/flows").length;
+    click(tid("flows-retry"));
+    await settle();
+    eq(asked.filter((a) => a.url === "/api/flows").length, before + 1,
+      "RETRY must actually re-ask - the slice leaves libraryLoaded false so nothing retries on its own");
+    assert(tid("flow-row-quick-m31") != null, "and the rows must come back");
+  } finally {
+    setRetrySleepForTests(null);
+  }
 });
 
 await testAsync("a just-saved flow is named in words, not by a ring", async () => {

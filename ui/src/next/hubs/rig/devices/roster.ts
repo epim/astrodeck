@@ -186,6 +186,7 @@ function liveState(role: string, inp: RosterInput): { state: string; led: Led } 
     case "guider": {
       const g = st?.guider;
       if (g?.phase === "lost") return { state: "LOST", led: "bad" };
+      if (g?.phase === "stopped") return { state: "STOPPED", led: "bad" };
       if (g?.guiding) return { state: "GUIDING", led: "on" };
       return { state: "IDLE", led: "off" };
     }

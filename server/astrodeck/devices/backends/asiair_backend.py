@@ -92,8 +92,24 @@ from ..base import (
     PierSide,
     Switch,
     SwitchPort,
+    SyncRefused,
+    SyncUnverified,
     Telescope,
     TRACKING_RATES,
+)
+from ..sync_verify import (
+    SYNC_NOT_SUPPORTED_REASON,
+    SYNC_READ_TIMEOUT_S,
+    SYNC_REPLY_BUSY,
+    SYNC_REPLY_ERROR,
+    SYNC_UNVERIFIED_LINK_BEFORE,
+    SYNC_UNVERIFIED_LINK_DURING,
+    SYNC_UNVERIFIED_UNCLEAR,
+    jnow_alternates,
+    refused_message,
+    refused_residual_deg,
+    unverified_message,
+    verify_sync,
 )
 
 _log = logging.getLogger("astrodeck.asiair")
@@ -110,6 +126,21 @@ DEFAULT_PORT = 4700
 #: Socket timeout for one RPC. The box answers ``scope_get_info`` in ms; 10s is
 #: libasi's own default and leaves room for a busy Wi-Fi link.
 DEFAULT_TIMEOUT_S = 10.0
+
+#: The sync read-back's per-read bound on this backend (#862): ABOVE libasi's
+#: own socket timeout, so libasi ends a slow read itself and the bound fires
+#: only when the read also waited more than ``SYNC_READ_TIMEOUT_S`` for the
+#: link lock. 10 + 4 = 14 s. That narrows the cancel-mid-RPC window; it does
+#: not close it (a 5 s lock wait plus a 9.5 s RPC passes 14 s). What makes a
+#: cancel mid-RPC safe is ``_Link.call``: a cancelled call keeps the lock
+#: until its libasi thread returns, so the next RPC cannot run beside it.
+ASIAIR_SYNC_READ_TIMEOUT_S = DEFAULT_TIMEOUT_S + SYNC_READ_TIMEOUT_S
+#: Fixed words for a busy box and for a sync the box answered and the mount
+#: did not take (#862). No digits, no codes, no raw replies (#618).
+ASIAIR_BUSY_REASON = ("the ASIAIR is busy with another task; stop that task "
+                      "in the ASIAIR app")
+ASIAIR_NOT_MOVED_REASON = ("the ASIAIR answered OK but the mount's position "
+                           "did not move; check the ASIAIR app")
 
 #: Poll cadence while waiting for a slew / park / focus move to settle.
 POLL_S = 0.5
@@ -274,11 +305,25 @@ class _Link:
         """Run ONE blocking libasi call off the event loop, under the lock.
 
         Maps libasi's exceptions onto ``DeviceError`` with a message that says
-        what failed and (for BusyError) what the box is doing instead."""
-        async with self._lock:
+        what failed and (for BusyError) what the box is doing instead.
+
+        A CANCEL KEEPS THE LOCK UNTIL THE THREAD RETURNS. A cancel (a bound
+        such as the engine's ``_bounded`` or the sync read-back's, a STOP)
+        cannot stop a thread that is inside libasi's transport. Releasing the
+        lock at the cancel let the next RPC run beside that thread, where
+        either could take the other's reply (#862 fix round 1). So the cancel
+        propagates at once, and the lock is released only when the abandoned
+        call returns, which libasi's own socket timeout bounds
+        (``DEFAULT_TIMEOUT_S``)."""
+        await self._lock.acquire()
+        orphaned = False
+        try:
+            rpc = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
             try:
-                value = await asyncio.to_thread(fn, *args, **kwargs)
+                value = await asyncio.shield(rpc)
             except asyncio.CancelledError:
+                orphaned = True
+                rpc.add_done_callback(self._release_after_orphan)
                 raise
             except Exception as exc:  # noqa: BLE001 — one honest DeviceError out
                 if _is_busy(exc):
@@ -286,8 +331,19 @@ class _Link:
                 self.last_error = f"{what}: {exc}"[:200]
                 raise DeviceError(
                     f"ASIAIR {self.host}: {what} failed — {exc}") from exc
+        finally:
+            if not orphaned:
+                self._lock.release()
         self.last_ok = time.time()
         return value
+
+    def _release_after_orphan(self, rpc: asyncio.Future) -> None:
+        """Done-callback of a call whose caller was cancelled: retrieve its
+        outcome (nobody awaits it, and an unretrieved exception would be
+        logged with its text) and release the link lock."""
+        if not rpc.cancelled():
+            rpc.exception()
+        self._lock.release()
 
     def _busy_message(self, exc: BaseException, what: str) -> str:
         activity = str(getattr(exc, "activity", "") or "another operation")
@@ -517,11 +573,93 @@ class AsiairTelescope(_AsiairDevice, Telescope):
         await self._wait_stopped(SLEW_TIMEOUT_S, "slew",
                                  (float(ra_hours), float(dec_deg)))
 
+    async def _read_position_strict(self) -> tuple[float, float]:
+        """The mount's position, or DeviceError when the box's mount info
+        carries no ``RA``/``Dec``: ``get_position``'s 0.0 default would read
+        a missing field as RA 0h Dec 0, which a sync to (0, 0) would then
+        "confirm"."""
+        raw = await self._info()
+        if "RA" not in raw or "Dec" not in raw:
+            raise DeviceError(f"{self.name}: the mount info carried no position")
+        return float(raw["RA"]), float(raw["Dec"])
+
+    async def _sync_refused(self, reason: str, code: str, ra_hours: float,
+                            dec_deg: float) -> SyncRefused:
+        """A refusal with the same best-effort residual read every refusal
+        gets. The read goes through ``_link.call`` and not ``check_idle``, so
+        it works while the box is busy: a None residual then always means a
+        read actually failed, which is what the resume ladder's words say."""
+        residual = await refused_residual_deg(
+            self._read_position_strict, ra_hours, dec_deg,
+            alternates=jnow_alternates,
+            read_timeout_s=ASIAIR_SYNC_READ_TIMEOUT_S)
+        return SyncRefused(refused_message(self.name, reason, residual),
+                           code=code, reason=reason, residual_deg=residual)
+
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
-        self._require_cap("sync", "sync")
-        await self._link.require_idle("a sync", allow_guiding=True)
-        await self._link.call(self._link.client.mount.sync,
-                              float(ra_hours), float(dec_deg), what="sync")
+        """Sync, then READ THE POSITION BACK (#862, the #850 class).
+
+        libasi's return value is still ignored: its shape is unknown, and a
+        guessed mapping is the silent-wrong-data defect the module docstring
+        forbids. The read-back decides. Raises only ``SyncRefused`` or
+        ``SyncUnverified`` (the AM5's contract after #850).
+
+        A refusal is only what is positively known to be one: caps that
+        leave out sync, or the box's ``BusyError``. A failed idle check for
+        any other cause means the sync was never sent; a failed sync call is
+        unverified whatever its cause (an OSError: the link failed; anything
+        else: an answer that is not a known refusal). HARDWARE-PENDING H3
+        names libasi's refusal class; until then nothing else is one. Every
+        raise is made outside the ``except`` block.
+
+        Both frames count, as for NINA: the box's reporting frame is not
+        known, so the read-back is accepted within tolerance of the target or
+        of its JNOW."""
+        if self.caps and "sync" not in self.caps:
+            # Same rule as ``_require_cap``: an empty caps list allows it.
+            raise await self._sync_refused(SYNC_NOT_SUPPORTED_REASON,
+                                           SYNC_REPLY_ERROR, ra_hours, dec_deg)
+        kind: str | None = None
+        try:
+            await self._link.require_idle("a sync", allow_guiding=True)
+        except DeviceError as e:
+            kind = "busy" if _is_busy(e.__cause__) else "before"
+        if kind == "busy":
+            raise await self._sync_refused(ASIAIR_BUSY_REASON, SYNC_REPLY_BUSY,
+                                           ra_hours, dec_deg)
+        if kind == "before":
+            raise SyncUnverified(
+                unverified_message(self.name, SYNC_UNVERIFIED_LINK_BEFORE),
+                code="", reason=SYNC_UNVERIFIED_LINK_BEFORE)
+        try:
+            await self._link.call(self._link.client.mount.sync,
+                                  float(ra_hours), float(dec_deg), what="sync")
+        except DeviceError as e:
+            cause = e.__cause__
+            if _is_busy(cause):
+                kind = "busy"
+            elif isinstance(cause, OSError):
+                # Socket errors, TimeoutError, ConnectionError.
+                kind = "link"
+            else:
+                kind = "unclear"
+        if kind == "busy":
+            raise await self._sync_refused(ASIAIR_BUSY_REASON, SYNC_REPLY_BUSY,
+                                           ra_hours, dec_deg)
+        if kind == "link":
+            raise SyncUnverified(
+                unverified_message(self.name, SYNC_UNVERIFIED_LINK_DURING),
+                code="", reason=SYNC_UNVERIFIED_LINK_DURING)
+        if kind == "unclear":
+            raise SyncUnverified(
+                unverified_message(self.name, SYNC_UNVERIFIED_UNCLEAR),
+                code="", reason=SYNC_UNVERIFIED_UNCLEAR)
+        # The bound is looked up by NAME here, at call time, so a test can
+        # monkeypatch it.
+        await verify_sync(self.name, self._read_position_strict, ra_hours,
+                          dec_deg, alternates=jnow_alternates,
+                          not_moved_reason=ASIAIR_NOT_MOVED_REASON,
+                          read_timeout_s=ASIAIR_SYNC_READ_TIMEOUT_S)
 
     async def set_tracking(self, on: bool) -> None:
         self._require_cap("ctrl_track", "tracking control")
