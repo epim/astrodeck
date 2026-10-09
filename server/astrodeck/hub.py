@@ -9433,16 +9433,23 @@ class Hub:
         if not seq:
             seq = {"state": "idle"}
         guide_recent: list = []
+        guide_as_of = None
         if self.guider and self.guider.connected:
             try:
-                guide_recent = list(getattr(self.guider.stats(), "recent", []) or [])
+                # ONE read (#856.3): the trace and its stamp from the same
+                # snapshot, so the stamp says when THIS trace was true.
+                st = self.guider.stats()
+                guide_recent = list(getattr(st, "recent", []) or [])
+                guide_as_of = getattr(st, "as_of", None) or None
             except Exception:
                 guide_recent = []
+                guide_as_of = None
         return {
             "sequence": seq,
             "status": await self.poll_status(),
             "preview_id": self.preview_seq or None,
             "guide_recent": guide_recent,
+            "guide_as_of": guide_as_of,
             # The long-running operations actually in flight RIGHT NOW, by name
             # ("autofocus", "goto", "polar", ...). Without this the client has no
             # way to learn that something it saw start has since ended: progress

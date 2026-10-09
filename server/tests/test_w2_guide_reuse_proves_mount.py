@@ -85,7 +85,11 @@ def _cal_dict(pier: str, scale: float = 2.0) -> dict:
     shape ``_persist_calibration`` writes: the engine's ``dump_calibration``
     keys plus the ``image_scale_arcsec`` sidecar). A made-up declination and
     near-orthogonal axis angles -- not a measurement of anything real."""
-    return {"x_rate": 0.0035, "y_rate": 0.0031, "x_angle": 0.7853981634,
+    # #848: within 10 percent of the sim's measured rates (about 0.0074
+    # px/ms). The old 0.0035/0.0031 is half of them, a 2x over-correction
+    # that oscillates and grows on the sim; the calibration probation now
+    # (correctly) discards it. Still not the sim's own numbers.
+    return {"x_rate": 0.0080, "y_rate": 0.0078, "x_angle": 0.7853981634,
             "y_angle": 2.3561944902, "y_angle_error": 0.0,
             "declination": -0.0941, "pier_side": pier,
             "ra_parity": "unknown", "dec_parity": "unknown",
@@ -316,13 +320,18 @@ async def test_successful_reuse_still_makes_no_pulse_guide_calls(
     real_pulse_guide = tel.pulse_guide
 
     async def _spy_pulse_guide(direction, ms):
-        pulse_calls.append((direction, ms))
+        # #848: ``start_guiding`` now waits for the calibration's probation,
+        # so the guide LOOP's own corrections reach the mount before it
+        # returns. The invariant here is the reuse PATH's: no walk and no
+        # standalone probe, i.e. no pulse before the loop exists.
+        if g._loop_task is None:
+            pulse_calls.append((direction, ms))
         return await real_pulse_guide(direction, ms)
 
     tel.pulse_guide = _spy_pulse_guide
 
     await asyncio.wait_for(g.start_guiding(), timeout=120.0)
-    tel.pulse_guide = real_pulse_guide  # before the loop task gets a turn
+    tel.pulse_guide = real_pulse_guide
 
     assert await g.is_active()
     assert pulse_calls == [], (
@@ -382,14 +391,27 @@ async def test_a_reused_calibration_never_claims_before_its_first_pulse(
 
     g, _cam, tel = await _connected_guider(profile)
     calibrate_calls = _spy_calibrate(g)
+    # #848: ``start_guiding`` now waits for the calibration's probation, so
+    # the loop runs (and pulses) before it returns. THE GATE ITSELF is
+    # therefore read at the moment the first pulse reaches the mount: neither
+    # the claim nor the persisted write may exist before it.
+    real_pulse_guide = tel.pulse_guide
+    at_first_pulse: dict = {}
+
+    async def _first_pulse_spy(direction, ms):
+        if not at_first_pulse:
+            at_first_pulse["claimed"] = logs.has("calibrated and guiding")
+            at_first_pulse["file"] = json.loads(path.read_text(encoding="utf-8"))
+        return await real_pulse_guide(direction, ms)
+
+    tel.pulse_guide = _first_pulse_spy
 
     await asyncio.wait_for(g.start_guiding(), timeout=120.0)
-    # THE GATE ITSELF: nothing has pulsed yet (the loop task this just
-    # scheduled has not had a single turn), so neither claim may exist.
-    assert not logs.has("calibrated and guiding"), (
-        f"the claim must not be logged before the loop has even been "
-        f"scheduled, let alone pulsed: {logs.lines}")
-    assert planted == json.loads(path.read_text(encoding="utf-8")), (
+    pulsed = await _wait_until(lambda: bool(at_first_pulse), timeout=15.0)
+    assert pulsed, "premise: the guide loop sent a first pulse"
+    assert at_first_pulse["claimed"] is False, (
+        f"the claim must not be logged before the first pulse: {logs.lines}")
+    assert planted == at_first_pulse["file"], (
         "the file must not move before the first pulse proves the reuse")
 
     claimed = await _wait_until(
@@ -418,18 +440,23 @@ async def test_a_failed_first_pulse_recalibrates_instead_of_claiming(
     recalibrates fresh, in place, and claims only once THAT succeeds.
 
     RED under the same mutant as the control above (the persist/log made
-    unconditional), observed:
+    unconditional: since #848, ``_persist_calibration()`` and the "calibrated
+    and guiding" line inserted in ``start_guiding`` right after
+    ``_maybe_flip_for_pier()``). Re-run 2026-10-09 (oct08 P1 fix round 1),
+    the ORDER assertion goes red, observed:
 
-        AssertionError: the claim must not be logged before the loop has
-        even been scheduled, let alone pulsed: ['native guider connected',
-        '...calibration image scale...', 'native guider: reusing persisted
-        calibration for profile ...', 'native guider: saved calibration for
-        profile ...', 'native guider calibrated and guiding']
+        AssertionError: the claim must follow the fallback, not precede it:
+        ['native guider connected', '...calibration image scale...',
+        'native guider: reusing persisted calibration for profile ...',
+        'native guider: saved calibration for profile ...', 'native guider
+        calibrated and guiding', 'native guider: the mount did not answer
+        its first pulse on a reused calibration (...); recalibrating
+        instead', ...]
+        assert 5 < 4
 
-    (the first assertion catches it identically, before this test's extra
-    fallback checks ever run -- the mutant never even gets a chance to fail
-    the first pulse, since it claims before anything has been dispatched at
-    all).
+    (Before #848 a first assertion, made right after ``start_guiding``
+    returned, caught it earlier; ``start_guiding`` now waits for the
+    probation, so the loop has pulsed by then and that assertion is gone.)
     """
     logs = _Logs(monkeypatch)
     profile = _profile_id("proof-fails")
@@ -454,10 +481,11 @@ async def test_a_failed_first_pulse_recalibrates_instead_of_claiming(
 
     tel.pulse_guide = _flaky_pulse_guide
 
+    # #848: ``start_guiding`` now waits for the calibration's probation, so
+    # the first pulse (and here its fallback walk) can happen before it
+    # returns. The ORDER assertion below carries this test's gate: no claim
+    # before the fallback's warning.
     await asyncio.wait_for(g.start_guiding(), timeout=120.0)
-    assert not logs.has("calibrated and guiding"), (
-        f"the claim must not be logged before the loop has even been "
-        f"scheduled, let alone pulsed: {logs.lines}")
 
     warned = await _wait_until(
         lambda: logs.has("recalibrating instead"), timeout=15.0)

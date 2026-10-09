@@ -100,7 +100,7 @@ export function GuideQuickBar(): JSX.Element | null {
       <div className="border border-line rounded bg-panel/95 backdrop-blur px-3 py-2">
         <div className="flex items-center gap-3 min-h-8">
           <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${
-            phase === "lost" ? "bg-bad"
+            phase === "lost" || phase === "stopped" ? "bg-bad"
               : live ? "bg-accent blink" : "bg-accent"}`} />
           <span className="text-[11px] tracking-widest uppercase text-dim truncate"
             aria-live="polite">

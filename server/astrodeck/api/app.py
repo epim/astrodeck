@@ -5923,7 +5923,10 @@ def create_app(*, bind_host: str | None = None,
              "mosaic", "panel",
              # A light shot at a pointing no solve confirmed (#852), appended
              # for the same reason.
-             "pointing_unverified"],
+             "pointing_unverified",
+             # #856: guide corrections at the limit during the exposure, by
+             # direction ("east:57 north:2"), appended the same way.
+             "guide_capped"],
             principal)
         import csv
         w = csv.writer(buf)
@@ -5934,6 +5937,9 @@ def create_app(*, bind_host: str | None = None,
         for d in rows:
             d = dict(d)
             d["ts_utc"] = _iso_utc(d.get("ts"))
+            if isinstance(d.get("guide_capped"), dict):
+                d["guide_capped"] = " ".join(
+                    f"{k}:{v}" for k, v in sorted(d["guide_capped"].items()))
             w.writerow(["" if d.get(c) is None else d.get(c) for c in cols])
         # Use the sanitized slug (not the raw path param) so the response header
         # can never carry CR/LF/quotes from attacker-controlled input.

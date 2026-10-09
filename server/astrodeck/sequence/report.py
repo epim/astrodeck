@@ -306,6 +306,10 @@ class FrameRecord(BaseModel):
     #: (``unverified_integration_s`` holds it). Additive: every report
     #: written before the field loads unchanged as False.
     pointing_unverified: bool = False
+    #: #856: corrections at or over the guider's axis limit during this
+    #: exposure, by direction (``{"east": 57}``); ``{}`` when none; None when
+    #: the guider cannot say. Additive, like the fields above.
+    guide_capped: dict[str, int] | None = None
 
 
 class FilterBreakdown(BaseModel):
