@@ -70,6 +70,17 @@ SYNC_READBACK_RETRIES = 2
 #: Wait between those read-backs. Two of them span 1 s, the delay the bench
 #: did measure as enough.
 SYNC_READBACK_RETRY_S = 0.5
+#: Within this many degrees of either pole, a sync the read-back passed does
+#: NOT clear ``position_known`` (#867). Near the pole the read-back is an
+#: angular separation and cannot see the RA axis: a sync the mount ignored
+#: (the bench's one ``N/A`` at home moved nothing) passes when the reported
+#: pole is within SYNC_VERIFY_DEG of the solved field, and 0.05 deg at polar
+#: distance p hides an RA-axis error of 2 asin(sin(0.025 deg) / sin p): 0.57
+#: deg at 5, 2.87 at 1, 29 at 0.1. Beyond 5 the hidden error is under 0.6 deg,
+#: which a re-centre corrects; 5 is also where the 2026-10-08 bench saw syncs
+#: taken. Inside it only Trust position, or a sync further out,
+#: re-establishes the frame.
+SYNC_POLE_BLIND_DEG = 5.0
 #: Floor between attempts to reopen a dropped link. An abandoned exchange can
 #: leave a worker thread parked inside a blocking read on the OS handle, and
 #: Windows refuses a second open of a COM port while that handle lives — so the
@@ -447,8 +458,10 @@ class ZwoAm5Telescope(Telescope):
         #: Latched True when a (re)open read the home pole (#144): the mount
         #: reports where it BELIEVES the tube is, and after a reset that belief
         #: is the home position wherever the tube physically is. Cleared only by
-        #: evidence, a successful ``sync`` or the operator's ``trust_position``,
-        #: and deliberately NOT by a goto (see ``position_known``).
+        #: evidence, a ``sync`` the read-back proved more than
+        #: ``SYNC_POLE_BLIND_DEG`` from either pole (#867) or the operator's
+        #: ``trust_position``, and deliberately NOT by a goto (see
+        #: ``position_known``).
         self._position_untrusted = False
         #: Serializes `_park_now` against `pulse_guide` (WP-18, #342). Both
         #: issue motion commands on the one serial link, and a park landing
@@ -494,16 +507,19 @@ class ZwoAm5Telescope(Telescope):
 
     @property
     def position_known(self) -> bool:
-        """False from a (re)open that read the home pole until a sync or
-        ``trust_position`` (#144; the contract is ``Telescope.position_known``).
+        """False from a (re)open that read the home pole until a sync more than
+        ``SYNC_POLE_BLIND_DEG`` from either pole (#867) or ``trust_position``
+        (#144; the contract is ``Telescope.position_known``).
 
         THE AM5 CANNOT TELL US. It has no home sensor and no brake, so after a
         power cycle (reproduced on the rig 2026-09-23) it reports its home
         position, pointing at the pole, wherever the tube is, and nothing on the
         wire says it restarted. A pole-signature read at the handshake is the
         evidence available; the cost of the false positive (a mount really
-        parked at home reads the same) is one sync, and a nudge at the pole is
-        already clamped by ``mount_offset``.
+        parked at home reads the same) is one Trust position tap, since a sync
+        at home is inside ``SYNC_POLE_BLIND_DEG`` and does not clear it
+        (#867), and a nudge at the pole is already clamped by
+        ``mount_offset``.
 
         NOT CLEARED BY A GOTO, a slew's settle or a reopen that reads somewhere
         else. A goto from a wrong model lands wherever the model sends it, the
@@ -1485,8 +1501,24 @@ class ZwoAm5Telescope(Telescope):
         # The one measurement of where the tube really points: a sync is only
         # ever asked with a solved position (or the operator's own), so it
         # re-establishes the frame a reset took away (#144). Only on a sync the
-        # read-back PROVED: every refusal above raised before this line.
-        self._position_untrusted = False
+        # read-back PROVED: every refusal above raised before this line. And
+        # NOT near the pole (#867): a read-back there cannot see the RA axis,
+        # so it proves nothing about where the tube points
+        # (SYNC_POLE_BLIND_DEG). This only stops a near-pole sync from
+        # CLEARING the latch; it never sets it.
+        if abs(dec_deg) <= 90.0 - SYNC_POLE_BLIND_DEG:
+            self._position_untrusted = False
+        elif self._position_untrusted:
+            # The action first, in the safe order and never a goto (#850),
+            # inside the UI's 137-char cut whatever the mount is called: the
+            # name is the operator's (``conn.extra["name"]``) and any length,
+            # so it goes after the action, not before it. No figure.
+            bus.log("warning",
+                    "position still unknown: tube at home, Trust position; "
+                    "else bring it home by eye with a pad key, then Trust "
+                    "it. A sync this near the pole cannot show where the RA "
+                    f"axis points, so it confirms nothing ({self.name})",
+                    "mount")
 
     async def _set_sync_target(self, ra_hours: float, dec_deg: float) -> None:
         """``:Sr#``/``:Sd#`` for ``sync``, classified the way ``sync`` must

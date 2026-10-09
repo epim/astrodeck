@@ -7338,8 +7338,23 @@ class Hub:
             # it is skipped with the rest so a refused sync has one shape (the
             # #850 brief's interface): the caller is about to stop on it.
             raise
-        bus.log("info", f"solved & synced: RA {result.ra_hours:.4f}h "
-                        f"Dec {result.dec_deg:+.3f}° (J2000)", "solve")
+        # NOT "solved & synced" WHEN THE DRIVER STILL CANNOT VOUCH (#867). Both
+        # mount UIs toast that prefix as "the mount's model now agrees with
+        # where the camera is pointing", and a goto does not read
+        # ``position_known``, so the toast would invite a slew from a
+        # position the driver has just said it does not know (an AM5 synced
+        # near the pole, where its read-back is blind). The driver's own
+        # warning carries the safe order; this line only says the sync
+        # vouched for nothing. No figure either way (#864).
+        if getattr(tel, "position_known", True):
+            bus.log("info",
+                    "solved & synced: the mount accepted the solved position",
+                    "solve")
+        else:
+            bus.log("info",
+                    "solved; the mount accepted the sync, but it still cannot "
+                    "vouch for its position (see the mount's warning)",
+                    "solve")
         # THE SOLVE THAT WAS ALREADY BEING PAID FOR (#182). Every goto centres by
         # calling this, so adopting its WCS here identifies the field for free on
         # a rig with per-frame solving still off — which is the default and, on a

@@ -407,7 +407,9 @@ class Telescope(Device):
     #: jog) is then a precise answer about nothing.
     #:
     #: A property in the driver, not a constant, because it is cleared by
-    #: evidence: a plate-solved ``sync`` re-establishes the frame, and
+    #: evidence: a plate-solved ``sync`` re-establishes the frame where the
+    #: driver can verify it took (the AM5 keeps the latch through a sync
+    #: within its ``SYNC_POLE_BLIND_DEG`` of a pole, #867), and
     #: :meth:`trust_position` is the operator's word that the tube is where the
     #: mount says. A goto does NOT clear it - it lands wherever the wrong model
     #: sends it and the mount then reads back its own opinion of the arrival.
