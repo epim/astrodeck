@@ -40,6 +40,26 @@ class TrackingLost(DeviceError):
     """
 
 
+class FieldTrailing(TrackingLost):
+    """Raised when a sweep is asked to measure stars the guider is trailing (#855).
+
+    2026-10-07 F+17: a guider runaway inflated the HFR, the relative watchdog
+    fired a sweep, the sweep counted 529 'stars' on the trails, moved the
+    focuser 22 steps and stored a defocus slope of 0.0909 px/step against the
+    0.078-0.080 that sweeps on round stars measured that night. A subclass of
+    TrackingLost so it takes the same teardown on every sweep engine (focuser
+    back to start_pos, nothing applied, no slope stored) and every existing
+    handler covers it; the sequence engine words it separately.
+
+    ``limit`` is the arcsec line the probe found exceeded, for the engine's
+    second sentence when abandons repeat; the message is the str().
+    """
+
+    def __init__(self, message: str, limit: float = 0.0) -> None:
+        super().__init__(message)
+        self.limit = limit
+
+
 async def assert_tracking(tracking_check, where: str) -> None:
     """Refuse to measure the sky on a mount that is not following it.
 
@@ -62,11 +82,17 @@ async def assert_tracking(tracking_check, where: str) -> None:
     False across several seconds before returning it, which is why this can
     stay a single question. A probe that does not confirm will throw away
     sweeps on clear nights.
+
+    A PROBE MAY RAISE TrackingLost ITSELF (for example FieldTrailing, #855) to
+    end the sweep with its own sentence; any other exception it raises is
+    still "cannot say".
     """
     if tracking_check is None:
         return
     try:
         state = await tracking_check()
+    except TrackingLost:
+        raise                            # the probe's own verdict (#855)
     except Exception:                    # noqa: BLE001 - unknown is not False
         return
     if state is False:
@@ -1290,6 +1316,11 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         # because that number cannot exceed its own measurement box — the exact
         # lie that made every frame this week look identically "FAIR".
         final_hfr, _n, _size = await asyncio.to_thread(focus_size, frame.data)
+        # AND ONCE MORE BEFORE ANYTHING IS STORED (#855): the per-point probe
+        # runs before each move, so nothing has asked since the last point's
+        # exposure and the validation frame. Inside the try, so a raise takes
+        # the teardown below: focuser back to start_pos, no slope written.
+        await assert_tracking(tracking_check, "before storing the result")
     except BaseException:
         # Never leave the focuser parked at an arbitrary sweep position. Restore
         # start_pos best-effort (shielded so even a cancel completes the move

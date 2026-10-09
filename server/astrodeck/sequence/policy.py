@@ -90,6 +90,38 @@ ECC_ELONGATED_MARGIN = 0.15
 #: crop can have eight.
 ECC_MIN_MARKS_FOR_FRACTION = 8
 
+#: The smallest image scale any real guide train has, arcsec per guide-camera
+#: pixel, used ONLY as a lower bound when the guider reports raw pixels with no
+#: image scale (#854). Smallest common guide-sensor pixel 2.0 um (IMX678 class)
+#: on the longest common off-axis-guider focal length, a C14 at 3910 mm rounded
+#: up to 4000 mm: 206.265 x 2.0 / 4000 = 0.103"/px, rounded down to 0.1. True
+#: arcsec RMS = px x true_scale >= px x 0.1, so comparing px x 0.1 with the
+#: ceiling can only reject a frame whose real RMS is certainly over it. At a
+#: 5.0" ceiling the bound rejects above 5.0 / 0.1 = 50 px RMS; a healthy guider
+#: is 0.3-2 px, and the 773" runaway of 2026-10-07 is 239 px on a 3.23"/px
+#: guide scope.
+MIN_GUIDE_SCALE_ARCSEC_PX = 0.1
+
+
+def guide_rms_floor_arcsec(stats: Any) -> float | None:
+    """The smallest arcsec RMS a guider's PIXEL figure can be, or None.
+
+    Only for the case `guide.base.rms_total_arcsec` cannot convert: the guider
+    reports raw guide-camera pixels with no image scale. Returns
+    ``rms_total * MIN_GUIDE_SCALE_ARCSEC_PX``. None when the stats are in arcsec
+    or carry a scale (the exact conversion owns those), or carry no number.
+    """
+    if stats is None or getattr(stats, "is_arcsec", False):
+        return None
+    try:
+        scale = float(getattr(stats, "image_scale", 0.0) or 0.0)
+        px = float(getattr(stats, "rms_total", None))
+    except (TypeError, ValueError):
+        return None
+    if scale > 0 or px != px or px < 0:      # px != px: NaN
+        return None
+    return px * MIN_GUIDE_SCALE_ARCSEC_PX
+
 #: field -> the config block that holds the rig-level value.
 _RIG_BLOCK: dict[str, str] = {
     "dither_pixels": "guide",
@@ -137,7 +169,8 @@ class RunPolicy:
         return {f: {"value": getattr(self, f), "source": self.sources.get(f, "rig")}
                 for f in MOVED_FIELDS}
 
-    def eccentricity_reject_reason(self, info: Any) -> str | None:
+    def eccentricity_reject_reason(self, info: Any,
+                                   guide_rms: float | None = None) -> str | None:
         """Why this frame fails the eccentricity gate, or ``None`` to keep it.
 
         Reads the grader's ``ecc`` (the median over the trusted mid-bright
@@ -161,6 +194,13 @@ class RunPolicy:
         fine, and the morning went looking for a guiding fault that did not
         exist. "defocus or trailing" is the honest reading of the number: the
         stars are not round, and both a bad focus and a bad guide do that.
+
+        THE GUIDE RMS IS QUOTED, NOT INTERPRETED (#854). ``guide_rms`` is the
+        guider's arcsec figure when the shutter closed, or None when it is not
+        known in arcsec. A low RMS beside a rejection points at focus, a high
+        one at the mount, and the reader decides; the statistic still cannot.
+        The fraction sentence is worded to fit the 137-character humanizer
+        limit with a 400-mark count and a five-digit RMS.
         """
         if self.max_eccentricity <= 0 or not isinstance(info, dict):
             return None
@@ -177,16 +217,19 @@ class RunPolicy:
         tail = (f", {frac:.0%} of {n} stars above {elongated:.2f}"
                 if n >= ECC_MIN_MARKS_FOR_FRACTION else "")
 
+        rms_tail = (f'; guide RMS {guide_rms:.1f}"'
+                    if guide_rms is not None else "")
+
         ecc = info.get("ecc")
         if ecc is not None and float(ecc) > ceiling:
             return (f"frame eccentricity median {float(ecc):.2f} above ceiling "
-                    f"{ceiling:.2f}{tail} - defocus or trailing")
+                    f"{ceiling:.2f}{tail} - defocus or trailing{rms_tail}")
         if n >= ECC_MIN_MARKS_FOR_FRACTION and frac > ECC_ELONGATED_FRACTION:
-            med = f"median {float(ecc):.2f} is under the {ceiling:.2f} ceiling" \
+            med = f"median {float(ecc):.2f} under the {ceiling:.2f} ceiling" \
                 if ecc is not None else f"median under the {ceiling:.2f} ceiling"
             return (f"frame eccentricity {frac:.0%} of {n} stars above "
-                    f"{elongated:.2f}, over the {ECC_ELONGATED_FRACTION:.0%} "
-                    f"limit ({med}) - defocus or trailing")
+                    f"{elongated:.2f} (limit {ECC_ELONGATED_FRACTION:.0%}), "
+                    f"{med} - defocus or trailing{rms_tail}")
         return None
 
 

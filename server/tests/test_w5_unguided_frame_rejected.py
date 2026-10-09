@@ -96,8 +96,9 @@ async def test_a_guided_frame_is_not_rejected_by_the_same_ceiling(
 @pytest.mark.asyncio
 async def test_an_unguided_frame_passes_when_no_ceiling_is_set(
         tmp_path, monkeypatch):
-    """CONTROL: ``max_guide_rms`` 0 (off, the default) -- the new rule is
+    """CONTROL: ``max_guide_rms`` 0 (off, set explicitly) -- the new rule is
     inert, same as every other gate here."""
+    # DELIBERATE PIN CHANGE (#854): docstring only; 0 is no longer the default.
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     hub = Hub()
     await hub.connect_sim()
