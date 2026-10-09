@@ -9121,7 +9121,8 @@ def create_app(*, bind_host: str | None = None,
     # ---------------------------------------------------------------- mount
 
     async def _plain_goto(ra_hours: float, dec_deg: float) -> None:
-        """Slew to an absolute J2000 target with NO centring pass.
+        """Slew to an absolute J2000 target with NO centring pass, in the frame
+        the mount expects (#861).
 
         HOISTED out of the goto handler so a second route can spawn the same
         lane. It was a closure over ``body``; a nudge computes its own
@@ -9134,6 +9135,12 @@ def create_app(*, bind_host: str | None = None,
         # so a STOP/abort that lands while this is awaiting (e.g. a stale
         # REMOTE goto racing a LOCAL abort) is fenced out at the mount.
         epoch = hub._motion_epoch
+        # #861: the target is J2000, the mount may want JNOW. Converted AFTER
+        # the epoch is read, so a STOP that lands while the conversion awaits
+        # (its EquatorialSystem probe is a device read) is still fenced out
+        # below. The nudge route hands this J2000 too (it converts its READ
+        # back with from_mount_frame), so nothing converts twice.
+        slew_ra, slew_dec = await hub.to_mount_frame(tel, ra_hours, dec_deg)
         async with hub._motion_lock:
             if not hub._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")
@@ -9154,7 +9161,7 @@ def create_app(*, bind_host: str | None = None,
             # A commanded move is what retires a plate-solved centre
             # (GN-07); the mount's own drifting report is not.
             hub.note_pointing_moved()
-            await tel.slew(ra_hours, dec_deg)
+            await tel.slew(slew_ra, slew_dec)
         bus.publish("mount", action="slew_complete")
 
     @app.post("/api/mount/goto", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])

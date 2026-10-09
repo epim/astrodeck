@@ -38,6 +38,20 @@ from .base import (
     SwitchPort,
     Telescope,
     TRACKING_RATES,
+    SyncRefused,
+    SyncUnverified,
+)
+from ..events import bus
+from .sync_verify import (
+    SYNC_PARKED_REASON,
+    SYNC_REFUSED_BY_DRIVER_REASON,
+    SYNC_REPLY_ERROR,
+    SYNC_UNVERIFIED_LINK_DURING,
+    SYNC_UNVERIFIED_UNCLEAR,
+    refused_message,
+    refused_residual_deg,
+    unverified_message,
+    verify_sync,
 )
 
 DISCOVERY_PORT = 32227
@@ -129,6 +143,40 @@ class AlpacaScanError(DeviceError):
     def __init__(self, kind: str, msg: str):
         super().__init__(msg)
         self.kind = kind
+
+
+class AlpacaReplyError(DeviceError):
+    """An Alpaca server ANSWERED, and the answer was an error (#862):
+    ``http_status`` != 200, or ``error_number`` (the body's ErrorNumber) != 0.
+
+    A plain DeviceError subclass, so every existing catch is unchanged; it
+    exists so a sync can tell "the driver said no" from "no answer came".
+    ``http_status == 200 and error_number is None`` means the server answered
+    with an error whose number cannot be read, which is NOT a known refusal.
+    There is no -1 sentinel, so no "0x-1" can reach a log."""
+
+    def __init__(self, message: str, *, http_status: int,
+                 error_number: int | None):
+        super().__init__(message)
+        self.http_status = http_status
+        self.error_number = error_number
+
+
+def _error_number(raw: Any) -> int | None:
+    """The body's ErrorNumber as an int, or None when it is not a number."""
+    if isinstance(raw, bool):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+#: ASCOM InvalidWhileParked. NOT 0x400 (NotImplemented) for "does not support
+#: sync": the comhost reports EVERY COM driver exception as 0x400
+#: (``comhost/server.py`` ``_ALPACA_DRIVER_ERROR``), so that mapping would
+#: mislabel a COM driver's "not tracking" or link timeout.
+_ASCOM_INVALID_WHILE_PARKED = 0x408
 
 
 # A bare hostname only — no scheme, path, query, userinfo, or an embedded
@@ -316,10 +364,14 @@ class AlpacaConnection:
     @staticmethod
     def _unwrap(r: httpx.Response) -> Any:
         if r.status_code != 200:
-            raise DeviceError(f"Alpaca HTTP {r.status_code}: {r.text[:200]}")
+            raise AlpacaReplyError(
+                f"Alpaca HTTP {r.status_code}: {r.text[:200]}",
+                http_status=r.status_code, error_number=None)
         body = r.json()
         if body.get("ErrorNumber", 0) != 0:
-            raise DeviceError(body.get("ErrorMessage", "Alpaca error"))
+            raise AlpacaReplyError(
+                body.get("ErrorMessage", "Alpaca error"), http_status=200,
+                error_number=_error_number(body.get("ErrorNumber")))
         return body.get("Value")
 
     async def close(self) -> None:
@@ -700,8 +752,76 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
             raise
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
-        await self._put("synctocoordinates", RightAscension=ra_hours,
-                        Declination=dec_deg)
+        """Sync, then READ THE POSITION BACK (#862, the #850 class).
+
+        ``ErrorNumber == 0`` is the driver's word, not a measurement: a driver
+        that answers success and does not move its position read as success,
+        and the run imaged the wrong field. So the position is read back
+        (``sync_verify.verify_sync``) and a sync it does not prove raises.
+
+        Raises only ``SyncRefused`` or ``SyncUnverified``, never a plain
+        ``DeviceError`` (the AM5's contract after #850): a plain one would go
+        past ``hub.solve_and_sync`` to the "plate solve failed" arm and the
+        no-light hold, for a solve that worked. A refusal is only what is
+        POSITIVELY known to be one: an ASCOM ErrorNumber that is a number, or
+        HTTP 4xx. Everything else is unverified, the conservative arm,
+        because the resume ladder slews on a small refusal and holds on an
+        unverified sync: no answer at all (a refused connection, a reset, a
+        timeout), HTTP 5xx, a body that is not JSON, or an ErrorNumber that
+        is not a number.
+
+        The driver's ErrorMessage is NEVER logged or quoted (a driver may put
+        the target in it); only the ASCOM error number is, in its own info
+        line, as the one thing that can be looked up. Every raise is made
+        outside the ``except`` block, so no transport text rides along in
+        ``__context__``."""
+        kind: str | None = None
+        error_number: int | None = None
+        try:
+            await self._put("synctocoordinates", RightAscension=ra_hours,
+                            Declination=dec_deg)
+        except AlpacaReplyError as e:
+            if e.error_number is not None or 400 <= e.http_status < 500:
+                kind = "refused"
+                error_number = e.error_number
+            else:
+                kind = "unclear"
+        except (httpx.HTTPError, OSError):
+            kind = "link"
+        except (DeviceError, ValueError):
+            kind = "unclear"
+        except Exception:  # noqa: BLE001 - the contract: nothing else escapes
+            # e.g. httpx's RuntimeError from a client a reconnect just closed,
+            # or an AttributeError from ``_unwrap`` on a JSON body that is not
+            # an object. CancelledError is a BaseException and still
+            # propagates.
+            kind = "unclear"
+        if kind == "link":
+            raise SyncUnverified(
+                unverified_message(self.name, SYNC_UNVERIFIED_LINK_DURING),
+                code="", reason=SYNC_UNVERIFIED_LINK_DURING)
+        if kind == "unclear":
+            raise SyncUnverified(
+                unverified_message(self.name, SYNC_UNVERIFIED_UNCLEAR),
+                code="", reason=SYNC_UNVERIFIED_UNCLEAR)
+        if kind == "refused":
+            reason = (SYNC_PARKED_REASON
+                      if error_number == _ASCOM_INVALID_WHILE_PARKED
+                      else SYNC_REFUSED_BY_DRIVER_REASON)
+            if error_number is not None:
+                shown = (f"0x{error_number:X}" if error_number > 0
+                         else f"{error_number}")
+                bus.log("info", f"{self.name}: the driver answered the sync "
+                                f"with ASCOM error {shown}", "mount")
+            residual = await refused_residual_deg(self.get_position,
+                                                  ra_hours, dec_deg)
+            raise SyncRefused(refused_message(self.name, reason, residual),
+                              code=SYNC_REPLY_ERROR, reason=reason,
+                              residual_deg=residual)
+        # The frame is consistent by construction: the hub sent the sync in
+        # the frame it chose (``to_mount_frame``), and ASCOM reports
+        # RightAscension/Declination in the frame the driver was synced in.
+        await verify_sync(self.name, self.get_position, ra_hours, dec_deg)
 
     async def set_tracking(self, on: bool) -> None:
         await self._put("tracking", Tracking=on)

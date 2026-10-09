@@ -251,6 +251,17 @@ CAPTURE_DIR = Path(_CAPTURE_ENV) if _CAPTURE_ENV else (Path(__file__).resolve().
 #: returns the same answer rather than a stale one. Short anyway, because a
 #: cheap number that is right is worth more than a free number that might not be.
 _PRECESS_MEMO_TTL_S = 60.0
+#: After an EquatorialSystem probe that got no definite answer, how long the
+#: READ path (``Hub.from_mount_frame``: the 2.0 s status poll, the capture
+#: snapshot, the solve hints) assumes JNOW for that same mount without asking
+#: again (seconds; #861 N6). Without it a mount that never answers (a V1 COM
+#: driver behind the comhost, an Alpaca server answering 500) paid one extra
+#: GET per status poll, 60 / 2.0 = 30 a minute, each one more call on the
+#: comhost's serialised STA thread; with it, one a minute. ``to_mount_frame``
+#: (a slew or a sync) ignores the hold-off and always asks, so a transient
+#: failure never sends a J2000 mount a precessed target; at worst the status
+#: RA and the solve hint read up to 0.38 deg off for one minute.
+_JNOW_REPROBE_HOLDOFF_S = 60.0
 
 #: rate cap (the server clamp in ``/api/mount/move`` imports this) and the
 #: move-axis deadman window. Defined ONCE here so the touch surface and the
@@ -524,6 +535,28 @@ def precess_jnow_to_j2000(ra_hours: float, dec_deg: float,
     c = TETE(ra=ra_hours * 15.0 * u.deg, dec=dec_deg * u.deg, obstime=t)
     icrs = c.transform_to(ICRS())
     return icrs.ra.hourangle % 24.0, float(icrs.dec.deg)
+
+
+async def slew_in_mount_frame(hub, tel, ra_hours: float, dec_deg: float) -> None:
+    """Slew ``tel`` to a J2000 target, in the frame the mount expects (#861).
+
+    Everything above the device layer is J2000; a JNOW Alpaca mount needs the
+    target precessed first, and ``Hub.to_mount_frame`` does that (a no-op for
+    every other mount). The engine's uncentred setup slew and its hold
+    re-point slewed the J2000 pair straight to the mount, so a JNOW mount
+    landed 0.04 to 0.38 deg off. One helper, so the two cannot drift apart.
+
+    The caller wraps THIS coroutine in its bound (``engine._bounded``), so
+    the conversion's one device read (the cached EquatorialSystem probe)
+    shares the slew's bound.
+
+    ``getattr``: the engine's own tests drive it with bare hub doubles that
+    have no ``to_mount_frame``; those slew unchanged, as every non-Alpaca
+    mount does."""
+    convert = getattr(hub, "to_mount_frame", None)
+    if convert is not None:
+        ra_hours, dec_deg = await convert(tel, ra_hours, dec_deg)
+    await tel.slew(ra_hours, dec_deg)
 
 
 @dataclass
@@ -1234,6 +1267,11 @@ class Hub:
         # J2000<->JNOW at the slew/sync boundary. None until first probed; reset on
         # teardown. Only consulted in native ("alpaca") mode.
         self._mount_wants_jnow: bool | None = None
+        # (telescope, monotonic time) before which the read path does not ask
+        # a mount whose EquatorialSystem probe failed again (#861 N6); None
+        # when no probe has failed. Keyed on the telescope OBJECT, so a mount
+        # swap asks at once. See ``_JNOW_REPROBE_HOLDOFF_S``.
+        self._mount_jnow_reprobe: tuple[Any, float] | None = None
         # boot auto-connect background task (boot-serves-immediately fix): the
         # lifespan spawns connect_active here instead of awaiting it inline, so the
         # HTTP/WS surface comes up at once even against an unreachable rig.
@@ -1420,6 +1458,7 @@ class Hub:
         old_session = self._alpaca_sessions.get(role)
         self.devices[role] = dev
         self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
+        self._mount_jnow_reprobe = None
         # retain the session so its httpx client is aclosed when this role is later
         # replaced or the rig torn down (session-leak fix); close the one we are
         # replacing so its keep-alive sockets don't accumulate per reconnect.
@@ -1911,6 +1950,7 @@ class Hub:
                                           lambda dev=dev: dev.disconnect())
             self.devices.clear()
             self._mount_wants_jnow = None
+            self._mount_jnow_reprobe = None
             if self.guider:
                 guider = self.guider
                 await self._teardown_step("the guider's disconnect",
@@ -3195,7 +3235,10 @@ class Hub:
         reset on device placement in ``_connect_alpaca_device_unlocked`` and
         on teardown in ``_teardown`` (invoked via ``disconnect_all``).
 
-        Best-effort EquatorialSystem probe (cached): ASCOM ``EquatorialSystem`` is
+        Best-effort EquatorialSystem probe (only a definite answer is cached;
+        a failed probe is JNOW without caching, and the read path waits
+        ``_JNOW_REPROBE_HOLDOFF_S`` before asking that mount again, while
+        ``to_mount_frame`` always asks): ASCOM ``EquatorialSystem`` is
         0=other, 1=topocentric(local/JNOW), 2=J2000, 3=B1950. Default to JNOW when
         unreadable — real ASCOM mounts are overwhelmingly topocentric, and a mount
         that already reports J2000 (==2) is left un-precessed so we never double-
@@ -3207,12 +3250,29 @@ class Hub:
         wants = True
         get = getattr(tel, "_get", None)
         if get is not None:
+            # ``getattr``: hub doubles in the tests bind this method onto a
+            # bare namespace.
+            held = getattr(self, "_mount_jnow_reprobe", None)
+            if (held is not None and held[0] is tel
+                    and time.monotonic() < held[1]):
+                return True
             try:
-                equ = await get("equatorialsystem")
-                # only a definitive J2000 (2) / B1950 (3) report disables it.
-                wants = int(equ) not in (2, 3)
+                equ = int(await get("equatorialsystem"))
             except Exception:
-                wants = True
+                # No definite answer (a timeout, an HTTP 500, an ASCOM error,
+                # a value that is not a number): JNOW, the overwhelmingly
+                # common case, and NOT cached (#861 N6), so a transient
+                # failure on the first probe no longer precesses a J2000
+                # mount for the whole connection. ``from_mount_frame`` runs
+                # on every 2 s status poll, so the read path waits
+                # ``_JNOW_REPROBE_HOLDOFF_S`` before asking this mount again;
+                # ``to_mount_frame`` clears the hold-off, so every slew or
+                # sync asks.
+                self._mount_jnow_reprobe = (
+                    tel, time.monotonic() + _JNOW_REPROBE_HOLDOFF_S)
+                return True
+            # only a definitive J2000 (2) / B1950 (3) report disables it.
+            wants = equ not in (2, 3)
         self._mount_wants_jnow = wants
         return wants
 
@@ -3225,7 +3285,13 @@ class Hub:
         offline Pi), fall back to the raw coordinates and log — a precession
         failure must never abort an unattended slew. The plate-solve center loop
         still corrects the residual, so worst case is one slightly-off first slew,
-        not a dead night."""
+        not a dead night.
+
+        A slew or a sync always asks a mount whose frame probe failed (the
+        read path's hold-off is cleared first, #861 N6): one fast GET beside
+        a slew, and a J2000 mount is never sent a precessed target because
+        an earlier probe failed."""
+        self._mount_jnow_reprobe = None
         if not await self._mount_expects_jnow(tel):
             return ra_hours, dec_deg
         try:

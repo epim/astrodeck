@@ -57,7 +57,8 @@ from ..guide.base import rms_total_arcsec
 # there is one copy; the `guide` package, which `hub` imports, loads it
 # already, so this costs nothing at import.
 from ..guide.native import _ENGINE_MAX_DURATION_MS as _NATIVE_PULSE_CAP_MS
-from ..hub import SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED, Hub
+from ..hub import (SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED, Hub,
+                   slew_in_mount_frame)
 from ..imaging.processing import to_jpeg
 from . import schedule
 from .cloudstate import CloudState, verdict_from_info
@@ -9110,7 +9111,9 @@ class SequenceEngine:
                     # this key to refuse crediting a stale rotator reading as
                     # proof the camera is at the mosaic's angle.
                     hop_centring = {"rotation_skipped": True}
-                await _bounded(tel.slew(target.ra_hours, target.dec_deg),
+                await _bounded(slew_in_mount_frame(self.hub, tel,
+                                                   target.ra_hours,
+                                                   target.dec_deg),
                                SLEW_TIMEOUT_S, f"slew to {target.name}")
                 try:
                     await _bounded(tel.set_tracking(True),
@@ -13455,7 +13458,9 @@ class SequenceEngine:
             if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
                               "mount is_parked query"):
                 await _bounded(tel.unpark(), PARK_TIMEOUT_S, "mount unpark")
-            await _bounded(tel.slew(target.ra_hours, target.dec_deg),
+            await _bounded(slew_in_mount_frame(self.hub, tel,
+                                               target.ra_hours,
+                                               target.dec_deg),
                            SLEW_TIMEOUT_S, f"slew to {target.name}")
             await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
                            "mount set_tracking")
