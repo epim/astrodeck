@@ -47,6 +47,31 @@ class GotoRefused(DeviceError):
         self.reason = reason
 
 
+class GotoNotArrived(DeviceError):
+    """A mount ACCEPTED a goto and did not get there by its own report (#860),
+    or the goto command itself was lost on the link, so nobody knows whether
+    the mount took it. Either way the driver halted it, and where the tube is
+    must be measured, not assumed.
+
+    A SIBLING of ``GotoRefused``, not a subclass: the resume ladder reads a
+    ``GotoRefused`` as a limit to wait out or clear, and a goto that stalled or
+    was stopped part way is neither. A ``DeviceError`` subclass, so every
+    existing ``except DeviceError`` still catches it.
+
+    ``reason`` is fixed words for a person (no figure, no code, no
+    coordinate): it may become a log clause or a result key. ``residual_deg``
+    is the angular separation between the commanded target and the position
+    the mount reported last, or ``None`` when that could not be computed. A
+    separation is not a site oracle; the coordinates are, so neither the
+    message nor the reason carries them (#140, #166)."""
+
+    def __init__(self, message: str, *, reason: str,
+                 residual_deg: float | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.residual_deg = residual_deg
+
+
 class SyncRefused(DeviceError):
     """A mount did not take a sync: it answered with a refusal code, or it
     answered as if it had and its reported position did not move (#850).
@@ -443,6 +468,12 @@ class Telescope(Device):
         homes AND parks), so a backend whose home implies a park is expected to
         unpark afterwards; ending parked would make the button a trap that looks
         like it worked.
+
+        A MOUNT WITH NO HOME SENSOR HOMES TO ITS OWN MODEL (#857). The ZWO AM5
+        drives to where its pointing model places home, so a model that is off
+        homes off by about the same amount: homing neither resets nor corrects
+        the model. A sync from a solved frame away from the pole corrects it,
+        and a power-up with the tube at true home starts it right.
 
         Default: refuse. A mount that cannot home says so rather than silently
         doing nothing."""
