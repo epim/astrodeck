@@ -1047,6 +1047,11 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                             best = int(round(salvage.best_position))
                             best_hfr = min(h for _p, h, _s in points)
                             advice = _advice(ok=True)
+                            # AND ONCE MORE BEFORE ANYTHING IS STORED (#855):
+                            # the per-move probe ran before the last point's
+                            # exposure, so nothing has asked since.
+                            await assert_tracking(tracking_check,
+                                                  "before storing the result")
                             await record_measured_span(
                                 focuser, _result_pts(), best, binning)
                             await _approach(best)
@@ -1155,6 +1160,10 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # WHAT THIS SWEEP TAUGHT THE NEXT ONE. A curve the engine
                 # accepted is the only kind worth learning a defocus slope from
                 # — a rejected one describes something that is not a V.
+                # AND ONCE MORE BEFORE ANYTHING IS STORED (#855): the per-move
+                # probe ran before the last point's exposure and the
+                # confirming frame, so nothing has asked since.
+                await assert_tracking(tracking_check, "before storing the result")
                 await record_measured_span(focuser, _result_pts(), best, binning)
                 # Settle the focuser on the position we CHOSE — the fitted vertex,
                 # or the best measured sample when the confirming frame refused it.
@@ -1213,6 +1222,11 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     # five of them.)
                     best_hfr = min(h for _p, h, _s in points)
                     advice = _advice(ok=True)
+                    # AND ONCE MORE BEFORE ANYTHING IS STORED (#855): the
+                    # per-move probe ran before the last point's exposure, so
+                    # nothing has asked since.
+                    await assert_tracking(tracking_check,
+                                          "before storing the result")
                     await record_measured_span(focuser, _result_pts(), best, binning)
                     await _approach(best)
                     bus.publish("focus", state="done", points=_pts(),
