@@ -170,6 +170,14 @@ async def test_each_guide_lost_deferral_follows_two_attempts_on_its_own_visit(
     """
     group_store.set_escalation(EscalationConfig(require_guiding=False,
                                                 guiding_action="warn"))
+    # Each panel makes six re-centring recoveries tonight (three visits of
+    # two). Since #853 (ruling R1b) a panel's fifth is past the nightly bound
+    # and defers it without one; this case grades the per-VISIT #72 budget,
+    # so the nightly bound is lifted out of its way. It is graded in
+    # test_group_guide_lost_defers.py's
+    # test_a_panel_past_tonights_recentres_defers_without_one.
+    monkeypatch.setattr(engine_mod, "MAX_RECOVERY_RECENTRES_PER_TARGET_NIGHT",
+                        100)
     plan = grid_plan(rows=1, cols=2,
                      panel_kw={"filters": ("L",), "count": 12,
                                "per_visit": 4}, **_plan_kw())
@@ -463,6 +471,13 @@ async def test_a_followers_visit_is_a_hop_and_starts_its_own_budget(
     """
     group_store.set_escalation(EscalationConfig(require_guiding=False,
                                                 guiding_action="warn"))
+    # The follower is a plain target, so since #853 (ruling R1b) its fifth
+    # re-centring recovery of the night stops it. This case grades the
+    # per-VISIT #72 budget across three visits (six recoveries), so the
+    # nightly bound is lifted out of its way here; it is graded in
+    # test_853_hold_bound_and_unsolved.py.
+    monkeypatch.setattr(engine_mod, "MAX_RECOVERY_RECENTRES_PER_TARGET_NIGHT",
+                        100)
     follower = "Follower"
 
     def never_turns(who, n, result):

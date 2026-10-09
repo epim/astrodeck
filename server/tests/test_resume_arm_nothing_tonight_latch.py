@@ -108,7 +108,8 @@ def night(sim_hub, monkeypatch, bus_lines):
     async def limits_pass(target, *, cfg=None, plan=None, projected=True):
         return None
 
-    def start(plan, *, session=None, tracking=None):
+    def start(plan, *, session=None, tracking=None, operator=True):
+        # ``operator``: ResumeArm passes False (#853, ruling R5).
         starts.append(session.id)
 
     monkeypatch.setattr(engine, "check_slew_limits", limits_pass)

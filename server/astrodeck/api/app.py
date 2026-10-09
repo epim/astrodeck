@@ -5920,7 +5920,10 @@ def create_app(*, bind_host: str | None = None,
              "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path",
              # A mosaic's panel labels (#188, WP-127), appended so a reader
              # of the columns by position reads what it always read.
-             "mosaic", "panel"],
+             "mosaic", "panel",
+             # A light shot at a pointing no solve confirmed (#852), appended
+             # for the same reason.
+             "pointing_unverified"],
             principal)
         import csv
         w = csv.writer(buf)

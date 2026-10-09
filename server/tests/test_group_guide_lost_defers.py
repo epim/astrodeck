@@ -44,9 +44,11 @@ from __future__ import annotations
 
 import pytest
 
+import astrodeck.sequence.engine as engine_mod
 from _group_harness import (GROUP_NAME, Night, grid_plan, group_hub,
                             group_store, single)
 from astrodeck.config import EscalationConfig
+from astrodeck.sequence.engine import RECOVERY_RECENTRES_SPENT
 from astrodeck.sequence.models import SequencePlan
 from astrodeck.sequence.session import session_store
 
@@ -183,6 +185,13 @@ async def test_a_guiding_loss_defers_the_panel_under_every_guiding_action(
     (S4-ENGC, observed): the next hop's start resets the count (#329).
     """
     group_store.set_escalation(ESCALATION[action])
+    # Six re-centring recoveries of 1-2 tonight (three visits of two): since
+    # #853 (ruling R1b) the fifth is past the nightly bound, which defers the
+    # panel without one. This case grades the per-VISIT #72 deferral, so the
+    # nightly bound is lifted out of its way; it is graded below, in
+    # test_a_panel_past_tonights_recentres_defers_without_one.
+    monkeypatch.setattr(engine_mod, "MAX_RECOVERY_RECENTRES_PER_TARGET_NIGHT",
+                        100)
     night = await _lost_night(group_hub, monkeypatch, _lost_plan(),
                               lose={LOST})
     assert night.done, night.trace[-3:]
@@ -208,6 +217,49 @@ async def test_a_guiding_loss_defers_the_panel_under_every_guiding_action(
     assert seq == "SC" * 9, (
         f"1-2's visits did not each make the hop's start and two recovery "
         f"attempts: {seq}")
+
+
+async def test_a_panel_past_tonights_recentres_defers_without_one(
+        group_hub, group_store, monkeypatch):
+    """#853, ruling R1b, for a mosaic panel. The group's
+    ``max_failed_visits`` counts consecutive FAILED visits only, so a panel
+    whose recoveries re-centre and bank frames was bounded by nothing
+    across the night. Now its re-centring recoveries are charged like any
+    target's: 1-2 loses its star in every exposure, visits 1 and 2 spend two
+    each (tonight's four), and on visit 3 the first loss defers the panel as
+    ``guide_lost`` with no re-centre and no guider restart. The group sets it
+    aside under its own reason, which now names the spent budget, and the
+    other panels complete.
+
+    MUTANT "panels exempt" (``if recentres:`` in `_maybe_recover_guiding`'s
+    nightly charge made ``if recentres and not defers:``): RED -
+        AssertionError: 1-2 was re-centred past tonight's budget:
+        SCSCSCSCSCSCSCSCSC
+    MUTANT "a spent panel stops instead of deferring" (the ``if defers:
+    raise PanelDeferred(...)`` arm removed, so the panel's visit ends in a
+    TARGET_STOP): RED -
+        AssertionError: [{'kind': 'deferred', ..., 'reason': "1-2 was
+        deferred on 3 consecutive visits, the last because the visit
+        stopped: the guide star kept going missing; tonight's re-centres for
+        it are spent", ...}]
+    """
+    group_store.set_escalation(ESCALATION["warn"])
+    night = await _lost_night(group_hub, monkeypatch, _lost_plan(),
+                              lose={LOST})
+    assert night.done, night.trace[-3:]
+    assert night.engine.state.get("end_reason") == "incomplete"
+    for label in ("1-1", "2-2", "2-1"):
+        shot = [f for t, f in night.shots() if t == f"{GROUP_NAME} {label}"]
+        assert shot == ["L"] * 4, (label, shot)
+    seq = _starts_and_frames(night, LOST)
+    # Three hop starts, four recovery restarts, one frame after each.
+    assert seq == "SC" * 7, f"1-2 was re-centred past tonight's budget: {seq}"
+    assert [(r["target_id"], r["step_id"], r["reason"])
+            for r in night.stored.set_aside] == [(
+                "p01", None, f"guiding was lost and did not recover on 1-2 "
+                             f"on 3 consecutive visits: "
+                             f"{RECOVERY_RECENTRES_SPENT}")], (
+        night.stored.set_aside)
 
 
 @pytest.mark.parametrize("action", ["abort", "skip", "warn"])

@@ -800,7 +800,9 @@ class _LadderEngine:
         self.limit_checks = 0
         self.on_limit_check = None
 
-    def start(self, plan, *, session=None, tracking=None) -> None:
+    def start(self, plan, *, session=None, tracking=None,
+              operator=True) -> None:
+        # ``operator``: ResumeArm passes False (#853, ruling R5).
         self.starts.append(session.id if session is not None else None)
 
     async def check_slew_limits(self, target, *, cfg=None, plan=None,
