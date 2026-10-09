@@ -1128,6 +1128,14 @@ class Hub:
         # reads other code was already paying for (the capture header, the solve
         # hint) so identification never adds a device round-trip to the hot path.
         self._last_pointing: tuple[float, float, float] | None = None
+        #: How many times the mount's report has moved more than the staleness
+        #: threshold away from the last solve with no slew having cleared it
+        #: (#851), and the latest such move (``{"moved_deg", "at"}``: a
+        #: separation and a timestamp, nothing that locates the rig). Read by
+        #: the engine's pointing re-check (`_maybe_recheck_pointing`), which
+        #: acts on each new one once.
+        self.pointing_disagreements: int = 0
+        self.last_pointing_disagreement: dict | None = None
         # GN-07: (ra_hours, dec_deg, unix) of the last PLATE SOLVE result, kept
         # separate from `_last_pointing` above (the mount's own, possibly-lying
         # report -- GN-10 measured it walking 50' across a run while the star
@@ -4370,8 +4378,23 @@ class Hub:
                 "cannot be trusted as current")
             return None
         if moved > self._field_stale_threshold_deg():
+            # COUNTED, NOT ONLY CLEARED (#851). On 2026-10-07 this fired three
+            # times (2.03, 2.34, 2.77 degrees) and did nothing but drop a
+            # caption while the run imaged the wrong field. The engine reads
+            # the count at its next frame boundary and checks the pointing in
+            # place. The invalidation just below is what makes one move count
+            # once across the two readers of a saved light
+            # (`field_identification`, `_field_block`): the second finds no
+            # field solve and returns early.
+            self.pointing_disagreements += 1
+            self.last_pointing_disagreement = {"moved_deg": float(moved),
+                                               "at": time.time()}
+            # In words the UI's humanizer leaves alone: the old reason
+            # carried "plate" and "solve", which it rewrites into a solve
+            # failure.
             self.invalidate_field_solve(
-                f"the mount has moved {moved:.2f}° since the last plate solve")
+                f"the mount's reported position moved {moved:.2f}° from the "
+                f"last solved field")
             return None
         return fs
 

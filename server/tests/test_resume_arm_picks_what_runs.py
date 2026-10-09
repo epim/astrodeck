@@ -304,8 +304,12 @@ async def test_the_resume_start_hands_the_engine_the_target_it_recentred(
     session_store.save(_session([a, b], frames=_banked(a, 3)))
     started: list[dict] = []
 
-    def start(plan, *, session=None, tracking=None):
-        started.append({"session": session.id, "tracking": tracking})
+    def start(plan, *, session=None, tracking=None, operator=True):
+        # ``operator``: ResumeArm passes False (#853, ruling R5). Recorded,
+        # with the real default, so a start that drops the keyword reads as
+        # an operator's.
+        started.append({"session": session.id, "tracking": tracking,
+                        "operator": operator})
 
     monkeypatch.setattr(rig.engine, "start", start)
     arm = rig.arm(t)
@@ -318,6 +322,13 @@ async def test_the_resume_start_hands_the_engine_the_target_it_recentred(
     assert len(started) == 1, started
     assert started[0]["tracking"] is not None
     assert started[0]["tracking"].id == b.id, started
+    # SEAM S7 (#853, ruling R5): a ResumeArm start is not an operator's, so
+    # the engine keeps tonight's hold and re-centre budgets across it.
+    # MUTANT "the keyword dropped" (``operator=False, `` removed from
+    # resume_arm.py's ``self.engine.start(...)`` call): RED -
+    #     AssertionError: a ResumeArm start read as an operator's
+    assert started[0]["operator"] is False, (
+        "a ResumeArm start read as an operator's")
 
 
 async def test_targets_come_in_the_order_the_run_walks_them(rig,
