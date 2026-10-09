@@ -796,6 +796,9 @@ and Part 1's own Detector E inherited the defect it was meant to fix.**
 
 ### 10.1 Timeline
 
+Times are minutes from the refused meridian flip, written R+M:SS or R-M:SS
+(R+M where the record kept only minutes); wall-clock times are withheld (#166).
+
 | time | event |
 |---|---|
 | R-140:43 | run starts, 105 frames. Rotator fails to reach PA 23 (`rotate: plate solve failed: no solution`) and the run continues unrotated |

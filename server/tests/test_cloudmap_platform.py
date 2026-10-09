@@ -70,7 +70,7 @@ def _better_by_geometry(lat_deg, lon_deg):
 
 
 def test_a_site_well_west_gets_goes_west():
-    """The observatory case, and the one the old default happened to serve.
+    """A western site, the case the old default happened to serve.
 
     A synthetic 34.0 N, 116.0 W (well away from the real observatory, #19)
     sits far nearer GOES-18's sub-point than GOES-19's, and the pixel smears

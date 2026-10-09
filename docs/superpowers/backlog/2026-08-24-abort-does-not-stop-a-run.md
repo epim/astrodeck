@@ -7,7 +7,8 @@ session `9af6ab0d1b5a40d5a2ce2a29d7a7d022` ("Two-target - 6946 then M31").
 
 `POST /api/sequence/abort` returned `{"aborted": true}`, the engine published
 state `aborted` with `running: false`, and within about 45 seconds auto-resume
-restarted the SAME session. Three times:
+restarted the SAME session. Three times (minutes:seconds from the first abort,
+A):
 
 ```
 A+0:00  state=aborted running=False :: sequence aborted

@@ -86,7 +86,7 @@ def rig(tmp_path, monkeypatch):
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     cfg = store.cfg()
     cfg.site = cfg.site.model_copy(update={
-        "name": "Test", "latitude": 34.0, "longitude": -116.0,
+        "name": "Test", "latitude": SITE_LAT, "longitude": SITE_LON,
         "elevation_m": 20.0, "is_default": False, "horizon_min_deg": 10.0})
     cfg.safety = cfg.safety.model_copy(update={"horizon": None})
     monkeypatch.setattr(config_mod, "config_store", store)
@@ -234,7 +234,7 @@ def test_the_big_pass_rises_before_the_sky_is_dark_and_says_so(rig):
     The 55-degree pass is the best of the night and it clears the horizon 164
     seconds before civil twilight ends here. ``start_unix`` is when it rises;
     there is nothing to look at yet. A card that printed the rise as the time to
-    be outside would be a minute early on the only pass anybody cares about."""
+    be outside would be minutes early on the only pass anybody cares about."""
     from astrodeck.catalog.coords import sun_altaz
 
     big = next(p for p in P.find_passes(48.0, 0.0, None, WHEN)["passes"]

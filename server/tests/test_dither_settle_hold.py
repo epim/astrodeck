@@ -8,7 +8,9 @@ existing guard missed it -- `_maybe_recover_guiding` because the guider never
 went inactive, and the GN-03 re-lock gate because it needs 3 re-locks in 10
 minutes and the night produced 2 spread over 22.5.
 
-The signal that DID separate, and separated perfectly, was the dither:
+The signal that DID separate, and separated perfectly, was the dither (times
+are minutes from the moment the flip began, F; wall-clock times are withheld
+because a flip time beside its target gives the site's longitude, #166):
 
     F-117 - F-19   pre-flip        11 dithers   11 settled    0 failed
     F+13:58        after the flip   1 dither     1 settled    0 failed

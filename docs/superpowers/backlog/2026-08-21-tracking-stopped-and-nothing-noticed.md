@@ -6,6 +6,10 @@ what it is entitled to do.
 
 ## What happened
 
+Times are minutes after the mount reached its limit (L). Wall-clock times are
+withheld on purpose: a meridian event's time beside its target gives the site's
+longitude (#166).
+
 ```
 L+0  the AM5 reaches its own limit near the meridian and stops tracking
 L+0  a 180 s Ha frame is already open. It runs to completion, fully trailed.

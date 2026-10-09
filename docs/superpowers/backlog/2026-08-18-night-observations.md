@@ -2,6 +2,10 @@
 
 Live-run notes. Everything here was seen on the rig tonight, not inferred.
 
+Times are minutes from the moment the meridian was due (F), written F+M or F-M.
+Wall-clock times are withheld on purpose: a meridian time beside its target gives
+the site's longitude (#166).
+
 ## Fixed and deployed (0.2.96)
 
 - **The sweep discarded a clean V because its outermost point was a donut.**
