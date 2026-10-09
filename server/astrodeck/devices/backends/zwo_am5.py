@@ -23,8 +23,9 @@ from ...catalog import coords
 from ...config import config_store
 from ...events import bus
 from .. import lx200
-from ..base import (DeviceError, GotoRefused, PierSide, Telescope,
-                    TRACKING_RATES)
+from ..base import (DeviceError, GotoRefused, PierSide, SyncRefused,
+                    SyncUnverified, Telescope, TRACKING_RATES,
+                    quotable_sync_reply)
 from ..serial_link import LinkError, SerialLink
 
 #: Seam for tests: the link factory used by ZwoAm5Session.
@@ -44,6 +45,31 @@ SLEW_TIMEOUT_S = 120.0
 SETTLE_DEG = 0.05
 #: Poll cadence during a slew.
 SETTLE_POLL_S = 0.5
+#: How close the position read back after a ``:CM#`` must be to the synced
+#: coordinates (angular separation, degrees) for the sync to count as taken
+#: (#850). The worst honest disagreement, summed:
+#:   - ``:Sr#`` rounds the requested RA to 1 s of time: <= 0.0021 deg;
+#:   - ``:Sd#`` rounds the requested Dec to 1 arcsec: <= 0.0003 deg;
+#:   - ``:GR#`` reads the RA back at 1 s of time: <= 0.0021 deg (``:GD#`` at
+#:     1 arcsec, negligible);
+#:   - a guide pulse running concurrently moves RA by up to its 1000 ms cap
+#:     at the emulated 1x sidereal rate, 1.0 s x 0.004178 deg/s = 0.0042 deg;
+#:   - with tracking OFF the reported RA advances at the sidereal rate while
+#:     the retries below wait, up to about 1 s x 0.004178 = 0.0042 deg.
+#: About 0.013 deg in all, so 0.05 is a 4x margin. It is the same number as
+#: ``SETTLE_DEG``, the criterion this driver already uses for "the position did
+#: not change". The bench on 2026-10-08 read back within 0.002 deg every time.
+#: A REFUSED sync smaller than this passes as taken, which is harmless: the
+#: pointing is then off by less than 3 arcmin, and the centring loop's own
+#: stuck check (the next solve shows the field unmoved) still sees it.
+SYNC_VERIFY_DEG = 0.05
+#: Further read-backs after the first, if the first disagrees. The bench read
+#: back 1 s after the reply and the report had already moved, but nobody has
+#: measured how SOON it moves, so a late update must not read as a refusal.
+SYNC_READBACK_RETRIES = 2
+#: Wait between those read-backs. Two of them span 1 s, the delay the bench
+#: did measure as enough.
+SYNC_READBACK_RETRY_S = 0.5
 #: Floor between attempts to reopen a dropped link. An abandoned exchange can
 #: leave a worker thread parked inside a blocking read on the OS handle, and
 #: Windows refuses a second open of a COM port while that handle lives — so the
@@ -128,6 +154,61 @@ def _goto_refusal_words(code: str) -> str:
     return _GOTO_REFUSALS.get(code) or (
         f"the mount refused the goto (code {code}); its altitude, meridian or "
         f"park limits are the usual reasons")
+
+
+#: Fixed words for a sync nobody could confirm (``SyncUnverified.reason``).
+#: They become a hold reason and a ``last_error`` downstream, so they carry no
+#: figure, no reply and none of the transport's own words (the #618 contract;
+#: a timed-out position read can hold half a coordinate).
+SYNC_UNVERIFIED_READBACK = ("the mount did not answer the position read after "
+                            "the sync, so whether it took is unknown")
+SYNC_UNVERIFIED_LINK_DURING = ("the link failed during the sync, so whether "
+                               "the mount took it is unknown")
+SYNC_UNVERIFIED_LINK_BEFORE = "the link failed before the sync was sent"
+#: What an ``e11`` reply gets (#850). The bench saw e11 WITH THE TUBE AT
+#: HOME, and nobody knows what it means anywhere else, so neither text treats
+#: the reply as proof of where the tube is. ``_sync_refused`` picks one from
+#: the refusal's read-back (``residual_deg``), and both follow the safe order:
+#: Trust position if the tube really is at home, otherwise bring it home by
+#: eye with a pad key first, and only after that a goto and a sync away from
+#: the pole. Neither tells the operator to slew or go anywhere: a goto is
+#: aimed from the position the mount believes, which is the thing in doubt.
+#: Each is at most 90 characters and carries no digit (the reply is quoted
+#: separately), so the hub's refused line still fits in 140.
+#:
+#: The mount's opinion is near the sky (or unknown): the tube may well be at
+#: home, so Trust position, behind its condition, comes first.
+SYNC_E11_AT_HOME_REASON = ("if the tube really is at home, use Trust position; "
+                           "a sync away from the pole then works")
+#: The mount's opinion is more than ``SYNC_E11_ELSEWHERE_DEG`` from the sky:
+#: the tube is not where the mount thinks, so it must come home by eye first.
+SYNC_E11_ELSEWHERE_REASON = ("tube not where the mount thinks: bring it home "
+                             "by eye with a pad key, then Trust position")
+#: Above this read-back residual (deg) an ``e11`` gets
+#: ``SYNC_E11_ELSEWHERE_REASON``; at or below it, or with no read-back,
+#: ``SYNC_E11_AT_HOME_REASON``. It mirrors
+#: ``resume_arm.RECOVERY_REFUSED_SYNC_MAX_DEG`` (the resume ladder's own
+#: "close enough to go ahead" figure) and is kept here rather than imported,
+#: so the driver does not depend on the sequencer. Change both together.
+SYNC_E11_ELSEWHERE_DEG = 5.0
+
+
+def _sync_reply(reply: str) -> tuple[str, str]:
+    """``(code, words)`` for a ``:CM#`` reply already stripped of ``#`` and
+    whitespace. ``code`` is what ``SyncRefused``/``SyncUnverified`` carry and
+    ``words`` is how a text names it: the reply itself only when
+    ``base.quotable_sync_reply`` (the one copy of the quoting rule) allows
+    it, ``""``/"an empty reply" for nothing, and
+    ``"unrecognised"``/"an unrecognised reply" for anything else, which is
+    never quoted: a desynchronised link can hand the sync a ``:GR#``-shaped
+    answer ("--:--"), and at the home position that is the local sidereal
+    time, a site oracle (#140, #166)."""
+    if not reply:
+        return "", "an empty reply"
+    quoted = quotable_sync_reply(reply)
+    if quoted is not None:
+        return quoted, f"reply {quoted!r}"
+    return "unrecognised", "an unrecognised reply"
 
 
 def _moved_deg(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -435,7 +516,7 @@ class ZwoAm5Telescope(Telescope):
     # ------------------------------------------------------------ helpers
 
     async def _request(self, cmd: str, *, reply: str = "hash",
-                       timeout: float = 1.5) -> str | None:
+                       timeout: float = 1.5, retry: bool = True) -> str | None:
         """One wire exchange, reopening a link that was dropped under us.
 
         EVERY command goes through here rather than straight to the link,
@@ -450,7 +531,14 @@ class ZwoAm5Telescope(Telescope):
         honest error rather than a retry storm.
 
         ``disconnect()`` deliberately does NOT use this — reopening a link in
-        order to close it is not a recovery, it is a loop."""
+        order to close it is not a recovery, it is a loop.
+
+        ``retry=False`` sends once and lets a ``LinkError`` out without the
+        reopen-and-resend. For a command whose meaning depends on state the
+        mount may have lost with the link: ``:CM#`` syncs to the target set
+        just before it, and a mount that restarted has lost that target, so a
+        bare resend after the reopen would sync it to whatever target it holds
+        (#850, found by a review probe). ``sync`` re-sends the target itself."""
         try:
             return await self._link.request(cmd, reply=reply, timeout=timeout)
         except LinkError:
@@ -460,7 +548,8 @@ class ZwoAm5Telescope(Telescope):
             # been through close() and cleared that flag — keying on it would
             # give up after exactly one attempt, which is one better than the
             # zero attempts of the bug and still not a recovery.
-            if self._relinking or not self._connected or self._link.is_open:
+            if (not retry or self._relinking or not self._connected
+                    or self._link.is_open):
                 raise
             await self._relink()        # raises LinkError if it cannot
             return await self._link.request(cmd, reply=reply, timeout=timeout)
@@ -715,10 +804,21 @@ class ZwoAm5Telescope(Telescope):
         was_untrusted = self._position_untrusted
         self._position_untrusted = was_untrusted or at_pole
         if self._position_untrusted and not was_untrusted:
+            # THE ACTION FIRST, and never a goto (#850). A goto is aimed from
+            # the position the mount believes, so with the tube elsewhere it
+            # lands somewhere unknown; holding a pad key computes no
+            # destination. The WHOLE action, both branches and the pad key,
+            # ends inside the UI's 137-char cut with the default name "ZWO
+            # AM5" (135 chars). The no-sync-at-home fact is what the bench
+            # showed WITH THE TUBE AT HOME, and is said as that.
             bus.log("warning",
-                    f"{self.name}: the mount reports its home position after "
-                    "(re)connecting, so its position is unknown until a "
-                    "plate-solve sync or the operator says the tube is at home",
+                    f"{self.name}: position is unknown. Tube really at home: "
+                    "Trust position. If not, hold a pad key to bring it home "
+                    "by eye, then Trust position. After that, a sync from a "
+                    "solved frame away from the pole refines the pointing. A "
+                    "reset makes the mount report home after (re)connecting, "
+                    "wherever the tube is; with the tube at home it refused "
+                    "every sync on the bench",
                     "mount")
 
     async def trust_position(self) -> None:
@@ -821,12 +921,19 @@ class ZwoAm5Telescope(Telescope):
             # two seconds with no slew and ``POST /api/mount/home`` logged
             # "mount homed" regardless. Homing does not re-establish a position
             # the mount does not know (only a sync or the operator can), so this
-            # says so rather than leaving the success line unchallenged.
+            # says so rather than leaving the success line unchallenged. The
+            # same order as the latch line (#850): the whole action first and
+            # inside the 137-char cut (125 chars with "ZWO AM5"), and no goto
+            # while the position is unknown.
             bus.log("warning",
-                    f"{self.name}: home was sent, but the mount's position is "
-                    "unknown, so the tube may not have moved: a reset mount "
-                    "believes it is already at home and stays put. Drive it "
-                    "home by eye and confirm it, or run a plate-solve sync",
+                    f"{self.name}: home sent. Tube really at home: Trust "
+                    "position. If not, hold a pad key to bring it home by "
+                    "eye, then Trust position. After that, a sync from a "
+                    "solved frame away from the pole refines the pointing. "
+                    "The tube may not have moved: a reset mount believes it "
+                    "is already at home, so home moves nothing and its "
+                    "position stays unknown; with the tube at home it refused "
+                    "every sync on the bench",
                     "mount")
 
     async def park(self) -> None:
@@ -1260,18 +1367,263 @@ class ZwoAm5Telescope(Telescope):
             self._slewing = False
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
-        await self._set_target(ra_hours, dec_deg)
-        try:
-            reply = await self._request("CM", reply="hash")
-        except LinkError as exc:
-            raise DeviceError(f"{self.name}: sync failed: {exc}") from exc
-        if reply == lx200.REFUSED:
-            raise await self._refused_error("sync")
+        """Tell the mount it points at ``(ra_hours, dec_deg)``, and PROVE it
+        took it by reading the position back (#850).
+
+        WHY A READ-BACK. On 2026-10-07 three centring syncs of 2.2 to 2.8 deg
+        "changed nothing": this method treated any reply but ``e14`` as
+        success, the hub logged "solved & synced", the next goto was zero
+        length, and the run imaged the wrong field for hours (#852). The reply
+        itself was thrown away, so what the mount said that night is unknown.
+        On the bench the next day (real AM5N, fw 1.8.8) the AM5 answered
+        ``N/A`` to every sync away from the pole and its ``:GR#``/``:GD#`` then
+        read the synced coordinates within 0.002 deg; with the tube at the
+        HOME position every sync was refused: all but one answered ``e11``,
+        and one 5 deg
+        sync answered ``N/A`` and moved nothing. So the reply is a hint and
+        the read-back is the test.
+
+        THE RULES. Any ``eNN`` reply is a refusal (``SyncRefused``), and the
+        position is still read back once, best effort, so the refusal can say
+        how far the mount's opinion is from the sky (``residual_deg``; the
+        resume ladder decides on it). Every other reply, ``N/A`` or anything a
+        firmware might say instead, is judged by the read-back alone: up to
+        ``1 + SYNC_READBACK_RETRIES`` reads, ``SYNC_READBACK_RETRY_S`` apart,
+        because how soon the report updates is unmeasured. A read that FAILS
+        (no answer, an unreadable answer, a non-finite position) is retried
+        exactly like one that disagrees: the first read goes out milliseconds
+        after the reply, a delay the bench never tried, and one link timeout
+        must not turn a sync the mount took into an error. A read within
+        ``SYNC_VERIFY_DEG`` ends it: taken. Otherwise the LAST read decides:
+        it succeeded and still disagrees, ``SyncRefused`` with the reply; it
+        failed, ``SyncUnverified``. "Accept only N/A" would be the same
+        mistake inverted: a reply standing in for a measurement.
+
+        WHAT IS NOT A REFUSAL. ``SyncUnverified`` is "the mount did not say
+        no, and nobody could confirm it said yes", in fixed words:
+          - the link fails while the target is set ("before the sync was
+            sent"). An ``eNN`` or any other answer but ``1`` to the target is
+            a refusal, ``e14`` with the same parked probe as everywhere else,
+            and an ``eNN`` there is read back once like one to ``:CM#``;
+          - the link fails on ``:CM#``. ``:CM#`` is never resent blind after a
+            reopen (``_request(retry=False)``): a mount that restarted under
+            the dropped link has lost its target and would sync to whatever it
+            holds. So the target is set again and ``:CM#`` sent once more,
+            which is harmless if the first one was taken and only its reply
+            was lost (same target, same sync). A second failure is
+            unverified;
+          - the read-back ends on a failed read.
+        None of them clears ``position_known``. So this method raises only
+        ``SyncRefused`` or ``SyncUnverified``, never a plain ``DeviceError``,
+        and ``slew()``'s own use of ``_set_target`` is untouched.
+
+        NO COORDINATES AND NO LINK BYTES IN ANY TEXT. At home the read-back is
+        the pole and its RA follows local sidereal time, so either one in a
+        message is a site oracle (#140, #166), and a timed-out read can hold
+        half of one. Messages carry fixed words, the separation, and the reply
+        only when it has the safe short shape (``_sync_reply``). No transport
+        error's words are interpolated, and every such raise is ``from None``
+        and made outside the handler, so neither ``__cause__`` nor
+        ``__context__`` carries them either."""
+        await self._set_sync_target(ra_hours, dec_deg)
+        raw = await self._send_sync(ra_hours, dec_deg)
+        reply = (raw or "").strip().rstrip("#").strip()
+        code, said = _sync_reply(reply)
+
+        if lx200.is_error_reply(reply):
+            raise await self._sync_refused(
+                reply, await self._refused_residual_deg(ra_hours, dec_deg))
+
+        residual = 0.0
+        # Why the LAST read failed, in fixed words, or None when it succeeded.
+        last_failed: str | None = None
+        for attempt in range(SYNC_READBACK_RETRIES + 1):
+            if attempt:
+                await asyncio.sleep(SYNC_READBACK_RETRY_S)
+            try:
+                residual = await self._sync_residual_deg(ra_hours, dec_deg)
+            except DeviceError as exc:
+                # The error's own text is NOT kept: a timed-out GR/GD names
+                # what it had received, and an unparseable one quotes it.
+                last_failed = ("no answer" if isinstance(exc.__cause__,
+                                                         LinkError)
+                               else "an unreadable answer")
+                continue
+            except ValueError:
+                # angular_sep_deg refuses a non-finite read, and its own text
+                # quotes all four coordinates.
+                last_failed = "a position that was not finite"
+                continue
+            last_failed = None
+            if residual <= SYNC_VERIFY_DEG:
+                break
+        else:
+            if last_failed is not None:
+                raise SyncUnverified(
+                    f"{self.name}: sync not confirmed ({said}): "
+                    f"{SYNC_UNVERIFIED_READBACK} (the last read got "
+                    f"{last_failed})",
+                    code=code, reason=SYNC_UNVERIFIED_READBACK) from None
+            raise SyncRefused(
+                f"{self.name}: sync refused ({said}) — the mount answered as "
+                "if it took the sync, but its reported position is still "
+                f"{residual:.2f} deg from the synced coordinates",
+                code=code,
+                reason=("the mount answered as if it took the sync, but its "
+                        "reported position did not move to the synced "
+                        "coordinates"),
+                residual_deg=residual)
+
+        if reply != lx200.SYNC_ACCEPTED:
+            # A firmware that accepts with some other word: the read-back says
+            # it worked, and the word is recorded so the next one is known
+            # (only when it is safe to quote; see _sync_reply).
+            bus.log("info",
+                    f"{self.name}: the mount took a sync with {said} (not the "
+                    "usual 'N/A'); the position read-back confirmed it",
+                    "mount")
         # The one measurement of where the tube really points: a sync is only
-        # ever asked with a plate-solved position (or the operator's own), so it
+        # ever asked with a solved position (or the operator's own), so it
         # re-establishes the frame a reset took away (#144). Only on a sync the
-        # mount ACCEPTED - the refusal above raised.
+        # read-back PROVED: every refusal above raised before this line.
         self._position_untrusted = False
+
+    async def _set_sync_target(self, ra_hours: float, dec_deg: float) -> None:
+        """``:Sr#``/``:Sd#`` for ``sync``, classified the way ``sync`` must
+        report (#850): a link failure is ``SyncUnverified`` ("before the sync
+        was sent"), an ``eNN`` answer is ``SyncRefused`` through
+        ``_sync_refused`` (``e14`` with the parked probe ``_refused_error``
+        uses) after the same one best-effort read-back the ``eNN`` answer to
+        ``:CM#`` gets, and any other answer but ``1`` is a ``SyncRefused``
+        too: the mount would not take the target. ``slew()`` keeps
+        ``_set_target``.
+
+        Through ``_request`` with its usual reopen: setting a target twice is
+        harmless, so a link dropped before the sync is simply recovered."""
+        for cmd in (f"Sr{lx200.format_ra(ra_hours)}",
+                    f"Sd{lx200.format_dec(dec_deg)}"):
+            ack: str | None = None
+            try:
+                ack = await self._request(cmd, reply="ack")
+            except LinkError:
+                pass
+            if ack is None:
+                raise SyncUnverified(
+                    f"{self.name}: sync not confirmed: "
+                    f"{SYNC_UNVERIFIED_LINK_BEFORE}",
+                    code="", reason=SYNC_UNVERIFIED_LINK_BEFORE) from None
+            # Any answer ends a halt window, as in _cmd_ack.
+            self._halting = False
+            ack = ack.strip().rstrip("#").strip()
+            if ack == lx200.ACK_OK:
+                continue
+            if lx200.is_error_reply(ack):
+                # Read back like the eNN answer to :CM#, so the refusal says
+                # how far off the mount is when it can, and a caller is never
+                # told the position "could not be read back" when nobody
+                # tried to read it.
+                raise await self._sync_refused(
+                    ack, await self._refused_residual_deg(ra_hours, dec_deg))
+            code, said = _sync_reply(ack)
+            reason = "the mount would not take the sync's target coordinates"
+            raise SyncRefused(f"{self.name}: sync refused ({said}) — {reason}",
+                              code=code, reason=reason)
+
+    async def _send_sync(self, ra_hours: float, dec_deg: float) -> str | None:
+        """``:CM#``, never resent blind after a reopen (#850).
+
+        A review probe dropped the link on ``:CM#`` with a fake that lost its
+        target: the old auto-retry reopened, sent ``:CM#`` again with no
+        target, and the mount synced to whatever it held. So the first send is
+        ``retry=False``; on a link failure the target is set again (which
+        reopens a dropped port through ``_request``) and ``:CM#`` goes once
+        more, also ``retry=False``, so a third, blind one can never happen.
+        If either of those fails, ``SyncUnverified``."""
+        try:
+            return await self._request("CM", reply="hash", retry=False)
+        except LinkError:
+            pass
+        bus.log("warning",
+                f"{self.name}: the link failed during the sync; setting the "
+                "target again and sending the sync once more", "mount")
+        raw: str | None = None
+        failed = False
+        try:
+            await self._set_target(ra_hours, dec_deg)
+            raw = await self._request("CM", reply="hash", retry=False)
+        except (LinkError, DeviceError):
+            # DeviceError is not optional: ``_set_target`` goes through
+            # ``_cmd_ack``, which turns a timeout, a failed reopen and an
+            # ``e14`` into a DeviceError carrying the transport's words.
+            failed = True
+        if failed:
+            raise SyncUnverified(
+                f"{self.name}: sync not confirmed: "
+                f"{SYNC_UNVERIFIED_LINK_DURING}",
+                code="", reason=SYNC_UNVERIFIED_LINK_DURING) from None
+        return raw
+
+    async def _sync_residual_deg(self, ra_hours: float, dec_deg: float) -> float:
+        """Angular separation (deg) between the coordinates a sync asked for
+        and the position the mount reports now. Angular, not per-axis: near
+        the pole a tiny offset reads as hours of RA, and across 0 h the RA
+        wraps. Raises ``DeviceError`` (read failed) or ``ValueError``
+        (non-finite read); the RA/Dec themselves never leave this method."""
+        read_ra, read_dec = await self.get_position()
+        return coords.angular_sep_deg(ra_hours, dec_deg, read_ra, read_dec)
+
+    async def _refused_residual_deg(self, ra_hours: float,
+                                    dec_deg: float) -> float | None:
+        """One best-effort read-back for an ``eNN`` refusal (to the target or
+        to ``:CM#``): ``_sync_residual_deg``, or ``None`` when the read fails.
+        A failed read must never mask the refusal we came to report, so it
+        leaves the residual unknown and nothing else. No retries: the mount
+        has already said no."""
+        try:
+            return await self._sync_residual_deg(ra_hours, dec_deg)
+        except (DeviceError, ValueError):
+            return None
+
+    async def _sync_refused(self, reply: str,
+                            residual: float | None) -> SyncRefused:
+        """Words for an ``eNN`` reply to a sync's commands. Only the codes seen
+        on the wire get words: ``e14`` ("refused in current state", with the
+        same parked probe ``_refused_error`` uses) and ``e11`` (seen with the
+        tube at home on 2026-10-08; the words never say the tube IS at home,
+        and are chosen from ``residual``: Trust position first, behind its
+        condition, when the mount's opinion is within
+        ``SYNC_E11_ELSEWHERE_DEG`` of the sky or unknown, and home by eye
+        first when it is further out). Any other
+        code is quoted and nothing is invented for it. The reason comes
+        straight after the name, so it survives a 140-character log line."""
+        lowered = reply.lower()
+        if lowered == lx200.REFUSED:
+            parked = False
+            try:
+                parked = await self.is_parked()
+            except Exception:  # noqa: BLE001 - probe is advisory only
+                pass
+            reason = ("mount is parked; unpark first" if parked else
+                      "refused in current state — check limits / that a slew "
+                      "isn't already running")
+        elif lowered == "e11":
+            # The read-back was taken before these words (the caller passes
+            # it in), so a tube the mount has badly wrong is told to come home
+            # by eye, never to Trust position first.
+            reason = (SYNC_E11_ELSEWHERE_REASON
+                      if residual is not None
+                      and residual > SYNC_E11_ELSEWHERE_DEG
+                      else SYNC_E11_AT_HOME_REASON)
+        else:
+            reason = ("the mount refused the sync; no meaning is known for "
+                      "this reply")
+        code, said = _sync_reply(reply)
+        where = ("" if residual is None else
+                 f"; its reported position is {residual:.2f} deg from the "
+                 "synced coordinates")
+        return SyncRefused(
+            f"{self.name}: sync refused — {reason} ({said}){where}",
+            code=code, reason=reason, residual_deg=residual)
 
     # --- rotate_axis: NOT offered on this mount, and here is why --------------
     #

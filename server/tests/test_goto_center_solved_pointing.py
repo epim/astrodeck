@@ -26,7 +26,7 @@ _SOLVE_DEC = _TARGET_DEC + 0.005      # 0.3' of Dec
 
 
 def _fixed_solver():
-    async def solve_and_sync(exposure_s):
+    async def solve_and_sync(exposure_s, refusal_level: str = "warning"):
         return {"ra_hours": _SOLVE_RA, "dec_deg": _SOLVE_DEC}
     return solve_and_sync
 

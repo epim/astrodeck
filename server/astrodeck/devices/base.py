@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import math
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -44,6 +45,94 @@ class GotoRefused(DeviceError):
         super().__init__(message)
         self.code = code
         self.reason = reason
+
+
+class SyncRefused(DeviceError):
+    """A mount did not take a sync: it answered with a refusal code, or it
+    answered as if it had and its reported position did not move (#850).
+
+    A SIBLING of ``GotoRefused``, not a subclass. The resume ladder reads a
+    ``GotoRefused`` as a limit to wait out or clear, and a refused sync is not
+    that: the mount's pointing model stays wrong by whatever the plate solve
+    measured, and waiting changes nothing.
+
+    On 2026-10-07 three centring syncs of 2.2 to 2.8 degrees "changed
+    nothing" and the run imaged the wrong field for hours, because the driver
+    threw the mount's reply away and never read its position back. On the
+    bench the next day the AM5 answered ``e11`` at its home position and took
+    nothing, and once answered ``N/A`` (its usual acceptance) without moving.
+
+    ``code`` is the mount's own reply, verbatim, without the ``#`` (``"e11"``,
+    or ``"N/A"`` when the read-back disproved it). ``reason`` is the driver's
+    words for a person. ``residual_deg`` is the angular separation between the
+    coordinates the sync asked for and the position the mount reported after
+    it, or ``None`` when no read-back could be taken. ``solved`` is set by the
+    hub, not the driver: the plate solve's own J2000 ``(ra_hours, dec_deg)``,
+    so a caller can still say how far the field is from its target.
+
+    NO COORDINATES IN THE MESSAGE OR THE REASON. The read-back at the home
+    position is the pole, and its RA follows local sidereal time: either one
+    in a log line is a site oracle (#140, #166). A separation is not.
+    """
+
+    def __init__(self, message: str, *, code: str, reason: str,
+                 residual_deg: float | None = None):
+        super().__init__(message)
+        self.code = code
+        self.reason = reason
+        self.residual_deg = residual_deg
+        self.solved: tuple[float, float] | None = None
+
+
+# A mount's sync reply is quoted in surfaced text only in this shape (#850):
+# one to eight ASCII letters, digits or "/" ("e11", "N/A"). A desynchronised
+# link can hand back a position reply instead (":GR#" is "07:23:41"), and at
+# the home position that is a site oracle (#140, #166), so anything else is
+# described, never quoted. ONE copy of the rule: the driver, the hub, the
+# engine and the resume ladder all ask this function.
+_QUOTABLE_SYNC_REPLY = re.compile(r"[A-Za-z0-9/]{1,8}")
+_DIGIT_RUN = re.compile(r"[0-9]{3}")
+
+
+def quotable_sync_reply(reply: str | None) -> str | None:
+    """``reply`` if it is safe to quote in a log line or a message, else
+    ``None``. Safe means it fully matches ``[A-Za-z0-9/]{1,8}`` and holds no
+    run of three or more digits (every code seen is ``eNN``; a bare digit run
+    could be a coordinate with its separators lost). ``None``, an empty string
+    and everything else return ``None``."""
+    if (reply and _QUOTABLE_SYNC_REPLY.fullmatch(reply)
+            and not _DIGIT_RUN.search(reply)):
+        return reply
+    return None
+
+
+class SyncUnverified(DeviceError):
+    """A sync the mount did NOT refuse, but that nobody could confirm (#850):
+    the link failed before, during or just after ``:CM#``, or the position
+    read-back never answered, so whether the mount took it is unknown.
+
+    A SIBLING of ``SyncRefused``, not a subclass, because it is not a refusal:
+    the mount may well have taken it. It exists so the hub does not hand such
+    a sync to the generic "plate solve failed" arm, whose result sends the
+    engine to its no-light hold (``_hold_for_light``) for a solve that worked.
+    Every caller that stops on ``SyncRefused`` stops on this too, in its own
+    words.
+
+    Same fields as ``SyncRefused``: ``code`` is the mount's reply when one
+    came back (``"N/A"``), else ``""``; ``reason`` is fixed words for a
+    person; ``residual_deg`` is ``None`` (nothing was read back); ``solved``
+    is set by the hub. NO COORDINATES and NO RAW LINK BYTES in the message or
+    the reason: a timed-out position read can hold half a coordinate (#140,
+    #166).
+    """
+
+    def __init__(self, message: str, *, code: str, reason: str,
+                 residual_deg: float | None = None):
+        super().__init__(message)
+        self.code = code
+        self.reason = reason
+        self.residual_deg = residual_deg
+        self.solved: tuple[float, float] | None = None
 
 
 class PierSide(enum.Enum):
