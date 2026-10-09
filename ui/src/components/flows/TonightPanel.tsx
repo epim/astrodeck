@@ -29,6 +29,7 @@ import {
 import { Overlay } from "../Overlay";
 import { useStore } from "../../store";
 import { radioNextIndex } from "../../lib/radiogroup";
+import { retryingLine } from "../../lib/retryLoad";
 import { compiledIsCurrent } from "./flowsSlice";
 import { tonightStoredNote, type TonightTab } from "./flowsTypes";
 import TonightTimeline, {
@@ -263,6 +264,8 @@ export function TonightPanel(): JSX.Element {
   const payload = useStore((s) => s.flows.tonight);
   const loading = useStore((s) => s.flows.tonightLoading);
   const error = useStore((s) => s.flows.tonightError);
+  // Set while `flowsFetchTonight` waits to ask its read again (#859).
+  const tonightRetry = useStore((s) => s.flows.tonightRetry);
   const dirty = useStore((s) => s.flows.dirty);
   const readonly = useStore((s) => s.flows.record?.readonly === true);
   // PLAN reads `flows.compiled`, which `flowsFetchTonight` brings up to date
@@ -308,11 +311,16 @@ export function TonightPanel(): JSX.Element {
       </TonightNote>
     );
   } else if (!read) {
+    // The slice asks a timed-out read again by itself (#859); while it waits
+    // the panel says so, the way the #/next Tonight sheet does, instead of a
+    // loading line that would run on for up to 82 s.
     body = (
       <TonightNote>
-        {loading
-          ? "Resolving tonight — dusk, astronomical dark, the moon, and each target's window."
-          : "Tonight has not been resolved for this flow yet."}
+        {loading && tonightRetry
+          ? retryingLine(tonightRetry)
+          : loading
+            ? "Resolving tonight — dusk, astronomical dark, the moon, and each target's window."
+            : "Tonight has not been resolved for this flow yet."}
       </TonightNote>
     );
   } else if (tab === "campaign") {
