@@ -224,7 +224,7 @@ export default function QuickFlow() {
       // The library reloads under the operator and this flow lands somewhere in
       // a folder that may already hold thirty, so the card says which is theirs.
       setUi({ highlightId: id });
-      await loadLibrary();
+      await loadLibrary({ retry: false });
       enqueueToast({
         level: "info",
         title: run ? `Started ${res.flow.name}` : `Saved ${res.flow.name}`,
@@ -250,7 +250,7 @@ export default function QuickFlow() {
       if (run && saved) {
         setUi({ highlightId: payload!.flow_id as string });
         close();
-        await loadLibrary();
+        await loadLibrary({ retry: false });
       }
       enqueueToast({
         level: "error",

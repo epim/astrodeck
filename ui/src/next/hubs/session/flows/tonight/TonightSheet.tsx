@@ -33,13 +33,16 @@
 // done: an example (its edits are never saved) and an edit the save did not
 // keep, each said above the tabs that read the stored flow.
 
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 
 import { compiledIsCurrent } from "../../../../../components/flows/flowsSlice";
 import { tonightStoredNote, type TonightTab } from "../../../../../components/flows/flowsTypes";
 import { capAllowed } from "../../../../../lib/caps";
 import { runIsLive } from "../../../../../lib/lastSessionFrame";
-import { usePrincipal, useResumeArm, useSeq, useStore } from "../../../../../store";
+import { retryingLine, useRetryOnReturn } from "../../../../../lib/retryLoad";
+import {
+  usePrincipal, useResumeArm, useSeq, useStore, useWsConnected,
+} from "../../../../../store";
 import { NxIcon } from "../../../../icons";
 import { nav } from "../../../../router";
 import { explainLock } from "../../../../shell/explain";
@@ -81,6 +84,8 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
   const payload = useStore((s) => s.flows.tonight);
   const loading = useStore((s) => s.flows.tonightLoading);
   const error = useStore((s) => s.flows.tonightError);
+  const tonightRetry = useStore((s) => s.flows.tonightRetry);
+  const wsConnected = useWsConnected();
   const dirty = useStore((s) => s.flows.dirty);
   const readonly = useStore((s) => s.flows.record?.readonly === true);
   // PLAN reads `flows.compiled`, which `flowsFetchTonight` brings up to date
@@ -158,6 +163,24 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
     void fetchTonight();
   }, [locked, flowId, mine, fetchTonight]);
 
+  // THE RE-ASK NEVER WRITES (#859). After a transient failure (a timeout, a
+  // network error, a proxy's 502/503/504) the read is asked once more when the
+  // websocket comes back up or the tab becomes visible - as a PURE read
+  // (`flush: false`), because the flush is a PUT and maybe a compile POST, and
+  // nothing may post by itself. With an unsaved edit on screen a pure read
+  // would answer for the flow as last saved (#688), so the re-ask does not run
+  // then: RETRY, which flushes, covers it. A refusal is the home's answer and
+  // is not re-asked. The gate reads live state at event time.
+  const gate = useRef({ locked, flowId, mine });
+  gate.current = { locked, flowId, mine };
+  useRetryOnReturn(() => {
+    const g = gate.current;
+    const f = useStore.getState().flows;
+    return !g.locked && !!g.flowId && g.mine && f.record?.id === g.flowId
+      && f.tonightError !== null && f.tonightErrorTransient && !f.tonightLoading
+      && !(f.dirty && !f.record?.readonly);
+  }, () => { void fetchTonight({ flush: false }); }, wsConnected);
+
   // Memoised on the payload: the sheet re-renders on every store tick that
   // touches the flows slice, and `readTonight` walks every target curve and
   // every story row. Read only once this sheet's own flow is open - while
@@ -223,7 +246,9 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
       </div>
     );
   } else if (!read) {
-    body = (
+    body = loading && tonightRetry ? (
+      <p className="nx-tn-note" data-testid="tonight-retrying">{retryingLine(tonightRetry)}</p>
+    ) : (
       <p className="nx-tn-note" data-testid="tonight-pending">
         {loading
           ? "Resolving tonight - dusk, astronomical dark, the moon, and each target's window."

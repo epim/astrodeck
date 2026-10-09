@@ -175,7 +175,7 @@ export function FlowQuickSheet(): JSX.Element {
       // a folder that may already hold thirty, so the card says which is theirs.
       setUi({ highlightId: id });
       close();
-      await loadLibrary();
+      await loadLibrary({ retry: false });
       enqueueToast({
         level: "info",
         title: run ? `Started ${res.flow.name}` : `Saved ${res.flow.name}`,
@@ -201,7 +201,7 @@ export function FlowQuickSheet(): JSX.Element {
       if (run && saved) {
         setUi({ highlightId: body!.flow_id as string });
         close();
-        await loadLibrary();
+        await loadLibrary({ retry: false });
       }
       enqueueToast({
         level: "error",
