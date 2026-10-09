@@ -794,6 +794,36 @@ def _frame_altitude(target, site: dict, when: float) -> float | None:
 #: hours the same night.
 _MAX_GUIDING_RECOVERIES = 2
 
+#: #849 (RULING R1): A PAUSE STOPS GUIDING. On 2026-10-07 a paused run's
+#: guider pulsed the AM5 for an hour, and on that mount every east pulse
+#: desynchronises the pointing model. The pause stands the guider down at the
+#: frame boundary (`_checkpoint`); the frame loop restarts it after its own
+#: gates, through the guiding-recovery path, re-centring first and without
+#: charging a recovery attempt.
+L_PAUSE_STOP = ("paused: guiding stopped, so the guider does not move the "
+                "mount while the run waits; it restarts when you resume")
+PAUSE_DETAIL = ("paused by you — guiding stopped; it waits here until you "
+                "resume it")
+L_PAUSE_NOSTOP = ("paused, but guiding did not stop, so the guider is still "
+                  "moving the mount; stop guiding by hand")
+L_RESUME_RESTART = ("resumed: re-centring if this target centres, then "
+                    "restarting guiding")
+L_RESUME_FAIL = ("resumed, but guiding did not restart; recovery takes over "
+                 "at the next frame if this plan recovers guiding")
+PAUSE_MOVED_REASON = "the mount is not where it was when the run paused"
+L_PAUSE_MOVED = ("resumed, but the mount is not where it was when the run "
+                 "paused and this target does not re-centre, so it is skipped")
+#: A tracking mount's reported position barely moves across a pause
+#: (arcminutes of tracking error), while a goto, a home or a park moves it by
+#: degrees. Either side unreadable counts as moved.
+PAUSE_MOVED_DEG = 1.0
+
+#: #848: a frame whose guider was guiding at the top of the iteration and is
+#: not guiding at the shutter (it stopped itself during the dither, or while
+#: the quiet gate waited) is not taken; recovery restarts guiding first.
+L_SKIP = ("guiding stopped before this frame, so the frame was not taken; "
+          "recovery re-centres and restarts guiding first")
+
 #: The longest exposure of the sky reading taken before a guiding recovery
 #: (#621, `_sky_closed_before_recovery`), seconds. The interrupted step's own
 #: exposure, capped here: a narrowband science exposure is three minutes or
@@ -1292,6 +1322,13 @@ class SequenceEngine:
         #: (`_sky_closed_before_recovery`): an unsolved re-centre after it is
         #: the pointing's fault, not the sky's (ruling R2).
         self._pre_recovery_saw_stars: bool = False
+        #: #849: the pause stood the guider down, so the frame loop's next
+        #: `_maybe_recover_guiding` restarts it (uncharged); and where the
+        #: mount was when it did, for a target that will not re-centre.
+        self._guiding_off_for_pause = False
+        self._pause_pose: tuple | None = None
+        #: #856: (guider id, saturated counts) when the shutter opened.
+        self._capped_at_open: tuple | None = None
         self._last_focus_temp: float | None = None
         #: The temperature-compensation reference (#D-RIG-2): ``(temp_c, pos)``
         #: or None for "not anchored yet".
@@ -2176,6 +2213,10 @@ class SequenceEngine:
         self._last_visit_ts = {}
         self._group_unguided = set()
         self._hop_guide_started = False
+        # #849: the engine outlives the run, and a run aborted while paused
+        # would hand its pause's stand-down to the next one.
+        self._guiding_off_for_pause = False
+        self._pause_pose = None
         self._meridian_wait = {}
         self._follower_group_active = None
         self._group_side = {}
@@ -2996,8 +3037,83 @@ class SequenceEngine:
         return live or None
 
     async def _checkpoint(self) -> None:
-        """Frame-boundary gate: honors pause and cancellation."""
+        """Frame-boundary gate: honors pause and cancellation.
+
+        A PAUSE STOPS GUIDING (#849, RULING R1). On 2026-10-07 a paused run's
+        guider went on pulsing the mount for an hour, until it was stopped by
+        hand before a re-home; on the AM5 each east pulse desyncs the pointing
+        model. So at the paused boundary (the in-flight exposure has finished
+        guided) the guider is stood down, and where the mount was is noted.
+        Nothing restarts it here: the frame loop does, after its stop
+        boundary, altitude floor, safety, reconnect and flip gates, through
+        `_maybe_recover_guiding`, re-centring first. An engine-made pause
+        (`_pause_unsafe`) waits on the same event and is the same hazard.
+
+        Not gated on an earlier stand-down: whatever the flag says, a guider
+        that is guiding now (restarted by hand, or by a path that did not
+        consume the flag) is pulsing the mount through this pause, and once
+        stood down it reads inactive, so nothing is stopped twice."""
+        if (not self._paused.is_set() and self.plan is not None
+                and getattr(self.plan, "guide", False)
+                and await self._guiding_active_now()):
+            if await self._stand_down_guider():
+                self._guiding_off_for_pause = True
+                self._pause_pose = await self._read_pose()
+                bus.log("info", L_PAUSE_STOP, "sequence")
+                self._set_state(detail=PAUSE_DETAIL)
+            else:
+                bus.log("warning", L_PAUSE_NOSTOP, "sequence")
         await self._paused.wait()
+
+    async def _read_pose(self) -> tuple | None:
+        """``(ra_hours, dec_deg, pier)`` as the mount reports them, or None on
+        any failure. Compared across a pause only: NEVER logged or published,
+        because a homed or stationary mount's position gives the site away
+        (#140, #166)."""
+        try:
+            tel = self.hub.devices.get("telescope")
+            if tel is None:
+                return None
+            ra_h, dec_deg = await asyncio.wait_for(tel.get_position(),
+                                                   MOUNT_QUERY_TIMEOUT_S)
+            pier = await asyncio.wait_for(tel.pier_side(), MOUNT_QUERY_TIMEOUT_S)
+            pier = getattr(pier, "value", pier)
+            return float(ra_h), float(dec_deg), str(pier)
+        except asyncio.CancelledError:
+            raise
+        except Exception:               # noqa: BLE001 - unreadable is None
+            return None
+
+    @staticmethod
+    def _pose_moved(a: tuple | None, b: tuple | None) -> bool:
+        """Whether the mount moved between two `_read_pose` readings: either
+        unreadable, a different pier side, or more than ``PAUSE_MOVED_DEG``
+        apart on the sky."""
+        if a is None or b is None or a[2] != b[2]:
+            return True
+        ra1, d1 = math.radians(a[0] * 15.0), math.radians(a[1])
+        ra2, d2 = math.radians(b[0] * 15.0), math.radians(b[1])
+        c = (math.sin(d1) * math.sin(d2)
+             + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
+        sep = math.degrees(math.acos(max(-1.0, min(1.0, c))))
+        return sep > PAUSE_MOVED_DEG
+
+    async def _repose_for_pause(self) -> None:
+        """The engine itself just placed the mount (a meridian flip's
+        re-slew, the end of a setup) while a pause's stand-down is still
+        unconsumed (#849). The pose noted at the pause no longer says where
+        the mount belongs, and left as it was the resumed recovery's
+        moved-mount test (`_maybe_recover_guiding`) would skip a target that
+        does not re-centre with PAUSE_MOVED_REASON for a move the engine made
+        on purpose: a flip changes the pier side, which reads as moved.
+
+        So the new placement becomes the pose to compare with. The flag
+        stays set, so the restart is still the resume's: uncharged, and also
+        with ``recover_guiding`` off. An unreadable mount reads None, which
+        the moved-mount test counts as moved, as at the pause. Read, never
+        logged (#140, #166)."""
+        if getattr(self, "_guiding_off_for_pause", False):
+            self._pause_pose = await self._read_pose()
 
     def _get_dispatcher(self):
         """Resolve the AlertDispatcher (injected on the engine or the hub). Returns
@@ -8620,6 +8736,13 @@ class SequenceEngine:
         leaves this one as it is.
         """
         self._hop_guide_started = False
+        # #849: a pause that stood the guider down belongs to the target it
+        # paused. A hop is a new acquisition, so a flag a StopTarget left
+        # unconsumed (the window closed, or the floor or safety gate stopped
+        # the target before its recovery ran) must not make this target's
+        # recovery compare its pose with the old target's.
+        self._guiding_off_for_pause = False
+        self._pause_pose = None
         await self._setup_target(ti, target)
         if self._hop_guide_started:
             self._guiding_recoveries = 0
@@ -9991,6 +10114,14 @@ class SequenceEngine:
         # `_begin_frame`'s NB.
         self._frame_had_event = True
 
+        # A RE-SETUP AFTER A PAUSE (#849): a safety pause's resume, a roof
+        # reopen or a cloud hold's release re-runs this setup inside the
+        # visit, and it placed the mount on the target. `_hop` clears the
+        # pause flag before its own setup, but these do not, so a pause's
+        # pose would read the setup's slew as "moved" when its guide start
+        # failed and the resumed recovery ran.
+        await self._repose_for_pause()
+
         # setup complete — capture is about to begin. Arm the no-progress watchdog
         # and anchor its clock to NOW so a slow slew/solve/AF that just finished
         # doesn't instantly read as a stall against the last target's frame stamp.
@@ -10669,6 +10800,10 @@ class SequenceEngine:
             # slew to explain it (#851): checked in place, by a solve that
             # moves nothing, before another frame is shot on it.
             await self._maybe_recheck_pointing(target)
+            # #848: was the guider guiding at the top of this iteration? Read
+            # once here, after every recovery above (the re-check's hold can
+            # restart guiding too), compared at the shutter below.
+            guided_at_top = await self._frame_was_guided()
             await self._enforce_tracking(step, target)
             await self._enforce_cooling()
 
@@ -10755,6 +10890,32 @@ class SequenceEngine:
             # path can see coming. Cheap to ask, and the frame it saves is one
             # nobody would have known to look for.
             await self._await_guider_quiet("this frame")
+
+            # #848: THE SKIP GATE. A guider that was guiding at the top of
+            # this iteration and is not guiding now stopped during it (a
+            # runaway or a failed first dither during the dither above, or a
+            # calibration check failing while the quiet gate waited), and its
+            # calibration was discarded with it. On 2026-10-07 the run shot a
+            # 180 s frame on exactly that. The frame is not taken; the next
+            # iteration's recovery re-centres and restarts guiding first.
+            # Bounded: each skip needs a fresh active-to-inactive transition,
+            # which needs a successful start, and recovery starts are capped by
+            # _MAX_GUIDING_RECOVERIES; once recovery is spent the guider is
+            # inactive at the top and the frame is shot as the operator's
+            # guiding_action says. With recover_guiding off nothing would
+            # restart guiding, so nothing is skipped, UNLESS a pause stood the
+            # guider down after the top read (a pause met in the cooling gate,
+            # the second flip gate or an owed-flip hold): the next
+            # iteration's `_maybe_recover_guiding` restarts guiding for a
+            # resumed run whatever recover_guiding says, so the skip costs
+            # nothing and the frame is shot guided.
+            if (self.plan.guide
+                    and (self._policy.recover_guiding
+                         or self._guiding_off_for_pause)
+                    and guided_at_top
+                    and not await self._frame_was_guided()):
+                bus.log("warning", L_SKIP, "sequence")
+                continue
 
             self._begin_frame(ti, si, step.exposure_s)
             shown = (self._ledger_counts().get(step.id, 0) + 1
@@ -10989,7 +11150,23 @@ class SequenceEngine:
 
     def _reporter_record(self, target: Target, step, info: dict, *, accepted: bool) -> None:
         """Record one frame to the session report (every frame, with its accepted
-        flag). Best-effort; never lets a report-write hiccup break the run."""
+        flag). Best-effort; never lets a report-write hiccup break the run.
+
+        #856.1: first, and whether or not there is a reporter, the night log
+        says how many guide corrections hit the limit during this exposure: a
+        runaway's thousands of exactly-at-cap pulses left no trace before."""
+        capped = None
+        try:
+            capped = self._capped_during_frame()
+            if capped:
+                dirs = ", ".join(f"{d} {n}" for d, n in sorted(
+                    capped.items(), key=lambda kv: -kv[1]))
+                bus.log("warning",
+                        f"{sum(capped.values())} guide pulse(s) at the pulse "
+                        f"limit during this exposure of {target.name} ({dirs})",
+                        "sequence")
+        except Exception:               # noqa: BLE001 - never break the run
+            capped = None
         if self.reporter is None:
             return
         hfr = info.get("hfr") if isinstance(info, dict) else None
@@ -11026,7 +11203,8 @@ class SequenceEngine:
                 altitude_deg=_frame_altitude(target, self.hub.site, time.time()),
                 mosaic=labels.get("mosaic") or None,
                 panel=labels.get("panel") or None,
-                pointing_unverified=unverified))
+                pointing_unverified=unverified,
+                guide_capped=capped))
         except Exception as e:
             bus.log("warning", f"report record failed: {e}", "sequence")
 
@@ -13578,15 +13756,21 @@ class SequenceEngine:
                         + (f", {unmetered} not shot (the exposure would not "
                            f"meter)" if unmetered else ""), "sequence")
 
-    async def _stand_down_guider(self) -> None:
+    async def _stand_down_guider(self) -> bool:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:
-        a wedged guider must not be able to prevent a weather hold."""
+        a wedged guider must not be able to prevent a weather hold.
+
+        True when ``stop_guiding`` returned without raising (#849: the pause
+        says whether it really stopped the guider); existing callers ignore
+        it."""
         try:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
+                return True
         except (asyncio.TimeoutError, Exception):
             pass
+        return False
 
     async def _cloud_probe(self, target: Target | None) -> bool | None:
         """One unsaved science-length exposure, judged. Returns cloudy / clear / unknown.
@@ -14623,6 +14807,49 @@ class SequenceEngine:
         self._active_step = (ti, si)
         self._cur_exposure_s = float(exposure_s)
         self._frame_started_at = time.time()
+        # #856.1: the guider's saturated-correction counts as the shutter
+        # opens, so the frame record can say how many fell inside it.
+        self._capped_at_open = (id(self.hub.guider),
+                                self._guider_saturated_counts())
+
+    def _guider_saturated_counts(self) -> dict[str, int] | None:
+        """The guider's lifetime counts of corrections at its axis limit, by
+        direction (#856.1), or None when it cannot say. Never raises."""
+        try:
+            g = self.hub.guider
+            if g is None or not getattr(g, "connected", False):
+                return None
+            fn = getattr(g, "saturated_pulses", None)
+            if not callable(fn):
+                return None
+            raw = fn()
+            if not isinstance(raw, dict):
+                return None
+            out: dict[str, int] = {}
+            for k, v in raw.items():
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                out[str(k)] = int(v)
+            return out
+        except Exception:               # noqa: BLE001 - cannot say
+            return None
+
+    def _capped_during_frame(self) -> dict[str, int] | None:
+        """Corrections at the guider's axis limit since the shutter opened, by
+        direction, non-zero ones only; None when the guider cannot say. The
+        base is zero when the guider object changed or a count went backwards
+        (a new guider), so nothing is ever negative."""
+        now = self._guider_saturated_counts()
+        if now is None:
+            return None
+        base: dict[str, int] = {}
+        at_open = getattr(self, "_capped_at_open", None)
+        if at_open is not None and at_open[0] == id(self.hub.guider) \
+                and isinstance(at_open[1], dict) \
+                and all(now.get(k, 0) >= v for k, v in at_open[1].items()):
+            base = at_open[1]
+        diff = {d: now[d] - base.get(d, 0) for d in now}
+        return {d: n for d, n in diff.items() if n > 0}
 
     def _record_frame(self, key: str, i: int, target: Target, step, info: dict,
                       *, accepted: bool = True, guided: bool = True) -> None:
@@ -15749,6 +15976,8 @@ class SequenceEngine:
             # owed.
             self._record_event_cost("flip", time.time() - _t0)
             self._frame_had_event = True
+            # The engine placed the mount, so a pause's pose is stale (#849).
+            await self._repose_for_pause()
             return
         # THE FLIP'S GOTO IS A FRESH POINTING (#248, H3 orchestrator ruling
         # 6), whichever side it landed on: the mount is on this target and
@@ -15762,6 +15991,14 @@ class SequenceEngine:
         self._record_sky_angle(target, since=_t0, commanded=flip_angle,
                                result=flip_result, rec=self._sky_angle_now())
         side_after = await self._pier_side_now()
+        # A FLIP AFTER A PAUSE (#849): the run paused, the target passed its
+        # flip point, and this re-slew moved the mount on purpose (the pier
+        # side too, for a flip that flipped). The guider is still down from
+        # the pause, so the hub's flip did not restart it, and the resumed
+        # recovery would compare the pause's pose with this one and skip a
+        # target that does not re-centre as "moved". Read after the side
+        # read, so the sky angle above stays the flip's own record.
+        await self._repose_for_pause()
         unchanged = (side_before not in (None, "unknown")
                      and side_after == side_before)
         # THE HUB NOW ANSWERS THE SAME QUESTION, and it answers it from INSIDE
@@ -16642,7 +16879,14 @@ class SequenceEngine:
         return True
 
     async def _maybe_recover_guiding(self, target=None) -> None:
-        if not (self.plan.guide and self._policy.recover_guiding):
+        # #849 (RULING R1): a pause stood the guider down (`_checkpoint`), so
+        # this, the first recovery point after the frame loop's gates, gives
+        # back what the pause took away: re-centre if the target centres, then
+        # restart, uncharged, and also for a plan with recover_guiding off
+        # (which gets nothing beyond that). Consumed here whatever follows.
+        resumed = bool(getattr(self, "_guiding_off_for_pause", False))
+        self._guiding_off_for_pause = False
+        if not (self.plan.guide and (self._policy.recover_guiding or resumed)):
             return
         g = self.hub.guider
         if not g or not g.connected:
@@ -16674,7 +16918,9 @@ class SequenceEngine:
         # forgotten whenever the attempts are not spent, so the next spell,
         # the next target (the key has the target in it) and the next run
         # (it has the run's start) each read once.
-        spent = self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES
+        # A resume is not a recovery attempt, so it never meets the bound.
+        spent = ((not resumed)
+                 and self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES)
         here = (self._started_at, id(target))
         if not spent:
             self._sky_read_at_bound = None
@@ -16682,7 +16928,8 @@ class SequenceEngine:
             self._stand_down_said_at = None
         if not (spent and getattr(self, "_sky_read_at_bound", None) == here):
             if await self._sky_closed_before_recovery(
-                    target, why="guiding was lost"):
+                    target, why=("the run resumed with guiding stopped"
+                                 if resumed else "guiding was lost")):
                 return
             if spent:
                 self._sky_read_at_bound = here
@@ -16701,7 +16948,7 @@ class SequenceEngine:
         # ALREADY chose for "guiding is unavailable" rather than inventing a
         # second policy for the same situation: a guider that cannot be kept
         # is a guider that is unavailable.
-        if self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES:
+        if spent:
             cfg = self._cfg
             require_guiding = bool(cfg and cfg.escalation.require_guiding)
             action = (cfg.escalation.guiding_action if cfg else "warn")
@@ -16796,12 +17043,18 @@ class SequenceEngine:
         # reason and the night still has a bound. A panel of a group sent on
         # unguided takes the escalation like any target, so it is stopped
         # like one.
+        #
+        # A RESUME IS NOT CHARGED HERE EITHER (#849, ruling R1): the pause
+        # took guiding away and nothing failed, so it neither spends nor
+        # meets this bound, as it never meets the #72 one above. Its
+        # re-centre still goes through `_recentre_for_hold` below, whose
+        # position gate runs before every goto (P2 ruling R9).
         recentres = (target is not None and getattr(target, "center", False)
                      and not getattr(target, "calibration", False))
         member = self._group_of(target) if target is not None else None
         defers = member is not None and member.id not in self._group_unguided
         charged_key = None
-        if recentres:
+        if recentres and not resumed:
             key = self._budget_key(target)
             n = self._recovery_recentres.get(key, 0)
             if n >= MAX_RECOVERY_RECENTRES_PER_TARGET_NIGHT:
@@ -16817,12 +17070,29 @@ class SequenceEngine:
             self._recovery_recentres[key] = n + 1
             charged_key = key
 
-        self._guiding_recoveries += 1
-        bus.log("warning",
-                f"guiding lost — attempting recovery "
-                f"({self._guiding_recoveries}/{_MAX_GUIDING_RECOVERIES})",
-                "sequence")
-        self._set_state(detail="recovering guiding")
+        if resumed:
+            # Not charged: the pause took guiding away, nothing failed.
+            bus.log("info", L_RESUME_RESTART, "sequence")
+            self._set_state(detail="resuming: restarting guiding")
+        else:
+            self._guiding_recoveries += 1
+            bus.log("warning",
+                    f"guiding lost — attempting recovery "
+                    f"({self._guiding_recoveries}/{_MAX_GUIDING_RECOVERIES})",
+                    "sequence")
+            self._set_state(detail="recovering guiding")
+
+        # A RESUMED TARGET THAT WILL NOT BE RE-CENTRED must still be where it
+        # was when the run paused: an operator may have homed, parked or
+        # slewed it in between, and guiding restarted there would guide the
+        # wrong field. A re-centred one needs no such test, since the solve
+        # puts it back. Positions are compared, never printed (#140, #166).
+        # Ahead of the re-centre below; `recentres` is the same test the
+        # re-centre uses, so exactly one of the two applies to a resume.
+        if resumed and not recentres:
+            if self._pose_moved(self._pause_pose, await self._read_pose()):
+                bus.log("warning", L_PAUSE_MOVED, "sequence")
+                raise StopTarget(PAUSE_MOVED_REASON)
 
         # RE-CENTRE BEFORE RESUMING, not after. While guiding was down the field
         # was free to walk, and on 2026-08-10 it walked 128 ARCMIN (2.1°) — the
@@ -16844,12 +17114,19 @@ class SequenceEngine:
         # `_visit_panel`). The guider is already inactive, which is how this
         # was reached, so nothing is left running; the attempt counter is the
         # next hop's to reset (`_hop`, #329).
+        #
+        # A RESUMED TARGET THAT CENTRES (#849) takes this same path, so the
+        # position gate runs before its goto too: a pause is exactly when an
+        # operator may re-home or power-cycle the mount, and a goto aimed
+        # from a position the driver calls unknown must not be sent.
         if recentres:
             self._set_state(detail="re-centring after guiding loss")
             await self._recentre_for_hold(
                 # Not "guiding was lost": the UI's humanizer rewrites any
                 # line carrying "guid" and "lost" as "Guiding was lost -
                 # recovering", and the operator would never read the stop.
+                # (A literal: test_850's scan grades every site's fixed
+                # words, and a resume shares this site, #849.)
                 target, "re-centring after the guide star went missing",
                 sync_check=lambda r: self._stop_if_sync_not_taken(
                     r, target,
@@ -16860,7 +17137,21 @@ class SequenceEngine:
         try:
             await g.start_guiding()
         except Exception as e:
-            bus.log("warning", f"guiding recovery failed: {e}", "sequence")
+            if resumed:
+                # Nothing was charged, so nothing is given back below. The
+                # exception text has its own line, so that L_RESUME_FAIL, the
+                # operator's line, carries no raw text and always reaches the
+                # UI whole. The evidence line itself is NOT protected: every
+                # native guider error starts "native guider:", and one that
+                # also says "lost" (a walk that lost its star) is shown by the
+                # UI's humanizer as a lost guide star, as the existing
+                # "guiding recovery failed: ..." line always was. Its raw
+                # text stays in the night log and the log drawer.
+                bus.log("warning", L_RESUME_FAIL, "sequence")
+                bus.log("warning", f"resume: the restart failed with: {e}",
+                        "sequence")
+            else:
+                bus.log("warning", f"guiding recovery failed: {e}", "sequence")
             # A CALIBRATION THAT FOUND NO STAR is the one thing the reading
             # above could not have seen: the sky may have closed since (#621:
             # "the last 14 frame(s) found no star" was cloud). Asked again,
@@ -16872,9 +17163,13 @@ class SequenceEngine:
             if await self._sky_closed_before_recovery(
                     target, why="guiding recovery failed",
                     after_failure=True):
-                self._guiding_recoveries = max(0, self._guiding_recoveries - 1)
+                # A resume charged nothing (#849), so nothing is given back.
+                if not resumed:
+                    self._guiding_recoveries = max(
+                        0, self._guiding_recoveries - 1)
                 # ...and the per-night re-centre it charged (#853): cloud
-                # charges nothing, before or after the fact.
+                # charges nothing, before or after the fact. None for a
+                # resume, which was never charged.
                 if charged_key is not None:
                     self._recovery_recentres[charged_key] = max(
                         0, self._recovery_recentres.get(charged_key, 0) - 1)
