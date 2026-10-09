@@ -854,20 +854,35 @@ def test_add_driver_serial(tmp_path, monkeypatch):
 
 def test_driver_id_resolution_carries_serial_addressing(tmp_path, monkeypatch):
     """B review I1: a serial driver REFERENCED BY ID must resolve with its
-    transport/port_path intact — resolve_driver_ids used to drop them."""
+    transport/port_path intact — resolve_driver_ids used to drop them.
+
+    #865: the store is bound on ``astrodeck.drivers`` itself. That module
+    binds ``config_store`` at its first import, which is lazy (the hub's
+    connect), so a test that patched ``astrodeck.config.config_store`` and
+    connected first left it holding a dead store for the rest of the xdist
+    worker; a driver written through the singleton then resolved as
+    "driver removed". Shown red before this change by running
+    ``test_hub_connect_profile.py::test_connect_rigspec_sim_connects_all_roles``
+    first under -n0.
+
+    NAMED MUTANT M865a "serial addressing dropped" (in drivers.py
+    ``resolve_driver_ids``, the ``transport=d.transport,`` and
+    ``port_path=(d.port_path or None),`` arguments deleted): RED on the
+    transport assertion."""
     from astrodeck import drivers as drv
-    from astrodeck.config import config_store
+    from astrodeck.config import ConfigStore
     from astrodeck.devices.backend import ConnSpec, RigSpec
-    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
-    monkeypatch.setattr(config_store, "_cfg", None)
-    d = config_store.add_driver("zwo-am5", transport="serial", port_path="COM9")
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(drv, "config_store", store)
+    d = store.add_driver("zwo-am5", transport="serial", port_path="COM9")
     spec = RigSpec(primary="none", roles={
         "telescope": ConnSpec(backend="", role="telescope", driver_id=d.id)})
     resolved, role_map, prefailed = drv.resolve_driver_ids(spec)
     assert prefailed == []
+    assert role_map == {"telescope": d.id}
     cs = resolved.roles["telescope"]
     assert cs.transport == "serial" and cs.port_path == "COM9"
-    assert cs.backend == "zwo-am5" or cs.backend == d.type   # registry-mapped
+    assert cs.backend == "zwo-am5"
 
 
 def test_api_creates_serial_driver(registered, tmp_path, monkeypatch):
