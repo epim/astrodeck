@@ -38,7 +38,10 @@ from .devices.base import (
     SafetyMonitor,
     SafetyReading,
     Switch,
+    SyncRefused,
+    SyncUnverified,
     Telescope,
+    quotable_sync_reply,
 )
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
@@ -795,6 +798,41 @@ SOLVE_REASON_SOLVER_MISSING = (
     "plate solve failed: no plate solver is available on this rig")
 SOLVE_REASON_FILE_LOCKED = (
     "plate solve failed: another program held the solve frame's file open")
+# Not a failed solve: the solve worked and the MOUNT refused to take it (#850).
+# Rig-side and it does not clear by itself, so D-03 may match it. Kept free of
+# the words "plate" and "solve" together: the UI's humanizer turns any text
+# carrying both into "Plate-solve failed - check focus/exposure", which would
+# send the operator to the wrong part of the rig.
+SOLVE_REASON_SYNC_REFUSED = (
+    "the mount refused the sync, so its pointing could not be corrected")
+# The sync was not refused but could not be confirmed (``SyncUnverified``,
+# #850): the link failed around it or the position read-back never answered.
+# The same fixed-words rules as the line above.
+SOLVE_REASON_SYNC_UNVERIFIED = (
+    "the mount did not confirm the sync, so its pointing could not be "
+    "corrected")
+
+
+def _sync_reply_words(code: str) -> str:
+    """The mount's sync reply as a log line may quote it (#850).
+
+    Quoted ONLY when ``devices.base.quotable_sync_reply`` says it may be,
+    the one copy of the rule: 1 to 8 letters, digits or ``/`` with no run of
+    three digits (``'e11'``, ``'N/A'``). The driver applies the same rule to
+    ``code``; the hub applies it again to its own lines, because a
+    desynchronised link can hand back a ``:GR#``-shaped string such as
+    ``07:23:41`` (or ``072341`` with its separators lost) as the "reply", and
+    at the home position that is the pole's RA, a site oracle (#140, #166).
+    Empty is "an empty reply", and anything else, the driver's
+    ``"unrecognised"`` sentinel included, is "an unrecognised reply", never
+    quoted. Short on purpose: the refusal line in ``solve_and_sync`` has to
+    fit 140 characters around the driver's 90-character e11 advice."""
+    if not code:
+        return "an empty reply"
+    quoted = quotable_sync_reply(code)
+    if quoted is not None:
+        return repr(quoted)
+    return "an unrecognised reply"
 
 
 def solve_failure_reason(exc: BaseException) -> str | None:
@@ -7103,8 +7141,20 @@ class Hub:
         return out
 
     async def solve_and_sync(self, exposure_s: float = 3.0, *,
-                             blind: bool = False) -> dict:
+                             blind: bool = False,
+                             refusal_level: str = "warning") -> dict:
         """Plate-solve the current pointing and sync the mount to it.
+
+        ``refusal_level`` is the level of the ONE line logged when the mount
+        refuses the sync or does not confirm it (``SyncRefused`` /
+        ``SyncUnverified``, #850): ``"warning"`` by default, ``"info"`` for a
+        caller that decides on the refusal itself and logs its own line next:
+        the resume ladder, which recovers from an ``e11`` at home without
+        anyone touching the rig, so a warning telling the operator to act
+        would be wrong; and ``goto_and_center``, whose centring loop logs the
+        one warning itself when it stops on the refusal, and only an info
+        line when the field is already within tolerance. Anything else is a
+        ``ValueError``, raised before the camera is touched.
 
         ONE real-solver path for every backend (P0-1). The old NINA branch called
         NINA's ``/prepared-image/solve``, which HANGS on the live rig and left the
@@ -7114,6 +7164,10 @@ class Hub:
         resolution now happens UP FRONT via ``providers.pick_solver`` (spec §3.4),
         so a rig nothing can trustworthily solve for fails in <1 ms with a clear
         ``DeviceError`` instead of wasting an exposure first."""
+        if refusal_level not in ("warning", "info"):
+            raise ValueError(
+                f"refusal_level must be 'warning' or 'info', not "
+                f"{refusal_level!r}")
         cam: Camera = self.require("camera")
         tel: Telescope = self.require("telescope")
         # Resolver-routed (spec §3.4): honors the user's solve override and the
@@ -7230,7 +7284,60 @@ class Hub:
         # J2000 — the caller's centering error math compares against a J2000 target.
         sync_ra, sync_dec = await self.to_mount_frame(
             tel, result.ra_hours, result.dec_deg)
-        await tel.sync(sync_ra, sync_dec)
+        try:
+            await tel.sync(sync_ra, sync_dec)
+        except (SyncRefused, SyncUnverified) as e:
+            # THE SOLVE WORKED AND THE MOUNT WOULD NOT TAKE IT (#850). On
+            # 2026-10-07 three centring syncs of 2.2 to 2.8 degrees changed
+            # nothing, this method logged "solved & synced" for each, and the
+            # run imaged the wrong field for hours. The driver now reads the
+            # position back and raises ``SyncRefused`` when the mount refused
+            # (an ``eNN`` reply) or answered as if it had and did not move,
+            # and ``SyncUnverified`` when nobody could tell: the link failed
+            # around ``:CM#`` or the read-back never answered. Both are
+            # siblings under ``DeviceError``, so naming both here is what
+            # keeps an unverified sync out of the callers' "plate solve
+            # failed" arms. A plain ``DeviceError`` is neither and goes past
+            # this arm untouched, with no line of its own.
+            #
+            # The solve is attached so a caller can still say how far the
+            # field is from its target: ``goto_and_center`` stops on it
+            # rather than re-slewing into the same place, and the resume
+            # ladder weighs ``residual_deg``. J2000, as the solver returned it.
+            e.solved = (result.ra_hours, result.dec_deg)
+            # ONE warning, and NO COORDINATES in it: the driver's read-back at
+            # the home position is the pole, and the solve there is too (#140,
+            # #166). Worded without "plate" beside "solve": the UI's log
+            # humanizer turns any line carrying both into "Plate-solve failed -
+            # check focus/exposure", which sends the operator to the optics
+            # when the cause is the mount. And never "solved & synced": both
+            # mount UIs read that line as a completed sync.
+            #
+            # The driver's reason goes EARLY and the line stays short: the
+            # UI cuts a line over 140 characters to 137 plus an ellipsis, and
+            # the e11 reason (at most 90 characters) carries the operator's
+            # action (the driver's e11 words, in the safe order). The
+            # prefix is 48 characters with a three-character reply, so the
+            # e11 line is at most 138 and nothing is cut.
+            #
+            # At ``refusal_level``: a warning unless the caller said it
+            # decides on the refusal itself and its own line follows.
+            if isinstance(e, SyncRefused):
+                bus.log(refusal_level,
+                        f"solved, but the mount refused the sync "
+                        f"({_sync_reply_words(e.code)}): {e.reason}", "solve")
+            else:
+                bus.log(refusal_level,
+                        f"solved, but the mount did not confirm the sync: "
+                        f"{e.reason}", "solve")
+            # Everything below is bookkeeping for a mount that now agrees with
+            # the sky. The field identity is keyed to the mount's report and
+            # the solved centre is recorded as the mount's pointing: neither
+            # is true of a mount that refused the correction. The rotator's
+            # sky angle from this solve would still be a fair measurement, but
+            # it is skipped with the rest so a refused sync has one shape (the
+            # #850 brief's interface): the caller is about to stop on it.
+            raise
         bus.log("info", f"solved & synced: RA {result.ra_hours:.4f}h "
                         f"Dec {result.dec_deg:+.3f}° (J2000)", "solve")
         # THE SOLVE THAT WAS ALREADY BEING PAID FOR (#182). Every goto centres by
@@ -8237,7 +8344,36 @@ class Hub:
         only then: a cloud verdict, a no-light verdict, a timeout or an
         unknown error leave it out, and the engine reads its absence as the
         generic failure. It is the centring solve's alone, not the rotate
-        loop's, and it never carries a number, a path or a site datum."""
+        loop's, and it never carries a number, a path or a site datum.
+
+        ``sync_refused: True`` (#850) means the field SOLVED and the mount
+        refused the sync (``SyncRefused``), with the field further than
+        ``tolerance_deg`` from the target. The loop stops there, because a
+        correction slew through the same uncorrected model lands in the same
+        place. Beside it: ``sync_reply`` (the mount's reply as the driver
+        sanitised it: a short code such as ``"e11"``, ``""`` or
+        ``"unrecognised"``),
+        ``sync_reason`` (the driver's words), ``error_arcmin`` (the solve
+        against the target, None when no solve was attached) and
+        ``solve_reason`` = ``SOLVE_REASON_SYNC_REFUSED``. There is NO
+        ``solve_failed`` key: it is not a failed solve, and must never reach
+        the engine's no-light hold. A refused sync whose solve is already
+        within tolerance is simply centred.
+
+        ``sync_unverified: True`` (#850) is its sibling for a sync the mount
+        did NOT refuse but nobody could confirm (``SyncUnverified``: the link
+        failed around ``:CM#``, or the position read-back never answered),
+        again with the field further than ``tolerance_deg`` off. Same stop,
+        same keys beside it, except that ``solve_reason`` is
+        ``SOLVE_REASON_SYNC_UNVERIFIED`` and there is NO ``sync_refused`` key
+        (a caller that must stop on either reads both keys). ``sync_reply``
+        is the reply when one came back, else ``""``. Within tolerance it is
+        centred, like a refusal. Neither shape ever carries ``solve_failed``,
+        and the pointing is marked unverified with the matching fixed
+        sentence as its reason. Both carry ``centring_solve_transient:
+        False`` even when a rotate-phase transient put ``solve_transient`` in
+        the rotation keys: the centring solve worked, so the miss must never
+        be read as a solve that could not run."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -8402,10 +8538,108 @@ class Hub:
             # hang or propagate (live bug): the mount has already slewed, so we
             # return the un-centered result with a warning rather than aborting.
             # CancelledError is re-raised so a user/engine abort still stops us.
+            #
+            # ``refusal_level="info"`` (#850 round 4): the arm below logs its
+            # own line for a sync that was not taken, a warning when it stops
+            # and an info line when the field is already within tolerance.
+            # At the default level a refused centring logged the hub's
+            # refusal warning AND the stop warning, two hub warnings for one
+            # event; this way the stop line is the only warning.
             try:
-                solved = await self.solve_and_sync(solve_exposure_s)
+                solved = await self.solve_and_sync(solve_exposure_s,
+                                                   refusal_level="info")
             except asyncio.CancelledError:
                 raise
+            except (SyncRefused, SyncUnverified) as e:
+                # THE MOUNT REFUSED THE SYNC, OR DID NOT CONFIRM IT (#850).
+                # Not a failed plate solve: the field solved, and the arm
+                # below would call it one and send the engine to its no-light
+                # hold (ruling 5). Caught FIRST because both are
+                # ``DeviceError``s. ``SyncUnverified`` (the link failed around
+                # the sync, or the read-back never answered) is not a refusal
+                # and gets its own key and words, but it stops the loop the
+                # same way: a correction slew planned from a pointing nobody
+                # could confirm is a guess.
+                refused = isinstance(e, SyncRefused)
+                if refused:
+                    what = ("the mount refused the sync "
+                            f"({_sync_reply_words(e.code)})")
+                    sync_const = SOLVE_REASON_SYNC_REFUSED
+                    sync_key = "sync_refused"
+                else:
+                    what = "the mount did not confirm the sync"
+                    sync_const = SOLVE_REASON_SYNC_UNVERIFIED
+                    sync_key = "sync_unverified"
+                #
+                # How far the FIELD is from the target comes from the solve
+                # the hub attached (``e.solved``), the same J2000 comparison
+                # the success path makes below. None when nothing was attached
+                # or the solve is non-finite: still a refusal, never the
+                # solve-failed arm.
+                from .catalog.coords import angular_sep_deg as _sep
+                refused_err: float | None = None
+                if e.solved is not None:
+                    try:
+                        refused_err = _sep(e.solved[0], e.solved[1],
+                                           ra_hours, dec_deg)
+                    except ValueError:
+                        refused_err = None
+                if refused_err is not None and refused_err <= tolerance_deg:
+                    # The goto already landed on the field: the mount's model
+                    # is right to within tolerance here, so a refused
+                    # correction costs nothing. Fall through to the normal
+                    # centred verdict below with the solve as ``solved``,
+                    # after one line saying what the mount did.
+                    bus.log("info",
+                            f"centering attempt {attempt}: {what}, but the "
+                            f"field is already {refused_err * 60:.1f}' from "
+                            f"the target, within tolerance", "solve")
+                    solved = {"ra_hours": e.solved[0], "dec_deg": e.solved[1]}
+                else:
+                    # STOP HERE. A refused sync: the correction slew below
+                    # would command the same target through the same
+                    # uncorrected model and land in the same place (on
+                    # 2026-10-07 this loop's next goto was zero length and the
+                    # field did not move). An unverified one: nobody knows
+                    # which model the slew would go through.
+                    #
+                    # In words, without coordinates (the solve and the mount's
+                    # report are site oracles at the pole, #140), and CAUSE
+                    # FIRST: the UI cuts a line over 140 characters to 137
+                    # plus an ellipsis, and "stopped" and the reason are what
+                    # the operator needs. With a three-digit arcmin figure the
+                    # refused line is 123 characters and the unverified one
+                    # 113 (both pinned in test_850_hub_sync_refused.py).
+                    off = (f"the field is {refused_err * 60:.1f}' off target"
+                           if refused_err is not None
+                           else "the field's offset was not measured")
+                    if refused:
+                        line = (f"centering stopped: {what}; {off} and a "
+                                f"re-slew lands in the same place")
+                    else:
+                        line = (f"centering stopped: {what}, so its pointing "
+                                f"is unknown; {off}")
+                    bus.log("warning", line, "solve")
+                    self.note_pointing_verified(False, reason=sync_const)
+                    # ``centring_solve_transient`` False, stated outright and
+                    # merged LAST: the centring solve ran and worked, so this
+                    # miss is the mount's. Without the key the engine's
+                    # ``_group_hop_checks`` falls back to the union
+                    # ``solve_transient``, which a rotate-phase transient in
+                    # ``_rot_keys`` sets, and it would defer a require_centred
+                    # panel as "the centring solve could not run" for a mount
+                    # refusal.
+                    return {"centered": False,
+                            "error_arcmin": (refused_err * 60
+                                             if refused_err is not None
+                                             else None),
+                            "attempts": attempt,
+                            sync_key: True,
+                            "sync_reply": e.code,
+                            "sync_reason": e.reason,
+                            "solve_reason": sync_const,
+                            } | _rot_keys | {
+                                "centring_solve_transient": False}
             except (DeviceError, Exception) as e:
                 bus.log("warning",
                         f"centering: plate solve failed ({e}); using raw GoTo", "solve")
@@ -8629,6 +8863,14 @@ class Hub:
         # recalibration above: unreadable is not evidence that nothing moved.
         bus.log("info", "meridian flip complete" if flipped else
                 "meridian flip attempt finished: nothing flipped", "sequence")
+        # The re-centre's own keys ride through UNCHANGED, and that is the
+        # contract the engine reads (#850): ``sync_refused``,
+        # ``sync_unverified``, ``sync_reply``, ``sync_reason``,
+        # ``error_arcmin`` and ``solve_reason`` from a re-centre whose sync
+        # the mount refused, or did not confirm, reach the flip step as
+        # ``goto_and_center`` returned them, so it can stop the target rather
+        # than image a field it could not centre. The three flip keys are
+        # added beside them and never overwrite one.
         return dict(result or {}, flipped=flipped,
                     pier_side_before=side_before, pier_side_after=side_after)
 

@@ -98,6 +98,7 @@ transfer; e.g. `:Sr10:37:16#` = 12 B in a single transfer, ack on bulk-IN):
 | `:Mn/s/e/w#` … `:Q#` | Manual move / stop | see note below |
 | `:Te#` / `:Td#` | Enable / disable tracking | see note below |
 | `:hR#` | Unpark | see note below |
+| `:CM#` | Sync to the set target | `N/A#` when taken (away from the pole); with the tube at the home position (bench, 2026-10-08) every sync was refused, all but one with `e11#`. **The reply is not proof**: see "Sync (`:CM#`) is verified by reading back" below |
 
 **The LX200 serial port is telemetry + config only — it cannot command motion.**
 With the mount confirmed **fully powered**, it answered every info query and accepted
@@ -120,6 +121,18 @@ e-code list, and `e14` and `e6` are the only two this project has seen on the wi
 driver (`_GOTO_REFUSALS` in `server/astrodeck/devices/backends/zwo_am5.py`) puts words to
 those two and says only "altitude, meridian or park limits are the usual reasons" for any
 other code. Do not add a meaning here without a capture to back it.
+
+**`e11#` = seen in answer to `:CM#` (sync) at the HOME position (bench, 2026-10-08,
+fw 1.8.8).** Every sync sent with the tube at home was refused: all but one answered
+`e11#` and moved nothing, sync-to-self included, tracking on or off; one answered `N/A#`
+and did not move. Its meaning beyond "where it was seen" is unknown, so the driver never
+reads it as proof that the tube is at home, and never answers it with a slew. It picks its
+words from the refusal's read-back: with the mount's opinion within 5 deg of the synced
+coordinates (or unread), "if the tube really is at home, use Trust position; a sync away
+from the pole then works"; further out, "tube not where the mount thinks: bring it home by
+eye with a pad key, then Trust position" (`SYNC_E11_ELSEWHERE_DEG`, which mirrors the
+resume ladder's `RECOVERY_REFUSED_SYNC_MAX_DEG`). The codes seen on the wire are now
+`e6`, `e11` and `e14`.
 
 The reason: **the mount was PARKED, and the unpark command is ZWO-specific — `:Spu#`, not
 the LX200/OnStep `:hR#`/`:hU#`/`:hP#` I had tried.** This was confirmed by capturing ZWO's
@@ -178,6 +191,10 @@ Verified live via `devices/backends/zwo_am5.py` over COM3 (no ZWO software):
   field**: `+90*00:00#` = 0.90× sidereal (NOT 90°).
 - **`:CM#` sync accepted** (sync-to-self round-trip clean). UTC-init scheme
   validated: `:GS#` sidereal matched computed LST within minutes.
+  > **Caveat (2026-10-08):** this held away from the pole only. With the tube
+  > at the HOME position (bench) sync-to-self answered `e11#` and the mount took
+  > nothing; see
+  > "Sync (`:CM#`) is verified by reading back" below.
 - **Pulse guide `:Mg{n,s,e,w}<ms>#` parses but produces NO motion** on this
   firmware over serial (tried 5–10 s pulses, upper+lowercase directions,
   tracking on, GR-monitored: 0.0″). `:GFR1#`/`:GFD1#` are NOT live encoders
@@ -257,6 +274,72 @@ Sample captures on the box: `C:\Users\James\AstroDeck\mountprobe.pcap` (the LX20
 
 > Site latitude/longitude returned by `:Gt#`/`:Gg#` are redacted here (the mount reports
 > the observatory's precise location); the live values are visible only on the rig.
+
+## Sync (`:CM#`) is verified by reading back (#850, bench 2026-10-08)
+
+**The incident, 2026-10-07.** Three centring syncs of 2.2 to 2.8 degrees at Dec +34,
+near the meridian, changed nothing. The hub logged "solved & synced", the next goto
+was zero length, the next solve showed the field unmoved, and the run imaged the wrong
+field for hours (#852). The driver of the day treated every `:CM#` reply except `e14`
+as success, threw the reply away and never read the position back, so **what the mount
+answered that night is unknown**.
+
+**The bench, real AM5N, fw 1.8.8, 2026-10-08:**
+
+| Where the tube was | `:CM#` reply (the link strips the `#`) | `:GR#`/`:GD#` read 1 s later |
+|---|---|---|
+| Away from the pole (Dec +35, hour angle +2.5 h, tracking on); 0.5 to 5 deg offsets in Dec and in RA | `N/A` every time | exactly the synced coordinates, within 0.002 deg |
+| HOME position (tube at the pole), tracking on or off | every sync there was refused: all but one answered `e11`, sync-to-self included | did not move |
+| HOME position, the one exception: a 5 deg sync | `N/A` | did NOT move |
+
+So the reply is a hint and the read-back is the test. How soon after the reply the
+report updates has not been measured: every read on the bench was taken 1 s after.
+
+**What the driver does** (`ZwoAm5Telescope.sync`, `server/astrodeck/devices/backends/zwo_am5.py`):
+
+1. `:Sr#`, `:Sd#`, `:CM#`. An `eNN` (or any answer but `1`) to the target is a refusal
+   (`SyncRefused`, `e14` with the parked probe); a link failure there is
+   `SyncUnverified` ("the link failed before the sync was sent"). `:CM#` is never
+   resent blind after a reopen: a mount that restarted under the dropped link has lost
+   its target and would sync to whatever it holds. On a link failure the driver sets
+   the target again and sends `:CM#` once more (harmless if the first was taken and
+   only its reply lost); a second failure is `SyncUnverified`.
+2. A reply matching `[eE]\d+` is a refusal (`SyncRefused`). The position is read
+   back once anyway, best effort, so the refusal carries how far the mount's own
+   opinion is from the synced coordinates (`residual_deg`).
+3. Any other reply (`N/A`, or anything a firmware might say instead) is judged by the
+   read-back: within `SYNC_VERIFY_DEG` (0.05 deg) of the synced coordinates, by angular
+   separation, it is taken; otherwise the driver re-reads up to twice more, 0.5 s
+   apart. A read that fails (no answer, unreadable, not finite) is retried the same
+   way. The LAST read decides: a good read still outside the tolerance raises
+   `SyncRefused` with the reply; a failed one raises `SyncUnverified` ("the mount did
+   not answer the position read after the sync"), not a refusal. A reply other than
+   `N/A` that the read-back confirms is logged once.
+4. The reply is quoted in a text only when it matches `[A-Za-z0-9/]{1,8}`. An empty
+   reply is "an empty reply" and anything else "an unrecognised reply", never quoted:
+   a desynchronised link can hand the sync a `:GR#`-shaped answer, and at home that
+   is local sidereal time. The link's own timeout text reports how many bytes arrived,
+   never the bytes.
+5. Only a verified sync clears the reset latch (`position_known`, #144).
+
+No message carries the read-back's RA or Dec: at home it is the pole, and its RA
+follows local sidereal time, so either is a site oracle (#140, #166). Separations
+in degrees are allowed.
+
+**Consequence for a reset mount.** After a power cycle the mount reports home wherever
+the tube is, so its position is unknown, and with the tube at home the bench saw every
+sync refused. Do not slew or go to a target from there: a goto is aimed from the position
+the mount believes, and with the tube elsewhere it lands somewhere unknown. The safe
+order is:
+
+1. If the tube really is at home, use Trust position.
+2. If it is not, hold a pad key and bring it home by eye (hold-to-move computes no
+   destination), then use Trust position.
+3. Only then does a goto away from the pole, followed by a solve and sync there, refine
+   the pointing.
+
+A mount whose own position disagrees badly with the sky AND refuses the
+correction cannot be put right from here; it needs the operator at the scope (#857).
 
 ## The reported RA/Dec walks during a run (measured 2026-08-21 and 2026-09-06)
 

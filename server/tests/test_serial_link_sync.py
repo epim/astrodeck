@@ -135,3 +135,24 @@ async def test_request_sync_gives_up_rather_than_blocking_forever():
     finally:
         link._port_lock.release()
     assert ser.writes == []
+
+
+def test_a_timeout_reports_how_many_bytes_came_never_the_bytes():
+    """#850 F1.2. A ``:GR#`` that times out part-way through holds half a
+    coordinate, and at the home position that is the local sidereal time (a
+    site oracle, #140, #166). The driver wraps this text into errors that
+    reach log lines and hold reasons, so it carries a count. Mutant
+    ``m_timeout_echoes_bytes`` (the round-1 ``(got {bytes(buf)!r})``
+    restored). Made-up value."""
+    ser = FakeSerial()
+    link = SerialLink("COM-TEST")
+    link._ser = ser
+    ser.arm(b"07:23:4")              # no '#': the reply never finished
+
+    with pytest.raises(LinkError) as exc:
+        link.request_sync("GR", reply="hash", timeout=0.3)
+
+    text = str(exc.value)
+    assert "got 7 bytes" in text, text
+    for needle in ("07:23:4", "07:23", "b'0"):
+        assert needle not in text, f"{needle!r} in {text!r}"

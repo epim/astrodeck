@@ -133,8 +133,14 @@ class SerialLink:
             if b == b"#":
                 return buf.decode("ascii", "replace")
             buf.extend(b)
+        # A COUNT, never the bytes (#850). A timed-out :GR#/:GD#/:GA#/:GZ# can
+        # hold half a coordinate, and at the home position that is the pole and
+        # the local sidereal time, both site oracles (#140, #166). This text is
+        # wrapped into driver errors that reach log lines and hold reasons. How
+        # much arrived is the diagnosis; what it said is not needed for one.
         raise LinkError(
-            f"timeout waiting for '#' on {self.port_path} (got {bytes(buf)!r})")
+            f"timeout waiting for '#' on {self.port_path} (got {len(buf)} "
+            f"bytes)")
 
     def _read_ack(self, deadline: float) -> str:
         """Blocking helper (thread): one ack byte; 'e' completes to '#'."""

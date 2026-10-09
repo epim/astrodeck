@@ -111,7 +111,8 @@ from ..sun_watch import SunWatch
 from ..catalog.ephemeris.elements import ephemeris_store
 from ..dew import DewController
 from ..devices import alpaca as alpaca_backend
-from ..devices.base import DeviceError, TRACKING_RATES
+from ..devices.base import (DeviceError, SyncRefused, SyncUnverified,
+                            TRACKING_RATES)
 from ..devices.nina import discover_nina
 from ..events import LOG_READ_MAX, bus, night_key
 from ..focus import run_autofocus
@@ -1553,6 +1554,35 @@ def _spawn(name: str, coro, *, replace: bool = False) -> dict:
 
     hub._busy[name] = asyncio.create_task(wrapped())
     return {"started": name}
+
+
+async def _sync_not_taken_is_not_a_failed_solve(solve_and_sync) -> None:
+    """Run a Solve & Sync, and report a sync the mount did not take in its
+    own words (#850).
+
+    ``_spawn`` words every failure "<lane> failed: ...", which for the
+    ``solve`` lane is "solve failed: ...". For ``SyncRefused`` (the mount
+    refused the sync: ``e11`` at its home position) and ``SyncUnverified``
+    (nobody could confirm it) that is false: the field solved, and the
+    operator toasted "solve failed" goes to the optics when the cause is the
+    mount. Those two are logged here at ERROR level, so the UI still toasts
+    them, as "sync not taken: <the driver's words>" on source "solve", and
+    they end here. Every other exception, ``CancelledError`` included, goes
+    on to ``_spawn``'s own handling unchanged.
+
+    The driver's message carries no coordinates and no raw link bytes, and
+    its action (for ``e11``, the driver's e11 words, in the safe order)
+    comes early, so the 16-character prefix still leaves it before the UI's
+    137-character cut.
+
+    Takes the method, not its coroutine: ``_spawn`` closes the coroutine it
+    is handed when it refuses the lane (409), and closing this wrapper
+    before it starts could not close an inner coroutine already made, which
+    would then log "coroutine ... was never awaited"."""
+    try:
+        await solve_and_sync()
+    except (SyncRefused, SyncUnverified) as e:
+        bus.log("error", f"sync not taken: {e}", "solve")
 
 
 # In-flight connect-by-profile/rig driver task (see _spawn_connect). Tracked here
@@ -9261,7 +9291,10 @@ def create_app(*, bind_host: str | None = None,
             hub.require("telescope"), hub.require("camera")
         except DeviceError as e:
             raise _err(e)
-        return _spawn("solve", hub.solve_and_sync())
+        # A sync the mount refused or did not confirm is not a failed solve
+        # (#850): worded as "sync not taken", never "solve failed".
+        return _spawn("solve", _sync_not_taken_is_not_a_failed_solve(
+            hub.solve_and_sync))
 
     # Monotonic stamp of the last "position unknown" warning /api/mount/move
     # wrote (None before the first). A one-slot list, not a global: the rate

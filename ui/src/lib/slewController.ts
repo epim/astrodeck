@@ -122,10 +122,23 @@ export function fastestRungIndex(rates: readonly SlewRateOption[]): number {
 // After a power cycle the AM5 reports its home position, pointing at the pole,
 // wherever the tube physically is. The server latches `status.mount.position_known`
 // False on that signature (devices/base.py `Telescope.position_known`) and keeps
-// it so until a plate-solved sync or the operator's word (`POST
-// /api/mount/trust-position`). While it is False a step is a goto from a position
-// that is wrong, so both UIs lock the steps, and the pad stops consulting
-// anything that reads the believed position.
+// it so until a sync from a solved frame or the operator's word (`POST
+// /api/mount/trust-position`). On the bench, WITH THE TUBE AT HOME, the AM5
+// refused every sync while it reported its home position (2026-10-08, #850), so
+// a solve and sync right after power-up is refused, and the driver says so.
+// While it is False a step is a goto from a position that is wrong, so both UIs
+// lock the steps, and the pad stops consulting anything that reads the believed
+// position.
+//
+// NO SURFACED ADVICE MAY TELL THE OPERATOR TO SLEW OR GO TO A TARGET IN THIS
+// STATE (#850). A goto is not locked here (neither route nor driver checks it,
+// and neither UI gates its goto on it), but it is aimed from the position the
+// mount believes. If the tube is not really at home, the goto lands somewhere
+// unknown, and that is how a tube meets a pier. The safe order is: if the tube
+// really is at home, TRUST POSITION. If it is not, hold a pad key and bring it
+// home by eye first (hold-to-move computes no destination), then TRUST POSITION.
+// Only after that does going to a target away from the pole, and solving and
+// syncing there, refine the pointing.
 //
 // ONLY AN EXPLICIT `false` LOCKS ANYTHING. The server always sends the key now,
 // so ABSENT is an engine older than #144 and reads as known; a client that read
@@ -138,17 +151,26 @@ export function positionKnown(
 
 // The copy is written once, here, because three surfaces say it (the classic
 // view, the new sheet, and the pad both of them host) and a sentence that
-// differs between them is a sentence one of them has wrong. It says "a
-// plate-solve sync" and never a button's name: the classic view's button reads
-// "Solve & Sync" and the sheet's "SOLVE + SYNC", and a sentence that named one
-// would be wrong on the other. TRUST POSITION is the one label both share.
+// differs between them is a sentence one of them has wrong. It says "solve and
+// sync" and never a button's name: the classic view's button reads "Solve &
+// Sync" and the sheet's "SOLVE + SYNC", and a sentence that named one would be
+// wrong on the other. TRUST POSITION is the one label both share.
+//
+// IT NEVER SAYS A SYNC AT HOME UNLOCKS ANYTHING, AND IT NEVER ADVISES A GOTO
+// (#850). The bench saw the AM5 refuse every sync with the tube at home, and a
+// goto is aimed from a position nobody vouches for, so the advice is the safe
+// order above: TRUST POSITION when the tube really is at home, and otherwise a
+// pad key held to bring it home by eye first. The word "plate" never sits beside
+// "solve" here:
+// `humanizeLog` rewrites any line holding both to "Plate-solve failed", and a
+// toast path that forgot `enqueueToast` would turn this advice into its opposite.
 //
 // A MOUNT POWERED UP PARKED AT HOME READS THE POLE TOO (WP-103's design note),
-// so this state is the ORDINARY start of every night, until the first plate-solve
-// sync. The wording therefore says what the mount is doing and what clears it, and
-// does not say "error", "lost" or "reset" as though something had gone wrong.
-// Hyphens, never em-dashes: the new UI forbids them and the classic strings read
-// the same either way.
+// so this state is the ORDINARY start of every night, until the operator trusts
+// the position or a sync from a solved frame. The wording therefore says what the mount is doing and what
+// clears it, and does not say "error", "lost" or "reset" as though something had
+// gone wrong. Hyphens, never em-dashes: the new UI forbids them and the classic
+// strings read the same either way.
 
 /** Why a step cannot run, and what unlocks it. Shown as the lock reason on RA
  *  STEP / DEC STEP and as the toast when a locked tap is pressed. It says "steps
@@ -156,16 +178,18 @@ export function positionKnown(
  *  arrows call them nudges; both are a move measured from the believed position. */
 export const POSITION_UNKNOWN_STEPS_REASON =
   "Steps and nudges are measured from where the mount thinks it points, and it "
-  + "does not know: it is reporting its home position. A plate-solve sync, or "
-  + "TRUST POSITION when the tube really is at home, unlocks them.";
+  + "does not know: it is reporting its home position. If the tube really is at "
+  + "home, TRUST POSITION unlocks them. If it is not, hold a pad key to bring it "
+  + "home by eye first, then use TRUST POSITION.";
 
 /** The note over the pad. Says what the mount is doing (ordinary after any
  *  power-up), what still works, and what teaches it where it is. */
 export const POSITION_UNKNOWN_NOTE =
   "The mount is reporting its home position, as it does after any power-up or "
   + "reset, so it does not know where the tube points. That is normal at the "
-  + "start of a night. Holding a pad key still moves the tube; a plate-solve "
-  + "sync teaches the mount where it is.";
+  + "start of a night. Holding a pad key still moves the tube. With the tube at "
+  + "home, TRUST POSITION tells the mount where it is; after that, the first "
+  + "solve and sync away from the pole measures it.";
 
 /** What the pad lost with the believed position: the horizon guard reads it. */
 export const ALT_GUARD_OFF_NOTE =
@@ -181,8 +205,9 @@ export const TRUST_POSITION_CONFIRM_BODY =
   "You are saying the tube is physically at the mount's home or park position, "
   + "the one it reports after a power-up. The mount's coordinates are then taken "
   + "as true: moves measured from them unlock, and manual moves check the Sun "
-  + "against them. If the tube is anywhere else, cancel and run a plate-solve "
-  + "sync instead.";
+  + "against them. If the tube is anywhere else, cancel and hold a pad key to "
+  + "bring it home by eye first: a move to a target now would be aimed from the "
+  + "wrong position.";
 export const TRUST_POSITION_CONFIRM_LABEL = "The tube is at home";
 
 export const TOUCH_MAX_RATE_DEG_S = 0.6; // mirror of server clamp (R2/R24)

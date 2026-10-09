@@ -21,6 +21,18 @@
 // The pad's own half (altitude guard dropped, the NINA tap refused) is graded
 // in components/__tests__/w16SlewPadPositionUnknown.test.tsx.
 //
+// #850 copy mutants (same procedure). Each puts back the round-3 wording:
+//   h1m3_body_goto_back -- TRUST_POSITION_CONFIRM_BODY's last sentence (in
+//     lib/slewController.ts) back to "If the tube is anywhere else, cancel, go
+//     to a target away from the pole, and solve and sync there instead: the
+//     mount refuses every sync at home." 12/13: "x TRUST POSITION asks first, and a
+//     cancel posts nothing: the confirmation does not send a tube that is not
+//     at home home by eye: You are saying the tube ...".
+//   h1m5_view_toast_back -- MountView.tsx's declined toast back to "... Run
+//     Solve & Sync instead." 12/13: "x a driver that declines is NOT reported
+//     as cleared: the declined toast is not the agreed advice: The mount did
+//     not accept that its position is known. Run Solve & Sync instead.".
+//
 // Named mutants (one-statement source changes in MountView.tsx; each run from a
 // byte backup inside the worktree, restored byte-identically, mutant text
 // grepped out). The first failing assertion of each is quoted verbatim:
@@ -253,6 +265,17 @@ await testAsync("TRUST POSITION asks first, and a cancel posts nothing", async (
   assert(req != null, "one tap attested the tube's position with no confirmation");
   eq(req.title, TRUST_POSITION_CONFIRM_TITLE, "the confirmation title");
   eq(req.body, TRUST_POSITION_CONFIRM_BODY, "the confirmation body");
+  // #850, the safety rule: a tube that is NOT at home is brought home by eye
+  // with a pad key first. A goto now would be aimed from the wrong position, so
+  // the dialog never advises one.
+  assert(/anywhere else, cancel and hold a pad key to bring it home by eye first/.test(String(req.body))
+    && /aimed from the wrong position/.test(String(req.body))
+    && !/plate/i.test(String(req.body)),
+    `the confirmation does not send a tube that is not at home home by eye: ${String(req.body)}`);
+  for (const re of [/go to a target/i, /target away from the pole/i, /goto/i, /go-to/i, /slew/i]) {
+    assert(!re.test(String(req.body)),
+      `the confirmation advises a goto (${re}) from an unknown position: ${String(req.body)}`);
+  }
   assert(!posts.some((p) => p.path.includes("trust-position")),
     "the attestation was posted before the operator confirmed");
   answerConfirm(false);
@@ -297,6 +320,16 @@ await testAsync("a driver that declines is NOT reported as cleared", async () =>
   assert(/did not accept that its position is known/.test(toasts),
     `a declined attestation was announced as a success: ${toasts}`);
   assert(!/Position trusted/.test(toasts), "the success toast was shown for a refusal");
+  // #850: a sync where the tube points now needs no goto, and the sentence
+  // names no button (the classic view's says Solve & Sync, the sheet's SOLVE +
+  // SYNC).
+  assert(toasts.includes(
+    "The mount did not accept that its position is known. Solve and sync where "
+    + "the tube points now instead."),
+    `the declined toast is not the agreed advice: ${toasts}`);
+  for (const re of [/go to a target/i, /goto/i, /slew/i, /Solve & Sync/, /SOLVE \+ SYNC/, /\bRun\b/]) {
+    assert(!re.test(toasts), `the declined toast says ${re}: ${toasts}`);
+  }
   assert(text().includes(POSITION_UNKNOWN_NOTE), "the view let go on a driver that declined");
 });
 

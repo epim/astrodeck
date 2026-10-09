@@ -408,7 +408,8 @@ class _RecHub:
             return object()
         raise RuntimeError(role)
 
-    async def solve_and_sync(self, exposure_s: float = 3.0, *, blind: bool = False):
+    async def solve_and_sync(self, exposure_s: float = 3.0, *, blind: bool = False,
+                             refusal_level: str = "warning"):
         self.blind_used = blind
         self.calls.append("solve")
         if self._solve_raises:

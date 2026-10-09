@@ -10,8 +10,9 @@
 // pole, wherever the tube physically is, and the server publishes
 // `status.mount.position_known = false` (WP-103). It is also the ORDINARY start
 // of every night: a mount powered up parked at home reads the same pole, so the
-// flag is false until the first plate-solve sync. Everything the sheet computes
-// from "where the mount points" is then a precise answer about nothing.
+// flag is false until TRUST POSITION or a sync from a solved frame (the bench saw
+// the AM5 refuse every sync with the tube at home, #850). Everything the sheet
+// computes from "where the mount points" is then a precise answer about nothing.
 //
 // WHAT THE SHEET MUST DO, and what each case holds it to:
 //   1. RA STEP / DEC STEP are locked WITH the reason (what a step is, why it
@@ -83,6 +84,34 @@
 //     tile says unknown but not whose reading it would have been: ALT / AZunknown".
 // (m10-m13 were added by the independent verifier: the first draft left those
 // four statements unpinned.)
+//
+// #850 copy mutants (one-string changes in lib/slewController.ts and the
+// declined toast, run the same way). Each puts back the round-3 wording, which
+// told the operator to go to a target while the mount's position is unknown, or
+// to run a sync the AM5 refuses at home:
+//   h1m1_reason_goto_back -- POSITION_UNKNOWN_STEPS_REASON back to "... where it
+//     refuses every sync. Go to a target away from the pole and solve and sync
+//     there, or use TRUST POSITION when the tube really is at home; either
+//     unlocks them." 17/20: "x the reason says what a step is, why it
+//     cannot run, and what unlocks it: what unlocks it: ...", "x no copy
+//     advises a goto or a slew ...: POSITION_UNKNOWN_STEPS_REASON advises a
+//     goto (/go to a target/i) from an unknown position: ..." and the
+//     exact-copy case.
+//   h1m2_note_goto_back -- POSITION_UNKNOWN_NOTE's last sentence back to "...;
+//     a solve and sync on a target away from the pole teaches the mount where
+//     it is." 18/20: "x no copy advises a goto or a slew ...:
+//     POSITION_UNKNOWN_NOTE advises a goto (/target away from the pole/i)
+//     from an unknown position: ..." and the exact-copy case.
+//   h1m3_body_goto_back -- TRUST_POSITION_CONFIRM_BODY's last sentence back to
+//     "If the tube is anywhere else, cancel, go to a target away from the pole,
+//     and solve and sync there instead: the mount refuses every sync at home."
+//     18/20: "x no copy advises a goto or a slew ...:
+//     TRUST_POSITION_CONFIRM_BODY advises a goto (/go to a target/i) from an
+//     unknown position: ..." and the exact-copy case.
+//   h1m4_sheet_toast_back -- mount.tsx's declined toast back to "... Run SOLVE
+//     + SYNC instead." 19/20: "x a driver that declines is NOT reported as
+//     cleared: the declined toast is not the agreed advice: The mount did not
+//     accept that its position is known. Run SOLVE + SYNC instead.".
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -327,8 +356,63 @@ test("the reason says what a step is, why it cannot run, and what unlocks it", (
   const r = POSITION_UNKNOWN_STEPS_REASON;
   assert(/measured from where the mount thinks it points/.test(r), `what a step is: ${r}`);
   assert(/does not know/.test(r), `why it cannot run: ${r}`);
-  assert(/plate-solve sync/.test(r) && /TRUST POSITION/.test(r), `what unlocks it: ${r}`);
+  assert(/If the tube really is at home, TRUST POSITION unlocks them\./.test(r),
+    `what unlocks it: ${r}`);
+  assert(/If it is not, hold a pad key to bring it home by eye first, then use TRUST POSITION\./.test(r),
+    `what to do when the tube is not at home: ${r}`);
   assert(!/[—–]/.test(r), "an em or en dash in a new-UI string (ARCHITECTURE 5)");
+});
+
+// #850, THE SAFETY RULE: while the mount does not know where it points, no copy
+// may tell the operator to slew or go to a target. A goto is not locked in this
+// state, but it is aimed from the position the mount believes, so with the tube
+// anywhere but home it lands somewhere unknown, which is how a tube meets a
+// pier. The safe order is TRUST POSITION when the tube really is at home, and a
+// pad key held to bring it home by eye first when it is not (hold-to-move
+// computes no destination). None holds "plate" beside "solve" either:
+// `humanizeLog` rewrites such a line to "Plate-solve failed".
+const GOTO_ADVICE: readonly RegExp[] = [
+  /go to a target/i, /target away from the pole/i, /goto/i, /go-to/i, /slew/i,
+];
+test("no copy advises a goto or a slew while the mount does not know where it points", () => {
+  for (const [name, s] of [
+    ["POSITION_UNKNOWN_STEPS_REASON", POSITION_UNKNOWN_STEPS_REASON],
+    ["POSITION_UNKNOWN_NOTE", POSITION_UNKNOWN_NOTE],
+    ["TRUST_POSITION_CONFIRM_BODY", TRUST_POSITION_CONFIRM_BODY],
+  ] as const) {
+    for (const re of GOTO_ADVICE) {
+      assert(!re.test(s), `${name} advises a goto (${re}) from an unknown position: ${s}`);
+    }
+    assert(!/refuses every sync/.test(s),
+      `${name} states the at-home refusal as a rule about any mount reporting home: ${s}`);
+    assert(!(/plate/i.test(s) && /solve/i.test(s)),
+      `${name} holds "plate" beside "solve", which the humanizer rewrites: ${s}`);
+    assert(!/[—–]/.test(s), `${name}: an em or en dash in a new-UI string`);
+  }
+});
+
+test("each copy names the safe order: TRUST POSITION at home, otherwise home by eye first", () => {
+  eq(POSITION_UNKNOWN_STEPS_REASON,
+    "Steps and nudges are measured from where the mount thinks it points, and it "
+    + "does not know: it is reporting its home position. If the tube really is at "
+    + "home, TRUST POSITION unlocks them. If it is not, hold a pad key to bring it "
+    + "home by eye first, then use TRUST POSITION.",
+    "POSITION_UNKNOWN_STEPS_REASON");
+  eq(POSITION_UNKNOWN_NOTE,
+    "The mount is reporting its home position, as it does after any power-up or "
+    + "reset, so it does not know where the tube points. That is normal at the "
+    + "start of a night. Holding a pad key still moves the tube. With the tube at "
+    + "home, TRUST POSITION tells the mount where it is; after that, the first "
+    + "solve and sync away from the pole measures it.",
+    "POSITION_UNKNOWN_NOTE");
+  eq(TRUST_POSITION_CONFIRM_BODY,
+    "You are saying the tube is physically at the mount's home or park position, "
+    + "the one it reports after a power-up. The mount's coordinates are then taken "
+    + "as true: moves measured from them unlock, and manual moves check the Sun "
+    + "against them. If the tube is anywhere else, cancel and hold a pad key to "
+    + "bring it home by eye first: a move to a target now would be aimed from the "
+    + "wrong position.",
+    "TRUST_POSITION_CONFIRM_BODY");
 });
 
 test("the ceiling stop is selected on the transition", () => {
@@ -473,6 +557,16 @@ await testAsync("a driver that declines is NOT reported as cleared", async () =>
   assert(/did not accept that its position is known/.test(lastToast()),
     `a declined attestation was announced as a success: ${lastToast()}`);
   assert(!/Position trusted/.test(lastToast()), "the success toast was shown for a refusal");
+  // #850: the advice is a sync where the tube points now, which needs no goto,
+  // and it names no button (the sheet's says SOLVE + SYNC, the classic view's
+  // Solve & Sync).
+  assert(lastToast().includes(
+    "The mount did not accept that its position is known. Solve and sync where "
+    + "the tube points now instead."),
+    `the declined toast is not the agreed advice: ${lastToast()}`);
+  for (const re of [...GOTO_ADVICE, /SOLVE \+ SYNC/, /Solve & Sync/, /\bRun\b/]) {
+    assert(!re.test(lastToast()), `the declined toast says ${re}: ${lastToast()}`);
+  }
   eq(track("mount-ra-step").getAttribute("aria-disabled"), "true",
     "the steps unlocked on a driver that declined");
 });

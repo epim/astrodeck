@@ -113,9 +113,9 @@ export default function MountView() {
   const slewRates = useMemo(() => slewRatesWithCeiling(maxRateDegS),
                             [maxRateDegS]);
 
-  // #144: false after a power-up or reset, until a plate-solve sync or the
-  // operator's word. Only an explicit false counts (an engine older than the
-  // flag sends none). The pad below reads the same flag off the same status for
+  // #144: false after a power-up or reset, until the operator trusts the
+  // position or a sync from a solved frame. Only an explicit false counts (an
+  // engine older than the flag sends none). The pad below reads the same flag off the same status for
   // its own half (the ceiling rung, the altitude guard); this view owns the note
   // and the TRUST POSITION button, and stops printing the home reading.
   const positionIsKnown = positionKnown(m);
@@ -284,7 +284,8 @@ export default function MountView() {
       // go on the next status frame, never on this press.
       if (res?.position_known === false) {
         showToast("warning",
-          "The mount did not accept that its position is known. Run Solve & Sync instead.");
+          "The mount did not accept that its position is known. Solve and sync where "
+            + "the tube points now instead.");
         return;
       }
       enqueueToast({
@@ -582,8 +583,9 @@ export default function MountView() {
           {/* WHY THE PAD BEHAVES DIFFERENTLY, above it where it is read first.
               Information, not an alarm: a mount powered up parked at home reads
               the same pole as a reset one, so this is the ORDINARY start of
-              every night until the first plate-solve sync. The pad itself has
-              already moved to the ceiling rung and dropped its horizon guard. */}
+              every night until the operator trusts the position or a sync
+              from a solved frame. The pad itself has already moved to the
+              ceiling rung and dropped its horizon guard. */}
           {!positionIsKnown && (
             <div className="mb-3 flex flex-col gap-2" data-testid="mount-position-note">
               <p className="text-[12px] leading-snug text-dim" role="status">
