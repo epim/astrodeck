@@ -265,7 +265,9 @@ test('affineFromTriangle of a source triangle with no area is the zero matrix at
 
 test('liveFrame.ts imports only rotation and the shared types, types by import type, and does not log', () => {
   const source = readFileSync(new URL('../liveFrame.ts', import.meta.url), 'utf8');
-  const imports = source.split('\n').filter(l => /^import\b/.test(l));
+  // Split on either line ending: a checkout with core.autocrlf=true leaves a \r on every line, and the anchored
+  // `;$` patterns below would then match nothing. This is a check on what the file imports, not on its line endings.
+  const imports = source.split(/\r?\n/).filter(l => /^import\b/.test(l));
   assert.equal(imports.length, 2, imports.join(' | '));
   assert.ok(imports.some(l => /^import \{[^}]*\} from '\.\/rotation';$/.test(l)));
   assert.ok(imports.some(l => /^import type \{[^}]*\} from '\.\/types';$/.test(l)));

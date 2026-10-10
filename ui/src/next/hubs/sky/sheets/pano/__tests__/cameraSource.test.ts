@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { createHarness, resample, type FrameMetadata, type ReplayHarness } from '../../__sim__/harness';
 import type { Raster } from '../../__sim__/png';
 import { pixelLuminance } from '../../photosphereGeometry';
+import { createManualRaf } from '../../../../../../testing/rafPolyfill';
 import {
   ANALYSIS_LONG_PX, CameraSource, LIVE_SOURCE_H, LIVE_SOURCE_W, TINY_H, TINY_W, cameraErrorText, frameTime, percentile,
   preferredRearCamera, readbackSummary,
@@ -439,15 +440,20 @@ await test('frameTime follows 3.2: capture, then presentation, then the callback
   assert.equal(frameTime({ captureTime: Number.POSITIVE_INFINITY }, 30), 30);
 });
 
-/** A rAF the test steps by hand. */
+/** A rAF the test steps by hand: the shared manual queue (testing/rafPolyfill.ts), installed over the harness's own,
+ *  which `createHarness` has already put on the globals and `dispose` takes back off. */
 function manualRaf() {
-  const queue = new Map<number, (t: number) => void>();
-  let next = 1;
-  g.requestAnimationFrame = (fn: (t: number) => void) => { queue.set(next, fn); return next++; };
-  g.cancelAnimationFrame = (id: number) => { queue.delete(id); };
+  const rafQueue = createManualRaf();
+  g.requestAnimationFrame = rafQueue.request;
+  g.cancelAnimationFrame = rafQueue.cancel;
   return {
-    queue,
-    step() { const q = [...queue.values()]; queue.clear(); for (const fn of q) fn(0); },
+    /** How many frames are waiting. A cancelled slot is a hole in the queue, so it is not counted. */
+    pending: () => rafQueue.pending.filter(Boolean).length,
+    /** Fires every frame requested so far, once. A frame a callback requests while it runs waits for the next step. */
+    step() {
+      const due = rafQueue.pending.splice(0, rafQueue.pending.length).filter(Boolean);
+      for (const fn of due) fn(0);
+    },
   };
 }
 
@@ -456,12 +462,16 @@ await test('rAF fallback when rVFC is stubbed away: a frame is a moved media clo
   const raf = manualRaf();
   const proto = g.window.HTMLVideoElement.prototype;
   proto.requestVideoFrameCallback = undefined;
+  // The harness answers getVideoPlaybackQuality (its counter is bumped by every `deliverFrame`, taken or not), and the
+  // poll prefers that counter to the media clock. The media clock is read only when there is no counter, so a case about
+  // the media clock has to take the counter away, or `deliverFrame(fm(1))` below would move it and be seen as a frame.
+  proto.getVideoPlaybackQuality = undefined;
   const cam = new CameraSource();
   try {
     h.setClock(2000); h.setFrame(pattern(720, 1280), 0);
     await cam.open(h.video);
     assert.equal(h.deliverFrame(fm(1)), false, 'no rVFC callback was registered');
-    assert.equal(raf.queue.size, 1, 'a rAF poll is');
+    assert.equal(raf.pending(), 1, 'a rAF poll is');
     const metas = collect(cam);
     raf.step();
     assert.equal(metas.length, 0, 'the clock has not moved: no frame');
@@ -486,7 +496,7 @@ await test('rAF fallback when rVFC is stubbed away: a frame is a moved media clo
     assert.ok(cam.bench, 'the benchmark finished on the fallback path');
     assert.equal(cam.bench!.chosen, 'A');
     cam.close();
-    assert.equal(raf.queue.size, 0, 'close cancels the poll');
+    assert.equal(raf.pending(), 0, 'close cancels the poll');
   } finally {
     cam.close();
     h.dispose();
