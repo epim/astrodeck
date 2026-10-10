@@ -16,6 +16,11 @@
 // stream on a 60 Hz change-driven pump, `devicemotion` at 60 Hz in the W3C slots (alpha = device x, beta = y,
 // gamma = z), and frames whose `captureTime` carries a lag or is absent. Every random source is seeded, so the same
 // options give the same bytes.
+//
+// Every rendered frame carries sensor noise unless the caller asks for none (S37): Gaussian, luma sd 2, the figure of
+// the simulator's `noise_sigma`. A noiseless smooth sky quantises into contours that are the same in both of two
+// views, and phase correlation whitens them into a confident wrong peak. A test that needs exact pixels passes
+// `noise: 0`.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { encodePng } from '../../../__sim__/png';
@@ -150,10 +155,40 @@ export function makeSynthScene(o: {
 /** Sub-pixel sample offsets: 2 x 2 at the quarter points of a pixel [x, x + 1). */
 const SUBSAMPLES: readonly (readonly [number, number])[] = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
 
+/** The luma standard deviation of the sensor noise a rendered frame carries by default (S37): the simulator's
+ *  `noise_sigma` default (frames_post.py), which is also the figure the scanner estimates. */
+export const DEFAULT_NOISE_SD = 2;
+
+export interface RenderOptions {
+  /** Luma standard deviation of the added sensor noise; 0 is noiseless, exactly the sampled scene. DEFAULT_NOISE_SD. */
+  noise?: number;
+  /** Which noise pattern the frame carries: one seed always draws the same bytes. The default is a hash of the pose, so
+   *  two views get two patterns and one view always gets the same. Two frames that must look like two exposures of the
+   *  sensor (the same pose twice, a stationary phone) need two seeds: a pattern shared by both is fixed-pattern noise,
+   *  which a registration reads as a zero shift. */
+  seed?: number;
+}
+
+/** A 32-bit hash of a pose's four components, the default noise seed of a view. */
+const poseSeed = (q: Quat): number => q.reduce((h, c) => { h = Math.imul(h ^ Math.round(c * 2 ** 30), 0x9e3779b1); return h ^ (h >>> 15); }, 0x2545f491);
+
+/** A standard normal from (seed, x, y), by Box-Muller over two hashed uniforms. The draw is a function of its three
+ *  integers alone (the simulator's frame noise is likewise one stream per frame number), so a frame's noise does not
+ *  depend on which frames were drawn before it, and no seed's stream is a shifted copy of another's, as two offsets
+ *  of one sequential generator can be: a shifted copy of one frame's noise in another reads as a phantom image shift. */
+const gaussAt = (seed: number, x: number, y: number): number =>
+  Math.sqrt(-2 * Math.log(1 - lattice(seed, x, 2 * y))) * Math.cos(2 * Math.PI * lattice(seed, x, 2 * y + 1));
+
 /** RGBA, `k.w` x `k.h`, row-major, alpha 255. `q` is camera to world (x right, y up, looking along -z) and a pixel i
  *  spans [i, i + 1), so the principal point is the centre. A sample point at (u, v) looks along
- *  `forward + (u - cx) / f right - (v - cy) / f up`; the average of the four sub-samples is the pixel. */
-export function renderView(scene: SynthScene, q: Quat, k: Intrinsics): Uint8ClampedArray {
+ *  `forward + (u - cx) / f right - (v - cy) / f up`; the average of the four sub-samples is the pixel.
+ *
+ *  Sensor noise is added last (S37), as the simulator does (frames_post.py step 5): one Gaussian draw per pixel, the
+ *  same on all three channels, so the luma noise has exactly the standard deviation `o.noise`, then rounded to 8 bits. */
+export function renderView(scene: SynthScene, q: Quat, k: Intrinsics, o: RenderOptions = {}): Uint8ClampedArray {
+  const sd = o.noise ?? DEFAULT_NOISE_SD;
+  if (!(sd >= 0 && sd < Infinity)) throw new RangeError('renderView: noise must be a finite number of at least 0');
+  const seed = o.seed ?? poseSeed(q);
   const { right, up, forward } = basisFromQuat(q);
   const out = new Uint8ClampedArray(k.w * k.h * 4);
   for (let y = 0; y < k.h; y++) {
@@ -167,8 +202,8 @@ export function renderView(scene: SynthScene, q: Quat, k: Intrinsics): Uint8Clam
         const rgb = scene.sample(Math.atan2(dx, dy) / DEG, Math.atan2(dz, Math.hypot(dx, dy)) / DEG);
         r += rgb[0]; g += rgb[1]; b += rgb[2];
       }
-      const i = (y * k.w + x) * 4;
-      out[i] = r / 4; out[i + 1] = g / 4; out[i + 2] = b / 4; out[i + 3] = 255;
+      const i = (y * k.w + x) * 4, n = sd > 0 ? sd * gaussAt(seed, x, y) : 0;
+      out[i] = r / 4 + n; out[i + 1] = g / 4 + n; out[i + 2] = b / 4 + n; out[i + 3] = 255;
     }
   }
   return out;
@@ -180,6 +215,9 @@ export interface SynthPanOptions {
   scene: SynthScene; shortFovDeg: number; w: number; h: number; fps: number; speedDegS: number; pitchDeg: number;
   turnDeg: number; startHoldS: number; endHoldS: number; gyroScaleErr: number; driftDegMin: number; seed: number;
   streams: 'both' | 'absolute-only'; gyro: boolean; captureLagMs: number | null; reverseAtDeg?: number;
+  /** Luma sd of the sensor noise on every frame (S37); 0 is noiseless. `DEFAULT_NOISE_SD`. Frame k's noise is drawn
+   *  from `seed` and k alone, so every frame of a pan has its own pattern and the same options give the same bytes. */
+  noise?: number;
 }
 export interface SynthPan {
   frames: { frameId: string; tCaptureMs: number | null; tPresentMs: number; truth: Quat; render(): Uint8ClampedArray }[];   // rendered lazily
@@ -239,6 +277,9 @@ const gauss = (r: () => number) => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(
 /** Each source draws from its own child of the case seed, so changing one stream never moves another's noise. The
  *  numbering follows the simulator's SeedSequence order: 0 relative, 1 absolute, 2 motion. */
 const child = (seed: number, index: number) => rng(Math.imul(seed | 0, 0x9e3779b1) ^ Math.imul(index + 1, 0x85ebca6b));
+/** The noise seed of frame `k`: child 4 of the case seed (the simulator's frame-noise child) with the frame number mixed
+ *  in, one pattern per frame number as the simulator draws it. */
+const frameNoiseSeed = (seed: number, k: number) => Math.imul(seed | 0, 0x9e3779b1) ^ Math.imul(4 + 1, 0x85ebca6b) ^ Math.imul(k + 1, 0x27d4eb2d);
 
 /** `x` rounded to a multiple of `step`, as a short decimal and never -0. */
 const roundTo = (x: number, step: number) => Number((Math.round(x / step) * step).toFixed(6)) + 0;
@@ -384,6 +425,7 @@ export function synthPan(o: SynthPanOptions): SynthPan {
     throw new RangeError('synthPan: fps, speedDegS, w, h and shortFovDeg must be positive, and shortFovDeg under 180');
   if (o.reverseAtDeg !== undefined && !(o.reverseAtDeg > 0 && o.turnDeg - o.reverseAtDeg + REVERSE_BACK_DEG >= 0))
     throw new RangeError('synthPan: reverseAtDeg must be positive, and turnDeg at least reverseAtDeg minus the 60 degrees back');
+  if (o.noise !== undefined && !(o.noise >= 0 && o.noise < Infinity)) throw new RangeError('synthPan: noise must be a finite number of at least 0');
   const tl = makeTimeline(o);
   // fNorm = f / shortEdgePx = 0.5 / tan(shortFov / 2); the principal point is the centre (3.2).
   const k0: Intrinsics = {
@@ -401,7 +443,11 @@ export function synthPan(o: SynthPanOptions): SynthPan {
     const tCaptureMs = o.captureLagMs === null ? null : exposure + Math.round(o.captureLagMs);
     const tPresentMs = tCaptureMs === null ? exposure + PRESENT_LATENCY_MS : Math.max(exposure + PRESENT_LATENCY_MS, tCaptureMs + 10);
     const truth = tl.poseAt(exposure);
-    frames.push({ frameId: `f${String(k).padStart(6, '0')}`, tCaptureMs, tPresentMs, truth, render: () => renderView(o.scene, truth, k0) });
+    const noiseSeed = frameNoiseSeed(o.seed, k);
+    frames.push({
+      frameId: `f${String(k).padStart(6, '0')}`, tCaptureMs, tPresentMs, truth,
+      render: () => renderView(o.scene, truth, k0, { noise: o.noise, seed: noiseSeed }),
+    });
   }
 
   // Generation order is relative, absolute, motion; the stable sort by delivery time keeps it for equal times.

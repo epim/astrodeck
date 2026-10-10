@@ -15,14 +15,21 @@
 //   * no reading age on the pump (every `age` 0): the relative stream delivers all 900 ticks of the 15 s window,
 //     over the 885 bound of the silent-in-a-hold case (S25);
 //   * a forward difference in the motion stream (the window starts at the sample, not half a period before it): the
-//     ramp-time motion case fails (S25).
+//     ramp-time motion case fails (S25);
+//   * the default noise set to 0 (`DEFAULT_NOISE_SD`): the default-noise cases fail, a default frame of a flat sky has
+//     a luma sd of 0 and not 2 (S37);
+//   * one noise draw per channel (three draws, not one): the same-offset-on-all-channels case and the luma sd fail;
+//   * the noise seed ignored (every frame the same pattern), or the pan's frame number left out of it: the
+//     different-patterns cases fail (S37);
+//   * the pan not passing its `noise` option on to renderView, or renderView reading the default and not the option:
+//     the pan's noise 6 and noise 0 cases, and the exact-pixel renderView cases that ask for noise 0, fail (S37).
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodePng } from '../../__sim__/png';
 import { replayCase } from '../../__sim__/replay';
-import { DEG, dot, lookBasis, skyVector } from '../../photosphereGeometry';
+import { DEG, dot, lookBasis, pixelLuminance, skyVector } from '../../photosphereGeometry';
 import {
   angleBetweenDeg, elevationDeg, expSO3, headingDeg, projectCamera, qinv, qmul, qrotate, quatFromBasis,
   quatFromDeviceOrientation, rollDeg,
@@ -144,6 +151,8 @@ function markerScene(az0: number, alt0: number, radiusDeg: number): SynthScene {
   return { horizonAlt: () => -90, sample: (az, alt) => (dot(skyVector(az, alt), m) >= cosR ? [255, 255, 255] : [0, 0, 0]) };
 }
 const K: Intrinsics = { w: 180, h: 320, f: 0.5 / Math.tan(41.14 * DEG / 2) * 180, cx: 90, cy: 160 };
+/** These cases read exact pixels, so they ask for none of the sensor noise a frame carries by default (S37). */
+const CLEAN = { noise: 0 } as const;
 
 await test('renderView puts a known direction at its projected pixel', () => {
   const cases: { q: Quat; az: number; alt: number; what: string }[] = [
@@ -153,7 +162,7 @@ await test('renderView puts a known direction at its projected pixel', () => {
     { q: lookAt(90, 60), az: 100, alt: 58, what: 'high pitch' },
   ];
   for (const { q, az, alt, what } of cases) {
-    const img = renderView(markerScene(az, alt, 0.7), q, K);
+    const img = renderView(markerScene(az, alt, 0.7), q, K, CLEAN);
     let sum = 0, sx = 0, sy = 0;
     for (let y = 0; y < K.h; y++) for (let x = 0; x < K.w; x++) {
       const v = img[(y * K.w + x) * 4] / 255;
@@ -168,7 +177,7 @@ await test('renderView puts a known direction at its projected pixel', () => {
 
 await test('renderView: the skyline is on the row the pinhole projects it to, at every column', () => {
   const flat = makeSynthScene({ seed: 1, skyline: () => 10, textureContrast: 0 });
-  const img = renderView(flat, lookAt(20, 0), K);
+  const img = renderView(flat, lookAt(20, 0), K, CLEAN);
   // Ground is [96, 84, 62] and the sky's red is 118 or more up to 58 degrees, so 107 separates them.
   for (const x of [20, 89, 90, 160]) {
     let first = -1;
@@ -183,7 +192,7 @@ await test('renderView supersamples 2 x 2: an edge through the middle of a pixel
   // A vertical edge at the azimuth whose projected column is cx + 0.5, so it splits the pixel at column cx exactly.
   const edge = Math.atan(0.5 / K.f) / DEG;
   const step: SynthScene = { horizonAlt: () => -90, sample: az => { const a = az > 180 ? az - 360 : az; return a < edge ? [0, 0, 0] : [200, 200, 200]; } };
-  const img = renderView(step, lookAt(0, 0), K);
+  const img = renderView(step, lookAt(0, 0), K, CLEAN);
   const at = (x: number, y: number) => img[(y * K.w + x) * 4];
   for (const y of [5, 160, 300]) {
     assert.equal(at(K.cx - 1, y), 0);
@@ -191,6 +200,113 @@ await test('renderView supersamples 2 x 2: an edge through the middle of a pixel
     assert.equal(at(K.cx + 1, y), 200);
   }
   assert.equal(img[3], 255);
+});
+
+// ---- Sensor noise (S37) ------------------------------------------------------
+
+/** Rec. 601 luma of every pixel of an RGBA image. */
+const lumaOf = (img: Uint8ClampedArray): number[] => Array.from({ length: img.length / 4 }, (_, p) => pixelLuminance(img[p * 4], img[p * 4 + 1], img[p * 4 + 2]));
+const meanOf = (v: readonly number[]) => v.reduce((a, b) => a + b, 0) / v.length;
+const sdOf = (v: readonly number[]) => { const m = meanOf(v); return Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / v.length); };
+/** Pearson correlation of two equally long series. */
+function corr(a: readonly number[], b: readonly number[]): number {
+  const ma = meanOf(a), mb = meanOf(b);
+  let sab = 0, saa = 0, sbb = 0;
+  for (let i = 0; i < a.length; i++) { sab += (a[i] - ma) * (b[i] - mb); saa += (a[i] - ma) ** 2; sbb += (b[i] - mb) ** 2; }
+  return sab / Math.sqrt(saa * sbb);
+}
+/** The red channel of `noisy` minus that of `clean`: what the noise did to a frame, whatever the scene is. */
+const noiseOf = (noisy: Uint8ClampedArray, clean: Uint8ClampedArray): number[] => Array.from({ length: noisy.length / 4 }, (_, p) => noisy[p * 4] - clean[p * 4]);
+/** Two frames are the same bytes. A failure names the first byte that differs: `assert.deepEqual` on two 230,000-element
+ *  arrays builds a diff of both and runs the process out of memory, which says nothing about the frame. */
+function sameBytes(actual: Uint8ClampedArray, expected: Uint8ClampedArray, what: string): void {
+  assert.equal(actual.length, expected.length, `${what}: frame length`);
+  const i = actual.findIndex((v, j) => v !== expected[j]);
+  if (i >= 0) assert.fail(`${what}: byte ${i} (pixel ${i >> 2}, channel ${i & 3}) is ${actual[i]}, expected ${expected[i]}`);
+}
+/** Two frames of the same size are not the same bytes. */
+function differBytes(a: Uint8ClampedArray, b: Uint8ClampedArray, what: string): void {
+  assert.equal(a.length, b.length, `${what}: frame length`);
+  assert.ok(a.some((v, j) => v !== b[j]), `${what}: the two frames are the same bytes`);
+}
+
+/** A sky with no texture and no gradient: whatever varies in a frame of it is the noise. */
+const FLAT_SKY_RGB = [120, 150, 190] as const;
+const flatSky: SynthScene = { horizonAlt: () => -90, sample: () => [...FLAT_SKY_RGB] };
+const qLook = lookAt(10, 20);
+
+await test('renderView: a default frame carries Gaussian luma noise of sd 2, the same on all three channels (S37)', () => {
+  const img = renderView(flatSky, qLook, K);
+  const luma = lumaOf(img);
+  const sd = sdOf(luma);
+  assert.ok(sd >= 1.6 && sd <= 2.4, `a flat sky's default luma sd is ${sd}, not within 1.6..2.4`);
+  near(sd, 2.02, 0.1, 'sd 2 plus the rounding to 8 bits, in quadrature');
+  near(meanOf(luma), pixelLuminance(...FLAT_SKY_RGB), 0.1, 'the noise has zero mean');
+  // One draw per pixel on every channel: the offset from the scene's colour is the same integer in red, green and blue.
+  for (let p = 0; p < K.w * K.h; p++) {
+    const dr = img[p * 4] - FLAT_SKY_RGB[0], dg = img[p * 4 + 1] - FLAT_SKY_RGB[1], db = img[p * 4 + 2] - FLAT_SKY_RGB[2];
+    if (dr !== dg || dg !== db) assert.fail(`pixel ${p}: offsets ${dr}, ${dg}, ${db} differ across channels`);
+    assert.equal(img[p * 4 + 3], 255);
+  }
+  // Gaussian and white: kurtosis 3 (sd 0.02 over 57,600 pixels), and no correlation between neighbours (sd 0.004).
+  const m = meanOf(luma);
+  near(luma.reduce((a, b) => a + (b - m) ** 4, 0) / luma.length / sd ** 4, 3, 0.1, 'kurtosis');
+  const right = luma.filter((_, p) => p % K.w < K.w - 1), rightNext = luma.filter((_, p) => p % K.w > 0);
+  const below = luma.slice(0, -K.w), belowNext = luma.slice(K.w);
+  assert.ok(Math.abs(corr(right, rightNext)) < 0.02, `horizontal neighbours correlate ${corr(right, rightNext)}`);
+  assert.ok(Math.abs(corr(below, belowNext)) < 0.02, `vertical neighbours correlate ${corr(below, belowNext)}`);
+});
+
+await test('renderView: the default noise rides on the default scene too, and the option sets its sd (S37)', () => {
+  const view = lookAt(0, 40);   // all sky, with the sky's own slow gradient across the frame
+  const clean = renderView(scene, view, K, CLEAN);
+  const added = noiseOf(renderView(scene, view, K), clean);
+  const sd = sdOf(added);
+  assert.ok(sd >= 1.6 && sd <= 2.4, `the noise on a default frame has sd ${sd}, not within 1.6..2.4`);
+  const wide = sdOf(noiseOf(renderView(scene, view, K, { noise: 5 }), clean));
+  near(wide, 5, 0.25, 'noise 5');
+  // The ground and the skyline carry it too.
+  const ground = lookAt(120, 0);
+  const groundNoise = sdOf(noiseOf(renderView(scene, ground, K), renderView(scene, ground, K, CLEAN)));
+  assert.ok(groundNoise >= 1.6 && groundNoise <= 2.4, `ground noise sd ${groundNoise}`);
+});
+
+await test('renderView: noise 0 is noiseless, exactly the sampled scene (S37)', () => {
+  const img = renderView(flatSky, qLook, K, { noise: 0 });
+  for (let p = 0; p < K.w * K.h; p++)
+    if (img[p * 4] !== FLAT_SKY_RGB[0] || img[p * 4 + 1] !== FLAT_SKY_RGB[1] || img[p * 4 + 2] !== FLAT_SKY_RGB[2] || img[p * 4 + 3] !== 255)
+      assert.fail(`pixel ${p} is ${img[p * 4]}, ${img[p * 4 + 1]}, ${img[p * 4 + 2]}, ${img[p * 4 + 3]}`);
+  near(sdOf(lumaOf(img)), 0, 1e-6, 'a flat sky at noise 0 has a luma sd of 0 (every pixel above is the scene colour, so what is left is float summation)');
+  // The seed has nothing to draw at noise 0.
+  sameBytes(renderView(flatSky, qLook, K, { noise: 0, seed: 99 }), img, 'noise 0 with a seed');
+  sameBytes(renderView(flatSky, lookAt(200, 5), K, CLEAN), img, 'noise 0 at another pose');
+});
+
+await test('renderView: the same seed gives identical frames, another seed another pattern, and a default seed follows the pose (S37)', () => {
+  const a = renderView(flatSky, qLook, K, { seed: 7 });
+  sameBytes(renderView(flatSky, qLook, K, { seed: 7 }), a, 'the same seed');
+  const b = renderView(flatSky, qLook, K, { seed: 8 });
+  differBytes(b, a, 'another seed');
+  const flat = renderView(flatSky, qLook, K, CLEAN);
+  assert.ok(Math.abs(corr(noiseOf(a, flat), noiseOf(b, flat))) < 0.02, 'two seeds are two independent patterns');
+  // Consecutive integers are no closer than any other pair (a sequential generator seeded 1 apart would be a shifted copy).
+  const c = noiseOf(renderView(flatSky, qLook, K, { seed: 9 }), flat);
+  assert.ok(Math.abs(corr(noiseOf(b, flat), c)) < 0.02, 'consecutive seeds');
+  // No seed: reproducible, because it is a function of the pose, and a different pose is a different pattern, so two views
+  // of a scene never share fixed-pattern noise.
+  const d = renderView(flatSky, qLook, K), e = renderView(flatSky, lookAt(10.5, 20), K);
+  sameBytes(renderView(flatSky, qLook, K), d, 'one pose, one frame');
+  differBytes(e, d, 'another pose');
+  assert.ok(Math.abs(corr(noiseOf(d, flat), noiseOf(e, flat))) < 0.02, 'two poses are two independent patterns');
+  // A given pixel's draw depends on the seed and the pixel alone, not on the frame's size around it.
+  const small: Intrinsics = { w: 20, h: 30, f: K.f, cx: 10, cy: 15 };
+  const part = renderView(flatSky, qLook, small, { seed: 7 });
+  for (let y = 0; y < small.h; y++) for (let x = 0; x < small.w; x++)
+    assert.equal(part[(y * small.w + x) * 4], a[(y * K.w + x) * 4], `pixel (${x}, ${y})`);
+});
+
+await test('renderView: a negative or non-finite noise is refused', () => {
+  for (const noise of [-1, Number.NaN, Infinity]) assert.throws(() => renderView(flatSky, qLook, K, { noise }), RangeError, `noise ${noise}`);
 });
 
 // ---- synthPan: timeline ------------------------------------------------------
@@ -253,8 +369,40 @@ await test('synthPan: frames are rendered lazily, and render() is deterministic'
   assert.deepEqual(Array.from(pan.frames[100].render()), Array.from(a), 'a scene that counts renders what the scene renders');
   assert.equal(a[3], 255);
   assert.notDeepEqual(Array.from(lazy.frames[200].render()), Array.from(a), 'a later frame looks elsewhere');
-  const t = renderView(scene, pan.frames[100].truth, pan.k0);
-  assert.deepEqual(Array.from(t), Array.from(a), 'render() is renderView of the truth pose at k0');
+  const clean = synthPan({ ...DEFAULT_PAN, scene, noise: 0 });
+  const t = renderView(scene, clean.frames[100].truth, clean.k0, CLEAN);
+  sameBytes(clean.frames[100].render(), t, 'at noise 0, render() is renderView of the truth pose at k0');
+});
+
+await test('synthPan: every frame carries its own reproducible noise pattern, sd 2 by default, and noise 0 is noiseless (S37)', () => {
+  const sky = synthPan({ ...DEFAULT_PAN, scene: flatSky });
+  const flat = renderView(flatSky, qLook, sky.k0, CLEAN);
+  const noise = (p: SynthPan, k: number) => noiseOf(p.frames[k].render(), flat);   // a flat sky: the frame is the noise
+  const n0 = noise(sky, 0), n1 = noise(sky, 1);
+  for (const n of [n0, n1, noise(sky, 200)]) {
+    const sd = sdOf(n);
+    assert.ok(sd >= 1.6 && sd <= 2.4, `a default pan frame's noise has sd ${sd}, not within 1.6..2.4`);
+  }
+  // Frames 0 and 1 are one pose (the start hold) and frames 0 and 200 are not: the pattern is the frame's own, so even
+  // two frames of one pose never share fixed-pattern noise.
+  assert.deepEqual(sky.frames[0].truth, sky.frames[1].truth, 'frames 0 and 1 are one pose');
+  assert.ok(Math.abs(corr(n0, n1)) < 0.02, `frames 0 and 1 share a pattern (correlation ${corr(n0, n1)})`);
+  assert.ok(Math.abs(corr(n0, noise(sky, 200))) < 0.02, 'frames 0 and 200');
+  // Reproducible, and a frame's noise does not depend on which frames were rendered before it.
+  const again = synthPan({ ...DEFAULT_PAN, scene: flatSky });
+  again.frames[200].render(); again.frames[3].render();
+  sameBytes(again.frames[1].render(), sky.frames[1].render(), 'frame 1 after frames 200 and 3');
+  sameBytes(sky.frames[1].render(), sky.frames[1].render(), 'frame 1 twice from one pan');
+  // The case seed moves the pattern; the option sets the sd; 0 is exactly the scene.
+  const other = synthPan({ ...DEFAULT_PAN, scene: flatSky, seed: 2 });
+  assert.ok(Math.abs(corr(n0, noise(other, 0))) < 0.02, 'another case seed, another pattern');
+  const loud = noise(synthPan({ ...DEFAULT_PAN, scene: flatSky, noise: 6 }), 0);
+  near(sdOf(loud), 6, 0.3, 'noise 6');
+  const quiet = synthPan({ ...DEFAULT_PAN, scene: flatSky, noise: 0 });
+  for (const k of [0, 1, 200]) sameBytes(quiet.frames[k].render(), flat, `frame ${k} at noise 0`);
+  assert.throws(() => synthPan({ ...DEFAULT_PAN, scene: flatSky, noise: -1 }), RangeError);
+  // The noise leaves the sensor streams alone.
+  assert.equal(JSON.stringify(quiet.observations), JSON.stringify(sky.observations));
 });
 
 await test('synthPan: captureTime is the exposure plus the lag, or null, and presentation never precedes either', () => {
