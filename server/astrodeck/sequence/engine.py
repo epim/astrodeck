@@ -8964,7 +8964,13 @@ class SequenceEngine:
             return
         try:
             from ..flows.tonight import target_own_window
-            window = target_own_window(
+            # OFF THE LOOP (#739): the night's first call builds the astropy
+            # scaffold (sun, moon and twilight over the whole night), seconds
+            # on a loaded or Pi-class box, and this coroutine shares the loop
+            # with the status poll, the relay and the safety loop. The
+            # catalogue routes already run the same compute in a thread.
+            window = await asyncio.to_thread(
+                target_own_window,
                 target.ra_hours, target.dec_deg, site=self.hub.site,
                 min_altitude_deg=target.schedule.min_altitude_deg,
                 now=time.time())
@@ -9596,7 +9602,9 @@ class SequenceEngine:
         were."""
         try:
             from ..flows.tonight import target_own_window
-            window = target_own_window(
+            # Off the loop for the reason `_await_target_window` gives (#739).
+            window = await asyncio.to_thread(
+                target_own_window,
                 target.ra_hours, target.dec_deg, site=self.hub.site,
                 min_altitude_deg=target.schedule.min_altitude_deg,
                 now=time.time())
