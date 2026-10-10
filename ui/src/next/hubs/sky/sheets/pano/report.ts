@@ -175,7 +175,12 @@ export function buildReport(input: ReportInput): ScanReport {
   return { format: 'astrodeck-pano-report', version: 2, ...body };
 }
 
-/** The text of a report as it is downloaded: two-space JSON, like the older scanner's. */
+/**
+ * The text of a report as it is downloaded: two-space JSON, like the older
+ * scanner's. It writes the report it is handed and does not filter it again,
+ * so `r` has to come out of buildReport; Recorder.finish runs buildReport
+ * itself on the report it is given.
+ */
 export function reportJson(r: ScanReport): string {
   return JSON.stringify(r, null, 2);
 }
