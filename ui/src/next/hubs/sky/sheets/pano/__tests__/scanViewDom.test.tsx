@@ -13,6 +13,11 @@
 // Further mutants named in the T18 report, each caught by the test written beside it: the ribbon scroll's sign, the
 // wrap of a dirty rectangle, the sign of the north offset on the labels, a band edge made exclusive, the cue line
 // without its role.
+//
+// FB6 (SPEC-v2 12.4, S26) adds four cases and the mutants they catch: no mesh projected, drawn or timed outside the
+// live phases and a redraw on the first live frame (the gate dropped; the gate on `noteMeshDraw` alone; `drawnFrame`
+// not reset), the whole new raster copied on the first frame after a scanner swap (the effect's `w.full` reset
+// dropped), the bar head at mod(heading, 360) / 360 of the bar (the mirrored head), and amber cells at half height.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PANO_H, PANO_W, PROFILE_BINS, PixClass } from '../types';
@@ -369,6 +374,51 @@ test('N/E/S/W labels appear only once a north estimate exists, at the scan azimu
   }, sc);
 });
 
+test('the bar head sits at the live heading as a fraction of the turn, and is hidden without a heading', () => {
+  const sc = new FakeScanner();
+  withView(m => {
+    const head = q(m.host, 'pano-bar-head');
+    assert.equal(head.parentElement, q(m.host, 'pano-bar'), 'the head is drawn on the bar');
+    // left = mod(heading, 360) / 360 of the bar's width: a mirrored head reads 75 at a heading of 90.
+    const cases: [number, number][] = [[0, 0], [90, 25], [180, 50], [270, 75], [10, 2.78], [100, 27.78], [359.5, 99.86], [450, 25], [-90, 75], [-10, 97.22]];
+    for (const [heading, pct] of cases) {
+      sc.set({ headingDeg: heading }); frame();
+      near(num(head.style.left), pct, 0.006, `heading ${heading}`);
+      assert.notEqual(head.style.display, 'none', `heading ${heading} is shown`);
+    }
+    sc.set({ headingDeg: null }); frame();
+    assert.equal(head.style.display, 'none', 'no heading, no head');
+    sc.set({ headingDeg: 270 }); frame();
+    assert.notEqual(head.style.display, 'none');
+    near(num(head.style.left), 75, 0.006, 'the head comes back at the live heading');
+  }, sc);
+});
+
+test('amber cells (sensor-placed and blurred) are drawn at half height, green and unseen cells at full height', () => {
+  const sc = new FakeScanner();
+  const cov = new Uint8Array(PROFILE_BINS);
+  cov[1] = PixClass.Sensor; cov[2] = PixClass.Blurred; cov[3] = PixClass.Aligned;
+  sc.status = { ...sc.status, coverage: cov };
+  withView(m => {
+    const cells = qa(m.host, '.pano-cell');
+    const heightOf = (i: number) => getComputedStyle(cells[i]).height;
+    // Cell 0 is unseen, 1 sensor-placed, 2 blurred, 3 aligned (the bar's four classes, SPEC-v2 2.5).
+    assert.equal(heightOf(0), '100%', 'unseen');
+    assert.equal(heightOf(1), '50%', 'sensor-placed');
+    assert.equal(heightOf(2), '50%', 'blurred');
+    assert.equal(heightOf(3), '100%', 'aligned');
+    // Every cell of a class has its class's height, not only the first ones.
+    const byClass = new Map<string, Set<string>>();
+    for (const c of cells) {
+      const cls = [...c.classList].find(n => n.startsWith('pano-cell-'))!;
+      byClass.set(cls, (byClass.get(cls) ?? new Set()).add(getComputedStyle(c).height));
+    }
+    assert.deepEqual([...byClass.entries()].map(([k, v]) => [k, [...v]]).sort(), [
+      ['pano-cell-aligned', ['100%']], ['pano-cell-blurred', ['50%']], ['pano-cell-none', ['100%']], ['pano-cell-sensor', ['50%']],
+    ].sort());
+  }, sc);
+});
+
 // ---- The pace gauge --------------------------------------------------------
 
 test('pace classes: the gauge takes the scanner\'s class, reads "Keep turning" when idle, and the marker moves with the rate', () => {
@@ -481,6 +531,48 @@ test('with no pose the overlay is cleared and nothing is drawn or timed', () => 
     assert.equal(drawCount(m), before);
     assert.equal(sc.meshDraws.length, timed, 'an empty redraw is not a mesh timing');
     assert.equal(callsOf(q(m.host, 'pano-live-canvas'), 'clearRect').length, clears + 1, 'the old frame is wiped');
+  }, sc);
+});
+
+test('outside the live phases the mesh is not projected, drawn or timed, and the first live frame draws it', () => {
+  const sc = new FakeScanner();
+  sc.status = { ...sc.status, phase: 'ready', frameNo: 4 };
+  withView(m => {
+    const overlay = q(m.host, 'pano-live-canvas');
+    const per = gridMesh().length;
+    const silent = (what: string) => {
+      assert.equal(drawCount(m), 0, `${what}: no drawImage`);
+      assert.equal(callsOf(overlay).length, 0, `${what}: the overlay is not touched`);
+      assert.equal(sc.meshDraws.length, 0, `${what}: noteMeshDraw is not called`);
+      assert.equal(sc.views.length, 0, `${what}: the mesh is not projected`);
+    };
+    silent('the first frame, in ready');
+    // A new camera frame in each phase that is not live changes nothing: the group is hidden.
+    let n = 4;
+    for (const phase of ['idle', 'opening', 'ready', 'failed'] as const) {
+      sc.set({ phase, frameNo: ++n, headingDeg: 10 * n }); frame();
+      silent(`${phase}, camera frame ${n}`);
+    }
+    // The first frame of a live phase draws with no new camera frame, and the next one with the same frameNo does not.
+    sc.set({ phase: 'scanning' }); frame();
+    assert.equal(drawCount(m), per, 'the first live frame draws');
+    assert.equal(sc.meshDraws.length, 1, 'and is timed');
+    sc.emit(); frame();
+    assert.equal(drawCount(m), per, 'the same frameNo is not drawn twice');
+    // Every live phase draws a new camera frame.
+    let draws = per;
+    for (const phase of ['scanning', 'paused', 'finishing', 'done'] as const) {
+      sc.set({ phase, frameNo: ++n }); frame();
+      draws += per;
+      assert.equal(drawCount(m), draws, `${phase} draws a new camera frame`);
+    }
+    // Leaving a live phase and coming back with the frameNo that was drawn last: the first live frame draws again.
+    sc.set({ phase: 'ready' }); frame();
+    assert.equal(drawCount(m), draws, 'ready draws nothing');
+    sc.set({ phase: 'done' }); frame();
+    assert.equal(drawCount(m), draws + per, 'the first live frame after a pause in a hidden phase redraws');
+    assert.equal(sc.meshDraws.length, drawCount(m) / per, 'every drawn frame, and only those, were timed');
+    assert.equal(sc.views.length, drawCount(m) / per, 'the mesh was projected for those frames only');
   }, sc);
 });
 
@@ -703,6 +795,38 @@ test('a new scanner replaces the old one: the old subscription goes and the new 
     assert.ok(b.meshDraws.length >= 1, 'the new scanner\'s mesh was drawn');
     b.set({ cue: 'Paused. Tap Resume to carry on.', cueKey: 'paused' }); frame();
     assert.equal(q(host, 'pano-cue').textContent, 'Paused. Tap Resume to carry on.');
+  } finally { act(() => { root.unmount(); }); host.remove(); }
+});
+
+test('the first frame after a scanner swap copies the whole new raster, once per half, in place of its dirty list', () => {
+  const a = new FakeScanner(), b = new FakeScanner();
+  b.dirty = [{ x: 40, y: 20, w: 8, h: 6 }];
+  const host = win.document.createElement('div') as HTMLElement;
+  win.document.body.append(host);
+  const root = createRoot(host);
+  rafQueue.clear();
+  try {
+    act(() => { root.render(createElement(ScanView, { scanner: a })); });
+    frame();
+    const canvas = q(host, 'pano-ribbon-canvas');
+    const first = callsOf(canvas, 'putImageData');
+    assert.equal(first.length, 2, 'the first scanner is copied whole once per half');
+    assert.equal(first[0].args[0].data, a.pix);
+    act(() => { root.render(createElement(ScanView, { scanner: b })); });
+    frame();
+    const swapped = callsOf(canvas, 'putImageData').slice(first.length);
+    assert.deepEqual(swapped.map(p => p.args.slice(1)), [[0, 0, 0, 0, 1080, 300], [1080, 0, 0, 0, 1080, 300]],
+      'the two full copies, not the 8 x 6 piece the new scanner reported');
+    assert.equal(swapped[0].args[0].data, b.pix, 'over the new scanner\'s own buffer, not the old one\'s');
+    assert.equal(swapped[1].args[0], swapped[0].args[0]);
+    assert.equal(b.takeDirtyCalls, 1, 'its dirty list was taken, and the full copy covers it');
+    assert.deepEqual(b.dirty, []);
+    // From the next frame on the new scanner is incremental again.
+    const mark = callsOf(canvas, 'putImageData').length;
+    b.dirty = [{ x: 100, y: 50, w: 20, h: 30 }];
+    b.emit(); frame();
+    assert.deepEqual(callsOf(canvas, 'putImageData').slice(mark).map(p => p.args.slice(1)),
+      [[0, 0, 100, 50, 20, 30], [1080, 0, 100, 50, 20, 30]]);
   } finally { act(() => { root.unmount(); }); host.remove(); }
 });
 

@@ -73,7 +73,9 @@
 .pano-cell { display: block; height: 100%; }
 .pano-cell-none { background: #354953; }
 .pano-cell-aligned { background: var(--good, #78edb9); }
-.pano-cell-sensor, .pano-cell-blurred { background: var(--warn, #edbd80); }
+/* Amber cells are half height, hung from the bottom, so the classes stay apart in the night palette, where every
+   status colour is a red (SPEC-v2 2.5). */
+.pano-cell-sensor, .pano-cell-blurred { height: 50%; align-self: end; background: var(--warn, #edbd80); }
 .pano-bar-head { position: absolute; top: -2px; width: 2px; height: 16px; margin-left: -1px; background: #ffffff; pointer-events: none; }
 .pano-compass-row { position: relative; height: 16px; }
 .pano-compass { position: absolute; top: 2px; transform: translateX(-50%); color: #b8cbd0; font: 11px/14px system-ui, sans-serif; }
