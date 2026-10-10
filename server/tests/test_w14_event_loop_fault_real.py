@@ -152,6 +152,7 @@ def _assert_the_raw_fault_is_the_one_in_496(exc: BaseException | None) -> None:
 
 
 def _night_file_events() -> list[dict]:
+    events.flush_night_logs()                   # the file is written off-thread
     out: list[dict] = []
     for path in sorted(events.NightLogWriter.dir().glob("*.jsonl")):
         for raw in path.read_text(encoding="utf-8").splitlines():
