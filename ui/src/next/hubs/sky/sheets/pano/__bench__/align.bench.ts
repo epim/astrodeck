@@ -40,12 +40,13 @@ function rng(seed: number) {
   };
 }
 const gauss = (r: () => number) => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r());
-/** The simulator's frame noise: Gaussian, sd 2 per channel (13.5). */
+/** The simulator's frame noise: Gaussian, sd 2 per channel (13.5). Added here, so the synth frames are rendered with `noise: 0` (S37). */
 function camera(rgba: Uint8ClampedArray, seed: number): Uint8ClampedArray {
   const r = rng(seed), out = new Uint8ClampedArray(rgba.length);
   for (let i = 0; i < rgba.length; i += 4) { for (let c = 0; c < 3; c++) out[i + c] = rgba[i + c] + 2 * gauss(r); out[i + 3] = 255; }
   return out;
 }
+const CLEAN = { noise: 0 } as const;
 function stripOf(rgba: Uint8ClampedArray, x0: number, w: number): RgbStrip {
   const strip = new Uint8Array(w * H * 3);
   for (let y = 0; y < H; y++) for (let x = 0; x < w; x++) for (let c = 0; c < 3; c++) strip[(y * w + x) * 3 + c] = rgba[(y * W + x0 + x) * 4 + c];
@@ -65,7 +66,7 @@ function timeMs(fn: () => void, runs = 200, warm = 30): number {
 
 const scene = makeSynthScene({ seed: 2 });
 const qa = look(100, RING_PITCH), qb = look(104, RING_PITCH), truth = relative(qa, qb);
-const rgbA = camera(renderView(scene, qa, K0), 1), rgbB = camera(renderView(scene, qb, K0), 2);
+const rgbA = camera(renderView(scene, qa, K0, CLEAN), 1), rgbB = camera(renderView(scene, qb, K0, CLEAN), 2);
 const tpl = templateOf(rgbA), img = pyramidOf(rgbB);
 const qPred = qmul(expSO3([0.5 * DEG, 2 * DEG, 0.3 * DEG]), truth);   // a typical predictor residual (4.6 step 2 RSS 2.34)
 const stripA = stripOf(rgbA, 50, 80), stripB = stripOf(rgbB, 50, 80);
@@ -165,8 +166,8 @@ for (const top of [5, 15, 25, 90]) for (const period of [3, 4, 6, 8, 10]) {
   const counts = { keyframe: { truth: 0, wrong: 0, refused: 0 }, closure: { truth: 0, wrong: 0, refused: 0 } };
   const sc = fenceScene(period, top);
   for (const az0 of [40, 130, 220, 310]) {
-    const pa = look(az0, RING_PITCH), pb = look(az0 + 4, RING_PITCH), t = templateOf(camera(renderView(sc, pa, K0), 100 + az0));
-    const b = pyramidOf(camera(renderView(sc, pb, K0), 200 + az0)), real = relative(pa, pb);
+    const pa = look(az0, RING_PITCH), pb = look(az0 + 4, RING_PITCH), t = templateOf(camera(renderView(sc, pa, K0, CLEAN), 100 + az0));
+    const b = pyramidOf(camera(renderView(sc, pb, K0, CLEAN), 200 + az0)), real = relative(pa, pb);
     for (const sign of [1, -1]) {
       const pred = relative(pa, look(az0 + 4 + sign * period, RING_PITCH));
       for (const window of windows) {

@@ -11,11 +11,12 @@
 //   * the gain term removed (the gain fixed at 1 in both fits of `evaluate`): `recovers injected yaw, pitch and roll`
 //     fails, because the gain reads 1 instead of 0.7, and the rotation then misses by up to 0.12 degrees.
 //
-// Frames are the 9:16 analysis frame (180 x 320) at the 70-degree prior (fNorm 1.2694). The synth.ts fixtures carry the
-// simulator's frame noise (Gaussian, sd 2 per channel, 13.5 `noise_sigma`): without it a noiseless smooth sky quantises
-// into contours that are identical in both views, phase-only correlation whitens them into a confident ridge, and two
-// of fifteen noiseless thin treelines took a 3-pixel wrong peak with PSR 17-19. Real frames, and the simulator's, have
-// noise that breaks those contours.
+// Frames are the 9:16 analysis frame (180 x 320) at the 70-degree prior (fNorm 1.2694). The fixtures carry the
+// simulator's frame noise (Gaussian, sd 2 per channel, 13.5 `noise_sigma`), added here by `camera` after the exposure
+// gain, so the synth frames are rendered with `noise: 0` (synth.ts carries the same noise by default, S37): without it
+// a noiseless smooth sky quantises into contours that are identical in both views, phase-only correlation whitens them
+// into a confident ridge, and two of fifteen noiseless thin treelines took a 3-pixel wrong peak with PSR 17-19. Real
+// frames, and the simulator's, have noise that breaks those contours.
 //
 // Measured (here on 200 pairs per set, and by __bench__/align.bench.ts on 1,000; S4 asks for the rates on both windows):
 //   * unrelated value-noise pairs: 0 accepted by either window (bench: 0 of 1,000 each; PSR >= 7 on 0.4 % of keyframe
@@ -103,11 +104,13 @@ function camera(rgba: Uint8ClampedArray, sigma: number, seed: number, gain: read
 }
 
 const FRAME_NOISE = 2;
+/** `camera` adds the frame noise itself, after the gain, so a synth frame comes in without its default noise (S37). */
+const CLEAN = { noise: 0 } as const;
 interface Pair { tpl: Template; img: Pyramid; truth: Quat; rgbA: Uint8ClampedArray; rgbB: Uint8ClampedArray }
 /** Template keyframe at (az0, pitch), candidate at (az0 + dAz, pitch), both under the simulator's frame noise. */
 function synthPair(sc: SynthScene, az0: number, dAz: number, gainB: readonly [number, number, number] = [1, 1, 1], pitch = RING_PITCH): Pair {
   const qa = look(az0, pitch), qb = look(az0 + dAz, pitch);
-  const rgbA = camera(renderView(sc, qa, K0), FRAME_NOISE, 100 + az0), rgbB = camera(renderView(sc, qb, K0), FRAME_NOISE, 200 + az0, gainB);
+  const rgbA = camera(renderView(sc, qa, K0, CLEAN), FRAME_NOISE, 100 + az0), rgbB = camera(renderView(sc, qb, K0, CLEAN), FRAME_NOISE, 200 + az0, gainB);
   return { tpl: templateOf(rgbA), img: pyramidOf(rgbB), truth: relative(qa, qb), rgbA, rgbB };
 }
 
@@ -179,7 +182,7 @@ const OVERCAST_PAIR = synthPair(OVERCAST, 40, 4), TREELINE_PAIR = synthPair(TREE
 
 test('a blank image gives ok: false, reason texture, textured: false', () => {
   const qa = look(40, RING_PITCH), qb = look(44, RING_PITCH), truth = relative(qa, qb);
-  const flatA = renderView(FLAT, qa, K0), flatB = renderView(FLAT, qb, K0);
+  const flatA = renderView(FLAT, qa, K0, CLEAN), flatB = renderView(FLAT, qb, K0, CLEAN);
   const textured = synthPair(makeSynthScene({ seed: 2 }), 40, 4);
   const cases: [string, Template, Pyramid, Quat][] = [
     ['exactly flat frames', templateOf(flatA), pyramidOf(flatB), truth],
@@ -489,7 +492,7 @@ test('the 3:4 analysis frame (240 x 320) aligns in both windows', () => {
   // 60 x 80 at L2: the keyframe window fits inside it and the closure window pads it with NaN on both sides.
   const f34 = priorFNorm(240, 320), k34 = { l0: intrinsicsAt(0, 240, 320, f34), l1: intrinsicsAt(1, 240, 320, f34), l2: intrinsicsAt(2, 240, 320, f34) };
   const sc = makeSynthScene({ seed: 2 }), qa = look(70, RING_PITCH), qb = look(74, RING_PITCH), truth = relative(qa, qb);
-  const frame = (q: Quat, seed: number) => buildPyramid(camera(renderView(sc, q, k34.l0), FRAME_NOISE, seed), 240, 320).pyr;
+  const frame = (q: Quat, seed: number) => buildPyramid(camera(renderView(sc, q, k34.l0, CLEAN), FRAME_NOISE, seed), 240, 320).pyr;
   const tpl = prepareTemplate(frame(qa, 1), k34.l1, k34.l2), img = frame(qb, 2);
   for (const [window, p, y, r] of [['keyframe', 2, -3, 1], ['closure', 0, 11.9, 0]] as const) {
     const res = alignPair(tpl, img, offBy(truth, p, y, r), k34, { window });
