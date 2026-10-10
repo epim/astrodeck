@@ -16,6 +16,8 @@ import type {
 } from './types';
 
 export const STEP_DEG = 4, WINDOW_DEG = 2, FIRST_KF_MAX_WAIT_MS = 300, MAX_KEYFRAMES = 140, STRIP_HALF_DEG = 10, TRAILING_MAX_DEG = 10;
+  // a trailing-fill commit keeps its strip out to 3 + trailingDeg on the trailing side (at most 13 degrees), so a fill of up to
+  // TRAILING_MAX_DEG meets the previous slice with no alpha or coverage hole (4.11, S12)
 
 // ---- Predictor variance, placement sigma and the innovation gate (4.7) ------
 
@@ -69,11 +71,18 @@ const wrap180 = (deg: number) => ((((deg + 180) % 360) + 360) % 360) - 180;
 const FORWARD: V3 = [0, 0, -1];
 /** Commits and replacements compare a rate with these fractions of rateMax and of the held candidate's rate (4.3). */
 const STEADY_FRAC = 0.3, REPLACE_FRAC = 0.8;
+/** The gap cue's threshold: an unpainted run this wide is a gap (gapDeg) and, bracketed by two keyframes, fires rule 8. */
+const GAP_MIN_DEG = 2;
+/** A slice's feather reaches 0 this far from its centre, or 3 + trailingDeg on the trailing side of a fill (4.11). */
+const FEATHER_EDGE_DEG = 3;
 /** sliceMsP50 is the median over this many of the newest slice paints. */
 const SLICE_MS_WINDOW = 32;
 
 /** What onFrame decided for a frame it asked the scanner to read back, kept until hold() brings the pixels. */
 interface Ask { commit: boolean; d: number | null; nearest: number; unwrapped: number }
+
+/** A trailing fill (4.3 rule 6): the extra degrees painted on one side, -1 the image's left, +1 its right, 0 none. */
+interface Fill { deg: number; side: -1 | 0 | 1 }
 
 /** The held candidate (4.3 rule 3): everything a keyframe needs, extracted at hold() because the camera may reuse
  *  the readback buffer. */
@@ -83,6 +92,7 @@ interface Candidate {
   d: number | null;      // axis distance to the nearest keyframe; null for the first keyframe
   nearest: number;       // that keyframe's id; -1 for the first
   unwrapped: number;     // the unwrapped heading of the frame (see trackHeading)
+  fill: Fill;            // decided at hold(), because the strip is sized from it
 }
 
 export class Tracker {
@@ -99,7 +109,7 @@ export class Tracker {
 
   private readonly kfs: Keyframe[] = [];
   /** Per keyframe id: the trailing fill it was committed with (4.3 rule 6), repainted with it. */
-  private readonly trailing: { deg: number; side: -1 | 0 | 1 }[] = [];
+  private readonly trailing: Fill[] = [];
   /** Per keyframe id: the unwrapped heading of its frame. */
   private readonly unwrappedAt: number[] = [];
   private readonly edgeList: Edge[] = [];
@@ -119,6 +129,9 @@ export class Tracker {
   private ask: Ask | null = null;
   private cand: Candidate | null = null;
   private readonly staleAt: number[] = [];
+  /** Rule 8: the nearest keyframe of the previous frame with a prediction (-1 for none), and how many keyframes existed then. */
+  private prevNearest = -1;
+  private prevCount = 0;
 
   private queue: number[] = [];       // keyframe ids awaiting a repaint after scheduleRerender()
   private renderYawDeg = 0;           // 0 while scanning (scan frame); the world yaw after renderAll
@@ -187,16 +200,13 @@ export class Tracker {
       first = Math.ceil((base + lo) / cellDeg - 0.5);
       count = Math.floor((base + hi) / cellDeg - 0.5) - first + 1;
     }
-    let run = 0, best = 0;
-    for (let j = 0; j < count; j++) {
-      if (cov[(((first + j) % cells) + cells) % cells] === 0) { run++; if (run > best) best = run; } else run = 0;
-    }
-    const deg = best * cellDeg;
-    return deg >= 2 ? deg : null;
+    const deg = this.unpaintedRunDeg(first, count);
+    return deg >= GAP_MIN_DEG ? deg : null;
   }
 
   /** The keyframe rule of 4.3, from sensors only. Order: inactive (rule 1), stale pose (rule 1), the cap (rule 7),
-   *  the first keyframe (rule 0), then the step and its window (rules 2-4, with rule 6 for a frame past the window). */
+   *  the first keyframe (rule 0), the bracketed gap (rule 8), then the step and its window (rules 2-4, with rule 6 for
+   *  a frame past the window). */
   onFrame(t: number, pred: Prediction | null, rateDegS: number | null): FrameStep {
     this.frames++;
     this.lastT = t;
@@ -204,6 +214,16 @@ export class Tracker {
     while (this.staleAt.length > 0 && this.staleAt[0] <= t - 1000) this.staleAt.shift();
     const live = this.livePose(pred);
     if (live) this.trackHeading(live);
+    // The nearest keyframe and the axis distance d to it, on every frame with a prediction, active or not, because rule 8
+    // compares it with the previous such frame's.
+    let d = Infinity, nearest = -1;
+    if (live) {
+      for (const kf of this.kfs) {
+        const s = axisSeparationDeg(kf.pose, live);
+        if (s < d) { d = s; nearest = kf.id; }
+      }
+    }
+    const crossed = live ? this.crossedFrom(nearest) : -1;
 
     const wasActive = this.wasActive;
     this.wasActive = this.active;
@@ -239,10 +259,14 @@ export class Tracker {
     // Rule 4: a held candidate commits as soon as it is steady, which after hold() only a raised rateMax can make it.
     if (held && held.rate <= STEADY_FRAC * this.rateMax) return { read: false, commit: true, why: 'step' };
 
-    let d = Infinity, nearest = -1;
-    for (const kf of this.kfs) {
-      const s = axisSeparationDeg(kf.pose, live);
-      if (s < d) { d = s; nearest = kf.id; }
+    // Rule 8, the bracketed gap: the axis has crossed the midpoint between two keyframes with an unpainted run of at
+    // least GAP_MIN_DEG between them, which the window cannot fill: between keyframes w degrees apart d peaks at w / 2,
+    // so for w < 12 it never reaches S + 2, and for w < 8 the window never opens (the ring seam is one such region). The
+    // held candidate commits, else this frame is read and committed; either way d < S does not stop it. Not while a
+    // re-render is pending, because the raster is then cleared on purpose (as gapDeg).
+    if (crossed >= 0 && this.queue.length === 0 && this.unpaintedBetween(crossed, nearest) >= GAP_MIN_DEG) {
+      if (held) return { read: false, commit: true, why: 'step' };
+      return this.read(true, 'step', d, nearest);
     }
     // Rule 2. Rule 5 (revisit) belongs here and needs alignment, so it is T27's: when the 6-degree slit under the
     // frame is painted only sensor or blurred and the rate is at most 0.5 rateMax, read back and commit a revisit
@@ -267,11 +291,20 @@ export class Tracker {
     if (f.w !== this.frameW || f.h !== this.frameH) {
       throw new RangeError(`Tracker.hold: frame ${f.w} x ${f.h}, analysis frame ${this.frameW} x ${this.frameH}`);
     }
-    // The kept strip: the columns within +-10 degrees of the centre at L0, 2 f tan 10 wide, as RGB (4.11).
+    // The kept strip: the columns within +-10 degrees of the centre at L0, 2 f tan 10 wide, as RGB (4.11). A slice paints
+    // only what its strip holds, so a trailing-fill commit, which paints its trailing side out to 3 + trailingDeg (up to
+    // 13 degrees), keeps that side of the strip out as far (ruling S12); a fill of 7 or less needs nothing beyond 10.
+    const fill = this.fillFor(ask.d, ask.nearest, pred.q);
     const k0 = intrinsicsAt(0, this.frameW, this.frameH, this.focal.fBest);
-    const stripW = Math.min(this.frameW, Math.ceil(2 * k0.f * Math.tan(STRIP_HALF_DEG * DEG)));
-    const stripX0 = Math.max(0, Math.min(this.frameW - stripW, Math.round(k0.cx - stripW / 2)));
-    const stripH = this.frameH;
+    const plainW = Math.min(this.frameW, Math.ceil(2 * k0.f * Math.tan(STRIP_HALF_DEG * DEG)));
+    let x0 = Math.max(0, Math.min(this.frameW - plainW, Math.round(k0.cx - plainW / 2))), x1 = x0 + plainW;
+    const reach = FEATHER_EDGE_DEG + fill.deg;
+    if (reach > STRIP_HALF_DEG) {
+      const ext = k0.f * Math.tan(reach * DEG);
+      if (fill.side < 0) x0 = Math.max(0, Math.min(x0, Math.floor(k0.cx - ext)));
+      else x1 = Math.min(this.frameW, Math.max(x1, Math.ceil(k0.cx + ext)));
+    }
+    const stripX0 = x0, stripW = x1 - x0, stripH = this.frameH;
     const strip = new Uint8Array(stripW * stripH * 3);
     for (let y = 0; y < stripH; y++) {
       let src = (y * this.frameW + stripX0) * 4, dst = y * stripW * 3;
@@ -282,13 +315,21 @@ export class Tracker {
     this.cand = {
       frameId: f.frameId, t: f.t, pred: pred.q, rate: rateDegS, up, extrapolatedMs: pred.extrapolatedMs,
       strip, stripX0, stripW, stripH, skyLuma: skyLumaOf(f.rgba, f.w, f.h),
-      d: ask.d, nearest: ask.nearest, unwrapped: ask.unwrapped,
+      d: ask.d, nearest: ask.nearest, unwrapped: ask.unwrapped, fill,
     };
     if (!ask.commit) {
       const r: CaptureRecord = { at: this.lastT, frameId: f.frameId, outcome: 'waiting-sharper', rateDegS, extrapolatedMs: pred.extrapolatedMs };
       if (ask.d !== null) r.stepDeg = ask.d;
       this.records.push(r);
     }
+  }
+
+  /** The step's readback returned null (3.5 step 5): log 'read-failed' for this frame, with the onFrame count as its
+   *  frame id, and drop the step. The scanner then calls neither hold() nor commit() for it. An earlier held candidate
+   *  stays held; with none, nothing is held and the next frame in the window reads again (ruling S28). */
+  noteReadFailed(t: number): void {
+    this.ask = null;
+    this.note(t, this.frames, 'read-failed');
   }
 
   /** Commit the held candidate: place it by the predictor (P = C . G with C the identity) and paint it. */
@@ -304,16 +345,9 @@ export class Tracker {
       gainRGB: [1, 1, 1], strip: c.strip, stripX0: c.stripX0, stripW: c.stripW, stripH: c.stripH, pyr: null,
       skyLuma: c.skyLuma,
     };
-    // Rule 6: a commit at d >= S + 2 came from no window, so it paints its trailing side to meet the slice of the
-    // keyframe d was measured to. The side is where that keyframe's axis falls in this camera's image.
-    let deg = 0, side: -1 | 0 | 1 = 0;
-    if (c.d !== null && c.d >= STEP_DEG + WINDOW_DEG) {
-      deg = Math.min(c.d - STEP_DEG, TRAILING_MAX_DEG);
-      const prev = qrotate(qinv(kf.pose), qrotate(this.kfs[c.nearest].pose, FORWARD));
-      side = prev[0] < 0 ? -1 : 1;
-    }
+    // Rule 6: the trailing fill decided at hold() (see fillFor).
     this.kfs.push(kf);
-    this.trailing.push({ deg, side });
+    this.trailing.push(c.fill);
     this.unwrappedAt.push(c.unwrapped);
     kf.sigmaDeg = this.sigmaFor(kf);
     this.loopState.unwrappedDeg = c.unwrapped - this.unwrappedAt[0];
@@ -370,6 +404,45 @@ export class Tracker {
   private read(commit: boolean, why: 'first' | 'step', d: number | null, nearest: number): FrameStep {
     this.ask = { commit, d, nearest, unwrapped: this.unwrapped };
     return { read: true, commit, why };
+  }
+
+  /** Rule 6: a frame read at d >= S + 2 came from no window, so it paints its trailing side to meet the slice of the
+   *  keyframe d was measured to, min(d - S, 10) degrees. The side is where that keyframe's axis falls in the image of
+   *  `q`, the pose the frame is placed at (its prediction in v0). */
+  private fillFor(d: number | null, nearest: number, q: Quat): Fill {
+    if (d === null || d < STEP_DEG + WINDOW_DEG) return { deg: 0, side: 0 };
+    const prev = qrotate(qinv(q), qrotate(this.kfs[nearest].pose, FORWARD));
+    return { deg: Math.min(d - STEP_DEG, TRAILING_MAX_DEG), side: prev[0] < 0 ? -1 : 1 };
+  }
+
+  /** Rule 8's trigger, called once per frame with a prediction: the previous such frame's nearest keyframe P when this
+   *  frame's nearest differs from it and both existed at that frame, so the axis has crossed the midpoint between them;
+   *  else -1. A keyframe committed since that frame has an id at or past its count, so a new commit does not count. */
+  private crossedFrom(nearest: number): number {
+    const p = this.prevNearest, existed = this.prevCount;
+    this.prevNearest = nearest;
+    this.prevCount = this.kfs.length;
+    return p >= 0 && nearest >= 0 && nearest !== p && nearest < existed ? p : -1;
+  }
+
+  /** The largest unpainted run, degrees, of the coverage cells whose centres lie on the shorter arc between the headings
+   *  of keyframes a and b. */
+  private unpaintedBetween(a: number, b: number): number {
+    const cellDeg = 360 / this.pano.coverage.length;
+    const ha = headingDeg(this.kfs[a].pose), hb = ha + wrap180(headingDeg(this.kfs[b].pose) - ha);
+    const lo = Math.min(ha, hb) + this.renderYawDeg, hi = Math.max(ha, hb) + this.renderYawDeg;
+    const first = Math.ceil(lo / cellDeg - 0.5);
+    return this.unpaintedRunDeg(first, Math.floor(hi / cellDeg - 0.5) - first + 1);
+  }
+
+  /** The largest run of unpainted coverage cells among `count` cells from `first` (wrapping), degrees. */
+  private unpaintedRunDeg(first: number, count: number): number {
+    const cov = this.pano.coverage, cells = cov.length;
+    let run = 0, best = 0;
+    for (let j = 0; j < count; j++) {
+      if (cov[(((first + j) % cells) + cells) % cells] === 0) { run++; if (run > best) best = run; } else run = 0;
+    }
+    return best * 360 / cells;
   }
 
   /** Unwrapped heading of the live pose, accumulated over every frame with a prediction, active or not, so a turn
