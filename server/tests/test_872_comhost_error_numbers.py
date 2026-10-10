@@ -27,7 +27,7 @@ import astrodeck.comhost.handlers_telescope as handlers_telescope
 import astrodeck.comhost.server as server
 from astrodeck.comhost.device import ComDevice
 from astrodeck.devices.alpaca import (AlpacaConnection, AlpacaReplyError,
-                                      AlpacaTelescope)
+                                      AlpacaTelescope, _shown_error_number)
 from astrodeck.devices.ascom_registry import AscomDriver
 from astrodeck.devices.base import SyncRefused
 from astrodeck.devices.sync_verify import SYNC_PARKED_REASON
@@ -314,7 +314,9 @@ def running_scope(monkeypatch):
 async def test_the_alpaca_client_sees_the_drivers_error_number(
         running_scope, error, expected):
     """Over the wire, through the real client: the AlpacaReplyError carries the
-    number the driver raised, and its message is the driver's text.
+    number the driver raised, and its message names that number but never
+    quotes the driver's words (#906: a driver's ErrorMessage is free text the
+    client does not repeat, since a mount driver can quote a position).
 
     MUTANT M1 (see above): RED (observed) on the four cases that expect a
     number other than 0x400, ``assert 1024 == 1035`` and the like.
@@ -329,7 +331,9 @@ async def test_the_alpaca_client_sees_the_drivers_error_number(
         await conn.close()
     assert info.value.http_status == 200
     assert info.value.error_number == expected
-    assert str(error) == str(info.value)
+    said = str(info.value)
+    assert _shown_error_number(expected) in said, said
+    assert error.args[2][0] not in said, said
 
 
 async def test_a_sync_on_a_parked_comhost_mount_reads_as_parked(running_scope):
