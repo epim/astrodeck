@@ -2061,7 +2061,15 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
         // actually land", which is the question the alarm is asking. Seeded on
         // the rising edge into `running` so the first frame of a run has an
         // anchor to be late against.
-        const doneNow = seq.progress?.frames_done ?? null;
+        //
+        // THE CALIBRATION FRAMES ARE FRAMES HERE (#939). The plan's counter
+        // no longer moves for the flats of a DUSK FLATS stage, which can run
+        // for many minutes before the first light, so a clock fed by that
+        // counter alone read the stage as a capture that had stopped, and
+        // raised the NO PROGRESS card over a healthy rig.
+        const planDone = seq.progress?.frames_done ?? null;
+        const doneNow = planDone == null
+          ? null : planDone + (seq.progress?.calibration_frames_done ?? 0);
         const prevDone = get().lastFramesDone;
         let lastCaptureAtMs = get().lastCaptureAtMs;
         if (seq.state === "running"

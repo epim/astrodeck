@@ -188,7 +188,7 @@ function live(sid: string): SequenceState {
   return {
     state: "running", plan_name: "Flow f1", target: "t1",
     session: { id: sid, name: "Flow f1", count_mode: "attempts", accepted: 0 },
-    progress: { frames_done: 0, frames_total: 10, percent: 0, elapsed_s: 0, rejected: 0 },
+    progress: { frames_done: 0, calibration_frames_done: 0, frames_total: 10, percent: 0, elapsed_s: 0, rejected: 0 },
   };
 }
 const over = (): SequenceState => ({ state: "complete", end_reason: "complete" });

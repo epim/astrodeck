@@ -122,7 +122,7 @@ const seq: SequenceState = {
   state: "running",
   detail: "",
   progress: {
-    frames_done: 4, frames_total: 20, percent: 20, elapsed_s: 600, rejected: 0,
+    frames_done: 4, calibration_frames_done: 0, frames_total: 20, percent: 20, elapsed_s: 600, rejected: 0,
     current_exposure_s: 120,
   },
 };
