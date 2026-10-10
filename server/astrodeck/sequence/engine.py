@@ -11787,6 +11787,9 @@ class SequenceEngine:
             # guided. The retake used to be graded without it, so a retaken
             # dark was thrown away as "shot with the guider stopped" and the
             # retake was spent for a frame the first check would have kept.
+            # Since #995 the HFR median gate leaves a calibration frame out
+            # too, so nothing real refuses one now and a calibration retake
+            # is reached only by a gate that someday does.
             accepted = self._check_quality(new_info,
                                            calibration=target.calibration)
             self._reporter_record(target, step, new_info, accepted=accepted)
@@ -19951,7 +19954,8 @@ class SequenceEngine:
         (``min_stars``) AND an optional guide-RMS ceiling (``max_guide_rms``)
         AND an optional per-frame eccentricity ceiling (``max_eccentricity``) —
         all AND together; 0 disables each. Star/RMS/ecc gates skip
-        calibration frames (darks/bias/flats have no stars and no guiding).
+        calibration frames (darks/bias/flats have no stars and no guiding),
+        and so does the HFR gate: its median is the LIGHTS' (#995).
 
         Preserves the legacy HFR logic exactly: gate against the median of the
         ACCEPTED window only, fold this frame's HFR in only when accepted and
@@ -19961,7 +19965,16 @@ class SequenceEngine:
         factor = self._policy.hfr_reject_factor
         hfr = info.get("hfr") if isinstance(info, dict) else None
         accepted = True
-        if factor and hfr is not None:
+        # A CALIBRATION FRAME IS NOT A SAMPLE OF THE LIGHTS' SEEING (#995).
+        # The window is the HFR of accepted LIGHT frames, and this gate asks
+        # whether a frame is poor against it. A flat can carry an HFR (the
+        # simulator gives one 3.5 px; glass may detect motes as stars): it was
+        # refused over median * factor, and unlinked or retaken under discard /
+        # retake, and an accepted one was folded into the window below, so DUSK
+        # FLATS ahead of the first light could seed or drag the median that
+        # gates every light after it. Neither the gate nor the fold below is a
+        # calibration frame's business.
+        if factor and hfr is not None and not calibration:
             window = self._recent_hfr
             if len(window) >= 4:
                 med = median(window)
@@ -20045,7 +20058,7 @@ class SequenceEngine:
                 self._rejected += 1
                 bus.log("warning", reason, "sequence")
                 accepted = False
-        if accepted and record and factor and hfr is not None:
+        if accepted and record and not calibration and factor and hfr is not None:
             self._recent_hfr.append(float(hfr))
             self._recent_hfr = self._recent_hfr[-12:]
         return accepted
