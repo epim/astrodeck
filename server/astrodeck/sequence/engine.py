@@ -64,7 +64,8 @@ from ..guide.base import rms_total_arcsec
 # already, so this costs nothing at import.
 from ..guide.native import _ENGINE_MAX_DURATION_MS as _NATIVE_PULSE_CAP_MS
 from ..hub import (GOTO_NOT_ARRIVED_REASON, SOLVE_REASON_SYNC_REFUSED,
-                   SOLVE_REASON_SYNC_UNVERIFIED, Hub, slew_in_mount_frame)
+                   SOLVE_REASON_SYNC_UNVERIFIED, Hub,
+                   destination_pier_side_in_mount_frame, slew_in_mount_frame)
 from ..imaging.processing import to_jpeg
 from . import schedule
 from .cloudstate import CloudState, verdict_from_info
@@ -14752,9 +14753,13 @@ class SequenceEngine:
         # pier-collision guard: a mount that reports a definite unsafe destination
         # side blocks the slew (only when enabled + the mount supports it).
         if pier and getattr(tel, "reports_destination_pier_side", False):
+            # ASKED IN THE FRAME THE SLEW GOES IN (#881): the catalogue's J2000
+            # pair would be read as JNOW by a JNOW Alpaca mount, a point up to
+            # 0.38 deg from the one `slew_in_mount_frame` then slews to. The
+            # conversion shares the read's bound.
             side = await self._pier_guard_read(
-                lambda: tel.destination_pier_side(target.ra_hours,
-                                                  target.dec_deg),
+                lambda: destination_pier_side_in_mount_frame(
+                    self.hub, tel, target.ra_hours, target.dec_deg),
                 "the mount's destination pier side", suffix=timeout_suffix)
             # the "unsafe" side is the one the mount cannot reach without a flip;
             # we only hard-stop on a *definite* east/west report (UNKNOWN passes).

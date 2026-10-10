@@ -541,6 +541,18 @@ def precess_jnow_to_j2000(ra_hours: float, dec_deg: float,
     return icrs.ra.hourangle % 24.0, float(icrs.dec.deg)
 
 
+async def _target_in_mount_frame(hub, tel, ra_hours: float,
+                                 dec_deg: float) -> tuple[float, float]:
+    """A J2000 target as the mount expects it: ``Hub.to_mount_frame``, or the
+    pair unchanged for a hub double that has none (the engine's own tests
+    drive the slew and the pier guard with bare doubles; those pass the pair
+    through, as every non-Alpaca mount does)."""
+    convert = getattr(hub, "to_mount_frame", None)
+    if convert is not None:
+        return await convert(tel, ra_hours, dec_deg)
+    return ra_hours, dec_deg
+
+
 async def slew_in_mount_frame(hub, tel, ra_hours: float, dec_deg: float) -> None:
     """Slew ``tel`` to a J2000 target, in the frame the mount expects (#861).
 
@@ -552,15 +564,28 @@ async def slew_in_mount_frame(hub, tel, ra_hours: float, dec_deg: float) -> None
 
     The caller wraps THIS coroutine in its bound (``engine._bounded``), so
     the conversion's one device read (the cached EquatorialSystem probe)
-    shares the slew's bound.
-
-    ``getattr``: the engine's own tests drive it with bare hub doubles that
-    have no ``to_mount_frame``; those slew unchanged, as every non-Alpaca
-    mount does."""
-    convert = getattr(hub, "to_mount_frame", None)
-    if convert is not None:
-        ra_hours, dec_deg = await convert(tel, ra_hours, dec_deg)
+    shares the slew's bound."""
+    ra_hours, dec_deg = await _target_in_mount_frame(hub, tel, ra_hours,
+                                                     dec_deg)
     await tel.slew(ra_hours, dec_deg)
+
+
+async def destination_pier_side_in_mount_frame(hub, tel, ra_hours: float,
+                                               dec_deg: float) -> PierSide:
+    """The side of the pier ``tel`` would take for a J2000 target, asked in the
+    frame the mount expects (#881).
+
+    The slew gate's pier guard asks this before the slew that
+    `slew_in_mount_frame` makes, so the two must ask about the SAME point.
+    ``destination_pier_side`` forwards its coordinates to the mount's
+    ``DestinationSideOfPier`` unchanged, and a JNOW Alpaca mount read the
+    J2000 pair as JNOW: a point up to 0.38 deg (about 92 s of RA) from the one
+    the slew then went to, so a target near the flip boundary was guarded on
+    the wrong side. Same conversion, same fail-safe, same bound (the caller
+    wraps this in ``engine._pier_guard_read``)."""
+    ra_hours, dec_deg = await _target_in_mount_frame(hub, tel, ra_hours,
+                                                     dec_deg)
+    return await tel.destination_pier_side(ra_hours, dec_deg)
 
 
 @dataclass
