@@ -118,6 +118,146 @@ def test_wcs_from_astap_none_when_scaleless(tmp_path):
     assert _wcs_from_astap(tmp_path / "scaleless.ini", wcs_path) is None
 
 
+# ----------------------------------- a degenerate scale is no scale either (#943)
+# The guard above caught a result with NO CD*/CDELT* cards. A reference point
+# with an all-zero CD (wcslib reads that as 1 deg/pixel), a singular one, a
+# zero CDELT or a NaN is the same bogus WCS by another route, and used to come
+# back as a WcsSolution inside a successful SolveResult.
+
+_REF_CARDS = {"CRVAL1": 83.8221, "CRVAL2": -5.3911,
+              "CRPIX1": 512.0, "CRPIX2": 512.0}
+_PIXEL_DEG = 0.0004305
+
+_UNUSABLE = {
+    "all-zero CD": {"CD1_1": 0.0, "CD1_2": 0.0, "CD2_1": 0.0, "CD2_2": 0.0},
+    "singular CD": {"CD1_1": 1e-4, "CD1_2": 1e-4, "CD2_1": 1e-4, "CD2_2": 1e-4},
+    "CD with only its first term": {"CD1_1": -_PIXEL_DEG},
+    "zero CDELT pair": {"CDELT1": 0.0, "CDELT2": 0.0},
+}
+#: A FITS card cannot hold these, so only the .ini can deliver them.
+_UNREPRESENTABLE = {
+    "NaN in the CD": {"CD1_1": "nan", "CD1_2": 0.0, "CD2_1": 0.0,
+                      "CD2_2": _PIXEL_DEG},
+    "inf in the CD": {"CD1_1": -_PIXEL_DEG, "CD1_2": "inf", "CD2_1": 0.0,
+                      "CD2_2": _PIXEL_DEG},
+    "NaN CDELT": {"CDELT1": "nan", "CDELT2": _PIXEL_DEG},
+}
+_USABLE = {
+    "north-up CD": {"CD1_1": -_PIXEL_DEG, "CD1_2": 0.0, "CD2_1": 0.0,
+                    "CD2_2": _PIXEL_DEG},
+    "CDELT and CROTA2": {"CDELT1": -_PIXEL_DEG, "CDELT2": _PIXEL_DEG,
+                         "CROTA2": 12.5},
+}
+
+
+def _write_headerlet(path: Path, cards: dict) -> Path:
+    from astropy.io import fits as _fits
+    hdr = _fits.Header()
+    hdr["CTYPE1"] = "RA---TAN"
+    hdr["CTYPE2"] = "DEC--TAN"
+    for key, value in {**_REF_CARDS, **cards}.items():
+        hdr[key] = value
+    hdr.totextfile(str(path))
+    return path
+
+
+def _write_ini(path: Path, cards: dict, **extra) -> Path:
+    path.write_text("".join(f"{k}={v}\n"
+                            for k, v in {**extra, **_REF_CARDS, **cards}.items()))
+    return path
+
+
+@pytest.mark.parametrize("cards", list(_UNUSABLE.values()),
+                         ids=list(_UNUSABLE))
+def test_wcs_from_astap_none_when_the_headerlet_scale_is_unusable(tmp_path, cards):
+    """RED under mutation "the guard back to the scale-less test" (``if not
+    sol.has_usable_scale():`` of ``_wcs_from_astap`` -> ``if sol.cd11 is None
+    and sol.cdelt1 is None:``), observed on every case here, in the .ini test
+    (which also holds the NaN and inf cases) and in the ``AstapSolver.solve``
+    test below:
+
+        E   AssertionError: assert WcsSolution(crval1=83.8221, crval2=-5.3911, ...) is None
+    """
+    from astrodeck.solve.astap import _wcs_from_astap
+    wcs_path = _write_headerlet(tmp_path / "x.wcs", cards)
+    assert _wcs_from_astap(tmp_path / "x.ini", wcs_path) is None
+
+
+@pytest.mark.parametrize("cards", list({**_UNUSABLE, **_UNREPRESENTABLE}.values()),
+                         ids=list({**_UNUSABLE, **_UNREPRESENTABLE}))
+def test_wcs_from_astap_none_when_the_ini_scale_is_unusable(tmp_path, cards):
+    from astrodeck.solve.astap import _wcs_from_astap
+    ini = _write_ini(tmp_path / "x.ini", cards)
+    assert _wcs_from_astap(ini, tmp_path / "x.wcs") is None   # no headerlet
+
+
+@pytest.mark.parametrize("source", ["headerlet", "ini"])
+@pytest.mark.parametrize("cards", list(_USABLE.values()), ids=list(_USABLE))
+def test_wcs_from_astap_keeps_a_usable_scale(tmp_path, source, cards):
+    """The control: the stricter guard must not reach a real solution, and
+    this is what shows the cases above get as far as the guard."""
+    from astrodeck.solve.astap import _wcs_from_astap
+    if source == "headerlet":
+        sol = _wcs_from_astap(tmp_path / "x.ini",
+                              _write_headerlet(tmp_path / "x.wcs", cards))
+    else:
+        sol = _wcs_from_astap(_write_ini(tmp_path / "x.ini", cards),
+                              tmp_path / "x.wcs")
+    assert sol is not None
+    assert sol.has_usable_scale()
+    assert sol.crval1 == pytest.approx(_REF_CARDS["CRVAL1"])
+
+
+class _FakeAstapProcess:
+    returncode = 0
+
+    async def wait(self):
+        return 0
+
+    def kill(self):
+        pass
+
+
+async def _solve_with_headerlet(tmp_path, monkeypatch, cards):
+    """``AstapSolver.solve`` against a fake ``astap_cli`` that leaves the .ini
+    and the .wcs headerlet ASTAP would, for the image ``light.fits``."""
+    import asyncio
+    image = tmp_path / "light.fits"
+    image.write_bytes(b"")
+
+    async def fake_exec(*args, **kwargs):
+        _write_ini(image.with_suffix(".ini"),
+                   {"CDELT1": -_PIXEL_DEG, "CDELT2": _PIXEL_DEG,
+                    "CROTA2": 12.5}, PLTSOLVD="T")
+        _write_headerlet(image.with_suffix(".wcs"), cards)
+        return _FakeAstapProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    return await AstapSolver("astap_cli").solve(image)
+
+
+async def test_astap_solve_carries_a_usable_headerlet_wcs(tmp_path, monkeypatch):
+    """The control for the next test: the fake reaches ``_wcs_from_astap``."""
+    res = await _solve_with_headerlet(tmp_path, monkeypatch,
+                                      _USABLE["north-up CD"])
+    assert res.success
+    assert res.wcs is not None and res.wcs.cd11 == pytest.approx(-_PIXEL_DEG)
+
+
+@pytest.mark.parametrize("cards", list(_UNUSABLE.values()),
+                         ids=list(_UNUSABLE))
+async def test_astap_solve_drops_a_headerlet_wcs_it_cannot_use(
+        tmp_path, monkeypatch, cards):
+    """The solve still reports where ASTAP says it is looking (the position is
+    not in doubt), but the unusable matrix is not handed on as a WCS, so the
+    hub stamps nothing, calibrates no rotator from it and identifies no
+    field from it."""
+    res = await _solve_with_headerlet(tmp_path, monkeypatch, cards)
+    assert res.success
+    assert res.ra_hours == pytest.approx(_REF_CARDS["CRVAL1"] / 15.0)
+    assert res.wcs is None
+
+
 async def test_simsolver_returns_wcs(tmp_path):
     import numpy as np
     from astrodeck.devices.base import CameraFrame

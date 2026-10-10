@@ -62,11 +62,11 @@ from .imaging import (
     display_histogram,
     grade_frame,
     save_fits,
+    stamp_wcs,
     stretch_with,
     to_jpeg,
     to_png,
     to_thumb,
-    write_wcs,
 )
 from .imaging.processing import frame_stats, to_png
 from .imaging.sessionstack import effective_bayer, normalise_bayer
@@ -4348,11 +4348,27 @@ class Hub:
         res = await solver.solve(job.path, ra_hint=job.ra, dec_hint=job.dec,
                                  fov_deg_hint=job.fov_deg, **kwargs)
         # A failed solve, or a solve whose WCS was REJECTED upstream (ASTAP's
-        # scale-less-result guard returns wcs=None rather than a bogus ~1°/px
+        # unusable-scale guard returns wcs=None rather than a bogus ~1°/px
         # solution), stamps nothing. An absent card beats a wrong one.
         if res.success and res.wcs is not None:
-            await asyncio.to_thread(write_wcs, job.path, res.wcs)
-            bus.log("info", f"stamped WCS on {job.path.name}", "solve")
+            # A solver that does not guard its own output (a stand-in, a future
+            # one) gets the same answer the file writer would give it: refused,
+            # and refused here, so the rotator and the field identification
+            # never see the solution either.
+            if not res.wcs.has_usable_scale():
+                bus.log("warning",
+                        f"WCS refused for {job.path.name}: the solution has "
+                        "no usable plate scale; frame saved without WCS",
+                        "solve")
+                return
+            # ``stamp_wcs`` swallows a missing, locked or corrupt file, so
+            # this line is only as true as its answer (#944).
+            if await asyncio.to_thread(stamp_wcs, job.path, res.wcs):
+                bus.log("info", f"stamped WCS on {job.path.name}", "solve")
+            else:
+                bus.log("warning",
+                        f"WCS not written to {job.path.name} (the file could "
+                        "not be updated); frame saved without WCS", "solve")
             # The sky angle this light measured, recorded and (when the rotator
             # has not turned and the mount has not flipped since the shutter
             # closed) fed to the rotator. Inside this branch on purpose: a

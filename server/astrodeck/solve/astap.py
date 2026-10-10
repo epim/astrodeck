@@ -167,11 +167,14 @@ def _wcs_from_astap(ini_path: Path, wcs_path: Path) -> "WcsSolution | None":
                 cd11=_g("CD1_1"), cd12=_g("CD1_2"),
                 cd21=_g("CD2_1"), cd22=_g("CD2_2"),
                 cdelt1=_g("CDELT1"), cdelt2=_g("CDELT2"), crota2=_g("CROTA2"))
-        # A reference point with no scale (no CD*, no CDELT*) is a bogus WCS —
-        # astropy reads it back as a silent 1 deg/pixel solution. Treat it as
+        # A reference point with no usable scale is a bogus WCS: no CD*/CDELT*
+        # at all, an all-zero or singular CD, a zero CDELT or a NaN reads back
+        # as a silent 1 deg/pixel solution or raises downstream. Treat it as
         # unsolved rather than let a wrong astrometric scale reach a saved light
-        # (spec §8: a wrong value is worse than an absent card).
-        if sol.cd11 is None and sol.cdelt1 is None:
+        # or a rotator calibration (spec §8: a wrong value is worse than an
+        # absent card). The same test the file writer applies, so the two
+        # layers cannot disagree about what is believable.
+        if not sol.has_usable_scale():
             return None
         return sol
     except Exception:

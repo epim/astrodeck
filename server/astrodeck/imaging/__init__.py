@@ -18,7 +18,7 @@ from .stars import (
 )
 from .clouds import CloudResult, cloud_score, frame_contrast
 from .bahtinov import BahtinovResult, analyze_bahtinov
-from .fitsio import FrameMeta, save_fits, write_wcs
+from .fitsio import FrameMeta, save_fits, stamp_wcs, write_wcs
 from .livestack import (
     LiveStacker, StackOutcome, brightest_centroid, align_offset,
     DEFAULT_REJECT_FRAC, DEFAULT_REANCHOR_AFTER,
@@ -42,7 +42,7 @@ __all__ = [
     "star_flux_median", "star_marks",
     "CloudResult", "cloud_score",
     "BahtinovResult", "analyze_bahtinov",
-    "frame_contrast", "FrameMeta", "save_fits", "write_wcs",
+    "frame_contrast", "FrameMeta", "save_fits", "stamp_wcs", "write_wcs",
     "LiveStacker", "StackOutcome", "brightest_centroid", "align_offset",
     "DEFAULT_REJECT_FRAC", "DEFAULT_REANCHOR_AFTER",
     "SessionStacker", "channel_for", "channels_for", "downsample_factor",

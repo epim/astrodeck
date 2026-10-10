@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,36 @@ class WcsSolution:
     cunit: str = "deg"
     equinox: float = 2000.0
     radesys: str = "ICRS"
+
+    def has_usable_scale(self) -> bool:
+        """Whether this solution states a plate scale a reader can use, judged
+        on the numbers ``fitsio._apply_wcs`` would write: the CD matrix (a
+        missing term written as 0.0) or else the CDELT pair (a missing CDELT2
+        written as CDELT1), with a non-zero determinant (product, for CDELT)
+        and every number finite.
+
+        An all-zero CD reads back as the CDELT=1 default (1 deg/pixel), a
+        singular CD or a zero CDELT as a wcslib error, and a NaN raises out of
+        the header half way through the block, after CTYPE and CRVAL are
+        already in it. One test for every layer that must not believe such a
+        solution: the ASTAP parser, the file writer and the hub."""
+        if self.cd11 is not None:
+            terms = [0.0 if t is None else float(t)
+                     for t in (self.cd11, self.cd12, self.cd21, self.cd22)]
+            det = terms[0] * terms[3] - terms[1] * terms[2]
+        elif self.cdelt1 is not None:
+            d1 = float(self.cdelt1)
+            d2 = d1 if self.cdelt2 is None else float(self.cdelt2)
+            terms = [d1, d2]
+            det = d1 * d2
+            if self.crota2 is not None:
+                terms.append(float(self.crota2))
+        else:
+            return False
+        others = (self.crval1, self.crval2, self.crpix1, self.crpix2,
+                  self.equinox)
+        return det != 0.0 and all(
+            math.isfinite(float(v)) for v in (det, *terms, *others))
 
 
 @dataclass
