@@ -14,8 +14,8 @@
 //       G2 is infeasible because both ends have to clear the taller neighbour.
 //       Shoulders always err toward blocked.
 //
-// The algorithm is the one SPEC-v2 5.4 prototyped (a Python script, sensorfirst_simplify.py,
-// kept in the build's scratch notes): 102 / 48 / 35 vertices for the chart yard at tau 0.25 / 0.5 / 1.
+// The algorithm is the one SPEC-v2 5.4 prototyped: 100 / 49 / 35 vertices for the chart yard fixture (the
+// Float32 draft) at tau 0.25 / 0.5 / 1.
 // Differences from it, none of which changes a chart-yard count:
 //   * vertex values are capped at 90, because the server refuses a control
 //     point above HORIZON_ALT_MAX_DEG (server/astrodeck/locations.py:33), and a
