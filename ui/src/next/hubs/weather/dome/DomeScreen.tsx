@@ -33,6 +33,7 @@ import {
 import { getSite } from "../../../../api/site";
 import { altAzOf } from "../../../../lib/altaz";
 import { useCan } from "../../../../lib/caps";
+import { believedPointing } from "../../../../lib/slewController";
 import { useLock } from "../../../lib/gateHook";
 import { useConfig, useMount, usePlan, useSeq, useSite, useWeather } from "../../../../store";
 import { horizonAltAt, isObstructed, summary, type HorizonPoint } from "../../../lib/horizonModel";
@@ -160,10 +161,10 @@ export function DomeScreen(): JSX.Element {
   // Where the scope is looking: the dome's pierce point, drawn by the panel
   // from this prop. Below the horizon is not a pointing anyone can image
   // through, and the panel treats alt < 0 as "no marker".
-  const pointing = mount && typeof mount.alt === "number" && typeof mount.az === "number"
-    && mount.alt >= 0
-    ? { alt: mount.alt, az: mount.az }
-    : null;
+  // `believedPointing` is null while the mount does not know where it points:
+  // it then reports its HOME position, the pole (#791, #144).
+  const believed = believedPointing(mount);
+  const pointing = believed && believed.alt >= 0 ? believed : null;
 
   // The target's own marker needs alt/az, which needs the site's coordinates -
   // view.site_precise. An operator holds weather but not coordinates, and

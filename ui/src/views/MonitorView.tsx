@@ -57,6 +57,7 @@ import { getDomeState, type DomeState } from "../api/backends";
 import { resumeRecoveryLine } from "../api/sessions";
 import { useStopResumeRecovery } from "../lib/stopResumeRecovery";
 import { domeStatusLabel } from "../lib/dome";
+import { believedPointing } from "../lib/slewController";
 import { accessPhrase, useCanControlMount, useCanViewWeather } from "../lib/caps";
 import {
   CountdownTile,
@@ -133,6 +134,10 @@ export default function MonitorView() {
   const guideRms = useGuideRms();
   const camera = useCamera();
   const mount = useMount();
+  // Null while the mount does not know where it points: it reports its HOME
+  // position, the pole, so neither the dome marker nor the below-horizon chip
+  // may read it (#791, #144).
+  const believed = believedPointing(mount);
   const liveness = useLiveness();
   const preview = usePreview();
   const status = useStatus();
@@ -1176,7 +1181,7 @@ export default function MonitorView() {
             Advisory only -- a named server test pins that nothing in the
             sequencer consults the model. */}
       <ClassicSkyDomePanel
-          pointing={mount && mount.alt >= 0 ? { alt: mount.alt, az: mount.az } : null}
+          pointing={believed && believed.alt >= 0 ? believed : null}
         />
 
         {/* ================================================== THERMAL */}
@@ -1289,9 +1294,9 @@ export default function MonitorView() {
       </div>
 
       {/* below-horizon chip (surfaced, not enforced — §0 rejected/deferred) */}
-      {mount && mount.alt < 0 && (
+      {believed && believed.alt < 0 && (
         <div className="mt-3 inline-flex items-center gap-2 border border-bad/60 bg-bad/5 px-3 py-1.5 text-xs text-bad">
-          <Icon name="alert" size={14} /> BELOW HORIZON — mount at {mount.alt.toFixed(0)}°
+          <Icon name="alert" size={14} /> BELOW HORIZON — mount at {believed.alt.toFixed(0)}°
         </div>
       )}
     </div>

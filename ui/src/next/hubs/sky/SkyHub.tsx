@@ -95,6 +95,7 @@ import {
 import { fetchPanels, framedStrip, framingPrefill, frameText } from "./frame/mosaic";
 import { openFlowWizard } from "../session/flows/wizard";
 import { effectiveOptics } from "../../../lib/effective";
+import { believedPointing } from "../../../lib/slewController";
 import { DEFAULT_OVERLAP, fovFromOptics, type OpticsLike } from "../../../lib/framing";
 import { useSkyRegion, type SkyRow } from "../../../lib/skyRegion";
 import { resolveRoleConnected, useCapability } from "../../../lib/caps";
@@ -658,10 +659,11 @@ export function SkyHub(): JSX.Element {
 
   const domeWind = useMemo(() => windSummary(weather?.now ?? null), [weather?.now]);
 
-  const pointing = status?.mount && typeof status.mount.alt === "number"
-    && typeof status.mount.az === "number" && status.mount.alt >= 0
-    ? { alt: status.mount.alt, az: status.mount.az }
-    : null;
+  // `believedPointing` is null while the mount does not know where it points:
+  // it then reports its HOME position, the pole, and a marker drawn there is a
+  // claim about the tube that nothing backs (#791, #144).
+  const believed = believedPointing(status?.mount);
+  const pointing = believed && believed.alt >= 0 ? believed : null;
 
   /**
    * THE DOME'S ARCS ARE THE MODEL'S, not this file's.

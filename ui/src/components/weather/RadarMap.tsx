@@ -34,6 +34,7 @@ import { LockedChip, Panel, Stepper } from "../ui";
 import { Icon } from "../icons";
 import { u } from "../../lib/base";
 import { fmtDuration } from "../../lib/eta";
+import { believedPointing, positionKnown } from "../../lib/slewController";
 import {
   CLOUD_DECKS_KM,
   clampLat,
@@ -324,8 +325,11 @@ export default function RadarMap({ chrome = "panel" }: {
     return { x: dx * TILE_SIZE + width / 2, y: dy * TILE_SIZE + MAP_H / 2 };
   };
 
-  const hasPointing =
-    !!mount && Number.isFinite(mount.alt) && Number.isFinite(mount.az);
+  // Null while the mount does not know where it points: it then reports its
+  // HOME position, so the wedge, the pierce points and the Az/Alt chip would
+  // all be a precise answer about nothing, and the home altitude is the site
+  // latitude (#791, #144, #140).
+  const pointing = believedPointing(mount);
   const sitePx = siteLat !== null && siteLon !== null ? toPx(siteLat, siteLon) : null;
 
   // Sight-line pierce points (spec §11): where the line of sight crosses each
@@ -334,11 +338,11 @@ export default function RadarMap({ chrome = "panel" }: {
   // subs survive; low/mid are dots on the same ray. Ray length IS the
   // inclination readout, physically.
   const pierce: { deck: "low" | "mid" | "high"; x: number; y: number }[] = [];
-  if (hasPointing && siteLat !== null && siteLon !== null && mount) {
+  if (pointing && siteLat !== null && siteLon !== null) {
     for (const deck of ["low", "mid", "high"] as const) {
-      const dist = pierceDistanceKm(mount.alt, CLOUD_DECKS_KM[deck]);
+      const dist = pierceDistanceKm(pointing.alt, CLOUD_DECKS_KM[deck]);
       if (dist === null) continue; // clamp: <3° alt or >150 km hidden
-      const p = destPoint(siteLat, siteLon, mount.az, dist);
+      const p = destPoint(siteLat, siteLon, pointing.az, dist);
       const px = toPx(p.lat, p.lon);
       if (px) pierce.push({ deck, ...px });
     }
@@ -410,9 +414,9 @@ export default function RadarMap({ chrome = "panel" }: {
             label="Zoom"
           />
           <span className="mono text-dim border border-line px-1.5 py-0.5">
-            {hasPointing && mount
-              ? `Az ${Math.round(mount.az)}° · Alt ${Math.round(mount.alt)}°`
-              : "no mount"}
+            {pointing
+              ? `Az ${Math.round(pointing.az)}° · Alt ${Math.round(pointing.alt)}°`
+              : mount && !positionKnown(mount) ? "position unknown" : "no mount"}
           </span>
         </div>
 
@@ -496,8 +500,8 @@ export default function RadarMap({ chrome = "panel" }: {
                 <circle cx={sitePx.x} cy={sitePx.y} r={5} fill="none" stroke="var(--accent)" strokeWidth={1.6} />
                 <line x1={sitePx.x} y1={sitePx.y + 5} x2={sitePx.x} y2={sitePx.y + 11} stroke="var(--accent)" strokeWidth={1.6} />
                 {/* azimuth wedge (map is north-up) */}
-                {hasPointing && mount && (
-                  <path d={wedgePath(sitePx.x, sitePx.y, mount.az)} fill="var(--accent)" opacity={0.35} />
+                {pointing && (
+                  <path d={wedgePath(sitePx.x, sitePx.y, pointing.az)} fill="var(--accent)" opacity={0.35} />
                 )}
                 {/* dashed sight-line ray to the farthest visible pierce point */}
                 {farthest && (

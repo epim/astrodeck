@@ -4,6 +4,7 @@ import { useStore } from "../store";
 import { SkyDomePanel, type DomeOverlayArgs } from "../components/cloudmap/SkyDomePanel";
 import { DomeOverlay } from "../next/hubs/weather/dome/domeOverlay";
 import { projectAltAz } from "../lib/domeProjection";
+import { believedPointing, positionKnown } from "../lib/slewController";
 import { alignmentSky } from "./focusSky";
 import type { SkyPosition } from "./setup";
 
@@ -40,7 +41,9 @@ export function GuidedFocusSky({field,arcDeg,now,expired,plannedSky}: {field:Sky
   const liveSky=field&&site&&!site.is_default&&typeof site.latitude==="number"&&typeof site.longitude==="number" ? alignmentSky(field,arcDeg,site.latitude,site.longitude,now):null;
   const sky=liveSky??plannedSky??null;
   const mount=status?.mount;
-  const pointing=fresh&&mount&&Number.isFinite(mount.alt)&&Number.isFinite(mount.az)?{alt:mount.alt,az:mount.az}:null;
+  // A reset mount reports its HOME position, the pole, wherever the tube is (#791, #144).
+  const unknownPosition=fresh&&!!mount&&!positionKnown(mount);
+  const pointing=fresh?believedPointing(mount):null;
   return <figure className="guided-focus-sky">
     <figcaption><strong>Your sky</strong><span>{site?.name||"Observing site"}</span></figcaption>
     <SkyDomePanel chrome="bare" compact height={270} showSessionTargets={false} pointing={pointing} overlay={args=><>
@@ -54,6 +57,7 @@ export function GuidedFocusSky({field,arcDeg,now,expired,plannedSky}: {field:Sky
     </div>
     <p>{horizon.length ? "The shaded edge follows your saved obstruction line." : "No obstruction line is saved for this site."} {sky?.arcs.length ? "The dotted arcs show the two directions alignment may use. Each dot is a measurement position." : sky ? "The ring marks your alignment field." : "Find a field to see where focusing and alignment will happen."}</p>
     {!fresh&&<p>Mount position is hidden until the connection returns.</p>}
+    {unknownPosition&&<p>Mount position is hidden until the mount knows where it points.</p>}
     {!liveSky&&plannedSky&&<p>Field positions are from the last sky check.</p>}
   </figure>;
 }
