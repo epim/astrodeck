@@ -16,6 +16,13 @@ over, the warm runs exactly as it always did.
 
 Park is not touched by any of this: the mount is stowed between runs regardless
 of what happens next, and the test below says so.
+
+#887: an armed session with nothing left to shoot tonight is not "about to
+shoot again". The run that ended because its only target was set aside for the
+night armed that very session, and its window was still open, so the wind-down
+held the TEC at its setpoint until dawn for a run the resume tick refuses
+(``NOTHING_TONIGHT``). The decision now also asks the tick's readiness check;
+the cases at the end of this file grade it, a control beside each.
 """
 from __future__ import annotations
 
@@ -26,12 +33,15 @@ import pytest
 import astrodeck.hub as hub_module
 from astrodeck.config import Site, config_store
 from astrodeck.devices.base import Camera, CameraFrame, DeviceError
+from astrodeck.events import night_key
 from astrodeck.hub import Hub
 from astrodeck.sequence import schedule
 from astrodeck.sequence import resume_arm as resume_arm_mod
 from astrodeck.sequence.engine import SequenceEngine
-from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
-from astrodeck.sequence.session import Session, session_store
+from astrodeck.sequence.group_rules import CENTRING
+from astrodeck.sequence.models import (ExposureStep, Schedule, SequencePlan,
+                                       Target, TargetGroup)
+from astrodeck.sequence.session import Session, SessionFrame, session_store
 
 # A real mid-latitude site with a proper June night — the same one
 # test_resume_arm_daylight.py drives the window predicate against.
@@ -241,3 +251,249 @@ def test_the_tick_and_the_wind_down_share_one_predicate(rig):
     for t in (clock["t"], dawn + 90 * 60, dawn + 5 * 3600):
         assert arm._window_open(s, t) is resume_arm_mod.window_open(
             s, h.site, twilight, t)
+
+
+# --------------------------------------- an armed session with nothing left
+
+def _high(name: str = "Cepheus field", **kw) -> Target:
+    """A target that stays above 30 degrees all night at SITE, so that nothing
+    but a set-aside (or a start floor it cannot clear) keeps it from being
+    shot."""
+    return Target(name=name, ra_hours=12.0, dec_deg=80.0, steps=[
+        ExposureStep(filter="L", exposure_s=60, count=2)], **kw)
+
+
+def _arm_with(targets, *, at, groups=(), aside=(), banked=(), record_at=None,
+              **record) -> Session:
+    """An armed session of ``targets`` whose ``aside`` targets are set aside
+    for the night ``record_at`` (default ``at``) falls in (``record``: the kind
+    and clock time the engine writes with it) and whose ``banked`` targets are
+    complete."""
+    s = Session(name="Mosaic", created_ts=1.0, updated_ts=1.0,
+                status="dormant", auto_resume=True,
+                plan=SequencePlan(name="Mosaic", targets=list(targets),
+                                  groups=list(groups)))
+    for t in banked:
+        for _ in range(2):
+            s.frames.append(SessionFrame(ts=at - 3600.0, night="n1",
+                                         target_id=t.id,
+                                         step_id=t.steps[0].id))
+    for t in aside:
+        s.note_set_aside(t.id, "held for 6 passes in a row",
+                         night=night_key(at if record_at is None else record_at),
+                         **record)
+    session_store.save(s)
+    return s
+
+
+def _held_back(bus_lines) -> list[str]:
+    """The wind-down's "leaving the cooler at its setpoint" lines."""
+    return [m for lv, m, _s in bus_lines
+            if lv == "info" and "armed to resume" in m]
+
+
+async def test_it_warms_when_the_armed_sessions_only_target_is_set_aside(
+        rig, bus_lines):
+    """#887, the 2026-10-09 shape: a run ended because its only target was set
+    aside for the night, and the session it armed is the one the wind-down
+    took for "about to resume". The tick refuses it until the next night, so
+    holding the TEC at its setpoint buys no run. The sentence that claimed a
+    resume must not be logged either (a claim nothing keeps)."""
+    _h, engine, warms, clock = rig
+    only = _high()
+    _arm_with([only], at=clock["t"], aside=[only], kind="group", ts=clock["t"])
+    await engine._wind_down(park=False, warm=True)
+    assert warms == [{"source": "wind-down"}]
+    assert _held_back(bus_lines) == []
+
+
+async def test_it_holds_the_cooler_while_one_target_can_still_run(
+        rig, bus_lines):
+    """The control: the same set-aside beside a target that still owes light
+    and is not set aside. The session can run tonight, so the cooler stays."""
+    _h, engine, warms, clock = rig
+    gone, left = _high("Set aside"), _high("Still owed")
+    _arm_with([gone, left], at=clock["t"], aside=[gone], kind="group",
+              ts=clock["t"])
+    await engine._wind_down(park=False, warm=True)
+    assert warms == []
+    assert len(_held_back(bus_lines)) == 1
+
+
+async def test_a_set_aside_from_another_night_does_not_warm(rig, bus_lines):
+    """Set-aside is for the NIGHT it was made on (spec 3.4); yesterday's
+    record is history, so tonight the target is owed and the cooler stays."""
+    _h, engine, warms, clock = rig
+    only = _high()
+    _arm_with([only], at=clock["t"], aside=[only], kind="group",
+              ts=clock["t"] - 86400.0, record_at=clock["t"] - 86400.0)
+    await engine._wind_down(park=False, warm=True)
+    assert warms == []
+    assert len(_held_back(bus_lines)) == 1
+
+
+def _mosaic(cols: int = 2):
+    group = TargetGroup(id="g-mosaic", name="Mosaic",
+                        geometry={"rows": 1, "cols": cols})
+    panels = [Target(name=f"Panel 1-{c + 1}", ra_hours=12.0 + 0.05 * c,
+                     dec_deg=80.0, mosaic_group=group.id, panel_row=0,
+                     panel_col=c,
+                     steps=[ExposureStep(filter="L", exposure_s=60, count=2)])
+              for c in range(cols)]
+    return group, panels
+
+
+async def test_it_warms_when_every_panel_of_the_mosaic_is_set_aside(
+        rig, bus_lines):
+    """The mosaic the issue names: each panel carries its own whole-panel
+    record, written by the group driver, and none is left to shoot."""
+    _h, engine, warms, clock = rig
+    group, panels = _mosaic()
+    _arm_with(panels, at=clock["t"], groups=[group], aside=panels,
+              kind="group", ts=clock["t"])
+    await engine._wind_down(park=False, warm=True)
+    assert warms == [{"source": "wind-down"}]
+    assert _held_back(bus_lines) == []
+
+
+async def test_it_holds_the_cooler_while_one_panel_of_the_mosaic_is_live(
+        rig, bus_lines):
+    """The control: one panel set aside, the other still owed."""
+    _h, engine, warms, clock = rig
+    group, panels = _mosaic()
+    _arm_with(panels, at=clock["t"], groups=[group], aside=panels[:1],
+              kind="group", ts=clock["t"])
+    await engine._wind_down(park=False, warm=True)
+    assert warms == []
+    assert len(_held_back(bus_lines)) == 1
+
+
+async def test_it_warms_when_every_owed_step_of_the_target_is_set_aside(
+        rig, bus_lines):
+    """A target whose owed steps each carry a step-level record (the reject
+    guard's) has nothing left tonight; one owed step still without one does."""
+    _h, engine, warms, clock = rig
+    t = Target(name="Two filters", ra_hours=12.0, dec_deg=80.0, steps=[
+        ExposureStep(filter="L", exposure_s=60, count=2),
+        ExposureStep(filter="R", exposure_s=60, count=2)])
+    s = _arm_with([t], at=clock["t"])
+    night = night_key(clock["t"])
+    s.note_set_aside(t.id, "rejects", night=night, step_id=t.steps[0].id)
+    session_store.save(s)
+    await engine._wind_down(park=False, warm=True)
+    assert warms == [], "one step is still owed tonight"
+    s.note_set_aside(t.id, "rejects", night=night, step_id=t.steps[1].id)
+    session_store.save(s)
+    await engine._wind_down(park=False, warm=True)
+    assert warms == [{"source": "wind-down"}]
+    assert len(_held_back(bus_lines)) == 1       # the first call's, only
+
+
+async def test_it_warms_when_the_owing_target_never_clears_its_start_floor(
+        rig, bus_lines):
+    """A target past its floor is dropped by the run unshot, as set aside is.
+    Beside a COMPLETE target whose window is open (so ``window_open`` is
+    true), the session owes only what cannot be shot."""
+    _h, engine, warms, clock = rig
+    done = _high("Done")
+    cannot = _high("Floor 80", schedule=Schedule(min_altitude_deg=80.0))
+    _arm_with([done, cannot], at=clock["t"], banked=[done])
+    await engine._wind_down(park=False, warm=True)
+    assert warms == [{"source": "wind-down"}]
+    assert _held_back(bus_lines) == []
+
+
+async def test_it_holds_the_cooler_when_the_owing_target_clears_its_floor(
+        rig, bus_lines):
+    """The control: the same shape with a floor the target does clear."""
+    _h, engine, warms, clock = rig
+    done = _high("Done")
+    can = _high("Floor 30", schedule=Schedule(min_altitude_deg=30.0))
+    _arm_with([done, can], at=clock["t"], banked=[done])
+    await engine._wind_down(park=False, warm=True)
+    assert warms == []
+    assert len(_held_back(bus_lines)) == 1
+
+
+async def test_owed_calibration_keeps_the_cooler_for_the_tick_to_start(
+        rig, bus_lines):
+    """The tick does not refuse calibration-only work (it starts it), so a
+    set-aside light target beside owed darks is a session about to resume."""
+    _h, engine, warms, clock = rig
+    only = _high()
+    darks = Target(name="Darks", ra_hours=0.0, dec_deg=0.0, calibration=True,
+                   steps=[ExposureStep(filter="Dark", exposure_s=60, count=5)])
+    _arm_with([only, darks], at=clock["t"], aside=[only], kind="group",
+              ts=clock["t"])
+    await engine._wind_down(park=False, warm=True)
+    assert warms == []
+    assert len(_held_back(bus_lines)) == 1
+
+
+async def test_a_centring_set_aside_that_expires_tonight_keeps_the_cooler(
+        rig, bus_lines):
+    """A panel set aside FOR NOW (centring, 45 minutes) is tried again tonight
+    by the tick, so its session can still run and must not be warmed under.
+    The control for the expiry cases below: the same session, the same record,
+    with the sky open at the moment it expires."""
+    _h, engine, warms, clock = rig
+    only = _high()
+    _arm_with([only], at=clock["t"], aside=[only], kind=CENTRING,
+              ts=clock["t"] - 600.0)
+    await engine._wind_down(park=False, warm=True)
+    assert warms == []
+    assert len(_held_back(bus_lines)) == 1
+
+
+async def test_a_centring_set_aside_that_expires_after_dawn_warms(rig):
+    """Expiring is only a reason to wait while the sky is still open when it
+    does: ten minutes before dawn, a record that frees its panel 45 minutes
+    later frees it into daylight."""
+    _h, engine, warms, clock = rig
+    _dusk, dawn = _night()
+    clock["t"] = dawn - 600.0
+    only = _high()
+    _arm_with([only], at=clock["t"], aside=[only], kind=CENTRING,
+              ts=clock["t"])
+    await engine._wind_down(park=False, warm=True)
+    assert warms == [{"source": "wind-down"}]
+
+
+async def test_a_centring_set_aside_that_already_expired_once_warms(rig):
+    """At most one expiry per panel per night (`set_aside_expiry`): the
+    second centring set-aside stands for the rest of it, so nothing is
+    waiting to free the panel."""
+    _h, engine, warms, clock = rig
+    only = _high()
+    s = _arm_with([only], at=clock["t"], aside=[only], kind=CENTRING,
+                  ts=clock["t"] - 4000.0)
+    night = night_key(clock["t"])
+    s.note_set_aside_expired(only.id, night=night)
+    s.note_set_aside(only.id, "centring again", night=night, kind=CENTRING,
+                     ts=clock["t"] - 600.0)
+    session_store.save(s)
+    await engine._wind_down(park=False, warm=True)
+    assert warms == [{"source": "wind-down"}]
+
+
+def test_the_wind_down_and_the_tick_ask_the_same_readiness_question(rig):
+    """The tick refuses a session as ``NOTHING_TONIGHT`` by
+    ``recentre_candidates`` and ``nothing_to_shoot_tonight`` (the pair
+    ``ResumeArm._recover`` asks). Whichever way a session answers there, the
+    wind-down's predicate answers the same: no session expected exactly when
+    the tick refuses, none when it would start."""
+    h, _engine, _warms, clock = rig
+    twilight = config_store.cfg().safety.twilight_deg
+    arm = resume_arm_mod.ResumeArm(engine=None, hub=h, clock=lambda: clock["t"])
+    a, b = _high("A"), _high("B")
+    for aside, refused in (([a, b], True), ([a], False), ([], False)):
+        s = _arm_with([a, b], at=clock["t"], aside=aside, kind="group",
+                      ts=clock["t"])
+        t = clock["t"]
+        asked = resume_arm_mod.nothing_to_shoot_tonight(
+            s, resume_arm_mod.recentre_candidates(
+                s, night_key(t), arm._walk(s, t), site=h.site,
+                twilight_deg=twilight, now=t))
+        assert asked is refused
+        expected = resume_arm_mod.resume_expected_tonight(h)
+        assert (expected is None) is refused

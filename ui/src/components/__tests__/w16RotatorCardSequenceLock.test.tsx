@@ -3,6 +3,8 @@
 // w16RotatorCardSequenceLock.test.tsx - the CLASSIC rotator card disables Go,
 // the nudges, Rotate to PA, Sync to sky and Test rotator while a run is live,
 // with the rig's own sentence as their title (#751; WP-145, wave 16). Mounted.
+// The reverse box is locked the same way since #822 (WP-158, wave 18): the rig
+// refuses `/api/rotator/reverse` during a run too.
 //
 //   Run directly:  npx tsx src/components/__tests__/w16RotatorCardSequenceLock.test.tsx
 //   Also run by `npm test` (run-tests.mjs).
@@ -71,11 +73,18 @@
 //      typed in first, 16/17: "x running, a position angle typed in: Go is
 //      disabled by the run alone: Go is ENABLED while the run is live and a PA is
 //      typed: the rig answers it 409 sequence_running"
-//   Z11 "the reverse box is disabled by a run" (`|| runLive` added to its
-//      `disabled`; the verifier's case, the claim that the rig does not refuse
-//      reverse was unpinned), 16/17: "x running: the reverse box is not disabled by
-//      the run, and a press posts the reverse route: the reverse box is disabled
-//      while a run is live, which the rig does not refuse"
+//   Z11 (retired by #822, WP-158, wave 18). It was "the reverse box is disabled
+//      by a run": the rig did not refuse `/api/rotator/reverse` then, and this
+//      file pinned the box live and failed the day the route took the guard.
+//      The route takes it now, so the box is the sixth control in the list.
+//   Z12 "the reverse box is not disabled by a run" (`|| runLive` removed from
+//      the checkbox's `disabled`; run from a byte backup of RotatorCard.tsx,
+//      restored byte-identically, md5sum compared), 12/17: "x running: Go, the
+//      nudges, Rotate to PA, Sync to sky, Test rotator and reverse are disabled
+//      with the rig's sentence: reverse is ENABLED while the run is running: the
+//      rig answers it 409 sequence_running" (and paused, holding, aborting), and
+//      "x a run ending re-enables the reverse box, and a press posts the reverse
+//      route: premise: the reverse box is disabled while the run is live"
 //
 // The card as it stood before this change (`git show HEAD:` of the file, put in
 // place from a byte backup and restored) read 8/14: the same cases as Z1.
@@ -193,6 +202,7 @@ const SENTENCE = {
   rotate: () => serverSentence("rotator_rotate_to_pa"),
   sync: () => serverSentence("rotator_sync_to_sky"),
   preflight: () => serverSentence("rotator_preflight"),
+  reverse: () => serverSentence("rotator_reverse"),
 };
 
 test("the reader finds the rig's template and its sentences (a vacuity guard)", () => {
@@ -202,6 +212,9 @@ test("the reader finds the rig's template and its sentences (a vacuity guard)", 
   eq(SENTENCE.sync(),
     "a sequence is running; sync to sky refused, because it would re-calibrate the rotator's sky angle under the run. Stop the run first",
     "the sync sentence was not read from app.py as written");
+  eq(SENTENCE.reverse(),
+    "a sequence is running; rotator reverse refused, because it would flip the rotator's direction convention under the run, changing what every later rotation means. Stop the run first",
+    "the reverse sentence (two adjacent literals) was not read from app.py as written");
 });
 
 // -------------------------------------------------------------------- seeding
@@ -254,7 +267,10 @@ const q = (sel: string) => container.querySelector(sel) as any;
 const buttonNamed = (name: string) => (Array.from(container.querySelectorAll("button")) as any[])
   .find((b) => (b.textContent || "").trim() === name);
 const commands = () => asked.filter((a) => a.method !== "GET");
-const titleOf = (node: any): string => (node?.getAttribute("title") ?? "") as string;
+// A button carries its own title; the reverse checkbox is titled by the label
+// that wraps it (the whole "reverse" control is the hover target).
+const titleOf = (node: any): string => (node?.getAttribute("title")
+  ?? node?.closest?.("label")?.getAttribute("title") ?? "") as string;
 /** Type into the card's target-PA field the way a person does: the native value
  *  setter, then an `input` event, which is what React's onChange listens for. */
 function typeAngle(value: string): void {
@@ -275,11 +291,13 @@ const LOCKED_BY_A_RUN: Array<[string, () => any, () => string]> = [
   ["Rotate to PA", () => buttonNamed("Rotate to PA (plate solve)"), SENTENCE.rotate],
   ["Sync to sky", () => q("[data-rotator-sync]"), SENTENCE.sync],
   ["Test rotator", () => q("[data-rotator-preflight]"), SENTENCE.preflight],
+  // Locked by #822: the rig refuses the reverse route during a run too.
+  ["reverse", () => q('input[type="checkbox"]'), SENTENCE.reverse],
 ];
 
 // =========================================== every live state locks, per route
 for (const state of ["running", "paused", "holding", "aborting"]) {
-  test(`${state}: Go, the nudges, Rotate to PA, Sync to sky and Test rotator are disabled with the rig's sentence`, () => {
+  test(`${state}: Go, the nudges, Rotate to PA, Sync to sky, Test rotator and reverse are disabled with the rig's sentence`, () => {
     seed({ state });
     mount();
     for (const [what, find, sentence] of LOCKED_BY_A_RUN) {
@@ -349,25 +367,26 @@ await testAsync("running: Halt is live and a press posts the halt route", async 
   assert(commands()[0].url.endsWith("/api/rotator/halt"), `Halt posted ${commands()[0].url}`);
 });
 
-// ============================================ the reverse box is not one of the five
-// The card leaves it live during a run ONLY because the rig does: `/api/rotator/
-// reverse` does not call `_refuse_while_sequence_runs` (a defect of its own,
-// reported with WP-145). This case reads that off `app.py`, so the day the rig
-// guards it this fails with the instruction to lock the box with the rig's
-// sentence, and does not leave the card offering a control that can only fail.
-await testAsync("running: the reverse box is not disabled by the run, and a press posts the reverse route", async () => {
-  const at = APP_PY.indexOf("async def rotator_reverse(");
-  assert(at >= 0, "app.py no longer defines rotator_reverse");
-  const body = APP_PY.slice(at, APP_PY.indexOf("async def ", at + 10));
-  assert(!body.includes("_refuse_while_sequence_runs("),
-    "the rig now refuses the reverse route while a run is live: disable the reverse box "
-    + "with its sentence, as the other five are (#751)");
+// ================================================ the reverse box is one of the six
+// `/api/rotator/reverse` calls `_refuse_while_sequence_runs` since #822 (the box
+// was left live before that only because the rig answered it). The sentence is
+// read from `app.py` like the other five (`SENTENCE.reverse` throws if the route
+// stops calling the guard), so the box and the rig cannot drift apart. The "every
+// live state" loop above grades the disabled state and the title in each live
+// state; a synthetic click is NOT graded on the disabled box, because jsdom
+// toggles a disabled checkbox on `dispatchEvent` and React then fires onChange,
+// which a browser never does for a person. What is graded below is the other
+// half: the box works again once the run ends.
+await testAsync("a run ending re-enables the reverse box, and a press posts the reverse route", async () => {
   seed({ state: "running" });
   mount();
+  assert(q('input[type="checkbox"]').disabled === true,
+    "premise: the reverse box is disabled while the run is live");
+  act(() => { useStore.setState({ sequence: { state: "complete" } } as never); });
+  await settle();
   const box = q('input[type="checkbox"]');
-  assert(box != null, "no reverse box on a rotator that can reverse");
-  assert(box.disabled === false,
-    "the reverse box is disabled while a run is live, which the rig does not refuse");
+  assert(box.disabled === false, "the reverse box is still disabled after the run ended");
+  eq(titleOf(box), "", "the reverse box still carries a run's sentence after the run ended");
   asked.length = 0;
   click(box);
   await settle();

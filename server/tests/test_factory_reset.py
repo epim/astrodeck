@@ -125,6 +125,7 @@ def test_dirty_runs_after_the_night_log_made_logs(env, monkeypatch):
     monkeypatch.setattr(events.bus, "night_log", events.NightLogWriter())
     events.bus.log("info", "test_factory_reset: a line before _dirty (#201)",
                    "test")
+    events.flush_night_logs()                   # logs/ is made off-thread now
     assert (cap / "logs").is_dir(), (
         "premise: the night log made logs/ under this test's captures root "
         "before _dirty ran")

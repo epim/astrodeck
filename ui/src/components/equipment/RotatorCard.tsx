@@ -65,8 +65,11 @@ const PREFLIGHT_DONE_NOTE =
 // are disabled while a run is live and carry their route's sentence as their
 // title, word for word (the panel in `next/hubs/rig/rotator/RotatorPanel.tsx` has
 // its own copy for the same reason this file keeps its own PREFLIGHT_NOTE;
-// `w16RotatorCardSequenceLock.test.tsx` reads all four out of `app.py`). Halt and
-// Reverse are not among them: the rig answers both.
+// `w16RotatorCardSequenceLock.test.tsx` reads all five out of `app.py`). The
+// reverse box joined them with #822: the rig refuses `/api/rotator/reverse`
+// during a run too, because flipping the direction convention under a run
+// changes what every later rotation means. Halt is not among them: the rig
+// answers it.
 const sequenceSentence = (refused: string, why: string): string =>
   `a sequence is running; ${refused} refused, because ${why}. Stop the run first`;
 
@@ -80,12 +83,16 @@ const SEQUENCE_PREFLIGHT = sequenceSentence(
   "rotator preflight",
   "it turns the rotator about 22 degrees and takes four plate solves, which "
   + "would ruin the run's frames");
+const SEQUENCE_REVERSE = sequenceSentence(
+  "rotator reverse",
+  "it would flip the rotator's direction convention under the run, changing "
+  + "what every later rotation means");
 
 // A disabled button's title is not shown on touch, so the lock is also said
 // once in the card, naming what is dim and what is not.
 const SEQUENCE_LOCK_NOTE =
-  "A sequence is running, so Go, the nudges, Rotate to PA, Sync to sky and "
-  + "Test rotator are locked until it stops. Halt stays live.";
+  "A sequence is running, so Go, the nudges, Rotate to PA, Sync to sky, "
+  + "Test rotator and reverse are locked until it stops. Halt stays live.";
 
 // What the rig knows about this rotator, in one line. null/undefined (an older
 // server) read as "not measured", which is not "failed".
@@ -305,8 +312,10 @@ export default function RotatorCard(): JSX.Element | null {
               Test rotator
             </button>
             {rot.can_reverse && (
-              <label className="flex items-center gap-1.5 text-[11px] text-dim">
-                <input type="checkbox" checked={rot.reverse} disabled={busy || !canMove}
+              <label className="flex items-center gap-1.5 text-[11px] text-dim"
+                     title={runLive ? SEQUENCE_REVERSE : undefined}>
+                <input type="checkbox" checked={rot.reverse}
+                       disabled={busy || !canMove || runLive}
                        onChange={(e) => void run(() => api.post("/api/rotator/reverse",
                          { reverse: e.target.checked }))} />
                 reverse

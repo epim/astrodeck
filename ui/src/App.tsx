@@ -16,6 +16,7 @@ import { connectWs } from "./ws";
 import { Icon, type IconName } from "./components/icons";
 import { Led } from "./components/ui";
 import ConnectionBanner from "./components/ConnectionBanner";
+import SunWatchBanner from "./components/SunWatchBanner";
 import { getResumeArm } from "./api/sessions";
 import HealthLeds from "./components/HealthLeds";
 import RoleBadge from "./components/RoleBadge";
@@ -45,6 +46,7 @@ import { startGuidedRecovery } from "./guided/recovery";
 import "./guided/guided.css";
 import { openSettingsPanel } from "./lib/settingsNavigation";
 import { effectiveProviders } from "./lib/effective";
+import { believedPointing, positionKnown } from "./lib/slewController";
 
 const GuidedHome = lazy(() => import("./guided/GuidedHome"));
 
@@ -432,6 +434,7 @@ export default function App() {
   const camConnected = !!status?.connected?.camera?.connected;
   const mountConnected = !!status?.connected?.telescope?.connected;
   const seqRunning = sequence.state === "running" || sequence.state === "paused";
+  const believed = believedPointing(status?.mount);
   const seqError = sequence.state === "error";
   const dim = linkDown || telemetryStale;
   // Route-level gating (onboarding §3b): show the interstitial on equipment-gated
@@ -695,8 +698,13 @@ export default function App() {
                     viewer) — the type says `number` but the wire does not always agree.
                     Render nothing for this span rather than throw on `.toFixed` of
                     undefined, which white-screened the whole classic root. */}
-                {typeof status.mount.alt === "number" && (
-                  <span className="hidden lg:inline shrink-0 whitespace-nowrap">ALT {status.mount.alt.toFixed(0)}°</span>
+                {believed ? (
+                  <span className="hidden lg:inline shrink-0 whitespace-nowrap">ALT {believed.alt.toFixed(0)}°</span>
+                ) : !positionKnown(status.mount) && (
+                  /* A reset mount reports its HOME position (the pole), where the
+                     altitude is the site latitude, not the tube's height (#791,
+                     #144, #140): say so rather than print it. */
+                  <span className="hidden lg:inline shrink-0 whitespace-nowrap text-warn">ALT unknown</span>
                 )}
               </>
             )}
@@ -730,6 +738,9 @@ export default function App() {
 
         {/* ConnectionBanner renders null when the link is up and telemetry fresh. */}
         <ConnectionBanner />
+        {/* The sun watch is blind or standing down (#894): the tube has no
+            protection from the Sun and nothing else on screen said so. */}
+        <SunWatchBanner />
 
         {/* ARMED-AND-WAITING banner. Same shape and same slot as the run
             banner below - an armed run is the other half of "something is

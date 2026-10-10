@@ -103,6 +103,7 @@ export function FlowLibrary() {
   const cards = useStore((s) => s.flows.cards);
   const folders = useStore((s) => s.flows.folders);
   const libraryError = useStore((s) => s.flows.libraryError);
+  const libraryLoadError = useStore((s) => s.flows.libraryLoadError);
   const libraryRetry = useStore((s) => s.flows.libraryRetry);
   const wsConnected = useWsConnected();
   const query = useStore((s) => s.flows.ui.query);
@@ -256,15 +257,27 @@ export function FlowLibrary() {
             <Icon name="alert" size={14} />
             <span>{retryingLine(libraryRetry)}</span>
           </div>
-        ) : libraryError ? (
+        ) : libraryLoadError ? (
           <div role="status"
                className="mt-6 flex flex-wrap items-center gap-2 font-mono text-[11px] text-bad">
             <Icon name="alert" size={14} />
-            <span>Could not read the flow library: {libraryError}</span>
+            <span>Could not read the flow library: {libraryLoadError}</span>
             <button type="button" className="btn !text-[10.5px] !px-2.5 !py-[7px]"
                     onClick={() => void flowsLoadLibrary()}>
               RETRY
             </button>
+          </div>
+        ) : null}
+        {/* An open's or a save's failure is its own line, BESIDE the load's
+            and never behind it (#877): the load retries for up to 82 s, and a
+            reason that only showed once that ended arrived long after the
+            press it explains. Not "could not read the library" either, which
+            is what the shared field made it say. */}
+        {libraryError ? (
+          <div role="status" data-flows-action-error
+               className={`${libraryRetry || libraryLoadError ? "mt-2" : "mt-6"} flex flex-wrap items-center gap-2 font-mono text-[11px] text-bad`}>
+            <Icon name="alert" size={14} />
+            <span>Could not open or save a flow: {libraryError}</span>
           </div>
         ) : null}
 

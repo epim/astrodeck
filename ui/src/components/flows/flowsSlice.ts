@@ -143,7 +143,16 @@ export interface FlowsState {
   cards: FlowCard[];
   folders: FlowFolder[];
   libraryLoaded: boolean;
+  /** Why the last OPEN or SAVE failed or was refused (`flowOpenFailure` and
+   *  the autosave note read it). Written by `flowsOpen`, `flowsSave` and
+   *  `flowsCloseEditor`. The library load never SETS it: the load has its own
+   *  field below, so a retrying or failed load can neither hide an open's or a
+   *  save's reason nor be reported as one (#877). A load's success only
+   *  CLEARS a reason that was already there when it started. */
   libraryError: string | null;
+  /** Why the library LOAD failed (`flowsLoadLibrary`), and only that. Cleared
+   *  by the load's success; untouched while it retries. */
+  libraryLoadError: string | null;
   /** Set while flowsLoadLibrary waits to ask again after a transient failure (#859). */
   libraryRetry: LoadRetry | null;
   /** True from the start of flowsLoadLibrary to its end, waits included. Read
@@ -295,12 +304,12 @@ export function compiledIsCurrent(f: Pick<FlowsState, "compiled" | "graph">): bo
  *  second handler in the same event sees the first one's `libraryLoading`
  *  and does nothing. */
 export function libraryFailedIn(f: FlowsState): boolean {
-  return !!f.libraryError && !f.libraryLoaded && !f.libraryLoading;
+  return !!f.libraryLoadError && !f.libraryLoaded && !f.libraryLoading;
 }
 
 export const FLOWS_INIT: FlowsState = {
   cards: [], folders: [], libraryLoaded: false, libraryError: null,
-  libraryRetry: null, libraryLoading: false,
+  libraryLoadError: null, libraryRetry: null, libraryLoading: false,
   record: null, graph: { nodes: [], edges: [] }, dirty: false, saving: false,
   sel: null, editNode: null, history: FLOW_HISTORY_EMPTY,
   // The prototype opens at this pan/zoom; a fresh canvas that started at 1.0/0,0
@@ -1402,19 +1411,26 @@ export function createFlowsActions(
       // A TRANSIENT FAILURE IS ASKED AGAIN BY ITSELF (#859): a timeout, a
       // network error or a proxy's 502/503/504 waits 2 s, 5 s, 15 s and asks
       // again, with `libraryRetry` set meanwhile, so the screen says it is
-      // retrying instead of showing the error. `libraryError` is not touched
-      // while it retries, so the screen never flickers between error and
-      // empty. A newer call supersedes this one: it then writes nothing,
+      // retrying instead of showing the error. `libraryLoadError` is not
+      // touched while it retries, so the screen never flickers between error
+      // and empty. A newer call supersedes this one: it then writes nothing,
       // which is what keeps it from clearing the newer call's `libraryLoading`.
       // `!== false`, as flowsFetchTonight's flush: an event handed in as
       // `options` reads as the default.
       const gen = ++libraryGen;
       const mine = () => gen === libraryGen;
-      // `libraryError` is SHARED with saves and opens (#859 N5). The success
-      // below clears what was there when this load started (a failed load's
-      // text, or an older failure, as before #859), but not a failure another
-      // action wrote while this load was out: up to 82 s of retries is long
-      // enough for a save or an open to fail meanwhile.
+      // THIS LOAD SETS `libraryLoadError` AND NEVER SETS `libraryError`
+      // (#877). `libraryError` is an open's or a save's reason, and up to 82 s
+      // of retries is long enough for either to fail meanwhile: a load that
+      // wrote its own failure there would hide that reason behind it, or have
+      // its own failure read as the open's (`flowOpenFailure`).
+      //
+      // It still CLEARS, on success, what `libraryError` held when it started
+      // (#859 N5): nothing else takes a failed open's or save's text down, so
+      // without this the "could not open or save" line stayed under a library
+      // that had just loaded - after a failed save was followed by one that
+      // worked, say - until some later open. A failure another action wrote
+      // while this load was out is a different text and is kept.
       const errorAtStart = get().flows.libraryError;
       set((s) => patch(s, { libraryLoading: true }));
       const load = () => Promise.all([flowsApi.list(), flowsApi.folders()]);
@@ -1428,7 +1444,7 @@ export function createFlowsActions(
         );
         if (!mine()) return;
         set((s) => patch(s, {
-          cards, folders, libraryLoaded: true,
+          cards, folders, libraryLoaded: true, libraryLoadError: null,
           libraryError: s.flows.libraryError === errorAtStart ? null : s.flows.libraryError,
           libraryRetry: null, libraryLoading: false,
         }));
@@ -1438,7 +1454,7 @@ export function createFlowsActions(
         // true would render "no flows yet" over a library the server has and
         // the client could not reach - which reads as data loss.
         set((s) => patch(s, {
-          libraryError: errText(e), libraryRetry: null, libraryLoading: false,
+          libraryLoadError: errText(e), libraryRetry: null, libraryLoading: false,
         }));
       }
     },

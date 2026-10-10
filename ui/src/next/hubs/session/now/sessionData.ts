@@ -117,7 +117,7 @@ const libraryFailedNow = () => libraryFailedIn(useStore.getState().flows);
 export function useFlowLibrary(): { cards: FlowCard[]; loaded: boolean; error: string | null } {
   const cards = useStore((s) => s.flows.cards);
   const loaded = useStore((s) => s.flows.libraryLoaded);
-  const error = useStore((s) => s.flows.libraryError);
+  const error = useStore((s) => s.flows.libraryLoadError);
   const loadLibrary = useStore((s) => s.flowsLoadLibrary);
   const wsConnected = useWsConnected();
   useEffect(() => {

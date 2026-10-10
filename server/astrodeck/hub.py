@@ -541,6 +541,42 @@ def precess_jnow_to_j2000(ra_hours: float, dec_deg: float,
     return icrs.ra.hourangle % 24.0, float(icrs.dec.deg)
 
 
+async def _precess_for_mount(hub, tel, ra_hours: float,
+                             dec_deg: float) -> tuple[float, float]:
+    """The J2000 -> mount-frame conversion behind ``Hub.to_mount_frame`` and
+    ``Hub.mount_frame_for_question``. A module function, not a method, so a
+    test double that binds either method onto a bare namespace still has it.
+
+    Fail-safe: if the astropy transform raises (e.g. an IERS hiccup on an
+    offline Pi), fall back to the raw coordinates and log."""
+    if not await hub._mount_expects_jnow(tel):
+        return ra_hours, dec_deg
+    try:
+        return await asyncio.to_thread(precess_j2000_to_jnow, ra_hours, dec_deg)
+    except Exception as e:  # noqa: BLE001 - availability over precision here
+        bus.log("warning", f"J2000->JNOW precession failed ({e}); "
+                           "slewing raw coordinates", "mount")
+        return ra_hours, dec_deg
+
+
+async def _target_in_mount_frame(hub, tel, ra_hours: float, dec_deg: float,
+                                 question: bool = False) -> tuple[float, float]:
+    """A J2000 target as the mount expects it: ``Hub.to_mount_frame``, or the
+    pair unchanged for a hub double that has none (the engine's own tests
+    drive the slew and the pier guard with bare doubles; those pass the pair
+    through, as every non-Alpaca mount does).
+
+    ``question``: the caller only ASKS the mount about the target and does not
+    move to it, so it converts through ``Hub.mount_frame_for_question``, which
+    leaves the read path's reprobe hold-off alone. A double without that
+    method converts through ``to_mount_frame``."""
+    convert = (getattr(hub, "mount_frame_for_question", None) if question
+               else None) or getattr(hub, "to_mount_frame", None)
+    if convert is not None:
+        return await convert(tel, ra_hours, dec_deg)
+    return ra_hours, dec_deg
+
+
 async def slew_in_mount_frame(hub, tel, ra_hours: float, dec_deg: float) -> None:
     """Slew ``tel`` to a J2000 target, in the frame the mount expects (#861).
 
@@ -552,15 +588,28 @@ async def slew_in_mount_frame(hub, tel, ra_hours: float, dec_deg: float) -> None
 
     The caller wraps THIS coroutine in its bound (``engine._bounded``), so
     the conversion's one device read (the cached EquatorialSystem probe)
-    shares the slew's bound.
-
-    ``getattr``: the engine's own tests drive it with bare hub doubles that
-    have no ``to_mount_frame``; those slew unchanged, as every non-Alpaca
-    mount does."""
-    convert = getattr(hub, "to_mount_frame", None)
-    if convert is not None:
-        ra_hours, dec_deg = await convert(tel, ra_hours, dec_deg)
+    shares the slew's bound."""
+    ra_hours, dec_deg = await _target_in_mount_frame(hub, tel, ra_hours,
+                                                     dec_deg)
     await tel.slew(ra_hours, dec_deg)
+
+
+async def destination_pier_side_in_mount_frame(hub, tel, ra_hours: float,
+                                               dec_deg: float) -> PierSide:
+    """The side of the pier ``tel`` would take for a J2000 target, asked in the
+    frame the mount expects (#881).
+
+    The slew gate's pier guard asks this before the slew that
+    `slew_in_mount_frame` makes, so the two must ask about the SAME point.
+    ``destination_pier_side`` forwards its coordinates to the mount's
+    ``DestinationSideOfPier`` unchanged, and a JNOW Alpaca mount read the
+    J2000 pair as JNOW: a point up to 0.38 deg (about 92 s of RA) from the one
+    the slew then went to, so a target near the flip boundary was guarded on
+    the wrong side. Same conversion, same fail-safe, same bound (the caller
+    wraps this in ``engine._pier_guard_read``)."""
+    ra_hours, dec_deg = await _target_in_mount_frame(hub, tel, ra_hours,
+                                                     dec_deg, question=True)
+    return await tel.destination_pier_side(ra_hours, dec_deg)
 
 
 @dataclass
@@ -3327,14 +3376,18 @@ class Hub:
         a slew, and a J2000 mount is never sent a precessed target because
         an earlier probe failed."""
         self._mount_jnow_reprobe = None
-        if not await self._mount_expects_jnow(tel):
-            return ra_hours, dec_deg
-        try:
-            return await asyncio.to_thread(precess_j2000_to_jnow, ra_hours, dec_deg)
-        except Exception as e:  # noqa: BLE001 - availability over precision here
-            bus.log("warning", f"J2000->JNOW precession failed ({e}); "
-                               "slewing raw coordinates", "mount")
-            return ra_hours, dec_deg
+        return await _precess_for_mount(self, tel, ra_hours, dec_deg)
+
+    async def mount_frame_for_question(self, tel, ra_hours: float,
+                                       dec_deg: float) -> tuple[float, float]:
+        """``to_mount_frame`` for a QUESTION about a target rather than a move
+        to it: the slew gate's pier guard (#881). The same conversion, but the
+        read path's reprobe hold-off stays as it is. The guard asks at every
+        selection, once per live member, so clearing the hold-off there made
+        a mount whose EquatorialSystem probe keeps failing take one failing
+        probe per member per selection, and the next 2 s status poll probe
+        again. The slew that follows a guard still clears it and asks."""
+        return await _precess_for_mount(self, tel, ra_hours, dec_deg)
 
     async def from_mount_frame(self, tel, ra_hours: float,
                                dec_deg: float) -> tuple[float, float]:
@@ -9777,6 +9830,23 @@ class Hub:
         # device I/O here — the poller did it). None when no monitor / not yet read.
         sr = self._safety_reading
         out["safety"] = self._safety_reading_dict(sr) if sr is not None else None
+        # THE SUN WATCH'S STATE (#894), the net under a tube the Sun is coming
+        # to: whether it can see the mount (`blind`), whether the rig's
+        # position latch has it standing down with no park (`position_unknown`,
+        # owner ruling 4B), since when, and whether its task is alive. It was
+        # published on `/api/safety/state` only, which no screen reads, so a
+        # rig with no alert sink showed a quiet UI while nothing watched the
+        # tube. TIMES AND BOOLEANS ONLY, so it needs no redaction for a viewer:
+        # no pointing, no Sun, nothing derived from the site (#140). ABSENT
+        # (not null) when no net is attached: an old or bare hub says nothing
+        # rather than "armed: false". Read through getattr like the dew
+        # controller below, since `SunWatch` attaches itself to the hub.
+        try:
+            _sun_watch = getattr(self, "sun_watch", None)
+            if _sun_watch is not None:
+                out["sun_watch"] = _sun_watch.state()
+        except Exception:
+            pass
         # THE DEW LOOP'S OWN VIEW OF ITSELF (D-RIG-3), cached by its own tick -
         # no weather fetch and no device read happen here. TOP LEVEL rather than
         # inside `camera`, because the loop drives camera window heaters AND
@@ -10258,21 +10328,27 @@ class Hub:
         # LONG a write takes, and the write goes through the private-ACL path
         # on a directory holding the night's images: py-spy caught this stack
         # on the loop thread on 2026-09-19 and the write was measured at 7 s.
-        # record() takes its own lock, because this now runs on a worker thread
-        # and poll_status is entered both from _status_loop and from
-        # /api/status.
+        #
+        # AND NOT AWAITED (#884). poll_status is entered both from
+        # _status_loop and from every client's /api/status, and a record that
+        # waited for its write left each of those calls parked on the write's
+        # lock in a default-executor worker for as long as the disk was slow.
+        # record_nowait observes here and hands the write to the fingerprint
+        # module's one writer thread, so the hop to the worker costs
+        # microseconds whatever the disk is doing. The slow-write warning below
+        # therefore reports the previous write, one poll late.
         try:
             from .devices import fingerprint as _fp
             _m = out.get("mount") or {}
             _f = out.get("focuser") or {}
             _w = out.get("filterwheel") or {}
             await asyncio.to_thread(
-                _fp.record, focuser_position=_f.get("position"),
+                _fp.record_nowait, focuser_position=_f.get("position"),
                 filter_slot=_w.get("position"),
                 ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
                 parked=_m.get("parked"), tracking=_m.get("tracking"),
                 sample_stamp=_fp_stamp)
-            # The worker records a slow write, the loop says it: bus.publish is
+            # The writer records a slow write, the loop says it: bus.publish is
             # loop-affine (see fingerprint._slow_write_notice).
             _slow = _fp.take_slow_write_notice()
             if _slow:

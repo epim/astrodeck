@@ -152,6 +152,7 @@ export function FlowsScreen(): JSX.Element {
   const folders = useStore((s) => s.flows.folders);
   const libraryLoaded = useStore((s) => s.flows.libraryLoaded);
   const libraryError = useStore((s) => s.flows.libraryError);
+  const libraryLoadError = useStore((s) => s.flows.libraryLoadError);
   const libraryRetry = useStore((s) => s.flows.libraryRetry);
   const query = useStore((s) => s.flows.ui.query);
   const folderChip = useStore((s) => s.flows.ui.folderChip);
@@ -512,13 +513,13 @@ export function FlowsScreen(): JSX.Element {
             <Mono size={10.5}>{retryingLine(libraryRetry)}</Mono>
           </span>
         </div>
-      ) : libraryError ? (
+      ) : libraryLoadError ? (
         <div
           role="status"
           style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}
         >
           <span data-testid="flows-error">
-            <Mono size={10.5} tone="bad">Could not read the flow library: {libraryError}</Mono>
+            <Mono size={10.5} tone="bad">Could not read the flow library: {libraryLoadError}</Mono>
           </span>
           <ActionButton
             kind="secondary"
@@ -527,6 +528,18 @@ export function FlowsScreen(): JSX.Element {
           >
             RETRY
           </ActionButton>
+        </div>
+      ) : null}
+      {/* An open's or a save's failure is its own line, BESIDE the load's and
+          never behind it (#877): the load retries for up to 82 s, and a reason
+          that only showed once that ended arrived long after the press it
+          explains. Nor is it "could not read the library", which is what the
+          field shared with the load made it say. */}
+      {libraryError ? (
+        <div role="status">
+          <span data-testid="flows-action-error">
+            <Mono size={10.5} tone="bad">Could not open or save a flow: {libraryError}</Mono>
+          </span>
         </div>
       ) : null}
 

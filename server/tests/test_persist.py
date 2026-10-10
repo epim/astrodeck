@@ -214,10 +214,10 @@ def test_two_threads_are_never_inside_a_fingerprint_write_together(
     together and the barrier trips.  Coalescing is switched off for this case so
     that every caller really does reach the write.
 
-    MUTATION: replace the ``with _write_lock:`` that wraps the coalescing latch
-    and the write in ``record`` with ``if True:``.  Observed under that
-    mutation: ``overlapped`` holds 8 entries and the first assertion fails with
-    "8 threads were inside the fingerprint write at once".
+    MUTATION: replace the ``with _io_lock:`` that wraps the write in ``_write``
+    with ``if True:``.  Observed under that mutation: ``overlapped`` holds 8
+    entries and the first assertion fails with "8 threads were inside the
+    fingerprint write at once".
     """
     import threading
 
@@ -460,6 +460,10 @@ def test_poll_status_dispatches_the_fingerprint_write_off_the_loop(
 ):
     """The status poll neither blocks on the write nor drops its warning.
 
+    The write belongs to the fingerprint module's background writer (#884), so
+    the poll that claims it does not see its warning: the NEXT poll, after the
+    writer has finished, carries it to the bus.
+
     MUTATION A: change the call in ``poll_status`` back to a direct
     ``_fp.record(...)``.  Observed: ``writer_threads`` holds the MainThread and
     the off-the-loop assertion fails.
@@ -496,7 +500,12 @@ def test_poll_status_dispatches_the_fingerprint_write_off_the_loop(
 
     async def drive():
         loop_thread = threading.current_thread()
-        await hub_module.Hub().poll_status()
+        hub = hub_module.Hub()
+        await hub.poll_status()
+        # The write is the writer thread's: let it land, then the next poll
+        # publishes what it said about itself.
+        assert await asyncio.to_thread(fingerprint.wait_idle, 30.0)
+        await hub.poll_status()
         return loop_thread
 
     loop_thread = asyncio.run(drive())

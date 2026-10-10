@@ -163,6 +163,7 @@ def test_what_a_test_saves_lands_in_its_own_root(_captures_are_the_tests_own):
                 plan=SequencePlan(name="isolation probe"))
     session_store.save(s)
     events.bus.log("info", "isolation probe line", "hub")
+    events.flush_night_logs()                   # the file is written off-thread
     mine = root / "sessions" / f"{s.id}.json"
     assert mine.is_file(), f"the session is not in the test's root: {mine}"
     for real in _REAL_CAPTURE_ROOTS:
@@ -197,12 +198,14 @@ def test_the_night_log_writes_into_every_new_root(
     """
     root = _captures_are_the_tests_own
     events.bus.log("info", "first root line", "hub")
+    events.flush_night_logs()                   # the file is written off-thread
     first = root / "logs" / f"{night_key()}.jsonl"
     assert first.is_file(), sorted(p.name for p in root.rglob("*"))
     second = tmp_path / "second root"
     with pytest.MonkeyPatch.context() as mp:
         _point_the_capture_root_at(mp, second)
         events.bus.log("info", "second root line", "hub")
+        events.flush_night_logs()               # the file is written off-thread
         writer = events.bus.night_log
         assert writer is not None and not writer.failed, (
             "the night log paused on its first write into the new root: "

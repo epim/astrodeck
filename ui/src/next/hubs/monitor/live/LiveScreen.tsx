@@ -45,6 +45,7 @@ import {
 import { newestPreviewId, showingLivePreview } from "../../../../lib/lastFrameId";
 import { snapshotStamp } from "../../../../ws";
 import { accessPhrase, useCan, useCanViewWeather } from "../../../../lib/caps";
+import { believedPointing } from "../../../../lib/slewController";
 import { useLock } from "../../../lib/gateHook";
 import { explainLock } from "../../../shell/explain";
 import {
@@ -200,6 +201,7 @@ export function LiveScreen(): JSX.Element {
   const status = useStatus();
   const camera = useCamera();
   const mount = useMount();
+  const believed = believedPointing(mount);
   const preview = usePreview();
   const liveness = useLiveness();
   const guideRecent = useGuideRecent();
@@ -365,6 +367,10 @@ export function LiveScreen(): JSX.Element {
       endReason: stoppedByUser ? undefined : seq.end_reason,
       wsConnected,
       telemetryStale,
+      // #894: the sun watch's own state, so "Night looks OK" cannot print
+      // while the net under the tube is blind or standing down.
+      sunWatch: status?.sun_watch,
+      mountConnected: !!status?.connected?.telescope?.connected,
     }),
     [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason,
       wsConnected, telemetryStale, runActive, stoppedByUser],
@@ -457,8 +463,10 @@ export function LiveScreen(): JSX.Element {
           PLACEHOLDER (0,0) site when none is saved, so with no site saved
           this is a fact about the Gulf of Guinea, not this rig, and the
           banner must not judge the horizon from it. `siteIsDefault` is
-          already read above for `weatherMonitored`. */}
-      {mount && !siteIsDefault && mount.alt < 0 && (
+          already read above for `weatherMonitored`. And with the mount not
+          knowing where it points (#791, #144) its altitude is the HOME
+          reading, the pole, so `believedPointing` withholds it here too. */}
+      {believed && !siteIsDefault && believed.alt < 0 && (
         <Pill tone="warn" data-testid="monitor-below-horizon">
           the mount is pointing below the horizon
         </Pill>

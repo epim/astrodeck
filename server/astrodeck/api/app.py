@@ -116,7 +116,8 @@ from ..devices.base import (DeviceError, SyncRefused, SyncUnverified,
                             TRACKING_RATES, forget_rig_position_doubt,
                             position_known_for_motion, rig_position_known)
 from ..devices.nina import discover_nina
-from ..events import LOG_READ_MAX, bus, night_key
+from ..events import (LOG_READ_MAX, NIGHTLOG_EXIT_S, bus, flush_night_logs,
+                      night_key)
 from ..focus import run_autofocus
 from ..focus.coarse import run_coarse_focus
 from .. import hub as hub_module
@@ -620,6 +621,13 @@ async def _lifespan(app: "FastAPI"):
         try:
             from ..comhost.manager import get_manager
             get_manager().stop()
+        except Exception:
+            pass
+        # Last: let the night-log writer thread finish what is queued, so the
+        # lines this shutdown just logged are in the file (#878). Off the loop
+        # because it waits; bounded, so a stalled disk cannot hold the exit.
+        try:
+            await asyncio.to_thread(flush_night_logs, NIGHTLOG_EXIT_S)
         except Exception:
             pass
 
@@ -9923,9 +9931,9 @@ def create_app(*, bind_host: str | None = None,
     def _refuse_while_sequence_runs(refused: str, why: str, *,
                                     lane: str) -> None:
         """Raise 409 ``sequence_running`` while a run is going, or return
-        (#698, backlog ruling for WP-114). The ONE refusal the rotator's move
-        and solving routes share, so a fourth route that turns or calibrates
-        the camera takes the guard by calling it.
+        (#698, backlog ruling for WP-114). The ONE refusal the rotator's move,
+        solving and reverse routes share, so a further route that turns,
+        calibrates or re-orients the camera takes the guard by calling it.
 
         THE ROUTES, NOT THE HUB. ``hub.rotate_to_pa`` is what the engine
         itself calls for every rotating panel, so a refusal in the hub would
@@ -10025,6 +10033,18 @@ def create_app(*, bind_host: str | None = None,
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def rotator_reverse(body: RotatorReverseBody):
+        """Refused while a sequence runs (#822): REVERSE flips the direction
+        convention between the sky angle and the camera frame, so flipping it
+        under a run changes what every later rotation of that run means and
+        invalidates the sign the nightly self-test learned. Nothing is sent to
+        the device. The guard sits ahead of the capability check, as on the
+        other rotator routes, so a live run is named whatever the rotator
+        supports."""
+        _refuse_while_sequence_runs(
+            "rotator reverse",
+            "it would flip the rotator's direction convention under the run, "
+            "changing what every later rotation means",
+            lane="rotator")
         try:
             rot = hub.require("rotator")
         except DeviceError as e:

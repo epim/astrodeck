@@ -634,6 +634,107 @@ def test_the_preflight_refuses_a_live_run_in_the_same_shape(
     _assert_sequence_running_409(r, "rotate_to_pa")
 
 
+# ----------------------------- REVERSE is refused while a sequence runs (#822)
+#
+# ``rotator_reverse`` was the one rotator route that changes what a rotation
+# MEANS and still skipped the guard: it flips the direction convention between
+# the sky angle and the camera frame, so flipping it under a run changes what
+# every later rotation of that run means and invalidates the sign the nightly
+# self-test learned. The guard asks ``engine.running`` (the run's TASK, not its
+# state string), so a cloud hold and an abort's wind-down are refused as well as
+# a run between two frames; the cases below set the published state to each
+# live one so that is pinned for this route and not assumed from the others.
+
+
+@pytest.fixture()
+def reversible(rot, monkeypatch):
+    """The sim rotator made a reversing one, with every ``set_reverse`` that
+    reaches the device recorded. ``SimRotator`` cannot reverse by itself
+    (``can_reverse`` is False), which is the 400 case above; this is a CAA."""
+    sent: list[bool] = []
+
+    async def spy(value: bool) -> None:
+        sent.append(value)
+
+    rot.can_reverse = True
+    monkeypatch.setattr(rot, "set_reverse", spy)
+    return sent
+
+
+@pytest.mark.parametrize("state", ["running", "paused", "holding", "aborting"])
+def test_reverse_is_refused_while_a_sequence_runs(client, hub, rot, reversible,
+                                                  run_is_live, monkeypatch,
+                                                  state):
+    """Mutation 'reverse does not refuse a live run' (the
+    ``_refuse_while_sequence_runs`` call deleted from ``rotator_reverse``) went
+    red here on all four states, and on the two cases after this one (6 failed,
+    3 passed among the reverse cases):
+
+        >       assert r.status_code == 409, r.text
+        E       AssertionError: {"reverse":true}
+        E       assert 200 == 409
+    """
+    from astrodeck.api import app as app_module
+    monkeypatch.setattr(app_module.engine, "state", {"state": state})
+
+    r = client.post("/api/rotator/reverse", json={"reverse": True})
+
+    detail = _assert_sequence_running_409(r, "rotator")
+    assert "rotator reverse refused" in detail["detail"], detail
+    assert reversible == [], "the refused route flipped the rotator anyway"
+    assert hub._busy.get("rotator") is None, "a lane was spawned"
+
+
+def test_reverse_names_the_run_before_the_missing_capability(client, hub, rot,
+                                                             run_is_live):
+    """The guard sits ahead of the ``can_reverse`` check, as on the other
+    rotator routes: the sim rotator cannot reverse (the 400 case above), and
+    with a run live the answer is still the run's, whose cause the operator can
+    act on, not a 400 that stays true after the run ends."""
+    assert rot.can_reverse is False
+    r = client.post("/api/rotator/reverse", json={"reverse": True})
+    _assert_sequence_running_409(r, "rotator")
+
+
+@pytest.mark.parametrize("reverse", [True, False])
+def test_reverse_still_reaches_the_rotator_with_no_sequence(client, hub, rot,
+                                                            reversible,
+                                                            reverse):
+    """The control for the cases above: nothing running, the flip is made."""
+    from astrodeck.api import app as app_module
+    assert not app_module.engine.running
+
+    r = client.post("/api/rotator/reverse", json={"reverse": reverse})
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"reverse": reverse}
+    assert reversible == [reverse]
+
+
+def test_reverse_is_available_again_once_the_run_ends(client, hub, rot,
+                                                      reversible, monkeypatch):
+    """The refusal lifts with the run: ``engine.running`` goes False when the
+    task is done, without anything else being reset."""
+    from astrodeck.api import app as app_module
+
+    class _Task:
+        done_ = False
+
+        def done(self) -> bool:
+            return self.done_
+
+    task = _Task()
+    monkeypatch.setattr(app_module.engine, "_task", task)
+    r = client.post("/api/rotator/reverse", json={"reverse": True})
+    _assert_sequence_running_409(r, "rotator")
+    assert reversible == []
+
+    task.done_ = True
+    r = client.post("/api/rotator/reverse", json={"reverse": True})
+    assert r.status_code == 200, r.text
+    assert reversible == [True]
+
+
 def test_halt_is_never_refused_by_a_live_sequence(client, hub, rot,
                                                   run_is_live):
     """STOP must always work: the guard is on the routes that MOVE the camera,

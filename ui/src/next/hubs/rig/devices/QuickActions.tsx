@@ -24,6 +24,7 @@ import type { JSX } from "react";
 import { ActionButton, Pill } from "../../../ui";
 import { useLock } from "../../../lib/gateHook";
 import { api } from "../../../../api";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { useBusyOrPending } from "../../../../lib/useBusy";
 import { useConfig, useSequence, useStatus, useStore } from "../../../../store";
 import type { CoolingConfig } from "../../../../types";
@@ -43,8 +44,11 @@ const RAMP_STOPPED = "Warm ramp stopped - cooler off";
 export function QuickActions(): JSX.Element {
   const status = useStatus();
   const config = useConfig();
-  const seqState = useSequence()?.state;
-  const flowOwns = seqState === "running" || seqState === "paused";
+  const sequence = useSequence();
+  const seqState = sequence?.state;
+  // A cloud hold and an abort's wind-down still own the camera and the mount
+  // (`runIsLive`), so COOL and UNPARK stay locked through them (#821).
+  const flowOwns = runIsLive(sequence);
 
   const cam = status?.camera;
   const mount = status?.mount;

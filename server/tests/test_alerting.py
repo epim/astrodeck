@@ -610,6 +610,7 @@ def _said_everywhere(bus: EventBus, sub, night_dir) -> tuple[str, list[str], str
             warnings.append(ev.data.get("message", ""))
     blob.append(json.dumps(bus.log_history))
     blob.append(json.dumps(bus.log_history_unflagged))
+    bus.night_log.flush()                       # the file is written off-thread
     night = "\n".join(f.read_text(encoding="utf-8") for f in sorted(night_dir.glob("*.jsonl")))
     blob.append(night)
     return "\n".join(blob), warnings, night

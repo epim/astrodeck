@@ -106,6 +106,7 @@ def _hold_when_a_panel_is_set_aside(night, seen: list) -> None:
 def _written_to_the_night_log(needle: str) -> bool:
     """Is ``needle`` in a line of ANY file of the durable night log
     (captures/logs/<night>.jsonl, the file that outlives the 200-entry ring)?"""
+    events_mod.flush_night_logs()               # the file is written off-thread
     for path in events_mod.NightLogWriter.dir().glob("*.jsonl"):
         for line in path.read_text(encoding="utf-8").splitlines():
             if needle in json.loads(line).get("data", {}).get("message", ""):

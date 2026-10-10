@@ -81,6 +81,7 @@ def test_a_failed_write_pauses_for_the_cooldown_then_writes_again(
     monkeypatch.setattr(events, "open", breaker, raising=False)
 
     bus.log("info", "the line that fails", "sequence")
+    bus.night_log.flush()               # the write happens on the writer thread
     assert bus.night_log.failed is True, "a failed write must pause the writer"
     assert breaker.calls == 1
 
@@ -88,6 +89,7 @@ def test_a_failed_write_pauses_for_the_cooldown_then_writes_again(
     # that is still full.
     clock.advance(NIGHTLOG_RETRY_S - 1.0)
     bus.log("info", "still inside the cooldown", "sequence")
+    bus.night_log.flush()
     assert breaker.calls == 1, "the writer retried before its cooldown elapsed"
     assert bus.night_log.failed is True
 
@@ -95,6 +97,7 @@ def test_a_failed_write_pauses_for_the_cooldown_then_writes_again(
     clock.advance(2.0)
     monkeypatch.setattr(events, "open", _Breaker(None), raising=False)
     bus.log("info", "after the cooldown", "sequence")
+    bus.night_log.flush()
     assert bus.night_log.failed is False, (
         "a write that worked must un-pause the writer; on 2026-09-06 the file "
         "stayed dead for nine hours after one exception")
@@ -111,6 +114,7 @@ def test_the_pause_and_the_resume_are_each_announced_exactly_once(
     monkeypatch.setattr(events, "open", _Breaker(OSError("read-only fs")),
                         raising=False)
     bus.log("info", "one", "sequence")
+    bus.night_log.flush()                       # the failure is on the writer thread
     bus.log("info", "two", "sequence")          # drains the pause notice first
     bus.log("info", "three", "sequence")
 
@@ -124,6 +128,7 @@ def test_the_pause_and_the_resume_are_each_announced_exactly_once(
     clock.advance(NIGHTLOG_RETRY_S + 1.0)
     monkeypatch.setattr(events, "open", _Breaker(None), raising=False)
     bus.log("info", "four", "sequence")         # the write that works again
+    bus.night_log.flush()
     bus.log("info", "five", "sequence")         # carries the resume notice
     bus.log("info", "six", "sequence")
 
@@ -142,6 +147,7 @@ def test_a_recursion_error_inside_the_write_does_not_propagate(bus, monkeypatch)
                         _Breaker(RecursionError("maximum recursion depth "
                                                 "exceeded")), raising=False)
     bus.log("warning", "holding for clear sky", "sequence")   # must not raise
+    bus.night_log.flush()
     assert bus.night_log.failed is True
     assert _messages(bus) == ["holding for clear sky"], (
         "the notice must wait for the next publish, not be emitted from the "
@@ -157,6 +163,7 @@ def test_the_writer_never_stops_trying(bus, clock, monkeypatch):
     for _ in range(10):
         clock.advance(NIGHTLOG_RETRY_S + 0.1)
         bus.log("info", "keep trying", "sequence")
+        bus.night_log.flush()
     assert breaker.calls >= 10, f"gave up after {breaker.calls} attempts"
 
 

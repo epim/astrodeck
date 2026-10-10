@@ -257,9 +257,10 @@ def _record_fault_in_the_night_log(exc: BaseException) -> None:
 
     The ``astrodeck`` logger line goes to stderr, and the rig's supervisor is
     started detached, so stderr can be gone with the process. The night file is
-    what outlives it, and ``bus.log`` writes it synchronously on this thread
-    (a subscriber whose loop has closed is skipped, which the faulted loop's
-    subscribers now are), so the line is on disk before the process exits.
+    what outlives it. ``bus.log`` queues the line for the night-log writer
+    thread (a subscriber whose loop has closed is skipped, which the faulted
+    loop's subscribers now are), and this waits for that thread to write it,
+    so the line is on disk before the process exits.
 
     NEVER RAISES. This runs on the way to ``EXIT_EVENT_LOOP_FAULT``; a logging
     failure that escaped here would replace that exit code with a traceback of
@@ -270,7 +271,7 @@ def _record_fault_in_the_night_log(exc: BaseException) -> None:
     try:
         import traceback
 
-        from .events import bus
+        from .events import NIGHTLOG_EXIT_S, bus, flush_night_logs
 
         trace = "".join(traceback.format_exception(exc))
         if len(trace) > _FAULT_TRACEBACK_CHARS:
@@ -284,6 +285,7 @@ def _record_fault_in_the_night_log(exc: BaseException) -> None:
             + trace,
             "server",
         )
+        flush_night_logs(NIGHTLOG_EXIT_S)
     except Exception:  # noqa: BLE001 - a logging failure must not mask the exit
         pass
 

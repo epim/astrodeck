@@ -160,28 +160,32 @@ def _recovery_line() -> str:
 
 
 def _mount_line(mount: dict) -> str:
-    """The mount's state in booleans, a status word and ra/dec only. (#140)
+    """The mount's state as booleans only: slewing, tracking, parked and
+    whether its position is trusted. No coordinate of any kind. (#140, #883)
 
     `/api/status` also carries the mount's alt/az, rounded to a tenth of a
-    degree (`hub.py`). Ra/dec say where the telescope LOOKS, which is not a
-    geolocator; alt/az say where it STANDS, in the observer's frame - and at
-    the mount's home/park position the altitude equals the site latitude to
-    that same tenth of a degree. #133 put an AM5 into exactly that state (a
-    reset mount believing it is parked at home, on the pole), and #140 is an
-    agent printing its altitude there to check tracking.
+    degree (`hub.py`), and its RA/Dec. Every one of them is a site coordinate
+    on a mount that is not tracking. A stationary mount holds a fixed hour
+    angle and Dec, so its reported RA advances with the local sidereal clock:
+    RA plus the wall-clock time of the run is the site longitude, and a mount
+    parked at home sits on the pole, where the RA IS that clock and the
+    altitude equals the site latitude to that same tenth of a degree. #133 put
+    an AM5 into exactly that state (a reset mount believing it is parked at
+    home), #140 is an agent printing its altitude there to check tracking, and
+    #883 is this line printing the RA beside it. This script runs to check a
+    rig that is idle before a deploy, which is when the mount is parked.
 
-    `redact.py`'s `_MOUNT_DERIVED_KEYS` already strips alt/az from every
-    non-admin API response for this reason, but rig_precheck authenticates
-    with the admin token, so nothing upstream withholds them here. The
-    withholding has to happen in this function, by never reading those two
-    keys off ``mount`` - not by rounding or formatting them differently after
-    the fact, which is the #19 key-name-filter failure repeating: a value a
-    caller can compute for itself is not made safe by hiding it downstream of
-    where it was read.
+    `redact.py` already strips alt/az from every non-admin API response for
+    this reason, but rig_precheck authenticates with the admin token, so
+    nothing upstream withholds anything here. The withholding has to happen in
+    this function, by never reading a coordinate key off ``mount`` - not by
+    rounding or formatting one differently after the fact, which is the #19
+    key-name-filter failure repeating: a value a caller can compute for itself
+    is not made safe by hiding it downstream of where it was read. The precheck
+    gates on whether the rig is busy, and no coordinate answers that.
     """
-    dec = str(mount.get("dec_str")).replace(chr(176), " deg")
     return (f"mount: slewing={mount.get('slewing')} tracking={mount.get('tracking')} "
-            f"parked={mount.get('parked')} ra={mount.get('ra_str')} dec={dec}")
+            f"parked={mount.get('parked')} position_known={mount.get('position_known')}")
 
 
 def _session_cookie() -> str:
