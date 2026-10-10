@@ -69,7 +69,10 @@ export async function openFlowById(id: string): Promise<boolean> {
  *  edits (#450), and the mismatch sentence when it wrote neither.
  *
  *  Read AFTER {@link openFlowById} resolves false. `libraryError` is the field
- *  `flowsOpen` writes on a failed read and on that refusal.
+ *  `flowsOpen` writes on a failed read and on that refusal. The library LOAD
+ *  never sets it (it has `libraryLoadError`, #877), so a load that fails
+ *  while this open is in flight cannot be reported here as the open's reason;
+ *  a load's success clears only what was there before the load started.
  *
  *  `previousError` IS NO LONGER COMPARED (#555). `flowsOpen` now clears
  *  `libraryError` itself before every open that gets far enough to try a read
@@ -102,12 +105,12 @@ export function libraryHasLoaded(): boolean {
 
 /** How long {@link waitForLibrary} waits for the flows list to land before
  *  giving up on it and retrying the open anyway (#658). Not tied to
- *  `flows.libraryError`: `flowsOpen` writes that same field for BOTH the
- *  list's own load failure and a single-flow read's failure (see
- *  `flowOpenFailure`'s own comment), so there is no clean signal in the store
- *  for "the list failed" that could be told apart from "this read just
- *  failed". A bound this generous is invisible on a live rig and still
- *  finite on a dead one. */
+ *  `flows.libraryLoadError`: the list's load has had its own field since #877
+ *  (it used to share `libraryError` with single-flow reads, so "the list
+ *  failed" could not be told from "this read just failed"), but the load asks
+ *  again by itself for up to about 82 s (#859), so that field says nothing
+ *  inside this wait. A bound this generous is invisible on a live rig and
+ *  still finite on a dead one. */
 export const LIBRARY_RETRY_WAIT_MS = 5000;
 
 /** A {@link waitForLibrary} in progress: `promise` resolves once the flows

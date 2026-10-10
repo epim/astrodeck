@@ -49,8 +49,9 @@ export function isTransientLoadError(e: unknown): boolean {
     const status = typeof err.status === "number" ? err.status : NaN;
     return err.timedOut === true || status === 0 || TRANSIENT_HTTP_STATUSES.has(status);
   }
-  // AbortSignal.timeout firing while the body is read (api.ts converts only
-  // the fetch call itself into an ApiError).
+  // A raw AbortSignal.timeout rejection. api.ts turns a timeout of the fetch
+  // AND of the body read into an ApiError (#870), so this is only what a
+  // caller that bypasses it, or a stub standing in for it, can throw.
   return err.name === "TimeoutError";
 }
 

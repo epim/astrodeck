@@ -290,7 +290,7 @@ await test("NL Now's library: a load that settled as failed is asked once more w
     await mount({ flows: { libraryLoaded: false, cards: [] } });
     eq(flowsGets(), 4, "precondition: the mount's load tried four times");
     const f = useStore.getState().flows;
-    assert(!!f.libraryError && !f.libraryLoading, "precondition: the load settled as failed");
+    assert(!!f.libraryLoadError && !f.libraryLoading, "precondition: the load settled as failed");
     flowsStep = () => "answer";
     asked = [];
     await tabComesBack();

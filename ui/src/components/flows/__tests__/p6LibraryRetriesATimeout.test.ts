@@ -22,8 +22,12 @@
 //   L5   flowsCloseEditor reloads with the retries (no `{ retry: false }`).
 //   LE1  the success write clears `libraryError` unconditionally: a failure
 //        another action wrote while the load was retrying is wiped.
-//   LE2  the success write never clears `libraryError`: a failure that was
+//   LE2  the success write never clears `libraryLoadError`: a failure that was
 //        there when the load started outlives the library it was about.
+//   LE3  the success write never clears `libraryError`: an open's or a save's
+//        failure that was there when the load started stays under a library
+//        that loaded fine (#877 split the load's own failure into
+//        `libraryLoadError`, which must not cost this clearing).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -104,7 +108,7 @@ function reset(): void {
   const st = useStore.getState() as any;
   useStore.setState({
     flows: {
-      ...st.flows, cards: [], folders: [], libraryLoaded: false, libraryError: null,
+      ...st.flows, cards: [], folders: [], libraryLoaded: false, libraryError: null, libraryLoadError: null,
       libraryRetry: null, libraryLoading: false, record: null, dirty: false,
     },
   } as any);
@@ -118,7 +122,7 @@ await test("L1 a load that times out once and then succeeds ends with the librar
   await useStore.getState().flowsLoadLibrary();
   const f = flows();
   eq(f.libraryLoaded, true, "libraryLoaded");
-  eq(f.libraryError, null, "libraryError");
+  eq(f.libraryLoadError, null, "libraryLoadError");
   eq(f.libraryRetry, null, "libraryRetry");
   eq(f.libraryLoading, false, "libraryLoading");
   eq(f.cards.map((c) => c.id), ["new"], "the cards of the second try");
@@ -129,7 +133,7 @@ await test("L2 during the wait the screen says retrying, not the error", async (
   let snap: any = null;
   setRetrySleepForTests(async () => {
     const f = flows();
-    snap = { retry: f.libraryRetry, error: f.libraryError, loading: f.libraryLoading };
+    snap = { retry: f.libraryRetry, error: f.libraryLoadError, loading: f.libraryLoading };
   });
   script["/api/flows"] = (n) => (n === 0 ? Promise.reject(timeout()) : Promise.resolve(CARDS2));
   script["/api/flows/folders"] = () => Promise.resolve(FOLDERS);
@@ -169,7 +173,7 @@ await test("L3b a superseded load's late FAILURE writes nothing", async () => {
   eq(flows().cards.map((c) => c.id), ["new"], "precondition: B's answer is in");
   sleepA.resolve();
   await a;
-  eq(flows().libraryError, null, "A's timeout must not land on B's library");
+  eq(flows().libraryLoadError, null, "A's timeout must not land on B's library");
   eq(flows().cards.map((c) => c.id), ["new"], "cards");
   eq(count("/api/flows"), 2, "A asked once, B once; A asks no more after B");
 });
@@ -181,7 +185,7 @@ await test("L4 a timeout that persists ends in the error after four tries", asyn
   await useStore.getState().flowsLoadLibrary();
   const f = flows();
   eq(count("/api/flows"), 4, "four tries");
-  eq(f.libraryError, TIMEOUT_TEXT, "the timeout text, as before");
+  eq(f.libraryLoadError, TIMEOUT_TEXT, "the timeout text, as before");
   eq(f.libraryRetry, null, "no retrying line once the tries are spent");
   eq(f.libraryLoading, false, "libraryLoading");
   eq(f.libraryLoaded, false, "an unreachable library never reads as an empty one");
@@ -193,7 +197,7 @@ await test("L5 a close's library reload asks once", async () => {
   script["/api/flows/folders"] = () => Promise.resolve(FOLDERS);
   await useStore.getState().flowsCloseEditor();
   eq(count("/api/flows"), 1, "the close holds leaveFlowEditor's one-at-a-time promise until this settles");
-  eq(flows().libraryError, "network error — server unreachable", "the failure is still said");
+  eq(flows().libraryLoadError, "network error — server unreachable", "the failure is still said");
 });
 
 await test("LE1 a failure another action writes while the load retries survives the load's answer", async () => {
@@ -205,7 +209,7 @@ await test("LE1 a failure another action writes while the load retries survives 
   const load = useStore.getState().flowsLoadLibrary();
   await tick();
   eq(flows().libraryRetry, { attempt: 2, of: 4 }, "precondition: the load waits to ask again");
-  // libraryError is shared with saves and opens (#859 N5): one fails now.
+  // libraryError is the reason of an open or a save (#877): one fails now.
   const st = useStore.getState() as any;
   useStore.setState({ flows: { ...st.flows, libraryError: "could not save QUICK M31" } } as any);
   sleep.resolve();
@@ -217,12 +221,23 @@ await test("LE1 a failure another action writes while the load retries survives 
 await test("LE2 a failure that was there when the load started is cleared by its answer", async () => {
   reset();
   const st = useStore.getState() as any;
-  useStore.setState({ flows: { ...st.flows, libraryError: TIMEOUT_TEXT } } as any);
+  useStore.setState({ flows: { ...st.flows, libraryLoadError: TIMEOUT_TEXT } } as any);
   script["/api/flows"] = () => Promise.resolve(CARDS2);
   script["/api/flows/folders"] = () => Promise.resolve(FOLDERS);
   await useStore.getState().flowsLoadLibrary();
   eq(flows().libraryLoaded, true, "precondition: the load answered");
-  eq(flows().libraryError, null, "the old failure outlived the library it was about");
+  eq(flows().libraryLoadError, null, "the old failure outlived the library it was about");
+});
+
+await test("LE3 an open's or save's failure that was there when the load started is cleared by its answer", async () => {
+  reset();
+  const st = useStore.getState() as any;
+  useStore.setState({ flows: { ...st.flows, libraryError: "could not save QUICK M31" } } as any);
+  script["/api/flows"] = () => Promise.resolve(CARDS2);
+  script["/api/flows/folders"] = () => Promise.resolve(FOLDERS);
+  await useStore.getState().flowsLoadLibrary();
+  eq(flows().libraryLoaded, true, "precondition: the load answered");
+  eq(flows().libraryError, null, "the stale failure outlived the library that loaded fine under it");
 });
 
 setRetrySleepForTests(null);
