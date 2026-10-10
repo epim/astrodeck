@@ -177,6 +177,38 @@ export function believedPointing(
   return { alt, az };
 }
 
+/** Where the mount says it points in RA/Dec, or `null` when that is not a
+ *  pointing: `believedPointing`'s twin for the equatorial reading (#913).
+ *
+ *  The ONE gate every reader of `status.mount.ra_hours` / `.dec_deg` / `.ra_str`
+ *  / `.dec_str` goes through. #791 gated alt and az and left these. A mount that
+ *  does not know where it points reports its HOME position, the pole, and its
+ *  RA there is not the tube's: a parked or stationary mount's RA follows the
+ *  site's sidereal clock (#883, #166), so the header, the lock screen, the
+ *  atlas footprint and a guided arrival check each showed a precise position
+ *  that nothing backs, and `atPosition` could say "at the target" for a target
+ *  near the pole. `null` when there is no mount block, the position is unknown
+ *  (`position_known === false`, absent reads as known), or RA or Dec is absent
+ *  or not a finite number. The strings are the server's own rendering of the
+ *  same reading and are withheld with it; they are "" when the wire carries
+ *  none. Use `positionKnown(mount)` instead to say WHY nothing is shown. */
+export function believedRaDec(
+  mount: {
+    ra_hours?: number; dec_deg?: number; ra_str?: string; dec_str?: string;
+    position_known?: boolean;
+  } | null | undefined,
+): { ra_hours: number; dec_deg: number; ra_str: string; dec_str: string } | null {
+  if (!mount || !positionKnown(mount)) return null;
+  const { ra_hours, dec_deg, ra_str, dec_str } = mount;
+  if (typeof ra_hours !== "number" || !Number.isFinite(ra_hours)) return null;
+  if (typeof dec_deg !== "number" || !Number.isFinite(dec_deg)) return null;
+  return {
+    ra_hours, dec_deg,
+    ra_str: typeof ra_str === "string" ? ra_str : "",
+    dec_str: typeof dec_str === "string" ? dec_str : "",
+  };
+}
+
 // The copy is written once, here, because three surfaces say it (the classic
 // view, the new sheet, and the pad both of them host) and a sentence that
 // differs between them is a sentence one of them has wrong. It says "solve and

@@ -46,7 +46,7 @@ import { startGuidedRecovery } from "./guided/recovery";
 import "./guided/guided.css";
 import { openSettingsPanel } from "./lib/settingsNavigation";
 import { effectiveProviders } from "./lib/effective";
-import { believedPointing, positionKnown } from "./lib/slewController";
+import { believedPointing, believedRaDec, positionKnown } from "./lib/slewController";
 
 const GuidedHome = lazy(() => import("./guided/GuidedHome"));
 
@@ -435,6 +435,7 @@ export default function App() {
   const mountConnected = !!status?.connected?.telescope?.connected;
   const seqRunning = sequence.state === "running" || sequence.state === "paused";
   const believed = believedPointing(status?.mount);
+  const believedEq = believedRaDec(status?.mount);
   const seqError = sequence.state === "error";
   const dim = linkDown || telemetryStale;
   // Route-level gating (onboarding §3b): show the interstitial on equipment-gated
@@ -692,7 +693,13 @@ export default function App() {
                   {status.mount.parked ? "PARKED" : status.mount.slewing ? "SLEWING"
                     : status.mount.tracking ? "TRACKING" : "IDLE"}
                 </span>
-                <span className="min-w-0 truncate">{status.mount.ra_str} {status.mount.dec_str}</span>
+                {/* The home reading is the pole, with an RA that follows the site's
+                    sidereal clock (#913, #144): not the tube's, so not printed. */}
+                {believedEq ? (
+                  <span className="min-w-0 truncate">{believedEq.ra_str} {believedEq.dec_str}</span>
+                ) : !positionKnown(status.mount) && (
+                  <span className="min-w-0 truncate text-warn">RA/Dec unknown</span>
+                )}
                 {/* mount.alt is site-derived (redact.py `_MOUNT_DERIVED_KEYS`) and is
                     ABSENT, not zero, for a principal without view.site_derived (a
                     viewer) — the type says `number` but the wire does not always agree.

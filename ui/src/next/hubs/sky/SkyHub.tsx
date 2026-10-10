@@ -95,7 +95,7 @@ import {
 import { fetchPanels, framedStrip, framingPrefill, frameText } from "./frame/mosaic";
 import { openFlowWizard } from "../session/flows/wizard";
 import { effectiveOptics } from "../../../lib/effective";
-import { believedPointing } from "../../../lib/slewController";
+import { believedPointing, believedRaDec } from "../../../lib/slewController";
 import { DEFAULT_OVERLAP, fovFromOptics, type OpticsLike } from "../../../lib/framing";
 import { useSkyRegion, type SkyRow } from "../../../lib/skyRegion";
 import { resolveRoleConnected, useCapability } from "../../../lib/caps";
@@ -664,6 +664,13 @@ export function SkyHub(): JSX.Element {
   // claim about the tube that nothing backs (#791, #144).
   const believed = believedPointing(status?.mount);
   const pointing = believed && believed.alt >= 0 ? believed : null;
+
+  // The same gate for the atlas and frame footprint and its caption, which draw
+  // the mount's RA/Dec (#913): the mount block is handed down only while the
+  // mount knows where it points, and the caption's position text goes with it.
+  const raDec = believedRaDec(status?.mount);
+  const footprintMount = raDec ? status?.mount ?? null : null;
+  const footprintWhere = raDec ? `${raDec.ra_str} ${raDec.dec_str}` : null;
 
   /**
    * THE DOME'S ARCS ARE THE MODEL'S, not this file's.
@@ -1686,9 +1693,9 @@ export function SkyHub(): JSX.Element {
               imageBrightness={surveyBright}
               surveyDegraded={surveyDegraded}
               onlineFetch={onlineFetch}
-              mount={status?.mount ?? null}
+              mount={footprintMount}
               rotator={status?.rotator ?? null}
-              pointingWhere={status?.mount ? `${status.mount.ra_str} ${status.mount.dec_str}` : null}
+              pointingWhere={footprintWhere}
               skyRows={atlasRows}
               region={{ degraded: region.degraded, truncated: region.truncated, error: region.error }}
               selectedObjectId={framing.target?.id ?? null}
@@ -1733,9 +1740,9 @@ export function SkyHub(): JSX.Element {
             surveyDegraded={surveyDegraded}
             degradedText={surveyDegradedText(onlineFetch, pack)}
             onlineFetch={onlineFetch}
-            mount={status?.mount ?? null}
+            mount={footprintMount}
             rotator={status?.rotator ?? null}
-            pointingWhere={status?.mount ? `${status.mount.ra_str} ${status.mount.dec_str}` : null}
+            pointingWhere={footprintWhere}
             skyRows={region.rows}
             region={{ degraded: region.degraded, truncated: region.truncated, error: region.error }}
             selectedObjectId={frameTarget}
