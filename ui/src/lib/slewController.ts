@@ -149,6 +149,34 @@ export function positionKnown(
   return mount?.position_known !== false;
 }
 
+/** Where the mount says it points, or `null` when that is not a pointing.
+ *
+ *  The ONE gate every reader of `status.mount.alt` / `.az` goes through (#791,
+ *  the #692 lesson: a capability flag published without sweeping its readers).
+ *  `null` in three cases, and the caller cannot tell them apart on purpose:
+ *   - there is no mount block;
+ *   - the mount does not know where it points (`position_known === false`). It
+ *     then reports its HOME position, the pole, wherever the tube is, and at
+ *     the pole the altitude IS the site latitude (#140), so printing, plotting
+ *     or measuring it is both a lie about the tube and a coordinate leak;
+ *   - alt or az is absent or not a finite number. A principal without
+ *     `view.site_derived` (a viewer) never receives them (api/redact.py
+ *     `_MOUNT_DERIVED_KEYS`), so the type saying `number` is not the wire.
+ *
+ *  It does NOT clip below the horizon: "alt < 0" is a fact several readers
+ *  state, and each decides for itself whether that is a marker, a banner or
+ *  nothing. Use `positionKnown(mount)` instead when the reader needs to say
+ *  WHY it is showing nothing; this returns only the pointing. */
+export function believedPointing(
+  mount: { alt?: number; az?: number; position_known?: boolean } | null | undefined,
+): { alt: number; az: number } | null {
+  if (!mount || !positionKnown(mount)) return null;
+  const { alt, az } = mount;
+  if (typeof alt !== "number" || !Number.isFinite(alt)) return null;
+  if (typeof az !== "number" || !Number.isFinite(az)) return null;
+  return { alt, az };
+}
+
 // The copy is written once, here, because three surfaces say it (the classic
 // view, the new sheet, and the pad both of them host) and a sentence that
 // differs between them is a sentence one of them has wrong. It says "solve and
