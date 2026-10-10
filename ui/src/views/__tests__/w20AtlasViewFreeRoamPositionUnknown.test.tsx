@@ -129,6 +129,11 @@ const FREE_ROAM_RA = 13;
 const FREE_ROAM_DEC = -20;
 
 function seedMount(mountExtra: Record<string, unknown>): void {
+  // A KNOWN-position open remembers the mount's pointing as the last field this
+  // viewer looked at (#956), and the unknown cases below reuse the same numbers
+  // as their "home reading". Each case starts with nothing remembered, or the
+  // view would open on the remembered field and read as the home reading.
+  try { localStorage.removeItem("astrodeck-atlas-last-field"); } catch { /* none */ }
   useStore.setState({
     status: {
       connected: { mount: true }, looping: false, mode: "sim",
