@@ -25,7 +25,8 @@ import type {
   Stats, V3,
 } from './types';
 
-export const STALE_LIMIT_MIN_MS = 50, STALE_LIMIT_MAX_MS = 150, HOLD_MAX_MS = 2000, HOLD_RATE_DEG_S = 0.5, RELATIVE_WINDOW_MS = 500;
+export const STALE_LIMIT_MIN_MS = 50, STALE_LIMIT_MAX_MS = 150, HOLD_RATE_DEG_S = 0.5, RELATIVE_WINDOW_MS = 500, CHORD_MIN_MS = 100, CHORD_MAX_MS = 300;
+// HOLD_MAX_MS is gone (S6): a hold vouched for by a quiet gyro has no time limit.
 
 // ---- Constants (4.5, 4.12) --------------------------------------------------
 
@@ -52,10 +53,10 @@ const BIAS_WEIGHT = 0.05, STILL_RATE_DEG_S = 0.5, STILL_FOR_MS = 500;
  *  0.5 deg/s over 250 ms is 0.125 degrees, which the noise passes on 21 % of samples, so a still phone would never
  *  stay still for 500 ms. Over 500 ms the line is 0.25 degrees and the noise passes it on 0.2 %. */
 const STILL_BASELINE_MS = 500;
-/** Axis-mapping pairs: a body rate from two orientation samples AXIS_CHORD_MS or more apart, paired with the mean of
+/** Axis-mapping pairs: a body rate from two orientation samples CHORD_MIN_MS or more apart, paired with the mean of
  *  the motion samples between them. Sample to sample (17 ms), the 0-16.7 ms pump age of a reading is a 40 % rate
- *  error; over 100 ms it is 7 %. A chord longer than AXIS_CHORD_MAX_MS spans a pause and is not used. */
-const AXIS_OMEGA_MIN_DEG_S = 10, AXIS_CHORD_MS = 100, AXIS_CHORD_MAX_MS = 300;
+ *  error; over 100 ms it is 7 %. A chord longer than CHORD_MAX_MS spans a pause and is not used (S10). */
+const AXIS_OMEGA_MIN_DEG_S = 10;
 const AXIS_MIN_PAIRS = 30, AXIS_FIT_MIN = 0.8, AXIS_EXCITED_SD_DEG_S = 1, AXIS_REFIT_EVERY = 10, AXIS_MAX_PAIRS = 2000;
 const UNIT_BANDS = { deg: [0.7, 1.4], rad: [40, 75] } as const;
 /** The six permutations, the W3C identity first so that it wins a tie. */
@@ -76,6 +77,9 @@ const LATENCY_MIN_MS = -50, LATENCY_MAX_MS = 250;
 
 const NORTH_INLIER_DEG = 8, NORTH_RESAMPLE_MS = 100, NORTH_SIGMA_FLOOR_DEG = 2;
 const NORTH_UNSTABLE_SLOPE_DEG_MIN = 3, NORTH_UNSTABLE_RESIDUAL_DEG = 3;
+/** Stable needs at least this share of the samples among the inliers: a 60/40 compass split 30 degrees apart has a
+ *  tight inlier set and read stable at sigma 2 (S11). */
+const NORTH_STABLE_INLIER_SHARE = 0.85;
 
 // ---- Small helpers ----------------------------------------------------------
 
@@ -344,10 +348,18 @@ export class PoseTrack {
     this.advance(t);
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
     if (m) return this.magnitudeDeg(m.raw);
+    // No gyro: a chord of G ending at the newest sample at or before t, never two consecutive samples (S10). The chord
+    // starts at the newest sample MORE than CHORD_MIN_MS older: on a regular 60 Hz stream the sample exactly 100 ms
+    // back makes a 6-interval chord, whose median pump-age error is 4.9 %; one interval more is 4.2 %. A chord
+    // longer than CHORD_MAX_MS spans a pause, and the rate is unknown.
     const i = this.g.floor(t);
     if (i < 1) return null;
-    const a = this.g.at(i - 1), b = this.g.at(i);
-    return b.t > a.t ? angleBetweenDeg(a.q, b.q) / ((b.t - a.t) / 1000) : null;
+    const b = this.g.at(i);
+    let j = this.g.floor(b.t - CHORD_MIN_MS);
+    if (j >= 0 && this.g.at(j).t === b.t - CHORD_MIN_MS) j--;
+    if (j < 0) return null;
+    const a = this.g.at(j);
+    return b.t - a.t <= CHORD_MAX_MS ? angleBetweenDeg(a.q, b.q) / ((b.t - a.t) / 1000) : null;
   }
 
   omegaBodyAt(t: number): V3 | null {
@@ -403,10 +415,13 @@ export class PoseTrack {
   }
 
   /** The per-sample rule of 4.5. It runs on orientation samples, and the sample that runs it always qualifies its own
-   *  stream, so once any sample has arrived the answer is never 'none': silence is predictAt's business. */
+   *  stream, so once any sample has arrived the answer is never 'none': silence is predictAt's business. A silent
+   *  relative stream stays in charge while a quiet gyro says the phone is still (S6): otherwise G's yaw would follow
+   *  the compass's wander before the mapping can confirm. */
   private chooseMode(t: number): PredictorMode {
     const rel = this.rel.last, abs = this.abs.last, m = this.motion.last;
     if (rel && t - rel.t <= RELATIVE_WINDOW_MS) return 'relative';
+    if (rel && this.active === 'relative' && this.quietGyro(t)) return 'relative';
     if (abs && this.axisMap?.confirmed && m && Math.abs(t - m.t) < MOTION_FRESH_MS) return 'absolute-gyro';
     if (abs && t - abs.t <= RELATIVE_WINDOW_MS) return 'absolute-only';
     return 'none';
@@ -517,12 +532,8 @@ export class PoseTrack {
       return { q: slerp(a.q, b.q, (t - a.t) / (b.t - a.t)), extrapolatedMs: 0, held: false };
     }
     const gap = t - last.t;
-    const m = this.motion.nearest(t, MOTION_FRESH_MS);
-    if (m && this.magnitudeDeg(m.raw) < HOLD_RATE_DEG_S) {
-      // A quiet gyro vouches for change-driven silence.
-      if (!strict || gap <= HOLD_MAX_MS) return { q: last.q, extrapolatedMs: gap, held: true };
-      return 'stale';
-    }
+    // A quiet gyro vouches for change-driven silence, for as long as it stays quiet (S6).
+    if (this.quietGyro(t)) return { q: last.q, extrapolatedMs: gap, held: true };
     const limit = strict ? this.staleLimit() : STALE_LIMIT_MAX_MS;
     if (strict && this.staleLimits.length < MAX_STALE_RECORDS) this.staleLimits.push(limit);
     const w = this.omegaBody((last.t + t) / 2) ?? this.omegaBody(t);
@@ -575,10 +586,16 @@ export class PoseTrack {
     return m ? this.bodyRad(m.raw, a) : null;
   }
 
+  /** A quiet gyro: a motion sample within 100 ms of t reads under 0.5 deg/s. */
+  private quietGyro(t: number): boolean {
+    const m = this.motion.nearest(t, MOTION_FRESH_MS);
+    return m !== null && this.magnitudeDeg(m.raw) < HOLD_RATE_DEG_S;
+  }
+
   /** The rate of a stream at its newest sample: the gyro's magnitude when fresh, else the stream's own chord. */
   private omegaFor(series: Series<Sample>, t: number): number | null {
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
-    return m ? this.magnitudeDeg(m.raw) : chordRateDeg(series, AXIS_CHORD_MS, false);
+    return m ? this.magnitudeDeg(m.raw) : chordRateDeg(series, CHORD_MIN_MS, false);
   }
 
   /** An interval's rate is the smaller of its two ends, so the gap that ends a pause is not counted as moving. An end
@@ -604,8 +621,8 @@ export class PoseTrack {
 
   private addChordPoint(s: Sample): void {
     const start = this.chordStart;
-    if (!start || s.t - start.t > AXIS_CHORD_MAX_MS) { this.chordStart = s; return; }
-    if (s.t - start.t < AXIS_CHORD_MS) return;
+    if (!start || s.t - start.t > CHORD_MAX_MS) { this.chordStart = s; return; }
+    if (s.t - start.t < CHORD_MIN_MS) return;
     this.chordStart = s;
     const omega = scale3(logSO3(qmul(qinv(start.q), s.q)), 1000 / (s.t - start.t) / DEG);   // body frame, deg/s
     if (norm3(omega) >= AXIS_OMEGA_MIN_DEG_S) this.chords.push({ t0: start.t, t1: s.t, omega });
@@ -795,8 +812,9 @@ function effectiveCount(ts: readonly number[], ds: readonly number[]): number {
 /** The compass offset of the scan frame. Each absolute sample's heading is stored against G's heading at the same
  *  time; the estimate is the circular median of o = abs - pred - corrYawAt(t), then the circular mean within 8 degrees
  *  of it, with the circular sd of those samples as the spread. Its sigma is honest about correlated compass noise:
- *  spread / sqrt(N_eff), and never under 2 degrees until a landmark says otherwise (4.12). Magnetic: declination is
- *  the caller's, and never enters here. */
+ *  spread / sqrt(N_eff), and never under 2 degrees until a landmark says otherwise (4.12). Stable needs inliers that
+ *  are at least 85 % of the samples as well as a steady fit. Magnetic: declination is the caller's, and never enters
+ *  here. */
 export class NorthAnchor {
   private ts: number[] = [];
   private os: number[] = [];
@@ -839,7 +857,7 @@ export class NorthAnchor {
       spreadDeg: spread,
       samples: n,
       nEff,
-      stable: stableOffset(inT, dev),
+      stable: inT.length >= NORTH_STABLE_INLIER_SHARE * n && stableOffset(inT, dev),
       source: this.nudged ? 'manual' : 'scan',
     };
   }
