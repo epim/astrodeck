@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "name": "overcast",
+  "seed": 17,
+  "background": {
+    "kind": "directional",
+    "distance_m": 4000,
+    "texture": {
+      "kind": "value-noise",
+      "seed": 17,
+      "octaves": 4,
+      "cells": 16,
+      "grey": [115, 125],
+      "stripes": {"count": 0, "tilt_deg": 23, "grey": 125, "width_deg": 1.5}
+    }
+  },
+  "landmarks": [
+    {"id": "L0", "palette": 6, "az": 5, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L1", "palette": 11, "az": 48, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L2", "palette": 16, "az": 79, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L3", "palette": 21, "az": 124, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L4", "palette": 2, "az": 157, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L5", "palette": 7, "az": 191, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L6", "palette": 12, "az": 226, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L7", "palette": 17, "az": 262, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L8", "palette": 22, "az": 299, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L9", "palette": 3, "az": 337, "alt": 45.5, "radius_deg": 1.0}
+  ],
+  "objects": [
+    {"id": "ground", "kind": "plane", "z": 0, "colour": [100, 104, 96]},
+    {"id": "ridge-far", "kind": "box", "min": [-500, 300, 0], "max": [500, 340, 60], "colour": [113, 118, 111], "material": {"kind": "noise", "seed": 61, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "hill-east", "kind": "box", "min": [150, -200, 0], "max": [190, 200, 32], "colour": [106, 112, 104], "material": {"kind": "noise", "seed": 62, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "hill-south", "kind": "box", "min": [-300, -250, 0], "max": [300, -210, 30], "colour": [110, 115, 108], "material": {"kind": "noise", "seed": 63, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "trunk-00", "kind": "cylinder", "base": [-10.1, -21.8, 0], "radius": 0.21, "height": 6.3, "colour": [100, 102, 94], "material": {"kind": "noise", "seed": 450, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "canopy-00", "kind": "sphere", "centre": [-10.1, -21.8, 6.3], "radius": 2.8, "colour": [92, 104, 88], "material": {"kind": "noise", "seed": 400, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "trunk-01", "kind": "cylinder", "base": [-19.3, -23.0, 0], "radius": 0.25, "height": 11.1, "colour": [100, 102, 94], "material": {"kind": "noise", "seed": 451, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "canopy-01", "kind": "sphere", "centre": [-19.3, -23.0, 11.1], "radius": 5.0, "colour": [92, 104, 88], "material": {"kind": "noise", "seed": 401, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "trunk-02", "kind": "cylinder", "base": [-18.2, -12.3, 0], "radius": 0.21, "height": 6.4, "colour": [100, 102, 94], "material": {"kind": "noise", "seed": 452, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "canopy-02", "kind": "sphere", "centre": [-18.2, -12.3, 6.4], "radius": 2.8, "colour": [92, 104, 88], "material": {"kind": "noise", "seed": 402, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "trunk-03", "kind": "cylinder", "base": [-26.3, -9.6, 0], "radius": 0.26, "height": 11.4, "colour": [100, 102, 94], "material": {"kind": "noise", "seed": 453, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "canopy-03", "kind": "sphere", "centre": [-26.3, -9.6, 11.4], "radius": 5.3, "colour": [92, 104, 88], "material": {"kind": "noise", "seed": 403, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "trunk-04", "kind": "cylinder", "base": [-23.9, -2.5, 0], "radius": 0.22, "height": 7.5, "colour": [100, 102, 94], "material": {"kind": "noise", "seed": 454, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "canopy-04", "kind": "sphere", "centre": [-23.9, -2.5, 7.5], "radius": 3.3, "colour": [92, 104, 88], "material": {"kind": "noise", "seed": 404, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "trunk-05", "kind": "cylinder", "base": [-29.7, 4.2, 0], "radius": 0.25, "height": 10.7, "colour": [100, 102, 94], "material": {"kind": "noise", "seed": 455, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "canopy-05", "kind": "sphere", "centre": [-29.7, 4.2, 10.7], "radius": 4.8, "colour": [92, 104, 88], "material": {"kind": "noise", "seed": 405, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "trunk-06", "kind": "cylinder", "base": [-20.4, 8.2, 0], "radius": 0.2, "height": 5.6, "colour": [100, 102, 94], "material": {"kind": "noise", "seed": 456, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "canopy-06", "kind": "sphere", "centre": [-20.4, 8.2, 5.6], "radius": 2.4, "colour": [92, 104, 88], "material": {"kind": "noise", "seed": 406, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "trunk-07", "kind": "cylinder", "base": [-22.7, 16.5, 0], "radius": 0.23, "height": 9.3, "colour": [100, 102, 94], "material": {"kind": "noise", "seed": 457, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}},
+    {"id": "canopy-07", "kind": "sphere", "centre": [-22.7, 16.5, 9.3], "radius": 4.2, "colour": [92, 104, 88], "material": {"kind": "noise", "seed": 407, "cells": 24, "octaves": 4, "mod": [0.9, 1.1]}}
+  ],
+  "test_obstacles": [
+  ]
+}
