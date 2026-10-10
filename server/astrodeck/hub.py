@@ -87,6 +87,11 @@ if TYPE_CHECKING:  # annotations only -- the harness is imported lazily at runti
 #: ``result.rig``).
 DEVICE_ROLES = ROLES
 
+#: What ``reconnect_role`` needs in a ``_last_connect`` record to REBUILD an Alpaca
+#: device from its address. Only ``connect_alpaca_device`` writes all of them; a
+#: profile-connected Alpaca role is recorded by its backend label alone (#967).
+_ALPACA_REPLAY_FIELDS = ("host", "port", "dev_type", "dev_num", "name")
+
 
 def _harness():
     """Lazily import the pluggable-backend harness (Stage A).
@@ -1297,6 +1302,8 @@ class Hub:
         # connection-replay map: role -> dict the reconnect path needs to rebuild
         # an Alpaca device (host/port/dev_type/dev_num/name). Populated in every
         # connect path; consumed by reconnect_role() (escalation/reconnect_resume).
+        # Only connect_alpaca_device writes the address; the profile path records
+        # the backend label alone, and reconnect_role re-opens those roles in place.
         self._last_connect: dict[str, dict] = {}
         # the last connect-by-profile / connect-by-rig / boot ConnectResult, retained
         # so the boot-LED grid (backend_links) can report the per-role tri-state that
@@ -2209,9 +2216,10 @@ class Hub:
 
         Two replay shapes, because the two backends lose a device differently:
 
-        * ALPACA — the device is a network client, and the far end may be a
-          restarted process, so the connection is rebuilt from scratch out of
-          the recorded host/port/type/number.
+        * ALPACA, connected on its own (``connect_alpaca_device``) — the device
+          is a network client, and the far end may be a restarted process, so
+          the connection is rebuilt from scratch out of the recorded
+          host/port/type/number.
         * NATIVE (and anything else) — the device object owns an open USB
           handle. Rebuilding the whole rig to recover one role would drop the
           guider and reset the cooler for the sake of a filter wheel, so the
@@ -2219,11 +2227,21 @@ class Hub:
           which is the point) then connect, which every driver implements
           idempotently. This branch is what makes the setting mean anything on a
           native rig, and a native rig is what this product is for.
+
+        An Alpaca device that came up through a profile (or the ``ascom-local``
+        backend, whose devices are the same Alpaca classes on the comhost's
+        loopback port) is recorded by its backend label alone, so it has no
+        address to rebuild from and takes the second shape. That is also the
+        right one for it: the profile's session owns the connection and a
+        guider holds the device object, so a replacement object would bypass
+        the profile and strand the guider (#967; it used to raise ``KeyError:
+        'host'`` here, caught below, and return False without trying).
         """
         info = self._last_connect.get(role)
         if not info:
             return False
-        if info.get("backend") == "alpaca":
+        if info.get("backend") == "alpaca" and all(
+                k in info for k in _ALPACA_REPLAY_FIELDS):
             try:
                 await self.connect_alpaca_device(
                     role, info["host"], info["port"], info["dev_type"],
