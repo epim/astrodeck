@@ -29,6 +29,7 @@ WITHOUT changing any existing ETA/resume bookkeeping:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
 from pathlib import Path
@@ -1506,6 +1507,9 @@ class SequenceEngine:
         #: instruction id -> consecutive failed fires (see
         #: `_rearm_failed_rule`). Cleared when the action works.
         self._rule_failures: dict[str, int] = {}
+        #: (step, exception type) pairs `_say_swallowed` has already said this
+        #: run (#964); cleared at run start.
+        self._swallowed_said: set[tuple[str, str]] = set()
         self._rejected = 0
         self._night_rejects = 0   # per-night consecutive-reject counter (spec §3)
         #: Consecutive rejects per STEP, keyed "<target.id>:<step.id>" (the
@@ -2187,8 +2191,14 @@ class SequenceEngine:
             # that disarms is the one place that says so, rather than trusting
             # each caller to ask.
             disarmed = self._arm_exclusively(session)
-        except Exception:  # noqa: BLE001 - never block a run over bookkeeping
-            pass
+        except Exception as e:  # noqa: BLE001 - never block a run over bookkeeping
+            # SAID, NOT SWALLOWED (#979). The run still starts: this is the
+            # 2 am auto-resume path, a refused start loses the night over a
+            # flag, and ``armed()`` takes the most recently updated session,
+            # which this one is, so a restart tonight still resumes this run.
+            # What the failure leaves behind is a SECOND armed session, which
+            # nothing else would name.
+            disarmed = self._say_singleton_failed(session, e)
         self._session = session
         self._done = dict(session.done_map()) if resume else {}
         self._frames_done = sum(self._done.values())
@@ -2225,6 +2235,7 @@ class SequenceEngine:
         self._warned_no_cooler = False
         self._warned_no_temperature = False
         self._rule_failures = {}
+        self._swallowed_said = set()
         self._rejected = 0
         self._night_rejects = 0
         self._step_rejects = {}
@@ -3004,8 +3015,12 @@ class SequenceEngine:
             if self.running and not self._aborting:
                 try:
                     progress.update(self.compute_eta())
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A status with no finish time reads like a run that has
+                    # none to give, so the failure is said (#964).
+                    self._say_swallowed(
+                        "the finish-time estimate for the run status could "
+                        "not be worked out", e)
             kw.setdefault("progress", progress)
             kw.setdefault("plan_name", self.plan.name)
             # live ETA chips sub-object (honest temps; meridian ETA in seconds —
@@ -3212,6 +3227,45 @@ class SequenceEngine:
         logged (#140, #166)."""
         if getattr(self, "_guiding_off_for_pause", False):
             self._pause_pose = await self._read_pose_twice()
+
+    def _say_swallowed(self, what: str, exc: BaseException) -> None:
+        """Say, once per run, that a best-effort step raised and was skipped
+        (#964, the shape #811 and #936 found: a handler that was a bare
+        ``pass``, so the failure was left to be found by the thing it broke).
+
+        ``what`` is the step in plain words and is the line's whole subject;
+        the exception's TYPE is the rest, never its text, which can quote a
+        path or a device's reply (the dispatcher's own latch,
+        ``AlertDispatcher._say_failure``, keeps the same rule). One line per
+        (step, type) per run: a step that raises the same thing every frame
+        says it on the first and stays quiet, a different type is news, and
+        ``start`` forgets the lot so the next run says it afresh. The key is
+        stamped before the line is published, and a bus that cannot take it
+        falls back to the logger, so this can neither repeat itself nor raise
+        into the safety or wind-down path it is called from.
+
+        The line says what failed and nothing about what happens next. Half
+        the callers sit on a terminal path (an abort, an error stop, the
+        wind-down, a roof close with no run live), where "the run goes on"
+        is false, and a warning reaches the alert sinks. A phrase that
+        names a consequence must name one that holds for EVERY caller of
+        the step.
+
+        Warning, source ``sequence``: it reaches the night log and the alert
+        sinks. For a step whose failure is the cosmetic kind, keep the
+        ``pass`` and say why beside it instead."""
+        said = getattr(self, "_swallowed_said", None)
+        if said is None:           # an engine built without __init__ (a double)
+            said = self._swallowed_said = set()
+        key = (what, type(exc).__name__)
+        if key in said:
+            return
+        said.add(key)
+        line = f"{what} ({key[1]})"
+        try:
+            bus.log("warning", line, "sequence")
+        except Exception:  # noqa: BLE001 - the bus is what failed; the caller goes on
+            logging.getLogger(__name__).warning(line)
 
     def _get_dispatcher(self):
         """Resolve the AlertDispatcher (injected on the engine or the hub). Returns
@@ -4078,9 +4132,16 @@ class SequenceEngine:
             if other.id == session.id or not other.auto_resume:
                 continue
             other.auto_resume = False
-            if on_disarm is not None:
-                on_disarm(other)
-            session_store.save(other)
+            try:
+                if on_disarm is not None:
+                    on_disarm(other)
+                session_store.save(other)
+            except Exception as e:
+                # What the loop had disarmed before it stopped rides the
+                # exception, for the caller that goes on regardless
+                # (``start``, #979); the others still raise it as it was.
+                e.disarmed_so_far = list(disarmed)
+                raise
             if other.status in ("dormant", "active"):
                 disarmed.append({"id": other.id,
                                  "name": other.name or other.plan.name})
@@ -4090,6 +4151,50 @@ class SequenceEngine:
                     f"arming '{session.name or session.plan.name}' disarmed "
                     f"auto-resume for: {names}", "sequence")
         return disarmed
+
+    @staticmethod
+    def _say_singleton_failed(session: Session, exc: Exception) -> list[dict]:
+        """``start()``'s answer to a singleton loop that raised (#979): one
+        warning, and the sessions it did disarm before it stopped, which the
+        caller hands back as ``disarmed`` like the loop's own list.
+
+        The line names the exception's TYPE and never its text (a store error
+        quotes a path), the session that is armed, and each session still
+        armed beside it, read back from the store, because that second armed
+        session is what the failure leaves and what nothing else would say.
+        Said here, and at warning, so it reaches the night log and the alert
+        sinks like the 'disarmed auto-resume for' line it stands in for. A
+        store that cannot be read back says so instead of naming nobody.
+        Never raises: it runs on the way into a run, so a bus that cannot
+        take the line falls back to the logger, as ``_say_swallowed`` does."""
+        done = list(getattr(exc, "disarmed_so_far", None) or [])
+        label = session.name or session.plan.name
+        line = (f"arming '{label}' stopped partway ({type(exc).__name__}); "
+                f"the run starts anyway")
+        try:
+            still = [o for o in session_store.load_all()
+                     if o.id != session.id and o.auto_resume
+                     and o.status in ("dormant", "active")]
+        except Exception:  # noqa: BLE001 - the store is what failed; say so
+            still = None
+        if still is None:
+            line += (", and the store could not be read back to say which "
+                     "sessions are still armed")
+        elif still:
+            line += (", but auto-resume is still armed for: "
+                     + ", ".join(o.name or o.plan.name or o.id
+                                 for o in still))
+        if done:
+            line += ("; disarmed before it stopped: "
+                     + ", ".join(d["name"] or d["id"] for d in done))
+        if still is None or still:
+            line += (". Two armed sessions can race for the same restart: "
+                     "disarm all but one from the session list")
+        try:
+            bus.log("warning", line, "sequence")
+        except Exception:  # noqa: BLE001 - the bus is what failed; the run starts
+            logging.getLogger(__name__).warning(line)
+        return done
 
     def _promote_queued(self, done: Session) -> None:
         """Arm the session waiting behind ``done``, which has just COMPLETED
@@ -8435,8 +8540,11 @@ class SequenceEngine:
                 mechanical_deg=None if mech is None else float(mech),
                 pa_deg=float(fresh["pa_deg"]),
                 source=str(fresh.get("source") or "plate solve"))
-        except Exception:               # noqa: BLE001 - bookkeeping never ends a slew
-            pass
+        except Exception as e:          # noqa: BLE001 - bookkeeping never ends a slew
+            # A row that never lands leaves the slip measurement quietly
+            # sparse, so it is said, once (#964).
+            self._say_swallowed(
+                "a sky-angle row could not be added to the night report", e)
 
     def _rotator_connected(self) -> bool:
         rot = self.hub.devices.get("rotator")
@@ -9411,8 +9519,13 @@ class SequenceEngine:
         if callable(mark):
             try:
                 mark(POSITION_UNKNOWN_STOP)
-            except Exception:  # noqa: BLE001 - never into the unsafe arm
-                pass
+            except Exception as e:  # noqa: BLE001 - never into the unsafe arm
+                # The doubt is not on the telescope, so the next restart's
+                # ladder may aim from the position this stop says nobody
+                # knows: said (#964), once.
+                self._say_swallowed(
+                    "the mount could not be marked position-unknown after "
+                    "the stop", e)
         # Recorded on the hub too, so a profile activate that builds a NEW
         # telescope object does not drop it (`rig_position_known`).
         rig_position_known(self.hub)
@@ -12470,8 +12583,11 @@ class SequenceEngine:
             return
         try:
             self.reporter.record_safety(reason, action)
-        except Exception:
-            pass
+        except Exception as e:
+            # A safety event missing from the night report is a night that
+            # reads as if it never happened; said (#964), once.
+            self._say_swallowed(
+                "the night report could not take a safety event", e)
 
     async def _park_hold_pause(self, reason: str, target: Target | None) -> None:
         """The open-sky safety pause (§1.9-A): stop tracking / park-hold, then loop
@@ -12911,8 +13027,12 @@ class SequenceEngine:
                 watch = getattr(self.hub, "sun_watch", None)
                 if watch is not None:
                     watch.note_parked()
-            except Exception:      # noqa: BLE001
-                pass
+            except Exception as e:      # noqa: BLE001
+                # Untold, its blind fallback can page a false "Parking now"
+                # (#696): said (#964), once.
+                self._say_swallowed(
+                    "the sun watch could not be told the roof close parked "
+                    "the mount", e)
         return parked
 
     async def _await_safe_and_reopen(self, dome, reason: str, *,
@@ -14223,8 +14343,13 @@ class SequenceEngine:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
                 return True
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            # Most callers ignore the False, and a guider that will not stop
+            # keeps pulsing a mount: said (#964), once. No claim about the
+            # mount moving: the pause, the weather hold and the
+            # position-unknown stop call this and move nothing.
+            self._say_swallowed(
+                "the guider could not be stood down", e)
         return False
 
     async def _cloud_probe(self, target: Target | None) -> bool | None:
@@ -14758,8 +14883,9 @@ class SequenceEngine:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            self._say_swallowed(
+                "the guider would not stop before the tracking stop", e)
         await self._stop_tracking_quietly(fence=fence)
 
     def _note_mount_stopped(self) -> None:
@@ -14796,8 +14922,12 @@ class SequenceEngine:
                 return
             if tel and tel.connected:
                 await asyncio.wait_for(tel.set_tracking(False), MOUNT_QUERY_TIMEOUT_S)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            # The callers that must know read the stop back; this is the
+            # cause, which the read-back cannot give (#964), said once.
+            self._say_swallowed(
+                "the command to stop the mount tracking did not go through",
+                e)
 
     async def current_safety(self):
         """The cached safety verdict, seed-wait included — the same read this
@@ -15399,8 +15529,10 @@ class SequenceEngine:
                 rms = getattr(self.hub.guider.stats(), "rms_total", None)
                 if rms is not None:
                     metrics["guide_rms"] = float(rms)
-        except Exception:
-            pass
+        except Exception as e:
+            self._say_swallowed(
+                "the guide RMS could not be read for a frame's ledger entry",
+                e)
         frame = getattr(self.hub, "last_frame", None)
         temp = getattr(frame, "temperature_c", None) if frame is not None else None
         if temp is not None:
@@ -18855,6 +18987,8 @@ class SequenceEngine:
                 self._flip_owed = False
                 return
         except Exception:               # noqa: BLE001 - not skippable is the safe read
+            # Kept as a pass on purpose (#964): the read it falls to is the
+            # hold below, which announces itself at error level.
             pass
         await self._hold_for_owed_flip(target, side, hold_min)
 
@@ -19336,8 +19470,11 @@ class SequenceEngine:
                 was_guiding = bool(await guider.is_active())
                 await _bounded(guider.stop_guiding(), GUIDE_OP_TIMEOUT_S,
                                "stop guiding for limit recovery")
-            except Exception:            # noqa: BLE001 - best effort
-                pass
+            except Exception as e:       # noqa: BLE001 - best effort
+                # The park below goes ahead with the guider still pulsing:
+                # said (#964), once.
+                self._say_swallowed(
+                    "the guider would not stop for the limit recovery", e)
         side_before = await self._pier_side_now()
         # AND RIGHT BEFORE THE PARK (#888 round 3): the guider stop and the
         # pier-side read above await the mount, and on the AM5 a read can
@@ -19649,8 +19786,12 @@ class SequenceEngine:
         try:
             if self.hub.guider and self.hub.guider.connected:
                 return rms_total_arcsec(self.hub.guider.stats())
-        except Exception:
-            pass
+        except Exception as e:
+            # None leaves the frame un-gated, so a guider whose stats raise
+            # has switched the guide-RMS gate off: said (#964), once.
+            self._say_swallowed(
+                "the guide RMS could not be read, so frames go ungated on it",
+                e)
         return None
 
     def _guide_rms_judged(self) -> tuple[float | None, bool]:
@@ -19668,8 +19809,10 @@ class SequenceEngine:
             g = self.hub.guider
             if g and g.connected:
                 return guide_rms_floor_arcsec(g.stats()), False
-        except Exception:      # noqa: BLE001 - unreadable is "cannot say"
-            pass
+        except Exception as e:      # noqa: BLE001 - unreadable is "cannot say"
+            self._say_swallowed(
+                "the guide RMS floor could not be read, so the sweep veto "
+                "cannot judge it", e)
         return None, False
 
     def _guiding_now(self) -> bool:
@@ -19877,8 +20020,13 @@ class SequenceEngine:
             self._last_focus_temp = t
             if t is not None:
                 self._anchor_temp_comp(float(t), int(await foc.get_position()))
-        except Exception:
-            pass
+        except Exception as e:
+            # The baseline above may be set with the compensation's reference
+            # still the old one, the two values this method keeps together:
+            # said (#964), once.
+            self._say_swallowed(
+                "the focus temperature could not be re-anchored after the "
+                "autofocus", e)
 
     def _focus_scope_frame(self) -> tuple[float, int, int]:
         """``(exposure_s, gain, binning)`` the operator set for FOCUS frames.
@@ -20759,14 +20907,18 @@ class SequenceEngine:
             cam = self.hub.devices.get("camera")
             if cam and cam.connected:
                 await asyncio.wait_for(cam.abort_exposure(), COOLER_CMD_TIMEOUT_S)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            # Said (#964), once: the exposure may run on after the stop.
+            self._say_swallowed(
+                "the camera would not abort its exposure after an abort or "
+                "error", e)
         try:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
-        except Exception:
-            pass
+        except Exception as e:
+            self._say_swallowed(
+                "the guider would not stop after an abort or error", e)
         # never leave the flat panel lit after an abort/error.
         await self._panel_off_safe()
 
@@ -20878,8 +21030,10 @@ class SequenceEngine:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            self._say_swallowed(
+                "the guider would not stop for the wind-down or the "
+                "roof close", e)
 
     async def _reap_by(self, task: asyncio.Task | None,
                        deadline: float) -> None:
@@ -21220,8 +21374,12 @@ class SequenceEngine:
         await self._stop_tracking_quietly()
         try:
             await self._confirm_quiet_stop(who)
-        except Exception:  # noqa: BLE001 - a wind-down step never raises
-            pass
+        except Exception as e:  # noqa: BLE001 - a wind-down step never raises
+            # The read-back is what says a stop did not take; without it the
+            # mount may be tracking on and nothing says so: said (#964), once.
+            self._say_swallowed(
+                "the read-back of the tracking stop failed, so it is not "
+                "known to have taken", e)
 
     @staticmethod
     async def _roof_reads_closed(dome) -> bool:
@@ -21386,8 +21544,11 @@ class SequenceEngine:
                         watch = getattr(self.hub, "sun_watch", None)
                         if watch is not None:
                             watch.note_parked()
-                    except Exception:      # noqa: BLE001
-                        pass
+                    except Exception as e:      # noqa: BLE001
+                        # As in the roof close's park above (#964).
+                        self._say_swallowed(
+                            "the sun watch could not be told the wind-down "
+                            "parked the mount", e)
                 if cancelled:
                     # Not after a skipped park: its own stop has run.
                     if parked is False:
