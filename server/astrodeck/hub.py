@@ -244,6 +244,33 @@ SAFETY_STALE_SLACK_S = 5.0
 #: "cannot say".
 STATUS_CAMERA_TEMPERATURE_TIMEOUT_S = 2.0
 
+#: How long the 2 s status poll waits for EACH of its other device reads (#814,
+#: the class of #724): the mount's position, tracking, park, slew and rate and
+#: the meridian built from it, the focuser's position, temperature and motion,
+#: the filter wheel's position and motion, the dome's shutter, the rotator's
+#: angle, motion and direction, and the imaging camera's dew heater, fan and
+#: cooler. The same one status period as the camera's temperature, for the same
+#: reason: a read that has not returned by then is published as unknown
+#: (``Hub._status_read``), and the frame is worth more than the number.
+STATUS_DEVICE_READ_TIMEOUT_S = 2.0
+
+#: Bound on each filter-wheel command the plate solve's borrow and return send
+#: (#815): the move itself and the reads that follow a move that failed. The
+#: sequence engine's ``FILTER_MOVE_TIMEOUT_S``, kept in step by a test; the hub
+#: cannot import the engine to borrow it. ``AlpacaFilterWheel.set_position``
+#: polls ``while position == -1``, and every poll SUCCEEDS, so a wheel jammed
+#: between slots never trips a transport timeout: without this a centring
+#: solve, a rotate or a rotator sync waits on it for ever.
+SOLVE_WHEEL_MOVE_TIMEOUT_S = 90.0
+
+#: Bound on the move that sends a borrowed wheel home when the borrow itself is
+#: CANCELLED mid-move (#816). Shorter than the move bound above because the
+#: caller is waiting on a Stop: the same 30 s as each command of a rig
+#: teardown's cleanup (``TEARDOWN_STEP_TIMEOUT_S``), enough for the longest
+#: real wheel to cross its whole circle and short enough that a jammed one
+#: cannot make Stop hang.
+SOLVE_WHEEL_CANCEL_RESTORE_TIMEOUT_S = 30.0
+
 _CAPTURE_ENV = (os.environ.get("ASTRODECK_CAPTURE_DIR") or "").strip()
 CAPTURE_DIR = Path(_CAPTURE_ENV) if _CAPTURE_ENV else (Path(__file__).resolve().parents[2] / "captures")
 
@@ -810,6 +837,17 @@ class PromoteRefused(RuntimeError):
         self.status = status
 
 
+class StatusReadStalled(Exception):
+    """A device read in the status poll did not return within
+    ``STATUS_DEVICE_READ_TIMEOUT_S``, or was not asked because an earlier read
+    of the same device in the same poll had just failed to (#814).
+
+    An ``Exception`` on purpose: every device block in ``Hub.poll_status`` is
+    already guarded to treat a read that raises as "no reading" (the block is
+    left off the frame, or its key is null or absent), and a read that does
+    not return is the same absence. Nothing outside the poll sees it."""
+
+
 async def _run_to_its_bound(make, timeout_s: float) -> BaseException | None:
     """Run ``make()`` until it ends or ``timeout_s`` passes, whatever cancels
     the caller meanwhile. Returns what it ended with: ``None`` when it
@@ -849,6 +887,16 @@ async def _run_to_its_bound(make, timeout_s: float) -> BaseException | None:
     if step.cancelled():
         return asyncio.CancelledError()
     return step.exception()
+
+
+def _wheel_why(e: BaseException,
+               bound_s: float | None = None) -> str:
+    """What a log line says about a wheel command that failed (#815): the
+    error's own text, or, for a bare timeout (``asyncio.wait_for`` raises one
+    with no text, and "could not return the wheel to L ()" says nothing), the
+    bound that ran out."""
+    return str(e) or (f"no answer within "
+                      f"{(bound_s or SOLVE_WHEEL_MOVE_TIMEOUT_S):g} s")
 
 
 # ------------------------------------------------------------ solve frames
@@ -6935,16 +6983,37 @@ class Hub:
         half-way still returns the slot to restore whenever the wheel may have
         left it (#723), because the caller's restore is the only thing that
         keeps the engine's focus offset right.
+
+        EVERY AWAIT ON THE WHEEL IS BOUNDED (#815), by
+        ``SOLVE_WHEEL_MOVE_TIMEOUT_S``. A wheel jammed between slots reports
+        Position -1 for ever, and ``set_position`` polls for that, so no
+        transport timeout ever ends the wait. A move that times out is a move
+        that failed half-way: the wheel is asked where it is, and the way back
+        is owed whenever it may have left.
+
+        A CANCEL IS NOT A FAILURE, AND IT OWES THE WAY BACK TOO (#816). The
+        callers await this OUTSIDE the ``finally`` that returns the wheel (the
+        slot to return is what this hands them), so a cancel that lands while
+        the move is on the wire (Stop, a shutdown) raised out of here with the
+        wheel on the solve filter and nobody holding the slot to put back.
+        The next frame's ``_apply_filter`` then derived its focus offset from a
+        slot the focuser never travelled to. So the cancel is caught once the
+        move command may have been sent, the wheel is sent home on a task of
+        its own (``_restore_wheel_after_cancel``), and the cancel is raised on.
         """
         from .focus.filter_offsets import solve_filter_slot
         fw = self.devices.get("filterwheel")
         if fw is None or not getattr(fw, "connected", False):
             return None
+        # The slot the wheel was on when its move command was sent; None until
+        # then. The one thing a cancel needs to know to owe the way back.
+        sent_from: int | None = None
         try:
             names = list(getattr(fw, "filter_names", []) or [])
             if not names:
                 return None
-            current = await fw.get_position()
+            current = await asyncio.wait_for(fw.get_position(),
+                                             SOLVE_WHEEL_MOVE_TIMEOUT_S)
             configured = (frames_payload()["solve"] or {}).get("filter")
             want = solve_filter_slot(
                 names,
@@ -6969,8 +7038,10 @@ class Hub:
                 return None
             bus.log("info", f"plate solve: filter {names[int(current)]!r} → "
                             f"{names[want]!r}", "solve")
+            sent_from = int(current)
             try:
-                await fw.set_position(want)
+                await asyncio.wait_for(fw.set_position(want),
+                                       SOLVE_WHEEL_MOVE_TIMEOUT_S)
             except Exception as e:  # noqa: BLE001 — see below
                 # A MOVE THAT FAILS HALF-WAY IS STILL OWED ITS WAY BACK (#723).
                 # The command was SENT. An Alpaca wheel whose poll times out
@@ -6992,43 +7063,92 @@ class Hub:
                 # because an Alpaca wheel in transit reports Position -1 and
                 # ``get_position`` clamps that to 0, so a wheel that left slot
                 # 0 reads as still being on it.
+                #
+                # A MOVE THAT TIMED OUT IS THIS CASE (#815): a wheel jammed
+                # between slots is on its way somewhere and owes the way back.
+                # The reads are bounded too, so a wheel that will not answer
+                # them is "cannot tell" and not a second hang.
                 try:
-                    where = int(await fw.get_position())
-                    moving = bool(await fw.is_moving())
+                    where = int(await asyncio.wait_for(
+                        fw.get_position(), SOLVE_WHEEL_MOVE_TIMEOUT_S))
+                    moving = bool(await asyncio.wait_for(
+                        fw.is_moving(), SOLVE_WHEEL_MOVE_TIMEOUT_S))
                 except Exception:  # noqa: BLE001 - cannot tell, so assume it left
                     where, moving = None, True
                 if where == int(current) and not moving:
                     bus.log("warning",
                             f"plate solve: the wheel would not move to "
-                            f"{names[want]!r} ({e}); solving through "
-                            f"{names[int(current)]!r}", "solve")
+                            f"{names[want]!r} ({_wheel_why(e)}); solving "
+                            f"through {names[int(current)]!r}", "solve")
                     return None
                 bus.log("warning",
                         f"plate solve: the move to {names[want]!r} failed "
-                        f"({e}) after the wheel may have left "
+                        f"({_wheel_why(e)}) after the wheel may have left "
                         f"{names[int(current)]!r}; it will be sent back",
                         "solve")
             return int(current)
+        except asyncio.CancelledError:
+            # SEE THE DOCSTRING (#816). Only once the move command may have
+            # been sent: a cancel before that (the first position read) left
+            # the wheel where it was and owes nothing.
+            if sent_from is not None:
+                await self._restore_wheel_after_cancel(fw, sent_from)
+            raise
         except Exception as e:  # noqa: BLE001 — a solve must still be attempted
             bus.log("warning", f"plate solve: could not choose a filter ({e}); "
                                f"solving through whatever is loaded", "solve")
             return None
 
+    async def _restore_wheel_after_cancel(self, fw, slot: int) -> None:
+        """Send a wheel whose borrow was cancelled mid-move back to ``slot``
+        (#816). Never raises, and finishes however the caller is cancelled.
+
+        The move runs on a task of its own behind ``asyncio.shield``
+        (``_run_to_its_bound``), so a second cancel of the caller (Stop
+        pressed twice, a shutdown on top of a Stop) cannot cut it short, and
+        it is bounded by ``SOLVE_WHEEL_CANCEL_RESTORE_TIMEOUT_S`` so a jammed
+        wheel cannot make the Stop wait for ever. Sent WITHOUT first asking
+        where the wheel is: the cancel can land with the command on the wire
+        and the wheel not yet turning, so a read here could answer "still
+        home" about a wheel that is about to leave, and a move to the slot the
+        wheel is already on costs nothing. The caller raises the cancel on
+        once this returns."""
+        names = list(getattr(fw, "filter_names", []) or [])
+        label = names[slot] if 0 <= slot < len(names) else f"slot {slot}"
+        outcome = await _run_to_its_bound(
+            lambda: fw.set_position(int(slot)),
+            SOLVE_WHEEL_CANCEL_RESTORE_TIMEOUT_S)
+        if outcome is None:
+            bus.log("info", f"plate solve: stopped while the wheel was "
+                            f"moving; it was sent back to {label}", "solve")
+            return
+        bus.log("warning",
+                f"plate solve: stopped while the wheel was moving, and it "
+                f"could not be sent back to {label} "
+                f"({_wheel_why(outcome, SOLVE_WHEEL_CANCEL_RESTORE_TIMEOUT_S)})"
+                f" — the next frame's filter move will correct it", "solve")
+
     async def _return_wheel_after_solve(self, slot: int | None) -> None:
-        """Put the wheel back where ``_borrow_wheel_for_solve`` found it."""
+        """Put the wheel back where ``_borrow_wheel_for_solve`` found it.
+
+        BOUNDED (#815), by ``SOLVE_WHEEL_MOVE_TIMEOUT_S``, for the reason the
+        borrow is: a wheel jammed between slots never ends the wait on its
+        own. A return that times out says so and leaves the correction to the
+        next frame's filter move, as every other failure of it does."""
         if slot is None:
             return
         fw = self.devices.get("filterwheel")
         if fw is None or not getattr(fw, "connected", False):
             return
         try:
-            await fw.set_position(int(slot))
+            await asyncio.wait_for(fw.set_position(int(slot)),
+                                   SOLVE_WHEEL_MOVE_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001
             names = list(getattr(fw, "filter_names", []) or [])
             label = names[slot] if 0 <= slot < len(names) else f"slot {slot}"
             bus.log("warning", f"plate solve: could not return the wheel to "
-                               f"{label} ({e}) — the next frame's filter move "
-                               f"will correct it", "solve")
+                               f"{label} ({_wheel_why(e)}) — the next frame's "
+                               f"filter move will correct it", "solve")
 
     async def _narrowband_filter_loaded(self) -> str | None:
         """The name of the filter a solve frame is about to be exposed
@@ -7279,13 +7399,17 @@ class Hub:
             # light path.
             borrowed_slot = (await self._borrow_wheel_for_solve()
                              if borrow else None)
-            # Read while the solve filter is still loaded (#531): the wheel is
-            # back on the run's filter by the time a failed solve is judged
-            # for light (#264), so a capped optic on a narrowband frame must
-            # not be called NO_LIGHT. Only the imaging frame borrows the
-            # wheel, so only it has a filter worth naming here.
-            through = await self._narrowband_filter_loaded() if borrow else None
             try:
+                # Read while the solve filter is still loaded (#531): the wheel
+                # is back on the run's filter by the time a failed solve is
+                # judged for light (#264), so a capped optic on a narrowband
+                # frame must not be called NO_LIGHT. Only the imaging frame
+                # borrows the wheel, so only it has a filter worth naming here.
+                # INSIDE the try (#816): a cancel landing on this read, with the
+                # wheel borrowed, must still reach the ``finally`` that returns
+                # it.
+                through = (await self._narrowband_filter_loaded()
+                           if borrow else None)
                 async with self.exposure_guard("guide-scope offset"):
                     frame = await device.expose(seconds, 200, 30,
                                                 binning=binning)
@@ -7469,8 +7593,13 @@ class Hub:
         # A solve needs STARS, so it must not inherit whatever filter the run
         # happens to be on (#222). Borrowed and returned around the exposure
         # only — see ``_borrow_wheel_for_solve`` for why it is symmetric.
-        borrowed_slot = await self._borrow_wheel_for_solve()
+        #
+        # INSIDE the outer try (#816): a cancel that lands on the borrow
+        # (Stop pressed while the wheel turns) must still clear the
+        # ``exposing`` narration the finally below clears, or an idle rig
+        # shows "exposing" for good.
         try:
+            borrowed_slot = await self._borrow_wheel_for_solve()
             try:
                 # What the rotator and the pier side were as the shutter
                 # opened, so the solve below may calibrate the rotator.
@@ -9740,9 +9869,104 @@ class Hub:
             return None, False
         return probe.result(), True
 
+    async def _status_read(self, stalled: set[str], role: str, what: str,
+                           dev, make):
+        """One of the status poll's device reads, BOUNDED (#814, the class of
+        #724): what ``make()`` returns, or ``StatusReadStalled`` when the
+        device has not answered within ``STATUS_DEVICE_READ_TIMEOUT_S``.
+        ``_imaging_temperature`` is the same bound for the camera's
+        temperature, which its own tests pin; this is every other read.
+
+        THE SAME SHAPE, AND FOR THE SAME REASONS. The read runs as ONE task in
+        flight per ``role`` and ``what`` and the poll waits on it: a read still
+        blocked inside a driver when the wait ends keeps its worker thread, and
+        a fresh one every two seconds on top of it would walk the default
+        executor to exhaustion, so while one is outstanding no second is
+        started and the next poll waits on the same one. A read that has
+        FINISHED is never reused: the next poll asks again. A read that
+        RAISES raises out of here, as it always did; the bound is for a read
+        that does not return. A device that has been REPLACED (a profile
+        re-activation) is not made to wait on the old one's read.
+
+        ``stalled`` is the set of roles that failed to answer EARLIER IN THIS
+        POLL, one per poll and passed in by it. A device that has just failed
+        to answer would only hold the rest of its block's reads in the same
+        stall, so a role in the set is not asked again: the call raises at
+        once, and each block's guard turns that into the same absence as a read
+        that failed (the block off the frame, a key null or absent). Bounding
+        one read of four would bound nothing.
+
+        A stall is said once when it starts, and again only after an answer
+        has ended it."""
+        key = f"{role}.{what}"
+        if role in stalled:
+            raise StatusReadStalled(
+                f"the {role} {what} read was not asked: the {role} had not "
+                f"answered earlier in this poll")
+        reads = getattr(self, "_status_reads", None)
+        if reads is None:
+            reads = self._status_reads = {}
+        held = reads.get(key)
+        if held is not None and held[0] is dev and not held[1].done():
+            probe = held[1]
+        else:
+            coro = make()
+            # STARTED EAGERLY where the runtime can (3.12+), for the reason
+            # ``_imaging_temperature`` gives: a read that answers without
+            # suspending finishes before this line returns, so the common case
+            # costs the poll no trip round the event loop. A read that hands
+            # back some other awaitable (a future from an executor) cannot be
+            # started that way and takes the ordinary task.
+            if (hasattr(asyncio, "eager_task_factory")
+                    and asyncio.iscoroutine(coro)):
+                probe = asyncio.Task(coro, loop=asyncio.get_running_loop(),
+                                     eager_start=True)
+            else:
+                probe = asyncio.ensure_future(coro)
+            # Nobody awaits a probe that outlives its poll, so its exception is
+            # retrieved here or the loop reports "Task exception was never
+            # retrieved" once per stall that ends in an error.
+            probe.add_done_callback(lambda t: t.cancelled() or t.exception())
+            reads[key] = (dev, probe)
+        if probe.done():
+            done = {probe}
+        else:
+            done, _pending = await asyncio.wait(
+                {probe}, timeout=STATUS_DEVICE_READ_TIMEOUT_S)
+        said = getattr(self, "_status_stalled", None)
+        if said is None:
+            said = self._status_stalled = set()
+        if probe not in done:
+            stalled.add(role)
+            if key not in said:
+                said.add(key)
+                bus.log("warning",
+                        f"{getattr(dev, 'name', None) or role}: the {role} "
+                        f"{what} read has not returned in "
+                        f"{STATUS_DEVICE_READ_TIMEOUT_S:g} s; the status frame "
+                        f"goes without it, and without the rest of the "
+                        f"{role}'s readings, until it does", role)
+            raise StatusReadStalled(
+                f"the {role} {what} read has not returned in "
+                f"{STATUS_DEVICE_READ_TIMEOUT_S:g} s")
+        said.discard(key)
+        if probe.cancelled():
+            stalled.add(role)
+            raise StatusReadStalled(f"the {role} {what} read was cancelled")
+        return probe.result()
+
     async def poll_status(self) -> dict:
         out: dict[str, Any] = {"connected": self.summary()["devices"],
                                "looping": self.looping, "mode": self.mode}
+        # The roles whose device failed to answer in THIS poll (#814), and the
+        # bounded read every device block below goes through. See
+        # ``_status_read`` for what the bound is and why a stalled role is not
+        # asked a second time.
+        stalled: set[str] = set()
+
+        async def read(role: str, what: str, dev, make):
+            return await self._status_read(stalled, role, what, dev, make)
+
         out["live_stack_active"] = self.live_stacker is not None   # NOV-1 server truth
         out["bahtinov_active"] = self.bahtinov is not None         # NOV-12 server truth
         # These must live in poll_status (not just summary): the store does a
@@ -9867,7 +10091,7 @@ class Hub:
         if tel and tel.connected:
             ra = dec = None
             try:
-                ra, dec = await tel.get_position()
+                ra, dec = await read("mount", "position", tel, tel.get_position)
                 from .catalog import altaz, format_dec, format_ra
                 # alt/az (and the meridian hour-angle below) are of-date quantities,
                 # so they stay on the raw apparent (JNOW) position the mount reports.
@@ -9881,10 +10105,14 @@ class Hub:
                     "ra_hours": ra_j2000, "dec_deg": dec_j2000,
                     "ra_str": format_ra(ra_j2000), "dec_str": format_dec(dec_j2000),
                     "alt": round(alt, 1), "az": round(az, 1),
-                    "tracking": await tel.get_tracking(),
-                    "parked": await tel.is_parked(),
-                    "slewing": await tel.is_slewing(),
-                    "tracking_rate": await tel.get_tracking_rate(),
+                    "tracking": await read("mount", "tracking", tel,
+                                           tel.get_tracking),
+                    "parked": await read("mount", "park state", tel,
+                                         tel.is_parked),
+                    "slewing": await read("mount", "slew state", tel,
+                                          tel.is_slewing),
+                    "tracking_rate": await read("mount", "tracking rate", tel,
+                                                tel.get_tracking_rate),
                     "can_set_tracking_rate": tel.can_set_tracking_rate,
                     # Home control (2026-07-30): the client gates its Home
                     # button on this, so a mount with no home sensor never shows
@@ -9924,7 +10152,14 @@ class Hub:
             # sim/Alpaca the hub derives it from the hour angle so the Monitor's
             # flip countdown populates on every backend (monitor spec §6.1).
             try:
-                meridian = await self._compute_meridian(tel, ra, dec)
+                # BOUNDED AS ONE READ (#814): it asks the mount for its pier
+                # side, its tracking and (NINA) its own flip time, and a mount
+                # that stalled above is not asked again (``read``), so a stall
+                # costs the frame one bound and leaves the block off it, as a
+                # mount whose reads failed always did.
+                meridian = await read(
+                    "mount", "meridian", tel,
+                    lambda: self._compute_meridian(tel, ra, dec))
                 out["meridian"] = meridian
                 # stash so the engine's (sync) ETA can window-gate the flip cost
                 # without doing device I/O.
@@ -9945,7 +10180,8 @@ class Hub:
         if foc and foc.connected:
             try:
                 out["focuser"] = {
-                    "position": await foc.get_position(),
+                    "position": await read("focuser", "position", foc,
+                                           foc.get_position),
                     "max": foc.max_position,
                 }
             except Exception:
@@ -9959,7 +10195,8 @@ class Hub:
                 # is what every client already renders as "cannot say"; only
                 # the coupling is gone.
                 try:
-                    out["focuser"]["temperature"] = await foc.get_temperature()
+                    out["focuser"]["temperature"] = await read(
+                        "focuser", "temperature", foc, foc.get_temperature)
                 except Exception:
                     out["focuser"]["temperature"] = None
                 # Its OWN try, deliberately: `moving` is the newest and least
@@ -9967,7 +10204,8 @@ class Hub:
                 # to cost the position/max/temperature readouts the user is
                 # actually looking at. Absent key == "this backend cannot say".
                 try:
-                    out["focuser"]["moving"] = bool(await foc.is_moving())
+                    out["focuser"]["moving"] = bool(await read(
+                        "focuser", "motion", foc, foc.is_moving))
                 except Exception:
                     pass
                 # Static capability, not a reading — the UI needs it to decide
@@ -10020,7 +10258,7 @@ class Hub:
         fw = self.devices.get("filterwheel")
         if fw and fw.connected:
             try:
-                pos = await fw.get_position()
+                pos = await read("filterwheel", "position", fw, fw.get_position)
                 names = list(fw.filter_names or [])
                 out["filterwheel"] = {
                     "position": pos,
@@ -10061,7 +10299,8 @@ class Hub:
                 # "this backend cannot say", which the client treats as
                 # "watch the position instead" rather than as "not moving".
                 try:
-                    out["filterwheel"]["moving"] = bool(await fw.is_moving())
+                    out["filterwheel"]["moving"] = bool(await read(
+                        "filterwheel", "motion", fw, fw.is_moving))
                 except Exception:
                     pass
         # UX #27: roof/dome state on the status surface. The roof closing was
@@ -10071,7 +10310,7 @@ class Hub:
         dome = self.devices.get("dome")
         if dome is not None and getattr(dome, "connected", False):
             try:
-                st = await dome.shutter_state()
+                st = await read("dome", "shutter", dome, dome.shutter_state)
                 out["dome"] = {
                     "name": dome.name,
                     "shutter": st.value,
@@ -10096,8 +10335,8 @@ class Hub:
                 # which is only right at the exact point the rotator was last
                 # calibrated at. Same anchor/sign pair as the frame-metadata
                 # block above and the manual-move route itself.
-                mech_now = _rotation.mod360(
-                    float(await rot.get_mechanical_position()))
+                mech_now = _rotation.mod360(float(await read(
+                    "rotator", "angle", rot, rot.get_mechanical_position)))
                 anchor_mech, anchor_offset = self._rotator_sync_anchor(
                     rot, mech_now)
                 sky_deg = _rotation.mechanical_to_sky(
@@ -10107,10 +10346,12 @@ class Hub:
                     "name": rot.name,
                     "sky_deg": round(sky_deg, 2),
                     "mech_deg": round(mech_now, 2),
-                    "moving": await rot.is_moving(),
+                    "moving": await read("rotator", "motion", rot,
+                                         rot.is_moving),
                     "synced": rot.synced,
                     "can_reverse": rot.can_reverse,
-                    "reverse": await rot.get_reverse(),
+                    "reverse": await read("rotator", "direction", rot,
+                                          rot.get_reverse),
                     # WP-88 (#145, #594): what the rig KNOWS about this
                     # rotator, for the TEST ROTATOR line. ``sky_sign`` is
                     # 1 / -1 once measured, null before; ``trusted`` is true
@@ -10264,7 +10505,8 @@ class Hub:
                 try:
                     getd = (getattr(cam, "get_dew_heater", None)
                             if _cam_answered else None)
-                    dew = await getd() if callable(getd) else None
+                    dew = (await read("camera", "dew heater", cam, getd)
+                           if callable(getd) else None)
                     if dew is not None:
                         out["camera"]["dew_heater"] = int(dew)
                 except Exception:
@@ -10275,7 +10517,8 @@ class Hub:
                 try:
                     getf = (getattr(cam, "get_fan_power", None)
                             if _cam_answered else None)
-                    fan = await getf() if callable(getf) else None
+                    fan = (await read("camera", "fan", cam, getf)
+                           if callable(getf) else None)
                     if fan is not None:
                         out["camera"]["fan_power"] = int(fan)
                 except Exception:
@@ -10287,7 +10530,7 @@ class Hub:
                 getc = (getattr(cam, "get_cooler", None)
                         if _cam_answered else None)
                 if callable(getc):
-                    cooler = await getc()
+                    cooler = await read("camera", "cooler", cam, getc)
                     if cooler is not None:
                         tgt = cooler.get("target_c")
                         cooler["at_target"] = bool(
