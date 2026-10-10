@@ -107,6 +107,10 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
       ``input/scanner.json``, the file the replay reads.
 
     All three are copied into ``manifest.json`` as written.
+
+    A ``pan`` route (spec 13.3) also writes ``truth/route.json``, the route
+    definition as built; no other kind does, so a legacy case's ``truth/``
+    keeps exactly the files, and the hash, it always had.
     """
     realism = case_def.get("realism")
     # Resolved before anything is created or rendered, so a block that cannot
@@ -125,7 +129,10 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
     camera = Camera(camera_def["width"], camera_def["height"], camera_def["fov_short_deg"])
     fps = case_def["fps"]
 
-    traj = trajectory_module.build(route, fps)
+    # The case's own seed, for the one thing a route draws: a pan route's
+    # tremor (child 3 of the same SeedSequence the sensors use). The other
+    # route kinds ignore it and build the bytes they always have.
+    traj = trajectory_module.build(route, fps, seed=case_def["seed"])
 
     # ``strict`` for two reasons: a renderer that yields the wrong number of
     # frames is a defect rather than a short case, and it makes zip ask the
@@ -204,6 +211,10 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
         {"index": h.index, "az": h.az, "alt": h.alt, "from_ms": h.from_ms, "to_ms": h.to_ms}
         for h in traj.holds
     ])
+    if route["kind"] == "pan":
+        # The route as it was built. The scorer reads ``kind: "pan"`` from it,
+        # and only from it, to know the case is a pan case.
+        _write_json(truth_dir / "route.json", route)
 
     frame_names = sorted(p.name for p in frames_dir.glob("*.png"))
     truth_paths = sorted((p for p in truth_dir.rglob("*") if p.is_file()),
