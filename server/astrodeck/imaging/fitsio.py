@@ -510,12 +510,41 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     return path
 
 
+def _has_usable_scale(wcs) -> bool:
+    """Whether ``wcs`` states a plate scale a reader can use, judged on the
+    numbers ``_apply_wcs`` would write: the CD matrix (a missing term written
+    as 0.0) or else the CDELT pair (a missing CDELT2 written as CDELT1), with a
+    non-zero determinant (product, for CDELT) and every number finite.
+
+    An all-zero CD reads back as the CDELT=1 default (1 deg/pixel), a singular
+    CD or a zero CDELT as a wcslib error, and a NaN raises out of the header
+    half way through the block, after CTYPE and CRVAL are already in it."""
+    if wcs.cd11 is not None:
+        terms = [0.0 if t is None else float(t)
+                 for t in (wcs.cd11, wcs.cd12, wcs.cd21, wcs.cd22)]
+        det = terms[0] * terms[3] - terms[1] * terms[2]
+    elif wcs.cdelt1 is not None:
+        d1 = float(wcs.cdelt1)
+        d2 = d1 if wcs.cdelt2 is None else float(wcs.cdelt2)
+        terms = [d1, d2]
+        det = d1 * d2
+        if wcs.crota2 is not None:
+            terms.append(float(wcs.crota2))
+    else:
+        return False
+    others = (wcs.crval1, wcs.crval2, wcs.crpix1, wcs.crpix2, wcs.equinox)
+    return det != 0.0 and all(
+        math.isfinite(float(v)) for v in (det, *terms, *others))
+
+
 def _apply_wcs(hdr, wcs) -> None:
     """Merge a WcsSolution's cards into a header — shared by save_fits and
-    write_wcs so both emit an identical WCS block. A scale-less WCS (no CD*,
-    no CDELT*) is skipped whole: astropy would read it back as a silent
-    1 deg/pixel solution, and a bogus WCS is worse than none (spec §8)."""
-    if wcs.cd11 is None and wcs.cdelt1 is None:
+    write_wcs so both emit an identical WCS block. A WCS with no usable scale
+    (no CD*, no CDELT*, an all-zero or singular CD, a zero CDELT, a non-finite
+    number) is skipped whole, before any card is written: astropy would read it
+    back as a silent 1 deg/pixel solution, and a bogus WCS is worse than none
+    (spec §8)."""
+    if not _has_usable_scale(wcs):
         return
     hdr["CTYPE1"] = (wcs.ctype1, "WCS projection")
     hdr["CTYPE2"] = (wcs.ctype2, "WCS projection")
