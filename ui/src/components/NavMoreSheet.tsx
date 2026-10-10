@@ -83,15 +83,11 @@ function OverflowRow({ id, label, icon, onPick }: {
   id: ViewName; label: string; icon: IconName; onPick: (v: ViewName) => void;
 }) {
   const active = useStore((s) => s.view === id);
-  // small liveness dot per overflow view (guide guiding / seq running / power n/a)
-  const led = useStore((s) => {
-    if (id === "guide") return s.status?.guider?.guiding ? "on" : "off";
-    if (id === "sequence") {
-      const st = s.sequence.state;
-      return st === "error" ? "bad" : st === "running" ? "busy" : st === "paused" ? "warn" : "off";
-    }
-    return "off";
-  });
+  // Small liveness dot per overflow view; only Guide has one. A "sequence" rule
+  // sat here for the Plan row that left the sheet in #239 stage B, so it could
+  // never render, and it spelled the live states by hand (#930). A row that
+  // wants the run's state calls `runIsLive`.
+  const led = useStore((s) => (id === "guide" && s.status?.guider?.guiding ? "on" : "off"));
   return (
     <button
       onClick={() => onPick(id)}

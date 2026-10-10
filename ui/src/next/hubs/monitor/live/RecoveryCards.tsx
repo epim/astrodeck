@@ -25,6 +25,7 @@ import { useEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../../../api";
 import { resumeRecoveryLine } from "../../../../api/sessions";
 import { useStore, useResumeArm, useArmedBannerDismissed, useSeq } from "../../../../store";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { accessPhrase, useCanControlMount } from "../../../../lib/caps";
 import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
 import { ActionButton, IncidentCard, Mono, type Incident } from "../../../ui";
@@ -187,7 +188,12 @@ export function RunArmedCard(): JSX.Element | null {
 export function InterruptedRunCard(): JSX.Element | null {
   const seq = useSeq();
   const canRun = useCanControlMount();
-  const running = seq.state === "running" || seq.state === "holding" || seq.state === "aborting";
+  // A PAUSED run is in flight too: its engine is running and its own session is
+  // active, so `recoverable` (any dormant session with frames, answered without
+  // looking at the engine) would name an OLDER session and offer a RESUME for it
+  // beside the paused run's own RESUME, one the engine refuses ("a sequence is
+  // already running", #931). `runIsLive` is the one predicate for "a run is on".
+  const running = runIsLive(seq);
   const [rec, clear] = useRecoverable(running);
   // A ref, not the state flag: two taps land in one React batch and share one
   // closure, so `if (busy) return` reads false both times (SequenceView.tsx:440).
