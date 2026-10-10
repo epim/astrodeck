@@ -29,7 +29,8 @@ import type { Intrinsics, Quat } from '../../types';
 
 export interface SynthScene {
   sample(azDeg: number, altDeg: number): [r: number, g: number, b: number];
-  /** The altitude of the skyline at an azimuth: the truth a traced horizon is graded against. */
+  /** The altitude of the skyline at an azimuth: the truth a traced horizon is graded against. Any azimuth: it is
+   *  wrapped to [0, 360) before the skyline is read, as `sample` wraps it, so what it says is what `sample` draws (S25). */
   horizonAlt(azDeg: number): number;
 }
 
@@ -132,7 +133,7 @@ export function makeSynthScene(o: {
   };
 
   return {
-    horizonAlt: azDeg => skyline(azDeg),
+    horizonAlt: azDeg => skyline(mod(azDeg, 360)),
     sample(azDeg, altDeg) {
       const az = mod(azDeg, 360);
       let rgb = altDeg < skyline(az) ? groundAt(az, altDeg) : skyAt(altDeg);
@@ -188,8 +189,11 @@ export interface SynthPan {
 }
 
 /** 41.14 lens, 180 x 320, 15 fps, 20 deg/s, pitch 22.98, turn 385, holds 1 s, scale 0.02, drift 2 deg/min, seed 1,
- *  both streams, gyro, lag 50. The pitch puts a 70 degree long axis symmetric about the horizon band; 385 is a full
- *  ring plus 25 degrees of overlap (7.5). */
+ *  both streams, gyro, lag 50. 22.98 is the ring 1 target p1 = h - 8 of this lens (h = 30.98, 4.4), which puts the
+ *  bottom of coverage 8 degrees below the horizontal; 385 is a full ring plus 25 degrees of overlap (7.5). The
+ *  relative stream's scale and drift are added to the azimuth, which runs clockwise: a positive drift makes its
+ *  heading creep clockwise, 2 degrees a minute here. `sensors.py` adds its drift to alpha, which runs the other way,
+ *  so its sign is the opposite of this one (S25). */
 export const DEFAULT_PAN: Omit<SynthPanOptions, 'scene'> = {
   shortFovDeg: 41.14, w: 180, h: 320, fps: 15, speedDegS: 20, pitchDeg: 22.98, turnDeg: 385,
   startHoldS: 1, endHoldS: 1, gyroScaleErr: 0.02, driftDegMin: 2, seed: 1,
@@ -298,9 +302,11 @@ type Row = Record<string, unknown>;
  *
  *  Relative: the truth turned about the vertical by `yaw0 + scale travel + drift t`, where `yaw0` is a seeded zero
  *  and `travel` is the signed azimuth travelled since the start. The sensor integrates a gyro that reads
- *  (1 + scale) of the true rate, so the relative heading turns (1 + scale) as fast as the phone does. Absolute: the
- *  truth turned by minus the compass error, a heading sinusoid plus an Ornstein-Uhlenbeck process (a compass reads
- *  the true azimuth minus its error, S3). */
+ *  (1 + scale) of the true rate, so the relative heading turns (1 + scale) as fast as the phone does. The turn is
+ *  added to the azimuth, which runs clockwise, so a positive drift makes the heading creep clockwise; `sensors.py`
+ *  adds its drift to alpha, which runs the other way, so the sign of the drift is opposite there (the scale's
+ *  agrees; S25). Absolute: the truth turned by minus the compass error, a heading sinusoid plus an
+ *  Ornstein-Uhlenbeck process (a compass reads the true azimuth minus its error, S3). */
 function orientationStream(tl: Timeline, o: SynthPanOptions, absolute: boolean, seed: () => number): Row[] {
   const periodMs = 1000 / PUMP_HZ;
   const nTicks = Math.round(tl.durationMs / periodMs) + 1;
@@ -349,10 +355,11 @@ function orientationStream(tl: Timeline, o: SynthPanOptions, absolute: boolean, 
 }
 
 /** `devicemotion` on a fixed grid, never thresholded. The rate is the rotation between the poses half a period
- *  either side of the sample, expressed in the device frame (`logSO3(qinv(q0) q1)`), so alpha, beta and gamma are the
- *  rates about device x, y and z: a portrait phone turning clockwise at omega and pitch p reads
- *  beta = -omega cos p and gamma = +omega sin p, with alpha about 0. The gyro reads (1 + scale) of the truth, plus a
- *  bias and white noise, and is rounded to 0.1 deg/s AFTER the noise. */
+ *  either side of the sample (centred on `t_event_ms`: a window starting at it would read the rate 8.3 ms late, in a
+ *  speed ramp too high or too low by up to 0.5 deg/s, S25), expressed in the device frame (`logSO3(qinv(q0) q1)`), so
+ *  alpha, beta and gamma are the rates about device x, y and z: a portrait phone turning clockwise at omega and pitch
+ *  p reads beta = -omega cos p and gamma = +omega sin p, with alpha about 0. The gyro reads (1 + scale) of the truth,
+ *  plus a bias and white noise, and is rounded to 0.1 deg/s AFTER the noise. */
 function motionStream(tl: Timeline, o: SynthPanOptions, seed: () => number): Row[] {
   const periodMs = 1000 / PUMP_HZ;
   const nSamples = Math.round(tl.durationMs / periodMs);
