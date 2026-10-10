@@ -2784,6 +2784,11 @@ class ResumeArm:
             # A sync nobody could confirm (``sync_unverified``) holds the same
             # way, in its own words: the field was not within tolerance and
             # the correction is unknown, so ``_recentred`` stays unset too.
+            # THE HUB REFUSED TO MOVE FOR AN UNKNOWN POSITION (#888): its
+            # own gate under the motion lock, the latch set after the check
+            # above. Nothing moved, so ``_recentred`` stays unset.
+            if isinstance(centring, dict) and centring.get("position_unknown"):
+                return POSITION_UNKNOWN_RECENTRE_WORDS
             if isinstance(centring, dict) and centring.get("sync_refused"):
                 return REFUSED_SYNC_RECENTRE_WORDS
             if isinstance(centring, dict) and centring.get("sync_unverified"):

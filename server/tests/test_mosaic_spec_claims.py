@@ -12765,9 +12765,12 @@ def test_6_17_and_item_24_say_the_wind_down_as_s3_built_it(monkeypatch):
 
     async def park(said, slewing=(False,), kind=Mount) -> tuple[int, bool]:
         tel = kind(said, slewing)
-        eng = SimpleNamespace()
+        # No telescope on the bare engine's hub: the position gate the
+        # read-back asks before its second park (#888) reads "known".
+        eng = SimpleNamespace(hub=SimpleNamespace(devices={}))
         # The read-back's own helpers, bound to the bare engine.
-        for name in ("_parked_state", "_slewing_state", "_await_the_park"):
+        for name in ("_parked_state", "_slewing_state", "_await_the_park",
+                     "_position_unknown"):
             setattr(eng, name, getattr(SequenceEngine, name).__get__(eng))
         ok = await SequenceEngine._park_and_read_back(eng, tel)
         return tel.parks, ok

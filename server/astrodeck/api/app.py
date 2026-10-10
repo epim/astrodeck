@@ -187,6 +187,7 @@ from ..flows.tonight import (banked_hours_by_target_from_reports,
 from ..rotation import angle_equals, map_sky_target, mod360, sky_to_mechanical
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
+from ..sequence.engine import ROOF_CLOSE_WITHOUT_PARK
 # The module, not its names: the routes call ``sequence_coverage.<fn>`` so a
 # test (or a mutant) that replaces one is seen here (the coverage check, #177).
 from ..sequence import coverage as sequence_coverage
@@ -5767,9 +5768,12 @@ def create_app(*, bind_host: str | None = None,
         defensively so this lane stays decoupled from the engine lane landing its
         counters.
 
-        ``sun_watch`` is ``{blind, blind_since, last_position_at, armed}`` (#137):
+        ``sun_watch`` is ``{blind, blind_since, position_unknown,
+        position_unknown_since, last_position_at, armed}`` (#137, #888):
         whether the sun-exclusion net can currently see the mount, since when,
-        when it last read a position, and whether its task is alive. TIMES AND
+        whether the rig's position latch has it standing down (no park while
+        the position is unknown) and since when, when it last read a
+        position, and whether its task is alive. TIMES AND
         BOOLEANS ONLY, which is what lets this stay readable at ``view.status``
         for a viewer: the position the net last read, and anything derived from
         it, is a latitude oracle (#140) and is never part of this."""
@@ -9720,9 +9724,37 @@ def create_app(*, bind_host: str | None = None,
 
         async def _run():
             tel = hub.devices.get("telescope")
+            needs_park = getattr(dome, "requires_park_before_close", True)
             async with hub._motion_lock:
-                if (tel is not None and getattr(tel, "connected", False)
-                        and getattr(dome, "requires_park_before_close", True)):
+                live = tel is not None and getattr(tel, "connected", False)
+                # NOT AIMED FROM AN UNKNOWN POSITION (#888). The one gate,
+                # asked under the motion lock before the park, as the park
+                # route asks it at its seam. On the AM5 a park is a goto to
+                # the MODEL's home, so with the position unknown the mount is
+                # asked to stop tracking instead, read back and asked again
+                # (the engine's `_quiet_stop_for_unknown_position`). The roof
+                # still closes when it needs no parked tube (rain included);
+                # one that does is left open, said at error level so it
+                # pages, because a mount that reads "parked" after a reset is
+                # no proof the roof clears the tube.
+                #
+                # ASKED WHATEVER THE LINK SAYS (#888 round 3): a dropped link
+                # is the reset case itself, and `close_observatory` asks no
+                # parked state of a mount that is not connected, so this arm
+                # is the only thing holding a needs-park roof open then. The
+                # tracking stop sends nothing over a dead link and its
+                # read-back says so. A roof that already reads closed is
+                # closed: nothing pages.
+                if tel is not None and not position_known_for_motion(hub, tel):
+                    await engine._quiet_stop_for_unknown_position(
+                        ROOF_CLOSE_WITHOUT_PARK, "The roof close")
+                    if needs_park:
+                        if await engine._roof_reads_closed(dome):
+                            return True
+                        engine._say_roof_left_open_for_unknown_position(
+                            record=False)
+                        return False
+                elif live and needs_park:
                     hub.invalidate_field_solve("the mount is parking for the roof")
                     hub.note_pointing_moved()
                     await tel.park()
@@ -11424,6 +11456,11 @@ def create_app(*, bind_host: str | None = None,
         # ...and the camera, which polar alignment also takes: three plate
         # solves with a slew between each.
         _refuse_if_camera_owned()
+        # ...and not from an unknown position (#888): every leg of the arc is
+        # aimed from the reported position, whichever driver runs it (NINA's
+        # TPPA plugin turns the mount too). The native driver asks the same
+        # gate again before its first move, for a caller that skips this one.
+        _refuse_if_position_unknown(hub.devices.get("telescope"))
         try:
             await hub.polar.start()
         except RuntimeError as e:

@@ -69,7 +69,7 @@ import time
 from .aio import reap
 from .catalog.coords import sun_altaz
 from .config import config_store
-from .devices.base import rig_position_known
+from .devices.base import position_known_for_motion, rig_position_known
 from .events import bus
 
 #: Tick cadence. The threshold sits ~20 minutes ahead of sunrise, so a minute of
@@ -400,6 +400,7 @@ class DawnPark:
                                 f"(parking above {threshold:+.0f}°), no run "
                                 f"is in progress and the mount is unparked "
                                 f"— parking it now", "safety")
+        latched = False
         try:
             # The same discipline as every other park path: bump the motion
             # fence so anything that slipped in behind the checks above is
@@ -412,7 +413,14 @@ class DawnPark:
             lock = getattr(self.hub, "_motion_lock", None)
             if lock is not None:
                 async with lock:
-                    await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
+                    # ASKED AGAIN UNDER THE LOCK (#888 round 3), as the sun
+                    # watch, the roof closes and the wind-down ask: this park
+                    # can wait here behind another park (each up to
+                    # PARK_TIMEOUT_S) while an AM5 reopen latches the
+                    # position unknown, and a park is aimed from it.
+                    latched = not position_known_for_motion(self.hub, tel)
+                    if not latched:
+                        await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
             else:
                 await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
         except asyncio.TimeoutError:
@@ -421,6 +429,10 @@ class DawnPark:
             return
         except Exception as e:      # noqa: BLE001 — a refusal to park is news, not a crash
             self._fail(str(e))
+            return
+        if latched:
+            # Outside the lock: the stop reads tracking back, bounded.
+            await self._stop_tracking_instead(tel, alt)
             return
         self._settled = True
         self._clear_failure()

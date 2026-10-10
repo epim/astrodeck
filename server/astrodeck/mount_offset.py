@@ -65,6 +65,13 @@ POSITION_UNKNOWN_MOTION_DETAIL = (
     "Mount position is unknown. Tube really at home: Trust position. If "
     "not, hold a pad key to bring it home by eye, then Trust position.")
 
+#: The same safe order in the short form, for a line whose cause must come
+#: first (86 characters): the engine's position-unknown lines, the roof left
+#: open over an unparked tube, and the TPPA refusal (#888). One copy.
+POSITION_UNKNOWN_SAFE_ORDER = (
+    "tube at home, Trust position; else bring it home by eye with a pad key, "
+    "then Trust it.")
+
 #: An RA offset is never taken further than half a turn. Past 12 hours the
 #: "shorter way round" is the other direction, so a bigger number is not a
 #: bigger move - it is the same move described the long way.

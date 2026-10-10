@@ -76,6 +76,19 @@ noted park is "no motion possible" to the blind projection until the next live
 read, so a link that drops right after a park does not turn the pre-park
 pointing into a false "Parking now".
 
+WHEN THE POSITION IS UNKNOWN (#888, owner ruling 4B, 2026-10-09). With the
+rig's position latch set (``devices.base.position_known_for_motion`` False)
+this net parks nothing, because a park is a goto to the model's home aimed
+from a position the system does not know, and it changes no tracking. Its
+projection reads the same untrusted position, so it judges no approach: the
+latched state is the blind state for the alert, without its park. While the
+Sun is above the dawn-park threshold it says one error line in fixed words
+(cover the tube; Trust position only for a tube really at home, else bring
+it home by eye with a pad key first), repeated on the blind cadence, and
+publishes the state beside the blind fields; below it, one info hold in the
+same safe order. Trust position clears the latch and the net resumes on the next
+tick (`SunWatch._position_unknown_tick`).
+
 A telescope object that does not exist at all (``tel is None``) is a rig that
 was never connected, or was deliberately disconnected. That stays a latched info
 hold: it must not page, and it ends a blind streak rather than extending one.
@@ -90,7 +103,9 @@ from .aio import reap
 from .catalog.coords import angular_sep_deg, sun_altaz, sun_radec
 from .config import config_store
 from .dawn_park import park_threshold_deg
+from .devices.base import position_known_for_motion
 from .events import bus
+from .mount_offset import POSITION_UNKNOWN_SAFE_ORDER
 
 #: Tick cadence, matching ``dawn_park``. The decision is made on a projection
 #: 30 minutes wide, so a minute of granularity gives ~30 chances to act before
@@ -174,6 +189,25 @@ NO_SUN_WATCH_ENV_VAR = "ASTRODECK_NO_SUN_WATCH"
 #: ``capture`` and ``looping`` are deliberately absent, because a frame taken
 #: while the Sun closes in is worth nothing next to the mount moving.
 HANDS_OFF_LANES = frozenset({"goto", "dome", "polar"})
+
+#: The error line while the mount's position is unknown and the Sun is above
+#: the dawn-park threshold (#888, owner ruling 4B, 2026-10-09). Fixed words:
+#: no figure, no position. Cover the tube, then the shared safe order
+#: (``mount_offset.POSITION_UNKNOWN_SAFE_ORDER``: Trust position only for a
+#: tube really at home, else home by eye with a pad key first), never a goto.
+#: 45 + 86 = 131 characters to the end of the action, inside the UI's
+#: 137-character cut.
+POSITION_UNKNOWN_DAYLIGHT = (
+    f"sun watch blind, position unknown: cover it; "
+    f"{POSITION_UNKNOWN_SAFE_ORDER} It will not park: a park is aimed from "
+    f"that position")
+#: The info hold while the position is unknown and the Sun is below the
+#: dawn-park threshold (or there is no site to compute it for), said through
+#: ``_hold`` with its "sun watch held off: " prefix (#888 round 3). The same
+#: safe order, never a goto: 20 + 27 + 86 = 133 characters to the end of the
+#: action.
+POSITION_UNKNOWN_NIGHT_HOLD = (
+    f"position unknown, no park: {POSITION_UNKNOWN_SAFE_ORDER}")
 
 
 def sun_watch_disabled() -> bool:
@@ -291,6 +325,14 @@ class SunWatch:
         # threshold and when the streak ends, so each dawn of an outage and
         # each new outage says it once (see ``_blind_in_daylight``).
         self._blind_daylight_said = False
+        # THE POSITION LATCH (#888, owner ruling 4B): since when this net has
+        # seen the rig's position unknown (``position_known_for_motion``
+        # False), or None. While it is set the net parks nothing and changes
+        # no tracking, and ``_unknown_daylight_ticks`` counts the ticks the
+        # Sun has been above the dawn-park threshold, for the error line's
+        # cadence (`_position_unknown_tick`).
+        self._unknown_since: float | None = None
+        self._unknown_daylight_ticks = 0
         # The other park paths reach this net through the hub, so hub.py and
         # api/app.py carry no wiring for it: the attach-yourself shape
         # ``DewController`` uses for ``hub.dew_controller``. Total: a hub that
@@ -344,7 +386,11 @@ class SunWatch:
         TIMES AND BOOLEANS ONLY. ``blind`` says the net cannot currently see
         the mount; ``blind_since`` is when that streak began (None unless blind);
         ``last_position_at`` is when any position was last read (None if none
-        has been since boot); ``armed`` is whether the task is alive. The
+        has been since boot); ``armed`` is whether the task is alive;
+        ``position_unknown`` says the rig's position latch is set, so the net
+        cannot judge an approach and parks nothing (#888), and
+        ``position_unknown_since`` is when it first saw that (None unless
+        set). The
         position itself is never part of this, and neither is anything derived
         from it: a mount's pointing is a latitude oracle (#140), and the route
         this feeds is readable by a viewer."""
@@ -352,6 +398,10 @@ class SunWatch:
         return {
             "blind": blind,
             "blind_since": self._blind_since if blind else None,
+            # #888: the rig's position latch is set, so this net cannot judge
+            # an approach and will not park; since when it has seen that.
+            "position_unknown": self._unknown_since is not None,
+            "position_unknown_since": self._unknown_since,
             "last_position_at": self._last_read_at,
             "armed": self._task is not None and not self._task.done(),
         }
@@ -390,6 +440,7 @@ class SunWatch:
             # for a rig whose owner switched the net off would nag about a
             # mount nobody asked this net to look at.
             self._drop_blind()
+            self._drop_unknown()
             return
         cone = float(getattr(safety, "solar_exclusion_deg", 30.0) or 0.0)
         if cone <= 0:
@@ -397,6 +448,7 @@ class SunWatch:
                        "every solar guard including this one", None)
             self._acted = False
             self._drop_blind()
+            self._drop_unknown()
             return
 
         tel = self.hub.devices.get("telescope")
@@ -414,7 +466,21 @@ class SunWatch:
             # A deliberate disconnect ends a blind streak; leaving it set would
             # publish ``blind: true`` for a mount that is gone on purpose.
             self._drop_blind()
+            self._drop_unknown()
             return
+
+        if not position_known_for_motion(self.hub, tel):
+            # BEFORE THE LINK CHECK AND THE READ (#888, owner ruling 4B): the
+            # blind fallback below would park too, and a park is aimed from
+            # the position nobody knows. Synchronous, touches no device.
+            self._position_unknown_tick(cfg)
+            return
+        if self._unknown_since is not None:
+            # Trust position (or a sync proved away from the pole) cleared
+            # it: the normal net resumes on this very tick, its hold latch
+            # forgotten so a hold it then meets is said.
+            self._held = None
+            self._drop_unknown()
 
         if not getattr(tel, "connected", False):
             # PRESENT BUT DROPPED (#137). This used to share the branch above,
@@ -552,6 +618,14 @@ class SunWatch:
         if held is not None:
             hold(held)
             return None
+        # THE GATE AGAIN, AT THE PARK (#888, owner ruling 4B). ``tick`` asked
+        # it at the top, then awaited the reopen, the position, tracking and
+        # parked reads (each up to MOUNT_QUERY_TIMEOUT_S), and a latch set in
+        # those awaits (an AM5 reopen that read the home pole) must not get
+        # the park. Asked before the "Parking now" line, so a held park does
+        # not page as a park, and again under the motion lock below.
+        if self._latched_at_park(tel, cfg):
+            return None
         if loud:
             bus.log("error", f"SUN WATCH: {approach}. Parking now.", "safety")
         try:
@@ -566,6 +640,10 @@ class SunWatch:
             lock = getattr(self.hub, "_motion_lock", None)
             if lock is not None:
                 async with lock:
+                    # The park can wait here behind another motion while the
+                    # latch is set: asked under the lock, as every seam asks.
+                    if self._latched_at_park(tel, cfg):
+                        return None
                     await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
             else:
                 await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
@@ -956,6 +1034,68 @@ class SunWatch:
             return ("; the last position read was taken while the mount was "
                     "being moved, so it cannot be projected from")
         return ""
+
+    def _position_unknown_tick(self, cfg) -> None:
+        """One tick while the rig's position latch is set (#888, OWNER RULING
+        4B, 2026-10-09).
+
+        NO PARK, NO TRACKING CHANGE. A park is a goto to the model's home,
+        aimed from a position the system does not know, so this net must not
+        send one, and it does not touch tracking for this reason either.
+        Its approach projection reads the same untrusted position, so no
+        approach is judged at all: the latched state is treated like the
+        blind state for the alert, without the blind state's park. The last
+        position is forgotten, so a blind fallback after Trust position never
+        projects from a reading taken before or during the doubt; ``_acted``
+        goes too, so the first live tick after it decides afresh.
+
+        THE ALERT, on the Sun's clock. While the Sun is at or above the
+        dawn-park threshold (``dawn_park.park_threshold_deg``, read where the
+        blind path reads it, `_sun_against_dawn_threshold`), ONE error line in
+        fixed words (``POSITION_UNKNOWN_DAYLIGHT``) says this net cannot
+        protect the tube and gives the safe order, and it is said again every
+        ``BLIND_LOG_EVERY`` ticks while that lasts, the blind escalation's
+        cadence. Error level, source "safety", never flagged site_derived:
+        the AlertDispatcher routes warning and error logs to every configured
+        sink, the channel the blind-in-daylight line pages through. The Sun
+        going back below the threshold resets the count, so the next dawn
+        says it at once. Below the threshold, or with no site to compute the
+        Sun for, one info hold says why the net stands down. Published on
+        ``/api/safety/state`` (``state()``), times and booleans only.
+        Synchronous, touches no device, never raises."""
+        if self._unknown_since is None:
+            self._unknown_since = self._clock()
+            self._unknown_daylight_ticks = 0
+        self._drop_blind()
+        self._last_good = None
+        self._acted = False
+        verdict = self._sun_against_dawn_threshold(cfg)
+        if verdict is None or not verdict[0]:
+            self._unknown_daylight_ticks = 0
+            self._hold(POSITION_UNKNOWN_NIGHT_HOLD, None)
+            return
+        n = self._unknown_daylight_ticks
+        self._unknown_daylight_ticks = n + 1
+        if n % BLIND_LOG_EVERY == 0:
+            bus.log("error", POSITION_UNKNOWN_DAYLIGHT, "safety")
+
+    def _latched_at_park(self, tel, cfg) -> bool:
+        """The one gate, asked again at the park itself (#888, owner ruling
+        4B): True, with the latched tick's hold and alert
+        (`_position_unknown_tick`), when the rig's position latch was set
+        after ``tick`` asked it. The park is then not sent and ``_park``
+        answers None, the "stood aside" answer, so the blind fallback does
+        not count it as a failed attempt. Synchronous, touches no device."""
+        if position_known_for_motion(self.hub, tel):
+            return False
+        self._position_unknown_tick(cfg)
+        return True
+
+    def _drop_unknown(self) -> None:
+        """The latch is clear (or the net is not watching): forget the
+        position-unknown state, with no line (#888)."""
+        self._unknown_since = None
+        self._unknown_daylight_ticks = 0
 
     def _clear_blind(self) -> None:
         """Forget a blindness streak once the position is readable again, so
