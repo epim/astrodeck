@@ -224,11 +224,21 @@ Every `python -m sim` command runs inside `tools/photosphere_sim`.
 - Corrupt: `python -m sim corrupt <case_id> <corruption> [--param KEY=VALUE ...]`
 - Re-render a page from a `scores.json` already on disk, without scoring
   again: `python -m sim report <case_id>`
+- Turn a phone's recording into a case:
+  `python -m sim import-recording <file> <case_id> [--out DIR]` (see "Importing
+  a recording")
+- Check a replay of an imported recording against the report the phone made:
+  `python -m sim selfcheck <case_id> [--cases DIR] [--result DIR]` (see "The
+  selfcheck")
 
 `score` exits 0 when `pass` is true, 1 when it is false, and 2 for "I could
 not run" -- a missing case, a missing result, or a truth the scorer cannot
 read. A failing case and a broken invocation must not look alike on the way
 out.
+
+`import-recording` exits 0 when it wrote the case and 2 when it could not.
+`selfcheck` exits 0 when every row matches, 1 when one does not and 2 when it
+could not run. Both are described under "Importing a recording".
 
 ## Scene schema (`scenes/<name>.json`)
 
@@ -941,6 +951,11 @@ kept even when frames are decimated. The file contains photos of the
 surroundings. It stays on the phone unless the owner shares it, and it is never
 committed without approval.
 
+The v1 `Recorder` writes no `screen` line, so a v1 recording carries no screen
+rotation: a rotation suspends the keyframes (the `portrait` cue), and nothing in
+the file says when the phone was turned or whether it was.
+`python -m sim import-recording` turns the file into a case (below).
+
 ### Scan report, version 2
 
 The `ScanReport` type defines it. No coordinates, no declination, no raw photo
@@ -948,6 +963,193 @@ key, no user-agent string, no wall-clock time. `buildReport` drops any field the
 type does not declare. `slices` are up to 16 JPEG data URLs of kept strips,
 spread evenly over the keyframes, and `captureLog` is the full `CaptureRecord`
 list (#902).
+
+### Importing a recording
+
+`python -m sim import-recording <file> <case_id> [--out DIR]` turns a recording
+file (above) into a case directory the replay can run. `--out` is the directory
+the case is written under, `cache/cases` by default, the same root `make-case`
+writes to. The result:
+
+```
+cache/cases/<case_id>/
+  manifest.json
+  input/
+    frames/<frame_id>.png       8-bit RGB PNG, one per frame line
+    observations.jsonl
+    actions.jsonl
+    scanner.json                always {}
+  recording/
+    report.json                 the embedded report; absent without a report line
+  result/                       written later, by the replay; selfcheck reads it
+```
+
+It is the `input/` of a built case (Case directory, above) plus `recording/`,
+which is made whether or not the recording has a report. There is no `truth/`:
+nobody knows the truth of a real garden, so the scorer has nothing to grade a
+recording case against, and the check it gets is `selfcheck`.
+
+- `input/frames/<frame_id>.png`: the frame line's `data` (base64 JPEG or PNG),
+  decoded and saved as an 8-bit RGB PNG (an alpha channel is dropped), named by
+  the line's own frame id. Ids are kept as recorded, gaps included where the
+  recorder decimated, and an id may hold only letters, digits, `-` and `_`,
+  because it becomes a file name. The decoded size must equal the line's `width`
+  and `height`, and a line's `mime`, where it has one, must name the format the
+  bytes really are.
+- `input/observations.jsonl`: the lines of "`input/observations.jsonl`, version
+  2", a frame line pointing at `frames/<frame_id>.png` through `file` in place
+  of `mime` and `data`. Each line is built from a fixed list of keys, in the
+  order that section gives, so a key a newer phone adds does not reach the case.
+  `event` stays absent on an orientation line that has none (it counts as
+  `deviceorientationabsolute`), and an angle, `absolute`, `rate`, rate component
+  or `t_capture_ms` that is null or absent is written as null. The lines are
+  sorted by delivery time (`t_present_ms` for a frame, `t_receive_ms` for an
+  event), equal times in the recording's order: the recording is in the order
+  the page appended lines, and a frame's presentation time can be a few
+  milliseconds before the callback that recorded it, so the file order is not
+  quite the delivery order. The replay still dispatches a reading before a frame
+  at an equal time, as above.
+- `input/actions.jsonl`: `{"t_ms","action"}` for each action line, in the
+  recording's order; empty when there are none.
+- `input/scanner.json`: always `{}`, which is every default of "`input/scanner.json`
+  and the `--scanner` flag": no declination, and the scanner's own options
+  rather than the phone's. The import does not read `scanner.sensorOnly` from
+  the report, so a scan the phone ran sensor-only replays as an ordinary one
+  unless the file is edited by hand.
+- `recording/report.json`: the object of the `report` line as it came, not the
+  `{"kind": "report"}` line around it. A recording with no report line still
+  imports, and `selfcheck` then cannot run. A second report line is an error.
+- `manifest.json`: the shape under Case directory, with these values. `schema`
+  1 and `seed` 0. `scene`, `route` and `profile` are all `"recording"`.
+  `camera` is the header's `analysis` size, with `fov_short_deg` null. `fps` is
+  the span of the frame ids over the span of the presentation times, to three
+  decimals (frame ids count deliveries, so a recording that kept every second
+  frame still reads as the camera's rate; where an id is not `f` and digits, the
+  number of frames less one stands in for the span of ids), and null for fewer
+  than two frames or no span. `expected` is null: a recording is neither a
+  `positive` nor a `control`. `hashes.frames` and `hashes.observations` are
+  those of a built case, and `hashes.truth` is null, because the hash of nothing
+  would claim a truth that was empty. In `versions`, `three`, `chromium` and
+  `webgl_renderer` are null, `python`, `numpy` and `pillow` are those of the
+  machine that did the import, and `app_commit` is the header's `commit`, null
+  when the header has none.
+
+Times are kept exactly as recorded, in ms since the camera opened. They are not
+rebased so that 0 is the first frame, as in a built case (Frames and units): a
+rebase would move the replay's `begin_ms` and `finish_ms` off the report's
+`timeline`, and the selfcheck would have to undo it.
+
+A v1 recording carries no screen rotation. The importer accepts a `screen` line,
+as "`input/observations.jsonl`, version 2" has it, and passes it through (the
+replay turns its screen to that angle at that time), but the v1 recorder writes
+none. The replay's screen therefore stays at angle 0 for the whole case, and the
+frames do not betray a turn either, because the analysis canvas keeps its size
+when the phone is turned. A replayed recording never exercises the portrait
+suspension: a scan during which the phone was turned replays as if it had not
+been.
+
+The case is built in a sibling directory under `--out`
+(`.<case_id>.*.importing`) and renamed into place only once every line has been
+read, so a recording that breaks on its last line leaves nothing for a replay
+to pick up. An existing `<out>/<case_id>` is refused, not merged into: a stale
+frame or `result/` beside new inputs would be a replay of one night scored
+against another. Remove it by hand, or pick another case id. A case id is
+letters, digits, `.`, `_` and `-`, beginning with a letter or a digit.
+
+The import refuses, naming the line where there is one: a case id that is not
+usable, a file that is not there or is not UTF-8 text, an empty recording, or
+one that does not start with its header line, or whose header is not `format`
+`astrodeck-pano-recording`, `version` 1, with a positive integer `analysis`
+`width` and `height`; a line that is not JSON or not an object; a line of a
+kind it does not know (dropping it would replay a different night from the
+phone's); a missing or mistyped field; a frame that is not base64 JPEG or PNG,
+does not decode, or decodes to a size other than its line's; a repeated frame
+id; a second report; and a recording with no frame lines. A leading UTF-8 byte
+order mark is tolerated.
+
+It prints `wrote <case dir>` and then a reminder that the case holds photos of
+the surroundings. Exit status 0: the case was written. Exit status 2: it could
+not import, with the reason on stderr and nothing written (an argument error
+from the parser also exits 2). A refusal is never status 1. An error the import
+did not foresee, such as an output path that cannot be created, ends as a Python
+traceback, which is status 1 too; a caller must not read that as a verdict, and
+a half-built case is removed in that case as well.
+
+The frames are photos of the surroundings, so a recording case is as private as
+the recording: it belongs under the git-ignored `cache/`, and nothing commits
+one without the owner's approval (O4). The embedded report carries no
+coordinates (Scan report, version 2). The import prints only the case's path
+and the reminder, and the selfcheck only its table, the note under it and its
+verdict line.
+
+### The selfcheck
+
+`python -m sim selfcheck <case_id> [--cases DIR] [--result DIR]` compares what a
+replay of an imported recording made of it with what the phone itself reported.
+The report was computed by the scanner on the device, from the same frames and
+sensor events, so a replay that agrees with it is the scanner running the same
+way off the phone (owner check D7). The order is: import, replay with
+`--scanner pano` (the replay driver takes an absolute case directory), then
+selfcheck. `--cases` is the root the case is under (`cache/cases`) and
+`--result` the replay's result directory (`<case>/result`). It reads three
+files, `result/diagnostics.json`, `recording/report.json` and
+`input/observations.jsonl`, and writes nothing.
+
+It prints a table of eight rows, then a verdict line. Each row gives the
+replay's value, the report's, the difference, the limit and `PASS` or `FAIL`:
+
+| row | replay (`diagnostics.json`) | report (`report.json`) | passes when |
+|---|---|---|---|
+| `focal f_norm` | `focal.f_norm` | `focal.fNorm` | within 0.1 % of the report's |
+| `loop post_deg` | `loop.post_deg` | `loop.postDeg` | within 0.1 degrees; null on both sides agrees (neither closed the ring), null on one side only does not |
+| `predictor mode` | `predictor_mode` | `sensors.modeAtBegin` | equal; null on both sides agrees |
+| `predictor mode changes` | `mode_changes` | `sensors.modeChanges` | the same `from` and `to` pairs in the same order; their times are not compared |
+| `keyframe count` | the length of `keyframes` | `keyframes.total` | within 2 % of the report's |
+| `event rate deviceorientation`, `event rate deviceorientationabsolute`, `event rate devicemotion` | the events of that stream in `input/observations.jsonl`, per second | the `total` of the `sensors.events` entry of that `type`, per second | each within 5 % of the report's |
+
+The limits are the constants `FOCAL_REL_TOL`, `LOOP_DEG_TOL`,
+`KEYFRAME_REL_TOL` and `RATE_REL_TOL` in `sim/recording.py`.
+
+`Diagnostics.predictor_mode` is the mode at Begin and every later handoff is in
+`mode_changes`, the pairing the report has as `modeAtBegin` and `modeChanges`.
+Each row is compared with its twin and with nothing else: a replay that latched
+another mode from the phone fails the first row even if it ended where the phone
+did, and a replay that never handed off fails the second when the phone did.
+
+`Diagnostics` holds no event counts, so the event rate rows are measured on
+`input/observations.jsonl`: the events of each stream over the span from the
+first to the last delivery time, the same span for every stream and for the
+report's totals. An orientation line with no `event` counts as
+`deviceorientationabsolute`, and a stream the report does not list counts 0.
+These rows check the import against the phone's counts (they are what makes a
+motion event dropped on import visible) and say nothing about the replay. The
+table prints a note saying so under it whenever it has them.
+
+For a replay whose focal length is 0.2 % off the phone's, the output is:
+
+```
+check                                 replay    report    diff         limit    verdict
+focal f_norm                          1.33506   1.3324    +0.200 %     0.1 %    FAIL
+loop post_deg                         0.0400    0.0400    +0.0000 deg  0.1 deg  PASS
+predictor mode                        relative  relative  n/a          equal    PASS
+predictor mode changes                none      none      n/a          equal    PASS
+keyframe count                        85        85        +0.000 %     2 %      PASS
+event rate deviceorientation          14.99 Hz  14.99 Hz  +0.000 %     5 %      PASS
+event rate deviceorientationabsolute  29.98 Hz  29.98 Hz  +0.000 %     5 %      PASS
+event rate devicemotion               59.95 Hz  59.95 Hz  +0.000 %     5 %      PASS
+note: the event rate rows count the events in the imported case against the phone's own counts, over one span; Diagnostics holds no event counts, so they check the import, not the replay
+selfcheck FAIL: focal f_norm
+```
+
+The last line is `selfcheck PASS`, or `selfcheck FAIL:` and the names of the
+failing rows, comma separated. Exit status 0: every row matches. Exit status 1:
+a row does not. Exit status 2: it could not run, with the reason on stderr and
+no table: no case directory, no `result/diagnostics.json` ("replay the case with
+--scanner pano first"), no `recording/report.json` (the recording had no report
+line), no `input/observations.jsonl`, a file that is not JSON, a field a row
+reads that is missing or not the type that row needs, or observations that span
+no time. A mismatch and a broken invocation must not look alike on the way out,
+as for `score`.
 
 ### Scoring version 2
 
