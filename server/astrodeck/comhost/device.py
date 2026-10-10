@@ -6,15 +6,16 @@ ASCOM drivers are STA: each ComDevice owns ONE thread that CoInitializeEx's an
 apartment for the device's whole lifetime, and every COM access (create,
 Connected=, property/method) marshals to it via a queue + Future. Every
 marshaled call has a deadline (the AlpacaCamera.expose imageready-timeout idiom,
-commit 082dd79): future.result(timeout=...) -> a wedged COM call raises
-ComTimeoutError instead of hanging the host.
+commit 082dd79): the caller waits with concurrent.futures.wait and raises
+ComTimeoutError only when the call has not finished by the deadline, so a
+wedged COM call cannot hang the host. A call that finished has its own
+exception re-raised as itself, never mistaken for the deadline (#938).
 """
 from __future__ import annotations
 
 import queue
 import threading
-from concurrent.futures import Future
-from concurrent.futures import TimeoutError as _FutureTimeout
+from concurrent.futures import Future, wait
 from typing import Any, Callable
 
 try:  # comtypes is Windows-only + optional; guarded so import never fails.
@@ -107,12 +108,20 @@ class ComDevice:
         """Run fn(self._obj) on the STA thread with the per-call deadline."""
         fut: Future = Future()
         self._q.put((fn, fut))
-        try:
-            return fut.result(timeout=self._timeout_s)
-        except _FutureTimeout:
+        return self._await(fut)
+
+    def _await(self, fut: Future) -> Any:
+        """The one per-call deadline, shared by submit and connect. wait()
+        reports only whether the call finished, so a TimeoutError the DRIVER
+        raised (marshalled back through the Future, and on 3.11+ the same
+        class fut.result(timeout=) raises on the deadline) is re-raised below
+        as the driver error it is, not mistaken for the deadline."""
+        done, _ = wait([fut], timeout=self._timeout_s)
+        if not done:
             raise ComTimeoutError(
                 f"COM call on {self.progid} exceeded "
-                f"{self._timeout_s:.0f}s deadline") from None
+                f"{self._timeout_s:.0f}s deadline")
+        return fut.result()
 
     def connect(self) -> None:
         # Idempotent + race-guarded (COM-T6 obligation 3): the lock serializes
@@ -128,7 +137,7 @@ class ComDevice:
                 self._obj.Connected = True
             fut: Future = Future()
             self._q.put((_do, fut))
-            fut.result(timeout=self._timeout_s)
+            self._await(fut)
             self.connected = True
 
     def disconnect(self) -> None:
