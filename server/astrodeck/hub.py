@@ -42,9 +42,11 @@ from .devices.base import (
     SyncRefused,
     SyncUnverified,
     Telescope,
+    position_known_for_motion,
     quotable_sync_reply,
     rig_position_known,
 )
+from .mount_offset import POSITION_UNKNOWN_MOTION_DETAIL
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
 from .align import guide_offset as _guide_offset
@@ -8540,6 +8542,28 @@ class Hub:
                     f"{where}: tracking could not be turned back on after "
                     f"the halted goto ({e})", "mount")
 
+    def _centring_refused_unknown(self, tel, where: str, attempts: int, *,
+                                  error_arcmin: float | None = None
+                                  ) -> dict | None:
+        """THE ONE GATE re-asked under a later ``_motion_lock`` of
+        `goto_and_center` (#888): the rotation pre-move and every centring
+        attempt, each of which follows an await outside the lock (the
+        rotator read, the rotate loop, a solve and sync). None while the
+        position is known. Otherwise one warning in the safe order and the
+        same aborted shape the first lock's gate returns, ``position_unknown``
+        and ``reason`` beside it, which every caller reads as a stop
+        (`SequenceEngine._stop_if_centring_refused_unknown`, the resume
+        ladder, `meridian_flip`). Synchronous, touches no device."""
+        if position_known_for_motion(self, tel):
+            return None
+        bus.log("warning", f"{POSITION_UNKNOWN_MOTION_DETAIL} Not moved "
+                           f"further ({where})", "mount")
+        self.note_pointing_verified(False, reason=str("centering did not converge"))
+        return {"centered": False, "error_arcmin": error_arcmin,
+                "attempts": attempts, "aborted": True,
+                "position_unknown": True,
+                "reason": POSITION_UNKNOWN_MOTION_DETAIL}
+
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
                               max_attempts: int = 3,
@@ -8675,6 +8699,21 @@ class Hub:
                 self.note_pointing_verified(False, reason=str("centering did not converge"))
                 return {"centered": False, "error_arcmin": None,
                         "attempts": 0, "aborted": True, "rotation": None}
+            # THE ONE GATE, ASKED AT THE HUB'S OWN MOTION SEAM (#888). Every
+            # caller asks it before calling, but this is where the unpark and
+            # the slews are sent, so a future caller cannot skip it and a
+            # latch set while the caller waited (an AM5 reopen that read the
+            # home pole) is caught here, before anything moves. The aborted
+            # shape, with ``position_unknown`` beside it: the engine stops
+            # the run on it (`_stop_if_centring_refused_unknown`), the resume
+            # ladder holds in its position-unknown words.
+            if not position_known_for_motion(self, tel):
+                bus.log("warning", f"{POSITION_UNKNOWN_MOTION_DETAIL} Nothing "
+                                   f"was moved (centring)", "mount")
+                return {"centered": False, "error_arcmin": None,
+                        "attempts": 0, "aborted": True, "rotation": None,
+                        "position_unknown": True,
+                        "reason": POSITION_UNKNOWN_MOTION_DETAIL}
             if await tel.is_parked():
                 await tel.unpark()
             await tel.set_tracking(True)
@@ -8719,6 +8758,12 @@ class Hub:
                         self.note_pointing_verified(False, reason=str("centering did not converge"))
                         return {"centered": False, "error_arcmin": None,
                                 "attempts": 0, "aborted": True, "rotation": None}
+                    # The gate again (#888): the rotator read above awaited
+                    # outside the lock, and this slew is aimed like any other.
+                    refused = self._centring_refused_unknown(
+                        tel, "the rotation pre-move", 0)
+                    if refused is not None:
+                        return refused | {"rotation": None}
                     slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
                     try:
                         await tel.slew(slew_ra, slew_dec)
@@ -8809,6 +8854,14 @@ class Hub:
                     return {"centered": False,
                             "error_arcmin": (last_err or 0) * 60 if last_err else None,
                             "attempts": attempt - 1, "aborted": True} | _rot_keys | arrival_keys
+                # The gate again, per attempt (#888): the rotate loop and the
+                # last attempt's solve and sync ran outside the lock, minutes
+                # with a rotation, and every attempt's slew is aimed.
+                refused = self._centring_refused_unknown(
+                    tel, f"centring attempt {attempt}", attempt - 1,
+                    error_arcmin=(last_err * 60 if last_err else None))
+                if refused is not None:
+                    return _rot_keys | arrival_keys | refused
                 # Slew in the mount's own frame: a JNOW Alpaca mount would
                 # otherwise interpret the J2000 target as JNOW and land ~20 arcmin
                 # off. Converting inside the loop (not once up front) keeps the
@@ -9136,6 +9189,14 @@ class Hub:
         else:
             result = await self.goto_and_center(ra_hours, dec_deg,
                                                 rotation_deg=rotation_deg)
+        if isinstance(result, dict) and result.get("position_unknown"):
+            # NOTHING MOVED (#888): the re-centre refused for an unknown
+            # position, so nothing flipped, and the calibration is neither
+            # flipped nor guiding restarted on a tube nobody knows the
+            # pointing of. The keys ride through to the engine, which ends
+            # the run on them.
+            return dict(result, flipped=False, pier_side_before=side_before,
+                        pier_side_after=side_before)
         side_after = await self.pier_side_now()
         # Both reads have to have SUCCEEDED for "unchanged" to mean anything.
         flipped = not (side_before not in (None, "unknown")

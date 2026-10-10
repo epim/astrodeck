@@ -735,6 +735,8 @@ async def test_state_is_times_and_booleans_only(cfg, pinned_sun):
     hub, tel = _rig(ra_hours=0.0, dec_deg=90.0, tracking=False, parked=True)
     w, now = _driven(hub)
     assert w.state() == {"blind": False, "blind_since": None,
+                         "position_unknown": False,
+                         "position_unknown_since": None,
                          "last_position_at": None, "armed": False}
 
     await w.tick()
@@ -748,7 +750,8 @@ async def test_state_is_times_and_booleans_only(cfg, pinned_sun):
     assert st["blind_since"] == JUNE_TS + 600.0
     assert st["last_position_at"] == JUNE_TS, (
         "the last GOOD read, not the last tick")
-    assert set(st) == {"blind", "blind_since", "last_position_at", "armed"}
+    assert set(st) == {"blind", "blind_since", "position_unknown",
+                       "position_unknown_since", "last_position_at", "armed"}
     assert all(isinstance(v, (bool, float, type(None))) for v in st.values())
 
     w2 = SunWatch(hub, FakeEngine(), clock=lambda: JUNE_TS, interval_s=3600.0)
@@ -819,9 +822,11 @@ def test_the_route_publishes_blindness_and_never_a_position(
         assert sw["blind_since"] == JUNE_TS + 120.0
         assert sw["last_position_at"] == JUNE_TS
 
-        # Times and booleans, exactly four keys: nothing that locates the tube
-        # can ride along without this key set (or the type check) changing.
-        assert set(sw) == {"blind", "blind_since", "last_position_at",
+        # Times and booleans, exactly these keys (#888 added the two
+        # position-unknown ones): nothing that locates the tube can ride
+        # along without this key set (or the type check) changing.
+        assert set(sw) == {"blind", "blind_since", "position_unknown",
+                           "position_unknown_since", "last_position_at",
                            "armed"}, sw
         assert all(isinstance(v, (bool, float, type(None)))
                    for v in sw.values()), sw

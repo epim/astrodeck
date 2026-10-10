@@ -41,8 +41,9 @@ import math
 from typing import Any
 
 from .. import sky_angle as _sky_angle
-from ..devices.base import DeviceError
+from ..devices.base import DeviceError, position_known_for_motion
 from ..events import bus
+from ..mount_offset import POSITION_UNKNOWN_SAFE_ORDER
 from ..sequence.schedule import hour_angle_h
 from ..site_gate import site_lat_lon
 from .session import wait_if_paused
@@ -241,6 +242,18 @@ MIN_MEASUREMENT_ALT_DEG = 10.0
 LOW_MEASUREMENT_ALT_DEG = 20.0
 
 
+#: The refusal while the mount's position is unknown (#888): the cause, then
+#: the safe order (``mount_offset.POSITION_UNKNOWN_SAFE_ORDER``), never a
+#: goto. 122 characters, so the run's error line ("native TPPA: " in front)
+#: still ends inside the UI's 137-character cut.
+TPPA_POSITION_UNKNOWN = (
+    f"TPPA not started, position unknown: {POSITION_UNKNOWN_SAFE_ORDER}")
+#: The same, for a latch set during the run, asked before every leg of the
+#: arc (`_rotate_in_ra`). 118 characters, 131 with "native TPPA: ".
+TPPA_POSITION_UNKNOWN_MID_RUN = (
+    f"TPPA stopped, position unknown: {POSITION_UNKNOWN_SAFE_ORDER}")
+
+
 async def run_native(session: Any, hub: Any) -> None:
     """Drive the native TPPA procedure for ``session`` on ``hub``.
 
@@ -281,6 +294,15 @@ async def _drive(session: Any, hub: Any) -> None:
     # answer, so nothing should be touched to find it out.
     site = _site_dict(hub)
     tel = hub.require("telescope")
+    # NOT FROM AN UNKNOWN POSITION (#888). Every leg of the arc is a move
+    # whose target is computed from the reported position, and the pole
+    # refusal below would answer a reset mount (which reports home, at the
+    # pole) with advice to point somewhere else, which is a goto from the
+    # position nobody knows. Asked here, before any device is read or moved,
+    # as well as at ``POST /api/polar/start``, so a future caller cannot skip
+    # it. The safe order, no goto in it.
+    if not position_known_for_motion(hub, tel):
+        raise DeviceError(TPPA_POSITION_UNKNOWN)
     hub.require("camera")  # fail fast with a clear error if no camera
     from .. import providers as _providers
     solver = _providers.pick_solver(hub)
@@ -1155,6 +1177,14 @@ async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
     also records that this is a mitigation for a cause nobody has proved."""
     _check_alive(hub, epoch)
     cur_ra, cur_dec = await tel.get_position()
+    # THE GATE AGAIN, BEFORE EVERY LEG (#888). `_drive` asks it at the start,
+    # but a run lasts minutes, and a latch set since (an AM5 reopen that read
+    # the home pole, quite possibly inside the read just above) makes the
+    # goto's destination and the sun check's landing point both figures
+    # computed from a position nobody knows. The axis turn is relative, but
+    # its sun check is not, so both mechanisms stop here, before any move.
+    if not position_known_for_motion(hub, tel):
+        raise DeviceError(TPPA_POSITION_UNKNOWN_MID_RUN)
     if step is None:
         step = _ra_step_hours(hub, cur_ra)
     target_ra = (cur_ra + step) % 24.0
