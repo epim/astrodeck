@@ -45,12 +45,51 @@ import {
 } from "./photosphere";
 import { PhotosphereDome } from './PhotosphereDome';
 import { readPanorama, writePanorama } from './photosphereStorage';
+import { useCanViewSitePrecise } from "../../../../lib/caps";
+import { panoFlag } from './pano/flag';
+import { PanoCapture } from './pano/PanoCapture';
+import { ERROR_TEXT } from './pano/copy';
+import { checkPanoSupport, requestIosMotionPermission } from './pano/support';
+import { declinationDeg, decimalYear } from './pano/wmm';
+import type { ScanResult } from './pano/types';
 
 type Source = "location" | "active";
 
 /** Why the lens picker is locked. Opening a camera stream takes a moment and a
  *  second open while the first is in flight strands both. */
 const CAMERA_LOCKED = "Opening the camera. The lens can be changed once it is ready.";
+
+/** The one line of copy the flagged scanner adds under the scan button (SPEC-v2 2.2). */
+const PANO_SCAN_LINE = "Stand where the telescope stands. One slow turn takes about 20 seconds.";
+
+/** What the flagged scanner needs before it can ask for a camera: the old scanner's secure-context and getUserMedia test,
+ *  then an orientation API at all, which SPEC-v2 2.11 locks the scan on (the scanner has the same test behind it). */
+function checkPanoReady(): { supported: boolean; reason: string | null } {
+  const base = checkPanoSupport();
+  if (!base.supported) return base;
+  const hasOrientation = typeof window !== "undefined" && typeof (window as unknown as { DeviceOrientationEvent?: unknown }).DeviceOrientationEvent !== "undefined";
+  return hasOrientation ? base : { supported: false, reason: ERROR_TEXT.noOrientation };
+}
+
+/** A site position for `trueNorthFor`, or null when latitude or longitude is not a finite number. */
+function positionOf(lat: number | undefined, lon: number | undefined, elevM: number | undefined): { lat: number; lon: number; elevM: number } | null {
+  if (typeof lat !== "number" || typeof lon !== "number" || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon, elevM: typeof elevM === "number" && Number.isFinite(elevM) ? elevM : 0 };
+}
+
+/** The map from a magnetic azimuth to a true one (SPEC-v2 4.12), or null when none can be made. The declination is
+ *  worked out here, once, and lives only in the returned closure: it is never logged, shown, stored in state or
+ *  reported, and a position the model refuses (outside its years, a latitude off the globe) gives null, which leaves
+ *  the panorama magnetic. Nothing is quoted in the failure, because the arguments are a site's position. */
+function trueNorthFor(site: { lat: number; lon: number; elevM: number } | null, now: Date): ((azMagDeg: number) => number) | null {
+  if (!site) return null;
+  try {
+    const d = declinationDeg(site.lat, site.lon, site.elevM / 1000, decimalYear(now));
+    return Number.isFinite(d) ? (azMagDeg) => azMagDeg + d : null;
+  } catch {
+    return null;
+  }
+}
 
 export function HorizonSheet({ params, onClose, onBusyChange, guided = false, onSaved, onDirty }: SheetProps & { onClose?: () => void; onBusyChange?: (busy:boolean) => void; guided?: boolean; onSaved?: () => void; onDirty?: () => void }): JSX.Element {
   const loadConfig = useStore((s) => s.loadConfig);
@@ -93,6 +132,9 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const reviewAz=useRef(180);
   const [photoKey, setPhotoKey] = useState<string | null>(null);
   const [photoStored, setPhotoStored] = useState(false);
+  // The site position this sheet loaded, for the flagged scanner's declination (SPEC-v2 4.12). A ref and not state,
+  // so it can never render; null when the load gave no position (a role without view.site_precise gets none).
+  const sitePos = useRef<{ lat: number; lon: number; elevM: number } | null>(null);
 
   const writeLocked = loading ? "Loading the horizon." : loadFailed ? "Reopen the horizon editor to retry loading before editing." : saving ? "Saving the horizon." : guided ? opticsLocked ?? safetyLocked : source === "location" ? opticsLocked : safetyLocked;
   const explainWrite = source === "location" ? explainOptics : explainSafety;
@@ -105,6 +147,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
       setLoading(true);
       setLoadFailed(false);
       setPanorama(null); setPhotoKey(null); setPhotoStored(false); setReviewDraft(false); setAlignmentReport(null);
+      setPanoResult(null); setPanoRecording(null); sitePos.current = null;
       try {
         if (siteParam && siteParam !== "current") {
           const locs = await listLocations();
@@ -114,6 +157,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
             setSource("location");
             setSourceLoc(loc);
             setSiteName(loc.name);
+            sitePos.current = positionOf(loc.latitude, loc.longitude, loc.elevation_m);
             setLegacy(false);
             setPoints((loc.horizon_points ?? []).map(([az, alt]) => ({ az, alt })));
             setByHand(true);
@@ -127,6 +171,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
         setSourceLoc(null);
         setSiteName(site.name?.trim() || "the active site");
         if(typeof site.latitude==='number' && typeof site.longitude==='number') setPhotoKey(`active:${site.latitude}:${site.longitude}:${site.elevation_m ?? 0}`);
+        sitePos.current = positionOf(site.latitude, site.longitude, site.elevation_m);
         if (Object.prototype.hasOwnProperty.call(site, "horizon_points")) {
           setLegacy(false);
           setPoints((site.horizon_points ?? []).map(([az, alt]) => ({ az, alt })));
@@ -254,7 +299,10 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   };
 
   // ------------------------------------------------------------ photosphere
-  const support = useMemo(() => checkPhotosphereSupport(), []);
+  // The flag (SPEC-v2 2.1, D27): off is today's scanner, unchanged. It is read once when the sheet opens.
+  const flag = useMemo(() => panoFlag(), []);
+  const panoOn = flag !== "off";
+  const support = useMemo(() => (panoOn ? checkPanoReady() : checkPhotosphereSupport()), [panoOn]);
   // A measured value can be offered through a shareable setup link. Applying
   // it is explicit and local to the selected camera; a URL never changes it.
   const suggestedLens=useMemo(()=>{
@@ -272,6 +320,14 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const [alignmentReport,setAlignmentReport]=useState<string|null>(null);
   const [lensAngleDraft,setLensAngleDraft]=useState('60');
   const [adopted, setAdopted] = useState(false);
+  // The flagged scanner (T25). `panoResult` is kept for the flagged review (T29); `panoRecording` is the recording's
+  // download link; the closure that maps a magnetic azimuth to a true one is a ref, so it can never render.
+  const [panoResult, setPanoResult] = useState<ScanResult | null>(null);
+  const [panoRecording, setPanoRecording] = useState<string | null>(null);
+  const toTrueRef = useRef<((azMagDeg: number) => number) | null>(null);
+  const panoAsking = useRef(false);
+  const canSeePrecise = useCanViewSitePrecise();
+  void panoResult;   // T29's review reads it
   const sweepRef = useRef<PhotosphereSweep | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -384,6 +440,49 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     sweep.stop();
     if (tickTimer.current != null) { clearInterval(tickTimer.current); tickTimer.current = null; }
     sweepRef.current = null;
+    setCapturing(false);
+  };
+
+  // ----------------------------------------------------------- flagged scan (T25)
+  // The scan button's tap with the flag on. The iOS motion prompt is asked first, synchronously, because Safari shows it
+  // only inside the tap and the first await spends the tap (SPEC-v2 2.3, ruling S14); PanoCapture mounts on any answer
+  // but a no, and a no shows the 2.11 text instead of starting.
+  const startPano = () => {
+    if (capturing || panoAsking.current) return;
+    const asked = requestIosMotionPermission();
+    panoAsking.current = true;
+    setCaptureError(null);
+    void asked.then((answer) => {
+      panoAsking.current = false;
+      if (answer === "denied") { setCaptureError(ERROR_TEXT.motionDenied); return; }
+      // Only a role that may see precise site coordinates gets a declination (SPEC-v2 4.12): everyone else's panorama
+      // stays magnetic, and the review says so. The closure goes to the scanner by prop and into no state.
+      toTrueRef.current = canSeePrecise ? trueNorthFor(sitePos.current, new Date()) : null;
+      setCapturing(true);
+    });
+  };
+
+  // What `stopAndTrace` does for the old scanner, for a finished flagged scan: the picture, the line and the draft go
+  // into the editor (and the picture into this browser's store), the sheet is dirty, and the report and recording
+  // links stay on the page after the capture panel closes.
+  const adoptPanoResult = (result: ScanResult, links: { report: string; recording: string | null }) => {
+    setPanoResult(result);
+    setPanorama(result.png || null); setReviewZoom(1); setReviewDraft(true);
+    setPhotoStored(false);
+    if (photoKey && result.png) void writePanorama(photoKey, result.png).then(setPhotoStored);
+    setPoints(result.points); setByHand(false); setDirty(true); setSaved(false); onDirty?.();
+    setTrace(result.points);
+    setTraceUncertain(0); setLensInDoubt(false); setManualOverhead(false);
+    setAlignmentReport(links.report); setPanoRecording(links.recording);
+    if (result.endedBy === "error" && result.error) setCaptureError(result.error);
+    toTrueRef.current = null;
+    setCapturing(false);
+  };
+
+  // KEEP THE REPORT ON THE WAY OUT (issue #66), as `cancelCapture` does: the links were taken before the scanner stopped.
+  const cancelPano = (links: { report: string | null; recording: string | null }) => {
+    setAlignmentReport(links.report); setPanoRecording(links.recording);
+    toTrueRef.current = null;
     setCapturing(false);
   };
 
@@ -515,14 +614,17 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
         {!capturing && <ActionButton kind="primary" size="lg"
           lockedReason={writeLocked ?? (support.supported ? null : support.reason)}
           onExplain={(r) => enqueueToast({ level: "warning", title: r })}
-          onPress={() => void startCapture()} data-testid="capture-photosphere">
+          onPress={() => (panoOn ? startPano() : void startCapture())} data-testid="capture-photosphere">
           <NxIcon name="camera" size={22}/>{trace || adopted ? "Scan surroundings again" : "Scan surroundings with camera"}
         </ActionButton>}
       </div>
       {!capturing && <p className="text-sm text-dim">Scan from the telescope’s position and height. Look around and up, including nearby roofs and tall trees. Daylight works best. You can also draw the line by hand above.</p>}
 
+      {panoOn && !capturing && <p className="text-sm text-dim" data-testid="pano-scan-line">{PANO_SCAN_LINE}</p>}
       {captureError && <p role="alert" className="photosphere-error">{captureError}</p>}
-      <div ref={capturePanel} tabIndex={-1} className="photosphere-capture" hidden={!capturing} data-scanning={scanning} data-testid="photosphere-capturing">
+      {panoOn && capturing && <PanoCapture previous={points} toTrue={toTrueRef.current} sensorOnly={flag === "pano-sensor"}
+        onFinish={adoptPanoResult} onCancel={cancelPano} />}
+      {!panoOn && <div ref={capturePanel} tabIndex={-1} className="photosphere-capture" hidden={!capturing} data-scanning={scanning} data-testid="photosphere-capturing">
         <div className="photosphere-preview">
           <video ref={videoRef} muted playsInline autoPlay aria-label="Live surroundings camera" data-testid="photosphere-video" />
           <PhotosphereDome sweep={sweep} active={capturing && !openingCamera}/>
@@ -585,7 +687,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
               lockedReason={sweep?.frameCount ? null : "Capture a patch of your surroundings first."} data-testid="stop-and-trace">{sweep?.complete ? 'Scan complete' : 'Review partial scan'}</ActionButton>}
           <ActionButton kind="secondary" size="md" onPress={cancelCapture}>Cancel scan</ActionButton>
         </div>
-      </div>
+      </div>}
 
       {trace && !capturing && (
         <Card data-testid="photosphere-card">
@@ -611,7 +713,8 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
           <details className="photosphere-detail" data-testid="photosphere-report">
             <summary>{trace ? 'Help diagnose a scrambled image' : 'Help diagnose a scan that captured nothing'}</summary>
             <p>Save a small set of camera pictures and their recorded angles. This stays on your phone unless you choose to share the file. It includes photos of your surroundings.</p>
-            <a className="photosphere-download" href={alignmentReport} download="astrodeck-scan-alignment.json">Download alignment report</a>
+            <a className="photosphere-download" href={alignmentReport} download={panoOn ? "astrodeck-pano-report.json" : "astrodeck-scan-alignment.json"}>{panoOn ? "Download scan report" : "Download alignment report"}</a>
+            {panoOn && panoRecording && <a className="photosphere-download" href={panoRecording} download="astrodeck-pano-recording.jsonl" data-testid="pano-recording-link">Download scan recording</a>}
           </details>
         </Card>
       )}
