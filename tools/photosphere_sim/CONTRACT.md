@@ -156,7 +156,7 @@ the canopy is indistinguishable from one that also found the trunk.
 - `result/panorama.png`: 1080 x 300 RGBA, column `x` is azimuth `(x + 0.5) / 1080 * 360`,
   row `y` is altitude `90 - y / 299 * 100`; alpha 255 where the scanner
   painted, 0 elsewhere.
-- `result/horizon.json`: `{"bins":N,"points":[{"az","alt"}],"uncertain_bins":[..]}` (`alt` 0..90; the scanner's own output).
+- `result/horizon.json`: `{"bins":N,"points":[{"az","alt"}],"uncertain_bins":[..]}` (`alt` 0..90; the scanner's own output). A result with `"version":2` is the pan scanner's 720-bin profile and polyline, described under "Version 2".
 - `result/columns.json`: the scanner's centre-ray columns, `centreColumns()`
   (array of arrays, NaN as `null`) - one 101-row column per azimuth bin, read
   at the bin's centre, unchanged in content from before issue #58's fix. The
@@ -217,7 +217,7 @@ Every `python -m sim` command runs inside `tools/photosphere_sim`.
 
 - Python tests: `python -m unittest discover -s tools/photosphere_sim/tests -t tools/photosphere_sim -v`
 - Build a case: `python -m sim make-case <case_id>`
-- Replay through the real scanner: `node --import tsx src/next/hubs/sky/sheets/__sim__/replay.ts <abs case dir>` (run inside `ui`)
+- Replay through the real scanner: `node --import tsx src/next/hubs/sky/sheets/__sim__/replay.ts <abs case dir> [--scanner legacy|pano]` (run inside `ui`; `legacy` is the default, see "Version 2")
 - Score: `python -m sim score <case_id>`, which also writes `report.html`
 - The instrument's own floor: `python -m sim ideal <case_id>` writes `ideal/`,
   scored with `python -m sim score <case_id> --result <case dir>/ideal`
@@ -681,3 +681,399 @@ and their parameters, spec section 10:
 `python -m sim report <case_id>` re-renders it from a `scores.json` that is
 already there. It is one self-contained file: inline base64 PNGs, inline SVG,
 one style block, no script and nothing to fetch.
+
+## Version 2: the horizon panorama scanner
+
+Everything above describes the legacy scanner and stays true of it. Version 2
+adds a second scanner, a single-ring live panorama behind a flag that is off by
+default (spec `docs/ui-rebuild/19-photosphere-panorama.md`), and the files,
+gates and corruptions to grade it. The legacy scanner stays the default and its
+results are scored exactly as before: a case is scored the version 2 way only
+when its route is a pan, its `horizon.json` is version 2, or it carries a
+`grading` block or a `truth/visibility.json`. Every other case takes the legacy
+path and writes the `scores.json` keys it always did.
+
+### Motion: which axis is which
+
+`rotationRate` in the W3C specification, and in Chromium, reports
+`alpha` = the rate about device x, `beta` = about device y and `gamma` = about
+device z, in degrees per second (rounded to 0.1 on Chromium). The `motion`
+record's `rate` is `{"alpha", "beta", "gamma"}` in exactly that order.
+
+- A portrait phone at pitch `p` turning on the spot at `omega` reports
+  `beta = omega cos p` and `|gamma| = omega sin p`, with `alpha` about 0. A
+  pure pitch lands in `alpha`.
+- The simulator's code has always written x, y, z in that order
+  (`sim/sensors.py`, the `alpha`, `beta`, `gamma` of `motion_events`). Only the
+  docstring of `motion_events` said otherwise (it called them the rates about
+  z, x and y), and it is corrected to match the code.
+  Issue #897 proposed changing the code to `alpha = rate[2], beta = rate[0],
+  gamma = rate[1]`; its premise is inverted, the code was right and the
+  docstring wrong, and that proposal is a mutant the sensor tests must fail.
+- The scanner does not depend on this ruling: `PoseTrack` fits the mapping
+  (permutation, sign and unit) at run time against the orientation stream. The
+  W3C mapping is only the default until that fit confirms or replaces it.
+
+### Seeding, and the legacy rule
+
+A case with a `realism` block draws every random source from
+`np.random.SeedSequence(case seed).spawn(10)`, in this fixed order: 0 relative
+stream, 1 absolute stream, 2 motion, 3 tremor, 4 frame noise, 5 EIS, 6
+auto-exposure, 7 to 9 reserved. The same seed reproduces byte-identical
+observations and a different seed does not (#901).
+
+**Legacy rule:** a case with no `realism` block keeps today's bytes. Its gyro
+noise is drawn from `default_rng(0)` through `gyro_noise_deg_s`, as it always
+was, and the committed fixtures' `hashes.observations` must rebuild unchanged.
+`grading`, `realism` and `scanner_options` are copied into `manifest.json` only
+when the case definition has them.
+
+### `input/observations.jsonl`, version 2
+
+One JSON object per line. Times are ms from the case start. Lines are merged by
+delivery time as today (`mergeObservations`): readings before frames at equal
+times, and equal kinds in file order.
+
+```
+{"kind":"frame","frame_id":"f000123","t_capture_ms":12300,"t_present_ms":12360,"width":180,"height":320,"file":"frames/f000123.png"}
+{"kind":"frame","frame_id":"f000124","t_capture_ms":null,"t_present_ms":12393,"width":180,"height":320,"file":"frames/f000124.png"}
+{"kind":"orientation","event":"deviceorientation","t_event_ms":12280,"t_receive_ms":12285,"alpha":12.3,"beta":67.0,"gamma":-1.2,"absolute":false}
+{"kind":"orientation","event":"deviceorientationabsolute","t_event_ms":12280,"t_receive_ms":12285,"alpha":101.4,"beta":67.0,"gamma":-1.2,"absolute":true}
+{"kind":"motion","t_event_ms":12290,"t_receive_ms":12295,"rate":{"alpha":0.1,"beta":18.4,"gamma":-7.8}}
+{"kind":"screen","t_event_ms":15000,"t_receive_ms":15000,"angle":90}
+```
+
+- `event` absent means `deviceorientationabsolute`, the legacy files.
+- `t_capture_ms: null` means the frame metadata carries no `captureTime`.
+- Orientation angles may be null (Brave's blocked shape).
+- `rate` may be null. Its components are deg/s about device x, y and z, in that
+  order.
+- `screen` is optional.
+
+### Case definition additions
+
+```json
+{
+  "case_id": "chartyard-pan1-41", "scene": "chartyard", "route": "pan1-p23",
+  "camera": {"width": 180, "height": 320, "fov_short_deg": 41.14}, "fps": 30, "seed": 7,
+  "expected": "positive", "profile": "realism-v1",
+  "grading": {"still_pivot": true, "fully_observable": false, "daylight": true, "north_graded": true, "expect_closure": true},
+  "scanner_options": {"focal_prior_scale": 1.1, "sensor_only": false, "declination_deg": 0},
+  "realism": {
+    "gyro_scale_err": 0.02,
+    "relative": {"yaw_zero_deg": "random", "drift_deg_min": 2.0, "noise_deg": 0.05, "quant_deg": 0.1,
+                 "threshold_deg": 0.1, "pump_hz": 60, "latency_ms": 5, "spikes": null},
+    "absolute": {"bias_deg": 0, "declination_deg": 0, "sinusoid": {"amp_deg": 0, "phase_deg": 0},
+                 "noise": {"sigma_deg": 3.0, "tau_s": 0.3}, "steps": [], "quant_deg": 0.1,
+                 "threshold_deg": 0.1, "pump_hz": 60, "latency_ms": 5, "spikes": null},
+    "motion": {"bias_deg_s": 0.05, "noise_deg_s": 0.03, "round_deg_s": 0.1, "pump_hz": 60, "latency_ms": 5},
+    "streams": "both",
+    "gyro": true,
+    "capture_time": {"mode": "delivery", "lag_ms": 50},
+    "frames": {"...": "see Frame realism"}
+  }
+}
+```
+
+Defaults (reset from the device facts by T31):
+
+- `gyro_scale_err` 0.02;
+- relative drift 2 deg/min and noise 0.05;
+- absolute noise sigma 3 degrees with `tau_s` 5.0, sinusoid amplitude 2 at
+  phase 40, no bias;
+- `north_graded` cases use `tau_s` 0.3 and amplitude 0;
+- spikes `{"rate_hz": 0.2, "size_deg": 15}`, only on the slow case;
+- capture time `delivery` with a 50 ms lag.
+
+Rules:
+
+- `steps`: `[{"t_s": 8.0, "deg": 4.0}]`, a heading step at `t_s`.
+- `spikes`: single samples displaced by plus or minus `size_deg`.
+- `streams`: `both`, or `absolute-only` in Chromium's shape: each absolute
+  record is also emitted as `event: "deviceorientation"` with `absolute: true`,
+  the same values and times, and no relative stream.
+- `capture_time`: `delivery` (`t_capture_ms` = exposure time + `lag_ms`,
+  Chromium's I420 semantics), `sensor` (the exposure time) or `none` (null).
+  `t_present_ms = max(exposure + 60, t_capture_ms + 10)` when `t_capture_ms` is
+  not null, else exposure + 60.
+- `grading` flags, read by the scorer from `manifest.json`: `still_pivot`,
+  `fully_observable`, `daylight`, `north_graded` (white-noise compass, no bias)
+  and `expect_closure`. An absent flag is false.
+
+### Route kind `pan`
+
+```json
+{"schema": 1, "name": "pan1-p23", "kind": "pan", "pivot": [0, 0, 0], "radius_m": 0, "height_m": 1.4,
+ "reference": "axis", "start_hold_s": 1.0, "end_hold_s": 1.0, "rate_cap_deg_s": 45,
+ "pans": [{"alt": 22.98, "from_az": 0, "turn_deg": 385, "speed_deg_s": 20, "ramp_s": 0.5, "direction": "cw"}],
+ "tremor": {"yaw_deg": 0.3, "pitch_deg": 0.3, "roll_deg": 0.3, "band_hz": [0.5, 3.0]}}
+```
+
+- Camera centre: `pivot + [r sin az, r cos az, height_m]`, with `r = radius_m`;
+  0 is a still pivot. The optical axis has the segment's azimuth `az(t)` and
+  altitude `alt`, with roll 0 plus tremor.
+- Segments run back to back, each with a smoothstep speed ramp of `ramp_s` at
+  each end. `cw` means azimuth increasing. `from_az` is optional after the
+  first segment.
+- Holds come only at the start and the end.
+- Tremor: per axis, the sum of 5 sinusoids log-spaced in `band_hz`, with phases
+  and weights from SeedSequence child 3, scaled to the given rms.
+- `rate_cap_deg_s`: the build raises if the total angular rate, tremor
+  included, would exceed it.
+- `reference: "axis"`: `c_ref = pivot + [0, 0, height_m]`. Otherwise the first
+  frame's position is used, as today.
+
+### Object materials
+
+```json
+"material": {"kind": "flat"}
+"material": {"kind": "noise", "seed": 11, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}
+"material": {"kind": "stripes", "count": 40, "duty": 0.5, "colour2": [60, 52, 40]}
+```
+
+- `noise`: the texel factor is `mod[0] + (mod[1] - mod[0]) x valueNoise(u, v) /
+  1.875`, using the lattice recipe of the Scene schema on the texture's (u, v).
+  The object colour is multiplied by it and clamped.
+- `stripes`: `count` stripes along u. `duty` is the fraction in the object's
+  colour; the rest is `colour2`.
+- Textures are 256 x 256, mapped with THREE's default geometry UVs.
+- Python truth ignores `material`.
+
+### Frame realism (`realism.frames`)
+
+```json
+"frames": {"exposure_ms": 4, "subframes": 4,
+  "ae": {"min_gain": 0.6, "max_gain": 1.6, "tau_s": 0.5, "target_luma": 118},
+  "noise_sigma": 2.0, "rolling_shutter_ms": 25,
+  "eis": {"tau_s": 0.2, "margin_deg": 1.8, "jitter_deg": 0.05},
+  "aliasing": null}
+```
+
+Dusk cases use `exposure_ms: 33` and fps 15. The alias case uses
+`"aliasing": {"factor": 4}`. Cases without a `frames` block render as today.
+
+### `input/scanner.json` and the `--scanner` flag
+
+```json
+{"focal_prior_scale": 1.0, "sensor_only": false, "declination_deg": null}
+```
+
+Every field is optional, and an absent file means these defaults. A non-null
+`declination_deg` makes the replay call `setDeclination(az => az + d)`. The
+replay reads nothing else from outside `input/`.
+
+The replay driver takes the scanner by name:
+
+    node --import tsx src/next/hubs/sky/sheets/__sim__/replay.ts <abs case dir> [--scanner legacy|pano]
+
+(run inside `ui`). `legacy` is the default and writes exactly the files it
+always wrote; `pano` writes the result files below. The flag selects an entry of
+the replay's `SCANNERS` registry, and the registry, not the flag, is what knows
+which scanners exist.
+
+### Result files (replay to scorer)
+
+- `panorama.png`: unchanged.
+- `horizon.json`: version 1 for `legacy`, version 2 for `pano`:
+  `{"version":2,"interpolation":"linear-wrap","profile_bins":720,"profile":[720],"profile_traced":[720, null where none],"profile_state":[720],"points":[{"az","alt"}],"tau","bins":720,"uncertain_bins":[..]}`.
+  `profile` is the published altitude per bin and `profile_traced` the traced
+  one. `profile_state` is the `BinState` of each bin: 0 Measured, 1 Low,
+  2 Unknown, 3 Tall, 4 Overhead (reserved), 5 Edited, 6 Kept. `uncertain_bins`
+  lists the bins in Low, Unknown or Tall. Bin `i` covers
+  `[i / 2, (i + 1) / 2)` degrees. `points` is the published polyline, linear
+  between points and wrapped at 360.
+- `columns.json`: legacy only.
+- `events.jsonl`: the legacy fields
+  `{t_ms, frame_id, compass_ready, tilt_ready, aim, basis, frame_count, cue}`,
+  plus `keyframe` and `cls` for `pano`. `basis` is the live corrected pose, in
+  the scan frame.
+- `captures.jsonl` (`pano`): the snake_case form of `CaptureRecord`:
+  `{at, frame_id, outcome, detail?, kf?, step_deg?, rate_deg_s?, psr?, zncc?, innovation_deg?, w_yaw?, extrapolated_ms?}`.
+  `frame_id` is the observation's id.
+- `summary.json`: as today, and unchanged for `legacy`. For other scanners,
+  `cells_total` and `cells_covered` are null, and
+  `"cost_ms": {"callback": Stats, "callback_ref": Stats, "ref_unit_ms": number}`
+  is added.
+- `first_seen.bin`: raw little-endian Uint16, 1080 x 300 row-major (the
+  panorama's raster), in deciseconds since Begin; 0 means never seen.
+- `diagnostics.json`: the `Diagnostics` type, keys verbatim:
+  `{version:1, scanner:'pano', sensor_only, begin_ms, finish_ms, predictor_mode, mode_changes:[{t_ms,from,to}], axis_mapping:{perm,sign,unit,fit,confirmed}|null, tau_ms, tau_sigma_ms, tau_pairs, tau_applied, focal:{state,f_norm,sd_pct,ratios,short_fov_deg}, loop:{closed,method,pre_deg,post_deg,match:{early_kf,late_kf}|null,unwrapped_deg}, north:{offset_deg,sigma_deg,spread_deg,samples,n_eff,stable,source}|null, declination_applied, keyframes:[{id,frame_id,t_ms,q,cls,sigma_deg}], keyframe_ms, readback_ms, stale_refusals, extractor:'tracer'}`.
+  `keyframes[].q` is the final world pose, camera to world, `[w, x, y, z]`: the
+  camera frame is x right, y up, looking along -z, so the rotation matrix of `q`
+  has the columns `right`, `up`, `-forward`.
+- `live.jsonl`: one `LiveSnapshot` per keyframe.
+- `Stats` in JSON: `{"n", "p50", "p95", "max"}`.
+
+### `truth/visibility.json` and `truth/route.json`
+
+```json
+{"bins": 720, "noise_sigma": 2.0,
+ "contrast_sigma": [720 numbers or null], "visible": [720 booleans], "footprint_top_deg": [720 numbers or null]}
+```
+
+For each bin, with A the truth boundary (the maximum of the 0.1-degree truth
+over the bin):
+
+- `contrast_sigma` is the maximum, over delivered frames whose claimed footprint
+  contains (the bin centre, A) with 2 degrees of footprint above A, of
+  `|mean luma in [A + 0.5, A + 1.5] - mean luma in [A - 1.5, A - 0.5]| /
+  noise_sigma`. Luma is sampled from the post-processed frame along the
+  bin-centre azimuth.
+- `visible` is `contrast_sigma >= 3`.
+- `footprint_top_deg` is the highest altitude of the footprint region at the
+  bin.
+
+`truth/route.json` is the route definition as built. It is written for pan
+routes only, and its `kind: "pan"` is what makes a case a pan case.
+
+### Recording file
+
+JSON Lines, UTF-8, the output of `Recorder.finish`:
+
+1. `RecordingHeader`;
+2. then, in delivery order: observation lines as above, where frame lines carry
+   `"mime"` and `"data"` (base64) in place of `"file"`; and
+   `{"kind": "action", "t_ms": ..., "action": "begin" | "finish"}` lines;
+3. finally `{"kind": "report", "report": ScanReport}`, when a report was passed.
+
+Times are ms since the camera opened. Frame ids are `f%06d` by delivery count,
+kept even when frames are decimated. The file contains photos of the
+surroundings. It stays on the phone unless the owner shares it, and it is never
+committed without approval.
+
+### Scan report, version 2
+
+The `ScanReport` type defines it. No coordinates, no declination, no raw photo
+key, no user-agent string, no wall-clock time. `buildReport` drops any field the
+type does not declare. `slices` are up to 16 JPEG data URLs of kept strips,
+spread evenly over the keyframes, and `captureLog` is the full `CaptureRecord`
+list (#902).
+
+### Scoring version 2
+
+Definitions the gates share:
+
+- **Pan route**: `truth/route.json` exists with `kind: "pan"`.
+- **Delivery window**: the frames whose `t_capture_ms` lies between the `begin`
+  and `finish` actions of `input/actions.jsonl`. They come from the case, never
+  from anything the scanner reports about itself, so a scanner that began late
+  or stopped writing lines does not shrink what it is asked about. Without an
+  actions file every frame is in the window.
+- **Claimed footprint** of a delivered frame: the directions whose camera-frame
+  coordinates under the truth pose and truth intrinsics satisfy
+  `|x / z| <= tan 3 deg` and `|y / z| <= 0.9 tan(long / 2)`, in front of the
+  camera (`y` is the long axis of the portrait image, so the half-extent is
+  `cy / fy`). The footprint region is the union over the window's frames, on the
+  panorama raster. Parallax is ignored.
+- **Measured mask**: the bins whose `profile_state` is 0.
+- **Expected bins**: the visible bins whose A + 6 degrees is at or below
+  `footprint_top_deg`. A perfect scanner measures these. Where
+  `visibility.json` is absent nothing is excused: every bin counts as visible
+  for the empty-Measured rule, and the gates that need the file fail.
+- **The polyline** is read as the planner reads a stored horizon, linear
+  between points and wrapped at 360, and is sampled at the truth's own
+  0.1-degree azimuths.
+
+| gate | rule | applies to |
+|---|---|---|
+| `horizon_p95_lt_1` | p95 of the absolute polyline-minus-truth error at the truth azimuths inside Measured bins is below 1.0 (the limit less 1e-9, so a line shifted exactly one degree does not pass on the last bit of an interpolation). An empty Measured set fails when 36 or more bins are visible, and passes when fewer are | every case |
+| `no_missed_obstructions` | the legacy obstacle rules on the interpolated polyline over Measured bins, rounded to 1e-9. An obstacle is only expected where it is inside the expected bins: one wholly dark or wholly above the footprint has nothing to miss | every case |
+| `never_below_profile` | the polyline is at or above `profile` at both ends of every bin and at every vertex inside one (1e-6) | every version 2 horizon |
+| `measured_is_honest` | p99 of the same error is below 2.0, and the same empty rule | every version 2 horizon |
+| `measured_share` | at least 85 % of the expected bins are Measured or Edited | `daylight` and `still_pivot` |
+| `unknown_where_unobservable` | at most 5 % of the not-visible bins are Measured | every case with `visibility.json` |
+| `no_unresolved_boundary` | zero Low, Unknown or Tall bins; the legacy rule (zero unresolved solid angle) for a version 1 horizon | `fully_observable` for version 2; every case for version 1 |
+| landmark gates | the legacy gates; a landmark is expected if the legacy `observable` flag says so AND its disc, grown by 1.5 degrees, lies inside the footprint region. The region comes from the route's frusta and the truth poses, never from the scanner's alpha. `per_landmark` rows gain `in_footprint` | every case; footprint rule on pan routes |
+| `overlay_moving_p95_lt_1` | after removing one global yaw (the circular mean of reported-minus-truth forward heading over every frame with a basis), the p95 of the largest of the `forward`, `right` and `up` angular errors over moving frames is below 1.0 | pan routes |
+| `overlay_complete` | frames in the window with a non-null basis are at least 95 % of the frames in the window (#898) | pan routes |
+| `overlay_settled_p95_lt_0_5`, `overlay_max_lt_10` | retired: absent from `gates`, still reported in `overlay` | pan routes |
+| `loop_residual_lt_0_25` | the angle of the rotation carrying `qinv(q_early) q_late` onto the same relative rotation of the truth poses, for the `loop.match` keyframes (through their `frame_id`), is below 0.25 degrees. Fails when `loop.closed` is false, the method is not `image`, or there is no match | pan, `expect_closure` |
+| `focal_err_lt_0_5pct` | `abs(f_norm x short px - truth fx) / truth fx` is below 0.5 %. Reported, not gated, on arc cases | pan, `still_pivot` |
+| `north_err_lt_1` | the circular mean over the diagnostics keyframes of `heading(q)` minus the truth heading of that keyframe's frame is below 1 degree in magnitude | pan, `north_graded` |
+| `north_sigma_honest` | that error is at most 2.5 x the reported `sigma_deg`; true when no north is reported | pan, no compass bias (`realism.absolute.bias_deg` 0) |
+| `live_fill_p95_le_1000` | per raster cell: from the first window frame whose central 2-degree slit contains the cell to `begin_ms + first_seen x 100`; p95 at most 1000 ms. A cell the scan entered and never reported counts 10 000 ms. Under the frozen replay clock this grades keyframe-selection latency only | pan routes |
+| `coverage_ge_0_95` | painted alpha over the footprint region is at least 0.95 on pan routes; the legacy frustum rule elsewhere | every case |
+| `capture_p95_le_1500`, `every_hold_captured` | present and true on pan routes (`capture` still reports what was logged); unchanged elsewhere | non-pan routes |
+| `no_duplicate_frames`, the other landmark and overlay gates | unchanged | every case |
+
+A gate that does not apply to a case is absent from `gates`, so the table of
+gates is exactly what graded the case. Cost is reported (`cost_ms`, from
+`summary.json`) and gated by nothing until D0 calibrates it.
+
+`scores.json` gains, on a version 2 case only:
+
+- `route` `{"kind"}`, `flags` (the five grading flags, absent ones false),
+  `visibility` `{"present"}` and `cost_ms`;
+- in `horizon`: `version`, `states` (a count per state name), `visible_bins`,
+  `empty_measured`, `error_samples`, `unresolved_bins`, `below_profile_bins`,
+  `polyline_points`, `tau`, `measured_share` `{expected, settled, share}`,
+  `unknown_where_unobservable` `{not_visible, measured, share}`, and `p99` in
+  `signed_error_deg`; the legacy keys keep their meaning, computed over Measured
+  bins at the truth's own azimuths, and `measured_bins` is 720;
+- in `overlay` on a pan route: `yaw_removed_deg`, `frames_in_window`,
+  `frames_with_basis`, `complete_fraction`;
+- in `coverage` on a pan route: `footprint_fraction_covered`, beside the
+  frustum figure `observable_fraction_covered`. A perfect slit painter on a
+  41.14 lens at a pitch of 22.98 degrees scores 0.9397 of the frustum, which is
+  why the frustum cannot be the rule, and at least 0.999 of the footprint;
+- on a pan route: `loop` `{closed, method, match, residual_deg, note}`, `focal`
+  `{f_norm, short_px, truth_fx, state, error_fraction}`, `north`
+  `{error_deg, keyframes, reported, sigma_deg}` and `live_fill`
+  `{cells, never, p95_ms, median_ms, max_ms, note}`.
+
+### Version 2 corruptions
+
+The corruptions that touch the boundary, the poses or the north have a version
+2 form (`yaw` and `north-wrap` turn the profile arrays by whole bins, the
+polyline's vertices by the same whole number of half degrees and every
+keyframe pose exactly; `mirror`, `focal`, `remove-section` and
+`erase-horizon-strip` edit the profile, its states and the polyline together).
+The eleven below act on version 2 results and refuse a result that lacks the
+file they act on, because a corruption that did not happen would read as a
+scorer that cannot fail.
+
+| name | parameters | what it does | gate it must fail |
+|---|---|---|---|
+| `shift-line-down-1` | `deg` | lowers the polyline by `deg` (1.0) | `horizon_p95_lt_1` (also `never_below_profile`, by construction: the line was built to sit on the profile) |
+| `dent-one-bin` | `bin_index`, `deg` | pulls the polyline `deg` (2.0) under the profile across one bin, with held vertices one bin out each side | `never_below_profile` |
+| `relabel-unknown-measured` | | calls every Unknown bin Measured, published altitude unchanged | `unknown_where_unobservable` (also `measured_is_honest`, and `horizon_p95_lt_1` once those bins are over 5 % of the graded azimuths, by construction) |
+| `relabel-measured-low` | `fraction`, `az0` | calls a contiguous run of `fraction` (0.2) of the Measured bins Low at 90, polyline lifted | `measured_share` |
+| `mark-bins-unknown` | `count`, `az0` | calls `count` (20) contiguous Measured bins Unknown at 90, polyline lifted | `no_unresolved_boundary` |
+| `drop-poses-90pct` | `keep_every` | nulls the basis on all but every `keep_every`-th (10th) event line | `overlay_complete` |
+| `yaw-ramp` | `deg` | a yaw error growing linearly from 0 to `deg` (3.0) across the poses of `events.jsonl` | `overlay_moving_p95_lt_1` |
+| `inflate-closure` | `deg` | turns the late keyframe of `loop.match` by `deg` (0.5) about the vertical | `loop_residual_lt_0_25` |
+| `scale-focal-1.01` | `scale` | multiplies `diagnostics.focal.f_norm` by `scale` | `focal_err_lt_0_5pct` |
+| `shrink-north-sigma` | `sigma_deg` | sets `diagnostics.north.sigma_deg` to `sigma_deg` (0.1) | `north_sigma_honest`, on a result whose north error is over 0.25 degrees: an exact result has an error of 0 and cannot be made dishonest |
+| `delay-first-seen-2s` | `deciseconds` | adds `deciseconds` (20) to every nonzero `first_seen.bin` cell | `live_fill_p95_le_1000` |
+
+The lifted polylines (`relabel-measured-low`, `mark-bins-unknown`,
+`remove-section`, `erase-horizon-strip`) only ever raise the line, and put a
+vertex at the line's own height one bin either side of the change, so the
+damage is the changed bins and one shoulder bin each side whatever the
+polyline looked like.
+
+### The sensor-only control
+
+The scanner with `sensor_only: true` (kept as an option) is replayed on
+`chartyard-pan1-41` under realism. It must fail at least one of:
+`landmarks_p95_lt_0_5`, `no_duplicates`, `loop_residual_lt_0_25`,
+`overlay_moving_p95_lt_1`. If it passes them all, the realism is too weak to
+grade stitching: the realism blocks get stronger before any stitching gate is
+believed. The control is re-run after the realism defaults are reset from the
+device facts.
+
+### The ideal result on a pan route
+
+`python -m sim ideal <case_id>` on a pan case writes a version 2 result from the
+truth: `horizon.json` with a state per bin (Unknown where the visibility file
+says not visible, Tall where A + 6 is above the footprint top, Measured
+elsewhere) and the tightest polyline that clears both bins at every shared edge
+(a flat line between equal bins and a climb of 0.01 degrees either side of each
+step); `diagnostics.json` whose keyframes are the truth poses every 4 degrees of
+turn, the loop match the last keyframe against the earlier one that looks most
+nearly the same way (at least 330 degrees of turn apart), the truth focal
+length, a north error of 0 and a sigma of 2; `first_seen.bin` from the claimed
+footprint; `events.jsonl` with the truth basis on every delivered frame, plus
+`keyframe` and `cls`; a `captures.jsonl` with one accepted record per keyframe;
+and a `summary.json` with null cell counts and a zero `cost_ms`. It needs
+`truth/visibility.json`. A legacy route keeps the result it always had.
