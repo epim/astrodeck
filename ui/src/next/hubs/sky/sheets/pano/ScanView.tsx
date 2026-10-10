@@ -10,7 +10,7 @@
 //   - the 720-cell coverage bar with N/E/S/W labels once a north estimate exists, the pace gauge and the cue line.
 // Work happens in `requestAnimationFrame` (3.5): the scanner's subscribers only schedule a frame, the frame copies
 // the dirty rectangles, moves the ribbon and publishes a snapshot to React, and the mesh is redrawn only when
-// `status.frameNo` has changed. Nothing here reads a canvas back.
+// `status.frameNo` has changed and only in the live phases. Nothing here reads a canvas back.
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { PANO_H, PANO_W, PROFILE_BINS, PixClass } from './types';
@@ -395,8 +395,12 @@ export function ScanView({ scanner, videoSlot, widthPx = DEFAULT_WIDTH_PX }: Sca
         headRef.current.style.left = `${(mod(w.heading, 360) / 360 * 100).toFixed(2)}%`;
       }
 
-      // The live frame, only after a new camera frame (or a resize, which cleared the overlay).
-      if (st.frameNo !== w.drawnFrame || width !== w.drawnW) {
+      // The live frame, only in a live phase and only after a new camera frame (or a resize, which cleared the
+      // overlay). Outside the live phases the group is hidden: the mesh is not projected, drawn or timed, so a
+      // hidden draw cannot skew `drawMs`, and the first live frame draws whatever `frameNo` was last drawn.
+      if (!LIVE_PHASES.includes(st.phase)) {
+        w.drawnFrame = -1;
+      } else if (st.frameNo !== w.drawnFrame || width !== w.drawnW) {
         w.drawnFrame = st.frameNo;
         w.drawnW = width;
         const t0 = performance.now();
