@@ -33,6 +33,9 @@ MAX_HORIZON_POINTS = 180
 #: ridge looks DOWN at its far horizon); 90 would be a floor at the zenith.
 HORIZON_ALT_MIN_DEG = -10.0
 HORIZON_ALT_MAX_DEG = 90.0
+#: The cap in words, so the refusal at the API doors and the count at the load
+#: door (``sanitize_horizon_points``) say it alike.
+_HORIZON_CAP_RULE = f"at most {MAX_HORIZON_POINTS} horizon points"
 
 
 class _Unchanged:
@@ -86,7 +89,7 @@ def normalize_horizon_points(points) -> list[list[float]] | None:
     # could make from len(). Dedupe cannot make an over-cap input legal: it
     # only ever removes points, and no real polyline sends duplicates.
     if len(points) > MAX_HORIZON_POINTS:
-        raise ValueError(f"at most {MAX_HORIZON_POINTS} horizon points")
+        raise ValueError(_HORIZON_CAP_RULE)
     by_az: dict[float, float] = {}
     for raw in points:
         if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
@@ -109,8 +112,78 @@ def normalize_horizon_points(points) -> list[list[float]] | None:
                 f"{HORIZON_ALT_MAX_DEG:g} degrees")
         by_az[az % 360.0] = alt
     if len(by_az) > MAX_HORIZON_POINTS:
-        raise ValueError(f"at most {MAX_HORIZON_POINTS} horizon points")
+        raise ValueError(_HORIZON_CAP_RULE)
     return [[az, by_az[az]] for az in sorted(by_az)]
+
+
+def _thin_horizon(pts: list[list[float]]) -> list[list[float]]:
+    """``pts`` (sorted, one per azimuth, more than the cap of them) as exactly
+    ``MAX_HORIZON_POINTS`` points on an even azimuth grid, none of which lets
+    the line fall.
+
+    Each grid point takes the HIGHEST the original line reaches within one grid
+    step either side of it. A straight segment between two grid points is then
+    never below the original anywhere, because every azimuth in it lies inside
+    the window of both ends. Truncating, or keeping the first 180, would leave a
+    stretch of sky to be interpolated across and could lower the floor there:
+    the false OPEN the stored-horizon repair exists to close. A piecewise-linear
+    line peaks at a window end or at a control point inside it, so those are the
+    only places to look."""
+    from .sequence.schedule import interp_wrap     # lazy: schedule is heavy
+
+    step = 360.0 / MAX_HORIZON_POINTS
+    out = []
+    for i in range(MAX_HORIZON_POINTS):
+        lo = (i - 1) * step
+        inside = [alt for az, alt in pts if (az - lo) % 360.0 <= 2 * step]
+        peak = max(interp_wrap(pts, lo), interp_wrap(pts, lo + 2 * step), *inside)
+        out.append([i * step, peak])
+    return out
+
+
+def sanitize_horizon_points(points) -> tuple[object, dict[str, int]]:
+    """What a STORED horizon becomes when it breaks ``normalize_horizon_points``
+    (#982). The load door of ``config.safety.horizon``: the API doors refuse a
+    bad horizon, but a config file already on disk, restored from its backup or
+    edited by hand never went through them, and refusing to load it would stop
+    the server.
+
+    Returns ``(points, problems)``. ``problems`` maps each rule that was broken
+    (the ``normalize_horizon_points`` message, which carries no value) to how
+    many times. It is EMPTY when the rule takes ``points`` as they stand, and
+    ``points`` then comes back as the very object that went in: a valid horizon
+    is not rewritten, any more than the API doors rewrite one. Otherwise
+    ``points`` is a list the rule accepts, holding every usable point (sorted,
+    one per azimuth, thinned by ``_thin_horizon`` if still over the cap), or
+    ``None`` when nothing usable remains.
+
+    Each point is judged by the rule itself, one at a time, so this cannot
+    drift from the API doors by keeping a rule of its own."""
+    try:
+        normalize_horizon_points(points)
+    except ValueError as exc:
+        whole = str(exc)
+    else:
+        return points, {}
+    if not isinstance(points, (list, tuple)):
+        return None, {whole: 1}
+    problems: dict[str, int] = {}
+    by_az: dict[float, float] = {}
+    for raw in points:
+        try:
+            az, alt = normalize_horizon_points([raw])[0]
+        except ValueError as exc:
+            problems[str(exc)] = problems.get(str(exc), 0) + 1
+        else:
+            by_az[az] = alt
+    if len(points) > MAX_HORIZON_POINTS:
+        problems[_HORIZON_CAP_RULE] = 1
+    if not by_az:
+        return None, problems
+    kept = [[az, by_az[az]] for az in sorted(by_az)]
+    if len(kept) > MAX_HORIZON_POINTS:
+        kept = _thin_horizon(kept)
+    return kept, problems
 
 
 class SavedLocation(BaseModel):

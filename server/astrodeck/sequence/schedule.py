@@ -280,6 +280,10 @@ def _refine_crossing(lat: float, lon: float, alt_deg: float,
 
 # --------------------------------------------------------------------- horizon
 
+#: What a horizon that cannot be read reads as: the zenith, so nothing clears it.
+HORIZON_BLOCKED_DEG = 90.0
+
+
 def interp_wrap(horizon: list[tuple[float, float]] | None, az: float) -> float:
     """Linearly-interpolated horizon altitude at azimuth ``az`` (degrees).
 
@@ -287,10 +291,21 @@ def interp_wrap(horizon: list[tuple[float, float]] | None, az: float) -> float:
     across the 0↔360 seam: between the last point (e.g. az=350) and the first
     (e.g. az=10) the floor blends through due-north (C2-3). Returns ``0.0`` for an
     empty/None horizon (no profile => no extra floor).
+
+    A control point that is not a finite number (a NaN, an infinity) makes the
+    whole line unreadable and the answer ``HORIZON_BLOCKED_DEG``, never a number
+    that reads as no obstruction (#982): ``max()`` in :func:`effective_floor`
+    keeps its first argument against a NaN, so a NaN returned here would have
+    dropped the floor to ``min_alt_deg`` -- a false OPEN. A NaN azimuth cannot be
+    ordered either, and its segments would be skipped as if the point were
+    absent. The config load repairs such a horizon before it gets here; this is
+    the floor refusing to trust one that arrives some other way.
     """
     if not horizon:
         return 0.0
     pts = sorted((float(a) % 360.0, float(h)) for a, h in horizon)
+    if not all(math.isfinite(a) and math.isfinite(h) for a, h in pts):
+        return HORIZON_BLOCKED_DEG
     if len(pts) == 1:
         return pts[0][1]
     az = float(az) % 360.0
