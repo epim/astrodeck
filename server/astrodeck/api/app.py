@@ -114,7 +114,8 @@ from ..dew import DewController
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import (DeviceError, SyncRefused, SyncUnverified,
                             TRACKING_RATES, forget_rig_position_doubt,
-                            position_known_for_motion, rig_position_known)
+                            is_present, position_known_for_motion,
+                            rig_position_known)
 from ..devices.nina import discover_nina
 from ..events import (LOG_READ_MAX, NIGHTLOG_EXIT_S, bus, flush_night_logs,
                       night_key)
@@ -7655,7 +7656,7 @@ def create_app(*, bind_host: str | None = None,
         _safety = config_store.cfg().safety
         blocking = blocking_reasons(
             unmapped, dome_connected=bool(dome_dev is not None
-                                          and dome_dev.connected),
+                                          and is_present(dome_dev)),
             closes_on_unsafe=bool(_safety.close_dome_on_unsafe))
         if blocking:
             raise HTTPException(409, detail={
@@ -9809,7 +9810,9 @@ def create_app(*, bind_host: str | None = None,
         and a slew POSTed while the roof is travelling is now refused with a
         reason about the roof."""
         dome = hub.devices.get("dome")
-        if dome is None or not getattr(dome, "connected", False):
+        # A roof whose link blipped a moment ago is still the roof: refusing
+        # 'no dome connected' would leave it open in the rain (#989).
+        if dome is None or not is_present(dome):
             raise _err(DeviceError("no dome connected"))
         hub.bump_motion_epoch()
 
@@ -9817,7 +9820,7 @@ def create_app(*, bind_host: str | None = None,
             tel = hub.devices.get("telescope")
             needs_park = getattr(dome, "requires_park_before_close", True)
             async with hub._motion_lock:
-                live = tel is not None and getattr(tel, "connected", False)
+                live = tel is not None and is_present(tel)
                 # NOT AIMED FROM AN UNKNOWN POSITION (#888). The one gate,
                 # asked under the motion lock before the park, as the park
                 # route asks it at its seam. On the AM5 a park is a goto to

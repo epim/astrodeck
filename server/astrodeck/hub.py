@@ -42,6 +42,8 @@ from .devices.base import (
     SyncRefused,
     SyncUnverified,
     Telescope,
+    is_present,
+    link_in_doubt,
     position_known_for_motion,
     quotable_sync_reply,
     rig_position_known,
@@ -237,6 +239,10 @@ SAFETY_READ_TIMEOUT_S = 8.0
 #: closes the fail-OPEN seam where a dead poller keeps returning the last SAFE
 #: reading all night (C1-12/C1-15).
 SAFETY_STALE_SLACK_S = 5.0
+#: Bound on one link probe (`Hub._kick_link_probes`): a host that black-holes
+#: the request must not leave a probe task hanging for the HTTP client's own
+#: 30 s, since only one probe per device is ever in flight.
+LINK_PROBE_TIMEOUT_S = 5.0
 
 #: How long the 2 s status poll waits for the imaging camera's sensor
 #: temperature (#724). One status period at most: for a native camera the read
@@ -1311,6 +1317,9 @@ class Hub:
         # loop and the engine gate read it for free. None until the first poll.
         self._safety_task: asyncio.Task | None = None
         self._safety_reading: SafetyReading | None = None
+        # role -> the one in-flight link probe for a device whose link was lost
+        # (`_kick_link_probes`, #989).
+        self._link_probes: dict[str, asyncio.Task] = {}
         # last (is_safe, stale, reason) actually PUBLISHED on the bus, so the two
         # producers of a safety verdict (this poller + the engine's debounced
         # _on_unsafe) can't announce the same trip twice (UX #33).
@@ -2100,6 +2109,10 @@ class Hub:
             if self._safety_task and not self._safety_task.done():
                 self._safety_task.cancel()
             self._safety_task = None
+            for probe_task in self._link_probes.values():
+                if not probe_task.done():
+                    probe_task.cancel()
+            self._link_probes.clear()
             self._safety_reading = None
             self._last_connect.clear()
             if self._nina_ws_task and not self._nina_ws_task.done():
@@ -2193,8 +2206,15 @@ class Hub:
                            f"warm ramp: {why}", "camera")
 
     def require(self, role: str):
+        """The device filling ``role``, or a DeviceError saying none is there.
+
+        A device that lost its link a moment ago and has not been heard from
+        since is still THERE (`is_present`, #989): the call is attempted and
+        fails or succeeds on its own merits. Refusing it as 'no telescope
+        connected' would turn one failed read into a mount STOP, park or goto
+        that is refused until somebody reconnects by hand."""
         dev = self.devices.get(role)
-        if dev is None or not dev.connected:
+        if dev is None or not is_present(dev):
             raise DeviceError(f"no {role} connected")
         return dev
 
@@ -9691,8 +9711,45 @@ class Hub:
         # alongside the status poller from every connect path.
         self.ensure_safety_poller()
 
+    def _kick_link_probes(self) -> None:
+        """Start one probe for each device whose link was lost (#989).
+
+        A device that lost its link reads ``connected == False`` so the
+        reconnect gate sees it, and every poll that is gated on ``connected``
+        then leaves it alone: nothing would ever hear it come back, and one
+        slow read would be a permanent 'disconnected' on the status surface
+        until an operator reconnected by hand. The probe asks the server
+        whether the device is connected (`probe_link`, a cheap read of the
+        Connected property) on the status cadence until it answers. One probe
+        per device is in flight at a time, on its own task and under its own
+        bound, so a dead host never stalls the status loop. Never raises."""
+        for role, dev in list(self.devices.items()):
+            if not link_in_doubt(dev):
+                continue
+            probe = getattr(dev, "probe_link", None)
+            if not callable(probe):
+                continue
+            held = self._link_probes.get(role)
+            if held is not None and not held.done():
+                continue
+            self._link_probes[role] = asyncio.create_task(
+                self._probe_link(role, probe))
+
+    async def _probe_link(self, role: str, probe) -> None:
+        try:
+            back = await asyncio.wait_for(probe(), timeout=LINK_PROBE_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:       # noqa: BLE001 - still gone; the next tick asks again
+            return
+        if back:
+            bus.log("info", f"the {role} answers again after its link was lost",
+                    "hub")
+
     async def _status_loop(self) -> None:
         while True:
+            with contextlib.suppress(Exception):
+                self._kick_link_probes()
             try:
                 bus.publish("status", **await self.poll_status())
             except Exception:
@@ -9722,7 +9779,12 @@ class Hub:
         idles until one appears."""
         while True:
             mon = self.safety
-            if mon is None or not getattr(mon, "connected", False):
+            # A monitor that lost its link a moment ago is still polled
+            # (`is_present`, #989): the read either fails, and is cached as
+            # the STALE reading that fail-closes, or succeeds, which is what
+            # puts the monitor back. Skipping it would hold the cache empty,
+            # and the monitor on the 'disconnected' side, for the whole night.
+            if mon is None or not is_present(mon):
                 self._safety_reading = None
             else:
                 prev = self._safety_reading

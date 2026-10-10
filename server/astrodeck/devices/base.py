@@ -280,6 +280,33 @@ def forget_rig_position_doubt(hub) -> None:
     _set_rig_doubt(hub, None)
 
 
+def link_in_doubt(dev) -> bool:
+    """True for a device that WAS connected and has since lost its link
+    (``dev.link_lost``, set by the Alpaca client on a transport failure, #989).
+
+    Such a device reads ``connected == False`` so the reconnect gate sees it,
+    but it is not ABSENT: the next reply (or the hub's link probe,
+    `Hub._kick_link_probes`) puts it back. A stateless HTTP device has no link
+    to reopen, so one blip must not look to a consumer like a device that was
+    never there. Strict ``is True``: a test double's auto-attribute is not a
+    measurement. Synchronous, touches no device, never raises."""
+    return getattr(dev, "link_lost", False) is True
+
+
+def is_present(dev) -> bool:
+    """Connected, or in doubt (`link_in_doubt`): the device a caller should
+    still TRY, and treat a failure of as a failure.
+
+    THE QUESTION a consumer asks with this is "is something there to ask?",
+    not "is it healthy?". It is the right question for the paths that must
+    not mistake a blip for an absence: the mount STOP and park routes, the
+    never-crush roof guard (`sequence/roof.close_observatory`), the roof close
+    paths, the safety poller. A device that was never connected, was
+    disconnected on purpose, or was told NotConnected by its server is NOT
+    present, and the plain ``connected`` flag is still what says so."""
+    return bool(getattr(dev, "connected", False)) or link_in_doubt(dev)
+
+
 class PierSide(enum.Enum):
     EAST = "east"
     WEST = "west"
