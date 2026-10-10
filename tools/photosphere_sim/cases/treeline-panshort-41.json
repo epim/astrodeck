@@ -1,0 +1,49 @@
+{
+  "case_id": "treeline-panshort-41",
+  "scene": "treeline",
+  "route": "panshort-p23",
+  "camera": {"width": 90, "height": 160, "fov_short_deg": 41.14},
+  "fps": 12,
+  "seed": 7,
+  "expected": "positive",
+  "profile": "realism-v1",
+  "scanner_options": {"focal_prior_scale": 1.1, "sensor_only": false, "declination_deg": 7.25},
+  "realism": {
+    "gyro_scale_err": 0.02,
+    "relative": {
+      "yaw_zero_deg": "random",
+      "drift_deg_min": 2.0,
+      "noise_deg": 0.05,
+      "quant_deg": 0.1,
+      "threshold_deg": 0.1,
+      "pump_hz": 60,
+      "latency_ms": 5,
+      "spikes": null
+    },
+    "absolute": {
+      "bias_deg": 0,
+      "declination_deg": 7.25,
+      "sinusoid": {"amp_deg": 2.0, "phase_deg": 40.0},
+      "noise": {"sigma_deg": 3.0, "tau_s": 5.0},
+      "steps": [],
+      "quant_deg": 0.1,
+      "threshold_deg": 0.1,
+      "pump_hz": 60,
+      "latency_ms": 5,
+      "spikes": null
+    },
+    "motion": {"bias_deg_s": 0.01, "noise_deg_s": 0.018, "round_deg_s": 0.1, "pump_hz": 60, "latency_ms": 5},
+    "streams": "both",
+    "gyro": true,
+    "capture_time": {"mode": "delivery", "lag_ms": 50},
+    "frames": {
+      "exposure_ms": 4,
+      "subframes": 4,
+      "ae": {"min_gain": 0.6, "max_gain": 1.6, "tau_s": 0.5, "target_luma": 118},
+      "noise_sigma": 0.0,
+      "rolling_shutter_ms": 25,
+      "eis": {"tau_s": 0.2, "margin_deg": 1.8, "jitter_deg": 0.05},
+      "aliasing": null
+    }
+  }
+}
