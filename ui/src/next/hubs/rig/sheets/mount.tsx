@@ -66,6 +66,7 @@ import { useConfig, usePolar, useSequence, useStatus, useStore } from "../../../
 import { useBusyOrPending } from "../../../../lib/useBusy";
 import { humanizeLaneConflict } from "../../../../lib/humanize";
 import { accessPhrase, useCanControlMount } from "../../../../lib/caps";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { useTouchSettings } from "../../../../lib/touchStore";
 import {
   POSITION_UNKNOWN_NOTE, POSITION_UNKNOWN_STEPS_REASON, TRUST_POSITION_CONFIRM_BODY,
@@ -242,8 +243,9 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // points" - a step, the ALT / AZ tile - reads this first.
   const positionIsKnown = positionKnown(m);
 
-  // plan 0.5: a run holds the mount while it is running or paused.
-  const flowOwns = sequence?.state === "running" || sequence?.state === "paused";
+  // plan 0.5: a run holds the mount for as long as it is live - running,
+  // paused, holding for cloud, or winding down from an abort (`runIsLive`).
+  const flowOwns = runIsLive(sequence);
   const flowExtra = flowOwns ? FLOW_OWNS_MOUNT : null;
 
   // ------------------------------------------------------------------ gates

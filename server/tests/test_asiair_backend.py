@@ -636,9 +636,12 @@ async def test_a_mount_that_never_left_the_origin_is_not_reported_as_settled(
         await tel.slew(12.0, -20.0)
     msg = str(ei.value)
     assert "did not settle" in msg
-    # Both numbers, so the message explains itself: where it is AND where it
-    # was asked to go.
-    assert "5.9" in msg and "32.5" in msg and "12.0" in msg and "-20.0" in msg
+    # How far it is from where it was asked to go explains the timeout; the
+    # figures themselves do not go in (#907: at home they are a site oracle).
+    sep = ab._sky_delta_deg((5.9, 32.5), (12.0, -20.0))
+    assert f"{sep:.2f} deg from the target" in msg, msg
+    for figure in ("5.9", "32.5", "12.0", "-20.0"):
+        assert figure not in msg.replace(f"{sep:.2f}", ""), msg
     assert "mount.stop" in fake.labels
     await session.close()
 

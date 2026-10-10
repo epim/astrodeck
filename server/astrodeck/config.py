@@ -2541,6 +2541,15 @@ class ConfigStore:
         return self.bump_and_save()
 
     def set_deadman(self, url: str) -> AppConfig:
+        """Persist the dead-man's-switch url. ``""`` clears it; anything else
+        must be one the ping can be sent to (#812), or this raises
+        ``ValueError`` and stores nothing. The message never carries the url:
+        its path is the ping secret (#694)."""
+        if url:
+            from .alerting import deadman_url_problem   # lazy: it imports httpx
+            problem = deadman_url_problem(url)
+            if problem is not None:
+                raise ValueError(f"dead-man's-switch url not saved: {problem}")
         cfg = self.cfg()
         cfg.deadman_url = url
         return self.bump_and_save()

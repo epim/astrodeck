@@ -29,9 +29,18 @@
 //        failed open's or save's line stays under a library that loaded).
 //   O-e  the load's success write clears `libraryError` unconditionally: OG
 //        (an open's reason written while the load retried is wiped).
-// The success write's side of the split is graded here by OE, OF and OG (the
-// open's and the save's failure through the real actions) and by LE1, LE2 and
-// LE3 in p6LibraryRetriesATimeout.test.ts (the field written directly).
+//   O-f  the success write decides by comparing text with the value captured
+//        at the start (#921): OH, OI (a fresh failure in the stale one's
+//        words is wiped).
+//   O-g  the write count is never bumped (`libraryErrorWrites++` deleted):
+//        OG, OH, OI (every write reads as "nothing changed").
+//   O-h  flowsSave's catch writes the field without the count: OI (the one
+//        path that writes the same words with no clear before it).
+//   O-i  flowsDismissLibraryError does nothing: OK.
+// The success write's side of the split is graded here by OE, OF, OG, OH, OI
+// and OJ (the open's and the save's failure through the real actions) and by
+// LE1, LE2 and LE3 in p6LibraryRetriesATimeout.test.ts (LE1 a save through the
+// real action, LE2 and LE3 the field seeded directly).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -245,6 +254,89 @@ await test("OG an open that fails while the load retries keeps its reason when t
   eq(flows().libraryLoaded, true, "precondition: the load's second try answered");
   eq(flows().libraryError, OPEN_REASON, "the open's reason was wiped by a load that started before it");
   eq(flowOpenFailure(null), OPEN_REASON, "and the open is reported with it");
+});
+
+// ------------------------------------------- the success clear counts writes (#921)
+//
+// The load clears, on success, the reason `libraryError` held when it started.
+// "Held" was decided by comparing TEXT with the value captured at the start, so
+// a failure written again with the same words while the load was out read as
+// "nothing changed" and was wiped. Each case below seeds a reason through a
+// real failure, holds a load, fails the same way again, and lets the load land.
+
+await test("OH an open that fails with the stale reason's words while a load is out keeps its line", async () => {
+  reset();
+  const held = deferred<unknown>();
+  script["/api/flows"] = () => held.promise;
+  script["/api/flows/folders"] = () => Promise.resolve(FOLDERS);
+  script["/api/flows/gone"] = () => Promise.reject(new ApiError(OPEN_REASON, 404));
+  eq(await openFlowById("gone"), false, "precondition: the first open failed");
+  eq(flows().libraryError, OPEN_REASON, "precondition: its reason is the stale text X");
+  const load = useStore.getState().flowsLoadLibrary({ retry: false });
+  await tick();
+  eq(flows().libraryLoading, true, "precondition: the load is out");
+  eq(await openFlowById("gone"), false, "precondition: the same open failed again while it is out");
+  eq(flows().libraryError, OPEN_REASON, "precondition: with the same words X");
+  held.resolve([]);
+  await load;
+  eq(flows().libraryLoaded, true, "precondition: the load answered");
+  eq(flows().libraryError, OPEN_REASON, "the fresh failure, in the stale one's words, was wiped by the load");
+  eq(flowOpenFailure(null), OPEN_REASON, "and the open is no longer reported with its reason");
+});
+
+await test("OI a save that fails with the stale reason's words while a load is out keeps its line", async () => {
+  reset();
+  const held = deferred<unknown>();
+  script["/api/flows"] = () => held.promise;
+  script["/api/flows/folders"] = () => Promise.resolve(FOLDERS);
+  useStore.setState({
+    flows: { ...FLOWS_INIT, folders: FOLDERS, record: EDITED, graph: EDITED.graph, dirty: true },
+  } as any);
+  putMode = "fail";
+  await useStore.getState().flowsSave();
+  eq(flows().libraryError, PUT_FAILURE, "precondition: the first save failed with the text X");
+  const load = useStore.getState().flowsLoadLibrary({ retry: false });
+  await tick();
+  eq(flows().libraryLoading, true, "precondition: the load is out");
+  await useStore.getState().flowsSave();
+  eq([flows().dirty, flows().libraryError], [true, PUT_FAILURE],
+    "precondition: the same save failed again while it is out, with the same words X");
+  held.resolve([]);
+  await load;
+  eq(flows().libraryLoaded, true, "precondition: the load answered");
+  eq(flows().libraryError, PUT_FAILURE, "the save's fresh failure, in the stale one's words, was wiped by the load");
+});
+
+await test("OJ a failure that was there when the load started, and nothing wrote since, is still cleared", async () => {
+  reset();
+  const held = deferred<unknown>();
+  script["/api/flows"] = () => held.promise;
+  script["/api/flows/folders"] = () => Promise.resolve(FOLDERS);
+  script["/api/flows/gone"] = () => Promise.reject(new ApiError(OPEN_REASON, 404));
+  eq(await openFlowById("gone"), false, "precondition: the open failed");
+  const load = useStore.getState().flowsLoadLibrary({ retry: false });
+  await tick();
+  held.resolve([]);
+  await load;
+  eq(flows().libraryError, null, "the stale line outlived a load that answered with nothing written since");
+});
+
+// ---------------------------------------------- the dismissal (#919)
+
+await test("OK DISMISS clears the open's reason, not the load's, and a repeat of the failure shows again", async () => {
+  reset();
+  script["/api/flows"] = () => Promise.reject(timeout());
+  script["/api/flows/folders"] = () => Promise.resolve(FOLDERS);
+  script["/api/flows/gone"] = () => Promise.reject(new ApiError(OPEN_REASON, 404));
+  await useStore.getState().flowsLoadLibrary({ retry: false });
+  eq(await openFlowById("gone"), false, "precondition: the open failed");
+  eq([flows().libraryError, flows().libraryLoadError], [OPEN_REASON, TIMEOUT_TEXT],
+    "precondition: an open's reason and a load's failure, each in its own field");
+  useStore.getState().flowsDismissLibraryError();
+  eq([flows().libraryError, flows().libraryLoadError], [null, TIMEOUT_TEXT],
+    "DISMISS must clear the open's reason and leave the load's failure (and its RETRY) up");
+  eq(await openFlowById("gone"), false, "precondition: the same open failed again");
+  eq(flows().libraryError, OPEN_REASON, "a failure the operator had dismissed did not show when it happened again");
 });
 
 setRetrySleepForTests(null);

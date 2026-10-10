@@ -86,6 +86,20 @@ FOCUS_ARRIVAL_TOLERANCE_STEPS = 2
 
 # --------------------------------------------------------------------- helpers
 
+#: Said, in these fixed words, after "NINA error on <path>" when NINA's own
+#: ``Error`` mentions settling. NINA's words are never quoted (#906), but the
+#: engine's walking-field gate counts a dither failure only when its text says
+#: "settle" (``SequenceEngine._note_dither_failure``), so the one fact the gate
+#: reads is carried as a fixed phrase instead of NINA's sentence.
+NINA_SETTLE_NOTE = ": NINA reports the guider did not settle"
+
+
+def _reports_settle(body: Any) -> bool:
+    """True when a ``Success: false`` reply's ``Error`` mentions settling."""
+    err = pick(body, "Error", default="")
+    return isinstance(err, str) and "settl" in err.lower()
+
+
 def pick(d: Any, *keys: str, default: Any = None) -> Any:
     """First present, non-null value among keys (defensive against NINA's
     PascalCase variations across versions)."""
@@ -200,13 +214,21 @@ class NinaClient:
         self.last_error = None
 
     async def get(self, path: str, *, timeout: float | None = None, **params: Any) -> Any:
-        """GET a JSON endpoint and return the unwrapped ``Response`` payload."""
+        """GET a JSON endpoint and return the unwrapped ``Response`` payload.
+
+        A failing reply is named by its status, the path and its SIZE, never
+        its words (#906): NINA's body and its ``Error`` are text it wrote, and
+        ``/equipment/mount/info`` carries the position and the site itself. At
+        the home position the mount points at the pole, so quoting them puts a
+        site oracle (#140, #166) into the exception and into ``last_error``,
+        which the status surfaces show."""
         try:
             r = await self.http.get(f"{self.base}{path}", params=self._params(params),
                                     timeout=timeout)
             if r.status_code != 200:
                 raise NinaReplyError(
-                    f"NINA HTTP {r.status_code} on {path}: {r.text[:160]}",
+                    f"NINA HTTP {r.status_code} on {path}: reply of "
+                    f"{len(r.content)} bytes not quoted",
                     http_status=r.status_code)
             try:
                 body = r.json()
@@ -214,7 +236,8 @@ class NinaClient:
                 raise DeviceError(f"NINA returned non-JSON on {path}")
             if not body.get("Success", True):
                 raise NinaReplyError(
-                    pick(body, "Error", default=f"NINA error on {path}"),
+                    f"NINA error on {path}"
+                    + (NINA_SETTLE_NOTE if _reports_settle(body) else ""),
                     http_status=200)
         except Exception as e:
             self.last_error = str(e)[:200]
@@ -229,7 +252,8 @@ class NinaClient:
             r = await self.http.get(f"{self.base}{path}", params=self._params(params),
                                     timeout=timeout)
             if r.status_code != 200:
-                raise DeviceError(f"NINA HTTP {r.status_code} on {path}: {r.text[:120]}")
+                raise DeviceError(f"NINA HTTP {r.status_code} on {path}: reply of "
+                                  f"{len(r.content)} bytes not quoted")
         except Exception as e:
             self.last_error = str(e)[:200]
             raise
@@ -908,10 +932,11 @@ class NinaGuider(Guider):
         self._poll_task = None
 
     async def start_guiding(self) -> None:
-        # Surface NINA's/PHD2's actual failure reason. NINA's guider/start can
-        # return Success:false with an EMPTY Error string (live bug: the failure
-        # then logged "guide failed:" with no reason) — when that happens, fall
-        # back to the guider info's State/last-message for a real explanation.
+        # Say why the start failed. NINA's own Error text is never quoted
+        # (NinaClient.get, #906), so a Success:false start reaches here as the
+        # bare "NINA error on <path>" and gets the hint below instead (live
+        # bug, when the Error was EMPTY: the failure logged "guide failed:" with
+        # no reason at all).
         try:
             await self.client.get("/equipment/guider/start",
                                   calibrate="false", timeout=180.0)
@@ -941,8 +966,8 @@ class NinaGuider(Guider):
         raw = (raw or "").strip()
         if raw and raw.lower() not in ("nina error on /equipment/guider/start",):
             return raw
-        return ("no reason reported by NINA — is PHD2 connected with a guide "
-                "star selected?")
+        return ("NINA's reason is not quoted (its log has it) — is PHD2 "
+                "connected with a guide star selected?")
 
     async def stop_guiding(self) -> None:
         try:

@@ -172,10 +172,19 @@ def _error_number(raw: Any) -> int | None:
         return None
 
 
+def _shown_error_number(number: int) -> str:
+    """An ASCOM error number as a log line shows it: ``0x408`` for the
+    positive ones (the spec's own spelling), plain decimal for the negative
+    COM HRESULTs, which have no sensible hex."""
+    return f"0x{number:X}" if number > 0 else f"{number}"
+
+
 #: ASCOM InvalidWhileParked. NOT 0x400 (NotImplemented) for "does not support
-#: sync": the comhost reports EVERY COM driver exception as 0x400
-#: (``comhost/server.py`` ``_ALPACA_DRIVER_ERROR``), so that mapping would
-#: mislabel a COM driver's "not tracking" or link timeout.
+#: sync": until #872 the comhost reported EVERY COM driver exception as 0x400,
+#: so that mapping would have mislabeled a COM driver's "not tracking" or link
+#: timeout. The comhost now maps each to its own number
+#: (``comhost/server.py`` ``_alpaca_error_number``); the read-back still treats
+#: any ErrorNumber as a refusal and singles out only this one.
 _ASCOM_INVALID_WHILE_PARKED = 0x408
 
 
@@ -353,25 +362,40 @@ class AlpacaConnection:
     async def get(self, dev_type: str, dev_num: int, method: str, **params: Any) -> Any:
         params |= {"ClientID": _client_id, "ClientTransactionID": _next_txn()}
         r = await self.http.get(f"{self.base}/{dev_type}/{dev_num}/{method}", params=params)
-        return self._unwrap(r)
+        return self._unwrap(r, f"{dev_type}/{dev_num}/{method}")
 
     async def put(self, dev_type: str, dev_num: int, method: str, **params: Any) -> Any:
         data = {k: v for k, v in params.items()}
         data |= {"ClientID": _client_id, "ClientTransactionID": _next_txn()}
         r = await self.http.put(f"{self.base}/{dev_type}/{dev_num}/{method}", data=data)
-        return self._unwrap(r)
+        return self._unwrap(r, f"{dev_type}/{dev_num}/{method}")
 
     @staticmethod
-    def _unwrap(r: httpx.Response) -> Any:
+    def _unwrap(r: httpx.Response, route: str = "") -> Any:
+        """The reply's ``Value``, or an :class:`AlpacaReplyError` that names
+        the status, the route and the SIZE of the reply, never its words
+        (#906). Both the HTTP body and the driver's ErrorMessage are text a
+        driver wrote, and an ASCOM mount driver's error for a position read, a
+        slew or the site write names the numbers it was asked about. At the
+        home position the mount points at the pole, so that is a site oracle
+        (#140, #166) in an exception text that reaches log lines and
+        ``last_error``. The ASCOM error number is kept: it is the one part
+        that can be looked up. Any device type is treated alike, because a
+        roof or dome driver that checks the mount's park position quotes it
+        too."""
+        on = f" on {route}" if route else ""
         if r.status_code != 200:
             raise AlpacaReplyError(
-                f"Alpaca HTTP {r.status_code}: {r.text[:200]}",
+                f"Alpaca HTTP {r.status_code}{on}: reply of "
+                f"{len(r.content)} bytes not quoted",
                 http_status=r.status_code, error_number=None)
         body = r.json()
         if body.get("ErrorNumber", 0) != 0:
+            number = _error_number(body.get("ErrorNumber"))
+            which = "" if number is None else f" {_shown_error_number(number)}"
             raise AlpacaReplyError(
-                body.get("ErrorMessage", "Alpaca error"), http_status=200,
-                error_number=_error_number(body.get("ErrorNumber")))
+                f"Alpaca error{which}{on}: the driver's message is not quoted",
+                http_status=200, error_number=number)
         return body.get("Value")
 
     async def close(self) -> None:
@@ -809,8 +833,7 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
                       if error_number == _ASCOM_INVALID_WHILE_PARKED
                       else SYNC_REFUSED_BY_DRIVER_REASON)
             if error_number is not None:
-                shown = (f"0x{error_number:X}" if error_number > 0
-                         else f"{error_number}")
+                shown = _shown_error_number(error_number)
                 bus.log("info", f"{self.name}: the driver answered the sync "
                                 f"with ASCOM error {shown}", "mount")
             residual = await refused_residual_deg(self.get_position,

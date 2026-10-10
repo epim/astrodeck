@@ -79,6 +79,7 @@ import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { useBusyOrPending } from "../lib/useBusy";
+import { believedRaDec } from "../lib/slewController";
 import { api } from "../api";
 import { ClassicAtlasSky, type AtlasDisplay } from "../components/sky/ClassicAtlasSky";
 // The wizard's classic mount. It imports the lazy door, never the sheet, so
@@ -200,15 +201,14 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   // it was does not re-render this page — and, more importantly, so the
   // footprint moves ONLY when the hardware reports that it moved. Nothing here
   // is ever set from the target; `gotoFraming` below posts a slew and returns.
+  // Null while the mount does not know where it points: it then reports its
+  // HOME position, the pole, and a footprint drawn there is a claim about the
+  // tube that nothing backs (#913, #144).
   const statusMount = useStore(
     useShallow((s) => {
       const m = s.status?.mount;
-      return m
-        ? {
-            ra_hours: m.ra_hours, dec_deg: m.dec_deg,
-            ra_str: m.ra_str, dec_str: m.dec_str, slewing: m.slewing,
-          }
-        : null;
+      const here = believedRaDec(m);
+      return m && here ? { ...here, slewing: m.slewing } : null;
     }),
   );
   const canMount = useCanControlMount();

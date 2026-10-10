@@ -17,21 +17,15 @@
 // table they share, so a change to the predicate is judged against the whole
 // union in one place.
 //
-// ONE SITE CANNOT BE GRADED BY WHAT IT DOES. `DevicesScreen` hands
-// `RosterInput.sequenceRunning` a value that `roster.ts` declares and nothing
-// reads (no row, no summary clause), so no rendered output differs between a
-// predicate that includes "holding" and one that does not. The last case reads
-// the file's text for that one site and is the only text-reading case here; the
-// day a reader of the field lands, grade it by behaviour like the rest and
-// delete this case.
+// (A sixth site, `DevicesScreen`'s `RosterInput.sequenceRunning`, had no reader
+// at all, so no behavioural test could grade it and this file carried a
+// text-reading case for it. #923 removed the dead field and that case with it.)
 //
 // MUTANT "running or paused only" (lib/lastSessionFrame.ts `runIsLive` made
 // `return s === "running" || s === "paused";`). Run from a byte backup,
 // restored byte-identically (md5sum compared): see the report for the failing
 // lines.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { runIsLive } from "../lastSessionFrame";
 import type { SequenceState } from "../../types";
 
@@ -68,15 +62,6 @@ for (const [state, live] of Object.entries(IS_LIVE) as Array<[State, boolean]>) 
 test("no sequence at all is not a live run", () => {
   assert(!runIsLive(null), "null");
   assert(!runIsLive(undefined), "undefined");
-});
-
-test("DevicesScreen feeds the roster the shared predicate, not a copy of running-or-paused", () => {
-  const src = readFileSync(
-    fileURLToPath(new URL("../../next/hubs/rig/devices/DevicesScreen.tsx", import.meta.url)), "utf8");
-  assert(/sequenceRunning:\s*runIsLive\(/.test(src),
-    "DevicesScreen's RosterInput.sequenceRunning is not runIsLive(...)");
-  assert(!/"running"\s*\|\|\s*\w+\s*===\s*"paused"/.test(src),
-    "DevicesScreen carries a hand-written running-or-paused comparison again");
 });
 
 console.log(`w18LiveRunPredicate: ${passed}/${passed + failed} passed`);

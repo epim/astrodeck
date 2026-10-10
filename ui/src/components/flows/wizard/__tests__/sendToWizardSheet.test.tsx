@@ -796,6 +796,49 @@ await test("a saved flow that cannot be read is said by the sheet, and nothing o
     `the failed read was reported as the store's refusal, or with no reason: ${JSON.stringify(said[0].detail)}`);
 });
 
+// A read that fails the SAME way twice running (#920, the #555 defect again).
+// `openSaved` showed `libraryError` only when it differed from the value it had
+// captured before the call, by text. `flowsOpen` clears the field before every
+// read, so the second identical failure was one `now.libraryError` equal to
+// `before.libraryError`, and the toast fell through to "the server answered
+// with a different flow", a claim nothing checked.
+//
+// MUTANT "the reason is compared with the snapshot" (SendToWizardSheet.tsx
+// openSaved: `detail: now.libraryError && now.libraryError !== before.libraryError
+// ? now.libraryError : "The server answered ..."`).
+// Observed ("sendToWizardSheet.test: 35/36 passed"):
+//   x a saved flow that cannot be read twice running is said with the server's reason both times: the second, identical failure was not said with the server's reason
+//     expected [[1,"no flow with that id"]]
+//     got      [[1,"The server answered with a different flow, so nothing was done."]]
+// The queue is emptied between the presses because an identical title
+// coalesces onto the toast still up and keeps ITS detail: left in, the second
+// press's sentence would never be readable.
+await test("a saved flow that cannot be read twice running is said with the server's reason both times", async () => {
+  setup();
+  useStore.setState({ toasts: [] } as any);
+  const REASON = "no flow with that id";
+  const base = routes();
+  answer = (c) => (c.method === "GET" && c.url.endsWith(`/api/flows/${ID}`)
+    ? { status: 404, body: { detail: REASON } } : base(c));
+  mount(fxPrefill());
+  walkToReview();
+  click(btn("wizard-generate"));
+  await flush();
+  click(btn("wizard-open-editor"));
+  await flush();
+  const gets = () => calls.filter((c) => c.method === "GET" && c.url.endsWith(`/api/flows/${ID}`)).length;
+  eq(gets(), 1, "precondition: the first press asked for the flow");
+  const said = () => ((useStore.getState() as any).toasts ?? [])
+    .filter((t: any) => t.title === OPEN_FAILED).map((t: any) => [t.count, t.detail]);
+  eq(said(), [[1, REASON]], "the first press did not say the server's reason");
+  useStore.setState({ toasts: [] } as any);
+  click(btn("wizard-open-editor"));
+  await flush();
+  eq(gets(), 2, "precondition: the second press asked for it again, and it failed the same way");
+  eq(opened, [], "the host was told to open a flow that did not open");
+  eq(said(), [[1, REASON]], "the second, identical failure was not said with the server's reason");
+});
+
 // ============================================================ 5. what is missing
 
 await test("a target with no name or coordinates is asked for them, and NEXT waits", async () => {

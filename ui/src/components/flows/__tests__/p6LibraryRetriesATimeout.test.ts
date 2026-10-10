@@ -86,6 +86,12 @@ const card = (id: string) => ({
 });
 const CARDS1 = [card("old")];
 const CARDS2 = [card("new")];
+/** A flow open in the editor with unsaved edits (LE1's save). */
+const EDITED = {
+  id: "edited", name: "M31 L", folder: "My flows", tagline: "", readonly: false,
+  created_ts: 1, updated_ts: 2, last_run: null, last_result: "",
+  graph: { nodes: [], edges: [] },
+};
 const FOLDERS = [{ name: "My flows", count: 1, readonly: false }];
 
 /** What `api.get(path)` does on its n-th call for that path (0-based). */
@@ -209,9 +215,17 @@ await test("LE1 a failure another action writes while the load retries survives 
   const load = useStore.getState().flowsLoadLibrary();
   await tick();
   eq(flows().libraryRetry, { attempt: 2, of: 4 }, "precondition: the load waits to ask again");
-  // libraryError is the reason of an open or a save (#877): one fails now.
+  // libraryError is the reason of an open or a save (#877): a save fails now,
+  // through the real action. The field is not written directly: the load
+  // decides "something wrote it since I started" by the slice's own count of
+  // writes (#921), which a `setState` from outside never touches.
   const st = useStore.getState() as any;
-  useStore.setState({ flows: { ...st.flows, libraryError: "could not save QUICK M31" } } as any);
+  useStore.setState({
+    flows: { ...st.flows, record: EDITED, graph: EDITED.graph, dirty: true },
+  } as any);
+  (api as any).put = () => Promise.reject(new ApiError("could not save QUICK M31", 500));
+  await useStore.getState().flowsSave();
+  eq(flows().libraryError, "could not save QUICK M31", "precondition: the save failed and said why");
   sleep.resolve();
   await load;
   eq(flows().cards.map((c) => c.id), ["new"], "precondition: the load's answer landed");

@@ -970,6 +970,7 @@ class CloudmapService:
         return out
 
     async def telescope_payload(self, telescope, *, ahead_s: float,
+                                position_known: bool,
                                 now: float | None = None) -> dict:
         """``GET /api/cloudmap/at``: the sky along the MOUNT's pointing.
 
@@ -994,10 +995,20 @@ class CloudmapService:
         feature must not cost the serial link a transaction, and without a
         site there is no way from the mount's RA/Dec to an alt/az at all.
         ``no_pointing`` when there is a sky but no direction to read it
-        along: no mount, a mount that will not say where it is, or a mount
-        below the horizon. Both are 200s, like every other state of the sky,
-        and neither is a 500: a missing mount is the normal daytime state of
-        this rig.
+        along: no mount, a mount that will not say where it is, a mount that
+        does not know where it points, or a mount below the horizon. Both are
+        200s, like every other state of the sky, and neither is a 500: a
+        missing mount is the normal daytime state of this rig.
+
+        ``position_known`` IS THE RIG'S, NOT A GUESS MADE HERE (#912). A mount
+        that does not know where it points (``Telescope.position_known``, #144)
+        reports its HOME position, the pole, wherever the tube is, so a sky
+        read along that reading answers confidently about a direction the tube
+        is not looking in, and at the pole its altitude is the site latitude
+        (#140). The route passes ``rig_position_known(hub)``, which also
+        carries a doubt across a replaced telescope object (a profile
+        activate); this module holds no hub. It has no default on purpose: a
+        caller that forgot the flag would be the next sweep of this class.
 
         The lead time is still the caller's, and a bad one is still a
         ``ValueError`` (a 400) at every hour, checked before anything else.
@@ -1009,7 +1020,7 @@ class CloudmapService:
         basis = "no_data"
         if reason is None:
             pointing, reason = await self._mount_pointing(
-                telescope, self.site(), now)
+                telescope, self.site(), now, position_known)
             if pointing is not None:
                 out = self.at_payload(alt_deg=pointing[0], az_deg=pointing[1],
                                       ahead_s=ahead_s, now=now)
@@ -1022,9 +1033,16 @@ class CloudmapService:
         return out
 
     @staticmethod
-    async def _mount_pointing(telescope, site: Site, now: float
+    async def _mount_pointing(telescope, site: Site, now: float,
+                              position_known: bool
                               ) -> tuple[tuple[float, float] | None, str | None]:
         """``((alt, az), None)`` for the mount's pointing, or ``(None, why)``.
+
+        ``(None, why)`` without reading the mount when ``position_known`` is
+        False (#912): its position is the home reading, not the tube's, and
+        asking for it would only cost the serial link a transaction whose
+        answer nothing here may use. A mount that is not connected is still
+        reported as not connected first.
 
         The same arithmetic as the status frame's ``mount.alt``/``az``, which
         is what the panels used to send: the RAW position the mount reports
@@ -1046,6 +1064,9 @@ class CloudmapService:
         if telescope is None or not getattr(telescope, "connected", False):
             return None, ("no mount is connected, so there is no pointing to "
                           "read the sky along")
+        if not position_known:
+            return None, ("the mount does not know where it points, so there "
+                          "is no pointing to read the sky along")
         try:
             ra, dec = await telescope.get_position()
             ra, dec = float(ra), float(dec)

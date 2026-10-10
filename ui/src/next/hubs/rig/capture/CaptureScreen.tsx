@@ -42,6 +42,7 @@ import {
   type FrameType,
 } from "../../../../lib/calibration";
 import { suggestSubLength } from "../../../../lib/photometry";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { ActionButton, Card, Chip, Divider, Label, Mono, Segmented, Switch } from "../../../ui";
 import { buildHash, nav, useRoute } from "../../../router";
 import "./capture.css";
@@ -430,7 +431,7 @@ export function CaptureScreen(): JSX.Element {
   const paramTarget = route.params.target || null;
   const ra = route.params.ra != null ? Number(route.params.ra) : null;
   const dec = route.params.dec != null ? Number(route.params.dec) : null;
-  const runOwnsMount = sequence.state === "running" || sequence.state === "paused";
+  const runOwnsMount = runIsLive(sequence);
   const plan = aimPlan({
     paramTarget,
     ra: ra != null && Number.isFinite(ra) ? ra : null,

@@ -73,7 +73,6 @@ export interface RosterInput {
    *  reads it today, and inventing one from a poll this screen does not make
    *  would be worse than the gap. */
   dome: DomeState | null;
-  sequenceRunning: boolean;
 }
 
 /** The design's seven, in the design's order, plus ROTATOR (GAP-2 "Missing -

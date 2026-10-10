@@ -455,6 +455,7 @@ const STORE_ACTIONS: string[] = [
   // action so the walk can tell them from slices; `flows` itself is a slice and
   // is classified in ClearedRigState, not here.
   "flowsLoadLibrary", "flowsOpen", "flowsCloseEditor", "flowsSave",
+  "flowsDismissLibraryError",
   "flowsAddNode", "flowsMoveNode", "flowsSetParam", "flowsDeleteSel",
   "flowsConnect", "flowsSetName", "flowsUndo", "flowsRedo",
   "flowsSelect", "flowsSetEditNode",

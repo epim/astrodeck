@@ -75,7 +75,7 @@ from .instructions import (
 from .angle_check import angle_verdict, fresh_sky_angle
 from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
                           GENERIC_SOLVE_FAILURE, HELD_PASS_ALERT_AT,
-                          REACH_RECHECK_S, SET_ASIDE_EXPIRY_S,
+                          HELD_PASS_KINDS, REACH_RECHECK_S, SET_ASIDE_EXPIRY_S,
                           SOLAR_PER_SIDEREAL, SOLVE_TRANSIENT, TARGET_STOP,
                           ExpiryCause, GroupRun, PanelDeferred, PanelMeridian,
                           PassEnd, VisitBound, angle_decision,
@@ -86,7 +86,7 @@ from .panel_order import OrderSnapshot, order_panels
 from .report import FrameRecord, SessionReporter
 from .policy import (MIN_GUIDE_SCALE_ARCSEC_PX, guide_rms_floor_arcsec,
                      resolve_policy)
-from .session import Session, SessionFrame, session_store
+from .session import STARVED_AFTER_NIGHTS, Session, SessionFrame, session_store
 
 # --- Monitor / ETA shared constants (single source of truth) ---------------
 # The cooler "at target" band. Defined ONCE here (master plan §A.7); the hub
@@ -6044,11 +6044,35 @@ class SequenceEngine:
                                         kind=kind or "panel")
                 elif self._target_complete(ti, t):
                     run.completed.add(t.id)
+            self._note_starved_panels(run, [t for _ti, t in mem])
             self._group_runs[gid] = run
             self._restore_group_pier(g, run)
             self._group_last_index[gid] = max(ti for ti, _t in mem)
             self._resort_group(g, remaining)
             self._place_followers(g, remaining)
+
+    def _note_starved_panels(self, run: GroupRun,
+                             targets: list[Target]) -> None:
+        """Tell ``run`` which panels the session found STARVED on the nights
+        before tonight (#835): set aside whole, for a kind a held pass
+        leaves (`group_rules.HELD_PASS_KINDS`), on ``STARVED_AFTER_NIGHTS``
+        or more nights running with none of the panel shot, the very count
+        at which the Campaign calls it starved. The group driver then gives
+        the mosaic's last live panel up after one held pass instead of six
+        (`GroupRun._apply_held_pass_rule`), and a mosaic stops spending an
+        hour of every night on the one panel that does not centre.
+
+        Read from the session's record at every start, a restart tonight
+        included, so a crash-resume neither forgets it nor needs it saved.
+        A session double without the reader reads as having none."""
+        read = getattr(self._session, "earlier_starved_nights", None)
+        if read is None:
+            return
+        night = night_key(time.time())
+        for t in targets:
+            nights = read(t.id, night=night, kinds=HELD_PASS_KINDS)
+            if nights >= STARVED_AFTER_NIGHTS:
+                run.note_starved(t.id, nights)
 
     def _place_followers(self, group: TargetGroup,
                          remaining: list[Target]) -> None:
@@ -8940,7 +8964,13 @@ class SequenceEngine:
             return
         try:
             from ..flows.tonight import target_own_window
-            window = target_own_window(
+            # OFF THE LOOP (#739): the night's first call builds the astropy
+            # scaffold (sun, moon and twilight over the whole night), seconds
+            # on a loaded or Pi-class box, and this coroutine shares the loop
+            # with the status poll, the relay and the safety loop. The
+            # catalogue routes already run the same compute in a thread.
+            window = await asyncio.to_thread(
+                target_own_window,
                 target.ra_hours, target.dec_deg, site=self.hub.site,
                 min_altitude_deg=target.schedule.min_altitude_deg,
                 now=time.time())
@@ -9572,7 +9602,9 @@ class SequenceEngine:
         were."""
         try:
             from ..flows.tonight import target_own_window
-            window = target_own_window(
+            # Off the loop for the reason `_await_target_window` gives (#739).
+            window = await asyncio.to_thread(
+                target_own_window,
                 target.ra_hours, target.dec_deg, site=self.hub.site,
                 min_altitude_deg=target.schedule.min_altitude_deg,
                 now=time.time())
@@ -10571,6 +10603,13 @@ class SequenceEngine:
         return st.exposure_s, st.converged
 
     async def _run_calibration(self, ti: int, target: Target) -> None:
+        # `ti` is where the scheduler found `target` in the plan. The targets
+        # the engine builds for itself (day darks, DUSK FLATS, cloud-hold
+        # darks) are not in the plan and pass a placeholder (0, or the held
+        # target's index), so their frames publish no place in the plan
+        # rather than the placeholder's: it names a light step that is not
+        # the one exposing (#842).
+        plan_ti = self._plan_index(ti, target)
         # this target is now actually starting — clear any stale waiting sub-state
         # a prior gated wait published (wave-3 §2).
         self._set_state(target=target.name, target_index=ti, detail=f"calibration: {target.name}",
@@ -10580,6 +10619,19 @@ class SequenceEngine:
         self._last_frame_at = time.time()
         self._progress_expected = True
         for si, step in enumerate(target.steps):
+            key = f"{target.id}:{step.id}"
+            # A STEP THE LEDGER HOLDS IN FULL IS NOT TOUCHED (#910). On a later
+            # start (an auto-resume, a hand CONTINUE) the frame loop below
+            # shoots nothing for it, but the flat metering ahead of that loop
+            # did not ask: it closed the cover, lit the lamp and took trial
+            # exposures through whichever filter was in the beam (the wheel is
+            # moved only for a step that owes frames), and an unconverged solve
+            # then said "none of its N flats are shot" for a step that needed
+            # none. A step that owes nothing moves nothing: no wheel, no
+            # lamp, no trial exposure, no warning, and no `_flat_metered`
+            # entry, so nothing is recorded for it either.
+            if self._done.get(key, 0) >= step.count:
+                continue
             # PRO-5: a Flat step with adu_target > 0 turns the panel on, solves the
             # per-filter exposure via bounded trial captures, then shoots the count
             # at the SOLVED exposure. adu_target == 0 keeps the fixed-exposure path
@@ -10594,7 +10646,6 @@ class SequenceEngine:
             # _panel_off_safe never runs and the panel would burn through every
             # following target's frames.
             try:
-                key = f"{target.id}:{step.id}"
                 # A calibration step carries a filter exactly like a light step
                 # does, and this call used to live in _run_step ALONE — so for
                 # the one target type calibration frames are actually shot
@@ -10603,10 +10654,10 @@ class SequenceEngine:
                 # and bias never drove to the blackout slot that exists for
                 # them. Placed ahead of the flat metering below, because a trial
                 # exposure solved through the wrong filter solves the wrong
-                # filter. Skipped for a step a resume has already finished, so
-                # recovery does not move the wheel for frames it will not shoot.
-                if self._done.get(key, 0) < step.count:
-                    await self._apply_filter(step)
+                # filter. Not reached for a step a resume has already finished
+                # (above), so recovery does not move the wheel for frames it
+                # will not shoot.
+                await self._apply_filter(step)
                 if flat_auto:
                     # METERING IS NOT THE PANEL'S JOB. This whole block used to
                     # sit behind `"covercalibrator" in self.hub.devices`, so on
@@ -10741,7 +10792,7 @@ class SequenceEngine:
                                     f"converge ({self._flat_solve_reason}); "
                                     f"using {solved_exp:g}s", "sequence")
                     exp = solved_exp if solved_exp is not None else step.exposure_s
-                    self._begin_frame(ti, si, exp)
+                    self._begin_frame(plan_ti, si, exp)
                     self._set_state(state="running",
                                     detail=f"{target.name}: {step.frame_type} {exp:g}s "
                                            f"[{i + 1}/{step.count}]")
@@ -11553,7 +11604,17 @@ class SequenceEngine:
             bus.log("warning", f"{target.name}: retaking a poor frame "
                                f"({spent + 1}/{cap or 'unlimited'})", "sequence")
             self._frame_had_event = True   # retake wall-time is not per-frame overhead
-            self._begin_frame(*(self._active_step or (ti, 0)), step.exposure_s)
+            # The same frame again, so the place it had: taken from this
+            # call's own arguments, NOT from `_active_step`. That is shared
+            # state, and an instruction that fires on the reject, which the
+            # engine runs BEFORE a retake, can expose frames of its own in
+            # between (`on_frame_rejected` -> `hold_for_clear` shoots hold
+            # darks through `_begin_frame`). `_plan_index` is None for a
+            # calibration frame the plan does not hold, which publishes no
+            # step (#842).
+            si = next((k for k, s in enumerate(target.steps) if s is step), 0)
+            self._begin_frame(self._plan_index(ti, target), si,
+                              step.exposure_s)
             new_info = await self._capture(step, target)
             # This retake's OWN exposure (#134): the guider may have come
             # back, or gone down, since the frame that was rejected. Read
@@ -11598,6 +11659,18 @@ class SequenceEngine:
                 if t is target:
                     return ti
         return 0
+
+    def _plan_index(self, ti: int, target: Target) -> int | None:
+        """``ti`` when the plan holds ``target`` at that index, else None.
+
+        `_index_of_target` answers 0 for a target the plan does not hold,
+        which is an index the plan DOES hold. Anything that reads
+        ``plan.targets[ti]`` on such a target's account reads another
+        target's step (#842)."""
+        targets = self.plan.targets if self.plan else ()
+        if 0 <= ti < len(targets) and targets[ti] is target:
+            return ti
+        return None
 
     @staticmethod
     def _unlink_saved(info: dict) -> None:
@@ -15147,7 +15220,7 @@ class SequenceEngine:
             return True
         return False
 
-    def _begin_frame(self, ti: int, si: int, exposure_s: float) -> None:
+    def _begin_frame(self, ti: int | None, si: int, exposure_s: float) -> None:
         """Mark the in-flight exposure for the sub-frame bar + ETA off-by-one
         guard (set immediately before ``hub.capture``).
 
@@ -15155,8 +15228,15 @@ class SequenceEngine:
         flip blocks set it True *before* this runs, and ``_record_frame`` must
         still see it True so the event wall-time is excluded from the overhead
         EMA (it is accounted analytically). The flag is reset in ``_record_frame``
-        AFTER it is read (P2-1)."""
-        self._active_step = (ti, si)
+        AFTER it is read (P2-1).
+
+        ``ti`` is None for a frame the plan does not hold (a calibration
+        target the engine built for itself), which publishes NO active step:
+        ``_active_step`` indexes ``plan.targets[ti].steps[si]``, so a
+        placeholder index names some other target's step, and the ETA guard
+        (`_remaining_capture_s`) takes a frame off a step that never got
+        one (#842)."""
+        self._active_step = None if ti is None else (ti, si)
         self._cur_exposure_s = float(exposure_s)
         self._frame_started_at = time.time()
         # #856.1: the guider's saturated-correction counts as the shutter

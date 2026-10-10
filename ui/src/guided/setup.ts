@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { create } from "zustand";
 import { useStore } from "../store";
+import { believedRaDec } from "../lib/slewController";
 import { WIZARD_STEPS, type WizardStep } from "./wizard";
 
 type Fact = "location" | "horizon" | "focus" | "alignment";
@@ -38,10 +39,16 @@ export const useGuidedSetup = create<{
   },
 }));
 
-export function atPosition(position: SkyPosition | undefined, target: SkyPosition): boolean {
-  if (!position || !Number.isFinite(position.ra_hours) || !Number.isFinite(position.dec_deg)) return false;
+/** Is the mount within a degree of `target`? False while the mount does not know
+ *  where it points (`position_known === false`): it then reports its HOME
+ *  position, the pole, and a target near the pole would read as arrived from it
+ *  (#913, #144). Takes the mount block itself so the flag travels with the
+ *  reading; a bare sky position has no flag and counts as known. */
+export function atPosition(position: (SkyPosition & { position_known?: boolean }) | undefined, target: SkyPosition): boolean {
+  const here = believedRaDec(position);
+  if (!here) return false;
   const rad = Math.PI / 180;
-  const cosine = Math.sin(position.dec_deg*rad)*Math.sin(target.dec_deg*rad) + Math.cos(position.dec_deg*rad)*Math.cos(target.dec_deg*rad)*Math.cos((position.ra_hours-target.ra_hours)*15*rad);
+  const cosine = Math.sin(here.dec_deg*rad)*Math.sin(target.dec_deg*rad) + Math.cos(here.dec_deg*rad)*Math.cos(target.dec_deg*rad)*Math.cos((here.ra_hours-target.ra_hours)*15*rad);
   return Math.acos(Math.max(-1,Math.min(1,cosine))) / rad < 1;
 }
 

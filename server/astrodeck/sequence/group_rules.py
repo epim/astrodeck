@@ -132,6 +132,23 @@ HELD_PASS_ALERT_AT = 3
 #: transient moment each time.
 HELD_PASS_SET_ASIDE_AT = 6
 
+#: Consecutive held passes at which the mosaic's LAST LIVE PANEL is set aside
+#: for the night when it is STARVED (#835): set aside whole on
+#: ``session.STARVED_AFTER_NIGHTS`` or more nights running before tonight
+#: with no frame shot, for a kind a held pass leaves (``HELD_PASS_KINDS``).
+#: A mosaic whose other panels are done and whose one panel cannot centre
+#: spent ``HELD_PASS_SET_ASIDE_AT`` passes of ``CENTRING_HOLD_RETRY_S`` on it
+#: every night, about an hour of sky, and was set aside at the end of it to
+#: do the same the next night. The first six passes of that are the owner's
+#: ruling (D-03) for a panel whose trouble is not known to repeat; for one
+#: that has failed to centre three nights running they are the same hour
+#: bought again. One held pass is still a real retry each night (a panel
+#: that centres is not held, shoots, and ends the streak), it is just not
+#: an hour of them. Applies to a group reduced to ONE live panel only:
+#: several panels held together are the night's (a fog bank), whatever
+#: their history.
+HELD_PASS_STARVED_SET_ASIDE_AT = 1
+
 
 #: The centring miss the engine reports when a solve failed outright and no
 #: more specific cause came back (``error_arcmin is None``, engine.py's
@@ -255,6 +272,22 @@ TARGET_STOP = "target_stop"
 #: with it, and a streak made only of it is the one set-aside that expires
 #: (:func:`set_aside_expiry`), both #534.
 CENTRING = "centring"
+
+#: The whole-panel set-aside kinds a HELD pass leaves behind (#835): a streak
+#: of centring misses (:data:`CENTRING`), and ``"deferred"``, which is the
+#: word for the mosaic's last live panel set aside by the held-pass rule
+#: (:meth:`GroupRun._apply_held_pass_rule`) and ALSO for a mixed streak
+#: (:meth:`GroupRun._count_failure`: a streak with more than one kind of
+#: failure in it, which need not hold a centring miss at all, a failed guide
+#: start beside a target stop, say). The ledger cannot tell those apart, so a
+#: panel set aside three nights running for a mixed streak is counted as
+#: starved here too; what is left out is a streak of nothing but failed guide
+#: starts (``GUIDE_START``), which names the guider and says nothing about
+#: whether the panel will centre. An earlier night counts toward
+#: :data:`HELD_PASS_STARVED_SET_ASIDE_AT` only when it was set aside for one
+#: of these. The cost of the wider word is bounded: the panel still gets one
+#: real held pass tonight, and a panel that centres is not held at all.
+HELD_PASS_KINDS = (CENTRING, "deferred")
 
 #: The kind a member's hop carries when a solve it needed could not RUN, for
 #: a reason that clears by itself: the centring result carries
@@ -751,6 +784,12 @@ class GroupRun:
       ``PassEnd`` :meth:`close_pass` returns so the engine can warn the
       operator once, at ``HELD_PASS_ALERT_AT``. Reset the moment a pass is
       not held.
+    - ``starved_nights`` (#835): for each panel the engine found STARVED on
+      the nights before tonight (:meth:`note_starved`), on how many nights
+      running. Read by :meth:`_apply_held_pass_rule` only, to give up on the
+      mosaic's last live panel after ``HELD_PASS_STARVED_SET_ASIDE_AT`` held
+      passes instead of ``HELD_PASS_SET_ASIDE_AT``. Empty for every other
+      group and night, which behave exactly as before.
     """
 
     def __init__(self, members: Mapping[str, str], *, max_failed_visits: int):
@@ -816,6 +855,7 @@ class GroupRun:
         # progress, or someone else's fault, either way not this streak's.
         self.held_streak = 0
         self._held_pass_reason: str | None = None
+        self.starved_nights: dict[str, int] = {}
 
     # -- membership
 
@@ -860,6 +900,21 @@ class GroupRun:
         self._check_live(panel)
         self.set_aside[panel] = str(reason)
         self.set_aside_kind[panel] = str(kind)
+
+    def note_starved(self, panel: str, nights: int) -> None:
+        """The engine's word that ``panel`` was set aside whole on ``nights``
+        consecutive nights before tonight, for a kind a held pass leaves,
+        and shot none of it (#835): what lets :meth:`_apply_held_pass_rule`
+        give it up after one held pass tonight when it is the mosaic's last
+        live panel. Asked at the group's start, from the session's record of
+        earlier nights, never from anything this run saw; 0 withdraws it."""
+        if panel not in self.members:
+            raise ValueError(f"{panel!r} is not a member of this group")
+        n = _count("nights", nights)
+        if n:
+            self.starved_nights[panel] = n
+        else:
+            self.starved_nights.pop(panel, None)
 
     def set_aside_all(self, reason: str, *, kind: str = "group") -> list[str]:
         """Set every live member aside tonight (``guiding_action`` skip after a
@@ -969,6 +1024,10 @@ class GroupRun:
         self.visited.discard(panel)
         self.held_streak = 0
         self._held_pass_reason = None
+        # The operator has judged the panel worth a full try tonight: the
+        # nights before it are no longer a reason to give it one held pass
+        # (#835), as the held-pass counter above goes back to nothing.
+        self.starved_nights.pop(panel, None)
         if alone:
             self._begin_pass_alone()
 
@@ -1177,6 +1236,11 @@ class GroupRun:
         self.exposures_this_pass += exposures
         if accepted > 0:
             self._last_accept[panel] = self._seq
+        if exposures > 0:
+            # A panel that shot a frame tonight centred tonight, which is the
+            # one thing its starved nights (#835) said it could not do: it
+            # earns the full held-pass bound back for whatever holds it later.
+            self.starved_nights.pop(panel, None)
         if guide_failed:
             self.guide_attempts += 1
             self.guide_failures += 1
@@ -1418,6 +1482,19 @@ class GroupRun:
         before :meth:`set_aside_all` empties it, so the wording can tell
         one panel from several; for several it reads exactly as before
         ("the mosaic ..."), so no multi-panel case changes.
+
+        A LAST LIVE PANEL THAT IS STARVED IS SET ASIDE AT THE FIRST HELD
+        PASS (#835). When the one live panel is in ``starved_nights`` (the
+        engine found it set aside on several nights running before tonight)
+        the bound is ``HELD_PASS_STARVED_SET_ASIDE_AT``, not
+        ``HELD_PASS_SET_ASIDE_AT``: without it a mosaic whose other panels
+        are done spent an hour of sky every night on the one that never
+        centred. The set-aside is the same one, the same "deferred" kind
+        (so the panel's streak goes on, and the Campaign goes on naming it),
+        and its reason says how many nights it had been set aside. A panel
+        that centres is not held, so the bound never touches it, and one
+        that shot a frame tonight, or that the operator brought back, is no
+        longer in ``starved_nights``.
         """
         if not is_held:
             self.held_streak = 0
@@ -1430,8 +1507,18 @@ class GroupRun:
         self.held_streak += 1
         streak = self.held_streak
         self._held_pass_reason = reason_code
-        if same_as_last or streak >= HELD_PASS_SET_ASIDE_AT:
-            live_before = self.live()
+        live_before = self.live()
+        # A STARVED LAST PANEL IS GIVEN UP SOONER (#835). The six-pass bound
+        # is the owner's for a panel with no history; one that was set aside
+        # whole on the nights before tonight and has not centred again is
+        # the same hour of sky bought a fourth time, so it gets
+        # ``HELD_PASS_STARVED_SET_ASIDE_AT``. Only when it is the ONLY live
+        # panel: several held together are the night's, whatever their past.
+        starved = (self.starved_nights.get(live_before[0], 0)
+                   if len(live_before) == 1 else 0)
+        limit = (HELD_PASS_STARVED_SET_ASIDE_AT if starved
+                 else HELD_PASS_SET_ASIDE_AT)
+        if same_as_last or streak >= limit:
             subject = (
                 "the mosaic" if len(live_before) != 1
                 else f"{self.members[live_before[0]]} (the mosaic's last "
@@ -1442,6 +1529,14 @@ class GroupRun:
                     f"identical reason ({reason_code!r}): a rig-side fault, "
                     f"not the sky, so it is set aside for tonight instead "
                     f"of held any further")
+            elif streak < HELD_PASS_SET_ASIDE_AT:
+                reason = (
+                    f"{subject} has been held for {streak} "
+                    f"{'pass' if streak == 1 else 'passes'} in a row with no "
+                    f"panel struck and no progress made, and was set aside "
+                    f"on {starved} nights running before tonight; set aside "
+                    f"for tonight without waiting for "
+                    f"{HELD_PASS_SET_ASIDE_AT} passes")
             else:
                 # "passes in a row", not "consecutive": that word is this
                 # file's own for a PANEL's own strike count ("1 of 3

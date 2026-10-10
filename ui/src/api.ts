@@ -85,6 +85,10 @@ const isTimeout = (e: unknown): boolean => e instanceof DOMException && e.name =
  *  headers or for the body (#870). */
 const timedOutError = (): ApiError => new ApiError("request timed out — server not responding", 0, true);
 
+/** The one ApiError a connection that failed, before the headers or inside the
+ *  body, becomes (#918). */
+const unreachableError = (): ApiError => new ApiError("network error — server unreachable", 0);
+
 /** Holds a body read to the request's budget (#870).
  *
  *  The budget covers the whole request, not only `fetch()`: headers can arrive
@@ -107,6 +111,26 @@ function withinBudget<T>(read: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+/** The one ApiError a success-path body read that failed for any reason but a
+ *  spent budget becomes (#918).
+ *
+ *  Two ways a 200's body ends badly, and they are told apart because a caller
+ *  retries one and not the other (`isTransientLoadError`):
+ *   - the body ARRIVED and is not JSON (a `SyntaxError`): the relay serves the
+ *     SPA's HTML for a path it does not route (lib/base.ts), a 200 that is not
+ *     the home's answer. The server is reachable and will say the same again,
+ *     so it carries the response's status and is not retried.
+ *   - the body never finished arriving (a `TypeError`, or whatever else the
+ *     browser rejects a dropped stream with): from here that is the connection
+ *     failing, the same ApiError `fetch()` failing gives, status 0.
+ *  Without this both reached the screens as the browser's own text. */
+function unreadableBody(e: unknown, status: number): ApiError {
+  if (e instanceof Error && e.name === "SyntaxError") {
+    return new ApiError("unreadable answer — the server did not send JSON", status);
+  }
+  return unreachableError();
+}
+
 async function req<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   const { signal, done } = timeoutSignal(timeoutFor(path));
   // `done()` runs after the body has been read, not when the headers arrive:
@@ -122,7 +146,7 @@ async function req<T = unknown>(method: string, path: string, body?: unknown): P
         signal,
       });
     } catch (e) {
-      throw isTimeout(e) ? timedOutError() : new ApiError("network error — server unreachable", 0);
+      throw isTimeout(e) ? timedOutError() : unreachableError();
     }
     if (!res.ok) {
       let body: unknown;
@@ -137,7 +161,11 @@ async function req<T = unknown>(method: string, path: string, body?: unknown): P
       // `body`, not just the three fields parsed out of it — see ApiError.body.
       throw new ApiError(message, res.status, false, code, id, body);
     }
-    return await withinBudget(res.json() as Promise<T>, signal);
+    try {
+      return await withinBudget(res.json() as Promise<T>, signal);
+    } catch (e) {
+      throw e instanceof ApiError ? e : unreadableBody(e, res.status);
+    }
   } finally {
     done();
   }

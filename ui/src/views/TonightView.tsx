@@ -21,6 +21,7 @@ import type { JSX } from "react";
 import { useStore } from "../store";
 import { Panel, Tooltip } from "../components/ui";
 import { Icon } from "../components/icons";
+import { runIsLive } from "../lib/lastSessionFrame";
 import { TonightPicker } from "../components/atlas/TonightPicker";
 import {
   difficultyGlyph, difficultyHint, difficultyLabel, difficultyTone, tierForTargetName,
@@ -32,7 +33,7 @@ export default function TonightView(): JSX.Element {
   const seqTarget = useStore((s) => s.sequence.target);
   const framingTarget = useStore((s) => s.framing?.target);
 
-  const running = seqState === "running" || seqState === "paused";
+  const running = runIsLive({ state: seqState });
   const tier = tierForTargetName(seqTarget, framingTarget ? [framingTarget] : []);
 
   return (
@@ -47,7 +48,9 @@ export default function TonightView(): JSX.Element {
           <Icon name="capture" size={14} className="text-accent shrink-0" />
           <span className="min-w-0 truncate">
             <span className="text-dim">
-              {seqState === "paused" ? "Paused on" : "Imaging now"} ·{" "}
+              {seqState === "paused" ? "Paused on"
+                : seqState === "holding" ? "Holding on"
+                  : seqState === "aborting" ? "Stopping on" : "Imaging now"} ·{" "}
             </span>
             <span className="text-ink">{seqTarget}</span>
           </span>

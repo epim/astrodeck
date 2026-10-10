@@ -25,6 +25,7 @@ import {
 import { ApiError } from "../../api";
 import { useConfig, useSequence, useStatus, useStore, useUpdate } from "../../store";
 import { useCan } from "../../lib/caps";
+import { runIsLive } from "../../lib/lastSessionFrame";
 import { useBusyOrPending } from "../../lib/useBusy";
 import { confirmDialog } from "../ConfirmDialog";
 import { Panel, Field, Toggle } from "../ui";
@@ -128,11 +129,12 @@ export default function UpdatePanel(): JSX.Element {
   //     The sequence is tested before `busy` (the server tests them the other
   //     way) only so the sentence holds still: inside a run, busy_label
   //     flickers between "capturing" and null between subs. The verdict is the
-  //     same either way. A paused sequence still owns the engine task.
+  //     same either way. A paused sequence, a cloud hold and an abort's
+  //     wind-down all still own the engine task (`runIsLive`, #922).
   const rig = useStatus();
-  const seqState = useSequence().state;
+  const sequence = useSequence();
   const rigBlocker =
-    seqState === "running" || seqState === "paused"
+    runIsLive(sequence)
       ? "a sequence is running"
       : rig?.busy
         ? `rig is ${rig.busy}`

@@ -57,6 +57,7 @@ import { useLock } from "../../../lib/gateHook";
 import { useBreakpoint } from "../../../breakpoint";
 import { api } from "../../../../api";
 import { useCanControlCapture } from "../../../../lib/caps";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
   DARK_SLOT_NAME, filterMotion, nameForOpaqueToggle, slotLabel,
   type FilterCommand,
@@ -186,7 +187,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
   const breakpoint = useBreakpoint();
   const reducedMotion = useReducedMotion();
 
-  const seqOwnsCamera = sequence.state === "running" || sequence.state === "paused";
+  const seqOwnsCamera = runIsLive(sequence);
   const flowOwns = seqOwnsCamera ? FLOW_OWNS_WHEEL : null;
   // r4 #25: LEARN OFFSETS steps the focuser through every filter, exposing at
   // each stop. Polar alignment owns the camera for its whole run and spawns its
