@@ -163,6 +163,109 @@ async def test_wcs_queue_drops_oldest_and_never_raises(wcs_hub, monkeypatch):
     assert not _has_wcs(paths[1]) and not _has_wcs(paths[2])
 
 
+# --------------------- the stamp log line is a claim, so it is kept (#944, #943)
+# ``write_wcs`` returns the path whether it wrote the card block, refused a
+# solution with no usable scale (#786) or swallowed an exception on a missing,
+# locked or corrupt file, and the hub logged "stamped WCS" after it regardless.
+
+class _Scripted:
+    """Stand-in solver: ``before`` stages a fault on the saved file, then
+    ``result`` comes back."""
+    name = "Scripted"
+
+    def __init__(self, result: SolveResult, before=None) -> None:
+        self.result = result
+        self.before = before
+
+    async def solve(self, fits_path, *, ra_hint=None, dec_hint=None,
+                    fov_deg_hint=None, downsample=0):
+        if self.before is not None:
+            self.before(Path(fits_path))
+        return self.result
+
+
+def _corrupt(path: Path) -> None:
+    path.write_bytes(b"this is not a FITS file" * 200)
+
+
+def _unusable_wcs() -> WcsSolution:
+    return WcsSolution(crval1=83.8, crval2=-5.4, crpix1=50.0, crpix2=50.0,
+                       cd11=0.0, cd12=0.0, cd21=0.0, cd22=0.0)
+
+
+async def _stamp_one(h, monkeypatch, solver) -> Path:
+    monkeypatch.setattr("astrodeck.providers.pick_solver", lambda hub: solver)
+    await h.capture(0.5, 100, 30, 1, save=True, target="M42")
+    saved = Path(h.last_frame.saved_path)
+    await _drain(h)
+    return saved
+
+
+async def test_a_good_solution_is_logged_as_stamped_and_calibrates(
+        wcs_hub, monkeypatch, bus_lines):
+    """The control for the three below: the line, the card block and the
+    rotator record all appear, so their absence below is the fault's doing."""
+    h, _store = wcs_hub
+    saved = await _stamp_one(h, monkeypatch,
+                             _Scripted(SolveResult(True, wcs=_wcs())))
+    assert ("info", f"stamped WCS on {saved.name}", "solve") in bus_lines
+    assert _has_wcs(saved)
+    assert h.last_sky_angle is not None
+
+
+@pytest.mark.parametrize("fault", [
+    pytest.param(lambda p: p.unlink(), id="the file is gone"),
+    pytest.param(_corrupt, id="the file is not a FITS"),
+])
+async def test_a_stamp_the_file_could_not_take_is_not_logged_as_stamped(
+        wcs_hub, monkeypatch, bus_lines, fault):
+    """RED under mutation "the line unconditional" (``if await
+    asyncio.to_thread(stamp_wcs, ...):`` of ``Hub._solve_and_stamp`` ->
+    ``await asyncio.to_thread(stamp_wcs, ...)`` then the ``stamped WCS``
+    ``bus.log`` with no condition), observed on both cases:
+
+        E   AssertionError: assert [('info', 'st...ts', 'solve')] == []
+        E     Left contains one more item: ('info', 'stamped WCS on Light_M42_L_2026-10-10_034121_0001.fits', 'solve')
+    """
+    h, _store = wcs_hub
+    solver = _Scripted(SolveResult(True, wcs=_wcs()), before=fault)
+    saved = await _stamp_one(h, monkeypatch, solver)
+    assert [ln for ln in bus_lines if ln[1].startswith("stamped WCS")] == []
+    assert [ln[0] for ln in bus_lines
+            if ln[1].startswith(f"WCS not written to {saved.name}")] == ["warning"]
+
+
+async def test_a_solution_with_no_usable_scale_is_refused_and_believed_by_no_one(
+        wcs_hub, monkeypatch, bus_lines):
+    """A solver that hands back an all-zero CD is not stamped, says so, and is
+    not trusted to calibrate the rotator or name the field either.
+
+    RED under mutation "the hub no longer refuses" (the ``if not
+    res.wcs.has_usable_scale():`` block of ``Hub._solve_and_stamp`` removed),
+    observed, the refusal line missing:
+
+        E   AssertionError: assert [] == ['warning']
+        E     Right contains one more item: 'warning'
+
+    and under mutation "refused, but believed" (only the ``return`` after the
+    ``WCS refused`` line removed), the line is there and the rotator is
+    calibrated from the solution anyway:
+
+        >       assert h.last_sky_angle is None
+        E       AssertionError: assert {'calibrated': True, 'camera': 'Sim Camera 533MM', ...} is None
+    """
+    h, _store = wcs_hub
+    solver = _Scripted(SolveResult(True, wcs=_unusable_wcs()))
+    saved = await _stamp_one(h, monkeypatch, solver)
+    assert [ln for ln in bus_lines if ln[1].startswith("stamped WCS")] == []
+    assert [ln[0] for ln in bus_lines
+            if ln[1].startswith(f"WCS refused for {saved.name}")] == ["warning"]
+    assert not _has_wcs(saved)
+    assert h.last_sky_angle is None
+    assert h.field_solve is None
+    assert not [ln for ln in bus_lines if "identify the solved field" in ln[1]]
+
+
 # ------------------------------------ no work at all when off / not locally saved
 
 @pytest.mark.parametrize("reason", ["feature-off", "remote-saved",
