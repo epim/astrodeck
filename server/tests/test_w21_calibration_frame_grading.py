@@ -21,14 +21,16 @@ shared path has to be told what kind of frame it is holding.
   true before a light was shot (#969).
 
 What is driven, through a REAL ``engine.start`` on the simulator with the
-engine's own ``_check_quality``, ``_handle_reject`` and ``_record_frame``
-(nothing here replaces the grader, as the WP-179 test file's harness does), and
-graded from what the engine PUBLISHES (``engine.state``), from the files on
-disk and from ``compute_eta``:
+engine's own ``_handle_reject`` and ``_record_frame`` and, but for one scripted
+verdict (below), its own ``_check_quality``, and graded from what the engine
+PUBLISHES (``engine.state``), from the files on disk and from ``compute_eta``:
 
-* a dark rejected by the HFR median gate (the one gate a calibration frame is
-  held to) and retaken is kept when the retake would fail the star floor, the
-  guide-RMS ceiling or the eccentricity ceiling, one case each;
+* a dark whose first grading is refused and that is retaken is kept when the
+  retake would fail the star floor, the guide-RMS ceiling or the eccentricity
+  ceiling, one case each. The HFR median gate was the one gate a calibration
+  frame was held to and so what refused that first grading; it is not any
+  more (#995, test_w22_calibration_hfr_median.py), so nothing real refuses a
+  calibration frame and the first verdict is scripted, for that one call;
 * the control: a retaken LIGHT frame is still graded by those gates;
 * a DUSK FLATS stage leaves the overhead EMA, its sample count and the ETA's
   confidence where they started;
@@ -166,8 +168,8 @@ async def _run(hub, plan, monkeypatch, *, report=None, lag_s=0.0, body=None,
 
 # ------------------------------------------------------------------ #968
 
-#: The first dark is the one the HFR median gate refuses: a window of four
-#: accepted frames at 3.0 px and a frame at 9.0 px against a factor of 1.5.
+#: Four accepted lights at 3.0 px, so that a light at 9.0 px is refused by the
+#: HFR median gate at a factor of 1.5.
 _HFR_WINDOW = [3.0, 3.0, 3.0, 3.0]
 
 
@@ -183,6 +185,23 @@ def _only_gate(**gate) -> dict:
     return off
 
 
+def _refuse_the_first_calibration_frame(eng, monkeypatch) -> None:
+    """Script ONE verdict: the first calibration frame the engine grades is
+    refused, which is what the HFR median gate did until #995 (a calibration
+    frame is held to no gate now, so nothing real can). Every other grading,
+    the retake's included, is the engine's own ``_check_quality``."""
+    real = eng._check_quality
+    refused: list[dict] = []
+
+    def check(info, **kw):
+        if kw.get("calibration") and not refused:
+            refused.append(info)
+            return False
+        return real(info, **kw)
+
+    monkeypatch.setattr(eng, "_check_quality", check)
+
+
 @pytest.mark.parametrize("gate, plan_kw, reported, guided", [
     # The guider has stopped: the issue's probe. A dark is never guided.
     ("guide RMS", _only_gate(max_guide_rms=2.0), {}, False),
@@ -191,15 +210,14 @@ def _only_gate(**gate) -> dict:
 ])
 async def test_a_retaken_dark_is_not_graded_by_the_light_gates(
         sim_hub, monkeypatch, bus_lines, gate, plan_kw, reported, guided):
-    """Two throwaway darks. The first fails the HFR median gate and is
-    retaken; the retake carries a reading that the named light gate would
-    refuse (the second dark carries it too, and passes, which is the same
-    gate graded as calibration). The retake must be KEPT: banked, on disk,
-    and counted. Unfixed it was unlinked and the frame was lost, with the
-    gate's own sentence in the log."""
+    """Two throwaway darks. The first is refused and is retaken; the retake
+    carries a reading that the named light gate would refuse (the second
+    dark carries it too, and passes, which is the same gate graded as
+    calibration). The retake must be KEPT: banked, on disk, and counted.
+    Unfixed it was unlinked and the frame was lost, with the gate's own
+    sentence in the log."""
     plan = SequencePlan(name="Graded night", guide=False, dither_every=0,
-                        targets=[_lights("Alpha", 0.7)],
-                        hfr_reject_factor=1.5, **plan_kw)
+                        targets=[_lights("Alpha", 0.7)], **plan_kw)
     throwaway = _dark_target("throwaway darks")
 
     def report(ft, n, info):
@@ -207,14 +225,12 @@ async def test_a_retaken_dark_is_not_graded_by_the_light_gates(
             return
         info.pop("hfr", None)
         info.update(reported)
-        if n == 1:
-            info["hfr"] = 9.0
 
     async def body(eng):
-        eng._recent_hfr = list(_HFR_WINDOW)
         monkeypatch.setattr(eng, "_reject_action", lambda: "retake")
         if not guided:
             monkeypatch.setattr(eng, "_frame_was_guided", _stopped)
+        _refuse_the_first_calibration_frame(eng, monkeypatch)
         await eng._run_calibration(0, throwaway)
 
     eng, cam = await _run(sim_hub, plan, monkeypatch, report=report,
@@ -223,7 +239,7 @@ async def test_a_retaken_dark_is_not_graded_by_the_light_gates(
     assert all(t is not throwaway for t in plan.targets), (
         "premise: the throwaway target is not in the plan")
     assert len(darks) == 3, (
-        f"premise: the first dark was refused by the HFR gate and retaken, "
+        f"premise: the first dark was refused and retaken, "
         f"3 exposures for 2 frames: {cam.shots}")
     assert not Path(darks[0]["path"]).exists(), (
         "premise: the refused original was unlinked, so a file that exists "

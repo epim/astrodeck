@@ -54,8 +54,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
+
+# Run as a script, the astrodeck beside it comes first on the path (#915): the
+# venv's editable install points at one checkout, which in a worktree is not
+# this one. The directory is tested for, because the header says this one file
+# may be copied to the rig alone, where nothing sits beside it and nothing is
+# added.
+_SERVER = Path(__file__).resolve().parents[1]
+if (_SERVER / "astrodeck").is_dir() and str(_SERVER) not in sys.path:
+    sys.path.insert(0, str(_SERVER))
 
 #: RA arcseconds per second of time at the sidereal rate.
 SIDEREAL_ARCSEC_PER_S = 15.041

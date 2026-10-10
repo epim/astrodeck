@@ -7,8 +7,11 @@ Server-spawned (plan lifecycle decision): a process-lifetime singleton spawns
 learns its ephemeral loopback port from the portfile, health-checks the
 management API, and tears it down on app shutdown. Restart is LAZY — a crashed
 child is detected and respawned on the NEXT `ensure()` (there is no background
-monitor loop; spawn is driven by a user rig-open, not a poller), throttled by a
-short spawn-backoff so a caller retry loop cannot thrash a crash-looping child.
+monitor loop; spawn is driven by a user rig-open or by an ascom-local device
+reconnecting, not a poller), throttled by a short spawn-backoff so a caller
+retry loop cannot thrash a crash-looping child. A respawn gets a new ephemeral
+port, so a caller that holds the port must ask `ensure()` again to learn it
+(`ComhostConnection` does, on every `Connected=true`; #992).
 
 No-orphan discipline (astrotown dedup lesson): the pidfile is the dedup key —
 before spawning, kill any process recorded in a stale portfile and confirm it is

@@ -75,9 +75,14 @@ class NativeSession:
         key = (host, port)
         conn = self._conns.get(key)
         if conn is None:
-            conn = alpaca.AlpacaConnection(host, port)
+            conn = self._new_connection(host, port)
             self._conns[key] = conn
         return conn
+
+    def _new_connection(self, host: str | None, port: int | None) -> object:
+        """Build the connection a new endpoint gets (a seam for a session whose
+        endpoint is managed, like ``ascom-local``'s)."""
+        return alpaca.AlpacaConnection(host, port)
 
     async def get_device(self, role: str, conn: ConnSpec) -> object:
         """Return (creating + caching on first use) the connected device for

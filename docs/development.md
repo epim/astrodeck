@@ -199,15 +199,32 @@ python scripts\wp_worktree.py add --root C:\scratch --name WP-12-k3f9 --base HEA
 
 # the gate, with a record of whether the tree moved under it
 cd C:\scratch\WP-12-k3f9
-$env:PYTHONPATH = "C:\scratch\WP-12-k3f9\server"
 python scripts\gate_run.py --tree . --cwd server --record C:\scratch\WP-12-k3f9.gate.json -- `
     <main checkout>\server\.venv\Scripts\python.exe -m pytest -q
 ```
 
-`PYTHONPATH` is not optional. The virtualenv's `astrodeck` is an editable
-install of one checkout, so without it a run in a copy imports the original
-and grades code that is not in the copy. Confirm it once with
-`python -c "import astrodeck; print(astrodeck.__file__)"`.
+The virtualenv's `astrodeck` is an editable install of ONE checkout, the main
+one. Code that does not start from the copy's own `server/` imports the
+original instead and grades code that is not in the copy, with nothing to say
+so (#915). What starts from the copy's `server/` is `python -m` and `python -c`
+with that as the working directory, and pytest (conftest.py puts `server/`
+first on `sys.path` and on `PYTHONPATH`, so the children a test starts follow).
+What does not: a script run by path from anywhere else, such as a benchmark or
+probe in a scratch directory, and a child started with its own environment.
+
+- `gate_run.py` puts `<tree>/server` first on `PYTHONPATH` for the command it
+  runs, so anything the command starts follows. Run through it, you set nothing.
+- The scripts in the repository that import astrodeck (`tools/gallery_benchmark.py`,
+  `tools/ui_probe/seed_session.py`, `server/tools/bench_am5_pulse_walk.py`,
+  `server/tools/sn_animation.py`, `scripts/sign_release.py`,
+  `scripts/gen_signing_key.py`) put their own checkout's `server/` first
+  themselves.
+- A script of your own outside the tree does neither. Start it with
+  `sys.path.insert(0, r"<copy>\server")`, or set `$env:PYTHONPATH =
+  "<copy>\server"` before it, and confirm it once with
+  `python -c "import astrodeck; print(astrodeck.__file__)"` from a directory
+  that is not the copy's `server/`. A benchmark or a mutation proof that skips
+  this measures the main tree and reports the result for the copy.
 
 `gate_run.py` refuses to start in the main checkout (pass `--shared-tree` to
 override; the record then says `isolated: false`), and refuses to start while a

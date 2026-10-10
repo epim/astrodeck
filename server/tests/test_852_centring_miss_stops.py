@@ -532,7 +532,7 @@ async def test_the_strings_keep_the_rules(name, bus_lines):
     """Every new line and stop text, built by the real helpers with every
     ``where`` and names of 7 and 24 characters:
 
-    - nothing trips the UI's humanizer (the four word pairs);
+    - nothing trips the UI's humanizer (its four rules);
     - every stop line has its outcome ("stopping this target") inside the
       137 characters the UI keeps, and every "goes on" line its "imaging
       goes on";

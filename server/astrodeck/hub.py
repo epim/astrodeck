@@ -12,6 +12,7 @@ import asyncio
 import collections
 import contextlib
 import json
+import logging
 import math
 import os
 import shutil
@@ -42,6 +43,8 @@ from .devices.base import (
     SyncRefused,
     SyncUnverified,
     Telescope,
+    is_present,
+    link_in_doubt,
     position_known_for_motion,
     quotable_sync_reply,
     rig_position_known,
@@ -237,6 +240,10 @@ SAFETY_READ_TIMEOUT_S = 8.0
 #: closes the fail-OPEN seam where a dead poller keeps returning the last SAFE
 #: reading all night (C1-12/C1-15).
 SAFETY_STALE_SLACK_S = 5.0
+#: Bound on one link probe (`Hub._kick_link_probes`): a host that black-holes
+#: the request must not leave a probe task hanging for the HTTP client's own
+#: 30 s, since only one probe per device is ever in flight.
+LINK_PROBE_TIMEOUT_S = 5.0
 
 #: How long the 2 s status poll waits for the imaging camera's sensor
 #: temperature (#724). One status period at most: for a native camera the read
@@ -1311,6 +1318,9 @@ class Hub:
         # loop and the engine gate read it for free. None until the first poll.
         self._safety_task: asyncio.Task | None = None
         self._safety_reading: SafetyReading | None = None
+        # role -> the one in-flight link probe for a device whose link was lost
+        # (`_kick_link_probes`, #989).
+        self._link_probes: dict[str, asyncio.Task] = {}
         # last (is_safe, stale, reason) actually PUBLISHED on the bus, so the two
         # producers of a safety verdict (this poller + the engine's debounced
         # _on_unsafe) can't announce the same trip twice (UX #33).
@@ -1619,17 +1629,8 @@ class Hub:
                         extra={"name": name})
         session = await get_backend("native").open(conn)
         dev = await session.get_device(role, conn)
-        await dev.connect()
-        dev.role = role                        # device identity for Profiles (A.6)
         old = self.devices.get(role)
         old_session = self._alpaca_sessions.get(role)
-        self.devices[role] = dev
-        self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
-        self._mount_jnow_reprobe = None
-        # retain the session so its httpx client is aclosed when this role is later
-        # replaced or the rig torn down (session-leak fix); close the one we are
-        # replacing so its keep-alive sockets don't accumulate per reconnect.
-        self._alpaca_sessions[role] = session
         # The SAME Alpaca device again (reconnect_role rebuilds one from its
         # record, #966) is not disconnected: the server keeps one Connected
         # state per device, so the old object's Connected=False would undo the
@@ -1641,12 +1642,47 @@ class Hub:
         if old and not replaced_same:
             try:
                 await old.disconnect()
-            except Exception:
+            except Exception:       # the device being replaced is dropped either way
                 pass
+        # The new device's connect comes AFTER the old one's disconnect, never
+        # before (#987, #991). The comparison above reads two spellings of one
+        # endpoint ('localhost' and '127.0.0.1', a LAN name and its address) as
+        # two devices, and the server keeps one Connected state per device, so
+        # the last word on the slot must be the new device's.
+        try:
+            await dev.connect()
+        except (Exception, asyncio.CancelledError):
+            # The replacement never took and the hub keeps the old device, so
+            # put it back as it was: connect the old device again (it was
+            # disconnected above; a server that is gone fails this too, and the
+            # device then reads disconnected for the reconnect gate) and close
+            # the session opened for the replacement instead of leaking it.
+            if old and not replaced_same:
+                try:
+                    await old.connect()
+                except Exception as exc:
+                    self.say_swallowed(
+                        "reconnecting the previous device after a failed "
+                        "rebuild", exc)
+            try:
+                await session.close()
+            except Exception as exc:
+                self.say_swallowed(
+                    "closing the replacement session after a failed connect",
+                    exc)
+            raise
+        dev.role = role                        # device identity for Profiles (A.6)
+        self.devices[role] = dev
+        self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
+        self._mount_jnow_reprobe = None
+        # retain the session so its httpx client is aclosed when this role is later
+        # replaced or the rig torn down (session-leak fix); close the one we are
+        # replacing so its keep-alive sockets don't accumulate per reconnect.
+        self._alpaca_sessions[role] = session
         if old_session is not None:
             try:
                 await old_session.close()
-            except Exception:
+            except Exception:       # as above: a session nothing references any more
                 pass
         # record enough to replay this connection (reconnect_role / escalation).
         self._last_connect[role] = {"backend": "alpaca", "host": host, "port": port,
@@ -1661,7 +1697,7 @@ class Hub:
         if self.guider:
             try:
                 await self.guider.disconnect()
-            except Exception:
+            except Exception:       # the guider being replaced is dropped either way
                 pass
         self.guider = PHD2Guider(host, port)
         await self.guider.connect()
@@ -1707,8 +1743,12 @@ class Hub:
         try:
             if await current.is_active():
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            # Unreadable is treated as idle, as it always was; a guider that
+            # cannot say whether it is guiding is worth a line before it is
+            # swapped (#993).
+            self.say_swallowed("the current guider would not say whether it "
+                               "is guiding, so it was treated as idle", exc)
         want = _providers.guide_override_family(self)   # auto/backend/astrodeck/sim
         candidates = self._candidate_guiders()
         if want == "backend":
@@ -1735,7 +1775,7 @@ class Hub:
                 if current is not g:
                     try:
                         await current.disconnect()
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001 - the guider being replaced is dropped either way
                         pass
                 bus.log("info",
                         f"guide provider -> {getattr(g, 'name', 'guider')} "
@@ -2073,8 +2113,8 @@ class Hub:
         try:
             try:
                 await self.cancel_warm("the rig is disconnecting", finalize=True)
-            except Exception:       # noqa: BLE001 - best-effort, as it always was
-                pass
+            except Exception:       # noqa: BLE001 - `cooler_owed` stays set (no `else`)
+                pass                #   so the cleanup below still switches the cooler off
             else:
                 # cancel_warm sent it, or said in a warning why it could not.
                 cooler_owed = False
@@ -2100,6 +2140,10 @@ class Hub:
             if self._safety_task and not self._safety_task.done():
                 self._safety_task.cancel()
             self._safety_task = None
+            for probe_task in self._link_probes.values():
+                if not probe_task.done():
+                    probe_task.cancel()
+            self._link_probes.clear()
             self._safety_reading = None
             self._last_connect.clear()
             if self._nina_ws_task and not self._nina_ws_task.done():
@@ -2193,8 +2237,15 @@ class Hub:
                            f"warm ramp: {why}", "camera")
 
     def require(self, role: str):
+        """The device filling ``role``, or a DeviceError saying none is there.
+
+        A device that lost its link a moment ago and has not been heard from
+        since is still THERE (`is_present`, #989): the call is attempted and
+        fails or succeeds on its own merits. Refusing it as 'no telescope
+        connected' would turn one failed read into a mount STOP, park or goto
+        that is refused until somebody reconnects by hand."""
         dev = self.devices.get(role)
-        if dev is None or not dev.connected:
+        if dev is None or not is_present(dev):
             raise DeviceError(f"no {role} connected")
         return dev
 
@@ -3078,7 +3129,7 @@ class Hub:
                 if self.nina_client is None:
                     return
                 self._bridge_ready = True
-            except Exception:
+            except Exception:       # a ping that fails IS the signal: `last_ok` goes stale
                 pass
             await asyncio.sleep(5.0)
 
@@ -3686,14 +3737,30 @@ class Hub:
         already been burned by is a FILTER card naming the wrong slot (every
         frame before 2026-08-02 is off by one). Two questions about one instant
         get one read; two instants get two.
+
+        BOUNDED (#999), by ``STATUS_DEVICE_READ_TIMEOUT_S`` through
+        ``_status_read``, as the status poll's own read of this wheel is. This
+        read follows the exposure of every capture, centring solve, rotate,
+        rotator sync and guide offset, and feeds a header card and a
+        judgement; a native wheel whose SDK read stalls in USB never trips a
+        transport timeout, so unbounded it held the caller for ever with the
+        camera lane already released. A read that does not return answers
+        None, the answer a read that raised gives: the slot is unknown, the
+        FILTER card is left off and no blackout slot is named, and the frame
+        goes on to be saved and published. The status bound and not the wheel
+        MOVE bound (``SOLVE_WHEEL_MOVE_TIMEOUT_S``): this is a read, and a
+        minute and a half a frame is no better than for ever on a live loop.
+        ``_status_read`` keeps ONE read in flight per wheel, so a stalled read
+        is never stacked under the next frame's, and says the stall once.
         """
         try:
             fw = self.devices.get("filterwheel")
             if not fw or not getattr(fw, "connected", False):
                 return None
-            pos = await fw.get_position()
+            pos = await self._status_read(
+                set(), "filterwheel", "position", fw, fw.get_position)
             return None if pos is None else int(pos)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - incl. StatusReadStalled
             return None
 
     async def _opaque_slot_in_beam(self, slot: int | None = ...) -> int | None:
@@ -3777,8 +3844,9 @@ class Hub:
                 meta.focal_length_mm = float(fl)
             if opt.get("have_optics") and opt.get("pixel_size_um"):
                 meta.pixel_size_um = float(opt["pixel_size_um"])   # UNBINNED
-        except Exception:
-            pass
+        except Exception as exc:
+            self.say_swallowed("the frame header went without the optics "
+                               "cards", exc)
         # site (only when a real, non-default site is configured)
         lat = lon = None
         try:
@@ -3805,7 +3873,7 @@ class Hub:
                 meta.mount_dec_deg = float(dec_deg)
                 meta.mountra = coords.format_ra_fits(ra_hours)
                 meta.mountdec = coords.format_dec_fits(dec_deg)
-            except Exception:
+            except Exception:       # pure formatting of two floats: a card is left off
                 pass
             if lat is not None and lon is not None:
                 try:
@@ -3820,7 +3888,7 @@ class Hub:
                         # count drops - both of them are "low".
                         meta.obj_az_deg = az
                         meta.airmass = coords.airmass(alt)
-                except Exception:
+                except Exception:   # pure arithmetic on numbers already in hand: a card is left off
                     pass
         # cooler setpoint (only when a cooler is present AND on)
         try:
@@ -3830,18 +3898,28 @@ class Hub:
                 cooler = await getc()
                 if cooler and cooler.get("on") and cooler.get("target_c") is not None:
                     meta.set_temp_c = float(cooler["target_c"])
-        except Exception:
-            pass
+        except Exception as exc:
+            self.say_swallowed("the frame header went without the cooler "
+                               "set point", exc)
         # focuser position + optional thermometer
         try:
             foc = self.devices.get("focuser")
             if foc and getattr(foc, "connected", False):
                 meta.focuser_pos = int(await foc.get_position())
-                t = await foc.get_temperature()
-                if t is not None:
-                    meta.focuser_temp_c = float(t)
-        except Exception:
-            pass
+                # The thermometer is its own read (poll_status says the same):
+                # the position is already in the header when it raises.
+                try:
+                    t = await foc.get_temperature()
+                    if t is not None:
+                        meta.focuser_temp_c = float(t)
+                except Exception as exc:
+                    self.say_swallowed("the frame header went without the "
+                                       "focuser temperature", exc)
+        except Exception as exc:
+            # The thermometer is asked only after the position read succeeds,
+            # so here the header has neither.
+            self.say_swallowed("the frame header went without the focuser "
+                               "position and temperature", exc)
         # rotator sky position angle
         try:
             rot = self.devices.get("rotator")
@@ -3871,8 +3949,9 @@ class Hub:
                 meta.rotator_angle_deg = _rotation.mechanical_to_sky(
                     mech_now, anchor_mech, anchor_offset,
                     self._effective_rotator_sign())
-        except Exception:
-            pass
+        except Exception as exc:
+            self.say_swallowed("the frame header went without the rotator "
+                               "angle", exc)
         # EGAIN (populated on the frame by the backend in Task 5; getattr keeps
         # this task decoupled from that field's existence)
         eg = getattr(frame, "egain_e_per_adu", None)
@@ -4164,8 +4243,11 @@ class Hub:
                 # (supervisor ruling 3).
                 if ra is not None:
                     ra, dec = await self.from_mount_frame(tel, ra, dec)
-            except Exception:
-                pass
+            except Exception as exc:
+                # The frame is still saved, with no pointing in its header
+                # (spec 9: a header never fails a capture), and said (#993).
+                self.say_swallowed("the mount's position could not be read "
+                                   "for a frame's header", exc)
         if note_pointing:
             # The identification's staleness check and its pointing fallback both
             # ride THIS read — the one the header was already paying for — so
@@ -5277,7 +5359,7 @@ class Hub:
                 if i < len(offsets):
                     try:
                         cur[i] = int(offsets[i])
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError):   # narrowed: the slot keeps its offset
                         pass
             fw.filter_offsets = cur
         # Blackout flags are user-assigned — no wheel reports them — so unlike
@@ -5384,8 +5466,9 @@ class Hub:
             from .config import config_store, save_egain_config
             save_egain_config(config_store.cfg().active_profile_id,
                               self._egain_learned)
-        except Exception:  # pragma: no cover - persistence is best-effort
-            pass
+        except Exception as exc:  # pragma: no cover - persistence is best-effort
+            self.say_swallowed("the measured e-/ADU could not be saved, so "
+                               "it is lost at the next restart", exc)
         # Driver-reported EGAIN always wins: only stamp a camera that reports 0.
         applied = False
         if not getattr(cam, "egain", 0.0):
@@ -6461,7 +6544,7 @@ class Hub:
                 if i < len(offsets):
                     try:
                         cur[i] = int(offsets[i])
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError):   # narrowed: the slot keeps its offset
                         pass
             fw.filter_offsets = cur
         if opaque is not None:
@@ -7051,8 +7134,9 @@ class Hub:
         try:
             from .sync.runner import runner as _sync_runner
             _sync_runner.note_saved()
-        except Exception:  # noqa: BLE001 - a capture must never fail for this
-            pass
+        except Exception as exc:  # noqa: BLE001 - a capture must never fail for this
+            self.say_swallowed("the file-sync push was not told a frame was "
+                               "saved", exc)
 
     async def _thumb_worker(self) -> None:
         """Render queued thumbnails off the event loop, one at a time.
@@ -9556,8 +9640,14 @@ class Hub:
             try:
                 was_guiding = await self.guider.is_active()
                 await self.guider.stop_guiding()
-            except Exception:
-                pass
+            except Exception as exc:
+                # The flip goes on (a refused flip loses the night), but a
+                # guider that would not stop is still pulsing through the
+                # slew, and `was_guiding` may be unread (#993). FLAGGED
+                # site_derived like the info line above: this runs at the
+                # target's computed transit.
+                self.say_swallowed("the guider would not stop for the "
+                                   "meridian flip", exc, site_derived=True)
         side_before = await self.pier_side_now()
         # Two spellings of one call on purpose: with no angle the re-centre is
         # today's call keyword for keyword, not one carrying rotation_deg=None,
@@ -9691,12 +9781,52 @@ class Hub:
         # alongside the status poller from every connect path.
         self.ensure_safety_poller()
 
+    def _kick_link_probes(self) -> None:
+        """Start one probe for each device whose link was lost (#989).
+
+        A device that lost its link reads ``connected == False`` so the
+        reconnect gate sees it, and every poll that is gated on ``connected``
+        then leaves it alone: nothing would ever hear it come back, and one
+        slow read would be a permanent 'disconnected' on the status surface
+        until an operator reconnected by hand. The probe asks the server
+        whether the device is connected (`probe_link`, a cheap read of the
+        Connected property) on the status cadence until it answers. One probe
+        per device is in flight at a time, on its own task and under its own
+        bound, so a dead host never stalls the status loop. Never raises."""
+        for role, dev in list(self.devices.items()):
+            if not link_in_doubt(dev):
+                continue
+            probe = getattr(dev, "probe_link", None)
+            if not callable(probe):
+                continue
+            held = self._link_probes.get(role)
+            if held is not None and not held.done():
+                continue
+            self._link_probes[role] = asyncio.create_task(
+                self._probe_link(role, probe))
+
+    async def _probe_link(self, role: str, probe) -> None:
+        try:
+            back = await asyncio.wait_for(probe(), timeout=LINK_PROBE_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:       # noqa: BLE001 - still gone; the next tick asks again
+            return
+        if back:
+            bus.log("info", f"the {role} answers again after its link was lost",
+                    "hub")
+
     async def _status_loop(self) -> None:
         while True:
+            with contextlib.suppress(Exception):
+                self._kick_link_probes()
             try:
                 bus.publish("status", **await self.poll_status())
-            except Exception:
-                pass
+            except Exception as exc:
+                # A poll that raises as a whole publishes nothing, so every
+                # client's status stops with no sign why (#993).
+                self.say_swallowed("the status poll failed, so no status "
+                                   "frame was published", exc)
             # NOTE: deliberately NOT routed through the sim fast-path knob. This
             # is an UNBOUNDED background loop; zeroing its cadence turns it into a
             # tight ``await asyncio.sleep(0)`` busy-spin that pegs a core for the
@@ -9722,7 +9852,12 @@ class Hub:
         idles until one appears."""
         while True:
             mon = self.safety
-            if mon is None or not getattr(mon, "connected", False):
+            # A monitor that lost its link a moment ago is still polled
+            # (`is_present`, #989): the read either fails, and is cached as
+            # the STALE reading that fail-closes, or succeeds, which is what
+            # puts the monitor back. Skipping it would hold the cache empty,
+            # and the monitor on the 'disconnected' side, for the whole night.
+            if mon is None or not is_present(mon):
                 self._safety_reading = None
             else:
                 prev = self._safety_reading
@@ -10066,6 +10201,54 @@ class Hub:
             return None, False
         return probe.result(), True
 
+    def say_swallowed(self, what: str, exc: BaseException, *,
+                      site_derived: bool = False) -> None:
+        """Say, once per observing night, that a best-effort step raised and
+        was skipped (#993, the shape #811, #936 and #964 found: an
+        ``except Exception: pass`` on a path whose failure matters, so the
+        only evidence of it was the thing that failed).
+
+        ``what`` is the step in plain words and is the line's whole subject;
+        the exception's TYPE is the rest, never its text, which can quote a
+        path or a device's reply. One line per (step, type) per NIGHT, keyed
+        by ``events.night_key`` because the durable record is the night's own
+        log file: a step that fails the same way every two-second poll says
+        it on the first and stays quiet, a different type is news, and a
+        fault that is still there tomorrow is in tomorrow's file too (a
+        latch that lasted the process would leave it out of every night after
+        the first). The key is stamped before the line is published, and a
+        bus that cannot take it falls back to the logger, so this can neither
+        repeat itself nor raise into the status poll, the capture or the
+        flip it is called from.
+
+        ``site_derived`` flags the line (spec 6.9, #166) for a step that runs
+        at a moment the sky sets: the guider's stop at a meridian flip happens
+        at the target's computed transit, so that line left unflagged would
+        hand a principal without ``view.site_derived`` the very moment the
+        flagged line beside it withholds. It goes to ``bus.log`` and nowhere
+        else; the once-per-night latch does not read it.
+
+        The line says what failed and nothing about what happens next: a
+        warning reaches the alert sinks, and a promise that is true of one
+        caller is false of another. The engine's twin is
+        ``SequenceEngine._say_swallowed``, which is once per run."""
+        from .events import night_key
+        night = night_key()
+        if getattr(self, "_swallowed_night", None) != night:
+            self._swallowed_night = night
+            self._swallowed_said = set()      # (step, exception type) pairs
+        key = (what, type(exc).__name__)
+        if key in self._swallowed_said:
+            return
+        self._swallowed_said.add(key)
+        line = f"{what} ({key[1]})"
+        # Passed only when set, as every other flagged call in this file does.
+        flag = {"site_derived": True} if site_derived else {}
+        try:
+            bus.log("warning", line, "hub", **flag)
+        except Exception:  # noqa: BLE001 - the bus is what failed; the caller goes on
+            logging.getLogger(__name__).warning(line)
+
     async def _status_read(self, stalled: set[str], role: str, what: str,
                            dev, make):
         """One of the status poll's device reads, BOUNDED (#814, the class of
@@ -10164,6 +10347,14 @@ class Hub:
         async def read(role: str, what: str, dev, make):
             return await self._status_read(stalled, role, what, dev, make)
 
+        def lost(block: str, exc: BaseException) -> None:
+            """Say that ``block`` is off this frame because its read raised
+            (#993). A stalled read is not said again here: ``_status_read``
+            said it, once, with the bound it missed."""
+            if not isinstance(exc, StatusReadStalled):
+                self.say_swallowed(
+                    f"the status frame went without its {block}", exc)
+
         out["live_stack_active"] = self.live_stacker is not None   # NOV-1 server truth
         out["bahtinov_active"] = self.bahtinov is not None         # NOV-12 server truth
         # These must live in poll_status (not just summary): the store does a
@@ -10245,8 +10436,10 @@ class Hub:
                            "low": free_gb < 10, "critical": free_gb < 1,
                            "capture_dir": str(CAPTURE_DIR),
                            "total_gb": round(du.total / 1e9, 1)}
-        except OSError:
-            pass
+        except OSError as exc:
+            # The capture volume itself unreadable (a USB disk that dropped off
+            # the bus, a share that went away) is the case the block is for.
+            lost("capture-disk free space", exc)
         # CHEAP safety block: the cached reading from the own-cadence poller (no
         # device I/O here — the poller did it). None when no monitor / not yet read.
         sr = self._safety_reading
@@ -10266,8 +10459,8 @@ class Hub:
             _sun_watch = getattr(self, "sun_watch", None)
             if _sun_watch is not None:
                 out["sun_watch"] = _sun_watch.state()
-        except Exception:
-            pass
+        except Exception as exc:
+            lost("sun watch state", exc)
         # THE DEW LOOP'S OWN VIEW OF ITSELF (D-RIG-3), cached by its own tick -
         # no weather fetch and no device read happen here. TOP LEVEL rather than
         # inside `camera`, because the loop drives camera window heaters AND
@@ -10282,8 +10475,8 @@ class Hub:
             _snap = _dew.snapshot() if _dew is not None else None
             if _snap is not None:
                 out["dew"] = _snap
-        except Exception:
-            pass
+        except Exception as exc:
+            lost("dew loop state", exc)
         tel = self.devices.get("telescope")
         if tel and tel.connected:
             ra = dec = None
@@ -10343,8 +10536,8 @@ class Hub:
                         "error_arcmin": self._pointing_error_arcmin,
                     },
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                lost("mount block", exc)
             # Server-computed meridian (Monitor): NINA returns a real number; for
             # sim/Alpaca the hub derives it from the hour angle so the Monitor's
             # flip countdown populates on every backend (monitor spec §6.1).
@@ -10361,8 +10554,8 @@ class Hub:
                 # stash so the engine's (sync) ETA can window-gate the flip cost
                 # without doing device I/O.
                 self.last_meridian = meridian
-            except Exception:
-                pass
+            except Exception as exc:
+                lost("meridian block", exc)
         # WHEN THE FOCUSER IS SAMPLED, for the fingerprint (#760). Stamped
         # BEFORE the read, so a vouch that lands while this poll is still on
         # its way to ``record`` (every await between here and there: the wheel,
@@ -10381,8 +10574,8 @@ class Hub:
                                            foc.get_position),
                     "max": foc.max_position,
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                lost("focuser block", exc)
             else:
                 # TEMPERATURE IS ITS OWN READ. It used to share the try above,
                 # so an EAF with an unplugged probe (or any driver that raises
@@ -10403,7 +10596,7 @@ class Hub:
                 try:
                     out["focuser"]["moving"] = bool(await read(
                         "focuser", "motion", foc, foc.is_moving))
-                except Exception:
+                except Exception:       # key absent == this backend cannot say
                     pass
                 # Static capability, not a reading — the UI needs it to decide
                 # whether to offer re-anchoring at all.
@@ -10435,7 +10628,7 @@ class Hub:
                         out["focuser"]["temp_comp"] = status_node(
                             _cfg, temperature_c=_temp, position=_pos,
                             focuser_max=foc.max_position)
-                except Exception:
+                except Exception:       # a derived display of a pure decision
                     pass
                 # WHAT A SWEEP WOULD ACTUALLY DO, so the Focus screen can print
                 # it before the tap. The width is no longer a constant the UI
@@ -10450,7 +10643,7 @@ class Hub:
                     out["focuser"]["sweep"] = {
                         "step": g.step, "steps_each_side": g.steps_each_side,
                         "basis": g.basis, "measured": g.measured}
-                except Exception:
+                except Exception:       # a preview of a sweep; the sweep reads its own file
                     pass
         fw = self.devices.get("filterwheel")
         if fw and fw.connected:
@@ -10486,8 +10679,8 @@ class Hub:
                     "gains": list(fw.filter_gains or []),
                     "dark_slot": fw.dark_slot(),
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                lost("filter-wheel block", exc)
             else:
                 # Its OWN try, for the same reason focuser.moving has one above:
                 # `moving` is the newest reading here and the least universally
@@ -10498,7 +10691,7 @@ class Hub:
                 try:
                     out["filterwheel"]["moving"] = bool(await read(
                         "filterwheel", "motion", fw, fw.is_moving))
-                except Exception:
+                except Exception:       # key absent == this backend cannot say
                     pass
         # UX #27: roof/dome state on the status surface. The roof closing was
         # visible only in Settings -> Safety, so the dashboard said nothing while
@@ -10515,8 +10708,8 @@ class Hub:
                         getattr(dome, "requires_park_before_close", True)),
                     "can_bind": bool(getattr(dome, "can_bind", False)),
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                lost("roof block", exc)
         rot = self.devices.get("rotator")
         if rot and rot.connected:
             try:
@@ -10558,8 +10751,8 @@ class Hub:
                     "sky_sign": self._rotator_sky_sign,
                     "trusted": self._rotation_trusted,
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                lost("rotator block", exc)
         cam = self.devices.get("camera")
         if cam and cam.connected:
             try:
@@ -10593,8 +10786,13 @@ class Hub:
                     from .imaging.video import camera_capabilities
                     _vcaps = camera_capabilities(cam)
                     _native_cam = isinstance(cam, NativeCamera)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Fail-closed stays (the video control is disabled), but
+                    # an import that fails in a build is a defect, and the
+                    # control would stay off with nothing to say why (#993).
+                    self.say_swallowed("the camera's video capabilities could "
+                                       "not be read, so video is offered as "
+                                       "unavailable", exc)
                 _burst = bool(getattr(_vcaps, "burst_supported", False))
                 out["camera"] = {
                     "temperature": temp,
@@ -10706,7 +10904,7 @@ class Hub:
                            if callable(getd) else None)
                     if dew is not None:
                         out["camera"]["dew_heater"] = int(dew)
-                except Exception:
+                except Exception:       # key absent == this camera cannot be asked
                     pass
                 # Issue #22: the hot-side fan, read from the camera so a restart
                 # cannot make it look like whatever was last written. Absent
@@ -10718,7 +10916,7 @@ class Hub:
                            if callable(getf) else None)
                     if fan is not None:
                         out["camera"]["fan_power"] = int(fan)
-                except Exception:
+                except Exception:       # key absent == this camera cannot be asked
                     pass
                 # Monitor cooler readout — driven by the per-backend get_cooler()
                 # (sim power model, Alpaca coolerpower probe, NINA optional). The
@@ -10727,17 +10925,23 @@ class Hub:
                 getc = (getattr(cam, "get_cooler", None)
                         if _cam_answered else None)
                 if callable(getc):
-                    cooler = await read("camera", "cooler", cam, getc)
-                    if cooler is not None:
-                        tgt = cooler.get("target_c")
-                        cooler["at_target"] = bool(
-                            tgt is not None and temp is not None
-                            and abs(temp - tgt) <= self._cooler_at_target_c())
-                        cooler.setdefault("can_report_power",
-                                          getattr(cam, "can_report_cooler_power", False))
-                        out["camera"]["cooler"] = cooler
-            except Exception:
-                pass
+                    # Its own guard (#993): the camera block above is built and
+                    # holds what it read, so a cooler that raises costs the
+                    # frame the cooler readout and nothing else.
+                    try:
+                        cooler = await read("camera", "cooler", cam, getc)
+                        if cooler is not None:
+                            tgt = cooler.get("target_c")
+                            cooler["at_target"] = bool(
+                                tgt is not None and temp is not None
+                                and abs(temp - tgt) <= self._cooler_at_target_c())
+                            cooler.setdefault("can_report_power",
+                                              getattr(cam, "can_report_cooler_power", False))
+                            out["camera"]["cooler"] = cooler
+                    except Exception as exc:
+                        lost("cooler readout", exc)
+            except Exception as exc:
+                lost("camera readings", exc)
             # Warm-down ramp progress (2026-08-04). Deliberately OUTSIDE the try
             # above: the cooler probe is the flakiest call in this block, and the
             # one moment the user most needs to see "warming, 6 min to go" is the
@@ -10793,8 +10997,9 @@ class Hub:
             _slow = _fp.take_slow_write_notice()
             if _slow:
                 bus.log("warning", _slow, "fingerprint")
-        except Exception:  # noqa: BLE001 — never break status over bookkeeping
-            pass
+        except Exception as exc:  # noqa: BLE001 — never break status over bookkeeping
+            self.say_swallowed("the device fingerprint could not be recorded",
+                               exc)
         # THE GUIDE CAMERA'S LIVENESS (#16, job 2c). The imaging camera is asked
         # for its temperature above every tick, and for a native camera that
         # read is also the only thing that notices an IDLE unplug: the adapter
@@ -10829,7 +11034,7 @@ class Hub:
                         lambda t: t.cancelled() or t.exception())
                     self._guide_probe = probe
                 await asyncio.wait({probe}, timeout=5.0)
-            except Exception:
+            except Exception:       # a probe; the next poll asks again
                 pass
         # The probe may have just noticed an unplug (the adapter's ``CameraGone``
         # marks the device disconnected from its worker thread). ``connected`` was
@@ -10840,7 +11045,7 @@ class Hub:
         if gcam is not None and isinstance(_listed, dict) and "guide_camera" in _listed:
             try:
                 _listed["guide_camera"] = gcam.describe()
-            except Exception:
+            except Exception:       # the entry keeps the plain listing it already has
                 pass
         if self.guider and self.guider.connected:
             out["guider"] = self.guider.stats().__dict__ | {"name": self.guider.name}

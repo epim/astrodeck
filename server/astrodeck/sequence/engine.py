@@ -44,8 +44,8 @@ from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
 from .. import capture_geometry, naming
 from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
                             PierSide, SyncRefused, SyncUnverified,
-                            position_known_for_motion, quotable_sync_reply,
-                            rig_position_known)
+                            is_present, position_known_for_motion,
+                            quotable_sync_reply, rig_position_known)
 from ..mount_offset import (POSITION_UNKNOWN_MOTION_DETAIL,
                             POSITION_UNKNOWN_SAFE_ORDER)
 from ..events import SITE_DERIVED_KEY, bus, night_key
@@ -11787,6 +11787,9 @@ class SequenceEngine:
             # guided. The retake used to be graded without it, so a retaken
             # dark was thrown away as "shot with the guider stopped" and the
             # retake was spent for a frame the first check would have kept.
+            # Since #995 the HFR median gate leaves a calibration frame out
+            # too, so nothing real refuses one now and a calibration retake
+            # is reached only by a gate that someday does.
             accepted = self._check_quality(new_info,
                                            calibration=target.calibration)
             self._reporter_record(target, step, new_info, accepted=accepted)
@@ -11839,7 +11842,11 @@ class SequenceEngine:
     def _unlink_saved(info: dict) -> None:
         """Delete the FITS a rejected frame saved (sim/Alpaca local saves only —
         NINA saved_paths live on the imaging host and are not local). Never
-        raises."""
+        raises, but SAYS when the file is still there afterwards (#994): on
+        Windows a file held open by antivirus or a thumbnail reader cannot be
+        deleted, and the frame stayed in the capture folder, where a stacker's
+        folder glob picks it up, with nothing to say the run had meant to
+        remove it."""
         if not isinstance(info, dict):
             return
         path = info.get("saved_path")
@@ -11858,12 +11865,23 @@ class SequenceEngine:
         # bundle's source selection. Only the delete side was missing it.
         if not Hub._is_local_save(path):
             return
+        p = Path(path)
         try:
-            p = Path(path)
             if p.is_file():
                 p.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            # One line per file, not the run-wide latch `_say_swallowed` keeps:
+            # each leftover is a different frame the owner has to deal with, and
+            # the count is bounded by the rejects, each of which already says
+            # itself. The FILE NAME only, never the directory (it is the
+            # capture root's path) and never the exception's text, which quotes
+            # that path.
+            line = (f"the rejected frame {p.name} could not be deleted and is "
+                    f"still in the capture folder ({type(exc).__name__})")
+            try:
+                bus.log("warning", line, "sequence")
+            except Exception:  # noqa: BLE001 - the bus is what failed; the caller goes on
+                logging.getLogger(__name__).warning(line)
 
     # --------------------------------------------------------- safety gate (§1.9)
 
@@ -11915,7 +11933,7 @@ class SequenceEngine:
             # branch below. Absent and disconnected are the same situation to an
             # operator and were opposite situations to this code.
             await self._no_safety_source(target)
-        elif not getattr(mon, "connected", False):
+        elif not is_present(mon):
             await self._on_unsafe("safety monitor disconnected", stale=True,
                                   target=target)
         else:
@@ -12470,7 +12488,7 @@ class SequenceEngine:
             await self._checkpoint()
             await asyncio.sleep(SAFETY_PAUSE_POLL_S)
             mon = self.hub.devices.get("safety")
-            if mon is not None and not getattr(mon, "connected", False):
+            if mon is not None and not is_present(mon):
                 self._unsafe_streak += 1            # disconnected → unsafe
                 continue
             reading = await self._read_safety()
@@ -12517,7 +12535,7 @@ class SequenceEngine:
         # NOT fall through to the warn/pause/abort branches below.
         dome = self.hub.devices.get("dome")
         closing = bool(cfg and cfg.safety.close_dome_on_unsafe
-                       and dome is not None and getattr(dome, "connected", False))
+                       and dome is not None and is_present(dome))
         act = self._escalated_action(act, closing=closing, cfg=cfg)
         self._record_safety(reason, act)
         # ONE producer per verdict edge (UX #33): the hub's own-cadence poller has
@@ -19936,7 +19954,8 @@ class SequenceEngine:
         (``min_stars``) AND an optional guide-RMS ceiling (``max_guide_rms``)
         AND an optional per-frame eccentricity ceiling (``max_eccentricity``) —
         all AND together; 0 disables each. Star/RMS/ecc gates skip
-        calibration frames (darks/bias/flats have no stars and no guiding).
+        calibration frames (darks/bias/flats have no stars and no guiding),
+        and so does the HFR gate: its median is the LIGHTS' (#995).
 
         Preserves the legacy HFR logic exactly: gate against the median of the
         ACCEPTED window only, fold this frame's HFR in only when accepted and
@@ -19946,7 +19965,16 @@ class SequenceEngine:
         factor = self._policy.hfr_reject_factor
         hfr = info.get("hfr") if isinstance(info, dict) else None
         accepted = True
-        if factor and hfr is not None:
+        # A CALIBRATION FRAME IS NOT A SAMPLE OF THE LIGHTS' SEEING (#995).
+        # The window is the HFR of accepted LIGHT frames, and this gate asks
+        # whether a frame is poor against it. A flat can carry an HFR (the
+        # simulator gives one 3.5 px; glass may detect motes as stars): it was
+        # refused over median * factor, and unlinked or retaken under discard /
+        # retake, and an accepted one was folded into the window below, so DUSK
+        # FLATS ahead of the first light could seed or drag the median that
+        # gates every light after it. Neither the gate nor the fold below is a
+        # calibration frame's business.
+        if factor and hfr is not None and not calibration:
             window = self._recent_hfr
             if len(window) >= 4:
                 med = median(window)
@@ -20030,7 +20058,7 @@ class SequenceEngine:
                 self._rejected += 1
                 bus.log("warning", reason, "sequence")
                 accepted = False
-        if accepted and record and factor and hfr is not None:
+        if accepted and record and not calibration and factor and hfr is not None:
             self._recent_hfr.append(float(hfr))
             self._recent_hfr = self._recent_hfr[-12:]
         return accepted
@@ -21654,7 +21682,7 @@ class SequenceEngine:
                 "close_roof_failed")
         elif close_dome:
             dome = self.hub.devices.get("dome")
-            if dome is not None and getattr(dome, "connected", False):
+            if dome is not None and is_present(dome):
                 from .roof import close_observatory
                 tel = self.hub.devices.get("telescope")
                 ok = await close_observatory(dome, tel, log=bus.log)

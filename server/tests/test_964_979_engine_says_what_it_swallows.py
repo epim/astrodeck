@@ -619,9 +619,9 @@ def test_a_bus_that_cannot_take_the_line_falls_back_to_the_logger(
 #: grades a property of the whole file that no single case can, which is that
 #: the next best-effort guard does not go back to a bare ``pass``.
 _ALLOWED_SILENT_PASS = {
-    ("_unlink_saved", "OSError"): (
-        1, "narrowed to what unlink can raise; the rejected frame is already "
-           "recorded as rejected, and the file left behind is the whole cost"),
+    # `_unlink_saved` was listed here until #994: it says which rejected frame
+    # it could not delete, by file name, one line per file (see
+    # test_993_994_hub_and_app_say_what_they_swallow.py).
     ("_enforce_flip_owed", "Exception"): (
         1, "'not skippable' is the safe read, and the hold it falls to is "
            "announced at error level"),

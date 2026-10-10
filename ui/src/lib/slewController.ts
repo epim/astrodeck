@@ -267,6 +267,12 @@ export const ALT_GUARD_OFF_NOTE =
 
 export const TRUST_POSITION_LABEL = "TRUST POSITION";
 
+/** The `code` of the 409 a move from an unknown position is refused with (the
+ *  server's `POSITION_UNKNOWN_CODE`). One definition, because a guided page
+ *  recognises that refusal by it and the guided wait (`slewAndWait`) makes one
+ *  of its own when the same latch is set after the route has answered. */
+export const POSITION_UNKNOWN_CODE = "position_unknown";
+
 /** The attestation, in full, for the confirmation: what the operator is saying,
  *  what it changes, and what to do instead when it is not true. */
 export const TRUST_POSITION_CONFIRM_TITLE = "Is the tube at home?";

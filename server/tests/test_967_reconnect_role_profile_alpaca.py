@@ -218,9 +218,9 @@ async def test_a_directly_connected_alpaca_role_is_still_rebuilt_from_its_addres
     ``connect_alpaca_device`` records its address and is rebuilt from it -
     a NEW device on a NEW connection to the recorded endpoint.
 
-    What the server holds AFTERWARDS is deliberately not asserted: the rebuild
-    disconnects the replaced object once the new one is connected, and both
-    address the same remote device. That is a separate defect, outside #967."""
+    The server must end holding the device connected: the replaced object
+    addresses the same remote device, and its disconnect used to undo the
+    rebuild's connect (#987, #991: test_987_991_alpaca_rebuild_ends_connected)."""
     h, _lib = hub_env
     await h.connect_alpaca_device("focuser", HOST, PORT, "focuser", 2, "Test focuser")
     old = h.devices["focuser"]
@@ -238,6 +238,7 @@ async def test_a_directly_connected_alpaca_role_is_still_rebuilt_from_its_addres
         HOST, PORT, "focuser", 2)
     assert server.connections_opened == opened + 1
     assert (_key("focuser"), True) in server.connect_puts[puts_before:]
+    assert server.connected[_key("focuser")] is True
 
 
 # ------------------------------------------------------------------- ascom-local

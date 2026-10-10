@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ..devices.base import DomeShutterState
+from ..devices.base import DomeShutterState, is_present
 
 #: A roll-off roof is minutes-slow to travel; the close command gets a generous
 #: bound so a real motor run isn't cut short, while a query is snappy.
@@ -63,9 +63,14 @@ async def close_observatory(
     #    mount's volume AND a connected telescope exists, the mount MUST be
     #    confirmed parked. Any doubt (query failure/timeout) is treated as
     #    NOT parked (fail-safe) → REFUSE. We never issue the park ourselves.
+    #    "Exists" includes a mount that lost its link a moment ago and has not
+    #    been heard from since (`is_present`, #989): one failed read of an
+    #    Alpaca mount must not read as 'no mount here', or the guard is skipped
+    #    over a tube nobody confirmed parked. The query below then either
+    #    answers (and the guard decides on it) or fails (and REFUSES).
     if (getattr(dome, "requires_park_before_close", True)
             and telescope is not None
-            and getattr(telescope, "connected", False)):
+            and is_present(telescope)):
         try:
             parked = await asyncio.wait_for(telescope.is_parked(), query_timeout_s)
         except Exception:

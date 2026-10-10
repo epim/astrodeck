@@ -650,9 +650,13 @@ _NOT_CELESTIAL = {**_GOOD_SOLUTION, "ctype1": "LINEAR", "ctype2": "LINEAR"}
 
 
 def _fake_astap(monkeypatch, solution: dict | None, *,
-                pixel_scale: float | None = 0.968) -> None:
+                pixel_scale: float | None = 0.968,
+                rotation_deg: float = 0.0, rotation_known: bool = True,
+                failure: str | None = None) -> None:
     """``solve_reference`` against an ASTAP that answers with ``solution``
-    (None -> a success carrying no WCS at all)."""
+    (None -> a success carrying no WCS at all, as ``AstapSolver`` returns
+    when it drops a headerlet it cannot use), or, with ``failure``, one that
+    did not solve and says why."""
     import astrodeck.solve as solve_pkg
     from astrodeck.solve.base import SolveResult, WcsSolution
 
@@ -661,9 +665,12 @@ def _fake_astap(monkeypatch, solution: dict | None, *,
             pass
 
         async def solve(self, fits_path, **kw):
+            if failure is not None:
+                return SolveResult(False, message=failure)
             return SolveResult(
                 True, ra_hours=339.267 / 15.0, dec_deg=34.416,
-                rotation_deg=0.0, pixel_scale_arcsec=pixel_scale,
+                rotation_deg=rotation_deg, rotation_known=rotation_known,
+                pixel_scale_arcsec=pixel_scale,
                 wcs=None if solution is None else WcsSolution(**solution),
                 message="solved by ASTAP")
 
@@ -788,6 +795,83 @@ def test_solve_reference_says_when_the_solver_stated_no_scale(tmp_path,
     assert any(ln.startswith("solved reference.fits: scale unknown")
                for ln in lines), lines
     assert not any("0.000" in ln for ln in lines), lines
+
+
+def test_solve_reference_says_when_the_solver_stated_no_rotation(tmp_path,
+                                                                monkeypatch):
+    """#1001: ASTAP's .ini with no CROTA2 is ``rotation_deg`` 0.0 with
+    ``rotation_known`` False (#146), and the line must not read as a real
+    position angle of 0 -- the same unknown-as-a-number class as the scale
+    above (#973).
+
+    RED under mutation "the rotation is printed as a number" (the line
+    formats ``result.rotation_deg`` without consulting ``rotation_known``),
+    observed:
+
+        E   AssertionError: ['solved reference.fits: 0.968 arcsec/px, rotation 0.00 deg']
+    """
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, _GOOD_SOLUTION, rotation_known=False)
+    wcs, lines = _solve_reference(path)
+    assert wcs is not None and wcs.has_celestial, lines
+    assert any(ln.startswith("solved reference.fits: 0.968 arcsec/px, "
+                             "rotation unknown")
+               for ln in lines), lines
+    assert not any("rotation 0.00" in ln for ln in lines), lines
+
+
+@pytest.mark.parametrize("rotation_deg", [0.0, 12.5])
+def test_solve_reference_prints_a_rotation_the_solver_did_report(
+        tmp_path, monkeypatch, rotation_deg):
+    """The control for the case above: a reported rotation is a number, and a
+    reported 0 is still 0 -- it is ``rotation_known``, not the value, that
+    decides."""
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, _GOOD_SOLUTION, rotation_deg=rotation_deg,
+                rotation_known=True)
+    wcs, lines = _solve_reference(path)
+    assert wcs is not None and wcs.has_celestial, lines
+    assert any(ln.startswith(f"solved reference.fits: 0.968 arcsec/px, "
+                             f"rotation {rotation_deg:.2f} deg")
+               for ln in lines), lines
+    assert not any("unknown" in ln for ln in lines), lines
+
+
+def test_solve_reference_says_when_the_solver_solved_but_dropped_the_wcs(
+        tmp_path, monkeypatch):
+    """#1000: ``AstapSolver`` returns ``success`` True with ``wcs`` None and
+    the message "solved by ASTAP" when it drops a solution it cannot use
+    (#943), and the tool logged "ASTAP did not solve reference.fits: solved
+    by ASTAP", a sentence that contradicts itself and hides the cause. Nothing
+    is stamped, and the log says that it solved and what became of the WCS.
+
+    RED under mutation "the original" (the two failures share one branch,
+    ``if not result.success or result.wcs is None``), observed:
+
+        E   AssertionError: ['ASTAP did not solve reference.fits: solved by ASTAP']
+    """
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, None)
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert not _has_sky_axes(path)
+    assert not any("did not solve" in ln for ln in lines), lines
+    assert not any(ln.startswith("solved") for ln in lines), lines
+    assert any("ASTAP solved reference.fits" in ln and "no usable WCS" in ln
+               and "none was stamped" in ln
+               and "skipping the light curve" in ln for ln in lines), lines
+
+
+def test_solve_reference_still_says_did_not_solve_when_the_solver_failed(
+        tmp_path, monkeypatch):
+    """The control for the case above: a solver that reports no solution is
+    still "did not solve", with the solver's own reason."""
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, None, failure="no solution")
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert lines == ["ASTAP did not solve reference.fits: no solution"], lines
+    assert not _has_sky_axes(path)
 
 
 def test_cli_skips_the_light_curve_when_the_stamp_was_refused(tmp_path,
