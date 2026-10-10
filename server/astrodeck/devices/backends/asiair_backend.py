@@ -255,6 +255,63 @@ def _is_busy(exc: BaseException) -> bool:
             and hasattr(exc, "activity") and hasattr(exc, "requested"))
 
 
+#: Said after a libasi failure so a bare class name does not read as a bug.
+_NOT_QUOTED = "libasi's own message is not quoted"
+
+
+def _shown_failure(exc: BaseException) -> str:
+    """How a libasi exception is named in a ``DeviceError`` and in
+    ``last_error``: its class, plus the box's numeric ``code`` when it carries
+    one. NEVER ``str(exc)`` (#927).
+
+    libasi's ``ASIAIRError`` builds its message from the ``error`` string of
+    the box's reply (``asiair/transport.py``: ``raise ASIAIRError(result
+    ["error"], ...)``), and nothing bounds what the box writes there. The box
+    reports the mount's position (``scope_get_info``) and is sent one
+    (``scope_sync``, ``start_auto_goto``), so an error about either can quote
+    it. At the home position the mount points at the pole, so a figure it
+    quotes is a site oracle (#140, #166) in a line that reaches the logs and
+    the status surfaces. The class and the code can be looked up; the words
+    cannot be trusted. The same rule as ``alpaca._shown_error_number`` (#906)
+    and the AM5's (#863)."""
+    name = type(exc).__name__
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and not isinstance(code, bool):
+        return f"{name} code {code}"
+    return name
+
+
+def _cause_kind(exc: BaseException) -> str:
+    """What a failed libasi call was, for ``AsiairTelescope.sync``: ``"busy"``
+    (the box refusing a conflicting command), ``"link"`` (an ``OSError``: a
+    socket error, a timeout, a reset) or ``"other"`` (an answer that is not a
+    known refusal)."""
+    if _is_busy(exc):
+        return "busy"
+    if isinstance(exc, OSError):
+        return "link"
+    return "other"
+
+
+class AsiairCallError(DeviceError):
+    """A ``DeviceError`` for a failed libasi call that says what the failure
+    WAS and keeps nothing of what it SAID (#955).
+
+    The kind (``cause_kind``, see ``_cause_kind``) and the class name
+    (``cause_class``) are decided where the failure is caught, and the error
+    is raised without the libasi exception on ``__cause__`` or ``__context__``.
+    libasi's exception text is the box's own error string (``_shown_failure``),
+    which can quote the mount's position, so any traceback that printed the
+    chain (asyncio's "Task exception was never retrieved", uvicorn's default
+    handler) would re-quote it. The class name is code, so it is safe to show.
+    """
+
+    def __init__(self, message: str, exc: BaseException) -> None:
+        super().__init__(message)
+        self.cause_kind = _cause_kind(exc)
+        self.cause_class = type(exc).__name__
+
+
 # ------------------------------------------------------------------- the link
 
 class _Link:
@@ -281,12 +338,19 @@ class _Link:
 
     async def connect(self) -> None:
         """Open both command sockets (heartbeat on, so the box keeps them)."""
+        failure: AsiairCallError | None = None
         try:
             await asyncio.to_thread(self.client.connect, True)
         except Exception as exc:  # noqa: BLE001
-            self.last_error = str(exc)[:200]
-            raise DeviceError(
-                f"ASIAIR {self.host}: could not connect — {exc}") from exc
+            shown = _shown_failure(exc)
+            self.last_error = f"connect: {shown}"[:200]
+            failure = AsiairCallError(
+                f"ASIAIR {self.host}: could not connect — {shown} "
+                f"({_NOT_QUOTED})", exc)
+        if failure is not None:
+            # Outside the handler and ``from None``: libasi's exception is on
+            # neither ``__cause__`` nor ``__context__`` (#955).
+            raise failure from None
         self.connected = True
         self.last_ok = time.time()
 
@@ -305,7 +369,13 @@ class _Link:
         """Run ONE blocking libasi call off the event loop, under the lock.
 
         Maps libasi's exceptions onto ``DeviceError`` with a message that says
-        what failed and (for BusyError) what the box is doing instead.
+        what failed and (for BusyError) what the box is doing instead. A
+        failure is named by its class and code, never by libasi's own text,
+        which can quote the box's reply (``_shown_failure``, #927). The error
+        is an ``AsiairCallError`` that carries the kind of failure (what
+        ``sync`` classifies on) and chains nothing: libasi's exception is on
+        neither ``__cause__`` nor ``__context__``, so no traceback re-quotes
+        it (#955).
 
         A CANCEL KEEPS THE LOCK UNTIL THE THREAD RETURNS. A cancel (a bound
         such as the engine's ``_bounded`` or the sync read-back's, a STOP)
@@ -317,6 +387,7 @@ class _Link:
         (``DEFAULT_TIMEOUT_S``)."""
         await self._lock.acquire()
         orphaned = False
+        failure: AsiairCallError | None = None
         try:
             rpc = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
             try:
@@ -327,13 +398,20 @@ class _Link:
                 raise
             except Exception as exc:  # noqa: BLE001 — one honest DeviceError out
                 if _is_busy(exc):
-                    raise DeviceError(self._busy_message(exc, what)) from exc
-                self.last_error = f"{what}: {exc}"[:200]
-                raise DeviceError(
-                    f"ASIAIR {self.host}: {what} failed — {exc}") from exc
+                    failure = AsiairCallError(self._busy_message(exc, what), exc)
+                else:
+                    shown = _shown_failure(exc)
+                    self.last_error = f"{what}: {shown}"[:200]
+                    failure = AsiairCallError(
+                        f"ASIAIR {self.host}: {what} failed — {shown} "
+                        f"({_NOT_QUOTED})", exc)
         finally:
             if not orphaned:
                 self._lock.release()
+        if failure is not None:
+            # Outside the handler and ``from None``: libasi's exception is on
+            # neither ``__cause__`` nor ``__context__`` (#955).
+            raise failure from None
         self.last_ok = time.time()
         return value
 
@@ -623,7 +701,8 @@ class AsiairTelescope(_AsiairDevice, Telescope):
         try:
             await self._link.require_idle("a sync", allow_guiding=True)
         except DeviceError as e:
-            kind = "busy" if _is_busy(e.__cause__) else "before"
+            busy = getattr(e, "cause_kind", "other") == "busy"
+            kind = "busy" if busy else "before"
         if kind == "busy":
             raise await self._sync_refused(ASIAIR_BUSY_REASON, SYNC_REPLY_BUSY,
                                            ra_hours, dec_deg)
@@ -635,10 +714,10 @@ class AsiairTelescope(_AsiairDevice, Telescope):
             await self._link.call(self._link.client.mount.sync,
                                   float(ra_hours), float(dec_deg), what="sync")
         except DeviceError as e:
-            cause = e.__cause__
-            if _is_busy(cause):
+            cause = getattr(e, "cause_kind", "other")
+            if cause == "busy":
                 kind = "busy"
-            elif isinstance(cause, OSError):
+            elif cause == "link":
                 # Socket errors, TimeoutError, ConnectionError.
                 kind = "link"
             else:
@@ -792,14 +871,16 @@ class AsiairTelescope(_AsiairDevice, Telescope):
                         or _sky_delta_deg(pos, target) <= ARRIVE_EPS_DEG):
                     return
                 if asyncio.get_running_loop().time() > deadline:
+                    # The separation, never a position (#907): the last read
+                    # of a mount at its home position is the pole at the local
+                    # sidereal time, and a target can be the zenith, so either
+                    # figure in a log line is a site oracle (#140, #166).
                     raise DeviceError(
                         f"{self.name}: {what} did not settle within "
-                        f"{timeout_s:.0f}s — stopped the mount. Last read "
-                        f"RA {pos[0]:.4f}h Dec {pos[1]:+.4f}deg"
+                        f"{timeout_s:.0f}s — stopped the mount"
                         + ("" if target is None else
-                           f", {_sky_delta_deg(pos, target):.2f}deg from the "
-                           f"requested RA {target[0]:.4f}h "
-                           f"Dec {target[1]:+.4f}deg"))
+                           f"; it reports {_sky_delta_deg(pos, target):.2f} "
+                           f"deg from the target"))
         except BaseException:
             try:
                 await self._link.call(self._link.client.mount.stop,

@@ -177,6 +177,38 @@ export function believedPointing(
   return { alt, az };
 }
 
+/** Where the mount says it points in RA/Dec, or `null` when that is not a
+ *  pointing: `believedPointing`'s twin for the equatorial reading (#913).
+ *
+ *  The ONE gate every reader of `status.mount.ra_hours` / `.dec_deg` / `.ra_str`
+ *  / `.dec_str` goes through. #791 gated alt and az and left these. A mount that
+ *  does not know where it points reports its HOME position, the pole, and its
+ *  RA there is not the tube's: a parked or stationary mount's RA follows the
+ *  site's sidereal clock (#883, #166), so the header, the lock screen, the
+ *  atlas footprint and a guided arrival check each showed a precise position
+ *  that nothing backs, and `atPosition` could say "at the target" for a target
+ *  near the pole. `null` when there is no mount block, the position is unknown
+ *  (`position_known === false`, absent reads as known), or RA or Dec is absent
+ *  or not a finite number. The strings are the server's own rendering of the
+ *  same reading and are withheld with it; they are "" when the wire carries
+ *  none. Use `positionKnown(mount)` instead to say WHY nothing is shown. */
+export function believedRaDec(
+  mount: {
+    ra_hours?: number; dec_deg?: number; ra_str?: string; dec_str?: string;
+    position_known?: boolean;
+  } | null | undefined,
+): { ra_hours: number; dec_deg: number; ra_str: string; dec_str: string } | null {
+  if (!mount || !positionKnown(mount)) return null;
+  const { ra_hours, dec_deg, ra_str, dec_str } = mount;
+  if (typeof ra_hours !== "number" || !Number.isFinite(ra_hours)) return null;
+  if (typeof dec_deg !== "number" || !Number.isFinite(dec_deg)) return null;
+  return {
+    ra_hours, dec_deg,
+    ra_str: typeof ra_str === "string" ? ra_str : "",
+    dec_str: typeof dec_str === "string" ? dec_str : "",
+  };
+}
+
 // The copy is written once, here, because three surfaces say it (the classic
 // view, the new sheet, and the pad both of them host) and a sentence that
 // differs between them is a sentence one of them has wrong. It says "solve and
@@ -189,9 +221,10 @@ export function believedPointing(
 // goto is aimed from a position nobody vouches for, so the advice is the safe
 // order above: TRUST POSITION when the tube really is at home, and otherwise a
 // pad key held to bring it home by eye first. The word "plate" never sits beside
-// "solve" here:
-// `humanizeLog` rewrites any line holding both to "Plate-solve failed", and a
-// toast path that forgot `enqueueToast` would turn this advice into its opposite.
+// "solve" here, a habit from when `humanizeLog` rewrote any line holding both to
+// "Plate-solve failed". It maps only a line that IS a failed solve now (#792), so
+// the habit is not needed; a test still holds the copy to it, in case a later
+// humanizer rule reads those two words again.
 //
 // A MOUNT POWERED UP PARKED AT HOME READS THE POLE TOO (WP-103's design note),
 // so this state is the ORDINARY start of every night, until the operator trusts
@@ -219,12 +252,26 @@ export const POSITION_UNKNOWN_NOTE =
   + "home, TRUST POSITION tells the mount where it is; after that, the first "
   + "solve and sync away from the pole measures it.";
 
+/** The second line of a toast that refuses to COPY the mount's RA/Dec into a
+ *  view (recentre on the mount, "use mount position", #928): the reading it
+ *  would have copied is the home position, not the tube's. Written once for the
+ *  same reason as the two above, and it likewise advises no slew (#850). */
+export const POSITION_UNKNOWN_COPY_DETAIL =
+  "The mount is reporting its home position, not the tube's. TRUST POSITION "
+  + "tells it where it is once the tube really is at home.";
+
 /** What the pad lost with the believed position: the horizon guard reads it. */
 export const ALT_GUARD_OFF_NOTE =
   "Horizon guard is off while the mount does not know where it points: the pad "
   + "cannot tell how low the tube is, so watch it.";
 
 export const TRUST_POSITION_LABEL = "TRUST POSITION";
+
+/** The `code` of the 409 a move from an unknown position is refused with (the
+ *  server's `POSITION_UNKNOWN_CODE`). One definition, because a guided page
+ *  recognises that refusal by it and the guided wait (`slewAndWait`) makes one
+ *  of its own when the same latch is set after the route has answered. */
+export const POSITION_UNKNOWN_CODE = "position_unknown";
 
 /** The attestation, in full, for the confirmation: what the operator is saying,
  *  what it changes, and what to do instead when it is not true. */

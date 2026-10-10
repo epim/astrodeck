@@ -187,7 +187,7 @@ async def test_the_precession_is_not_recomputed_for_a_mount_that_has_not_moved(
     # The sim mount is not an Alpaca one, so the transform is skipped entirely;
     # force the JNOW branch the way a real Alpaca mount takes it.
     monkeypatch.setattr(Hub, "_mount_expects_jnow",
-                        lambda self, t: _true(), raising=False)
+                        lambda self, t, **_bound: _true(), raising=False)
 
     first = await hub.from_mount_frame(tel, 5.5, 40.0)
     again = await hub.from_mount_frame(tel, 5.5, 40.0)

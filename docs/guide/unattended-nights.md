@@ -40,6 +40,8 @@ The mosaic held-pass rule, tracked as D-03, counts consecutive passes in which a
 
 This rule also applies when only one live panel remains. It counts passes, not minutes; do not treat the third-pass alert as an exact half-hour timer. Inspect the reported cause and fix it before resuming. A group set aside for the night is not complete, and a restart that night does not erase the set-aside.
 
+A last panel that was set aside whole on each of the three nights before, by the centring streak or by this rule, and shot none of its frames, is given up at its first held pass instead of its sixth. A panel that never centres therefore takes one pass of sky a night, not an hour. A streak that mixed several kinds of failure counts; one made only of failed guide starts does not. The set-aside reason says how many nights it had been set aside. A panel that centres is never held, so nothing changes for it. A panel that shoots a frame tonight, or that you bring back by hand, gets the full six passes again, and a restart later the same night does not change that.
+
 ## At dawn and the next start
 
 A flow-derived plan requests park and camera warm-up when its observing window ends, including dawn. The wind-down closes the dust cover; roof or dome closure depends on the configured policy. If a wired shutdown calibration lane requests day darks, a normal night can take them between park and warm-up. An abort or unsafe trip does not run that day-darks lane.

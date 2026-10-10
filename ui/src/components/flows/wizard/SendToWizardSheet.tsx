@@ -354,10 +354,18 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
       if (refused) return false;
       // `flowsOpen` swallows its failure and leaves the previous record in
       // place, so RUN from here would start THAT flow: act on nothing.
+      //
+      // THE REASON IS READ, NOT COMPARED (#920, #555). `flowsOpen` clears
+      // `libraryError` before every read and writes it again when the read
+      // fails, so any text there now is this press's, even when it is the
+      // words the last press failed with. Compared with the value from before
+      // the call, two identical failures ("no flow named X" twice) read as
+      // "nothing changed" and the second was reported as a different flow
+      // answering, which nothing checked.
       enqueueToast({
         level: "error", title: OPEN_FAILED,
-        detail: now.libraryError && now.libraryError !== before.libraryError
-          ? now.libraryError : "The server answered with a different flow, so nothing was done.",
+        detail: now.libraryError
+          ?? "The server answered with a different flow, so nothing was done.",
       });
       return false;
     }

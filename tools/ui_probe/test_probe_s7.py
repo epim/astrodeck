@@ -61,6 +61,13 @@ import server_ctl  # noqa: E402
 
 ROUTES_PATH = HERE / "routes_s7.json"
 REPO_ROOT = HERE.parents[1]
+#: The environment of the venv-python children below: this checkout's server/
+#: first on PYTHONPATH, because the venv's editable install names the main
+#: checkout and a child run from a worktree would otherwise import that one
+#: (#915). seed_session.py pins its own tree; the -c snippets do not.
+CHILD_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(
+    [str(REPO_ROOT / "server")]
+    + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p])}
 
 
 def _resolve_venv_python() -> Path:
@@ -1181,7 +1188,7 @@ class SeedSessionScriptTest(unittest.TestCase):
             cap.mkdir()
             server_ctl.write_probe_marker(cfg, 8871, 1)
             server_ctl.write_probe_marker(cap, 8871, 1)
-            env = {**os.environ, "ASTRODECK_CONFIG_DIR": str(cfg),
+            env = {**CHILD_ENV, "ASTRODECK_CONFIG_DIR": str(cfg),
                    "ASTRODECK_CAPTURE_DIR": str(cap)}
             made = subprocess.run([str(VENV_PYTHON), "-c", MAKE_SESSION], env=env,
                                   capture_output=True, text=True, timeout=120,
@@ -1231,7 +1238,7 @@ class SeedSessionScriptTest(unittest.TestCase):
             cap.mkdir()
             server_ctl.write_probe_marker(cfg, 8871, 1)
             server_ctl.write_probe_marker(cap, 8871, 1)
-            env = {**os.environ, "ASTRODECK_CONFIG_DIR": str(cfg),
+            env = {**CHILD_ENV, "ASTRODECK_CONFIG_DIR": str(cfg),
                    "ASTRODECK_CAPTURE_DIR": str(cap)}
             made = subprocess.run([str(VENV_PYTHON), "-c", MAKE_SESSION, "active"], env=env,
                                   capture_output=True, text=True, timeout=120, cwd=str(REPO_ROOT))

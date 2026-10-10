@@ -34,6 +34,7 @@
 import { Fragment, type JSX } from "react";
 
 import { fmtClock, fmtDuration } from "../../../../lib/eta";
+import { activePlanTarget } from "../../../../lib/planTarget";
 import { formatScheduleStatus } from "../../../../lib/scheduleStatus";
 import { useSeq, useStatus, useStore } from "../../../../store";
 import type { SequenceGroupState, SequenceState } from "../../../../types";
@@ -81,8 +82,11 @@ export function runTargetLine(seq: RunLineState, sessionTargets: number | null):
     if (n == null) return where;
     return panelNamed(g) ? `${where} · one of ${n} panels` : `${where} · ${n} panels`;
   }
-  if (sessionTargets != null && sessionTargets > 1) {
-    return `${where} · ${(seq.target_index ?? 0) + 1} of ${sessionTargets}`;
+  // No place in the plan while a calibration set the plan does not hold is
+  // exposing (`target_index` null, #941): the line is the set's name alone.
+  const at = activePlanTarget(seq);
+  if (sessionTargets != null && sessionTargets > 1 && at !== null) {
+    return `${where} · ${at + 1} of ${sessionTargets}`;
   }
   return where;
 }

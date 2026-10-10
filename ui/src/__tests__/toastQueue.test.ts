@@ -66,6 +66,7 @@ if (typeof g.document === "undefined") {
 }
 
 const { useStore } = await import("../store");
+const { CLIP_AT } = await import("../lib/humanize");
 import type { Toast } from "../types";
 
 // ---------------------------------------------------------------- harness
@@ -134,6 +135,55 @@ test("#33: different reasons stay separate cards (coalescing is per-title)", () 
 });
 
 // ====================================================================
+// #933: identical means the detail too
+// ====================================================================
+//
+// The coalescing key was title and level, and the merge keeps the FIRST toast's
+// detail. A second failure under the same title with a different reason was
+// counted as a repeat of the first and the operator read a stale reason for it.
+
+const FLOW_NOT_OPENED = "That flow did not open";
+const fail = (detail?: string): void =>
+  useStore.getState().enqueueToast({ level: "error", title: FLOW_NOT_OPENED, detail });
+
+test("#933: the same title with a different reason is a second toast carrying it", () => {
+  reset();
+  fail("no flow named X");
+  fail("disk full");
+  eq(toasts().length, 2, "the second reason was merged into the first toast");
+  eq(toasts()[0].detail, "no flow named X", "the first reason changed:");
+  eq(toasts()[1].detail, "disk full", "the operator would read the wrong reason:");
+  eq(toasts()[0].count + toasts()[1].count, 2, "one failure each, not a x2 on the first:");
+});
+
+test("#933: a repeat of a reason still coalesces, whichever reason came between", () => {
+  reset();
+  fail("no flow named X");
+  fail("disk full");
+  fail("no flow named X");
+  fail("disk full");
+  eq(toasts().length, 2, "a repeated reason raised a new card");
+  eq(toasts()[0].count, 2, "the first reason's repeat is not counted on it:");
+  eq(toasts()[1].count, 2, "the second reason's repeat is not counted on it:");
+});
+
+test("#933: no detail and an empty detail are the same toast", () => {
+  reset();
+  fail(undefined);
+  fail("");
+  fail(undefined);
+  eq(toasts().length, 1, "nothing to say is not a reason to raise a second card");
+  eq(toasts()[0].count, 3, "the repeats are not counted:");
+});
+
+test("#933: a toast with a reason and one without are different failures", () => {
+  reset();
+  fail(undefined);
+  fail("disk full");
+  eq(toasts().length, 2, "a bare failure swallowed the one that says why");
+});
+
+// ====================================================================
 // "zero other times"
 // ====================================================================
 
@@ -185,35 +235,41 @@ test("#33: the focal sequence toast is never evicted", () => {
 // ====================================================================
 //
 // `showToast` routes its message through `humanizeLog`, whose fall-through
-// truncates at 137 characters plus an ellipsis. That rule is right for the LOG
-// stream, where a raw line can be a stack trace and the whole text is one tap
-// away in the drawer. It is wrong for a refusal: those are complete sentences,
-// their repair is usually the LAST clause ("... stop the run, or clear the
-// protection for this port in Power settings"), and there is no drawer behind
-// a toast holding the rest. `power.tsx` already bypassed the whole helper to
-// keep its 178-character refusal intact; `{ verbatim: true }` is that escape,
+// shortens a message past CLIP_AT characters (on a sentence boundary, #792; it
+// was a cut at 137 characters wherever that fell). That rule is right for the
+// LOG stream, where a raw line can be a stack trace and the whole text is one
+// tap away in the drawer. It is wrong for a refusal: those are complete
+// sentences, their repair is usually the LAST clause ("... stop the run, or
+// clear the protection for this port in Power settings"), and there is no
+// drawer behind a toast holding the rest. `power.tsx` already bypassed the
+// whole helper to keep its refusal intact; `{ verbatim: true }` is that escape,
 // spelled once, without giving up the mapping every caller wants.
 
-/** 178 characters. If this ever shrinks under 141 the assertions below stop
- *  proving anything, so its length is asserted rather than assumed. */
+/** Longer than CLIP_AT, with the repair LAST. If this ever shrinks under the
+ *  budget the assertions below stop proving anything, so its length is asserted
+ *  rather than assumed. */
 const LONG_REFUSAL =
   "Mount 12V is protected while a run is live: switching it now would cut power to "
-  + "something the sequence is using. Stop the run, or clear the protection for "
+  + "something the sequence is using. The run holds the mount, the guide camera and "
+  + "the dew heaters on that one port, and an unplanned loss of power during an "
+  + "exposure costs the frame in flight and the guiding calibration, which takes "
+  + "about ten minutes to rebuild, and the dew heaters take longer than that to "
+  + "come back to temperature. Stop the run, or clear the protection for "
   + "this port in Power settings.";
 
-test("the fixture is long enough to be truncated - the vacuity guard", () => {
-  assert(LONG_REFUSAL.length > 140,
-    `the refusal fixture is ${LONG_REFUSAL.length} chars, under humanizeLog's cut: `
-    + "every assertion below would pass on a helper that truncates");
+test("the fixture is long enough to be shortened - the vacuity guard", () => {
+  assert(LONG_REFUSAL.length > CLIP_AT,
+    `the refusal fixture is ${LONG_REFUSAL.length} chars, under humanizeLog's budget of ${CLIP_AT}: `
+    + "every assertion below would pass on a helper that shortens nothing");
 });
 
-test("showToast still truncates by default - #/classic's log toasts are unchanged", () => {
+test("showToast still shortens a very long message by default", () => {
   reset();
   useStore.getState().showToast("error", LONG_REFUSAL);
   const title = toasts()[0].title;
   assert(title.length < LONG_REFUSAL.length,
-    "the default stopped truncating: every classic log toast just got longer");
-  assert(title.endsWith("…"), `the truncated title lost its ellipsis: "${title}"`);
+    "the default stopped shortening: every classic log toast just got longer");
+  assert(title.endsWith("…"), `the shortened title lost its ellipsis: "${title}"`);
 });
 
 test("verbatim keeps the refusal WHOLE, including the second way out", () => {
@@ -233,6 +289,60 @@ test("verbatim does NOT turn off the mapping: a lane conflict is still a sentenc
   assert(!title.includes("'goto'"),
     `a lane id reached the user under verbatim: "${title}"`);
   assert(/already/i.test(title), `the lane sentence was lost: "${title}"`);
+});
+
+// ====================================================================
+// showToast: honest copy that shares words with a rewrite (#792)
+// ====================================================================
+//
+// `showToast` and the log-line toast both run their text through `humanizeLog`,
+// whose rewrites used to fire on two bare words. The rule-by-rule cases are in
+// lib/__tests__/humanizeRewrites.test.ts; these two prove the TOAST a person
+// reads, on the two paths that reach it.
+
+test("showToast: a sentence that mentions a plate-solve sync is shown, not 'Plate-solve failed'", () => {
+  reset();
+  const sentence =
+    "Steps and nudges are measured from where the mount thinks it points, and it "
+    + "does not know. A plate-solve sync, or TRUST POSITION, unlocks them.";
+  assert(sentence.length <= CLIP_AT, "the fixture would be shortened by the default, which is not under test");
+  useStore.getState().showToast("warning", sentence);
+  eq(toasts()[0].title, sentence, "the refusal was replaced by a failure notice:");
+});
+
+test("a bare solve failure on the log stream still reads as a plate-solve failure", () => {
+  reset();
+  useStore.getState().handleEvent({
+    type: "log", ts: 0,
+    data: { level: "error", source: "solve", message: "solve failed: plate solve failed" },
+  });
+  eq(toasts()[0].title, "Plate-solve failed - check focus/exposure, or solve manually.",
+    "the rewrite stopped firing on the report it exists for:");
+});
+
+test("a solve failure that names its cause reaches the toast with the cause (#960)", () => {
+  reset();
+  const message = "solve failed: plate solve failed: no plate solver is available on this rig";
+  useStore.getState().handleEvent({
+    type: "log", ts: 0, data: { level: "error", source: "solve", message },
+  });
+  eq(toasts()[0].title, message, "the cause was replaced by the generic advice:");
+});
+
+test("a long error log line is never cut in the middle of a sentence", () => {
+  reset();
+  const cause = `${"The mount did not confirm it was parked and may still be tracking, ".repeat(
+    Math.floor((CLIP_AT - 60) / 68))}so the roof may not close.`;
+  const repair = "Park the mount by hand from the pad, then close the roof.";
+  assert(cause.length <= CLIP_AT && `${cause} ${repair}`.length > CLIP_AT, "fixture is the wrong size");
+  useStore.getState().handleEvent({
+    type: "log", ts: 0, data: { level: "error", source: "safety", message: `${cause} ${repair}` },
+  });
+  const title = toasts()[0].title;
+  assert(title.startsWith(cause), `the cause was cut: "${title}"`);
+  const shown = title.replace(/ …$/, "");
+  assert(shown.endsWith(".") && `${cause} ${repair}`.startsWith(shown),
+    `the toast stops inside a sentence: "${title}"`);
 });
 
 // ---------------------------------------------------------------- report

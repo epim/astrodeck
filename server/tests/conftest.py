@@ -47,6 +47,15 @@ _root_str = str(_REPO_ROOT)
 if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
 
+# A child process a test starts inherits this, so with this checkout's server/
+# first it imports THIS checkout's astrodeck (#915). The venv's editable install
+# points at one checkout, which in a worktree is the main tree: a child with no
+# PYTHONPATH of its own graded code that was not in the worktree, and passed or
+# failed for the wrong tree. A test that sets its own PYTHONPATH still wins.
+_py_path = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+if _py_path[:1] != [_server_str]:
+    os.environ["PYTHONPATH"] = os.pathsep.join([_server_str, *_py_path])
+
 #: The capture roots no test may write under (#309): the repo's captures/,
 #: which is ``hub.CAPTURE_DIR``'s default, and ASTRODECK_CAPTURE_DIR when
 #: the run was started with it. Read here, at conftest import, before any
@@ -598,6 +607,12 @@ def _sweep_off_the_real_config(real_dir, throwaway: Path):
     return undo
 
 
+#: Set on every method ``_watch_the_real_config`` wraps, to the name of the
+#: module that wrapped it, so a second arming in one process is refused
+#: (#980).
+_WATCHED_BY = "_astrodeck_real_config_watched_by"
+
+
 def _watch_the_real_config():
     """Wrap every method through which a ``ConfigStore`` reads or writes its
     file and a ``ProfileLibrary`` its directory, and hook every file the
@@ -614,16 +629,47 @@ def _watch_the_real_config():
     that first loaded such a store was named; a stand-in run with the
     session net removed named 1 of 5 tests reading one. ``functools.wraps``
     keeps ``inspect.getsource`` on a wrapped method reading its own
-    source."""
+    source.
+
+    ONCE PER PROCESS (#980). This file arms the guard at its own import, so
+    executing it again in the same process (test_w15_tests_tree_guard.py's
+    label case loaded it by path to reach ``_TheTreeMustNotMove``) wrapped
+    the same classes a second time, over these wrappers, for a
+    ``_RealConfig`` of its own. Both kept the cached-real marker under one
+    key on the store, and the outer ``_load``, judging the path by ITS
+    record of the real file, popped the marker the inner one had just set:
+    for the rest of that xdist worker the guard named no read served from a
+    store's cache, and the second arming had also moved ``config_store``
+    and ``CONFIG_DIR`` and added an audit hook nothing disarmed. Each
+    wrapper now carries the arming module's name, and a second arming is
+    refused, naming both modules, before it changes anything."""
     import functools
 
     from astrodeck.config import ConfigStore
     from astrodeck.profiles import ProfileLibrary
+    profile_methods = ("_all", "get", "save", "delete")
+    seams = ([(ConfigStore, name) for name in ("_load", "cfg", "_save")]
+             + [(ProfileLibrary, name) for name in profile_methods])
+    armed_by = sorted({getattr(cls.__dict__.get(name), _WATCHED_BY, None)
+                       for cls, name in seams} - {None})
+    if armed_by:
+        raise RuntimeError(
+            f"the real-config guard is already armed in this process, by "
+            f"module {armed_by[0]!r}, and conftest.py is being executed "
+            f"again, as module {__name__!r} (#980). A second arming would "
+            f"wrap ConfigStore and ProfileLibrary over the first guard's "
+            f"watchers, and its ConfigStore._load would erase the marker by "
+            f"which the first names a read served from a store's cache, for "
+            f"the rest of this process; it would also move config_store and "
+            f"CONFIG_DIR. Import what you need from the loaded module "
+            f"instead (from conftest import ...).")
     undo = []
 
     def replace(cls, name: str, watched) -> None:
         inner = cls.__dict__[name]
-        setattr(cls, name, functools.wraps(inner)(watched(inner)))
+        wrapper = functools.wraps(inner)(watched(inner))
+        setattr(wrapper, _WATCHED_BY, __name__)
+        setattr(cls, name, wrapper)
         undo.append(lambda: setattr(cls, name, inner))
 
     def watch(cls, name: str, attr: str, kind: str) -> None:
@@ -662,7 +708,7 @@ def _watch_the_real_config():
     replace(ConfigStore, "_load", load)
     replace(ConfigStore, "cfg", cfg)
     watch(ConfigStore, "_save", "_path", "config file")
-    for name in ("_all", "get", "save", "delete"):
+    for name in profile_methods:
         watch(ProfileLibrary, name, "_dir", "profiles directory")
 
     # THE DIRECTORY, for everything in it no class above owns (S5, verifying

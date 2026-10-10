@@ -510,13 +510,29 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     return path
 
 
-def _apply_wcs(hdr, wcs) -> None:
-    """Merge a WcsSolution's cards into a header — shared by save_fits and
-    write_wcs so both emit an identical WCS block. A scale-less WCS (no CD*,
-    no CDELT*) is skipped whole: astropy would read it back as a silent
-    1 deg/pixel solution, and a bogus WCS is worse than none (spec §8)."""
-    if wcs.cd11 is None and wcs.cdelt1 is None:
-        return
+#: Every card that spells a WCS's scale and rotation, in any of the three forms
+#: wcslib reads. It reads PC before CD before CDELT/CROTA2, so a card of a form
+#: the new solution does not use would win over it (or, for CROTA2, a rotation
+#: the new solution does not have would survive it).
+_SCALE_KEYS = ("PC1_1", "PC1_2", "PC2_1", "PC2_2",
+               "CD1_1", "CD1_2", "CD2_1", "CD2_2",
+               "CDELT1", "CDELT2", "CROTA2")
+
+
+def _apply_wcs(hdr, wcs) -> bool:
+    """Write a WcsSolution's cards into a header — shared by save_fits and
+    write_wcs so both emit an identical WCS block. A WCS with no usable scale
+    (no CD*, no CDELT*, an all-zero or singular CD, a zero CDELT, a non-finite
+    number) is skipped whole, before any card is touched: astropy would read it
+    back as a silent 1 deg/pixel solution, and a bogus WCS is worse than none
+    (spec §8). The scale and rotation cards are REPLACED, not merged: a header
+    stamped before (a re-solve, or a file another tool solved) must not keep a
+    CD matrix under a CDELT solution, or the new solution reads back as the old
+    one. True when the cards were written."""
+    if not wcs.has_usable_scale():
+        return False
+    for key in _SCALE_KEYS:
+        hdr.remove(key, ignore_missing=True, remove_all=True)
     hdr["CTYPE1"] = (wcs.ctype1, "WCS projection")
     hdr["CTYPE2"] = (wcs.ctype2, "WCS projection")
     hdr["CUNIT1"] = wcs.cunit
@@ -537,18 +553,28 @@ def _apply_wcs(hdr, wcs) -> None:
             hdr["CROTA2"] = float(wcs.crota2)
     hdr["EQUINOX"] = (float(wcs.equinox), "Equinox of WCS")
     hdr["RADESYS"] = wcs.radesys
+    return True
+
+
+def stamp_wcs(path: Path, wcs) -> bool:
+    """Write a plate-solved WCS into an existing FITS in place, and say whether
+    the file now carries it. Non-fatal: a missing/locked/corrupt file (or a
+    None wcs) is swallowed — WCS write-back must never break a save (spec §9) —
+    and so is a WCS ``_apply_wcs`` refused. All three come back False, which is
+    the only way a caller can tell them from a stamp."""
+    if wcs is None:
+        return False
+    try:
+        with fits.open(path, mode="update") as hdul:
+            written = _apply_wcs(hdul[0].header, wcs)
+            hdul.flush()
+    except Exception:
+        return False
+    return written
 
 
 def write_wcs(path: Path, wcs) -> Path:
-    """Merge a plate-solved WCS into an existing FITS in place. Non-fatal: a
-    missing/locked/corrupt file (or a None wcs) is swallowed and the path is
-    returned unchanged — WCS write-back must never break a save (spec §9)."""
-    if wcs is None:
-        return path
-    try:
-        with fits.open(path, mode="update") as hdul:
-            _apply_wcs(hdul[0].header, wcs)
-            hdul.flush()
-    except Exception:
-        pass
+    """``stamp_wcs`` for a caller with no use for the answer: the path comes
+    back whether or not anything was written."""
+    stamp_wcs(path, wcs)
     return path

@@ -141,7 +141,8 @@ GOTO_STALL_S = 10.0
 #: HARDWARE-PENDING (the approach-speed profile, DESIGN-P4 Appendix A).
 GOTO_PROGRESS_DEG = 0.10
 #: Fixed words for ``GotoNotArrived.reason``. No figures (#618); each fits
-#: the 137-character cut in every surface that quotes it.
+#: the UI's old 137-character cut in every surface that quotes it (it keeps
+#: whole sentences up to 400 since #792).
 GOTO_STALLED_REASON = "the mount stopped short of the target"
 GOTO_STOPPED_REASON = "a stop was sent during the goto"
 #: ``:MS#`` itself failed on the link (no reply, or the port went), so
@@ -270,7 +271,8 @@ SYNC_UNVERIFIED_LINK_BEFORE = "the link failed before the sync was sent"
 #: the pole. Neither tells the operator to slew or go anywhere: a goto is
 #: aimed from the position the mount believes, which is the thing in doubt.
 #: Each is at most 90 characters and carries no digit (the reply is quoted
-#: separately), so the hub's refused line still fits in 140.
+#: separately), so the hub's refused line still fits in 140 (the UI's old cut;
+#: it keeps whole sentences up to 400 since #792).
 #:
 #: The mount's opinion is near the sky (or unknown): the tube may well be at
 #: home, so Trust position, behind its condition, comes first.
@@ -1002,8 +1004,9 @@ class ZwoAm5Telescope(Telescope):
             # the position the mount believes, so with the tube elsewhere it
             # lands somewhere unknown; holding a pad key computes no
             # destination. The WHOLE action, both branches and the pad key,
-            # ends inside the UI's 137-char cut with the default name "ZWO
-            # AM5" (135 chars). The no-sync-at-home fact is what the bench
+            # ends inside the UI's old 137-char cut with the default name
+            # "ZWO AM5" (135 chars; the budget is 400 since #792). The
+            # no-sync-at-home fact is what the bench
             # showed WITH THE TUBE AT HOME, and is said as that.
             bus.log("warning",
                     f"{self.name}: position is unknown. Tube really at home: "
@@ -1125,8 +1128,8 @@ class ZwoAm5Telescope(Telescope):
             # the mount does not know (only a sync or the operator can), so this
             # says so rather than leaving the success line unchallenged. The
             # same order as the latch line (#850): the whole action first and
-            # inside the 137-char cut (125 chars with "ZWO AM5"), and no goto
-            # while the position is unknown.
+            # inside the UI's old 137-char cut (125 chars with "ZWO AM5"), and
+            # no goto while the position is unknown.
             bus.log("warning",
                     f"{self.name}: home sent. Tube really at home: Trust "
                     "position. If not, hold a pad key to bring it home by "
@@ -1775,9 +1778,9 @@ class ZwoAm5Telescope(Telescope):
         self.note_verified_sync(dec_deg)
         if not self.position_known:
             # The action first, in the safe order and never a goto (#850),
-            # inside the UI's 137-char cut whatever the mount is called: the
-            # name is the operator's (``conn.extra["name"]``) and any length,
-            # so it goes after the action, not before it. No figure.
+            # inside the UI's old 137-char cut whatever the mount is called:
+            # the name is the operator's (``conn.extra["name"]``) and any
+            # length, so it goes after the action, not before it. No figure.
             bus.log("warning",
                     "position still unknown: tube at home, Trust position; "
                     "else bring it home by eye with a pad key, then Trust "
@@ -1892,7 +1895,8 @@ class ZwoAm5Telescope(Telescope):
         ``SYNC_E11_ELSEWHERE_DEG`` of the sky or unknown, and home by eye
         first when it is further out). Any other
         code is quoted and nothing is invented for it. The reason comes
-        straight after the name, so it survives a 140-character log line."""
+        straight after the name, so it survived the UI's old 140-character
+        cut of a log line."""
         lowered = reply.lower()
         if lowered == lx200.REFUSED:
             parked = False

@@ -245,7 +245,7 @@ LOW_MEASUREMENT_ALT_DEG = 20.0
 #: The refusal while the mount's position is unknown (#888): the cause, then
 #: the safe order (``mount_offset.POSITION_UNKNOWN_SAFE_ORDER``), never a
 #: goto. 122 characters, so the run's error line ("native TPPA: " in front)
-#: still ends inside the UI's 137-character cut.
+#: still ends inside the UI's old 137-character cut (400 since #792).
 TPPA_POSITION_UNKNOWN = (
     f"TPPA not started, position unknown: {POSITION_UNKNOWN_SAFE_ORDER}")
 #: The same, for a latch set during the run, asked before every leg of the

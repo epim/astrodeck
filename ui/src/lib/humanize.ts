@@ -97,9 +97,106 @@ function parts(input: LogInput): { source: string; message: string } {
   return { source: input.source ?? "", message: input.message ?? "" };
 }
 
+// ------------------------------------------------------- keyword rewrites
+//
+// A rewrite REPLACES the line it matches, so it may only fire on a line that IS
+// the report it was written for. The plate-solve and guiding rules below, and
+// the HTTP 5xx arm of the NINA rule, are keyed on that report's own shape, never
+// on two words that happen to sit somewhere in the same text. The bare keyword
+// pairs these replaced rewrote honest copy they were never written for, and
+// showToast routes EVERY message through here:
+//
+//   "... a plate-solve sync, or TRUST POSITION, unlocks them"   (#792)
+//       became "Plate-solve failed - check focus/exposure", the opposite of it;
+//   "re-centring after guiding was lost: the mount refused the sync ..." (#850)
+//       became "Guiding was lost - recovering", hiding the refusal and the stop;
+//   "slow request GET /api/nina/health: still waiting after 15.0 s"
+//       became "NINA reported an error" because "15.0" holds a 5.
+//
+// A new line that mentions a plate solve or guiding in its own words need not
+// avoid the words. Two arms are still bare words: "nina" beside "http" or
+// "error", and "camera" beside "not responding", "timeout" or "disconnect" (the
+// camera rule in humanizeLog below). A server line that can hold those pairs
+// still breaks them apart (api/slow_requests.py `_HUMANIZER_KEYS`).
+
+/** A plate solve that FAILED, as a bare statement, and nothing else in the line.
+ *  The replacement sends the operator to focus and exposure: right for a failure
+ *  that names no cause, wrong for one that does. "... failed: no light: the
+ *  optic is capped" and "... failed: no plate solver is available on this rig"
+ *  ARE the answer, and replacing them sent an operator with a lens cap on, or a
+ *  rig with no solver, to the focuser (#960). So the line must BE the failure:
+ *  an optional "label: " (a source or a stage, "solve failed: "), an optional
+ *  article, the failure phrase, and closing punctuation. Anything after the
+ *  phrase is a cause or a consequence ("... failed: <cause>", "... failed (no
+ *  stars); using raw GoTo", "... error: timed out") and the line is kept as
+ *  written.
+ *
+ *  "plate solve" with no failure after it ("plate solve: filter L -> Lum", "a
+ *  plate-solve sync") is not a failure, and neither is a hypothetical ("if the
+ *  plate solve fails"). Past tense or the noun, because that is how the server
+ *  and NINA word a failure. A label starts on a non-space and holds no colon of
+ *  its own, so the repeat cannot split one run of spaces two ways. */
+const PLATE_SOLVE_FAILED =
+  /^\s*(?:[^\s:;][^:;]{0,29}:\s*)*(?:(?:the|a)\s+)?plate[- ]?solv(?:e|ing)\s+(?:failed|failure|error|timed out)\b[\s.!]*$/;
+
+/** An HTTP 5xx status as a TOKEN: three digits starting with 5, standing alone
+ *  and not followed by a unit or a decimal part. The 5 in "15.0 s" or "5 in
+ *  flight" is not one, nor is "500 ms", "a reply of 512 bytes", "after 523.4 s"
+ *  (the slow-request formatter writes its elapsed time with one decimal, on the
+ *  closing line of a request that SUCCEEDED) or "500,000 bytes". */
+const HTTP_5XX = /\b5\d\d\b(?![.,]\d)(?!\s*(?:(?:ms|s|sec|secs|bytes|kb|mb|gb)\b|%))/;
+
+/** Guiding reported lost, and NOTHING else in the line. The replacement claims
+ *  "recovering", so a line that goes on to say something else ("... lost: the
+ *  mount refused the sync", "... lost and did not recover") can contradict it,
+ *  and a line that only mentions guiding being lost on the way to another point
+ *  ("re-centring after guiding was lost") is not this report at all. What is
+ *  allowed around the report: a short "label: " before it (a source or a
+ *  device), and a bracketed note ("(reacquire 1/3)") or stop after it. */
+const GUIDING_LOST =
+  /^(?:[^:;]{0,30}:\s*)?(?:native\s+)?guid(?:ing|er|e)(?:\s+(?:was|has been|is))?\s+lost\b(?:\s+the\s+guide\s+star)?\s*(?:\([^)]*\))?[\s.!]*$/;
+
+// The length past which an unrecognised line is shortened, and the one past
+// which even a single sentence is (a line that long is a dump, not a sentence).
+// It was 140, which by a static count of the server's `bus.log("error", ...)`
+// literals cut about one error line in eight and, in a refusal, cut the clause
+// that names the cause or the repair. The longest of those lines is roughly 430
+// characters; 400 shows all but that one whole.
+export const CLIP_AT = 400;
+const CLIP_MAX = 2 * CLIP_AT;
+
+/** Shorten a line that is too long for a toast WITHOUT cutting a sentence in
+ *  half. The old rule cut at 137 characters wherever that fell, and what falls
+ *  there in a refusal is the clause that names the cause or the repair
+ *  ("... clear the protection for this port in Power se..."). Whole sentences
+ *  only: keep as many leading sentences as fit in CLIP_AT, or the first one
+ *  whole when it alone is longer, and say that more follows. A line break ends a
+ *  sentence too, so a stack trace keeps its first line. Only a single sentence
+ *  past CLIP_MAX is cut mid-way, at a word, as the dump it must be. A line that
+ *  fits CLIP_AT is never touched, so a cause and its repair that share a toast
+ *  both reach it. */
+function clip(message: string): string {
+  if (message.length <= CLIP_AT) return message;
+  const ends: number[] = [];
+  const stop = /[.!?]+(?=\s)|\n/g;
+  for (let s = stop.exec(message); s; s = stop.exec(message)) {
+    const at = s.index + (s[0] === "\n" ? 0 : s[0].length);
+    if (at > 0) ends.push(at);
+  }
+  ends.push(message.length);
+  const fits = ends.filter((e) => e <= CLIP_AT);
+  const end = fits.length ? fits[fits.length - 1] : ends[0];
+  if (end >= message.length && end <= CLIP_MAX) return message;
+  if (end <= CLIP_MAX) return `${message.slice(0, end).trimEnd()} …`;
+  return `${message.slice(0, CLIP_MAX).replace(/\s+\S*$/, "")}…`;
+}
+
 /** Map a raw log line to a short human sentence; falls back to the raw message.
  *
- *  `opts.verbatim` keeps that fall-back WHOLE. The truncation below exists for
+ *  The mappings are for the report each one names; a line that merely mentions
+ *  the same words is passed through (see the keyword rewrites above).
+ *
+ *  `opts.verbatim` keeps the fall-back WHOLE. The shortening below exists for
  *  the log stream, where a raw line can be a stack trace and the full text is
  *  one tap away in the drawer. A server REFUSAL is the opposite case: it is a
  *  complete sentence written to be read, its repair is usually the last clause
@@ -120,24 +217,52 @@ export function humanizeLog(input: LogInput, opts?: { verbatim?: boolean }): str
       return "Camera isn't responding. Check the camera connection on the Rig page.";
     }
   }
-  if (m.includes("nina") && (m.includes("5") || m.includes("http") || m.includes("error"))) {
+  if (m.includes("nina") && (HTTP_5XX.test(m) || m.includes("http") || m.includes("error"))) {
     return "NINA reported an error. Check NINA on the imaging PC.";
   }
-  if (m.includes("plate") && m.includes("solve")) {
+  if (PLATE_SOLVE_FAILED.test(m)) {
     return "Plate-solve failed - check focus/exposure, or solve manually.";
   }
-  if (m.includes("guid") && m.includes("lost")) {
+  if (GUIDING_LOST.test(m)) {
     return "Guiding was lost - recovering.";
   }
-  // Unknown - keep the raw message (truncated, unless the caller asked for it
-  // whole). Raw text always lives in the log.
-  const trimmed = !opts?.verbatim && message.length > 140
-    ? `${message.slice(0, 137)}…`
-    : message;
-  return trimmed || "Something went wrong.";
+  // Unknown - keep the raw message (shortened to whole sentences, unless the
+  // caller asked for it whole). Raw text always lives in the log.
+  const kept = opts?.verbatim ? message : clip(message);
+  return kept || "Something went wrong.";
 }
 
-/** Map a sequence error detail to a plain sentence + suggested action. */
+// ------------------------------------------------- sequence-error sentences
+//
+// humanizeSeqError holds to the rule the keyword rewrites above state: a
+// sentence REPLACES the detail, so it may only replace a detail that IS the
+// report it was written for. It used to fire on one bare keyword, so any detail
+// holding "plate" and "solve" read "check focus/exposure", the same defect as
+// #960: "plate solve failed: no light: the optic is capped" sent an operator
+// with a lens cap on to the focuser (#998). "mount", "camera", "focus", "guid"
+// and "cool" did the same to a cause on their own words ("mount refused the
+// slew: position unknown" read "check the mount is connected, unparked and
+// tracking"). A detail that goes on to name a cause is kept as written.
+
+/** `<label: >?<article >?<subject> <failure word>` and nothing else: the shape
+ *  PLATE_SOLVE_FAILED has, for the other parts of the rig humanizeSeqError names.
+ *  `subject` is a regex source. */
+function bareFailure(subject: string): RegExp {
+  return new RegExp(
+    String.raw`^\s*(?:[^\s:;][^:;]{0,29}:\s*)*(?:(?:the|a)\s+)?${subject}\s+`
+      + String.raw`(?:failed|failure|error|timed out|timeout|not responding|disconnected)\b[\s.!]*$`,
+  );
+}
+
+const CAMERA_FAILED = bareFailure("camera");
+const MOUNT_FAILED = bareFailure(String.raw`(?:mount|slew|goto)(?:\s+(?:move|slew|goto))?`);
+const FOCUS_FAILED = bareFailure("(?:auto-?)?focus(?:ing)?");
+const GUIDING_FAILED = bareFailure("guid(?:ing|er|e)");
+const COOLER_FAILED = bareFailure("cool(?:er|ing)");
+
+/** Map a sequence error detail to a plain sentence + suggested action, when the
+ *  detail is a bare report of a failure; any other detail is kept, shortened to
+ *  whole sentences the way humanizeLog does. */
 export function humanizeSeqError(detail?: string): string {
   if (!detail) return "The run stopped unexpectedly. Check the log for details.";
   const laneConflict = humanizeLaneConflict(detail);
@@ -146,17 +271,17 @@ export function humanizeSeqError(detail?: string): string {
   // "Rig page" is left standing deliberately: the new IA HAS a Rig hub, and it
   // is the one surface a disconnected camera is actually fixed on. Only the
   // screens the new shell does not have were reworded.
-  if (d.includes("camera")) return "Camera isn't responding - check the Rig page.";
-  if (d.includes("plate") && d.includes("solve")) {
+  if (CAMERA_FAILED.test(d)) return "Camera isn't responding - check the Rig page.";
+  if (PLATE_SOLVE_FAILED.test(d)) {
     return "Plate-solve failed - check focus/exposure or solve manually.";
   }
   // Same rule as the lane table above: name the thing to do, not the screen to
   // do it on - these three sentences are read on both front-ends.
-  if (d.includes("mount") || d.includes("slew")) {
+  if (MOUNT_FAILED.test(d)) {
     return "Mount move failed - check the mount is connected, unparked and tracking.";
   }
-  if (d.includes("focus")) return "Autofocus failed - re-run autofocus, or set focus by hand.";
-  if (d.includes("guid")) return "Guiding failed - re-run the calibration, or pick a brighter guide star.";
-  if (d.includes("cool")) return "Cooler didn't reach target - check the camera.";
-  return detail.length > 160 ? `${detail.slice(0, 157)}…` : detail;
+  if (FOCUS_FAILED.test(d)) return "Autofocus failed - re-run autofocus, or set focus by hand.";
+  if (GUIDING_FAILED.test(d)) return "Guiding failed - re-run the calibration, or pick a brighter guide star.";
+  if (COOLER_FAILED.test(d)) return "Cooler didn't reach target - check the camera.";
+  return clip(detail);
 }

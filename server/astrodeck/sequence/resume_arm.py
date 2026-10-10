@@ -219,20 +219,23 @@ RECOVERY_REFUSED_SYNC_MAX_DEG = 5.0
 #: ``since`` across retries only while its words stay the same, and a viewer
 #: reads it. The figure goes to a separate warning.
 #:
-#: NEVER "plate" BESIDE "solve" in any of the ``REFUSED_SYNC_*`` words (#850).
-#: The UI's ``humanizeLog`` rewrites any line holding both into "Plate-solve
-#: failed - check focus/exposure", so the "auto-resume held: ..." warning
-#: would tell the operator the solve failed when it worked, and send them to
-#: focus and exposure instead of to the mount (#857). Nor "guid" beside
-#: "lost", "camera" beside "timeout", "not responding" or "disconnect", or
-#: "nina" beside "5", "http" or "error": the other three rewrites.
+#: NO "plate" BESIDE "solve" in any of the ``REFUSED_SYNC_*`` words (#850).
+#: Until #792 the UI's ``humanizeLog`` rewrote any line holding both into
+#: "Plate-solve failed - check focus/exposure", which told the operator the
+#: solve failed when it worked and sent them to focus and exposure instead of
+#: to the mount (#857). It rewrites only a line that IS a bare failed solve
+#: now, so these words could say it; they are fixed words (the hold keeps its
+#: ``since`` only while they stay the same), so they stay as they are. Still
+#: avoided: "camera" beside "timeout", "not responding" or "disconnect", and
+#: "nina" beside "http", "error" or a 5xx status, which are bare-word pairs.
 #:
 #: THE ACTION COMES FIRST (#850). ``tick`` logs every hold as "auto-resume
-#: held: <words> ...", and the UI cuts a line longer than 140 chars to 137
-#: and an ellipsis, so what happens next ("not slewing", "needs someone at
+#: held: <words> ...". The UI used to cut a line longer than 140 chars to 137
+#: and an ellipsis, and keeps whole sentences up to 400 (``CLIP_AT``) since
+#: #792; the order stays. What happens next ("not slewing", "needs someone at
 #: the scope", "if this repeats, check the mount's link", "the run is not
-#: starting") comes before the explanation, inside those 137 chars. An
-#: instruction at the end of a long hold is an instruction nobody sees.
+#: starting") comes before the explanation. An instruction at the end of a
+#: long hold is an instruction nobody sees.
 REFUSED_SYNC_FAR_WORDS = (
     "the mount refused the sync after the restart; not slewing, it needs "
     "someone at the scope: its own position disagrees badly with the sky, so "
@@ -274,9 +277,9 @@ REFUSED_SYNC_RECENTRE_WORDS = (
 #: not confirmed, so the run would image a field the ladder could not centre.
 #: A sync nobody could confirm is most often the link, hence the advice.
 #: The advice comes BEFORE the hub's reason (#850, round 4): at the end it
-#: fell past the UI's 137-char cut of "auto-resume held: ...". Short words
-#: in front, so the cause ("the mount did not confirm the sync") still fits
-#: inside the cut too.
+#: fell past the UI's old 137-char cut of "auto-resume held: ...". Short words
+#: in front, so the cause ("the mount did not confirm the sync") still sits
+#: near the front too.
 REFUSED_SYNC_UNVERIFIED_RECENTRE_WORDS = (
     "the run is not starting; if this repeats, check the mount's link: "
     "re-centering: "
@@ -305,20 +308,24 @@ FAULT_SITE_FRAMES = 3
 
 #: The hold for a software fault in the blind solve (#866). Fixed words: no
 #: type name, no frames (they go to the warning beside it), no ``{e}``.
-#: Never "plate" beside "solve": the humanizer would send the operator to
-#: focus and exposure for a bug. The action ("report it as a bug") ends
-#: inside the 137-char cut of the "auto-resume held: ..." line.
+#: Worded as "the blind solve", never as a plate solve that failed: until #792
+#: the humanizer sent any line holding "plate" beside "solve" to focus and
+#: exposure, for a bug. It reads only a bare failed-solve line now; these are
+#: fixed words, so they stay. The hold is short, and the action ("report it as
+#: a bug") ends well inside the UI's 400-char budget (``CLIP_AT``) for the
+#: "auto-resume held: ..." line.
 SOLVE_SOFTWARE_FAULT_WORDS = (
     "the resume ladder hit a software fault in the blind solve, not a "
     "sky or optics issue; not slewing: report it as a bug")
 
 #: THE SAFE ORDER, AND NO GOTO (the SAFETY RULE; #867): Trust position if
 #: the tube really is at home; otherwise bring it home by eye with a pad key,
-#: then Trust it. Ends inside the 137-char cut of the "auto-resume held:
-#: ..." line; each hold's cause comes after. Fixed words, no figures, so a
-#: hold keeps its ``since``. Named outside the ``REFUSED_SYNC_*_WORDS``
-#: family on purpose: those carry "the mount refused the sync" inside the
-#: cut, and these put the action first.
+#: then Trust it. It leads the "auto-resume held: ..." line and each hold's
+#: cause comes after (it used to have to end inside the UI's 137-char cut; the
+#: budget is 400 since #792). Fixed words, no figures, so a hold keeps its
+#: ``since``. Named outside the ``REFUSED_SYNC_*_WORDS`` family on purpose:
+#: those carry "the mount refused the sync" up front, and these put the action
+#: first.
 _POSITION_UNKNOWN_ACTION = (
     "not slewing, position unknown: tube at home, Trust position; else "
     "bring it home by eye with a pad key, then Trust it.")
@@ -364,16 +371,18 @@ POSITION_UNKNOWN_RECENTRE_WORDS = (
     _POSITION_UNKNOWN_ACTION + " Its driver stopped vouching for the "
     "position during the resume, as a reopened link does")
 
-#: The UI humanizer's keys (ui/src/lib/humanize.ts): a line holding one of
-#: these beside its partner word ("nina" with "5", "http" or "error";
-#: "camera" with "timeout" or "disconnect"; "plate" with "solve"; "guid" with
-#: "lost") is replaced whole by the UI's own sentence. The software-fault
-#: warning interpolates exception type and frame names, which this program
-#: does not choose, beside a type name ending "Error", line numbers and the
-#: word "solve", so a fault raised in nina.py would reach the operator as
-#: "NINA reported an error" (#866). ``_unpaired`` breaks each key with a
-#: hyphen ("ni-na.py"), which a developer still reads.
-_HUMANIZER_KEYS = re.compile(r"nina|camera|plate|guid", re.IGNORECASE)
+#: The UI humanizer's keys that are still bare words (ui/src/lib/humanize.ts):
+#: a line holding "nina" beside "http", "error" or a 5xx status, or "camera"
+#: beside "timeout", "not responding" or "disconnect", is replaced whole by the
+#: UI's own sentence. The software-fault warning interpolates exception type
+#: and frame names, which this program does not choose, beside a type name
+#: ending "Error" and line numbers (one in the 500s reads as an HTTP status),
+#: so a fault raised in nina.py would reach the operator as "NINA reported an
+#: error" (#866). ``_unpaired`` breaks each key with a hyphen ("ni-na.py"),
+#: which a developer still reads. "plate" and "guid" are no longer keys: the
+#: plate-solve and guiding rules need a whole report (#792), so ``plate.py``
+#: and ``guider.py`` are left whole (#961).
+_HUMANIZER_KEYS = re.compile(r"nina|camera", re.IGNORECASE)
 
 
 def _unpaired(text: str) -> str:
@@ -543,6 +552,19 @@ NOTHING_TONIGHT = ("none of this session's remaining frames can be captured "
                    "tonight: the remaining targets are set aside for tonight, "
                    "past their observing windows, or never above their minimum "
                    "start altitude; waiting until the next night before slewing")
+
+#: The same refusal, said for a session whose flats would not meter (#911).
+#: NOTHING_TONIGHT names a window, a floor and a set-aside, and a session held
+#: because its lamp, its cover or its sky would not give a flat exposure read
+#: as one of those; only the run's own warning line said otherwise. Words
+#: only, no site and no number, and the same latch and retry as the sentence
+#: above (``_ladder_nothing_tonight``): ``flats_would_not_meter`` chooses
+#: between them, and nothing else about the refusal differs.
+NOTHING_TONIGHT_UNMETERED = (
+    "none of this session's remaining frames can be captured tonight: its "
+    "flat exposures would not meter, so they are set aside for tonight; "
+    "check the lamp, the cover and the sky. It tries again next night, or "
+    "CONTINUE it by hand once fixed")
 
 #: The gating states the run drops a target for without shooting it
 #: (``_run_scheduled``), and so the re-centre leaves out (#283).
@@ -930,6 +952,28 @@ def nothing_to_shoot_tonight(session: Session,
                     and (t.id, s.id) not in aside
                     for t in owing for s in t.steps)
     return (light or bool(owing)) and not shootable
+
+
+def flats_would_not_meter(session: Session, night: str) -> bool:
+    """True when a calibration step ``session`` still owes is set aside for
+    ``night`` because its flat exposure would not meter (#911): a record of
+    kind ``"unmetered"``, as ``SequenceEngine._record_flat_metering`` writes
+    it. The question the ladder asks AFTER ``nothing_to_shoot_tonight`` has
+    refused, to choose the words (``NOTHING_TONIGHT_UNMETERED`` rather than
+    ``NOTHING_TONIGHT``); it is not a refusal of its own.
+
+    ANY OWED STEP, NOT ALL. A session can be out of tonight for a light
+    target's window and for an unmetered flat at once. The window is nothing
+    an operator can change tonight, and the flat is, so the words name the
+    flat. A record of another kind, a record from another night and a record
+    for a step the session no longer owes say nothing here. Words only, and
+    a pure function of the session: nothing site-derived is read."""
+    remaining = session.remaining()
+    owed = {(t.id, s.id) for t in session.plan.targets if t.calibration
+            for s in t.steps if remaining.get(s.id, 0) > 0}
+    return any(r.get("kind") == "unmetered"
+               and (r.get("target_id"), r.get("step_id")) in owed
+               for r in session.set_aside_on(night))
 
 
 def spent_tonight(session: Session, site, twilight_deg: float,
@@ -2300,7 +2344,12 @@ class ResumeArm:
             twilight_deg=cfg.safety.twilight_deg if cfg else -12.0, now=now)
         if nothing_to_shoot_tonight(session, candidates, night_key(now)):
             self._ladder_nothing_tonight = True
-            return NOTHING_TONIGHT
+            # THE SAME REFUSAL, WITH THE CAUSE THE RUN FOUND (#911): flats that
+            # would not meter are the operator's to fix, and the window and
+            # floor words would send them looking at the plan's windows.
+            return (NOTHING_TONIGHT_UNMETERED
+                    if flats_would_not_meter(session, night_key(now))
+                    else NOTHING_TONIGHT)
 
         # 0. IS IT SAFE TO BE OUT AT ALL — before anything moves.
         #
@@ -2550,8 +2599,8 @@ class ResumeArm:
                                 f"within {residual:.1f} deg of the solved "
                                 f"field)", "sequence")
                         return POSITION_UNKNOWN_WORDS
-                    # What happens next first (#850): the UI cuts a long
-                    # line at 137 chars.
+                    # What happens next first (#850), as the UI once cut a
+                    # long line at 137 chars.
                     bus.log("warning",
                             f"the re-centre goes ahead and syncs away from "
                             f"the pole: the mount would not take the blind "
@@ -2577,7 +2626,7 @@ class ResumeArm:
                     # first), a second instruction beside a hold that says
                     # the mount cannot be corrected from here. The reply
                     # code names the refusal well enough. The action
-                    # before the figure, inside the UI's 137-char cut.
+                    # before the figure, as in the 137-char cut it once met.
                     bus.log("warning",
                             f"the mount refused the blind solve's sync"
                             f"{_reply_words(e.code)} and needs someone at the "

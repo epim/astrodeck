@@ -59,7 +59,8 @@ POSITION_UNKNOWN_DETAIL = (
 #: the MODEL's home, so neither recovers the position. The safe order, and
 #: nothing aimed: Trust position if the tube really is at home, otherwise a
 #: pad key by eye (the jog computes no destination), then Trust position.
-#: 131 characters, inside the UI's 137-character cut; no "goto", "slew" or
+#: 131 characters, inside the UI's old 137-character cut (400 since #792); no
+#: "goto", "slew" or
 #: "go to" in it.
 POSITION_UNKNOWN_MOTION_DETAIL = (
     "Mount position is unknown. Tube really at home: Trust position. If "

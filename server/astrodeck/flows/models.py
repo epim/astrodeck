@@ -448,8 +448,10 @@ class FlowRecord(BaseModel):
     folder: str = MY_FLOWS_FOLDER
     tagline: str = Field("", max_length=400)
     graph: FlowGraph = Field(default_factory=FlowGraph)
-    created_ts: float = Field(default_factory=time.time)
-    updated_ts: float = Field(default_factory=time.time)
+    # Looked up at each call, not ``default_factory=time.time``, which binds the
+    # function once at class creation and so cannot be pinned by a test (#946).
+    created_ts: float = Field(default_factory=lambda: time.time())
+    updated_ts: float = Field(default_factory=lambda: time.time())
     #: Observations of the last run, for the card's meta + status rows. Never
     #: consulted to decide anything — same separation as sync's PushState.
     last_run: float | None = None

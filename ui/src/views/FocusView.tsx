@@ -50,6 +50,7 @@ import { BahtinovAid } from "../components/preview/BahtinovAid";
 import { FrameStats } from "../components/preview/FrameStats";
 import { Field, Led, LockedChip, LockedNote, Panel, Stat } from "../components/ui";
 import { accessPhrase, useCanControlCapture } from "../lib/caps";
+import { runIsLive } from "../lib/lastSessionFrame";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
 import StepDial from "../components/ui/StepDial";
@@ -413,8 +414,9 @@ export default function FocusView() {
   const looping = !!status?.looping;
   const polarBusy = polar.state === "running" || polar.state === "paused";
   // A PAUSED sequence still holds the camera between frames — it is not handed
-  // back to manual control (r1 CAP-01), so it blocks here exactly as on Capture.
-  const seqOwnsCamera = sequence.state === "running" || sequence.state === "paused";
+  // back to manual control (r1 CAP-01), so it blocks here exactly as on Capture,
+  // and so do a cloud hold and an abort's wind-down (`runIsLive`, #922).
+  const seqOwnsCamera = runIsLive(sequence);
 
   // A frame landed: whatever single exposure we were waiting on is done.
   useEffect(() => { setShotAt(null); }, [liveId]);

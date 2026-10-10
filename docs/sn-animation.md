@@ -139,8 +139,9 @@ it is an ordinary uint16 light of exactly the kind ASTAP already solves on this
 rig every night. Nothing has to be re-encoded and no temporary stack FITS is
 written.
 
-If ASTAP is missing or the solve fails, the tool says so, writes the animation
-anyway, and skips the light curve.
+If ASTAP is missing, the solve fails, or the solution cannot be stamped into
+`reference.fits` (no usable plate scale, or the file could not be updated), the
+tool says so, writes the animation anyway, and skips the light curve.
 
 **Comparison stars** are chosen once, on the reference night: the brightest
 unsaturated, isolated point sources in the crop, at least 40 px from the

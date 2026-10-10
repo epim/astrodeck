@@ -87,7 +87,6 @@ function input(over: Partial<RosterInput> = {}): RosterInput {
     status: null,
     safety: null,
     dome: null,
-    sequenceRunning: false,
     ...over,
   };
 }

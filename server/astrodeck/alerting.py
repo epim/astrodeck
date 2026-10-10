@@ -139,6 +139,22 @@ _WALLCLOCK_TICK_S = 5.0
 _POST_REFUSED = (frozenset(range(400, 500)) - {408, 429}) | {501}
 # The word a log line carries in place of a dead-man url's path (#694).
 _PATH_WITHHELD = "<path withheld>"
+# The longest dead-man url the settings route will save (#812). A healthchecks or
+# Uptime-Kuma ping url is under a hundred characters; 2048 is the ceiling a
+# browser, proxy or monitor will carry, and past it the field holds a paste of
+# something that is not a url.
+DEADMAN_URL_MAX = 2048
+# The two things the dispatcher does on a timer, as the failure latch names them
+# (``AlertDispatcher._failures_said``).
+_STAGE_DEADMAN = "dead-man ping"
+_STAGE_HEARTBEAT = "heartbeat"
+# The same two calls as the engine's frame loop makes them (#936,
+# ``SequenceEngine._frame_alerts_tick``), under stages of their own: a heartbeat
+# that works on the frame path must not forget what the timer's heartbeat has
+# already said (and the reverse), or one failing path would say itself again
+# every time the other one worked.
+STAGE_FRAME_DEADMAN = "dead-man ping on the frame path"
+STAGE_FRAME_HEARTBEAT = "heartbeat on the frame path"
 
 # Source tag on the dispatcher's own diagnostic logs so they are NOT routed back
 # through the alert pipeline (would otherwise self-feed a failure loop).
@@ -202,6 +218,47 @@ def _url_is_safe(url: str, *, allow_private: bool = False) -> bool:
     if not allow_private:
         blocked = blocked or ip.is_loopback or ip.is_private or ip.is_link_local
     return not blocked
+
+
+def deadman_url_problem(url: str) -> str | None:
+    """Why ``url`` can never be the dead-man's-switch target, in words fit for
+    a 422 body, or None when the ping can be sent to it (#812).
+
+    The same test the ping applies when it fires, run when the url is SAVED,
+    so the owner learns at the moment of saving and not from a one-shot log
+    line on some later night: a length bound, no stray whitespace, an
+    http(s) scheme with a host and a port that is a port, the literal-address
+    guard of :func:`_url_is_safe`, and finally that httpx will BUILD a request
+    for it (a control character, a malformed IDNA label and a lone surrogate
+    are refused there and nowhere above).
+
+    The reason NEVER carries any part of ``url``: its path is the ping secret
+    (#694) and a refusal is handed back to whoever sent it and logged. For a
+    request httpx refuses it names the exception's TYPE and never its text,
+    which quotes the url."""
+    if len(url) > DEADMAN_URL_MAX:
+        return f"the url is longer than {DEADMAN_URL_MAX} characters"
+    if url != url.strip():
+        return "the url has leading or trailing whitespace"
+    try:
+        parts = urlsplit(url)
+        host, _port = parts.hostname, parts.port   # .port raises on a bad port
+    except ValueError:
+        return "the url is not well formed (check the host and the port)"
+    if parts.scheme not in ("http", "https"):
+        return "the url must start with http:// or https://"
+    if not host:
+        return "the url has no host name"
+    if not _url_is_safe(url, allow_private=True):
+        return ("the url points at an address that can never be a monitor "
+                "(unspecified, multicast or reserved)")
+    try:
+        httpx.Request("GET", url)
+    except Exception as e:  # noqa: BLE001 - however httpx refuses, the url is unusable
+        return (f"the HTTP client cannot build a request for the url "
+                f"({type(e).__name__}): check the port and any stray characters")
+    return None
+
 
 def _smtp_send_blocking(sink: Any, ev: "AlertEvent") -> tuple[bool, str | None]:
     """Blocking SMTP send (runs in a worker thread). Returns (ok, err);
@@ -394,6 +451,12 @@ class AlertDispatcher:
         # live (#542): a single-flight guard so a still-running ping absorbs
         # the next tick instead of piling another request up behind it.
         self._deadman_task: asyncio.Task | None = None
+        # What the timer-driven work has already said it failed with (#811):
+        # stage -> the exception TYPES said for it. A failure of a type already
+        # said is not said again; a stage that works again forgets its set, so
+        # the next failure is news. Type names only: the text of whatever
+        # raised can carry the dead-man url or a sink's token.
+        self._failures_said: dict[str, set[str]] = {}
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -625,7 +688,9 @@ class AlertDispatcher:
         (P0-3). Wakes every ``_WALLCLOCK_TICK_S`` and fires whatever is due,
         regardless of whether the engine is producing frames — so a paused or
         waiting (but alive) rig keeps its monitor green. Never raises out of the
-        loop; both helpers are hardened, but guard anyway."""
+        loop; both helpers are hardened, but guard anyway, and SAY what the
+        guard caught (:meth:`_say_failure`, #811): it used to be a bare ``pass``,
+        which is how #735 stayed invisible."""
         try:
             while not self._stop.is_set():
                 now = time.monotonic()
@@ -633,18 +698,57 @@ class AlertDispatcher:
                     self._last_deadman = now
                     try:
                         await self.deadman_ping()
-                    except Exception:
-                        pass
+                    except Exception as e:  # noqa: BLE001 - the loop outlives any one failure
+                        self._say_failure(_STAGE_DEADMAN, e)
                 try:
                     await self.emit_heartbeat("rig alive (wall-clock)")
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 - as above
+                    self._say_failure(_STAGE_HEARTBEAT, e)
+                else:
+                    self._failures_said.pop(_STAGE_HEARTBEAT, None)
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=_WALLCLOCK_TICK_S)
                 except asyncio.TimeoutError:
                     pass
         except asyncio.CancelledError:
             raise
+
+    def _say_failure(self, stage: str, exc: BaseException) -> None:
+        """Say, once, that ``stage`` raised ``exc`` and was skipped (#811).
+
+        One warning per distinct failure: the exception's TYPE is the key, so a
+        stage that raises the same thing every tick says it on the first and
+        stays quiet, a different type is news, and a stage that works again
+        (``_failures_said`` forgets it) says its next failure afresh. The line
+        carries the type and never the text, which can quote the dead-man url
+        (#694) or a sink's token. Source ``alert``, so it is not itself turned
+        into an alert. The latch is stamped before the line is published, and a
+        bus that cannot take it falls back to the module's logger, so saying
+        this can neither repeat itself nor end the loop it reports on."""
+        kind = type(exc).__name__
+        said = self._failures_said.setdefault(stage, set())
+        if kind in said:
+            return
+        said.add(kind)
+        line = (f"alert dispatcher: the {stage} raised {kind} and was skipped; "
+                f"it is tried again at the next tick")
+        try:
+            self.bus.log("warning", line, _ALERT_LOG_SOURCE)
+        except Exception:  # noqa: BLE001 - the bus is what failed; the loop goes on
+            logging.getLogger(__name__).warning(line)
+
+    def report_failure(self, stage: str, exc: BaseException) -> None:
+        """:meth:`_say_failure` for a caller outside this module that guards a
+        call into the dispatcher and must go on whatever it raises (#936: the
+        engine's per-frame dead-man ping and heartbeat). ``stage`` is one of the
+        ``STAGE_FRAME_*`` names; the rules are :meth:`_say_failure`'s own."""
+        self._say_failure(stage, exc)
+
+    def report_recovery(self, stage: str) -> None:
+        """``stage`` worked: forget what it has said, so its next failure is
+        news again (:meth:`_say_failure`'s latch is 'nothing said yet', never
+        'never again')."""
+        self._failures_said.pop(stage, None)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -1020,7 +1124,20 @@ class AlertDispatcher:
             return
         if self._deadman_task is not None and not self._deadman_task.done():
             return
-        self._deadman_task = asyncio.create_task(self._deadman_ping_now())
+        self._deadman_task = asyncio.create_task(self._deadman_ping_reporting())
+
+    async def _deadman_ping_reporting(self) -> None:
+        """The pipelined ping's task body (#811): :meth:`_deadman_ping_now`,
+        with whatever escapes it said (:meth:`_say_failure`) instead of left on
+        a task nobody awaits. ``_deadman_ping_now`` answers for the failures it
+        foresaw; what is left here is what it cannot, such as ``get_config()``
+        at its top, which sits outside its own try."""
+        try:
+            await self._deadman_ping_now()
+        except Exception as e:  # noqa: BLE001 - a task nobody awaits is a swallow too
+            self._say_failure(_STAGE_DEADMAN, e)
+        else:
+            self._failures_said.pop(_STAGE_DEADMAN, None)
 
     async def _deadman_ping_now(self) -> None:
         """The dead-man ping itself. Absence of these pings is what triggers

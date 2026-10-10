@@ -447,16 +447,26 @@ class Session(BaseModel):
                 out[r["target_id"]] = out.get(r["target_id"], 0) + 1
         return out
 
-    def set_aside_streak(self, target_id: str) -> tuple[int, str | None]:
+    def set_aside_streak(
+            self, target_id: str, *, before: str | None = None,
+            kinds: tuple[str, ...] = STARVING_KINDS) -> tuple[int, str | None]:
         """On how many CONSECUTIVE observing nights, ending with the newest
         this session ran, ``target_id`` was starved, and the kind of the
         newest record: ``(0, None)`` when it was not (#180 part A, backlog
         WP-131). The read behind "panel 1-3 has been set aside 4 nights
         running" (``flows.progress._starved``).
 
+        ``before`` (#835) is a night key: the walk then ends with the night
+        BEFORE it, as if the session had not run on ``before`` or after.
+        "Starved on the nights before tonight" is what the group driver
+        wants at its start, whether or not tonight has a record yet.
+        ``kinds`` narrows which records count (default ``STARVING_KINDS``,
+        the answer progress serves, unchanged); the walk stops at the first
+        night the panel was reached on with none of them.
+
         A NIGHT COUNTS when the session holds a whole-panel record for the
         target on it (``step_id`` None: a step the reject guard set aside
-        leaves the panel's other steps shot) of a kind in ``STARVING_KINDS``,
+        leaves the panel's other steps shot) of a kind in ``kinds``,
         AND the session banked no effective frame of the target that night.
         The records are keyed by ``events.night_key`` and the frames by their
         report id, so both are put through ``report_night``, the function
@@ -464,6 +474,33 @@ class Session(BaseModel):
         its own night there and matches no record. The walk stops at the
         first night that does not count: a panel shot once since is not
         starved, however often it was set aside before.
+
+        A NIGHT THAT NEVER REACHED THE PANEL IS STEPPED OVER (#970): it
+        neither counts nor stops the walk. A night is REACHED when the
+        session holds anything of the target from it, a set-aside record of
+        any kind or step (expired and cleared included) or a frame of any
+        grade (a rejected one was centred and exposed). A night that holds
+        neither is one the panel was not tried on: clouded out before its
+        turn, cut by the dawn, or spent on the mosaic's other panels. The
+        ledger has no evidence about the panel from it, in either direction,
+        so the walk goes on to the night before and the streak is a run of
+        the nights the panel WAS tried. Read as a break it made a panel set
+        aside on three nights answer ``(0, None)`` the night after a night
+        that never got to it, which is when the Campaign should still name
+        it and the group driver (``earlier_starved_nights``) should still
+        give it the one held pass. A reached night that does not count
+        (a frame banked, a kind outside ``kinds``, one step only) ends the
+        streak as before. A night the panel was tried on whose set-aside had
+        not landed when the run stopped looks like one it never reached, and
+        is stepped over too.
+
+        TONIGHT IS THE SAME CASE (#942). A run that has started has tonight
+        in ``nights`` (``engine.start`` appends its report id) and, until the
+        panel is set aside, no record of it: tonight is stepped over while it
+        holds nothing of the panel and counted once when the record lands, so
+        the earlier nights are not dropped as the run begins and not counted
+        twice. No clock is needed to tell tonight from a night that closed
+        untouched, because both are stepped over.
 
         EXPIRED AND CLEARED RECORDS COUNT. Both stay as history of what the
         night did (a centring set-aside that expired and struck out again, a
@@ -475,24 +512,71 @@ class Session(BaseModel):
 
         ONLY THE KIND IS RETURNED, never the record's ``reason``: it is free
         text that can carry a solver's error, and what is built from this
-        answer is served to a viewer. Tonight counts once its run has
-        started (``nights`` has its report id), so "including tonight" holds.
-        NOTHING HERE IS SITE-DERIVED: nights and kinds, no time."""
+        answer is served to a viewer.
+
+        NOTHING HERE IS SITE-DERIVED: nights and kinds, no clock and no time.
+        The night key is the server's own local noon-to-noon date."""
         banked = {report_night(f.night) or f.night for f in self.frames
                   if f.target_id == target_id and f.effective()}
+        reached = {r.get("night") for r in self.set_aside
+                   if r.get("target_id") == target_id}
+        reached |= {report_night(f.night) or f.night for f in self.frames
+                    if f.target_id == target_id}
+        nights = self.observing_nights()
+        if before is not None and before in nights:
+            nights = nights[:nights.index(before)]
         streak, kind = 0, None
-        for night in reversed(self.observing_nights()):
+        for night in reversed(nights):
+            if night not in reached:
+                continue
             records = [r for r in self.set_aside
                        if r.get("target_id") == target_id
                        and r.get("step_id") is None
                        and r.get("night") == night
-                       and r.get("kind") in STARVING_KINDS]
+                       and r.get("kind") in kinds]
             if not records or night in banked:
                 break
             if kind is None:
                 kind = records[-1]["kind"]
             streak += 1
         return streak, kind
+
+    def earlier_starved_nights(self, target_id: str, *, night: str,
+                               kinds: tuple[str, ...]) -> int:
+        """On how many consecutive observing nights BEFORE ``night`` the
+        session set ``target_id`` aside whole for one of ``kinds`` and shot
+        none of it (``set_aside_streak``), or 0 (#835). What the group driver
+        reads at its start to give up sooner on a panel that has not centred
+        for nights running. A night in between that never reached the panel
+        is stepped over (#970), so a cloud-out does not give it the six
+        passes back.
+
+        ZERO WHEN THE OPERATOR BROUGHT THE PANEL BACK ON ``night``
+        (``note_set_aside_cleared``, backlog ruling D-07): the retry is the
+        operator's decision that the panel is worth a full try tonight, and a
+        restart after it must not read the nights before as a reason to give
+        it one pass.
+
+        ZERO WHEN THE SESSION HOLDS A FRAME OF THE PANEL FROM ``night`` ITSELF.
+        The driver drops its starved note the moment the panel shoots
+        (``GroupRun._record``: ``exposures > 0``, a rejected frame included,
+        since a rejected frame was centred and exposed), and this read is made
+        again at every start, so a crash-resume, a CONTINUE or a /recover
+        later the same night would otherwise note it starved a second time and
+        give a panel that recovered tonight one held pass instead of the six.
+        Any frame of the panel counts here, effective or not, and the report
+        ids are put through ``report_night`` as ``set_aside_streak`` does;
+        the NIGHTS BEFORE are still counted by the ledger's own rule, which
+        needs an effective frame to end a night. Counts and nights, nothing
+        site-derived (6.9)."""
+        if any(r.get("cleared") and r.get("target_id") == target_id
+               and r.get("night") == night for r in self.set_aside):
+            return 0
+        if any(f.target_id == target_id
+               and (report_night(f.night) or f.night) == night
+               for f in self.frames):
+            return 0
+        return self.set_aside_streak(target_id, before=night, kinds=kinds)[0]
 
     def lock_angle(self, target_id: str, pa_deg: float, *, solved_at: float,
                    exposed_at: float | None, source: str) -> dict:

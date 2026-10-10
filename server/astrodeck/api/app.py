@@ -38,7 +38,7 @@ from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
                       field_validator)
 
 from ..aio import reap
-from ..alerting import AlertDispatcher
+from ..alerting import AlertDispatcher, deadman_url_problem
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_VIEW_SITE_DERIVED,
                     CAP_CONFIG_BACKEND, CAP_CONFIG_SAFETY, CAP_CONFIG_SITE_OPTICS,
@@ -114,7 +114,8 @@ from ..dew import DewController
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import (DeviceError, SyncRefused, SyncUnverified,
                             TRACKING_RATES, forget_rig_position_doubt,
-                            position_known_for_motion, rig_position_known)
+                            is_present, position_known_for_motion,
+                            rig_position_known)
 from ..devices.nina import discover_nina
 from ..events import (LOG_READ_MAX, NIGHTLOG_EXIT_S, bus, flush_night_logs,
                       night_key)
@@ -596,12 +597,12 @@ async def _lifespan(app: "FastAPI"):
         if relay_client is not None:
             try:
                 relay_client.stop()
-            except Exception:
+            except Exception:       # the process is exiting; nothing reads the relay after this
                 pass
         # Stop the self-update poller (best-effort; never raises out of shutdown).
         try:
             get_update_service().stop_poller()
-        except Exception:
+        except Exception:           # as above: the poller dies with the process
             pass
         # Stop a still-running boot auto-connect before tearing the rig down, so a
         # slow connect can't race disconnect_all on shutdown (best-effort).
@@ -612,8 +613,11 @@ async def _lifespan(app: "FastAPI"):
         # Clean teardown of an auto-connected rig (best-effort; never raises).
         try:
             await hub.disconnect_all()
-        except Exception:
-            pass
+        except Exception as exc:
+            # Said (#993). The night-log flush below is what puts the line in
+            # the file.
+            hub.say_swallowed("the rig did not disconnect cleanly at "
+                              "shutdown", exc)
         # Stop the bundled COM host if this install ever started one (COM-T6):
         # the ascom-local backend owns a process-lifetime ComHostManager, and its
         # child is a no-orphan supervised process torn down here on app shutdown.
@@ -622,13 +626,15 @@ async def _lifespan(app: "FastAPI"):
             from ..comhost.manager import get_manager
             get_manager().stop()
         except Exception:
+            # stop() swallows a failed terminate itself; a child left behind
+            # is reaped through its pidfile at the next spawn.
             pass
         # Last: let the night-log writer thread finish what is queued, so the
         # lines this shutdown just logged are in the file (#878). Off the loop
         # because it waits; bounded, so a stalled disk cannot hold the exit.
         try:
             await asyncio.to_thread(flush_night_logs, NIGHTLOG_EXIT_S)
-        except Exception:
+        except Exception:           # the night-log writer is what failed: nothing could say so
             pass
 
 
@@ -1623,7 +1629,7 @@ async def _sync_not_taken_is_not_a_failed_solve(solve_and_sync) -> None:
     The driver's message carries no coordinates and no raw link bytes, and
     its action (for ``e11``, the driver's e11 words, in the safe order)
     comes early, so the 16-character prefix still leaves it before the UI's
-    137-character cut.
+    old 137-character cut (the UI keeps whole sentences up to 400 since #792).
 
     Takes the method, not its coroutine: ``_spawn`` closes the coroutine it
     is handed when it refuses the lane (409), and closing this wrapper
@@ -1844,7 +1850,7 @@ def _materialize_bundle(b, root: Path) -> dict:
                 g["linked"] += 1
                 continue
         except OSError:
-            pass
+            pass  # cannot compare: fall through to the copy, which reports its own failure
         try:
             shutil.copy2(it.src, dest)
             copied += 1
@@ -3190,7 +3196,7 @@ def _normalise_allowed_host(raw: str) -> str:
     try:
         return ipaddress.ip_address(value).compressed.casefold()
     except ValueError:
-        pass
+        pass  # not an IP literal: validated as a DNS name below, which raises
     value = value.rstrip(".").casefold()
     if len(value) > 253 or not _DNS_HOST_RE.fullmatch(value):
         raise ValueError(f"invalid host in {ALLOWED_HOSTS_ENV}: {raw!r}")
@@ -3451,13 +3457,17 @@ def _tell_sun_watch_the_mount_parked() -> None:
     the engine and dawn park reach it, so a hub without one (every test double, a
     build without the net) is a no-op. Called only AFTER ``tel.park()`` has
     returned: a park that raised was not confirmed and tells nobody. Never raises:
-    bookkeeping must not turn a park that worked into a failed route."""
+    bookkeeping must not turn a park that worked into a failed route. A raise
+    is SAID (``Hub.say_swallowed``, #993), as the engine says when its two
+    calls fail: the fallback is left stale, which is how #696's false
+    'Parking now' page came about."""
     try:
         watch = getattr(hub, "sun_watch", None)
         if watch is not None:
             watch.note_parked()
-    except Exception:       # noqa: BLE001 - see the docstring
-        pass
+    except Exception as exc:       # noqa: BLE001 - see the docstring
+        hub.say_swallowed("the sun watch could not be told the mount "
+                          "parked", exc)
 
 
 def create_app(*, bind_host: str | None = None,
@@ -4240,8 +4250,12 @@ def create_app(*, bind_host: str | None = None,
                                     "POST {alt, az, ahead_s} asks about a "
                                     "picked point")
         try:
+            # The rig's own latch, so a mount that has not been told where it
+            # is (it then reports its HOME position) gets no sky read along
+            # that reading (#912, #144).
             return await cloudmap_service.telescope_payload(
-                hub.devices.get("telescope"), ahead_s=ahead_s)
+                hub.devices.get("telescope"), ahead_s=ahead_s,
+                position_known=rig_position_known(hub))
         except ValueError as exc:
             raise _cloudmap_400(exc) from exc
 
@@ -5183,6 +5197,48 @@ def create_app(*, bind_host: str | None = None,
             if body.deadman_url or not config_store.cfg().deadman_url:
                 config_store.set_deadman(body.deadman_url)
 
+    def _require_deadman_url_usable(body: ConfigPatchBody) -> None:
+        """422 for a ``deadman_url`` the ping could never be sent to (#812),
+        BEFORE any block of the body is written: ``_persist_config_patch``
+        writes block by block, so a refusal found at the deadman's turn would
+        leave the blocks before it saved under an error. Nothing to check for
+        an empty value (the redacted round-trip, 'unchanged') or when the same
+        body clears it. The reason never echoes the url (#694)."""
+        if body.clear_deadman_url or not body.deadman_url:
+            return
+        problem = deadman_url_problem(body.deadman_url)
+        if problem is not None:
+            raise HTTPException(422, detail={
+                "detail": f"dead-man's-switch url not saved: {problem}",
+                "code": "invalid_deadman_url"})
+
+    def _require_horizon_usable(body: ConfigPatchBody) -> None:
+        """422 for a drawn horizon the obstruction rule could not read (#899),
+        BEFORE any block of the body is written.
+
+        ``POST /api/config {safety}`` is the active site's door to
+        ``config.safety.horizon`` and ``PUT /api/locations/{id}`` is a saved
+        location's; only the second one validated. ``SafetyConfig.horizon`` is a
+        bare ``list[tuple[float, float]]``, so 501 points, an altitude of 999, an
+        azimuth of 720 and a NaN were all stored. A point at altitude 120 is a
+        floor no target clears, so every slew at that azimuth is denied, and a
+        NaN is dropped by the ``max()`` in ``effective_floor``, which is a false
+        OPEN. Both doors now run ``normalize_horizon_points``, so what one
+        refuses the other does.
+
+        The rule only REFUSES. The points are stored as sent: ``interp_wrap``
+        sorts and wraps for itself, and a valid horizon must save as it always
+        did. Nothing to check when the block carries none (``None`` is "no drawn
+        horizon", and ``[]`` passes as the explicit clear)."""
+        if body.safety is None or body.safety.horizon is None:
+            return
+        try:
+            normalize_horizon_points(body.safety.horizon)
+        except ValueError as e:
+            raise HTTPException(422, detail={
+                "detail": f"horizon not saved: {e}",
+                "code": "invalid_horizon"})
+
     def _require_config_field_caps(body: ConfigPatchBody,
                                    principal: Principal) -> None:
         """Field-level RBAC for ``POST /api/config`` (plan field-level map).
@@ -5296,6 +5352,8 @@ def create_app(*, bind_host: str | None = None,
         caller); ``_require_config_field_caps`` then atomically enforces the
         per-block capability before any write."""
         _require_config_field_caps(body, principal)
+        _require_deadman_url_usable(body)
+        _require_horizon_usable(body)
         await asyncio.to_thread(_persist_config_patch, body)
         if body.site is not None:
             push = getattr(hub, "push_site_to_mount", None)
@@ -7256,8 +7314,11 @@ def create_app(*, bind_host: str | None = None,
         setting time, not one value computed from a clock and the site: a
         key-name filter cannot withhold a value a route computes and names
         itself (#19), so the only safe answer is never to compute one.
-        ``flow_progress`` takes no site, clock or config, and the keys it
-        emits are held to an allow-list at the wire by
+        ``flow_progress`` takes no site and no config and reads no clock of
+        its own; the one ``now`` it is handed is this route's request clock,
+        and it only keys a night (``events.night_key``, for ``continue_night``
+        and a dormant session's ``set_aside`` list), never an altitude or a
+        transit. The keys it emits are held to an allow-list at the wire by
         tests/test_flows_progress_route.py, with the session's ``armed`` and
         ``plan_saved_ts`` (S7, #473): a status and a flag, and the moment an
         operator pressed Save, none of them from the site. Its ``nights``
@@ -7516,7 +7577,11 @@ def create_app(*, bind_host: str | None = None,
             hop_cost_s=rig.hop_cost_s,
             rig=rig,
             # Tonight reads the progress answer's blocks and never its
-            # session, so the clock handed in moves nothing it reads.
+            # session. The payload takes the request's clock, which keys the
+            # night of CONTINUE and of a dormant session's set-aside list,
+            # and none of what Tonight reads moves with it: a panel's
+            # `starved` count is the ledger's alone (#970), so the Campaign
+            # says what the progress card says.
             progress=lambda: _flow_progress_payload(rec, flow_id, can_cool,
                                                     rig, time.time()))
 
@@ -7600,7 +7665,7 @@ def create_app(*, bind_host: str | None = None,
         _safety = config_store.cfg().safety
         blocking = blocking_reasons(
             unmapped, dome_connected=bool(dome_dev is not None
-                                          and dome_dev.connected),
+                                          and is_present(dome_dev)),
             closes_on_unsafe=bool(_safety.close_dome_on_unsafe))
         if blocking:
             raise HTTPException(409, detail={
@@ -8655,8 +8720,12 @@ def create_app(*, bind_host: str | None = None,
         if cam and cam.connected:
             try:
                 await cam.abort_exposure()
-            except Exception:
-                pass
+            except Exception as exc:
+                # The operator pressed STOP and the exposure may still be
+                # running; the route answers as it always did, and says so
+                # in the log (#993).
+                hub.say_swallowed("the camera would not abort its exposure "
+                                  "when capture was stopped", exc)
         return {"looping": False}
 
     # ---- Live View (NOV-1): arm/reset/disarm, mirroring capture_loop -------
@@ -9190,7 +9259,9 @@ def create_app(*, bind_host: str | None = None,
 
     # ---------------------------------------------------------------- mount
 
-    async def _plain_goto(ra_hours: float, dec_deg: float) -> None:
+    async def _plain_goto(ra_hours: float, dec_deg: float,
+                          jnow: bool | None = None,
+                          epoch: int | None = None) -> None:
         """Slew to an absolute J2000 target with NO centring pass, in the frame
         the mount expects (#861).
 
@@ -9198,19 +9269,29 @@ def create_app(*, bind_host: str | None = None,
         lane. It was a closure over ``body``; a nudge computes its own
         destination and has no body to close over, and copying the motion fence
         into a second handler is how two paths that must agree stop agreeing.
+
+        ``epoch`` is the motion fence a caller read BEFORE its own awaits. A
+        nudge reads the mount and asks its frame before it spawns this, and a
+        STOP that lands in those awaits has already advanced the epoch this
+        would read at its start, so it would pass the check below and slew.
+        None (a goto, which awaits nothing first) reads it here.
         """
         tel = hub.require("telescope")
         # Motion fence (W3.7): serialize the device-touching commit under the
         # hub motion lock and re-check the epoch immediately before dispatch,
         # so a STOP/abort that lands while this is awaiting (e.g. a stale
         # REMOTE goto racing a LOCAL abort) is fenced out at the mount.
-        epoch = hub._motion_epoch
+        if epoch is None:
+            epoch = hub._motion_epoch
         # #861: the target is J2000, the mount may want JNOW. Converted AFTER
         # the epoch is read, so a STOP that lands while the conversion awaits
         # (its EquatorialSystem probe is a device read) is still fenced out
         # below. The nudge route hands this J2000 too (it converts its READ
-        # back with from_mount_frame), so nothing converts twice.
-        slew_ra, slew_dec = await hub.to_mount_frame(tel, ra_hours, dec_deg)
+        # back with from_mount_frame), so nothing converts twice. ``jnow`` is
+        # the nudge's one frame decision (#962), used here as it was used for
+        # the read; a goto has no read to agree with, passes None, and asks.
+        slew_ra, slew_dec = await hub.to_mount_frame(tel, ra_hours, dec_deg,
+                                                     jnow=jnow)
         async with hub._motion_lock:
             if not hub._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")
@@ -9278,6 +9359,12 @@ def create_app(*, bind_host: str | None = None,
         NOT ``center=True``: a nudge is a small deliberate offset, and
         re-centring on a plate solve would undo the very thing that was asked
         for."""
+        # Motion fence (W3.7), read BEFORE the first await below: the position
+        # read and the frame probe are device reads, and a STOP that lands in
+        # either must still stop this nudge. It is handed to ``_plain_goto``,
+        # which re-checks it at the mount; read there instead, it would be the
+        # epoch the STOP had already advanced.
+        entry_epoch = hub._motion_epoch
         try:
             tel = hub.require("telescope")
         except DeviceError as e:
@@ -9306,7 +9393,17 @@ def create_app(*, bind_host: str | None = None,
         # Convert FIRST and slew J2000 - the frame every other target on this
         # server is in. Nudging in the mount's frame and slewing the answer as
         # J2000 would add a precession-sized error to EVERY tap.
-        from_ra, from_dec = await hub.from_mount_frame(tel, cur_ra, cur_dec)
+        #
+        # ONE FRAME DECISION for both ends (#962). The read and the slew used
+        # to decide the mount's frame separately, by different rules (the read
+        # honours the reprobe hold-off and the status bound, the slew always
+        # asks), so a J2000 mount whose first probe failed or was slow had its
+        # start precessed backwards and its target sent as it stood. Asked
+        # once, the way a slew asks, and the answer used by the read here and
+        # by the slew in ``_plain_goto``.
+        jnow = await hub.decide_mount_frame(tel)
+        from_ra, from_dec = await hub.from_mount_frame(tel, cur_ra, cur_dec,
+                                                       jnow=jnow)
         moved = nudge_offset(from_ra, from_dec, body.axis, arcmin)
         to_ra, to_dec = moved.ra_hours, moved.dec_deg
         # The DESTINATION passes the same two gates a goto does. A nudge is
@@ -9318,7 +9415,7 @@ def create_app(*, bind_host: str | None = None,
         solar = _solar_block(to_ra, to_dec)
         if solar is not None:
             raise HTTPException(409, detail=solar)
-        started = _spawn("goto", _plain_goto(to_ra, to_dec))
+        started = _spawn("goto", _plain_goto(to_ra, to_dec, jnow, entry_epoch))
         return {**started,
                 "from": {"ra_hours": from_ra, "dec_deg": from_dec},
                 "to": {"ra_hours": to_ra, "dec_deg": to_dec},
@@ -9726,7 +9823,9 @@ def create_app(*, bind_host: str | None = None,
         and a slew POSTed while the roof is travelling is now refused with a
         reason about the roof."""
         dome = hub.devices.get("dome")
-        if dome is None or not getattr(dome, "connected", False):
+        # A roof whose link blipped a moment ago is still the roof: refusing
+        # 'no dome connected' would leave it open in the rain (#989).
+        if dome is None or not is_present(dome):
             raise _err(DeviceError("no dome connected"))
         hub.bump_motion_epoch()
 
@@ -9734,7 +9833,7 @@ def create_app(*, bind_host: str | None = None,
             tel = hub.devices.get("telescope")
             needs_park = getattr(dome, "requires_park_before_close", True)
             async with hub._motion_lock:
-                live = tel is not None and getattr(tel, "connected", False)
+                live = tel is not None and is_present(tel)
                 # NOT AIMED FROM AN UNKNOWN POSITION (#888). The one gate,
                 # asked under the motion lock before the park, as the park
                 # route asks it at its seam. On the AM5 a park is a goto to
@@ -12531,7 +12630,7 @@ def create_app(*, bind_host: str | None = None,
                     if out is not None:  # None = dropped event (weather spec §8)
                         await websocket.send_json(out)
         except (WebSocketDisconnect, RuntimeError):
-            pass
+            pass  # the client went away (or a send raced the close): the normal end
         finally:
             bus.unsubscribe(q)
 

@@ -51,3 +51,17 @@ const MAP: Record<SequenceState["state"], StateMeta> = {
 export function stateMeta(state: SequenceState["state"]): StateMeta {
   return MAP[state] ?? MAP.idle;
 }
+
+/**
+ * The words on the persistent run banner (App.tsx's strip and the #/next
+ * Banners). The banner stays up through every live state (runIsLive), so it has
+ * to say which one: a cloud hold or an abort's wind-down printed as "SEQUENCE
+ * RUNNING" sits two clicks from a Monitor badge that says HOLDING / ABORTING
+ * for the same rig, the disagreement the PAUSED wording was added to end (#231).
+ * Anything else, running included, reads RUNNING.
+ */
+export function runBannerLabel(state: SequenceState["state"]): string {
+  return state === "paused" || state === "holding" || state === "aborting"
+    ? `SEQUENCE ${stateMeta(state).label}`
+    : "SEQUENCE RUNNING";
+}

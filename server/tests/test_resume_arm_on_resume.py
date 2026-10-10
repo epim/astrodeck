@@ -32,6 +32,7 @@ import time
 
 import pytest
 
+from _simhub import sim_hub  # noqa: F401  (fixture import)
 from astrodeck.sequence.session import Session, session_store
 
 
@@ -81,30 +82,59 @@ class TestArmingIsAboutTheActiveSession:
             "auto_resume is set before the resume branch runs — it is back "
             "inside the fresh-run-only path")
 
-    def test_the_singleton_still_holds(self):
-        """DELIBERATE PIN CHANGE (#837, wave 17 integration). This asserted
-        ``other.auto_resume = False`` in ``SequenceEngine.start``'s OWN source,
-        back when ``start`` ran its own copy of the singleton loop beside the
-        PATCH route's and the queue promotion's. The loop is written once now
-        (``SequenceEngine._arm_exclusively``) and all three call it, so the pin
-        follows the loop: ``start`` must still call the shared loop, and the
-        shared loop must still disarm every other session. The behaviour itself
-        (a start returns and logs the session it disarmed) is pinned by
-        ``test_w4_disarm_visible.py``, which did not change.
+    async def test_the_singleton_still_holds(self, store, sim_hub):
+        """Starting a run leaves exactly ONE session armed, the one it
+        started, however many others were armed before it. Two earlier
+        sessions, not one: a loop that stops after the first it disarms leaves
+        the second armed, and two armed sessions race for the same restart.
+
+        #844. This used to read the source of ``start`` and of the shared
+        loop for ``self._arm_exclusively(session)`` and ``other.auto_resume =
+        False``, which grades where the code sits: a refactor that kept the
+        behaviour broke it (#837 did), and a loop that disarmed only the first
+        session still contained both strings and passed. It grades the store
+        after a real ``start`` now. The PATCH route's half of the same rule
+        (arming another session stops the ladder recovering the one it
+        disarms) is test_resume_ladder_stops.py's ``arm_another`` case.
 
         RED under mutant "start no longer arms exclusively" (``disarmed =
-        self._arm_exclusively(session)`` removed from ``start``), observed:
+        self._arm_exclusively(session)`` in ``SequenceEngine.start`` made
+        ``disarmed = []``), observed:
 
-            AssertionError: start no longer calls the shared singleton loop
+            AssertionError: a start must leave only the session it started armed;
+            still armed beside it: ['538bf995...', 'c0ca870e...']
+
+        RED under mutant "the loop disarms only the first" (a ``break`` after
+        ``session_store.save(other)`` in ``SequenceEngine._arm_exclusively``),
+        observed:
+
+            AssertionError: a start must leave only the session it started armed;
+            still armed beside it: ['3f674225...']
+
+        The source-text version this replaced was GREEN under that one.
         """
-        import inspect
         from astrodeck.sequence.engine import SequenceEngine
-        src = inspect.getsource(SequenceEngine.start)
-        assert "self._arm_exclusively(session)" in src, \
-            "start no longer calls the shared singleton loop — two armed sessions would race"
-        loop = inspect.getsource(SequenceEngine._arm_exclusively)
-        assert "other.auto_resume = False" in loop, \
-            "arming no longer disarms the others — two armed sessions would race"
+        earlier = []
+        for n, name in enumerate(("night one", "night two")):
+            s = Session(name=name, created_ts=time.time() + n,
+                        status="dormant", plan=_plan(), auto_resume=True)
+            store.save(s)
+            earlier.append(s)
+        ids = {s.id for s in earlier}
+        assert {s.id for s in store.load_all() if s.auto_resume} == ids, (
+            "premise: both earlier sessions start out armed")
+
+        engine = SequenceEngine(sim_hub)
+        disarmed = engine.start(_plan())
+        try:
+            armed = {s.id for s in store.load_all() if s.auto_resume}
+            assert armed == {engine._session.id}, (
+                f"a start must leave only the session it started armed; "
+                f"still armed beside it: {sorted(armed - {engine._session.id})}")
+            assert {d["id"] for d in disarmed} == ids, (
+                "the start must name every session it disarmed")
+        finally:
+            await engine.abort()
 
 
 class TestTheRigSequenceThatFailed:

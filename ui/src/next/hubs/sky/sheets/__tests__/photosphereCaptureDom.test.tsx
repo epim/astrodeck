@@ -731,6 +731,318 @@ await test('A browser with no DeviceOrientationEvent is told what to do instead 
     w.DeviceOrientationEvent = originalDOE;
   }
 });
+/** Chromium's whole answer to a blocked or absent motion sensor (issue #951):
+ *  a `deviceorientation` event with alpha, beta and gamma all null. Stamped on
+ *  the test clock like every other event here. */
+const nullOrientation = (type = 'deviceorientation') => {
+  const ev = new w.Event(type);
+  sensorNow += 10; Object.defineProperty(ev, 'timeStamp', { value: sensorNow });
+  Object.assign(ev, { alpha: null, beta: null, gamma: null, absolute: false }); w.dispatchEvent(ev);
+};
+/** Run the timers the sheet and the driver registered, without delivering any
+ *  sensor event: the sheet repaints every 350 ms whether or not the phone says
+ *  anything, which is the only way a verdict about SILENCE can reach the panel. */
+const repaint = async () => { await act(async () => { for (const fn of [...intervals.values()]) fn(); }); await settle(); };
+await test('One all-null deviceorientation event and then silence is called blocked sensors, not a wait for the compass (#951)', async () => {
+  // Brave blocks the Motion sensors site setting by default and Chromium
+  // answers a blocked sensor with ONE all-null event and no prompt. The scan
+  // used to read that as "no compass reading yet" and tell the user to move the
+  // phone gently - an instruction no movement can satisfy, with the real remedy
+  // (a site setting) named nowhere on the screen.
+  // Through the real sheet, because the sentence has to arrive where the user
+  // is standing; the verdict is about a silence, so the clock is moved between
+  // looks and the sheet repainted without a single further sensor event.
+  // 999 ms after the event is still a wait and 1000 is the verdict, which pins
+  // the bound from both sides: a verdict at once would tell every slow-starting
+  // sensor it is blocked, and one that never came would be the original defect.
+  // Mutation: delete the `this.motionBlockedAt(now) ? MOTION_BLOCKED_CUE : null`
+  // arm of `issueAt` (leave `return this.issue`). Observed red: 'the panel never
+  // said the motion sensors are blocked'.
+  // Mutation: make `motionBlockedAt` return true as soon as
+  // `orientationNullAt` is set. Observed red: 'the sensors were called blocked
+  // the instant the empty event arrived'.
+  // Mutation: drop the `this.hasOrientation || this.tiltAt !== null` guard from
+  // `motionBlockedAt`. Observed red: 'a compass reading arrived and the panel
+  // still said the sensors are blocked'.
+  const priorSensor = lastSensor;
+  const blockedRoot = createRoot(document.getElementById('root')!);
+  try {
+    await act(async () => blockedRoot.render(createElement(HorizonSheet, { depth: 0, params: { site: 'current' }, guided: true })));
+    await settle();
+    await click(byTest('capture-photosphere'));
+    nullOrientation();
+    await repaint();
+    const panel = () => byTest('photosphere-capturing').textContent!;
+    assert.doesNotMatch(panel(), /blocked/, 'the sensors were called blocked the instant the empty event arrived');
+    assert.match(panel(), /Waiting for the compass/, 'the ordinary wait was lost before the verdict was due');
+    sensorNow += 999;
+    await repaint();
+    assert.doesNotMatch(panel(), /blocked/, 'the sensors were called blocked before the silence had lasted a second');
+    sensorNow += 1;
+    await repaint();
+    assert.match(panel(), /Motion sensors are blocked for this site\. In Brave or Chrome, open Site settings > Motion sensors and allow this site, then reopen the scan\./,
+      `the panel never said the motion sensors are blocked: "${panel()}"`);
+    assert.doesNotMatch(panel(), /Waiting for the compass\. Move the phone gently/,
+      'the panel still asks for a compass that a blocked sensor can never deliver');
+    // The Start control stays locked, which is right, and pressing it starts
+    // nothing: the explanation is what changed, not the gate.
+    const start = byTest('start-horizon-scan');
+    assert.equal(start.getAttribute('aria-disabled'), 'true');
+    await click(start);
+    assert.equal(byTest('photosphere-capturing').getAttribute('data-scanning'), 'false',
+      'a scan started with the motion sensors blocked');
+    // A reading arriving after the verdict withdraws it: the setting may have
+    // been fixed in another tab, and a message that outlived the reading that
+    // disproves it would be the next defect.
+    heading(80);
+    await repaint();
+    assert.doesNotMatch(panel(), /blocked/, 'a compass reading arrived and the panel still said the sensors are blocked');
+  } finally {
+    await act(async () => blockedRoot.unmount());
+    lastSensor = priorSensor;
+  }
+});
+await test('Blocked sensors: the Start lock reason and the bearing line say so instead of waiting for a compass and a tilt sensor (#976)', async () => {
+  // #951 made the HINT say the motion sensors are blocked and left the two
+  // short labels beside it describing a wait: the Start control stayed locked
+  // on "Waiting for compass" and the bearing line on "Waiting for tilt sensor",
+  // for sensors that no amount of waiting will deliver. Through the real sheet
+  // and the real button, because the labels have to be right where the user is
+  // looking; a locked control carries its reason as its `title`.
+  // The control comes first: before the verdict is due the ordinary waits stand,
+  // which also proves the two elements being graded are on the page, so a later
+  // absence of 'Waiting for' cannot be a blank panel.
+  // Mutation: in horizon.tsx put `"Waiting for compass"` back as the Start
+  // `lockedReason` for `!compassReady` (drop the `motionBlocked` arm). Observed
+  // red: 'the Start control still gives a wait as its lock reason for sensors
+  // that are blocked'.
+  // Mutation: in horizon.tsx drop the `motionBlocked ? MOTION_BLOCKED_LABEL :`
+  // arm of the bearing line. Observed red: 'the bearing line still waits for a
+  // tilt sensor that a blocked setting will never deliver'.
+  // Mutation: delete `this.issue === null &&` from `motionBlocked`. Observed
+  // red: 'a label named the blocked sensors beside a sentence that names
+  // something else'.
+  const priorSensor = lastSensor;
+  const labelsRoot = createRoot(document.getElementById('root')!);
+  try {
+    await act(async () => labelsRoot.render(createElement(HorizonSheet, { depth: 0, params: { site: 'current' }, guided: true })));
+    await settle();
+    await click(byTest('capture-photosphere'));
+    nullOrientation();
+    await repaint();
+    const start = () => byTest('start-horizon-scan');
+    const bearing = () => document.querySelector('.photosphere-bearing')!.textContent!;
+    const hint = () => document.querySelector('.photosphere-hint')!.textContent!;
+    assert.equal(start().getAttribute('title'), 'Waiting for compass', 'the premise did not hold: no ordinary wait before the verdict is due');
+    assert.equal(bearing(), 'Waiting for tilt sensor', 'the premise did not hold: no ordinary tilt wait before the verdict is due');
+    sensorNow += 1000;
+    await repaint();
+    assert.ok(hint().startsWith('Motion sensors are blocked for this site.'),
+      `the premise did not hold: the hint does not call the sensors blocked: "${hint()}"`);
+    assert.equal(start().getAttribute('aria-disabled'), 'true');
+    assert.equal(start().getAttribute('title'), 'Motion sensors blocked',
+      `the Start control still gives a wait as its lock reason for sensors that are blocked: "${start().getAttribute('title')}"`);
+    assert.equal(bearing(), 'Motion sensors blocked',
+      `the bearing line still waits for a tilt sensor that a blocked setting will never deliver: "${bearing()}"`);
+    assert.doesNotMatch(byTest('photosphere-capturing').textContent!, /Waiting for (compass|tilt)/,
+      'a wait is still printed in the capture panel beside the blocked sentence');
+    // A reading arriving after the verdict withdraws the labels with the
+    // sentence: the setting may have been fixed in another tab.
+    heading(80);
+    await repaint();
+    assert.doesNotMatch(hint(), /blocked/, 'the premise did not hold: the hint outlived the reading');
+    assert.doesNotMatch(bearing(), /blocked/, 'a compass reading arrived and the bearing line still said the sensors are blocked');
+    assert.notEqual(start().getAttribute('title'), 'Motion sensors blocked',
+      'a compass reading arrived and the Start control still said the sensors are blocked');
+  } finally {
+    await act(async () => labelsRoot.unmount());
+    lastSensor = priorSensor;
+  }
+  // The driver's own answer, so the short labels are graded at the seam too.
+  // The iOS denial outranks the blocked verdict in the hint, so the label that
+  // would name the verdict stays off beside a sentence that names something else.
+  const originalDOE = w.DeviceOrientationEvent;
+  try {
+    let sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    assert.equal(sweep.motionBlocked, false, 'a scan with no event yet was called blocked');
+    nullOrientation(); sensorNow += 3000;
+    assert.equal(sweep.motionBlocked, true, 'the premise did not hold: one empty event and three seconds of silence is the verdict');
+    sweep.stop();
+    w.DeviceOrientationEvent = class { static requestPermission = async () => 'denied'; };
+    sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    nullOrientation(); sensorNow += 3000;
+    assert.ok((sweep.error ?? '').startsWith('Motion access was denied.'), 'the premise did not hold: the iOS denial did not outrank the verdict');
+    assert.equal(sweep.motionBlocked, false, 'a label named the blocked sensors beside a sentence that names something else');
+    sweep.stop();
+  } finally {
+    w.DeviceOrientationEvent = originalDOE;
+    lastSensor = priorSensor;
+  }
+});
+await test('Repeated empty events count from the first, and a reading, iOS and a missing constructor keep their own sentences (#951)', async () => {
+  // The driver, with no sheet: every case is one fact and one sentence.
+  // Mutation: make the heading handler overwrite `orientationNullAt` on every
+  // empty event instead of keeping the first. Observed red: 'repeated empty
+  // events restarted the silence each time'.
+  // Mutation: reorder `issueAt` to put the blocked verdict ahead of `issue`.
+  // Observed red: 'the blocked sentence displaced the iOS denial'.
+  // Mutation: make `captureCue` read `this.issue` instead of `this.issueAt(now)`.
+  // Observed red: 'the scan cue and the panel hint disagree about what is wrong'.
+  const priorSensor = lastSensor;
+  const BLOCKED = /^Motion sensors are blocked for this site\./;
+  const driver = async () => {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    return sweep;
+  };
+  try {
+    // A sensor that is merely slow: empty event, then a value inside the second.
+    let sweep = await driver();
+    nullOrientation();
+    sensorNow += 400; heading(80);
+    sensorNow += 2000;
+    assert.equal(sweep.error, null, 'a reading inside the second did not withdraw the empty event');
+    assert.doesNotMatch(sweep.captureCue, BLOCKED);
+    // Several empty events in a row are still one silence, counted from the first.
+    sweep.stop();
+    sweep = await driver();
+    nullOrientation(); sensorNow += 600; nullOrientation(); sensorNow += 400; nullOrientation('deviceorientationabsolute');
+    assert.match(sweep.error ?? '', BLOCKED, 'repeated empty events restarted the silence each time');
+    assert.equal(sweep.captureCue, sweep.error, 'the scan cue and the panel hint disagree about what is wrong');
+    sweep.stop();
+    // Events with a value are not empty: a phone with a compass-less tilt
+    // sensor reports alpha null with beta and gamma present. This pins the
+    // all-three test only together with the reading guard in `motionBlockedAt`
+    // (tilt arrives on this very event, so the guard masks an alpha-only test);
+    // the guard itself is graded by the phone-with-no-compass case below.
+    sweep = await driver();
+    const tiltOnly = new w.Event('deviceorientation');
+    sensorNow += 10; Object.defineProperty(tiltOnly, 'timeStamp', { value: sensorNow });
+    Object.assign(tiltOnly, { alpha: null, beta: 70, gamma: 3, absolute: false }); w.dispatchEvent(tiltOnly);
+    sensorNow += 5000;
+    assert.equal(sweep.error, null, 'a tilt-only sensor was called blocked');
+    sweep.stop();
+    // iOS: the permission request answered "denied". Today's sentence, even
+    // with the empty event and the second both present.
+    const originalDOE = w.DeviceOrientationEvent;
+    w.DeviceOrientationEvent = class { static requestPermission = async () => 'denied'; };
+    try {
+      sweep = await driver();
+      nullOrientation(); sensorNow += 3000;
+      assert.match(sweep.error ?? '', /^Motion access was denied\./, 'the blocked sentence displaced the iOS denial');
+      sweep.stop();
+    } finally { w.DeviceOrientationEvent = originalDOE; }
+    // No constructor: today's sentence, and no listener to have heard an event.
+    delete w.DeviceOrientationEvent;
+    try {
+      sweep = await driver();
+      nullOrientation(); sensorNow += 3000;
+      assert.match(sweep.error ?? '', /does not report which way the phone is pointing/, 'the blocked sentence displaced the missing-constructor sentence');
+      sweep.stop();
+    } finally { w.DeviceOrientationEvent = originalDOE; }
+  } finally {
+    lastSensor = priorSensor;
+  }
+});
+await test('A phone with no compass sensor, which sends one empty absolute event and then streams tilt, is waiting for the compass and not blocked (#951)', async () => {
+  // The Chromium phone this guard exists for: no absolute (compass) sensor, so
+  // its `deviceorientationabsolute` stream is ONE all-null event, while the
+  // relative `deviceorientation` stream delivers tilt as it should. The relative
+  // events never become a heading (`ScanPoseSource.accept` needs an absolute
+  // basis to align them to), so `hasOrientation` stays false for the whole
+  // scan and the only thing keeping the blocked verdict off a working tilt
+  // sensor is `tiltAt`. The tilt-only case above cannot grade that: it sends no
+  // empty event first, so `orientationNullAt` is never set and the verdict has
+  // nothing to be wrong about.
+  // Mutation: drop `|| this.tiltAt !== null` from the guard in
+  // `motionBlockedAt`. Observed red: 'a phone streaming tilt was told its motion
+  // sensors are blocked'.
+  const priorSensor = lastSensor;
+  // A relative reading every 100 ms for 1.5 s, past MOTION_BLOCKED_AFTER_MS, and
+  // the last one 50 ms old when the panel is read: a live tilt stream.
+  const streamTilt = async (between: () => Promise<void> | void) => {
+    nullOrientation('deviceorientationabsolute');
+    for (let i = 0; i < 15; i++) { heading(80, false, 110); sensorNow += 50; await between(); }
+  };
+  const tiltRoot = createRoot(document.getElementById('root')!);
+  try {
+    await act(async () => tiltRoot.render(createElement(HorizonSheet, { depth: 0, params: { site: 'current' }, guided: true })));
+    await settle();
+    await click(byTest('capture-photosphere'));
+    await streamTilt(repaint);
+    const panel = byTest('photosphere-capturing').textContent!;
+    assert.doesNotMatch(panel, /blocked/, `a phone streaming tilt was told its motion sensors are blocked: "${panel}"`);
+    // The ordinary wait is the true statement here: the tilt is live and the
+    // compass is the thing that never came.
+    assert.match(panel, /° up · Waiting for compass/, `the panel did not show a live tilt waiting on a compass: "${panel}"`);
+    assert.match(panel, /Waiting for the compass\. Move the phone gently/, 'the compass wait was lost for a phone that has no compass reading');
+  } finally {
+    await act(async () => tiltRoot.unmount());
+    lastSensor = priorSensor;
+  }
+  // The driver's own answer, so the verdict is graded at the seam as well as
+  // through the sheet.
+  try {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    await streamTilt(() => {});
+    assert.equal(sweep.tiltReady, true, 'the premise did not hold: the relative stream did not make a live tilt');
+    assert.equal(sweep.compassReady, false, 'the premise did not hold: a relative-only stream became a compass heading');
+    assert.equal(sweep.error, null, 'a phone streaming tilt was told its motion sensors are blocked');
+    assert.doesNotMatch(sweep.captureCue, /^Motion sensors are blocked/, 'the scan cue called a tilt-streaming phone blocked');
+    sweep.stop();
+  } finally {
+    lastSensor = priorSensor;
+  }
+});
+await test('A gyroscope permission reported denied is the same verdict with no event at all, and a granted or unknown one says nothing (#951)', async () => {
+  // `navigator.permissions.query({name:'gyroscope'})` is the other way Chromium
+  // reports the Motion sensors setting. `denied` needs no event and cannot be a
+  // slow sensor, so it is called at once; `granted` is no evidence of anything,
+  // and Firefox and Safari reject the name outright, which says nothing about
+  // their sensors and must not surface as an error either.
+  // Mutation: delete the `status.state === "denied"` test so every answer sets
+  // the flag. Observed red: 'a granted gyroscope permission was called blocked'.
+  // Mutation: delete `this.motionPermissionDenied = false` from `start()`.
+  // Observed red: 'a denied permission from the last scan was carried into the
+  // next'.
+  const answer = async (reply: () => Promise<unknown>) => {
+    const asked: unknown[] = [];
+    Object.defineProperty(w.navigator, 'permissions', { value: { query: (d: unknown) => { asked.push(d); return reply(); } }, configurable: true });
+    try {
+      const sweep = new PhotosphereSweep();
+      await sweep.start(document.createElement('video'), document.createElement('canvas'));
+      await settle();
+      const error = sweep.error;
+      sweep.stop();
+      return { asked, error };
+    } finally { delete w.navigator.permissions; }
+  };
+  const denied = await answer(async () => ({ state: 'denied' }));
+  assert.deepEqual(denied.asked, [{ name: 'gyroscope' }], 'the gyroscope permission was never asked about');
+  assert.match(denied.error ?? '', /^Motion sensors are blocked for this site\./, 'a denied gyroscope permission was not reported as blocked sensors');
+  const granted = await answer(async () => ({ state: 'granted' }));
+  assert.equal(granted.error, null, 'a granted gyroscope permission was called blocked');
+  const unknown = await answer(() => Promise.reject(new TypeError("Failed to read the 'name' property")));
+  assert.equal(unknown.error, null, 'a browser that does not know the permission name was called blocked');
+  // And the answer of one scan is not carried into the next.
+  Object.defineProperty(w.navigator, 'permissions', { value: { query: async () => ({ state: 'denied' }) }, configurable: true });
+  const sweep = new PhotosphereSweep();
+  try {
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    await settle();
+    assert.notEqual(sweep.error, null, 'the denied permission case this one depends on did not hold');
+    delete w.navigator.permissions;
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    await settle();
+    assert.equal(sweep.error, null, 'a denied permission from the last scan was carried into the next');
+  } finally {
+    delete w.navigator.permissions;
+    sweep.stop();
+  }
+});
 /** A camera image with structure in it, at whatever size it is asked for: three
  *  sinusoids of different periods and one diagonal, so the pattern is the same
  *  picture at the stillness canvas's size and at the capture canvas's, and so a

@@ -124,14 +124,16 @@ async def test_control_a_dither_and_an_explicit_slew_count_nothing(real_hub):
 
 async def test_the_cleared_line_does_not_read_as_a_solve_failure(real_hub,
                                                                  bus_lines):
-    """The UI's humanizer rewrites any line with "plate" and "solve" into
+    """The UI's humanizer rewrites a line that IS a plate-solve failure into
     "Plate-solve failed - check focus/exposure"; the detector's line is about
-    the mount, not the optics.
+    the mount, not the optics, and must not read as one.
 
     MUTANT "the old words" (the reason put back as ``f"the mount has moved
-    {moved:.2f}° since the last plate solve"``): RED -
-        AssertionError: the humanizer rewrites: 'field identification
-        cleared: the mount has moved 6.00° since the last plate solve'
+    {moved:.2f}° since the last plate solve"``) is RETIRED (#997): it was red
+    while the humanizer rewrote any line holding "plate" and "solve", and the
+    UI shows that line as written now (#792, #960), so it passes. What the
+    assertion still catches is the line becoming a bare solve failure, such as
+    "field identification cleared: plate solve failed".
     """
     h = real_hub
     h._note_pointing(5.0, 30.0)

@@ -57,6 +57,7 @@ import { nav } from "../../../router";
 import { useLock } from "../../../lib/gateHook";
 import { useEquipConnected, useSequence, useStatus, useStore } from "../../../../store";
 import { resolveRoleConnected } from "../../../../lib/caps";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
   getSwitchPorts, putSwitchPortSettings, setSwitchPort,
   type SwitchPortSettings,
@@ -123,17 +124,19 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
   const equipConnected = useEquipConnected();
   const sequence = useSequence();
   const showToast = useStore((s) => s.showToast);
-  // The engine's refusals are shown VERBATIM, which `showToast` cannot do: it
-  // runs every message through `humanizeLog`, which truncates at 137 characters,
-  // and `power_guard`'s refusal is longer than that - the clause that gets cut
-  // is the second way out ("clear the protection for this port in Power
-  // settings"), which is the one the user is standing in front of.
+  // The engine's refusals are shown VERBATIM, which `showToast` does only with
+  // `{ verbatim: true }`: it runs every message through `humanizeLog`, which
+  // shortens a line past CLIP_AT (400) characters to whole sentences, and
+  // `power_guard`'s refusal is two sentences with the port's own name in the
+  // first (about 170 characters plus the name). A long name takes it past the
+  // budget, and the sentence that goes is the second way out ("clear the
+  // protection for this port in Power settings"), which is the one the user is
+  // standing in front of.
   const enqueueToast = useStore((s) => s.enqueueToast);
 
   const role = resolveRoleConnected("switch", status?.backend_links, status?.connected, equipConnected);
   const connected = role.connected;
-  const seqState = sequence?.state ?? null;
-  const runOwns = seqState === "running" || seqState === "paused";
+  const runOwns = runIsLive(sequence);
 
   const { lockedReason: capReason, onExplain } = useLock({
     cap: "control.power", needsRole: "switch",

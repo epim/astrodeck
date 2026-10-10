@@ -249,7 +249,7 @@ async def test_a_centring_on_a_jnow_alpaca_mount_counts_no_disagreement(
     h = hub
     tel = h.devices["telescope"]
 
-    async def expects_jnow(_tel) -> bool:
+    async def expects_jnow(_tel, **_bound) -> bool:
         return True
 
     monkeypatch.setattr(h, "_mount_expects_jnow", expects_jnow)

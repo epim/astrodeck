@@ -64,6 +64,7 @@ import pytest
 import astrodeck.config as config_mod
 import astrodeck.hub as hub_module
 import astrodeck.sequence.engine as engine_mod
+from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 from _simhub import a_real_site
 from astrodeck.config import ConfigStore, SafetyConfig, Site
 from astrodeck.devices.sim import SimTelescope
@@ -120,22 +121,6 @@ _KINDS = {
                    "the mount did not confirm the sync"),
 }
 _BY_KIND = pytest.mark.parametrize("kind", list(_KINDS))
-
-
-def _humanizer_rewrites(text: str) -> bool:
-    """Whether ui/src/lib/humanize.ts's ``humanizeLog`` replaces ``text``
-    with its own words, by its four rules in order (lower-cased substring
-    tests; FIXES "Surfaced-text rules" 2). A line it rewrites never reaches
-    the operator in our words."""
-    m = text.lower()
-    if "camera" in m and any(w in m for w in
-                             ("not responding", "timeout", "disconnect")):
-        return True
-    if "nina" in m and any(w in m for w in ("5", "http", "error")):
-        return True
-    if "plate" in m and "solve" in m:
-        return True
-    return "guid" in m and "lost" in m
 
 
 def _continuing(lines) -> list[str]:
@@ -674,29 +659,21 @@ def test_no_surfaced_text_is_rewritten_by_the_humanizer(kind, err, reply,
                                                          bus_lines):
     """The stop, the skip line the scheduler logs it in, and the warning,
     for every ``where``, every kind, with and without a figure and with each
-    shape of reply: none trips a humanizer rule (FIXES rule 2), so the
-    operator reads our words and not "Guiding was lost - recovering" or
+    shape of reply: none IS a report the humanizer replaces (FIXES rule 2), so
+    the operator reads our words and not "Guiding was lost - recovering" or
     "Plate-solve failed - check focus/exposure".
 
-    MUTANT "the old where" (the lost-star site's ``where`` put back as
-    "re-centring after guiding was lost"): RED, all twelve -
-        AssertionError: the humanizer rewrites: 're-centring after guiding
-        was lost: the mount refused the sync, so its pointing could not be
-        corrected'
-    MUTANT "plate in the warning" (the warning's ``{what}`` preceded by
-    "the plate solve worked but "): RED, all twelve, for example -
-        AssertionError: the humanizer rewrites: 'Fictional 12: re-centring
-        after the meridian flip: the plate solve worked but the mount did
-        not confirm the sync (an unrecognised reply)'
+    The humanizer replaces a line that is the report, not one that mentions
+    it (#792, #960), so the three mutants this test was first shown red under
+    are lines the UI now shows as written and no longer fail here (#997): a
+    ``where`` of "re-centring after guiding was lost", "the plate solve worked
+    but " before the warning's cause, and "guided imaging goes on until the
+    star is lost" in the opted-out clause. The rule they stood for is live:
+    MUTANT "the stop is a failed solve" (both ``raise StopTarget`` sites made
+    ``f"{where}: plate solve failed"``): RED, all twelve, for example -
+        AssertionError: the humanizer rewrites: 'centring at acquisition:
+        plate solve failed'
     The opted-out target's warning (FIXES3 G3.1) is graded too.
-    MUTANT "guid and lost in the opted-out clause"
-    (``_SYNC_NOT_TAKEN_GOES_ON`` made "; centring is off, so guided
-    imaging goes on until the star is lost"): RED, all twelve, for example
-    (FIXES4 H3 layout) -
-        AssertionError: the humanizer rewrites: 'Fictional 12: re-centring
-        after the meridian flip: the mount refused the sync; centring is
-        off, so guided imaging goes on until the star is lost (an
-        unrecognised reply)'
     """
     for where in _wheres():
         texts = list(_texts_for(where, kind, err, reply, bus_lines))

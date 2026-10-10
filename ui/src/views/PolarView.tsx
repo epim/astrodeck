@@ -20,6 +20,7 @@ import { useGuidedSetup, stepBlocker } from "../guided/setup";
 import { AlignmentLesson } from "../guided/AlignmentLesson";
 import { AlignmentFinish } from "../guided/AlignmentFinish";
 import { AlignmentCoach } from "../guided/AlignmentCoach";
+import { GuidedTrustPosition, usePositionGate } from "../guided/GuidedTrustPosition";
 
 /* Fields the native TPPA engine (server/astrodeck/polar/native.py) adds to the
    canonical `polar` payload beyond PolarState. The store forwards the whole
@@ -64,6 +65,12 @@ export default function PolarView() {
   const polar = usePolar() as NativePolar;
   const showToast = useStore((s) => s.showToast);
   const canMount = useCanControlMount(); // polar alignment slews the mount
+  // Every leg of the arc is aimed from the believed position, so the server
+  // refuses a start while the mount does not know where it points (#888, 409
+  // `position_unknown`) and advises TRUST POSITION or a pad key. Neither was on
+  // this page (#985): the attestation takes Start's place while the status says
+  // so, and a start that raced the status and was refused lands there too.
+  const position = usePositionGate();
   // UX-04: warn when the resolved polar provider is the SIMULATOR (fabricated az/alt).
   const isSimProvider = useProviders()?.polar_align?.kind === "sim";
   // "pausing" is still a LIVE run — the driver holds the camera and the mount
@@ -475,6 +482,7 @@ export default function PolarView() {
               </p>
             )}
             <div className="flex flex-col gap-2">
+              {position.needed && !live ? <GuidedTrustPosition inPro={!guided} onTrusted={position.clear} /> : (
               <button className="btn btn-accent" disabled={!canMount || live || busy || !!guidedBlock} title={guidedBlock ?? undefined}
                 aria-busy={starting || undefined}
                 onClick={() => {
@@ -484,14 +492,16 @@ export default function PolarView() {
                   void act(async () => {
                     // A refused start (409 "already running", 403) never becomes
                     // a run, so drop the latch at once rather than making the
-                    // user wait out its expiry to try again.
+                    // user wait out its expiry to try again. The position
+                    // refusal is not an error line: the attestation that
+                    // answers it has taken this button's place.
                     try { await api.post("/api/polar/start"); }
-                    catch (e) { setStarting(false); throw e; }
+                    catch (e) { setStarting(false); if (!position.refusedBy(e)) throw e; }
                   });
                 }}>
                 <Icon name="align" size={14} className="inline -mt-0.5 mr-1" />
                 {starting ? "Starting…" : "Start Alignment"}
-              </button>
+              </button>)}
               <div className="grid grid-cols-2 gap-2">
                 {pausing ? (
                   /* Neither Pause (already asked) nor Resume (nothing has

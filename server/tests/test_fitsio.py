@@ -1,16 +1,20 @@
 # Copyright (c) 2026 James Penick
 # SPDX-License-Identifier: Apache-2.0
 """FITS header correctness (save_fits)."""
+import math
 import re
 
 import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.time import Time
+from astropy.wcs import WCS
+from astropy.wcs.utils import proj_plane_pixel_scales
 
 from astrodeck import __version__
 from astrodeck.devices.base import CameraFrame
-from astrodeck.imaging.fitsio import FrameMeta, save_fits
+from astrodeck.imaging.fitsio import FrameMeta, save_fits, stamp_wcs, write_wcs
+from astrodeck.solve.base import WcsSolution
 
 # FITS 4.0 sec 4.4.2: 'YYYY-MM-DDThh:mm:ss[.s...]' with NO timezone designator.
 _DATE_OBS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$")
@@ -155,6 +159,272 @@ def test_wcs_writeback_roundtrips(tmp_path):
     # +Y: Dec increases ~scale north (cd22 > 0), RA ~unchanged
     assert py[1] == pytest.approx(world[1] + scale, abs=5e-5)
     assert py[0] == pytest.approx(world[0], abs=1e-5)
+
+
+# --------------------------------------- a degenerate solution, stamped (#786)
+# wcslib reads an all-zero CD matrix as a CDELT of 1, so a frame stamped with
+# one reads back as a 1 deg/pixel solution: a field of view thousands of
+# degrees across that every consumer of the header (the coverage check, the
+# frame overlay, the field identification) would believe. The contract is the
+# same for both writers (save_fits' solve-then-save and write_wcs' post-hoc):
+# a solution with no usable scale, or a number in it that is not finite, leaves
+# NO celestial WCS in the file. A NaN is the same defect another way: astropy
+# refuses it half way through the block, and write_wcs flushes what it had
+# written so far -- CTYPE and CRVAL, no scale -- which reads as 1 deg/pixel.
+
+_NAN = float("nan")
+_INF = float("inf")
+_REF = dict(crval1=83.8221, crval2=-5.3911, crpix1=8.5, crpix2=8.5)
+_WCS_KEYS = ("CTYPE1", "CTYPE2", "CUNIT1", "CUNIT2", "CRVAL1", "CRVAL2",
+             "CRPIX1", "CRPIX2", "CD1_1", "CD1_2", "CD2_1", "CD2_2",
+             "CDELT1", "CDELT2", "CROTA2")
+_ARCSEC = 1.5 / 3600.0
+
+_DEGENERATE = {
+    "no scale at all": dict(),
+    "all-zero CD": dict(cd11=0.0, cd12=0.0, cd21=0.0, cd22=0.0),
+    "singular CD": dict(cd11=1e-4, cd12=1e-4, cd21=1e-4, cd22=1e-4),
+    "CD with only its first term": dict(cd11=-_ARCSEC),
+    "NaN in the CD": dict(cd11=_NAN, cd12=0.0, cd21=0.0, cd22=_ARCSEC),
+    "inf in the CD": dict(cd11=-_ARCSEC, cd12=_INF, cd21=0.0, cd22=_ARCSEC),
+    "zero CDELT pair": dict(cdelt1=0.0, cdelt2=0.0),
+    "one zero CDELT": dict(cdelt1=-_ARCSEC, cdelt2=0.0),
+    "NaN CDELT": dict(cdelt1=_NAN, cdelt2=_ARCSEC),
+    "NaN CROTA2": dict(cdelt1=-_ARCSEC, cdelt2=_ARCSEC, crota2=_NAN),
+    "NaN reference point": dict(cd11=-_ARCSEC, cd12=0.0, cd21=0.0,
+                                cd22=_ARCSEC, crval1=_NAN),
+    "NaN equinox": dict(cd11=-_ARCSEC, cd12=0.0, cd21=0.0, cd22=_ARCSEC,
+                        equinox=_NAN),
+}
+
+
+def _stamp(tmp_path, how, **cards):
+    """A 16x16 light carrying ``WcsSolution(**cards)`` by writer ``how``."""
+    solution = WcsSolution(**{**_REF, **cards})
+    if how == "save_fits":
+        return save_fits(_frame(), tmp_path / "light.fits",
+                         meta=FrameMeta(wcs=solution))
+    path = save_fits(_frame(), tmp_path / "light.fits")
+    return write_wcs(path, solution)
+
+
+@pytest.mark.parametrize("how", ["save_fits", "write_wcs"])
+@pytest.mark.parametrize("cards", list(_DEGENERATE.values()),
+                         ids=list(_DEGENERATE))
+def test_a_degenerate_solution_leaves_no_celestial_wcs(tmp_path, how, cards):
+    """RED under mutation "the guard back to the scale-less test" (the
+    ``if not wcs.has_usable_scale():`` of ``_apply_wcs`` -> ``if wcs.cd11 is
+    None and wcs.cdelt1 is None:``), observed on every case but the first,
+    which that guard already caught:
+
+        >       assert [k for k in _WCS_KEYS if k in header] == []
+        E       AssertionError: assert ['CTYPE1', 'C...'CRVAL2', ...] == []
+        E         Left contains 12 more items, first extra item: 'CTYPE1'
+
+    and, out of ``save_fits`` for the NaN and inf cases,
+    ``ValueError: Floating point nan values are not allowed in FITS headers``.
+    """
+    path = _stamp(tmp_path, how, **cards)
+    header = fits.getheader(path)
+    assert [k for k in _WCS_KEYS if k in header] == []
+    assert not WCS(header).has_celestial
+    # the frame itself is untouched by the refusal
+    assert header["NAXIS1"] == 16 and header["EXPTIME"] == 1.0
+
+
+_S = _ARCSEC
+_C30, _S30 = math.cos(math.radians(30.0)), math.sin(math.radians(30.0))
+
+#: (cards, expected degrees per pixel along x and along y)
+_USABLE_SCALE = {
+    "north-up CD": (dict(cd11=-_S, cd12=0.0, cd21=0.0, cd22=_S), (_S, _S)),
+    "CD rotated 30 degrees": (
+        dict(cd11=-_S * _C30, cd12=-_S * _S30, cd21=-_S * _S30,
+             cd22=_S * _C30), (_S, _S)),
+    "mirrored CD (positive determinant)": (
+        dict(cd11=_S, cd12=0.0, cd21=0.0, cd22=_S), (_S, _S)),
+    "different scale on each axis": (
+        dict(cd11=-_S, cd12=0.0, cd21=0.0, cd22=2.0 * _S), (_S, 2.0 * _S)),
+    "a tenth of an arcsecond per pixel": (
+        dict(cd11=-_S / 15.0, cd12=0.0, cd21=0.0, cd22=_S / 15.0),
+        (_S / 15.0, _S / 15.0)),
+    "CDELT and CROTA2": (
+        dict(cdelt1=-_S, cdelt2=_S, crota2=30.0), (_S, _S)),
+    "CDELT1 alone": (dict(cdelt1=-_S), (_S, _S)),
+}
+
+
+@pytest.mark.parametrize("how", ["save_fits", "write_wcs"])
+@pytest.mark.parametrize("cards,scales", list(_USABLE_SCALE.values()),
+                         ids=list(_USABLE_SCALE))
+def test_a_solution_with_a_scale_is_stamped_at_that_scale(
+        tmp_path, how, cards, scales):
+    """The refusal above must not reach a real solution: each of these reads
+    back as a celestial WCS whose pixel scale is the one that went in."""
+    path = _stamp(tmp_path, how, **cards)
+    w = WCS(fits.getheader(path))
+    assert w.has_celestial
+    assert tuple(proj_plane_pixel_scales(w)) == pytest.approx(scales, rel=1e-9)
+    # one pixel from the reference pixel is one scale away on the sky, not
+    # one degree: the stamp does not read as the 1 deg/px default
+    footprint = w.calc_footprint(axes=(16, 16), center=False)
+    assert max(abs(footprint[:, 1] - _REF["crval2"])) < 20.0 * max(scales)
+
+
+# ------------------------------------ a re-stamp REPLACES the solution (#945)
+# wcslib reads a PC matrix before a CD matrix before CDELT/CROTA2, whatever
+# order the cards are in. A re-stamp that merged the new solution's cards into
+# the old header therefore kept whichever form went in first: a CDELT solution
+# written over a CD one read back as the CD one (the new scale ignored without
+# a word), and a CDELT solution with no rotation written over one with a
+# rotation kept the old CROTA2.
+
+_CD_15 = dict(cd11=-_S, cd12=0.0, cd21=0.0, cd22=_S)
+_CD_ROT = dict(cd11=-_S * _C30, cd12=-_S * _S30, cd21=-_S * _S30,
+               cd22=_S * _C30)
+_CDELT_6 = dict(cdelt1=-4.0 * _S, cdelt2=4.0 * _S)
+_CDELT_6_ROT = dict(_CDELT_6, crota2=30.0)
+_SCALE_CARDS = ("PC1_1", "PC1_2", "PC2_1", "PC2_2", "CD1_1", "CD1_2", "CD2_1",
+                "CD2_2", "CDELT1", "CDELT2", "CROTA2")
+
+
+def _sky(path):
+    """Where the corners and the middle of the 16x16 frame fall on the sky."""
+    w = WCS(fits.getheader(path))
+    return w.wcs_pix2world(
+        [[0, 0], [15, 0], [0, 15], [15, 15], [7.5, 7.5]], 0)
+
+
+def _scale_cards(path):
+    header = fits.getheader(path)
+    return {k: header[k] for k in _SCALE_CARDS if k in header}
+
+
+def _foreign_pc_stamp(tmp_path):
+    """A light another tool solved: PC matrix (rotated 30 degrees) and CDELT."""
+    path = save_fits(_frame(), tmp_path / "light.fits")
+    with fits.open(path, mode="update") as hdul:
+        h = hdul[0].header
+        for key, value in (("CTYPE1", "RA---TAN"), ("CTYPE2", "DEC--TAN"),
+                           ("CRVAL1", _REF["crval1"]),
+                           ("CRVAL2", _REF["crval2"]),
+                           ("CRPIX1", _REF["crpix1"]),
+                           ("CRPIX2", _REF["crpix2"]),
+                           ("CDELT1", -4.0 * _S), ("CDELT2", 4.0 * _S),
+                           ("PC1_1", _C30), ("PC1_2", _S30),
+                           ("PC2_1", -_S30), ("PC2_2", _C30)):
+            h[key] = value
+    return path
+
+
+#: (what is in the file, what is written over it)
+_RESTAMPS = {
+    "CD over CDELT": (_CDELT_6_ROT, _CD_15),
+    "CDELT over CD": (_CD_15, _CDELT_6_ROT),
+    "CDELT without rotation over CDELT with it": (_CDELT_6_ROT, _CDELT_6),
+    "CD over a different CD": (_CD_15, _CD_ROT),
+    "CDELT over a different CDELT": (_CDELT_6_ROT, dict(cdelt1=-_S, cdelt2=_S)),
+    "CD over another tool's PC": (None, _CD_15),
+    "CDELT over another tool's PC": (None, _CDELT_6),
+}
+
+
+@pytest.mark.parametrize("first,second", list(_RESTAMPS.values()),
+                         ids=list(_RESTAMPS))
+def test_a_restamp_reads_back_as_the_new_solution(tmp_path, first, second):
+    """The file reads back exactly as it would had the new solution been the
+    only one ever written, and holds none of the old solution's cards.
+
+    RED under mutation "merge instead of replace" (the ``for key in
+    _SCALE_KEYS: hdr.remove(...)`` loop of ``_apply_wcs`` deleted), observed
+    on every case but "CD over a different CD", the control that stays in one
+    form and passes. On "CD over CDELT" the old cards survive:
+
+        E   AssertionError: assert {'CD1_1', 'CD...'CDELT2', ...} == {'CD1_1', 'CD...2_1', 'CD2_2'}
+        E     Extra items in the left set:
+        E     'CDELT1'
+        E     'CDELT2'
+        E     'CROTA2'
+
+    on "CDELT over CD" the sky is the old solution's:
+
+        E   AssertionError: Not equal to tolerance rtol=0, atol=1e-09
+        E   Max absolute difference among violations: 0.01401241
+    """
+    if first is None:
+        path = _foreign_pc_stamp(tmp_path / "old")
+    else:
+        path = _stamp(tmp_path / "old", "write_wcs", **first)
+    write_wcs(path, WcsSolution(**{**_REF, **second}))
+
+    fresh = _stamp(tmp_path / "fresh", "write_wcs", **second)
+    np.testing.assert_allclose(_sky(path), _sky(fresh), rtol=0, atol=1e-9)
+    assert set(_scale_cards(path)) == set(_scale_cards(fresh))
+
+
+@pytest.mark.parametrize("cards", list(_DEGENERATE.values()),
+                         ids=list(_DEGENERATE))
+def test_a_refused_restamp_leaves_the_earlier_wcs_alone(tmp_path, cards):
+    """The replacement happens only once the new solution is believed: a
+    refused one must not take the old one with it.
+
+    RED under mutation "clear before the guard" (the ``_SCALE_KEYS`` loop of
+    ``_apply_wcs`` moved above ``if not wcs.has_usable_scale():``), observed
+    on every degenerate case:
+
+        E   AssertionError: assert {} == {'CD1_1': -0.00036084391824351, ...}
+        E     Right contains 4 more items:
+    """
+    path = _stamp(tmp_path, "write_wcs", **_CD_ROT)
+    before, sky = _scale_cards(path), _sky(path)
+    write_wcs(path, WcsSolution(**{**_REF, **cards}))
+    assert _scale_cards(path) == before
+    np.testing.assert_allclose(_sky(path), sky, rtol=0, atol=1e-12)
+
+
+# --------------------------------- write_wcs says nothing; stamp_wcs does (#944)
+
+def test_stamp_wcs_says_a_good_solution_is_in_the_file(tmp_path):
+    path = save_fits(_frame(), tmp_path / "light.fits")
+    assert stamp_wcs(path, WcsSolution(**_REF, **_CD_15)) is True
+    assert WCS(fits.getheader(path)).has_celestial
+
+
+@pytest.mark.parametrize("cards", list(_DEGENERATE.values()),
+                         ids=list(_DEGENERATE))
+def test_stamp_wcs_says_a_refused_solution_is_not_in_the_file(tmp_path, cards):
+    """``write_wcs`` returns the path for a refusal too, which is why the hub
+    could not tell.
+
+    RED under mutation "_apply_wcs answers True on a refusal" (``return
+    False`` of the guard -> ``return True``), observed:
+
+        E   AssertionError: assert True is False
+    """
+    path = save_fits(_frame(), tmp_path / "light.fits")
+    solution = WcsSolution(**{**_REF, **cards})
+    assert stamp_wcs(path, solution) is False
+    assert write_wcs(path, solution) == path        # the contract it keeps
+    assert not WCS(fits.getheader(path)).has_celestial
+
+
+def test_stamp_wcs_says_a_file_it_could_not_update_is_not_stamped(tmp_path):
+    """The swallowed-exception half: a file that is missing or is not a FITS.
+
+    RED under mutation "the except branch answers True", observed:
+
+        E   AssertionError: assert True is False
+    """
+    solution = WcsSolution(**_REF, **_CD_15)
+    missing = tmp_path / "gone.fits"
+    corrupt = tmp_path / "corrupt.fits"
+    corrupt.write_bytes(b"this is not a FITS file" * 200)
+    for path in (missing, corrupt):
+        assert stamp_wcs(path, solution) is False
+        assert write_wcs(path, solution) == path
+    assert not missing.exists()
+    assert corrupt.read_bytes() == b"this is not a FITS file" * 200
+    assert stamp_wcs(missing, None) is False
 
 
 # ------------------------------------------------------- GN-07 (mount lies)

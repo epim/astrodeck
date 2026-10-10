@@ -35,13 +35,11 @@ import { LOCAL_ONLY_REASON } from "../../../lib/gate";
 import { listDrivers, listProfiles } from "../../../../api/backends";
 import { accessPhrase, useCan, useCanConfigBackend } from "../../../../lib/caps";
 import { liveRoleCount, type AssignmentMap } from "../../../../lib/equipment";
-import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
   retryTransient, retryingLine, useRetryOnReturn, type LoadRetry,
 } from "../../../../lib/retryLoad";
 import {
-  useConfig, useEquipConnected, useSafety, useSequence, useStatus, useStore,
-  useWsConnected,
+  useConfig, useEquipConnected, useSafety, useStatus, useStore, useWsConnected,
 } from "../../../../store";
 import type { DriversResponse, ProfileRow as ProfileRowData } from "../../../../types";
 import { RECONNECT_CAP } from "../profiles/profilesModel";
@@ -73,7 +71,6 @@ export function DevicesScreen(): JSX.Element {
   const config = useConfig();
   const equipConnected = useEquipConnected();
   const safety = useSafety();
-  const sequence = useSequence();
   const canConfig = useCanConfigBackend();
   const canReconnect = useCan(RECONNECT_CAP);
 
@@ -157,7 +154,6 @@ export function DevicesScreen(): JSX.Element {
     // The roof has its own 15 s poll and no row on this screen; passing null is
     // the honest value rather than a poll this screen does not make.
     dome: null,
-    sequenceRunning: runIsLive(sequence),
   };
   const rows = deviceRows(rosterInput);
   const summary = rigSummary(rosterInput, activeProfile?.name ?? null);

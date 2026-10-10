@@ -16,7 +16,9 @@
 //
 // J2000 invariant: the session center is always J2000; we never mix the live
 // JNow mount RA into the overlay (spec §9). openFraming seeds center from the
-// catalog entry (J2000) or the mount's J2000 RA/Dec when free-roam.
+// catalog entry (J2000) or, when free-roam, the mount's believed J2000 RA/Dec,
+// else the last field this viewer looked at, else a fixed default field. Nothing
+// in that chain depends on the saved site (#956).
 //
 // NOTE on the mosaic: the page owns rows/cols/overlap (they drive the live
 // FovOverlay grid via the FramingSession with the byte-identical client mirror
@@ -79,6 +81,7 @@ import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { useBusyOrPending } from "../lib/useBusy";
+import { POSITION_UNKNOWN_COPY_DETAIL, believedRaDec, positionKnown } from "../lib/slewController";
 import { api } from "../api";
 import { ClassicAtlasSky, type AtlasDisplay } from "../components/sky/ClassicAtlasSky";
 // The wizard's classic mount. It imports the lazy door, never the sheet, so
@@ -110,6 +113,22 @@ function readSurveyBright(): number {
  *  module is the lazily loaded sheet, and importing it to label a button would
  *  load it. */
 const SEND_TO_WIZARD = "SEND TO FLOW WIZARD";
+
+// Why a free-roam map is not on the scope (#956). With no mount position the
+// view opens on the last field this viewer looked at, or a fixed default
+// (`store.openFraming`), and a map with no scope on it needs one sentence naming
+// which of the three cases it is. The sentences are about NOW: the cause is read
+// live from the status and the session keeps no record of what it opened on, so
+// none of them says where the view opened. The unknown case carries the shared
+// copy: the reading the mount does report is its home position, not the tube's,
+// and what clears it is TRUST POSITION.
+const NO_MARKER_NO_MOUNT =
+  "No mount is connected, so this view is not centred on the scope and the scope is not drawn on it.";
+const NO_MARKER_POSITION_UNKNOWN =
+  "The mount position is unknown, so this view is not centred on the scope and the scope is not drawn on it. "
+  + POSITION_UNKNOWN_COPY_DETAIL;
+const NO_MARKER_UNREPORTED =
+  "The mount has not reported a position yet, so this view is not centred on the scope and the scope is not drawn on it.";
 
 function fmtAngle(deg: number): string {
   if (!(deg > 0)) return "—";
@@ -200,17 +219,25 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   // it was does not re-render this page — and, more importantly, so the
   // footprint moves ONLY when the hardware reports that it moved. Nothing here
   // is ever set from the target; `gotoFraming` below posts a slew and returns.
+  // Null while the mount does not know where it points: it then reports its
+  // HOME position, the pole, and a footprint drawn there is a claim about the
+  // tube that nothing backs (#913, #144).
   const statusMount = useStore(
     useShallow((s) => {
       const m = s.status?.mount;
-      return m
-        ? {
-            ra_hours: m.ra_hours, dec_deg: m.dec_deg,
-            ra_str: m.ra_str, dec_str: m.dec_str, slewing: m.slewing,
-          }
-        : null;
+      const here = believedRaDec(m);
+      return m && here ? { ...here, slewing: m.slewing } : null;
     }),
   );
+  // Why `statusMount` is null, for the line under a free-roam map (#956). A
+  // boolean for the same reason `statusMount` is narrowed: the status tick must
+  // not re-render this page. Only an explicit `position_known: false` counts.
+  const mountPositionKnown = useStore((s) => positionKnown(s.status?.mount));
+  const markerAbsent = statusMount
+    ? null
+    : !mountConnected ? NO_MARKER_NO_MOUNT
+    : !mountPositionKnown ? NO_MARKER_POSITION_UNKNOWN
+    : NO_MARKER_UNREPORTED;
   const canMount = useCanControlMount();
 
   const setFraming = useStore((s) => s.setFraming);
@@ -672,15 +699,35 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
     });
 
   // Recenter on the origin object, or — in free-roam — on the live mount position
-  // (consistent with openFraming's free-roam seed). No-op only if free-roam AND
-  // the mount status isn't available yet.
+  // (consistent with openFraming's free-roam seed). A mount that does not know
+  // where it points reports its HOME position, the pole, so it is not a place to
+  // recentre on (#928): the button says so rather than land the view there
+  // labelled as the scope. With no mount status it says so too (#957).
   const recenter = () => {
     if (target) {
       setCenter(target.ra_hours, target.dec_deg);
       return;
     }
     const m = useStore.getState().status?.mount;
-    if (m) setCenter(m.ra_hours, m.dec_deg);
+    const here = believedRaDec(m);
+    if (here) {
+      setCenter(here.ra_hours, here.dec_deg);
+      return;
+    }
+    if (m && !positionKnown(m)) {
+      enqueueToast({
+        level: "warning",
+        title: "Nothing to recenter on - this framing has no object and the mount does not know where it points.",
+        detail: POSITION_UNKNOWN_COPY_DETAIL,
+      });
+      return;
+    }
+    // No mount block, or one with no readable RA/Dec: the Sky hub's RECENTRE
+    // says the same (#957), because a button that does nothing says nothing.
+    enqueueToast({
+      level: "warning",
+      title: "Nothing to recenter on - this framing has no object and the mount has not reported a position.",
+    });
   };
 
   // Center-nudge by ±1 frame (±0.05° when no optics). dx East, dy North (frames).
@@ -1325,6 +1372,13 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
             onSurveyError={onSurveyError}
             onSurveyLoad={onSurveyLoad}
           />
+          {/* Only a free-roam session: a framed object is where the view is
+              because of the object, and has nothing to say about the scope. */}
+          {!target && markerAbsent && (
+            <p className="mt-1 text-[12px] text-dim leading-snug" data-testid="atlas-no-marker-note">
+              {markerAbsent}
+            </p>
+          )}
         </div>
 
         {/* planners — scroll beneath the pinned canvas on phone */}

@@ -126,8 +126,9 @@ NO_DAWN_PARK_ENV_VAR = "ASTRODECK_NO_DAWN_PARK"
 HANDS_OFF_LANES = frozenset({"goto", "dome", "polar"})
 
 #: The one line when the mount's position is unknown at dawn (#874): the
-#: cause first, then the safe order (RULES.md SAFETY RULE), all inside the
-#: UI's 137-character cut (123 characters), no figure and no goto word. A
+#: cause first, then the safe order (RULES.md SAFETY RULE), 123 characters
+#: (inside the UI's old 137-character cut, far inside its 400 since #792), no
+#: figure and no goto word. A
 #: park is a goto to where the mount BELIEVES home is (on the AM5 ``:hP#``
 #: goes to the MODEL's home), aimed from the position in doubt, so tracking
 #: is stopped instead.

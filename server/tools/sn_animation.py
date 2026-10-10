@@ -46,7 +46,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from astrodeck.imaging import nightstack as ns          # noqa: E402
-from astrodeck.imaging.fitsio import write_wcs          # noqa: E402
+from astrodeck.imaging.fitsio import stamp_wcs          # noqa: E402
 
 #: Extra pixels kept around the final crop while stacking, so the residual
 #: night-to-night registration has somewhere to shift into and so a sub that
@@ -153,15 +153,37 @@ def solve_reference(fits_path: Path, *, ra_hint: float | None,
     except Exception as exc:                       # pragma: no cover - defensive
         log(f"ASTAP raised {exc!r}; skipping the light curve")
         return None
-    if not result.success or result.wcs is None:
+    if not result.success:
         log(f"ASTAP did not solve {fits_path.name}: {result.message}")
         return None
-    write_wcs(fits_path, result.wcs)
+    if result.wcs is None:
+        # ``AstapSolver`` reports a solve whose headerlet it dropped (#943) as
+        # success with no WCS and the message "solved by ASTAP": not a failure
+        # to solve, so not worded as one (#1000).
+        log(f"ASTAP solved {fits_path.name} but returned no usable WCS (no "
+            "solution cards, or no usable plate scale), so none was stamped; "
+            "skipping the light curve")
+        return None
+    # ``stamp_wcs`` swallows a missing, locked or corrupt file and refuses a
+    # solution with no usable scale; False is the only sign of either (#972).
+    if not stamp_wcs(fits_path, result.wcs):
+        log(f"ASTAP solved {fits_path.name} but the WCS could not be written "
+            "to it (no usable plate scale, or the file could not be updated); "
+            "skipping the light curve")
+        return None
     from astropy.io import fits
     from astropy.wcs import WCS
-    log(f"solved {fits_path.name}: {result.pixel_scale_arcsec:.3f} arcsec/px, "
-        f"rotation {result.rotation_deg:.2f} deg")
-    return WCS(fits.getheader(fits_path))
+    wcs = WCS(fits.getheader(fits_path))
+    if not wcs.has_celestial:
+        log(f"{fits_path.name} has no celestial WCS after the stamp; "
+            "skipping the light curve")
+        return None
+    scale = result.pixel_scale_arcsec
+    shown = "scale unknown" if scale is None else f"{scale:.3f} arcsec/px"
+    turned = ("rotation unknown" if not result.rotation_known
+              else f"rotation {result.rotation_deg:.2f} deg")
+    log(f"solved {fits_path.name}: {shown}, {turned}")
+    return wcs
 
 
 def _fov_hint(header, shape) -> float | None:

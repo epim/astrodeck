@@ -110,6 +110,7 @@ export function FlowLibrary() {
   const folderChip = useStore((s) => s.flows.ui.folderChip);
   const highlightId = useStore((s) => s.flows.ui.highlightId);
   const flowsLoadLibrary = useStore((s) => s.flowsLoadLibrary);
+  const flowsDismissLibraryError = useStore((s) => s.flowsDismissLibraryError);
   const flowsSetUi = useStore((s) => s.flowsSetUi);
   const flowsOpen = useStore((s) => s.flowsOpen);
 
@@ -272,12 +273,19 @@ export function FlowLibrary() {
             and never behind it (#877): the load retries for up to 82 s, and a
             reason that only showed once that ended arrived long after the
             press it explains. Not "could not read the library" either, which
-            is what the shared field made it say. */}
+            is what the shared field made it say. DISMISS is the only thing that
+            takes it down between opens (#919): a reload that works clears a
+            stale one, but nothing says the press it explains is over. */}
         {libraryError ? (
           <div role="status" data-flows-action-error
                className={`${libraryRetry || libraryLoadError ? "mt-2" : "mt-6"} flex flex-wrap items-center gap-2 font-mono text-[11px] text-bad`}>
             <Icon name="alert" size={14} />
             <span>Could not open or save a flow: {libraryError}</span>
+            <button type="button" data-flows-action-error-dismiss
+                    className="btn !text-[10.5px] !px-2.5 !py-[7px]"
+                    onClick={() => flowsDismissLibraryError()}>
+              DISMISS
+            </button>
           </div>
         ) : null}
 

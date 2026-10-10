@@ -31,6 +31,7 @@ import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
+import { runIsLive } from "../lib/lastSessionFrame";
 import { EXPOSURE_MAX_S, isStepExposureInvalid } from "../lib/exposure";
 import { filterSettingsPatchByName } from "../lib/filterSettings";
 import {
@@ -60,6 +61,8 @@ function SeqStateBadge({ state }: { state: string }) {
     // channel that survives a red-light screen where hue barely reads.
     pausing: { icon: "pause", cls: "text-warn blink", word: "PAUSING" },
     paused: { icon: "pause", cls: "text-warn", word: "PAUSED" },
+    // HOLDING is a cloud hold: the run is live and waiting, not stopped.
+    holding: { icon: "clock", cls: "text-warn blink", word: "HOLDING" },
     // ABORTING is an engine state and it is NOT terminal: the wind-down is
     // running and the rig has not stopped. Warn tone + blink, like PAUSING —
     // the danger tone belongs to the state where it has actually stopped.
@@ -345,10 +348,12 @@ export default function SequenceView() {
   // ~210 s wind-down, and this predicate gates the panel, the badge and the
   // Abort control itself. Reading it as not-running unmounted all three over a
   // rig that was still stopping — worse than the stale RUNNING panel it
-  // replaced. Same fold as PolarView's "pausing".
+  // replaced. Same fold as PolarView's "pausing". A cloud hold is live for the
+  // same reason, and it is the long-lived state on a cloudy night: reading it
+  // as not-running unmounted the panel and the Abort control and unlocked the
+  // plan editor under a run that was still probing the sky (`runIsLive`, #922).
   const serverAborting = sequence.state === "aborting";
-  const running = sequence.state === "running" || sequence.state === "paused"
-    || serverAborting;
+  const running = runIsLive(sequence);
   // THE GAP PAUSE CANNOT CLOSE. `engine.pause()` clears an asyncio.Event and
   // publishes state="paused" in the same breath, but the run loop only rechecks
   // that flag at the top of the next frame (`_checkpoint`) — so the shutter open

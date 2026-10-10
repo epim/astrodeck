@@ -46,7 +46,9 @@ import { startGuidedRecovery } from "./guided/recovery";
 import "./guided/guided.css";
 import { openSettingsPanel } from "./lib/settingsNavigation";
 import { effectiveProviders } from "./lib/effective";
-import { believedPointing, positionKnown } from "./lib/slewController";
+import { believedPointing, believedRaDec, positionKnown } from "./lib/slewController";
+import { runIsLive } from "./lib/lastSessionFrame";
+import { runBannerLabel } from "./lib/stateMeta";
 
 const GuidedHome = lazy(() => import("./guided/GuidedHome"));
 
@@ -433,8 +435,10 @@ export default function App() {
   const Active = EAGER_VIEWS[view];
   const camConnected = !!status?.connected?.camera?.connected;
   const mountConnected = !!status?.connected?.telescope?.connected;
-  const seqRunning = sequence.state === "running" || sequence.state === "paused";
+  // A cloud hold and an abort's wind-down are the run too (`runIsLive`, #922).
+  const seqRunning = runIsLive(sequence);
   const believed = believedPointing(status?.mount);
+  const believedEq = believedRaDec(status?.mount);
   const seqError = sequence.state === "error";
   const dim = linkDown || telemetryStale;
   // Route-level gating (onboarding §3b): show the interstitial on equipment-gated
@@ -445,6 +449,10 @@ export default function App() {
   // the store's guarded rising-edge logic (monitor §3.2) — the banner is the
   // never-forced, always-dismissible affordance (resolves A3/B6).
   const showRunBanner = !!runBanner?.active && view !== "monitor";
+  // The banner outlives "running" (paused, a cloud hold, an abort's wind-down),
+  // so what it prints is read off the state, not off its being up.
+  const runBannerWarn = sequence.state === "paused" || sequence.state === "holding"
+    || sequence.state === "aborting";
 
   // ARMED IS NEWS TOO. A run that will start by itself deserves the same
   // announcement as one already going: dim text in the middle of an empty
@@ -692,7 +700,13 @@ export default function App() {
                   {status.mount.parked ? "PARKED" : status.mount.slewing ? "SLEWING"
                     : status.mount.tracking ? "TRACKING" : "IDLE"}
                 </span>
-                <span className="min-w-0 truncate">{status.mount.ra_str} {status.mount.dec_str}</span>
+                {/* The home reading is the pole, with an RA that follows the site's
+                    sidereal clock (#913, #144): not the tube's, so not printed. */}
+                {believedEq ? (
+                  <span className="min-w-0 truncate">{believedEq.ra_str} {believedEq.dec_str}</span>
+                ) : !positionKnown(status.mount) && (
+                  <span className="min-w-0 truncate text-warn">RA/Dec unknown</span>
+                )}
                 {/* mount.alt is site-derived (redact.py `_MOUNT_DERIVED_KEYS`) and is
                     ABSENT, not zero, for a principal without view.site_derived (a
                     viewer) — the type says `number` but the wire does not always agree.
@@ -804,11 +818,11 @@ export default function App() {
                 Unlabelled for the same reason as the armed banner's LED: the
                 SEQUENCE PAUSED / RUNNING beside it is its name (#231). */}
             <span className={sequence.state === "paused" ? "shrink-0" : "blink shrink-0"}>
-              <Led state={sequence.state === "paused" ? "warn" : "busy"} />
+              <Led state={runBannerWarn ? "warn" : "busy"} />
             </span>
             <span className="min-w-0 truncate text-ink">
-              <span className={`font-display tracking-wider ${sequence.state === "paused" ? "text-warn" : "text-accent"}`}>
-                {sequence.state === "paused" ? "SEQUENCE PAUSED" : "SEQUENCE RUNNING"}
+              <span className={`font-display tracking-wider ${runBannerWarn ? "text-warn" : "text-accent"}`}>
+                {runBannerLabel(sequence.state)}
               </span>
               {runBanner?.plan_name && <span className="text-dim"> · {runBanner.plan_name}</span>}
               {typeof runBanner?.percent === "number" && (

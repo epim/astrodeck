@@ -21,6 +21,9 @@
 //       (e) and (f).
 //   (#877) U2: the open's line is the `else` of the retrying line, so it hides
 //       behind it: (d).
+//   (#919) X1: the DISMISS button is deleted from the open's line: (g).
+//   (#919) X2: the button's onClick does nothing (the store action is never
+//       called): (g).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -206,6 +209,30 @@ await test("(f) #877 an open's failure alone is not reported as an unreadable li
   assert(actionLine(), "no open-failure line");
   assert(!loadLine(), "an open's failure was reported as 'could not read the flow library'");
   assert(!retryButton(), "a RETRY for a library that did not fail");
+});
+
+// #919: the open's or save's failure line can be taken down. Nothing else does
+// it between opens, so a stale failure sat under a healthy list.
+const dismissButton = () => document.querySelector("[data-flows-action-error-dismiss]") as any;
+
+await test("(g) #919 DISMISS takes the open's failure line down and leaves the load's line and RETRY", async () => {
+  seed({ libraryLoadError: LOAD_REASON, libraryError: OPEN_REASON });
+  await mount();
+  const dismiss = dismissButton();
+  assert(dismiss, "the open-failure line has no DISMISS");
+  await act(async () => { dismiss.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
+  assert((useStore.getState() as any).flows.libraryError === null, "DISMISS left the open's reason in the store");
+  assert(!actionLine(), "the open-failure line is still up after DISMISS");
+  assert(!dismissButton(), "DISMISS is still up after it was pressed");
+  assert(loadLine() && retryButton(), "DISMISS took the load's failure line, or its RETRY, down with it");
+  assert((useStore.getState() as any).flows.libraryLoadError === LOAD_REASON, "DISMISS cleared the load's failure");
+});
+
+await test("(h) #919 there is no DISMISS when there is no open or save failure to dismiss", async () => {
+  seed({ libraryLoadError: LOAD_REASON });
+  await mount();
+  assert(!actionLine(), "an open-failure line with no open failure");
+  assert(!dismissButton(), "a DISMISS with nothing to dismiss");
 });
 
 unmount();

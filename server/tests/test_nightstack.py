@@ -630,3 +630,280 @@ def test_parse_crop_rejects_nonsense():
         sn_animation.parse_crop("wide")
     with pytest.raises(argparse.ArgumentTypeError):
         sn_animation.parse_crop("4x4")
+
+
+# --------------------------------------------------------------------------
+# solve_reference: "solved" means the file carries the solution (#972)
+# --------------------------------------------------------------------------
+
+_PIXEL_DEG = 0.968 / 3600.0
+_GOOD_SOLUTION = dict(crval1=339.267, crval2=34.416, crpix1=200.0,
+                      crpix2=150.0, cd11=-_PIXEL_DEG, cd12=0.0, cd21=0.0,
+                      cd22=_PIXEL_DEG)
+#: A solution the file writer refuses (no usable scale), as a solver that does
+#: not guard its own output would hand it on.
+_ZERO_CD = {**_GOOD_SOLUTION, "cd11": 0.0, "cd22": 0.0}
+_SINGULAR_CD = {**_GOOD_SOLUTION, "cd11": 1e-4, "cd12": 1e-4, "cd21": 1e-4,
+                "cd22": 1e-4}
+#: A stamp that takes, whose axes are not on the sky.
+_NOT_CELESTIAL = {**_GOOD_SOLUTION, "ctype1": "LINEAR", "ctype2": "LINEAR"}
+
+
+def _fake_astap(monkeypatch, solution: dict | None, *,
+                pixel_scale: float | None = 0.968,
+                rotation_deg: float = 0.0, rotation_known: bool = True,
+                failure: str | None = None) -> None:
+    """``solve_reference`` against an ASTAP that answers with ``solution``
+    (None -> a success carrying no WCS at all, as ``AstapSolver`` returns
+    when it drops a headerlet it cannot use), or, with ``failure``, one that
+    did not solve and says why."""
+    import astrodeck.solve as solve_pkg
+    from astrodeck.solve.base import SolveResult, WcsSolution
+
+    class _Solver:
+        def __init__(self, exe):
+            pass
+
+        async def solve(self, fits_path, **kw):
+            if failure is not None:
+                return SolveResult(False, message=failure)
+            return SolveResult(
+                True, ra_hours=339.267 / 15.0, dec_deg=34.416,
+                rotation_deg=rotation_deg, rotation_known=rotation_known,
+                pixel_scale_arcsec=pixel_scale,
+                wcs=None if solution is None else WcsSolution(**solution),
+                message="solved by ASTAP")
+
+    monkeypatch.setattr(solve_pkg, "find_astap", lambda: "astap")
+    monkeypatch.setattr(solve_pkg, "AstapSolver", _Solver)
+
+
+def _solve_reference(path: Path):
+    from tools import sn_animation
+    lines: list[str] = []
+    wcs = sn_animation.solve_reference(
+        path, ra_hint=339.267, dec_hint=34.416, fov_deg=None, log=lines.append)
+    return wcs, lines
+
+
+def _reference_fits(tmp_path: Path) -> Path:
+    return _write_fits(tmp_path / "reference.fits", np.zeros((H, W)))
+
+
+def _has_sky_axes(path: Path) -> bool:
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    return WCS(fits.getheader(path)).has_celestial
+
+
+def test_solve_reference_returns_the_wcs_the_file_now_carries(tmp_path,
+                                                              monkeypatch):
+    """The control for the cases below: a usable solution is stamped, read
+    back, logged as solved, and returned."""
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, _GOOD_SOLUTION)
+    wcs, lines = _solve_reference(path)
+    assert wcs is not None and wcs.has_celestial, lines
+    assert _has_sky_axes(path)
+    x, y = wcs.wcs_world2pix([[339.267, 34.416]], 0)[0]
+    assert (x, y) == pytest.approx((199.0, 149.0), abs=1e-3)
+    assert any(ln.startswith("solved reference.fits: 0.968 arcsec/px")
+               for ln in lines), lines
+
+
+@pytest.mark.parametrize("solution", [_ZERO_CD, _SINGULAR_CD],
+                         ids=["all-zero CD", "singular CD"])
+def test_solve_reference_does_not_claim_a_solution_the_stamp_refused(
+        tmp_path, monkeypatch, solution):
+    """``write_wcs`` hands the path back for a refusal, so the tool logged
+    ``solved`` and returned a WCS read from a header with no sky axes.
+
+    RED under mutation "the original" (the ``stamp_wcs`` guard and the
+    ``has_celestial`` guard of ``solve_reference`` both removed, leaving a bare
+    ``stamp_wcs(...)`` call), observed:
+
+        E   AssertionError: ['solved reference.fits: 0.968 arcsec/px, rotation 0.00 deg']
+        E   assert WCS Keywords ... CTYPE : '' '' ... is None
+
+    and under mutation "the stamp is not checked" (only the ``stamp_wcs``
+    guard removed; the read-back still catches it, but not in the words that
+    say why), observed:
+
+        E   AssertionError: ['reference.fits has no celestial WCS after the stamp; skipping the light curve']
+        E   assert False
+    """
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, solution)
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert not _has_sky_axes(path)
+    assert not any(ln.startswith("solved") for ln in lines), lines
+    assert any("WCS could not be written" in ln
+               and "skipping the light curve" in ln for ln in lines), lines
+
+
+@pytest.mark.parametrize("make", ["missing", "corrupt"])
+def test_solve_reference_does_not_claim_a_solution_for_a_file_it_could_not_update(
+        tmp_path, monkeypatch, make):
+    """The swallowed-exception half of ``stamp_wcs``: the solve is real, the
+    file is not there to carry it. Before the fix the tool went on to read the
+    header back and died on it.
+
+    RED under mutation "the original" (see above), observed:
+
+        E   FileNotFoundError: [Errno 2] No such file or directory: '...reference.fits'
+        E   OSError: No SIMPLE card found, this file does not appear to be a valid FITS file.
+    """
+    path = tmp_path / "reference.fits"
+    if make == "corrupt":
+        path.write_bytes(b"this is not a FITS file" * 200)
+    _fake_astap(monkeypatch, _GOOD_SOLUTION)
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert not any(ln.startswith("solved") for ln in lines), lines
+    assert any("WCS could not be written" in ln for ln in lines), lines
+
+
+def test_solve_reference_does_not_return_a_wcs_without_sky_axes(tmp_path,
+                                                                monkeypatch):
+    """A stamp that takes but leaves a header whose axes are not celestial is
+    the second condition #972 names: the light curve cannot map the sky with
+    it.
+
+    RED under mutation "the read-back is not checked" (the ``has_celestial``
+    guard of ``solve_reference`` removed), observed:
+
+        E   AssertionError: ['solved reference.fits: 0.968 arcsec/px, rotation 0.00 deg']
+        E   assert WCS Keywords ... CTYPE : 'LINEAR' 'LINEAR' ... is None
+    """
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, _NOT_CELESTIAL)
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert not any(ln.startswith("solved") for ln in lines), lines
+    assert any("no celestial WCS" in ln and "skipping the light curve" in ln
+               for ln in lines), lines
+
+
+def test_solve_reference_says_when_the_solver_stated_no_scale(tmp_path,
+                                                              monkeypatch):
+    """#973 at its caller here: an unstated scale is not logged as a number."""
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, _GOOD_SOLUTION, pixel_scale=None)
+    wcs, lines = _solve_reference(path)
+    assert wcs is not None and wcs.has_celestial, lines
+    assert any(ln.startswith("solved reference.fits: scale unknown")
+               for ln in lines), lines
+    assert not any("0.000" in ln for ln in lines), lines
+
+
+def test_solve_reference_says_when_the_solver_stated_no_rotation(tmp_path,
+                                                                monkeypatch):
+    """#1001: ASTAP's .ini with no CROTA2 is ``rotation_deg`` 0.0 with
+    ``rotation_known`` False (#146), and the line must not read as a real
+    position angle of 0 -- the same unknown-as-a-number class as the scale
+    above (#973).
+
+    RED under mutation "the rotation is printed as a number" (the line
+    formats ``result.rotation_deg`` without consulting ``rotation_known``),
+    observed:
+
+        E   AssertionError: ['solved reference.fits: 0.968 arcsec/px, rotation 0.00 deg']
+    """
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, _GOOD_SOLUTION, rotation_known=False)
+    wcs, lines = _solve_reference(path)
+    assert wcs is not None and wcs.has_celestial, lines
+    assert any(ln.startswith("solved reference.fits: 0.968 arcsec/px, "
+                             "rotation unknown")
+               for ln in lines), lines
+    assert not any("rotation 0.00" in ln for ln in lines), lines
+
+
+@pytest.mark.parametrize("rotation_deg", [0.0, 12.5])
+def test_solve_reference_prints_a_rotation_the_solver_did_report(
+        tmp_path, monkeypatch, rotation_deg):
+    """The control for the case above: a reported rotation is a number, and a
+    reported 0 is still 0 -- it is ``rotation_known``, not the value, that
+    decides."""
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, _GOOD_SOLUTION, rotation_deg=rotation_deg,
+                rotation_known=True)
+    wcs, lines = _solve_reference(path)
+    assert wcs is not None and wcs.has_celestial, lines
+    assert any(ln.startswith(f"solved reference.fits: 0.968 arcsec/px, "
+                             f"rotation {rotation_deg:.2f} deg")
+               for ln in lines), lines
+    assert not any("unknown" in ln for ln in lines), lines
+
+
+def test_solve_reference_says_when_the_solver_solved_but_dropped_the_wcs(
+        tmp_path, monkeypatch):
+    """#1000: ``AstapSolver`` returns ``success`` True with ``wcs`` None and
+    the message "solved by ASTAP" when it drops a solution it cannot use
+    (#943), and the tool logged "ASTAP did not solve reference.fits: solved
+    by ASTAP", a sentence that contradicts itself and hides the cause. Nothing
+    is stamped, and the log says that it solved and what became of the WCS.
+
+    RED under mutation "the original" (the two failures share one branch,
+    ``if not result.success or result.wcs is None``), observed:
+
+        E   AssertionError: ['ASTAP did not solve reference.fits: solved by ASTAP']
+    """
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, None)
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert not _has_sky_axes(path)
+    assert not any("did not solve" in ln for ln in lines), lines
+    assert not any(ln.startswith("solved") for ln in lines), lines
+    assert any("ASTAP solved reference.fits" in ln and "no usable WCS" in ln
+               and "none was stamped" in ln
+               and "skipping the light curve" in ln for ln in lines), lines
+
+
+def test_solve_reference_still_says_did_not_solve_when_the_solver_failed(
+        tmp_path, monkeypatch):
+    """The control for the case above: a solver that reports no solution is
+    still "did not solve", with the solver's own reason."""
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, None, failure="no solution")
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert lines == ["ASTAP did not solve reference.fits: no solution"], lines
+    assert not _has_sky_axes(path)
+
+
+def test_cli_skips_the_light_curve_when_the_stamp_was_refused(tmp_path,
+                                                              monkeypatch):
+    """The consequence, end to end. Before the fix a refused stamp reached
+    ``wcs_world2pix`` as a WCS with the default 1 deg/pixel axes, which puts
+    the transient at pixel (RA, Dec) -- here inside the frame, so the tool
+    centred the crop on empty sky and drew a light curve of it.
+
+    RED under mutation "the original" (see above), observed in the log it
+    prints:
+
+        E     solved reference.fits: 0.968 arcsec/px, rotation 0.00 deg
+        E     transient at reference pixel x=338.3 y=33.4
+        E     wrote ...lightcurve.csv
+        E   assert not True
+    """
+    from tools import sn_animation
+
+    captures = _build_captures(tmp_path)
+    out = tmp_path / "out"
+    _fake_astap(monkeypatch, _ZERO_CD)
+    lines: list[str] = []
+    rc = sn_animation.main(
+        ["--captures", str(captures), "--out", str(out), "--filter", "L",
+         "--sn-ra", "339.267", "--sn-dec", "34.416", "--crop", "240x160",
+         "--bin", "2"],
+        solve_fn=sn_animation.solve_reference, log=lines.append)
+    report = "\n".join(lines)
+    assert rc == 0, report
+    assert not any(ln.startswith("solved") for ln in lines), report
+    assert not any("transient at reference pixel" in ln for ln in lines), report
+    assert "(frame centre)" in report, report
+    assert len(list(out.glob("2026-*.png"))) == 3, report
+    assert not (out / "lightcurve.csv").exists(), report

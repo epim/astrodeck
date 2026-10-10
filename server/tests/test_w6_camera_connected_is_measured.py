@@ -21,10 +21,11 @@ historical ``connect()``. Native cameras (``NativeCamera``,
 devices/cameras/engine.py) measure it off their own REQUIRED adapter hooks
 (``start_exposure``/``image_ready``/``read_frame``/``abort`` -- every brand
 must implement these for real, so a failure there is always evidence the
-device dropped, never an unsupported feature); the Alpaca camera client
-(``AlpacaCamera``, devices/alpaca.py) measures it off a TRANSPORT failure (no
-HTTP response at all), as opposed to a ``DeviceError`` -- which means the
-driver DID answer, just refused the call.
+device dropped, never an unsupported feature); the Alpaca client
+(``_AlpacaDevice``, devices/alpaca.py: the camera first, every Alpaca device
+type since #989) measures it off a TRANSPORT failure (no HTTP response at
+all), as opposed to a ``DeviceError`` -- which means the driver DID answer,
+just refused the call.
 
 Built against the simulator and fakes only, per backlog ruling D-10
 (owner-approved 2026-09-30): the astrotown profile's ``reconnect_resume``
@@ -256,10 +257,11 @@ async def test_alpaca_transport_failure_measures_connected_false():
     answers at all (connection refused -- the server process is gone, the
     exact #16 incident shape for a network camera).
 
-    Named mutant: ``AlpacaCamera._put``'s ``except httpx.TransportError:
-    self.connected = False`` changed to ``except httpx.TransportError:
-    pass``. FAILS: ``assert cam.connected is False`` -- the reconnect gate
-    would keep skipping a camera whose Alpaca server has vanished.
+    Named mutant: ``_AlpacaDevice._note_link_lost``'s ``self.connected =
+    False`` changed to ``pass`` (the measurement lives on the base class
+    since #989, where every device type shares it). FAILS: ``assert
+    cam.connected is False`` -- the reconnect gate would keep skipping a
+    camera whose Alpaca server has vanished.
     """
     conn = _ScriptedConnection(
         fail={"startexposure": httpx.ConnectError("connection refused")})
@@ -280,7 +282,7 @@ async def test_alpaca_device_error_does_not_measure_connected_false():
     this one call. That must not read as a drop.
 
     Named mutant: the ``except httpx.TransportError:`` clauses in
-    `AlpacaCamera._get`/`_put` widened to bare ``except Exception:``. FAILS:
+    `_AlpacaDevice._get`/`_put` widened to bare ``except Exception:``. FAILS:
     ``assert cam.connected is True`` -- a camera that merely declined one
     command (busy, bad parameter) would be torn down and reconnected for no
     reason.

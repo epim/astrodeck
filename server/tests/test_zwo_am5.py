@@ -11,6 +11,7 @@ import time
 import pytest
 
 from _deadline import wait_until
+from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 from astrodeck.devices.serial_link import LinkError, SerialLink
 
 
@@ -1753,20 +1754,11 @@ async def test_no_refusal_text_carries_the_read_back_coordinates(
 # a byte backup and restored by sha256 (the report lists each pairing).
 
 
-def _humanizer_rewrites(text: str) -> bool:
-    """True when the UI's ``humanizeLog`` (ui/src/lib/humanize.ts) would
-    replace this line with its own sentence, so the operator never reads ours.
-    The four rules, in its order, as lower-cased substring tests."""
-    m = text.lower()
-    return (("camera" in m and any(k in m for k in
-                                   ("not responding", "timeout", "disconnect")))
-            or ("nina" in m and any(k in m for k in ("5", "http", "error")))
-            or ("plate" in m and "solve" in m)
-            or ("guid" in m and "lost" in m))
-
-
 def test_the_humanizer_mirror_fires_on_each_rule():
-    """The helper is only worth its assertions if it can say True."""
+    """The helper is only worth its assertions if it can say True. It is the
+    one shared ``_humanizer_mirror`` (test_997_humanizer_mirror grades it
+    against the function, rule by rule); this keeps the line per rule the
+    driver's own wording is judged beside."""
     for line in ("camera timeout", "NINA http 500", "plate solve failed",
                  "guiding lost"):
         assert _humanizer_rewrites(line), line

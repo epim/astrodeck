@@ -29,6 +29,7 @@ import { useStore } from "../store";
 import { Icon } from "./icons";
 import { haptics } from "../lib/haptics";
 import { accessPhrase } from "../lib/caps";
+import { believedRaDec } from "../lib/slewController";
 import {
   useLocked,
   useLockAvailable,
@@ -49,6 +50,9 @@ function StatusChip({ alert }: { alert: boolean }) {
   const guider = useStore((s) => s.status?.guider ?? null);
   const seq = useStore((s) => s.sequence);
   const camTemp = useStore((s) => s.status?.camera?.temperature ?? null);
+  // Null while the mount does not know where it points: it then reports its
+  // HOME position, not the tube's (#913, #144).
+  const raDec = believedRaDec(mount);
 
   const state = mount
     ? mount.parked
@@ -78,9 +82,13 @@ function StatusChip({ alert }: { alert: boolean }) {
         <>
           <div className="flex items-center justify-between gap-6">
             <span className="text-dim text-xs">RA / DEC</span>
-            <span>
-              {mount.ra_str} {mount.dec_str}
-            </span>
+            {raDec ? (
+              <span>
+                {raDec.ra_str} {raDec.dec_str}
+              </span>
+            ) : (
+              <span className="text-warn">unknown</span>
+            )}
           </div>
         </>
       )}

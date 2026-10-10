@@ -167,11 +167,14 @@ def _wcs_from_astap(ini_path: Path, wcs_path: Path) -> "WcsSolution | None":
                 cd11=_g("CD1_1"), cd12=_g("CD1_2"),
                 cd21=_g("CD2_1"), cd22=_g("CD2_2"),
                 cdelt1=_g("CDELT1"), cdelt2=_g("CDELT2"), crota2=_g("CROTA2"))
-        # A reference point with no scale (no CD*, no CDELT*) is a bogus WCS —
-        # astropy reads it back as a silent 1 deg/pixel solution. Treat it as
+        # A reference point with no usable scale is a bogus WCS: no CD*/CDELT*
+        # at all, an all-zero or singular CD, a zero CDELT or a NaN reads back
+        # as a silent 1 deg/pixel solution or raises downstream. Treat it as
         # unsolved rather than let a wrong astrometric scale reach a saved light
-        # (spec §8: a wrong value is worse than an absent card).
-        if sol.cd11 is None and sol.cdelt1 is None:
+        # or a rotator calibration (spec §8: a wrong value is worse than an
+        # absent card). The same test the file writer applies, so the two
+        # layers cannot disagree about what is believable.
+        if not sol.has_usable_scale():
             return None
         return sol
     except Exception:
@@ -193,14 +196,23 @@ def _result_from_ini(kv: dict, wcs: "WcsSolution | None") -> SolveResult:
 
     No CROTA2 is "no rotation reported", not "rotation 0" (#146): every imaging
     solve now calibrates the rotator, and a 0 that meant "unknown" would re-sync
-    it to PA 0. ``rotation_known`` carries the difference."""
+    it to PA 0. ``rotation_known`` carries the difference.
+
+    The scale is the same shape (#973): CDELT2 when the .ini has it, else the
+    scale of the CD matrix in ``wcs``, else None. A 0.0 for "not stated" would
+    read as a scale of zero on a solve that succeeded."""
     if kv.get("PLTSOLVD") != "T":
         return SolveResult(False, message=kv.get("ERROR", "no solution"))
     ra_deg = float(kv["CRVAL1"])
     dec_deg = float(kv["CRVAL2"])
     rot_raw = kv.get("CROTA2")
     rot = float(rot_raw) if rot_raw is not None else 0.0
-    scale = abs(float(kv.get("CDELT2", 0))) * 3600
+    if "CDELT2" in kv:
+        scale = abs(float(kv["CDELT2"])) * 3600
+    else:
+        scale = wcs.pixel_scale_arcsec() if wcs is not None else None
+    if not scale or not math.isfinite(scale):
+        scale = None
     return SolveResult(True, ra_hours=ra_deg / 15.0, dec_deg=dec_deg,
                        rotation_deg=rot, pixel_scale_arcsec=scale,
                        wcs=wcs, message="solved by ASTAP",

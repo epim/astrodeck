@@ -32,6 +32,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from _humanizer_mirror import humanizer_rule
 import astrodeck.api.app as app_module
 from astrodeck.api import slow_requests
 from astrodeck.api.slow_requests import SlowRequestLog
@@ -508,22 +509,10 @@ async def test_an_open_stream_is_not_counted_in_flight(bus_lines):
 
 # ------------------------------------------- int-review finding 6 (humanizer)
 
-def _humanizer_rewrite(line: str) -> str | None:
-    """The humanizeLog rule (ui/src/lib/humanize.ts) that would replace
-    ``line`` whole, or None. A copy of its word-pair tests as they stand,
-    for a line from source "http" (the camera rule's source arm is "capture",
-    so it never applies here)."""
-    m = line.lower()
-    if "camera" in m and any(w in m for w in
-                             ("not responding", "timeout", "disconnect")):
-        return "camera"
-    if "nina" in m and any(w in m for w in ("5", "http", "error")):
-        return "nina"
-    if "plate" in m and "solve" in m:
-        return "plate"
-    if "guid" in m and "lost" in m:
-        return "guid"
-    return None
+#: The shared mirror of humanize.ts ``humanizeLog`` (#997): a line from source
+#: "http" (the camera rule's source arm is "capture", so it never applies
+#: here). Returns the rule that would replace the line whole, or None.
+_humanizer_rewrite = humanizer_rule
 
 
 def _every_route_label() -> list[str]:
@@ -541,17 +530,21 @@ def _every_route_label() -> list[str]:
 def test_no_slow_line_trips_a_humanizer_pair_on_any_route():
     """Finding 6: a slow line for a NINA route held "nina" beside the 5 in
     its own figures, so the UI showed "NINA reported an error" for a connect
-    that answered 200. Every route template of the real app, every outcome,
-    with figures full of 5s and a 500 status: no line may hold a humanizer
-    pair. Mutant H6: format_slow_line interpolates ``label`` instead of
-    ``unpaired_label(label)``. Mutant H6b: drop ``nina`` from _HUMANIZER_KEYS."""
+    that answered 200. #792 narrowed that rule to an HTTP 5xx token, so the
+    figures are safe now; a NINA route that answered 500 is not. Every route
+    template of the real app, every outcome, with figures full of 5s and a 500
+    status: no line may hold a humanizer pair. Mutant H6: format_slow_line
+    interpolates ``label`` instead of ``unpaired_label(label)``. Mutant H6b:
+    drop ``nina`` from _HUMANIZER_KEYS."""
     labels = _every_route_label()
     # The harness still sees the routes it was built for, and its copy of the
-    # rule still fires on the line that was shown wrongly.
+    # rule still fires on a 5xx status line, and no longer on the figures.
     assert {"/api/connect/nina", "/api/nina/health",
             "/api/discover/nina"} <= set(labels), labels
     assert _humanizer_rewrite(
-        "slow request POST /api/connect/nina: 200 after 15.2 s") == "nina"
+        "slow request POST /api/connect/nina: 500 after 15.2 s") == "nina"
+    assert _humanizer_rewrite(
+        "slow request POST /api/connect/nina: 200 after 15.2 s") is None
     tripped = []
     for label in labels:
         for method in sorted(slow_requests._METHODS | {"OTHER"}):
@@ -580,3 +573,22 @@ async def test_a_slow_nina_connect_reads_as_a_slow_request(bus_lines):
         ("info", "slow request POST /api/connect/ni-na: 200 after 15.5 s",
          "http")]
     assert _humanizer_rewrite(bus_lines[-1][1]) is None
+
+
+def test_a_route_with_plate_or_guid_in_it_is_written_as_it_is():
+    """#961: the plate-solve and guiding rules read a whole report since #792,
+    which a route label never is, so the label is left alone. The guiding
+    routes used to be logged as ``/api/gu-ide/start``. The keys that still
+    pair (``nina``, ``camera``) stay broken: the test above pins that.
+    Mutant: _HUMANIZER_KEYS back to ``nina|camera|plate|guid``."""
+    labels = [lab for lab in _every_route_label()
+              if re.search(r"plate|guid", lab, re.IGNORECASE)
+              and not re.search(r"nina|camera", lab, re.IGNORECASE)]
+    # The real app has guiding routes; a scan that found none proves nothing.
+    assert "/api/guide/start" in labels and len(labels) >= 5, labels
+    for label in labels:
+        line = slow_requests.format_slow_line(
+            method="POST", label=label, outcome="200", elapsed_s=15.5,
+            stall_s=0.0, remote=False, others=0, earlier=0)
+        assert f" {label}: " in line, line
+        assert _humanizer_rewrite(line) is None, line

@@ -68,8 +68,12 @@ management). On the first `ascom-local` rig-open it:
 3. **Health-checks** the management API (`GET /management/v1/configureddevices`)
    before handing back the port.
 4. **Auto-restarts** lazily: a crashed child is detected and respawned on the next
-   `ensure()` (driven by a user rig-open, not a background poller), throttled by a
-   short spawn-backoff so a caller retry loop cannot thrash a crash-looping child.
+   `ensure()` (driven by a user rig-open or an `ascom-local` device reconnecting,
+   not a background poller), throttled by a short spawn-backoff so a caller retry
+   loop cannot thrash a crash-looping child. The respawn binds a new ephemeral
+   port, so the session's Alpaca connection asks `ensure()` for the current port
+   before every `Connected=true` and repoints itself (and the devices that share
+   it): reconnecting a role recovers a comhost that died mid-night.
 5. **Never orphans.** The portfile is the dedup key. A leftover portfile only
    exists after an *unclean* crash (a clean `stop()` removes it); before spawning,
    the manager kills the recorded PID **only if a live command-line check confirms
@@ -84,7 +88,10 @@ queue + `Future`; `future.result(timeout=30)` turns a **wedged COM call** into a
 `ComTimeoutError` → Alpaca HTTP 500 → the client's `DeviceError`, **never a hang**.
 A timeout also **fault-evicts** the device (drops its slot, abandons the blocked
 STA thread) so the *next* call rebuilds a fresh device on a fresh thread — recovery
-is per-device, not "restart the whole host".
+is per-device, not "restart the whole host". Eviction names the device that timed
+out and drops the slot only while it still holds that device: calls queued behind
+one wedge time out a deadline apart, and a late timeout must not evict the healthy
+device a reconnect has since put in the slot.
 
 ## The "device in use" reality (single-client)
 

@@ -27,11 +27,12 @@ refused its sync or did not confirm it, and does not hand the engine a
 target it did not centre.
 
 EVERY SURFACED TEXT here (a hold reason, a warning) must survive the UI's
-``humanizeLog`` (ui/src/lib/humanize.ts), which replaces a line that trips
-one of four substring rules with its own sentence. "plate" beside "solve"
-becomes "Plate-solve failed - check focus/exposure", which tells an operator
-whose solve WORKED to go and fix focus. ``_humanizer_rewrites`` mirrors the
-rules and every test asserts it is False.
+``humanizeLog`` (ui/src/lib/humanize.ts), which replaces a line that IS one
+of four reports with its own sentence (a bare "plate solve failed" becomes
+"Plate-solve failed - check focus/exposure", which would send an operator
+whose solve WORKED to fix focus; a line that only mentions a plate solve is
+left alone since #792 and #960). ``_humanizer_rewrites`` is the shared
+``_humanizer_mirror`` of those rules and every test asserts it is False.
 
 Every coordinate in this file is fictional and deliberately non-round. No
 read-back coordinate may reach a log line or a hold (#140, #166); the tests
@@ -41,9 +42,10 @@ exception, do not either, in every spelling a formatter is likely to print.
 MUTANTS, each run under this file's normal command and each RED (the test
 that went red is named):
 
-- "plate words": REFUSED_SYNC_FAR_WORDS starts "the plate solve after the
-  restart worked" again -> test_every_refused_sync_constant_is_fixed_words,
-  test_the_hold_words_carry_no_figures_and_survive_the_humanizer.
+- "plate words" is RETIRED (#997): REFUSED_SYNC_FAR_WORDS starting "the plate
+  solve after the restart worked" was red through the humanizer mirror when it
+  rewrote any line holding "plate" and "solve". The UI shows that line as
+  written now (#792, #960), so the mutant passes and nothing here pins it.
 - "no unverified arm": step 2's ``except SyncUnverified`` removed (it falls
   to the generic failed-solve arm) -> test_an_unverified_blind_sync_holds.
 - "unverified arm leaves the light unset": its ``_ladder_light = "lit"``
@@ -113,6 +115,7 @@ import re
 
 import pytest
 
+from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 from astrodeck.devices.base import SyncRefused, SyncUnverified
 from astrodeck.hub import (SOLVE_REASON_SYNC_REFUSED,
                            SOLVE_REASON_SYNC_UNVERIFIED)
@@ -144,31 +147,6 @@ _UNVERIFIED_REASONS = (
 
 # The UI cuts a line longer than 140 chars to 137 and an ellipsis.
 _CUT = 137
-
-
-def _humanizer_rewrites(text: str) -> bool:
-    """True when ui/src/lib/humanize.ts ``humanizeLog`` would replace
-    ``text`` with its own sentence (lower-cased substring tests, in its
-    order): camera + not responding/timeout/disconnect; nina + 5/http/error;
-    plate + solve; guid + lost."""
-    m = text.lower()
-    if "camera" in m and any(w in m for w in
-                             ("not responding", "timeout", "disconnect")):
-        return True
-    if "nina" in m and any(w in m for w in ("5", "http", "error")):
-        return True
-    if "plate" in m and "solve" in m:
-        return True
-    return "guid" in m and "lost" in m
-
-
-def test_the_humanizer_mirror_is_not_vacuous():
-    """Each rule fires on a line built to trip it."""
-    for line in ("camera timeout", "NINA error", "plate solve failed",
-                 "guiding was lost", "the plate solve after the restart "
-                 "worked"):
-        assert _humanizer_rewrites(line), line
-    assert not _humanizer_rewrites("the field solved after the restart")
 
 
 @pytest.fixture(autouse=True)

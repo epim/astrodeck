@@ -91,6 +91,7 @@ import {
 import { accessPhrase, useCanConfigBackend, useCanControlCapture }
   from "../../../../lib/caps";
 import { useBusy } from "../../../../lib/useBusy";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
   deriveAutofocusParams, focusButtonState, readFocusFailure,
 } from "../../../../lib/autofocus";
@@ -303,7 +304,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
 
   const sweeping = useBusy("autofocus");
   const looping = !!status?.looping;
-  const seqOwnsCamera = sequence.state === "running" || sequence.state === "paused";
+  const seqOwnsCamera = runIsLive(sequence);
   const flowOwns = seqOwnsCamera
     ? (sequence.state === "paused" ? FLOW_OWNS_CAMERA_PAUSED : FLOW_OWNS_CAMERA)
     : null;

@@ -1368,6 +1368,34 @@ const NO_BEARING_CUE = 'Waiting for the compass. Keep the camera open and move t
  *  replaces did name it ("or cancel and draw the horizon") and this one must
  *  not lose that. */
 const NO_POSE_STREAM_CUE = 'This browser does not report which way the phone is pointing, so a scan cannot place what it sees. Cancel the scan and draw the horizon by hand instead.';
+/** What the user is told when the browser HAS the constructor but the site may
+ *  not use the sensors behind it (issue #951).
+ *
+ *  Chromium answers a blocked or absent motion sensor with exactly one
+ *  `deviceorientation` event whose alpha, beta and gamma are all null, and then
+ *  nothing; with no prompt anywhere. Brave blocks the Motion sensors site
+ *  setting by default (brave-browser#4789, #30076), so on a fresh install that
+ *  event is the first and only thing a scan ever receives, and the panel's
+ *  "Waiting for the compass. Move the phone gently" asks for something no
+ *  amount of gentleness can produce. The remedy is a setting, so the sentence
+ *  names the setting and where it is, and says to reopen the scan because the
+ *  page is not told when the setting changes. `navigator.permissions` reporting
+ *  the gyroscope as denied is the same fact asked a different way.
+ *
+ *  Like `NO_POSE_STREAM_CUE` it travels as the scan's `error`, above every
+ *  other cue. It is not stored as `issue`: it is a measurement over time (a
+ *  silence, and so a clock) that a reading arriving late must be able to
+ *  retract, so `issueAt` works it out each time it is asked. */
+const MOTION_BLOCKED_CUE = 'Motion sensors are blocked for this site. In Brave or Chrome, open Site settings > Motion sensors and allow this site, then reopen the scan.';
+/** The same verdict in the few words the Start control's lock reason and the
+ *  bearing line have room for (issue #976). Both used to keep saying "Waiting
+ *  for compass" / "Waiting for tilt sensor" beside the sentence above, a wait
+ *  that a blocked sensor can never end. */
+export const MOTION_BLOCKED_LABEL = 'Motion sensors blocked';
+/** How long an all-null `deviceorientation` event may stand with no reading
+ *  after it before the sensors are called blocked. A sensor that is only slow
+ *  to start delivers inside it, and the first reading withdraws the verdict. */
+const MOTION_BLOCKED_AFTER_MS = 1000;
 
 /** Opens a visible preview; recording begins only after begin() is pressed. */
 export class PhotosphereSweep {
@@ -1497,6 +1525,12 @@ export class PhotosphereSweep {
    *  with, so there is nothing here to be healthy or unhealthy about (issue
    *  #42 item 3). See `sourceHealthy`. */
   private orientationSupported = false;
+  /** When the first all-null `deviceorientation` event of this scan arrived, on
+   *  the performance clock. Whether the silence since is long enough to call
+   *  the sensors blocked is `motionBlockedAt`'s question (issue #951). */
+  private orientationNullAt: number | null = null;
+  /** `navigator.permissions` reported the gyroscope as denied (issue #951). */
+  private motionPermissionDenied = false;
   private trackEnded = false;
   private alignmentWait = false;
   private overlapWait = false;
@@ -1547,7 +1581,27 @@ export class PhotosphereSweep {
   get isRecording(): boolean { return this.recording; }
   get cameraChoices(): SweepCamera[] { return this.cameras; }
   get activeCameraId(): string { return this.deviceId; }
-  get error(): string | null { return this.issue; }
+  get error(): string | null { return this.issueAt(performance.now()); }
+  /** Is `error` the blocked-sensors sentence right now? True only while the
+   *  verdict holds AND nothing outranks it in `issueAt`, so a short label read
+   *  from this can never name a cause the hint beside it does not (issue #976). */
+  get motionBlocked(): boolean { return this.issue === null && this.motionBlockedAt(performance.now()); }
+  /** What is stopping the scan, if anything: the reason `issue` was set to, or
+   *  the blocked-sensors verdict, which is a measurement and so is read at the
+   *  instant of asking (issue #951). `issue` wins, so the iOS denial and the
+   *  missing-constructor sentences keep their places. */
+  private issueAt(now: number): string | null {
+    return this.issue ?? (this.motionBlockedAt(now) ? MOTION_BLOCKED_CUE : null);
+  }
+  /** Are the motion sensors blocked for this site? Only while no reading of any
+   *  kind has arrived this scan: either the permission API says so, or the
+   *  browser's one all-null event has stood for `MOTION_BLOCKED_AFTER_MS` with
+   *  nothing after it. A reading ends it, whichever answer came first. */
+  private motionBlockedAt(now: number): boolean {
+    if (this.hasOrientation || this.tiltAt !== null) return false;
+    return this.motionPermissionDenied
+      || (this.orientationNullAt !== null && now - this.orientationNullAt >= MOTION_BLOCKED_AFTER_MS);
+  }
   /** The newest 4096 grabFrame outcomes, oldest first. Survives `stop()` -
    *  a finished scan must still be diagnosable - and is cleared only by a
    *  fresh `start()`. A fresh array each read: `readonly` is erased at
@@ -1873,7 +1927,8 @@ export class PhotosphereSweep {
     // is sub-millisecond and the shape is still wrong, and it is the shape
     // `vouched`'s own `now` parameter was added to prevent.
     const now=performance.now();
-    if(this.issue)return this.issue;
+    const issue=this.issueAt(now);
+    if(issue)return issue;
     if(!this.recording)return 'Tap Start scan to begin capturing.';
     if(!this.video?.videoWidth || !this.video?.videoHeight)return 'Waiting for a camera image…';
     // The same fact as the stale-image line below, reached from the other side:
@@ -2096,6 +2151,7 @@ export class PhotosphereSweep {
     this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
     this.headingStoodAt = null; this.tiltStoodAt = null;
+    this.orientationNullAt = null; this.motionPermissionDenied = false;
     this.orientationSupported = typeof window !== "undefined" && "DeviceOrientationEvent" in window;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
@@ -2129,7 +2185,14 @@ export class PhotosphereSweep {
     this.deviceId = stream.getVideoTracks?.()[0]?.getSettings?.().deviceId ?? preferred ?? "";
     video.srcObject = this.stream;
     try { await video.play(); }
-    catch { this.stop(); throw new Error("The camera opened but its preview could not play. Try opening the camera again."); }
+    catch {
+      // A newer start() (or a stop()) replaced this one while play() was
+      // pending: the element's reload rejects a pending play() with
+      // AbortError. That is not a failed preview, and this.stop() would stop
+      // the NEWER start's stream and bump the generation under it (#1003).
+      if (generation !== this.generation) return;
+      this.stop(); throw new Error("The camera opened but its preview could not play. Try opening the camera again.");
+    }
     if (generation !== this.generation) return;
     this.ready = true;
     // The baseline reading, taken now that the element is playing: the timer
@@ -2151,10 +2214,13 @@ export class PhotosphereSweep {
       this.ready = false; this.recording = false; this.trackEnded = true;
     }));
 
-    if (motionPermission && await motionPermission !== "granted") {
+    const motion = motionPermission ? await motionPermission : "granted";
+    // Checked before the verdict is written: a start() superseded while the
+    // permission prompt was open must not put its answer on the newer one (#1003).
+    if (generation !== this.generation) return;
+    if (motion !== "granted") {
       this.issue = "Motion access was denied. Allow motion sensors to scan, or draw the horizon by hand.";
     }
-    if (generation !== this.generation) return;
     // `orientationSupported` rather than a second copy of the same test: the
     // else below turns on exactly the fact that flag records, and two spellings
     // of one condition is one that will be changed and one that will not.
@@ -2166,6 +2232,11 @@ export class PhotosphereSweep {
         // DOM event timestamps and video captureTime share the performance time
         // origin. Fall back for older implementations using epoch timestamps.
         const at=Number.isFinite(e.timeStamp)&&Math.abs(received-e.timeStamp)<2000?e.timeStamp:received;
+        // Chromium's signal for a blocked or absent sensor (issue #951): the
+        // event with nothing in it. Remember when the first one came;
+        // `motionBlockedAt` decides what the silence after it means, and a
+        // reading of any kind overrides it there.
+        if (this.orientationNullAt === null && oe.alpha === null && oe.beta === null && oe.gamma === null) this.orientationNullAt = at;
         const elevation = cameraElevation(oe);
         if (elevation !== null) { this.altitude = elevation; this.tiltAt = at;
           this.tilts.add({at,screenAngle,basis:orientationBasis(0,oe.beta!,oe.gamma!,screenAngle)});
@@ -2190,6 +2261,15 @@ export class PhotosphereSweep {
       window.addEventListener("deviceorientationabsolute", this.headingHandler);
       window.addEventListener("deviceorientation", this.headingHandler);
       this.listening = true;
+      // The other way to learn the same thing (issue #951): Chromium's Motion
+      // sensors setting is a gyroscope permission, and `denied` is an answer
+      // that needs no event and cannot be a slow sensor. Firefox and Safari
+      // reject the name, which says nothing about their sensors.
+      try {
+        void navigator.permissions?.query({ name: "gyroscope" } as unknown as PermissionDescriptor).then(
+          (status) => { if (generation === this.generation && status.state === "denied") this.motionPermissionDenied = true; },
+          () => { /* the name is unknown to this browser */ });
+      } catch { /* no Permissions API */ }
     } else {
       // Below the motion-permission branch above, deliberately. Both are about
       // the pose stream and only one can be true - a browser with no
@@ -2831,8 +2911,14 @@ export class PhotosphereSweep {
     // next one a cue about a lens the next one has not yet been refused over.
     this.mediaGateRefusals = 0; this.mediaGateRefusalRun = 0; this.overlapWaitRun = 0;
     this.lastMediaTime = null; this.lastMediaAdvanceAt = -Infinity; this.presentedFrameId = null; this.lastCapturedFrameId = null; this.imageGate = null;
-    this.stream?.getTracks().forEach((t) => t.stop());
+    const stream = this.stream;
+    stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    if (this.video) this.video.srcObject = null;
+    // The element is shared: horizon.tsx keeps ONE <video> across scans and
+    // hands it to each new sweep. So it is cleared only while it still shows
+    // THIS sweep's stream. A stop() that runs late (the caller's own, on return
+    // from a start() it no longer owns) must not blank a newer sweep's picture,
+    // and a sweep that has no stream left owns nothing on the element (#1003).
+    if (this.video && stream && this.video.srcObject === stream) this.video.srcObject = null;
   }
 }

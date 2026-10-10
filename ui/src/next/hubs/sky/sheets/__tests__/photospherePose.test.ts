@@ -1,7 +1,7 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
-import { CameraPoseHistory, MotionStability, viewVouchesFor,
+import { CameraPoseHistory, MotionStability, ZERO_TRUST_MS, viewVouchesFor,
   MOTION_STALE_MS, QUIET_DRIFT_DEG, QUIET_RATE_DEG_S } from '../photospherePose';
 import { lookBasis, orientationBasis } from '../photosphereGeometry';
 // The fixture's dispatch predicate lives in this tracked helper (the fixture
@@ -92,11 +92,11 @@ test('A delivered-late event does not move a frame captured before it',()=>{
 // QUIET_RATE_DEG_S, and 0.0359 degrees integrated over the longest run below -
 // so neither the floor nor the total is anywhere near it and every break in
 // these cases is the one the case is about.
-// It is not `{0,0,0}` for a load-bearing reason (issue #106): an exact zero
-// triple is no measurement at all, because a stuck driver reports one and so
-// does a synthesised stream, and `observe` refuses it. A fixture written on
-// exact zeros would describe a device that does not exist and would now vouch
-// for nothing - which the case at the end of this file pins directly.
+// It is not `{0,0,0}` because an exact zero triple is a sample only once the
+// stream has delivered something else (issues #106 and #952), and the cases at
+// the end of this file pin that rule directly. Chromium, which rounds every
+// rate to 0.1 deg/s, reports exactly zero on about 96 percent of a still
+// phone's samples, and `chromiumStill` below is that stream.
 const still={alpha:0.02,beta:-0.03,gamma:0.01};
 /** Feed `n` samples at `step` ms from `from`, all at one rate, and return the
  *  instant of the last one. Written as a helper because every case below needs
@@ -106,6 +106,20 @@ function samples(m:MotionStability,from:number,n:number,rate:{alpha:number;beta:
   for(let i=0;i<n;i++){m.observe(at,rate);if(i<n-1)at+=step;}
   return at;
 }
+/** A phone holding still as CHROMIUM reports it (issue #952): rms noise of
+ *  0.02 deg/s on each axis, then every rate rounded to the nearest 0.1 deg/s
+ *  (`kGyroscopeRoundingMultiple`). Seeded, so the stream is the same on every
+ *  run and a failure names a sample rather than a lucky draw. At that noise a
+ *  rate reaches 0.05 deg/s, the rounding threshold, about once in 80 draws, so
+ *  about 96 percent of the triples come out exactly `{0,0,0}`. */
+function chromiumStill(n:number,seed=7):{alpha:number;beta:number;gamma:number}[]{
+  let s=seed>>>0;
+  const uniform=()=>{s=(s+0x6d2b79f5)>>>0;let t=s;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;};
+  const gauss=()=>Math.sqrt(-2*Math.log(1-uniform()))*Math.cos(2*Math.PI*uniform());
+  const round=(rate:number)=>Math.round(rate/0.1)*0.1+0;
+  return Array.from({length:n},()=>({alpha:round(0.02*gauss()),beta:round(0.02*gauss()),gamma:round(0.02*gauss())}));
+}
+const isZero=(r:{alpha:number;beta:number;gamma:number})=>r.alpha===0&&r.beta===0&&r.gamma===0;
 test('A quiet gyro run vouches for a reading taken inside it, and for nothing before the run began',()=>{
   // The shape the whole witness exists for: the phone is holding still over a
   // view that can say nothing, and the gyro says it has not turned since before
@@ -255,45 +269,95 @@ test('A browser with the event but no gyro vouches for nothing',()=>{
   const view=wentEmpty.continuity(656);
   assert.equal(view,null,'a run resumed across a silence longer than the stale bound');
 });
-test('A channel that reports exact zeros is not a witness, and one that dies into zeros stops being one',()=>{
-  // Issue #106, and the one wrong guess in this witness that used to VOUCH
-  // rather than refuse. The spec spelling of "no rate sensor" is `null`, and
-  // that was refused; a device that spells its silence `0` was read as a phone
-  // holding perfectly still. Nothing downstream catches it - the video is
-  // `featureless` by construction wherever this witness is consulted - so it is
-  // a false hold, which puts a frame into the mosaic at a pose the phone has
-  // left, and that is the outcome this whole subsystem exists to make
-  // impossible.
-  // A real MEMS gyro has a noise floor and does not report an exact zero triple
-  // twice running; a stream that does is synthetic. So an exact zero is treated
-  // as NO SAMPLE, the same as a null, which is strictly stronger than a
-  // "has it ever measured anything" flag in either scope - see `observe`.
-  // The second half is what neither flag scope would have caught: a channel
-  // that WORKS, opens a run, and then dies into zeros. A stream of zeros
-  // produces no break, so a per-run flag is never cleared and a per-session flag
-  // was set long ago; here `at` simply stops advancing and the witness goes
-  // stale MOTION_STALE_MS after the last real sample.
-  // Mutation: delete `if(a===0&&b===0&&c===0)return;` from `observe`. Observed
-  // red: 'a stream of exact zeros opened a run'.
+test('A channel that has only ever reported exact zeros is not a witness (issue #106)',()=>{
+  // The wrong guess in this witness that used to VOUCH rather than refuse. The
+  // spec spelling of "no rate sensor" is `null`, and that is refused; a device
+  // that spells its silence `0` - a stuck driver, an emulator, a WebView that
+  // synthesises zeros - must not be read as a phone holding perfectly still,
+  // because nothing downstream catches it: the video is `featureless` by
+  // construction wherever this witness is consulted, so it would be a false
+  // hold, which puts a frame into the mosaic at a pose the phone has left.
+  // What changed with issue #952 is the reason this is still true. An exact
+  // zero used to be refused outright, on the premise that no real gyro reports
+  // one twice running; Chromium rounds to 0.1 deg/s, so a real one reports
+  // nothing else for most of a second. A zero triple is a sample only once the
+  // stream has delivered a non-zero one, so a channel of NOTHING BUT zeros is
+  // still no witness, and that is the half pinned here.
+  // Mutation: set `measured` to true where it is declared (so a zero triple is
+  // always a sample). Observed red: 'a stream of exact zeros opened a run'.
   const zeros={alpha:0,beta:0,gamma:0};
   const dead=new MotionStability();
   samples(dead,0,61,zeros);
   assert.equal(dead.witness(960),'stale','a stream of exact zeros opened a run');
   assert.equal(dead.continuity(960),null,'a stream of exact zeros vouched for a reading');
-  // Two real samples are needed to open a run, so a single non-zero sample in a
-  // sea of zeros is not enough either - that stream delivers about one
-  // measurement a second and can witness nothing.
-  const oneSample=new MotionStability();
-  for(let at=0;at<=960;at+=16)oneSample.observe(at,at===480?still:zeros);
-  assert.equal(oneSample.continuity(960),null,'one measurement in a second of zeros opened a run');
-  // The working channel that dies.
-  const died=new MotionStability();
-  assert.equal(samples(died,0,61,still),960);
-  assert.equal(died.witness(960),'quiet','the run before the channel died is the premise of this half');
-  assert.equal(viewVouchesFor(500,died.continuity(960)),true,'the live channel must vouch, or the death below shows nothing');
-  for(let at=976;at<=1600;at+=16)died.observe(at,zeros);
-  assert.equal(died.witness(1600),'stale','a channel that died into zeros went on vouching from its last real sample');
-  assert.equal(died.continuity(1600),null);
+  // `clear()` ends the session's stream, so what it had shown goes with it: a
+  // new scan that meets nothing but zeros starts from refusing them again.
+  // Mutation: delete `this.measured=false;` from `clear`. Observed red:
+  // 'a cleared witness remembered that the last session had a gyro'.
+  const cleared=new MotionStability();
+  samples(cleared,0,61,still);
+  cleared.clear();
+  samples(cleared,2000,61,zeros);
+  assert.equal(cleared.witness(2960),'stale','a cleared witness remembered that the last session had a gyro');
+  assert.equal(cleared.continuity(2960),null);
+});
+test('A Chromium gyro, which rounds to 0.1 deg/s, keeps vouching through the exact zeros a still phone reports (issue #952)',()=>{
+  // The stream a still phone really delivers on Chromium: about 96 percent of
+  // its triples are exactly {0,0,0} and the rest are a single 0.1 deg/s step.
+  // `observe` used to drop every exact zero, so the only
+  // samples that moved the witness were the rare non-zero ones, a few a second,
+  // each further than MOTION_STALE_MS from the last - the run broke on the stale
+  // bound over and over and the witness could not vouch for a reading from a
+  // phone that never moved.
+  // The premise is asserted first, because a fixture that is not mostly zeros
+  // grades nothing: this stream must be the one the issue describes.
+  // Instants: 313 samples at 16 ms, 0 to 4992. The run opens at the first
+  // non-zero sample (zeros ahead of it are dropped) and nothing after it breaks:
+  // the largest rate in the stream is a fraction of QUIET_RATE_DEG_S and the
+  // integrated total is at most 0.016 degrees against QUIET_DRIFT_DEG's 0.5.
+  // Mutation: restore the unconditional `if(a===0&&b===0&&c===0)return;` in
+  // `observe`. Observed red: 'a still Chromium phone read as turning or stale'
+  // (and, were that assertion absent, the vouching ones after it).
+  const stream=chromiumStill(313);
+  const zeroShare=stream.filter(isZero).length/stream.length;
+  assert.ok(zeroShare>0.9&&zeroShare<0.99,`the fixture is not the stream the issue describes: ${(zeroShare*100).toFixed(1)} percent exact zeros`);
+  const first=stream.findIndex(r=>!isZero(r));
+  assert.ok(first>=0&&first<40,`the stream's first non-zero sample is at index ${first}, too late for the readings below to be inside the run`);
+  const m=new MotionStability();
+  stream.forEach((rate,i)=>m.observe(i*16,rate));
+  const last=312*16;
+  assert.equal(m.witness(last),'quiet','a still Chromium phone read as turning or stale');
+  const view=m.continuity(last);
+  for(const reading of [first*16+100,1000,2500,4000,last-100])
+    assert.equal(viewVouchesFor(reading,view),true,`a reading inside a still Chromium run was not vouched for (at ${reading})`);
+  // The run reaches back exactly to its first non-zero sample and no further.
+  assert.deepEqual(view?.lastBreak,{from:first*16,to:first*16});
+  assert.equal(viewVouchesFor(first*16-500,view),false,'the zeros ahead of the first non-zero sample vouched for a reading they did not watch');
+});
+test('A gyro that worked and then died stuck at zero stops vouching within ZERO_TRUST_MS (issues #106, #952)',()=>{
+  // A real Chromium still stream for 2 s opens a quiet run, then the driver
+  // dies and reports exact zeros at 60 Hz for 8 s more. Zeros inside
+  // ZERO_TRUST_MS of the last non-zero triple are still readings; after it they
+  // are not samples, `at` stops, and the witness goes stale.
+  // Mutation: count every zero once any non-zero was seen (the first #952
+  // rule, `if(!this.measured)return;`). Observed red: 'a gyro dead at zero
+  // for 8 s still vouched'.
+  const m=new MotionStability();
+  const live=chromiumStill(125);
+  live.forEach((rate,i)=>m.observe(i*16,rate));
+  let lastLive=-1;
+  live.forEach((rate,i)=>{if(!isZero(rate))lastLive=i*16;});
+  assert.ok(lastLive>=0,'the live stream has no non-zero triple');
+  const zero={alpha:0,beta:0,gamma:0};
+  let at=124*16;
+  while(at<10000){at+=16;m.observe(at,zero);}
+  assert.equal(m.witness(lastLive+ZERO_TRUST_MS-100),'quiet','zeros inside the trust window stopped counting');
+  assert.equal(m.witness(at),'stale','a gyro dead at zero for 8 s still vouched');
+  // A still phone whose non-zero triples keep coming is unaffected for as long
+  // as it holds: 10 s of the Chromium stream still reads quiet at its end.
+  const held=new MotionStability();
+  chromiumStill(625,11).forEach((rate,i)=>held.observe(i*16,rate));
+  assert.equal(held.witness(624*16),'quiet','a still Chromium phone lost its witness on a 10 s hold');
 });
 console.log(`photospherePose.test: ${passed}/${passed} passed`);
 export const result={passed,failed:0,total:passed};

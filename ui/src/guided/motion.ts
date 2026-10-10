@@ -1,6 +1,7 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
-import { api } from "../api";
+import { api, ApiError } from "../api";
+import { POSITION_UNKNOWN_CODE, positionKnown } from "../lib/slewController";
 import { useStore } from "../store";
 import { atPosition, equipmentBlocker, type SkyPosition } from "./setup";
 import { ACTIVE_SEQUENCE } from "./model";
@@ -39,6 +40,13 @@ export async function slewAndWait(target: SkyPosition, center: boolean, signal: 
           (observedStart || (!atPosition(before?.mount,target) && (!center || !before?.mount?.pointing?.verified)))) {
         if (!center || mount.pointing?.verified) return;
       }
+      // The route answered {started} before the hub's own motion seam asked the
+      // position gate again (#888): a latch set while the move waited for the
+      // motion lock (an AM5 link reopen that read the home pole) sends nothing
+      // and leaves this loop waiting for an arrival that cannot come (#986). The
+      // status says so at once; end the wait in the refusal the pages already
+      // recognise, so they show the attestation now, not after the deadline.
+      if (!positionKnown(mount)) throw new ApiError("The mount no longer knows where the telescope points, so this move can't be confirmed.", 409, false, POSITION_UNKNOWN_CODE);
     }
     throw new Error(signal.aborted ? "Waiting stopped. Check the mount's current state." : "The telescope hasn't confirmed arrival. Check the mount before continuing.");
   } finally { unsubscribe(); }

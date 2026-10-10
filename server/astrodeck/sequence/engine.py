@@ -29,6 +29,7 @@ WITHOUT changing any existing ETA/resume bookkeeping:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
 from pathlib import Path
@@ -37,13 +38,14 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, NamedTuple, NoReturn
 
 from ..aio import reap
+from ..alerting import STAGE_FRAME_DEADMAN, STAGE_FRAME_HEARTBEAT
 from ..catalog.coords import angular_sep_deg
 from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
 from .. import capture_geometry, naming
 from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
                             PierSide, SyncRefused, SyncUnverified,
-                            position_known_for_motion, quotable_sync_reply,
-                            rig_position_known)
+                            is_present, position_known_for_motion,
+                            quotable_sync_reply, rig_position_known)
 from ..mount_offset import (POSITION_UNKNOWN_MOTION_DETAIL,
                             POSITION_UNKNOWN_SAFE_ORDER)
 from ..events import SITE_DERIVED_KEY, bus, night_key
@@ -75,7 +77,7 @@ from .instructions import (
 from .angle_check import angle_verdict, fresh_sky_angle
 from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
                           GENERIC_SOLVE_FAILURE, HELD_PASS_ALERT_AT,
-                          REACH_RECHECK_S, SET_ASIDE_EXPIRY_S,
+                          HELD_PASS_KINDS, REACH_RECHECK_S, SET_ASIDE_EXPIRY_S,
                           SOLAR_PER_SIDEREAL, SOLVE_TRANSIENT, TARGET_STOP,
                           ExpiryCause, GroupRun, PanelDeferred, PanelMeridian,
                           PassEnd, VisitBound, angle_decision,
@@ -86,7 +88,7 @@ from .panel_order import OrderSnapshot, order_panels
 from .report import FrameRecord, SessionReporter
 from .policy import (MIN_GUIDE_SCALE_ARCSEC_PX, guide_rms_floor_arcsec,
                      resolve_policy)
-from .session import Session, SessionFrame, session_store
+from .session import STARVED_AFTER_NIGHTS, Session, SessionFrame, session_store
 
 # --- Monitor / ETA shared constants (single source of truth) ---------------
 # The cooler "at target" band. Defined ONCE here (master plan §A.7); the hub
@@ -924,8 +926,9 @@ HOLD_RESOLVE_SETTLE_S = 5.0
 
 # FIXED WORDS (#618, D-03): the StopTarget and abort texts below carry no
 # figure, code or reply, so two passes that failed the same way read as one
-# rig-side reason. None carries a pair the UI's humanizer rewrites ("plate"
-# with "solve", "guid" with "lost", "camera", "nina"). The figures go in the
+# rig-side reason. None carries a pair the UI's humanizer still rewrites
+# ("camera" with "timeout", "nina" with "error"), nor "plate" beside "solve" or
+# "guid" beside "lost", which it stopped reading in #792. The figures go in the
 # one warning logged beside each.
 CENTRING_DID_NOT_MOVE = "the mount did not move to correct the pointing"
 CENTRING_TOO_FAR = "the field is too far off target to image"
@@ -963,7 +966,8 @@ _SAFE_ORDER_SHORT = POSITION_UNKNOWN_SAFE_ORDER
 #: The error line when a roof that needs a parked tube is left open because
 #: the position is unknown, so nothing parked the tube under it (#888): the
 #: auto-reopen close (`_close_for_reopen`) and ``POST /api/dome/close``.
-#: The cause and the safe order first, 120 characters, inside the UI's cut.
+#: The cause and the safe order first, 120 characters: inside the UI's old
+#: 137-character cut, and far inside its 400-character budget since #792.
 ROOF_LEFT_OPEN_POSITION_UNKNOWN = (
     f"roof left open, position unknown: {_SAFE_ORDER_SHORT} A park is aimed "
     f"from that position, so the tube was not parked under the roof")
@@ -973,7 +977,8 @@ ROOF_CLOSE_WITHOUT_PARK = "The roof close does not park first"
 #: park skips a mount whose position is unknown (#874), so the usual "Dawn
 #: park will park it" would be false. The cause, then the shared safe order
 #: (a bare "until Trust position" left out the tube-at-home condition and the
-#: pad key): 134 characters, inside the UI's cut.
+#: pad key): 134 characters, inside the UI's old 137-character cut and far
+#: inside its 400-character budget since #792.
 NOT_PARKED_POSITION_UNKNOWN = (
     f"Unparked, position unknown; dawn park skips it: {_SAFE_ORDER_SHORT}")
 
@@ -1350,6 +1355,10 @@ class SequenceEngine:
         self._paused.set()  # set = not paused
         self.state: dict[str, Any] = {"state": "idle"}
         self._frames_done = 0
+        #: Frames of the calibration targets the engine builds for itself (day
+        #: darks, DUSK FLATS, cloud-hold darks): shot, but not the plan's, so
+        #: not in ``_frames_done`` (#939). Published beside it.
+        self._calibration_frames_done = 0
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         #: consecutive dither SETTLE failures; the walking-field gate
@@ -1501,6 +1510,9 @@ class SequenceEngine:
         #: instruction id -> consecutive failed fires (see
         #: `_rearm_failed_rule`). Cleared when the action works.
         self._rule_failures: dict[str, int] = {}
+        #: (step, exception type) pairs `_say_swallowed` has already said this
+        #: run (#964); cleared at run start.
+        self._swallowed_said: set[tuple[str, str]] = set()
         self._rejected = 0
         self._night_rejects = 0   # per-night consecutive-reject counter (spec §3)
         #: Consecutive rejects per STEP, keyed "<target.id>:<step.id>" (the
@@ -2182,11 +2194,18 @@ class SequenceEngine:
             # that disarms is the one place that says so, rather than trusting
             # each caller to ask.
             disarmed = self._arm_exclusively(session)
-        except Exception:  # noqa: BLE001 - never block a run over bookkeeping
-            pass
+        except Exception as e:  # noqa: BLE001 - never block a run over bookkeeping
+            # SAID, NOT SWALLOWED (#979). The run still starts: this is the
+            # 2 am auto-resume path, a refused start loses the night over a
+            # flag, and ``armed()`` takes the most recently updated session,
+            # which this one is, so a restart tonight still resumes this run.
+            # What the failure leaves behind is a SECOND armed session, which
+            # nothing else would name.
+            disarmed = self._say_singleton_failed(session, e)
         self._session = session
         self._done = dict(session.done_map()) if resume else {}
         self._frames_done = sum(self._done.values())
+        self._calibration_frames_done = 0
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         #: consecutive dither SETTLE failures; the walking-field gate
@@ -2219,6 +2238,7 @@ class SequenceEngine:
         self._warned_no_cooler = False
         self._warned_no_temperature = False
         self._rule_failures = {}
+        self._swallowed_said = set()
         self._rejected = 0
         self._night_rejects = 0
         self._step_rejects = {}
@@ -2978,6 +2998,10 @@ class SequenceEngine:
                 "frames_done": self._frames_done,
                 "frames_total": total,
                 "percent": round(100 * self._frames_done / total, 1) if total else 0,
+                # Shot and not the plan's (#939). A client that watches the
+                # frame counter for a stall must see these land too: the DUSK
+                # FLATS stage moves no other counter for as long as it runs.
+                "calibration_frames_done": self._calibration_frames_done,
                 "elapsed_s": round(self._elapsed_s()),   # paused-aware (spec §5.1)
                 "rejected": self._rejected,
             }
@@ -2994,8 +3018,12 @@ class SequenceEngine:
             if self.running and not self._aborting:
                 try:
                     progress.update(self.compute_eta())
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A status with no finish time reads like a run that has
+                    # none to give, so the failure is said (#964).
+                    self._say_swallowed(
+                        "the finish-time estimate for the run status could "
+                        "not be worked out", e)
             kw.setdefault("progress", progress)
             kw.setdefault("plan_name", self.plan.name)
             # live ETA chips sub-object (honest temps; meridian ETA in seconds —
@@ -3203,6 +3231,45 @@ class SequenceEngine:
         if getattr(self, "_guiding_off_for_pause", False):
             self._pause_pose = await self._read_pose_twice()
 
+    def _say_swallowed(self, what: str, exc: BaseException) -> None:
+        """Say, once per run, that a best-effort step raised and was skipped
+        (#964, the shape #811 and #936 found: a handler that was a bare
+        ``pass``, so the failure was left to be found by the thing it broke).
+
+        ``what`` is the step in plain words and is the line's whole subject;
+        the exception's TYPE is the rest, never its text, which can quote a
+        path or a device's reply (the dispatcher's own latch,
+        ``AlertDispatcher._say_failure``, keeps the same rule). One line per
+        (step, type) per run: a step that raises the same thing every frame
+        says it on the first and stays quiet, a different type is news, and
+        ``start`` forgets the lot so the next run says it afresh. The key is
+        stamped before the line is published, and a bus that cannot take it
+        falls back to the logger, so this can neither repeat itself nor raise
+        into the safety or wind-down path it is called from.
+
+        The line says what failed and nothing about what happens next. Half
+        the callers sit on a terminal path (an abort, an error stop, the
+        wind-down, a roof close with no run live), where "the run goes on"
+        is false, and a warning reaches the alert sinks. A phrase that
+        names a consequence must name one that holds for EVERY caller of
+        the step.
+
+        Warning, source ``sequence``: it reaches the night log and the alert
+        sinks. For a step whose failure is the cosmetic kind, keep the
+        ``pass`` and say why beside it instead."""
+        said = getattr(self, "_swallowed_said", None)
+        if said is None:           # an engine built without __init__ (a double)
+            said = self._swallowed_said = set()
+        key = (what, type(exc).__name__)
+        if key in said:
+            return
+        said.add(key)
+        line = f"{what} ({key[1]})"
+        try:
+            bus.log("warning", line, "sequence")
+        except Exception:  # noqa: BLE001 - the bus is what failed; the caller goes on
+            logging.getLogger(__name__).warning(line)
+
     def _get_dispatcher(self):
         """Resolve the AlertDispatcher (injected on the engine or the hub). Returns
         None when unset, so all dead-man's-switch / heartbeat calls are no-ops."""
@@ -3213,21 +3280,29 @@ class SequenceEngine:
         ABSENCE is what pages the user — C2-9) and emit a progress heartbeat (the
         dispatcher self-gates it per-sink by ``heartbeat_min``). Best-effort: both
         dispatcher calls are already hardened never to raise, but guard anyway so
-        an alerting hiccup can never break the capture loop."""
+        an alerting hiccup can never break the capture loop, and SAY what the
+        guard caught (#936): it used to be a bare ``pass``, the shape #811 found
+        on the dispatcher's timer. Said once per distinct exception type, never
+        its text (which can quote the dead-man url or a sink's token), by the
+        dispatcher's own latch (``report_failure``)."""
         disp = self._get_dispatcher()
         if disp is None:
             return
         try:
             await disp.deadman_ping()
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 - the capture loop outlives any alerting failure
+            disp.report_failure(STAGE_FRAME_DEADMAN, e)
+        else:
+            disp.report_recovery(STAGE_FRAME_DEADMAN)
         try:
             await disp.emit_heartbeat(
                 f"{self.plan.name if self.plan else 'run'}: "
                 f"{self._frames_done}/"
                 f"{self.plan.total_frames() if self.plan else 0} frames")
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 - as above
+            disp.report_failure(STAGE_FRAME_HEARTBEAT, e)
+        else:
+            disp.report_recovery(STAGE_FRAME_HEARTBEAT)
 
     def _warn_if_the_run_has_no_temperature(self, plan) -> None:
         """Say out loud that this run has no target temperature.
@@ -3897,8 +3972,9 @@ class SequenceEngine:
                 self._session.auto_resume = False
                 # THE ACTION FIRST, THE NAME LAST: with the name in front, a
                 # name over 15 characters pushed "arm it from the session
-                # list" past the UI's 137-character cut. Both things that
-                # clear the doubt are named (``Telescope.position_known``).
+                # list" past the UI's old 137-character cut (400 since #792).
+                # Both things that clear the doubt are named
+                # (``Telescope.position_known``).
                 bus.log("info",
                         f"auto-resume disarmed, position unknown: once Trust "
                         f"position or a sync away from the pole clears it, "
@@ -4060,9 +4136,16 @@ class SequenceEngine:
             if other.id == session.id or not other.auto_resume:
                 continue
             other.auto_resume = False
-            if on_disarm is not None:
-                on_disarm(other)
-            session_store.save(other)
+            try:
+                if on_disarm is not None:
+                    on_disarm(other)
+                session_store.save(other)
+            except Exception as e:
+                # What the loop had disarmed before it stopped rides the
+                # exception, for the caller that goes on regardless
+                # (``start``, #979); the others still raise it as it was.
+                e.disarmed_so_far = list(disarmed)
+                raise
             if other.status in ("dormant", "active"):
                 disarmed.append({"id": other.id,
                                  "name": other.name or other.plan.name})
@@ -4072,6 +4155,50 @@ class SequenceEngine:
                     f"arming '{session.name or session.plan.name}' disarmed "
                     f"auto-resume for: {names}", "sequence")
         return disarmed
+
+    @staticmethod
+    def _say_singleton_failed(session: Session, exc: Exception) -> list[dict]:
+        """``start()``'s answer to a singleton loop that raised (#979): one
+        warning, and the sessions it did disarm before it stopped, which the
+        caller hands back as ``disarmed`` like the loop's own list.
+
+        The line names the exception's TYPE and never its text (a store error
+        quotes a path), the session that is armed, and each session still
+        armed beside it, read back from the store, because that second armed
+        session is what the failure leaves and what nothing else would say.
+        Said here, and at warning, so it reaches the night log and the alert
+        sinks like the 'disarmed auto-resume for' line it stands in for. A
+        store that cannot be read back says so instead of naming nobody.
+        Never raises: it runs on the way into a run, so a bus that cannot
+        take the line falls back to the logger, as ``_say_swallowed`` does."""
+        done = list(getattr(exc, "disarmed_so_far", None) or [])
+        label = session.name or session.plan.name
+        line = (f"arming '{label}' stopped partway ({type(exc).__name__}); "
+                f"the run starts anyway")
+        try:
+            still = [o for o in session_store.load_all()
+                     if o.id != session.id and o.auto_resume
+                     and o.status in ("dormant", "active")]
+        except Exception:  # noqa: BLE001 - the store is what failed; say so
+            still = None
+        if still is None:
+            line += (", and the store could not be read back to say which "
+                     "sessions are still armed")
+        elif still:
+            line += (", but auto-resume is still armed for: "
+                     + ", ".join(o.name or o.plan.name or o.id
+                                 for o in still))
+        if done:
+            line += ("; disarmed before it stopped: "
+                     + ", ".join(d["name"] or d["id"] for d in done))
+        if still is None or still:
+            line += (". Two armed sessions can race for the same restart: "
+                     "disarm all but one from the session list")
+        try:
+            bus.log("warning", line, "sequence")
+        except Exception:  # noqa: BLE001 - the bus is what failed; the run starts
+            logging.getLogger(__name__).warning(line)
+        return done
 
     def _promote_queued(self, done: Session) -> None:
         """Arm the session waiting behind ``done``, which has just COMPLETED
@@ -6044,11 +6171,35 @@ class SequenceEngine:
                                         kind=kind or "panel")
                 elif self._target_complete(ti, t):
                     run.completed.add(t.id)
+            self._note_starved_panels(run, [t for _ti, t in mem])
             self._group_runs[gid] = run
             self._restore_group_pier(g, run)
             self._group_last_index[gid] = max(ti for ti, _t in mem)
             self._resort_group(g, remaining)
             self._place_followers(g, remaining)
+
+    def _note_starved_panels(self, run: GroupRun,
+                             targets: list[Target]) -> None:
+        """Tell ``run`` which panels the session found STARVED on the nights
+        before tonight (#835): set aside whole, for a kind a held pass
+        leaves (`group_rules.HELD_PASS_KINDS`), on ``STARVED_AFTER_NIGHTS``
+        or more nights running with none of the panel shot, the very count
+        at which the Campaign calls it starved. The group driver then gives
+        the mosaic's last live panel up after one held pass instead of six
+        (`GroupRun._apply_held_pass_rule`), and a mosaic stops spending an
+        hour of every night on the one panel that does not centre.
+
+        Read from the session's record at every start, a restart tonight
+        included, so a crash-resume neither forgets it nor needs it saved.
+        A session double without the reader reads as having none."""
+        read = getattr(self._session, "earlier_starved_nights", None)
+        if read is None:
+            return
+        night = night_key(time.time())
+        for t in targets:
+            nights = read(t.id, night=night, kinds=HELD_PASS_KINDS)
+            if nights >= STARVED_AFTER_NIGHTS:
+                run.note_starved(t.id, nights)
 
     def _place_followers(self, group: TargetGroup,
                          remaining: list[Target]) -> None:
@@ -8393,8 +8544,11 @@ class SequenceEngine:
                 mechanical_deg=None if mech is None else float(mech),
                 pa_deg=float(fresh["pa_deg"]),
                 source=str(fresh.get("source") or "plate solve"))
-        except Exception:               # noqa: BLE001 - bookkeeping never ends a slew
-            pass
+        except Exception as e:          # noqa: BLE001 - bookkeeping never ends a slew
+            # A row that never lands leaves the slip measurement quietly
+            # sparse, so it is said, once (#964).
+            self._say_swallowed(
+                "a sky-angle row could not be added to the night report", e)
 
     def _rotator_connected(self) -> bool:
         rot = self.hub.devices.get("rotator")
@@ -8940,7 +9094,13 @@ class SequenceEngine:
             return
         try:
             from ..flows.tonight import target_own_window
-            window = target_own_window(
+            # OFF THE LOOP (#739): the night's first call builds the astropy
+            # scaffold (sun, moon and twilight over the whole night), seconds
+            # on a loaded or Pi-class box, and this coroutine shares the loop
+            # with the status poll, the relay and the safety loop. The
+            # catalogue routes already run the same compute in a thread.
+            window = await asyncio.to_thread(
+                target_own_window,
                 target.ra_hours, target.dec_deg, site=self.hub.site,
                 min_altitude_deg=target.schedule.min_altitude_deg,
                 now=time.time())
@@ -8993,8 +9153,8 @@ class SequenceEngine:
     #: out of centring and so is NOT stopped (#850): without it the operator
     #: reads "the mount refused the sync" and then sees the run carry on, with
     #: nothing saying why. It comes straight after the cause and BEFORE the
-    #: figure and the reply (`_sync_not_taken_line`), so humanizeLog's cut at
-    #: 137 takes the figure and the reply first and never this.
+    #: figure and the reply (`_sync_not_taken_line`), so the cut humanizeLog
+    #: once made at 137 took the figure and the reply first and never this.
     _SYNC_NOT_TAKEN_GOES_ON = "; centring is off, so imaging goes on"
 
     @staticmethod
@@ -9030,7 +9190,7 @@ class SequenceEngine:
         stopped) gets the outcome BEFORE the figure: "M31: re-centring after
         the meridian flip: the mount refused the sync; centring is off, so
         imaging goes on (152.3' off, reply 'e11')". The outcome is why the
-        run carries on, so it must survive the cut at 137 (FIXES4 H3); the
+        run carries on, so it came before the old cut at 137 (FIXES4 H3); the
         figure and the reply share one bracket after it, each left out when
         there is nothing to say, and the bracket too when both are.
 
@@ -9050,14 +9210,16 @@ class SequenceEngine:
         rule); any other reply is "an unrecognised reply", and an empty one
         says nothing.
 
-        THE FIGURE COMES BEFORE THE REPLY, because humanizeLog cuts a line
-        longer than 140 characters to 137 and an ellipsis: with a long name
-        and the longest ``where`` the reply is what goes, never half a
-        number. No figure clause when the figure is unknown.
+        THE FIGURE COMES BEFORE THE REPLY, because humanizeLog used to cut a
+        line longer than 140 characters to 137 and an ellipsis: with a long
+        name and the longest ``where`` the reply was what went, never half a
+        number. It keeps whole sentences up to 400 now (#792) and the order
+        stays. No figure clause when the figure is unknown.
 
-        THE UI'S HUMANIZER (ui/src/lib/humanize.ts) replaces a line carrying
-        "plate" and "solve", or "guid" and "lost", with its own words, so
-        neither pair appears here or in any ``where``."""
+        THE UI'S HUMANIZER (ui/src/lib/humanize.ts) once replaced a line
+        carrying "plate" and "solve", or "guid" and "lost", with its own
+        words, so neither pair appears here or in any ``where``. It reads a
+        whole failure or loss report only now (#792), and the wording stays."""
         refused = bool(result.get("sync_refused"))
         what = ("the mount refused the sync" if refused
                 else "the mount did not confirm the sync")
@@ -9226,8 +9388,9 @@ class SequenceEngine:
     def _centring_miss_line(self, result, target, where: str, *,
                             goes_on: bool) -> str:
         """The ONE warning beside a centring miss: the outcome FIRST and the
-        figures last, because the UI cuts a line at 137 characters plus an
-        ellipsis, so the cut can only ever take a figure. No coordinates:
+        figures last, because the UI used to cut a line at 137 characters plus
+        an ellipsis (it keeps whole sentences up to 400 since #792), so the cut
+        could only ever take a figure. No coordinates:
         the figures are a separation from the target and a field limit."""
         name = getattr(target, "name", "this target")
         err = self._arcmin(result.get("error_arcmin")) \
@@ -9363,8 +9526,13 @@ class SequenceEngine:
         if callable(mark):
             try:
                 mark(POSITION_UNKNOWN_STOP)
-            except Exception:  # noqa: BLE001 - never into the unsafe arm
-                pass
+            except Exception as e:  # noqa: BLE001 - never into the unsafe arm
+                # The doubt is not on the telescope, so the next restart's
+                # ladder may aim from the position this stop says nobody
+                # knows: said (#964), once.
+                self._say_swallowed(
+                    "the mount could not be marked position-unknown after "
+                    "the stop", e)
         # Recorded on the hub too, so a profile activate that builds a NEW
         # telescope object does not drop it (`rig_position_known`).
         rig_position_known(self.hub)
@@ -9572,7 +9740,9 @@ class SequenceEngine:
         were."""
         try:
             from ..flows.tonight import target_own_window
-            window = target_own_window(
+            # Off the loop for the reason `_await_target_window` gives (#739).
+            window = await asyncio.to_thread(
+                target_own_window,
                 target.ra_hours, target.dec_deg, site=self.hub.site,
                 min_altitude_deg=target.schedule.min_altitude_deg,
                 now=time.time())
@@ -10571,15 +10741,41 @@ class SequenceEngine:
         return st.exposure_s, st.converged
 
     async def _run_calibration(self, ti: int, target: Target) -> None:
+        # `ti` is where the scheduler found `target` in the plan. The targets
+        # the engine builds for itself (day darks, DUSK FLATS, cloud-hold
+        # darks) are not in the plan and pass a placeholder (0, or the held
+        # target's index), so their frames publish no place in the plan
+        # rather than the placeholder's: it names a light step that is not
+        # the one exposing (#842).
+        plan_ti = self._plan_index(ti, target)
         # this target is now actually starting — clear any stale waiting sub-state
         # a prior gated wait published (wave-3 §2).
-        self._set_state(target=target.name, target_index=ti, detail=f"calibration: {target.name}",
-                        schedule=None)
+        #
+        # `target_index` IS THE PLAN'S TARGET OR NULL (#941). It is published
+        # as an explicit null (the key present) for a target the plan does not
+        # hold: the placeholder it was handed named plan target 0, or the held
+        # target, so the Plan editor lit a target that was not exposing and
+        # the run header read "1 of N" through the flats.
+        self._set_state(target=target.name, target_index=plan_ti,
+                        detail=f"calibration: {target.name}", schedule=None)
         bus.log("info", f"calibration target: {target.name}", "sequence")
         # calibration frames flow immediately — arm the watchdog + anchor its clock.
         self._last_frame_at = time.time()
         self._progress_expected = True
         for si, step in enumerate(target.steps):
+            key = f"{target.id}:{step.id}"
+            # A STEP THE LEDGER HOLDS IN FULL IS NOT TOUCHED (#910). On a later
+            # start (an auto-resume, a hand CONTINUE) the frame loop below
+            # shoots nothing for it, but the flat metering ahead of that loop
+            # did not ask: it closed the cover, lit the lamp and took trial
+            # exposures through whichever filter was in the beam (the wheel is
+            # moved only for a step that owes frames), and an unconverged solve
+            # then said "none of its N flats are shot" for a step that needed
+            # none. A step that owes nothing moves nothing: no wheel, no
+            # lamp, no trial exposure, no warning, and no `_flat_metered`
+            # entry, so nothing is recorded for it either.
+            if self._done.get(key, 0) >= step.count:
+                continue
             # PRO-5: a Flat step with adu_target > 0 turns the panel on, solves the
             # per-filter exposure via bounded trial captures, then shoots the count
             # at the SOLVED exposure. adu_target == 0 keeps the fixed-exposure path
@@ -10594,7 +10790,6 @@ class SequenceEngine:
             # _panel_off_safe never runs and the panel would burn through every
             # following target's frames.
             try:
-                key = f"{target.id}:{step.id}"
                 # A calibration step carries a filter exactly like a light step
                 # does, and this call used to live in _run_step ALONE — so for
                 # the one target type calibration frames are actually shot
@@ -10603,10 +10798,10 @@ class SequenceEngine:
                 # and bias never drove to the blackout slot that exists for
                 # them. Placed ahead of the flat metering below, because a trial
                 # exposure solved through the wrong filter solves the wrong
-                # filter. Skipped for a step a resume has already finished, so
-                # recovery does not move the wheel for frames it will not shoot.
-                if self._done.get(key, 0) < step.count:
-                    await self._apply_filter(step)
+                # filter. Not reached for a step a resume has already finished
+                # (above), so recovery does not move the wheel for frames it
+                # will not shoot.
+                await self._apply_filter(step)
                 if flat_auto:
                     # METERING IS NOT THE PANEL'S JOB. This whole block used to
                     # sit behind `"covercalibrator" in self.hub.devices`, so on
@@ -10741,7 +10936,7 @@ class SequenceEngine:
                                     f"converge ({self._flat_solve_reason}); "
                                     f"using {solved_exp:g}s", "sequence")
                     exp = solved_exp if solved_exp is not None else step.exposure_s
-                    self._begin_frame(ti, si, exp)
+                    self._begin_frame(plan_ti, si, exp)
                     self._set_state(state="running",
                                     detail=f"{target.name}: {step.frame_type} {exp:g}s "
                                            f"[{i + 1}/{step.count}]")
@@ -11523,7 +11718,9 @@ class SequenceEngine:
         """
         cfg = self._cfg
         action = self._reject_action()
-        ti = self._index_of_target(target)
+        # None for a calibration target the plan does not hold: `_index_of_target`
+        # answers 0 for it, which is the FIRST LIGHT target's index (#940).
+        ti = self._plan_index(self._index_of_target(target), target)
 
         if action == "warn":
             return False        # keep + record normally
@@ -11541,19 +11738,37 @@ class SequenceEngine:
             return True
 
         if action == "retake":
-            spent = self._retakes_per_target.get(ti, 0)
+            # THE BUDGET IS A PLAN TARGET'S (#940). A throwaway calibration
+            # frame (cloud-hold, day or dusk) has no index in the plan and
+            # spends none: it used to be filed under 0, so one retaken dark
+            # used up the first light target's retakes for the night. Each
+            # rejected frame is retaken once and never again (below), so
+            # leaving it out of the budget leaves it bounded.
+            spent = self._retakes_per_target.get(ti, 0) if ti is not None else 0
             cap = cfg.escalation.hfr_retake_limit_per_target if cfg else 0
-            if cap and spent >= cap:
+            if ti is not None and cap and spent >= cap:
                 bus.log("warning", f"{target.name}: retake cap reached — discarding",
                         "sequence")
                 self._end_discarded_frame()
                 return True
-            self._retakes_per_target[ti] = spent + 1
-            self._set_state(detail=f"retaking (HFR reject) [{spent + 1}/{cap or '∞'}]")
-            bus.log("warning", f"{target.name}: retaking a poor frame "
-                               f"({spent + 1}/{cap or 'unlimited'})", "sequence")
+            if ti is not None:
+                self._retakes_per_target[ti] = spent + 1
+            tally = f"{spent + 1}/{cap or '∞'}" if ti is not None else None
+            self._set_state(detail="retaking (HFR reject)"
+                                   + (f" [{tally}]" if tally else ""))
+            bus.log("warning", f"{target.name}: retaking a poor frame"
+                               + (f" ({spent + 1}/{cap or 'unlimited'})"
+                                  if tally else ""), "sequence")
             self._frame_had_event = True   # retake wall-time is not per-frame overhead
-            self._begin_frame(*(self._active_step or (ti, 0)), step.exposure_s)
+            # The same frame again, so the place it had: taken from this
+            # call's own arguments, NOT from `_active_step`. That is shared
+            # state, and an instruction that fires on the reject, which the
+            # engine runs BEFORE a retake, can expose frames of its own in
+            # between (`on_frame_rejected` -> `hold_for_clear` shoots hold
+            # darks through `_begin_frame`). `ti` is None for a calibration
+            # frame the plan does not hold, which publishes no step (#842).
+            si = next((k for k, s in enumerate(target.steps) if s is step), 0)
+            self._begin_frame(ti, si, step.exposure_s)
             new_info = await self._capture(step, target)
             # This retake's OWN exposure (#134): the guider may have come
             # back, or gone down, since the frame that was rejected. Read
@@ -11564,7 +11779,19 @@ class SequenceEngine:
             # the rejected original was NOT folded into the running median (only
             # ACCEPTED frames anchor it now), so let an accepted retake contribute
             # its single good sample — one logical frame, at most one median sample.
-            accepted = self._check_quality(new_info)
+            #
+            # GRADED AS THE KIND OF FRAME IT IS (#968). `_run_calibration`
+            # graded the frame this retake replaces with ``calibration=True``,
+            # which leaves out the star floor, the guide-RMS ceiling and the
+            # eccentricity ceiling: a dark has no stars and a flat is not
+            # guided. The retake used to be graded without it, so a retaken
+            # dark was thrown away as "shot with the guider stopped" and the
+            # retake was spent for a frame the first check would have kept.
+            # Since #995 the HFR median gate leaves a calibration frame out
+            # too, so nothing real refuses one now and a calibration retake
+            # is reached only by a gate that someday does.
+            accepted = self._check_quality(new_info,
+                                           calibration=target.calibration)
             self._reporter_record(target, step, new_info, accepted=accepted)
             if accepted:
                 self._record_frame(key, i, target, step, new_info,
@@ -11599,11 +11826,27 @@ class SequenceEngine:
                     return ti
         return 0
 
+    def _plan_index(self, ti: int, target: Target) -> int | None:
+        """``ti`` when the plan holds ``target`` at that index, else None.
+
+        `_index_of_target` answers 0 for a target the plan does not hold,
+        which is an index the plan DOES hold. Anything that reads
+        ``plan.targets[ti]`` on such a target's account reads another
+        target's step (#842)."""
+        targets = self.plan.targets if self.plan else ()
+        if 0 <= ti < len(targets) and targets[ti] is target:
+            return ti
+        return None
+
     @staticmethod
     def _unlink_saved(info: dict) -> None:
         """Delete the FITS a rejected frame saved (sim/Alpaca local saves only —
         NINA saved_paths live on the imaging host and are not local). Never
-        raises."""
+        raises, but SAYS when the file is still there afterwards (#994): on
+        Windows a file held open by antivirus or a thumbnail reader cannot be
+        deleted, and the frame stayed in the capture folder, where a stacker's
+        folder glob picks it up, with nothing to say the run had meant to
+        remove it."""
         if not isinstance(info, dict):
             return
         path = info.get("saved_path")
@@ -11622,12 +11865,23 @@ class SequenceEngine:
         # bundle's source selection. Only the delete side was missing it.
         if not Hub._is_local_save(path):
             return
+        p = Path(path)
         try:
-            p = Path(path)
             if p.is_file():
                 p.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            # One line per file, not the run-wide latch `_say_swallowed` keeps:
+            # each leftover is a different frame the owner has to deal with, and
+            # the count is bounded by the rejects, each of which already says
+            # itself. The FILE NAME only, never the directory (it is the
+            # capture root's path) and never the exception's text, which quotes
+            # that path.
+            line = (f"the rejected frame {p.name} could not be deleted and is "
+                    f"still in the capture folder ({type(exc).__name__})")
+            try:
+                bus.log("warning", line, "sequence")
+            except Exception:  # noqa: BLE001 - the bus is what failed; the caller goes on
+                logging.getLogger(__name__).warning(line)
 
     # --------------------------------------------------------- safety gate (§1.9)
 
@@ -11679,7 +11933,7 @@ class SequenceEngine:
             # branch below. Absent and disconnected are the same situation to an
             # operator and were opposite situations to this code.
             await self._no_safety_source(target)
-        elif not getattr(mon, "connected", False):
+        elif not is_present(mon):
             await self._on_unsafe("safety monitor disconnected", stale=True,
                                   target=target)
         else:
@@ -12234,7 +12488,7 @@ class SequenceEngine:
             await self._checkpoint()
             await asyncio.sleep(SAFETY_PAUSE_POLL_S)
             mon = self.hub.devices.get("safety")
-            if mon is not None and not getattr(mon, "connected", False):
+            if mon is not None and not is_present(mon):
                 self._unsafe_streak += 1            # disconnected → unsafe
                 continue
             reading = await self._read_safety()
@@ -12281,7 +12535,7 @@ class SequenceEngine:
         # NOT fall through to the warn/pause/abort branches below.
         dome = self.hub.devices.get("dome")
         closing = bool(cfg and cfg.safety.close_dome_on_unsafe
-                       and dome is not None and getattr(dome, "connected", False))
+                       and dome is not None and is_present(dome))
         act = self._escalated_action(act, closing=closing, cfg=cfg)
         self._record_safety(reason, act)
         # ONE producer per verdict edge (UX #33): the hub's own-cadence poller has
@@ -12363,8 +12617,11 @@ class SequenceEngine:
             return
         try:
             self.reporter.record_safety(reason, action)
-        except Exception:
-            pass
+        except Exception as e:
+            # A safety event missing from the night report is a night that
+            # reads as if it never happened; said (#964), once.
+            self._say_swallowed(
+                "the night report could not take a safety event", e)
 
     async def _park_hold_pause(self, reason: str, target: Target | None) -> None:
         """The open-sky safety pause (§1.9-A): stop tracking / park-hold, then loop
@@ -12804,8 +13061,12 @@ class SequenceEngine:
                 watch = getattr(self.hub, "sun_watch", None)
                 if watch is not None:
                     watch.note_parked()
-            except Exception:      # noqa: BLE001
-                pass
+            except Exception as e:      # noqa: BLE001
+                # Untold, its blind fallback can page a false "Parking now"
+                # (#696): said (#964), once.
+                self._say_swallowed(
+                    "the sun watch could not be told the roof close parked "
+                    "the mount", e)
         return parked
 
     async def _await_safe_and_reopen(self, dome, reason: str, *,
@@ -13661,8 +13922,22 @@ class SequenceEngine:
             self._set_state(
                 detail=f"held for cloud - dark {self._hold_darks_taken}"
                        f"/{self._hold_darks_want} at {step.exposure_s:g}s")
-            await self._run_calibration(self._index_of_target(target)
-                                        if target is not None else 0, dark)
+            try:
+                await self._run_calibration(self._index_of_target(target)
+                                            if target is not None else 0, dark)
+            finally:
+                # THE HOLD GOES ON FOR THE HELD TARGET (#941). The dark
+                # published its own name and no plan target, and nothing else
+                # on the way back to the frame loop publishes the target
+                # again (a hop does), so the held target's name was left
+                # replaced by the dark's for the rest of its frames; with the
+                # dark's index null as well, the run would read as being on no
+                # target at all. Said again here, before the next look at the
+                # sky.
+                held = (self._plan_index(self._index_of_target(target), target)
+                        if target is not None else None)
+                if held is not None:
+                    self._set_state(target=target.name, target_index=held)
             return True
         except SafetyAbort:
             raise
@@ -14102,8 +14377,13 @@ class SequenceEngine:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
                 return True
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            # Most callers ignore the False, and a guider that will not stop
+            # keeps pulsing a mount: said (#964), once. No claim about the
+            # mount moving: the pause, the weather hold and the
+            # position-unknown stop call this and move nothing.
+            self._say_swallowed(
+                "the guider could not be stood down", e)
         return False
 
     async def _cloud_probe(self, target: Target | None) -> bool | None:
@@ -14637,8 +14917,9 @@ class SequenceEngine:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            self._say_swallowed(
+                "the guider would not stop before the tracking stop", e)
         await self._stop_tracking_quietly(fence=fence)
 
     def _note_mount_stopped(self) -> None:
@@ -14675,8 +14956,12 @@ class SequenceEngine:
                 return
             if tel and tel.connected:
                 await asyncio.wait_for(tel.set_tracking(False), MOUNT_QUERY_TIMEOUT_S)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            # The callers that must know read the stop back; this is the
+            # cause, which the read-back cannot give (#964), said once.
+            self._say_swallowed(
+                "the command to stop the mount tracking did not go through",
+                e)
 
     async def current_safety(self):
         """The cached safety verdict, seed-wait included — the same read this
@@ -15147,7 +15432,7 @@ class SequenceEngine:
             return True
         return False
 
-    def _begin_frame(self, ti: int, si: int, exposure_s: float) -> None:
+    def _begin_frame(self, ti: int | None, si: int, exposure_s: float) -> None:
         """Mark the in-flight exposure for the sub-frame bar + ETA off-by-one
         guard (set immediately before ``hub.capture``).
 
@@ -15155,8 +15440,15 @@ class SequenceEngine:
         flip blocks set it True *before* this runs, and ``_record_frame`` must
         still see it True so the event wall-time is excluded from the overhead
         EMA (it is accounted analytically). The flag is reset in ``_record_frame``
-        AFTER it is read (P2-1)."""
-        self._active_step = (ti, si)
+        AFTER it is read (P2-1).
+
+        ``ti`` is None for a frame the plan does not hold (a calibration
+        target the engine built for itself), which publishes NO active step:
+        ``_active_step`` indexes ``plan.targets[ti].steps[si]``, so a
+        placeholder index names some other target's step, and the ETA guard
+        (`_remaining_capture_s`) takes a frame off a step that never got
+        one (#842)."""
+        self._active_step = None if ti is None else (ti, si)
         self._cur_exposure_s = float(exposure_s)
         self._frame_started_at = time.time()
         # #856.1: the guider's saturated-correction counts as the shutter
@@ -15206,12 +15498,24 @@ class SequenceEngine:
     def _record_frame(self, key: str, i: int, target: Target, step, info: dict,
                       *, accepted: bool = True, guided: bool = True) -> None:
         now = time.time()
+        # A calibration target the plan does not hold (day darks, DUSK FLATS,
+        # cloud-hold darks) is not the plan's frame (#939, #969); the two
+        # readers below both ask.
+        plan_frame = self._plan_index(self._index_of_target(target),
+                                      target) is not None
         # Per-frame overhead EMA: cadence minus exposure, EXCLUDING any frame that
         # carried a dither/AF/flip (those are accounted analytically, so folding
         # them into the per-frame overhead would double-count and whipsaw the
         # finish clock). α=0.1 keeps one cloud-slowed frame from whipsawing it
         # (spec §5.2).
-        if self._last_frame_done > 0 and self._cur_exposure_s > 0 \
+        #
+        # AND EXCLUDING A THROWAWAY CALIBRATION FRAME (#969): the EMA prices
+        # the plan's frames (``frames_remaining * _overhead_ema``) and its
+        # sample count is what lets the ETA call itself confident. A 20-flat
+        # DUSK FLATS stage reached ETA_MIN_FRAMES before the first light, so
+        # the clock was confident on a cadence measured from flats, and the
+        # lights' overhead was an average that included them.
+        if plan_frame and self._last_frame_done > 0 and self._cur_exposure_s > 0 \
                 and not getattr(self, "_frame_had_event", False):
             overhead = (now - self._last_frame_done) - self._cur_exposure_s
             if overhead > 0:
@@ -15226,7 +15530,17 @@ class SequenceEngine:
         self._last_frame_at = now              # watchdog progress stamp (§1.9-F)
         self._frame_started_at = 0.0   # frame complete — no longer in flight
         self._done[key] = i + 1
-        self._frames_done += 1
+        # THE PLAN'S PROGRESS COUNTS THE PLAN'S FRAMES (#939). `_frames_done`
+        # is read against `plan.total_frames()`, which sums the plan's own
+        # targets, so a frame of a calibration target the plan does not hold
+        # (day darks, DUSK FLATS, cloud-hold darks) made the bar read 75
+        # percent before a light was shot, shortened the ETA's
+        # `frames_remaining`, and ended the night past its own total. A
+        # calibration target the plan DOES hold is in that total and counts.
+        if not plan_frame:
+            self._calibration_frames_done += 1
+        else:
+            self._frames_done += 1
         # A banked frame is evidence that recovery actually worked ONLY WHEN
         # IT IS EVIDENCE GUIDING HELD (#134): every recorded frame used to
         # clear the bound, rejected-but-kept ones included, so a trailed
@@ -15261,8 +15575,10 @@ class SequenceEngine:
                 rms = getattr(self.hub.guider.stats(), "rms_total", None)
                 if rms is not None:
                     metrics["guide_rms"] = float(rms)
-        except Exception:
-            pass
+        except Exception as e:
+            self._say_swallowed(
+                "the guide RMS could not be read for a frame's ledger entry",
+                e)
         frame = getattr(self.hub, "last_frame", None)
         temp = getattr(frame, "temperature_c", None) if frame is not None else None
         if temp is not None:
@@ -17495,9 +17811,11 @@ class SequenceEngine:
         if recentres:
             self._set_state(detail="re-centring after guiding loss")
             await self._recentre_for_hold(
-                # Not "guiding was lost": the UI's humanizer rewrites any
-                # line carrying "guid" and "lost" as "Guiding was lost -
-                # recovering", and the operator would never read the stop.
+                # Not "guiding was lost": until #792 the UI's humanizer
+                # rewrote any line carrying "guid" and "lost" as "Guiding was
+                # lost - recovering", and the operator would never read the
+                # stop. It maps only a bare loss report now, so the words stay
+                # as fixed words.
                 # (A literal: test_850's scan grades every site's fixed
                 # words, and a resume shares this site, #849.)
                 target, "re-centring after the guide star went missing",
@@ -17514,12 +17832,15 @@ class SequenceEngine:
                 # Nothing was charged, so nothing is given back below. The
                 # exception text has its own line, so that L_RESUME_FAIL, the
                 # operator's line, carries no raw text and always reaches the
-                # UI whole. The evidence line itself is NOT protected: every
-                # native guider error starts "native guider:", and one that
-                # also says "lost" (a walk that lost its star) is shown by the
-                # UI's humanizer as a lost guide star, as the existing
-                # "guiding recovery failed: ..." line always was. Its raw
-                # text stays in the night log and the log drawer.
+                # UI whole. The evidence line itself is shielded only by its
+                # prefix: every native guider error starts "native guider:",
+                # and one that also said "lost" (a walk that lost its star) was
+                # shown by the UI's humanizer as a lost guide star until #792.
+                # It maps only a line that is nothing but a loss report now, so
+                # this one reaches the operator as written, and the "guiding
+                # recovery failed: ..." line below can still be mapped when the
+                # error is itself a bare loss report. The raw text is in the
+                # night log and the log drawer either way.
                 bus.log("warning", L_RESUME_FAIL, "sequence")
                 bus.log("warning", f"resume: the restart failed with: {e}",
                         "sequence")
@@ -18717,6 +19038,8 @@ class SequenceEngine:
                 self._flip_owed = False
                 return
         except Exception:               # noqa: BLE001 - not skippable is the safe read
+            # Kept as a pass on purpose (#964): the read it falls to is the
+            # hold below, which announces itself at error level.
             pass
         await self._hold_for_owed_flip(target, side, hold_min)
 
@@ -19198,8 +19521,11 @@ class SequenceEngine:
                 was_guiding = bool(await guider.is_active())
                 await _bounded(guider.stop_guiding(), GUIDE_OP_TIMEOUT_S,
                                "stop guiding for limit recovery")
-            except Exception:            # noqa: BLE001 - best effort
-                pass
+            except Exception as e:       # noqa: BLE001 - best effort
+                # The park below goes ahead with the guider still pulsing:
+                # said (#964), once.
+                self._say_swallowed(
+                    "the guider would not stop for the limit recovery", e)
         side_before = await self._pier_side_now()
         # AND RIGHT BEFORE THE PARK (#888 round 3): the guider stop and the
         # pier-side read above await the mount, and on the AM5 a read can
@@ -19280,8 +19606,8 @@ class SequenceEngine:
         # (`_stop_if_centring_missed`); a mount that did not carry out the
         # correction inside the ceiling gets ruling R3's line there. Said
         # here too, it would be a second line contradicting the first.
-        # "Ended", not "converged", and no "plate" beside "solve": the UI's
-        # humanizer rewrites that pair into a solve failure of its own.
+        # "Ended", not "converged", and no "plate" beside "solve": until #792
+        # the UI's humanizer rewrote that pair into a solve failure of its own.
         if (not centred and report_centring
                 and self._sync_not_taken(centring) is None
                 and self._centring_miss(centring, target) is None
@@ -19511,8 +19837,12 @@ class SequenceEngine:
         try:
             if self.hub.guider and self.hub.guider.connected:
                 return rms_total_arcsec(self.hub.guider.stats())
-        except Exception:
-            pass
+        except Exception as e:
+            # None leaves the frame un-gated, so a guider whose stats raise
+            # has switched the guide-RMS gate off: said (#964), once.
+            self._say_swallowed(
+                "the guide RMS could not be read, so frames go ungated on it",
+                e)
         return None
 
     def _guide_rms_judged(self) -> tuple[float | None, bool]:
@@ -19530,8 +19860,10 @@ class SequenceEngine:
             g = self.hub.guider
             if g and g.connected:
                 return guide_rms_floor_arcsec(g.stats()), False
-        except Exception:      # noqa: BLE001 - unreadable is "cannot say"
-            pass
+        except Exception as e:      # noqa: BLE001 - unreadable is "cannot say"
+            self._say_swallowed(
+                "the guide RMS floor could not be read, so the sweep veto "
+                "cannot judge it", e)
         return None, False
 
     def _guiding_now(self) -> bool:
@@ -19606,7 +19938,8 @@ class SequenceEngine:
         self._rms_unit_warned = True
         # #854: the gate still judges pixels through the floor
         # (`policy.guide_rms_floor_arcsec`), so only a runaway is caught. The
-        # action comes first so the humanizer's 137 characters keep it.
+        # action comes first, where the humanizer's old 137-character cut kept
+        # it.
         ceiling = self._policy.max_guide_rms
         bus.log("warning",
                 "Set the guide scope focal length in Settings > Optics: the "
@@ -19621,7 +19954,8 @@ class SequenceEngine:
         (``min_stars``) AND an optional guide-RMS ceiling (``max_guide_rms``)
         AND an optional per-frame eccentricity ceiling (``max_eccentricity``) —
         all AND together; 0 disables each. Star/RMS/ecc gates skip
-        calibration frames (darks/bias/flats have no stars and no guiding).
+        calibration frames (darks/bias/flats have no stars and no guiding),
+        and so does the HFR gate: its median is the LIGHTS' (#995).
 
         Preserves the legacy HFR logic exactly: gate against the median of the
         ACCEPTED window only, fold this frame's HFR in only when accepted and
@@ -19631,7 +19965,16 @@ class SequenceEngine:
         factor = self._policy.hfr_reject_factor
         hfr = info.get("hfr") if isinstance(info, dict) else None
         accepted = True
-        if factor and hfr is not None:
+        # A CALIBRATION FRAME IS NOT A SAMPLE OF THE LIGHTS' SEEING (#995).
+        # The window is the HFR of accepted LIGHT frames, and this gate asks
+        # whether a frame is poor against it. A flat can carry an HFR (the
+        # simulator gives one 3.5 px; glass may detect motes as stars): it was
+        # refused over median * factor, and unlinked or retaken under discard /
+        # retake, and an accepted one was folded into the window below, so DUSK
+        # FLATS ahead of the first light could seed or drag the median that
+        # gates every light after it. Neither the gate nor the fold below is a
+        # calibration frame's business.
+        if factor and hfr is not None and not calibration:
             window = self._recent_hfr
             if len(window) >= 4:
                 med = median(window)
@@ -19715,7 +20058,7 @@ class SequenceEngine:
                 self._rejected += 1
                 bus.log("warning", reason, "sequence")
                 accepted = False
-        if accepted and record and factor and hfr is not None:
+        if accepted and record and not calibration and factor and hfr is not None:
             self._recent_hfr.append(float(hfr))
             self._recent_hfr = self._recent_hfr[-12:]
         return accepted
@@ -19739,8 +20082,13 @@ class SequenceEngine:
             self._last_focus_temp = t
             if t is not None:
                 self._anchor_temp_comp(float(t), int(await foc.get_position()))
-        except Exception:
-            pass
+        except Exception as e:
+            # The baseline above may be set with the compensation's reference
+            # still the old one, the two values this method keeps together:
+            # said (#964), once.
+            self._say_swallowed(
+                "the focus temperature could not be re-anchored after the "
+                "autofocus", e)
 
     def _focus_scope_frame(self) -> tuple[float, int, int]:
         """``(exposure_s, gain, binning)`` the operator set for FOCUS frames.
@@ -20621,14 +20969,18 @@ class SequenceEngine:
             cam = self.hub.devices.get("camera")
             if cam and cam.connected:
                 await asyncio.wait_for(cam.abort_exposure(), COOLER_CMD_TIMEOUT_S)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            # Said (#964), once: the exposure may run on after the stop.
+            self._say_swallowed(
+                "the camera would not abort its exposure after an abort or "
+                "error", e)
         try:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
-        except Exception:
-            pass
+        except Exception as e:
+            self._say_swallowed(
+                "the guider would not stop after an abort or error", e)
         # never leave the flat panel lit after an abort/error.
         await self._panel_off_safe()
 
@@ -20740,8 +21092,10 @@ class SequenceEngine:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except Exception as e:      # a timeout is one (asyncio.TimeoutError)
+            self._say_swallowed(
+                "the guider would not stop for the wind-down or the "
+                "roof close", e)
 
     async def _reap_by(self, task: asyncio.Task | None,
                        deadline: float) -> None:
@@ -21067,8 +21421,9 @@ class SequenceEngine:
             self, ending: str = "The run ends without parking",
             who: str = "The run") -> None:
         """The wind-down's park replaced, for a mount whose position is
-        unknown (#886, `_wind_down_park`): one warning, the action first and
-        inside the UI's cut, then the tracking stop, read back and asked
+        unknown (#886, `_wind_down_park`): one warning, the action first
+        (inside the UI's old 137-character cut, and far inside its 400 since
+        #792), then the tracking stop, read back and asked
         again on its own bounded clock when it does not take
         (`_confirm_quiet_stop`). Nothing aimed, never raises.
 
@@ -21082,8 +21437,12 @@ class SequenceEngine:
         await self._stop_tracking_quietly()
         try:
             await self._confirm_quiet_stop(who)
-        except Exception:  # noqa: BLE001 - a wind-down step never raises
-            pass
+        except Exception as e:  # noqa: BLE001 - a wind-down step never raises
+            # The read-back is what says a stop did not take; without it the
+            # mount may be tracking on and nothing says so: said (#964), once.
+            self._say_swallowed(
+                "the read-back of the tracking stop failed, so it is not "
+                "known to have taken", e)
 
     @staticmethod
     async def _roof_reads_closed(dome) -> bool:
@@ -21248,15 +21607,22 @@ class SequenceEngine:
                         watch = getattr(self.hub, "sun_watch", None)
                         if watch is not None:
                             watch.note_parked()
-                    except Exception:      # noqa: BLE001
-                        pass
+                    except Exception as e:      # noqa: BLE001
+                        # As in the roof close's park above (#964).
+                        self._say_swallowed(
+                            "the sun watch could not be told the wind-down "
+                            "parked the mount", e)
                 if cancelled:
                     # Not after a skipped park: its own stop has run.
                     if parked is False:
                         await self._stop_after_a_failed_park()
                     raise asyncio.CancelledError()
-        elif self._frames_done and not getattr(
+        elif (self._frames_done or self._calibration_frames_done) and not getattr(
                 self, "_ended_position_unknown", False):
+            # EITHER COUNTER (#939): a night of cloud-hold darks alone still
+            # leaves the mount tracking, and this line used to be said for it
+            # because the one counter held them.
+            #
             # A position-unknown stop is not a run "set not to park": it
             # stopped tracking on purpose and says so itself
             # (`_confirm_quiet_stop`), and "Dawn park will park it" would be
@@ -21316,7 +21682,7 @@ class SequenceEngine:
                 "close_roof_failed")
         elif close_dome:
             dome = self.hub.devices.get("dome")
-            if dome is not None and getattr(dome, "connected", False):
+            if dome is not None and is_present(dome):
                 from .roof import close_observatory
                 tel = self.hub.devices.get("telescope")
                 ok = await close_observatory(dome, tel, log=bus.log)

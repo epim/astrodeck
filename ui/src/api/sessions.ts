@@ -3,6 +3,7 @@
 // api/sessions.ts — typed wrappers for the multi-night session routes
 // (sessions spec §6). Cookie auth is automatic; ApiError on non-2xx.
 import { api } from "../api";
+import { runIsLive } from "../lib/lastSessionFrame";
 import type { DisarmedSession } from "../lib/disarmed";
 import type {
   SequencePlan, SequenceState, Session, SessionFilesIndex, SessionFrame, SessionListRow,
@@ -285,8 +286,7 @@ export function resumeRecoveryLine(
   engineState: SequenceState["state"] | undefined,
 ): string | null {
   if (!arm?.recovering || !arm.recovery) return null;
-  if (engineState === "running" || engineState === "paused"
-    || engineState === "holding" || engineState === "aborting") return null;
+  if (engineState && runIsLive({ state: engineState })) return null;
   const { step, session_id: id, session_name: name } = arm.recovery;
   return `Auto-resume is re-centring the mount for ${name || id} (${step})`;
 }

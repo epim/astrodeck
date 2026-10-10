@@ -31,6 +31,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 import astrodeck.api.app as app_module
 from astrodeck.devices.base import DeviceError, SyncRefused, SyncUnverified
 
@@ -49,23 +50,6 @@ _REFUSED_MSG = f"ZWO AM5: sync refused - {_E11_REASON} (reply 'e11')"
 #: The shape of the driver's unverified message.
 _UNVERIFIED_MSG = ("ZWO AM5: sync not confirmed: the link failed during the "
                    "sync, so whether the mount took it is unknown")
-
-
-def _humanizer_rewrites(text: str) -> bool:
-    """True when the UI's ``humanizeLog`` (ui/src/lib/humanize.ts:110-138)
-    would replace ``text`` with a canned sentence. Its four text rules, in
-    its order, lower-cased substring tests."""
-    m = text.lower()
-    if "camera" in m and any(k in m for k in ("not responding", "timeout",
-                                              "disconnect")):
-        return True
-    if "nina" in m and any(k in m for k in ("5", "http", "error")):
-        return True
-    if "plate" in m and "solve" in m:
-        return True
-    if "guid" in m and "lost" in m:
-        return True
-    return False
 
 
 def _coordinate_spellings(ra: float, dec: float) -> list[str]:

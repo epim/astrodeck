@@ -15,7 +15,7 @@ import type { CatalogEntry, LogLine, PreflightAlt } from "../types";
 import { altTone, fmtAlt, fmtMag } from "../lib/catalogFormat";
 import {
   POSITION_UNKNOWN_NOTE, TRUST_POSITION_CONFIRM_BODY, TRUST_POSITION_CONFIRM_LABEL,
-  TRUST_POSITION_CONFIRM_TITLE, TRUST_POSITION_LABEL, positionKnown,
+  TRUST_POSITION_CONFIRM_TITLE, TRUST_POSITION_LABEL, believedRaDec, positionKnown,
   slewRatesWithCeiling,
 } from "../lib/slewController";
 
@@ -119,6 +119,9 @@ export default function MountView() {
   // its own half (the ceiling rung, the altitude guard); this view owns the note
   // and the TRUST POSITION button, and stops printing the home reading.
   const positionIsKnown = positionKnown(m);
+  // The equatorial reading, gated as the angles are (#928): null while the
+  // position is unknown, and the stats below say so.
+  const equatorial = believedRaDec(m);
 
   // ---------------------------------------------------------- in-flight state
   // TWO KINDS OF ROUTE, TWO KINDS OF TRUTH.
@@ -412,8 +415,15 @@ export default function MountView() {
       <div className="flex flex-col gap-4 min-w-0">
         <Panel title="Pointing" right={!canMount && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-            <Stat label="RA (J2000)" value={m?.ra_str ?? "—"} />
-            <Stat label="Dec (J2000)" value={m?.dec_str ?? "—"} />
+            {/* RA and Dec go through the same gate as the angles below (#928,
+                #913): the mount's home reading is the pole, and RA there is
+                the site's sidereal clock, not where the tube is. */}
+            <Stat label="RA (J2000)"
+              value={!m ? "—" : !positionIsKnown ? "unknown" : equatorial?.ra_str || "—"}
+              tone={m && !positionIsKnown ? "warn" : undefined} />
+            <Stat label="Dec (J2000)"
+              value={!m ? "—" : !positionIsKnown ? "unknown" : equatorial?.dec_str || "—"}
+              tone={m && !positionIsKnown ? "warn" : undefined} />
             {/* While the mount does not know where it points it reports its
                 HOME position, and an altitude read there is the site latitude,
                 not the tube's height (#144, #140). Neither angle is printed.

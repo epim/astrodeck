@@ -57,12 +57,13 @@ here is a number an operator acts on:
   absent when there is no lock, so every answer without one is the answer
   S1 gave.
 * NOTHING DERIVED FROM THE SITE (spec 6.9). The route is ``CAP_VIEW_STATUS``
-  and a viewer can read it. This function takes no site and no config, and
-  the one clock it can be handed (``now``, below) only keys a night, so it
-  cannot compute an altitude or a transit time; the keys it
-  emits are pinned to an allow-list by ``tests/test_flows_progress.py`` (a
-  mosaic's by ``tests/test_flows_progress_mosaic.py``, which also moves the
-  site and checks that no number in the answer moves with it, the #19 way).
+  and a viewer can read it. This function takes no site and no config and
+  reads no clock of its own, and the one clock it is handed (``now``, below)
+  only keys a night, so it cannot compute an altitude or a transit time; the
+  keys it emits are pinned to an allow-list by
+  ``tests/test_flows_progress.py`` (a mosaic's by
+  ``tests/test_flows_progress_mosaic.py``, which also moves the site and
+  checks that no number in the answer moves with it, the #19 way).
   The one outside answer it reads is the catalogue's canonical IDENTITY of a
   TARGET known only by its name (``tonight.resolve_target``, #229), which is
   a catalogue constant ("M31", "Jupiter"). The lookup computes a position as
@@ -72,8 +73,8 @@ here is a number an operator acts on:
   first reached the target, a moment its altitude at the site decides.
 * CONTINUE'S NIGHT COMES FROM THE ROUTE THAT HAS THE CLOCK (#511, H4). The
   route adds ``continue_night`` (``continue_night`` below) with the clock it
-  reads and hands in, never one read here, so ``flow_progress`` itself still
-  takes none. It is a small count keyed by ``events.night_key``, local noon
+  reads and hands in, never one read here, so ``flow_progress`` reads none
+  of its own. It is a small count keyed by ``events.night_key``, local noon
   to local noon in the SERVER'S zone: the site is never asked, so moving it
   moves nothing (the route's #19 test moves the site with the key valued).
 * A DORMANT SESSION'S STANDING SET-ASIDE PANELS ARE LISTED ON ITS MOSAIC
@@ -101,6 +102,15 @@ here is a number an operator acts on:
   the record's reason (free text a viewer must not read) and never a time. The
   key is absent where it is not true, as ``locked_angle`` is, so every answer
   without one is the answer before.
+* A NIGHT THAT NEVER REACHED THE PANEL IS NOT A NIGHT IT WAS SPARED (#942,
+  #970). A run that has started is a night in the session before any record
+  of it exists, and a night that ran but clouded out before the panel's turn
+  never gets one, so the streak used to end at either and the flag dropped
+  out. The session steps over a night that holds nothing of the panel, no
+  set-aside record and no frame (``Session.set_aside_streak``), so neither
+  extends the count nor ends it, and the answer needs no clock for it: the
+  group driver's own read (``earlier_starved_nights``) is the same walk, so
+  the card and the driver agree.
 
 Pure otherwise: no devices, no store, and no clock or config of its own.
 """
@@ -203,7 +213,9 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
 
     ``starved`` is present only on a panel set aside whole on
     ``STARVED_AFTER_NIGHTS`` or more nights running (``_starved``): ``nights``,
-    how many, counting tonight once its run has started, and ``kind``,
+    how many, counting tonight once the panel is set aside on it (until
+    then the nights before it, #942) and not counting a night the session
+    ran that never reached the panel (#970), and ``kind``,
     "centring", "guide_start" or "deferred". Never the record's reason.
 
     ``now`` (#727) is the clock the ROUTE hands in, as it does for
@@ -517,6 +529,11 @@ def _starved(session: "Session | None",
     streak starts again. A streak of fewer nights is no answer at all, so
     every panel short of the threshold, and every answer for a session that
     never set one aside, is exactly what it was before.
+
+    A night the session ran that never reached the panel (tonight, before
+    its record lands, or one that clouded out first) is stepped over by the
+    streak, so it neither adds to the count nor ends it (#942, #970). See
+    ``Session.set_aside_streak``.
 
     WORDS AND A COUNT ONLY, as ``_set_aside_tonight`` is: ``kind`` is one of
     the closed set ``STARVING_KINDS``, so no free text can travel in it, and

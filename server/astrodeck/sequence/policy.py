@@ -199,8 +199,9 @@ class RunPolicy:
         guider's arcsec figure when the shutter closed, or None when it is not
         known in arcsec. A low RMS beside a rejection points at focus, a high
         one at the mount, and the reader decides; the statistic still cannot.
-        The fraction sentence is worded to fit the 137-character humanizer
-        limit with a 400-mark count and a five-digit RMS.
+        The fraction sentence is worded to fit the 137-character cut the
+        humanizer made until #792 (it keeps whole sentences up to 400 now),
+        with a 400-mark count and a five-digit RMS.
         """
         if self.max_eccentricity <= 0 or not isinstance(info, dict):
             return None

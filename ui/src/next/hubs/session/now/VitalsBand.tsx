@@ -36,6 +36,7 @@ import { useEffect, useState, type JSX } from "react";
 
 import { fmtClock, fmtCountdown, fmtDuration, GUIDE_STALE_S, stallLevel } from "../../../../lib/eta";
 import { warmReadout } from "../../../../lib/cooling";
+import { activePlanTarget } from "../../../../lib/planTarget";
 import {
   useCamera, useGuideRms, useLiveness, useMeridian, useSeq, useStore,
 } from "../../../../store";
@@ -184,9 +185,12 @@ export function VitalsBand({ cells = 4 }: { cells?: 4 | 7 }): JSX.Element {
   }
 
   // ---- NEXT TARGET -------------------------------------------------------
+  // Absent, not guessed, while a calibration set the plan does not hold is
+  // exposing (`target_index` null, #941): no plan target is the one "after
+  // this one" is counted from.
   const targets = session?.plan?.targets ?? [];
-  const idx = seq.target_index ?? 0;
-  const next = targets[idx + 1];
+  const idx = activePlanTarget(seq);
+  const next = idx === null ? undefined : targets[idx + 1];
   if (next) {
     const start = next.schedule?.start_mode === "time" && next.schedule.start_time
       ? next.schedule.start_time : null;
