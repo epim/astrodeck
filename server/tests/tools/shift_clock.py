@@ -15,13 +15,14 @@ plugin does nothing at all.
 IT MUST INSTALL BEFORE conftest.py IMPORTS astrodeck, which is why this is a
 ``tryfirst`` ``pytest_load_initial_conftests`` hook and not ``pytest_configure``.
 A ``field(default_factory=time.time)`` binds the function object once, when its
-class body runs. ``SafetyReading.ts`` is one (devices/base.py). Swap
-``time.time`` after conftest has imported astrodeck and that default still
-reads the REAL clock while ``Hub.safety_reading()`` ages it against the
-shifted one: every reading looks stale, the run pauses UNSAFE and never takes
-a frame, and the replay reports a failure at every offset that looks exactly
-like a clock dependence and is not (#917). The first scratchpad version of
-this tool did that.
+class body runs. ``SafetyReading.ts`` was one (devices/base.py) until #946
+made it look the clock up per call, and any module that binds the real
+function at import still is. Swap ``time.time`` after conftest has imported
+astrodeck and such a default reads the REAL clock while ``Hub.safety_reading()``
+ages it against the shifted one: every reading looks stale, the run pauses
+UNSAFE and never takes a frame, and the replay reports a failure at every
+offset that looks exactly like a clock dependence and is not (#917). The first
+scratchpad version of this tool did that.
 
 What is shifted: ``time.time``, ``time.time_ns``, ``time.localtime`` /
 ``gmtime`` / ``strftime`` called without a time argument (C code that reads

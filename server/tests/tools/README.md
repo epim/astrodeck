@@ -60,10 +60,12 @@ Remove-Item Env:ASTRODECK_SHIFT_CLOCK_S, Env:PYTHONPATH
 `shift_clock` swaps `time.time` in a `tryfirst` `pytest_load_initial_conftests`
 hook, before `conftest.py` imports astrodeck. That order is the point. A
 `field(default_factory=time.time)` binds the function object when its class
-body runs. `SafetyReading.ts` (`devices/base.py`) is one. A plugin that swaps
-the clock in `pytest_configure` runs after conftest has imported astrodeck, so
-that default still reads the real clock while `Hub.safety_reading()` ages the
-stamp against the shifted one. Every reading then looks stale, the run pauses
+body runs. `SafetyReading.ts` (`devices/base.py`) was one until #946 made it
+look the clock up per call, and any module that binds the real function at
+import still is. A plugin that swaps the clock in `pytest_configure` runs
+after conftest has imported astrodeck, so such a default still reads the real
+clock while `Hub.safety_reading()` ages the stamp against the shifted one.
+Every reading then looks stale, the run pauses
 `UNSAFE: safety read stale/unavailable` and never takes a frame, and the
 replay fails at all eight offsets for a reason that has nothing to do with the
 hour (#917). The first scratchpad version of this tool did exactly that.

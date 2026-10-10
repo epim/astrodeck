@@ -26,6 +26,7 @@ sit tonight.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import time
 
 import pytest
@@ -87,13 +88,25 @@ def test_target_own_window_pure_function():
     window dict from nothing."""
     site = {"latitude": 35.0, "longitude": -110.0, "elevation_m": 1200.0,
            "is_default": False}
-    now = time.time()
 
-    window = target_own_window(5.5, 20.0, site=site, min_altitude_deg=30.0,
-                               now=now)
-    assert window is not None
-    assert window["start_unix"] <= window["end_unix"]
-    assert window["mean_alt"] >= 30.0
+    # One pinned instant in each season, so the answer owes nothing to the
+    # date the suite happens to run (a past year, so astropy needs no
+    # predicted Earth rotation for it). The target is near the pole: at the
+    # synthetic site (lat 35) it stays between 30 and 40 deg altitude all
+    # night, all year, so it clears the 20 deg floor for the whole of every
+    # night's astronomical dark. The equatorial target this test first used
+    # (RA 5.5 h, Dec +20) has no window at all from late April to mid August,
+    # and the test failed by the date it ran, not by the code (#925).
+    seasons = [dt.datetime(2025, month, 15, 18, tzinfo=dt.timezone.utc)
+               for month in (3, 6, 9, 12)]
+    for when in seasons:
+        window = target_own_window(5.5, 85.0, site=site, min_altitude_deg=20.0,
+                                   now=when.timestamp())
+        assert window is not None, f"no window on {when.date()}"
+        assert window["start_unix"] <= window["end_unix"]
+        assert window["mean_alt"] >= 20.0
+
+    now = seasons[0].timestamp()
 
     # A floor this target can never clear in the dark -> None, never a crash.
     assert target_own_window(5.5, -85.0, site=site, min_altitude_deg=60.0,
