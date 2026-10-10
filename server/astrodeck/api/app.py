@@ -4240,8 +4240,12 @@ def create_app(*, bind_host: str | None = None,
                                     "POST {alt, az, ahead_s} asks about a "
                                     "picked point")
         try:
+            # The rig's own latch, so a mount that has not been told where it
+            # is (it then reports its HOME position) gets no sky read along
+            # that reading (#912, #144).
             return await cloudmap_service.telescope_payload(
-                hub.devices.get("telescope"), ahead_s=ahead_s)
+                hub.devices.get("telescope"), ahead_s=ahead_s,
+                position_known=rig_position_known(hub))
         except ValueError as exc:
             raise _cloudmap_400(exc) from exc
 

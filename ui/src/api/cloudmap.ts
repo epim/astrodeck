@@ -65,7 +65,8 @@ export interface CloudmapAt {
   /** "mask_only" | "forecast" | "no_data" | "no_pointing" -- what the number
    *  is based on. "no_data" is what you get before two granules exist,
    *  because motion needs a pair to correlate; "no_pointing" is the telescope
-   *  answer with no mount, or a mount below the horizon. */
+   *  answer with no mount, a mount that does not know where it points
+   *  (`position_known` false, #912), or a mount below the horizon. */
   basis: string;
   /** The server's sentence about the basis, e.g. why there is no pointing. */
   reason?: string;
