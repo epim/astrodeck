@@ -7304,8 +7304,11 @@ def create_app(*, bind_host: str | None = None,
         setting time, not one value computed from a clock and the site: a
         key-name filter cannot withhold a value a route computes and names
         itself (#19), so the only safe answer is never to compute one.
-        ``flow_progress`` takes no site, clock or config, and the keys it
-        emits are held to an allow-list at the wire by
+        ``flow_progress`` takes no site and no config and reads no clock of
+        its own; the one ``now`` it is handed is this route's request clock,
+        and it only keys a night (``events.night_key``, for ``continue_night``
+        and a dormant session's ``set_aside`` list), never an altitude or a
+        transit. The keys it emits are held to an allow-list at the wire by
         tests/test_flows_progress_route.py, with the session's ``armed`` and
         ``plan_saved_ts`` (S7, #473): a status and a flag, and the moment an
         operator pressed Save, none of them from the site. Its ``nights``
@@ -7564,10 +7567,11 @@ def create_app(*, bind_host: str | None = None,
             hop_cost_s=rig.hop_cost_s,
             rig=rig,
             # Tonight reads the progress answer's blocks and never its
-            # session, and the clock handed in moves one thing it reads: the
-            # night a panel's `starved` count leaves out while that night's
-            # run has set nothing aside yet (#942), so the Campaign says what
-            # the progress card says.
+            # session. The payload takes the request's clock, which keys the
+            # night of CONTINUE and of a dormant session's set-aside list,
+            # and none of what Tonight reads moves with it: a panel's
+            # `starved` count is the ledger's alone (#970), so the Campaign
+            # says what the progress card says.
             progress=lambda: _flow_progress_payload(rec, flow_id, can_cool,
                                                     rig, time.time()))
 

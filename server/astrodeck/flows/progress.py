@@ -57,12 +57,13 @@ here is a number an operator acts on:
   absent when there is no lock, so every answer without one is the answer
   S1 gave.
 * NOTHING DERIVED FROM THE SITE (spec 6.9). The route is ``CAP_VIEW_STATUS``
-  and a viewer can read it. This function takes no site and no config, and
-  the one clock it can be handed (``now``, below) only keys a night, so it
-  cannot compute an altitude or a transit time; the keys it
-  emits are pinned to an allow-list by ``tests/test_flows_progress.py`` (a
-  mosaic's by ``tests/test_flows_progress_mosaic.py``, which also moves the
-  site and checks that no number in the answer moves with it, the #19 way).
+  and a viewer can read it. This function takes no site and no config and
+  reads no clock of its own, and the one clock it is handed (``now``, below)
+  only keys a night, so it cannot compute an altitude or a transit time; the
+  keys it emits are pinned to an allow-list by
+  ``tests/test_flows_progress.py`` (a mosaic's by
+  ``tests/test_flows_progress_mosaic.py``, which also moves the site and
+  checks that no number in the answer moves with it, the #19 way).
   The one outside answer it reads is the catalogue's canonical IDENTITY of a
   TARGET known only by its name (``tonight.resolve_target``, #229), which is
   a catalogue constant ("M31", "Jupiter"). The lookup computes a position as
@@ -72,8 +73,8 @@ here is a number an operator acts on:
   first reached the target, a moment its altitude at the site decides.
 * CONTINUE'S NIGHT COMES FROM THE ROUTE THAT HAS THE CLOCK (#511, H4). The
   route adds ``continue_night`` (``continue_night`` below) with the clock it
-  reads and hands in, never one read here, so ``flow_progress`` itself still
-  takes none. It is a small count keyed by ``events.night_key``, local noon
+  reads and hands in, never one read here, so ``flow_progress`` reads none
+  of its own. It is a small count keyed by ``events.night_key``, local noon
   to local noon in the SERVER'S zone: the site is never asked, so moving it
   moves nothing (the route's #19 test moves the site with the key valued).
 * A DORMANT SESSION'S STANDING SET-ASIDE PANELS ARE LISTED ON ITS MOSAIC
@@ -101,16 +102,15 @@ here is a number an operator acts on:
   the record's reason (free text a viewer must not read) and never a time. The
   key is absent where it is not true, as ``locked_angle`` is, so every answer
   without one is the answer before.
-* THE NIGHT STILL OPEN IS NOT A NIGHT THE PANEL WAS SPARED (#942). A run
-  that has started is a night in the session before any record of it exists,
-  so the streak used to end at it and the flag dropped out as the run began.
-  ``now``, the clock the route hands in, names the open night
-  (``events.night_key``, the server's local noon-to-noon date, as for
-  ``continue_night``), and the session leaves that night out of the streak
-  while it holds nothing of the panel (``Session.set_aside_streak``,
-  ``open_night``). A night that has closed without reaching the panel is not
-  left out, so it ends the streak here as it does for the group driver. With
-  no ``now`` nothing is left out: the answer before #942.
+* A NIGHT THAT NEVER REACHED THE PANEL IS NOT A NIGHT IT WAS SPARED (#942,
+  #970). A run that has started is a night in the session before any record
+  of it exists, and a night that ran but clouded out before the panel's turn
+  never gets one, so the streak used to end at either and the flag dropped
+  out. The session steps over a night that holds nothing of the panel, no
+  set-aside record and no frame (``Session.set_aside_streak``), so neither
+  extends the count nor ends it, and the answer needs no clock for it: the
+  group driver's own read (``earlier_starved_nights``) is the same walk, so
+  the card and the driver agree.
 
 Pure otherwise: no devices, no store, and no clock or config of its own.
 """
@@ -214,8 +214,8 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     ``starved`` is present only on a panel set aside whole on
     ``STARVED_AFTER_NIGHTS`` or more nights running (``_starved``): ``nights``,
     how many, counting tonight once the panel is set aside on it (until
-    then the nights before it, #942, when ``now`` is given and names the
-    night the session's newest run belongs to), and ``kind``,
+    then the nights before it, #942) and not counting a night the session
+    ran that never reached the panel (#970), and ``kind``,
     "centring", "guide_start" or "deferred". Never the record's reason.
 
     ``now`` (#727) is the clock the ROUTE hands in, as it does for
@@ -233,10 +233,7 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     still expire tonight, here too. Absent where there is none, as
     ``locked_angle`` is absent where there is no lock, so every answer
     without one, and every answer asked with no ``now``, is the answer
-    before #727. ``now`` also names the night a panel's ``starved`` count
-    leaves out while the run for it has started and set nothing aside (see
-    ``starved`` above, #942), on any session; with none that count is the
-    one before #942.
+    before #727.
 
     ``orphaned`` counts every one of the session's frames whose step id is in
     no step of ``plan``, whatever the count mode, and how many distinct step
@@ -252,9 +249,6 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
             "flow progress needs the flow id: plan targets are found by the "
             "ids the flow compiled to, and with no flow id none can be found")
     counts = _counts(session)
-    # The night still open (#942), from the clock the route handed in: None
-    # with no clock, and then no night is left out of a starved count.
-    open_night = night_key(now) if now is not None else None
     by_id = {t.id: t for t in plan.targets}
     members_used: dict[str, set[str]] = {}
     blocks: list[dict] = []
@@ -268,8 +262,7 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
             # whatever its node id; `to_plan` gives an id-less entry uuid4s,
             # which `_mosaic` cannot find and `_refuse_a_foreign_plan` skips.
             block = _mosaic(plan, entry, counts, session, flow_id=flow_id,
-                            node_id=node_id, name=name,
-                            open_night=open_night)
+                            node_id=node_id, name=name)
             block_of[node_id or f"#{index}"] = block
             blocks.append(block)
             continue
@@ -295,7 +288,7 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
         lock = _locked(session, target)
         if lock is not None:
             panel["locked_angle"] = lock
-        starved = _starved(session, target, open_night=open_night)
+        starved = _starved(session, target)
         if starved is not None:
             panel["starved"] = starved
         block["panels"].append(panel)
@@ -524,8 +517,8 @@ def _locked(session: "Session | None",
     return {"pa_deg": float(pa), "source": LOCK_SOURCE}
 
 
-def _starved(session: "Session | None", target: "Target | None", *,
-             open_night: str | None = None) -> dict | None:
+def _starved(session: "Session | None",
+             target: "Target | None") -> dict | None:
     """``{nights, kind}`` for a panel ``session`` has set aside whole, for a
     STARVING kind, on ``STARVED_AFTER_NIGHTS`` or more nights running, or
     None (#180 part A, backlog WP-131).
@@ -537,9 +530,9 @@ def _starved(session: "Session | None", target: "Target | None", *,
     every panel short of the threshold, and every answer for a session that
     never set one aside, is exactly what it was before.
 
-    ``open_night`` (#942) is the key of the night the caller's clock is in,
-    handed on to the streak so a run that has started and set nothing aside
-    yet does not end it; None leaves no night out. See
+    A night the session ran that never reached the panel (tonight, before
+    its record lands, or one that clouded out first) is stepped over by the
+    streak, so it neither adds to the count nor ends it (#942, #970). See
     ``Session.set_aside_streak``.
 
     WORDS AND A COUNT ONLY, as ``_set_aside_tonight`` is: ``kind`` is one of
@@ -548,7 +541,7 @@ def _starved(session: "Session | None", target: "Target | None", *,
     answer."""
     if session is None or target is None:
         return None
-    nights, kind = session.set_aside_streak(target.id, open_night=open_night)
+    nights, kind = session.set_aside_streak(target.id)
     if nights < STARVED_AFTER_NIGHTS or kind is None:
         return None
     return {"nights": nights, "kind": kind}
@@ -658,7 +651,7 @@ def _group(plan: "SequencePlan", entry: dict, *, flow_id: str,
 
 def _mosaic(plan: "SequencePlan", entry: dict, counts: dict[str, int],
             session: "Session | None", *, flow_id: str, node_id: str,
-            name: str, open_night: str | None = None) -> dict:
+            name: str) -> dict:
     """The block entry of a mosaic: its panels found through its plan group
     (``_group``), in the plan's order, and the panels it skipped.
 
@@ -688,7 +681,7 @@ def _mosaic(plan: "SequencePlan", entry: dict, counts: dict[str, int],
         lock = _locked(session, target)
         if lock is not None:
             panel["locked_angle"] = lock
-        starved = _starved(session, target, open_night=open_night)
+        starved = _starved(session, target)
         if starved is not None:
             panel["starved"] = starved
         block["panels"].append(panel)
