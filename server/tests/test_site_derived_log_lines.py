@@ -237,6 +237,7 @@ def test_an_unflagged_line_is_byte_identical_to_what_it_was(private_bus):
          "source": "sequence"},
     ]
     assert [r["data"] for r in private_bus.log_history] == got
+    private_bus.night_log.flush()               # the file is written off-thread
     text = NightLogWriter.path_for(NIGHT).read_text(encoding="utf-8")
     assert text == (
         '{"type":"log","data":{"level":"info","message":"2-1 first: sets '
@@ -268,6 +269,7 @@ def test_a_flagged_line_carries_the_flag_and_the_night_file_keeps_it(
     assert q.get_nowait().data == {"level": "info", "message": TIMED,
                                    "source": "sequence", "site_derived": True}
     assert private_bus.log_history[-1]["data"]["site_derived"] is True
+    private_bus.night_log.flush()               # the file is written off-thread
     text = NightLogWriter.path_for(NIGHT).read_text(encoding="utf-8")
     assert TIMED in text and '"site_derived":true' in text, (
         "the night log file keeps everything a line says (spec 6.9)")

@@ -116,7 +116,8 @@ from ..devices.base import (DeviceError, SyncRefused, SyncUnverified,
                             TRACKING_RATES, forget_rig_position_doubt,
                             position_known_for_motion, rig_position_known)
 from ..devices.nina import discover_nina
-from ..events import LOG_READ_MAX, bus, night_key
+from ..events import (LOG_READ_MAX, NIGHTLOG_EXIT_S, bus, flush_night_logs,
+                      night_key)
 from ..focus import run_autofocus
 from ..focus.coarse import run_coarse_focus
 from .. import hub as hub_module
@@ -620,6 +621,13 @@ async def _lifespan(app: "FastAPI"):
         try:
             from ..comhost.manager import get_manager
             get_manager().stop()
+        except Exception:
+            pass
+        # Last: let the night-log writer thread finish what is queued, so the
+        # lines this shutdown just logged are in the file (#878). Off the loop
+        # because it waits; bounded, so a stalled disk cannot hold the exit.
+        try:
+            await asyncio.to_thread(flush_night_logs, NIGHTLOG_EXIT_S)
         except Exception:
             pass
 

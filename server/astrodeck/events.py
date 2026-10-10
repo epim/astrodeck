@@ -49,16 +49,30 @@ loop it subscribed from, and code handed to ``asyncio.to_thread`` logs too
 line waits for something else to wake it, and asyncio's debug mode raises
 out of ``bus.log`` instead. So each subscription records its loop at
 ``subscribe``, and a publish made off that loop's thread hands the delivery
-to it with ``call_soon_threadsafe``. The ring and the night log are still
-appended at once, on the caller's thread, so the record never waits on a
-loop. With no loop running a subscriber is served inline, as before, and one
+to it with ``call_soon_threadsafe``. The ring is still appended at once, on the
+caller's thread, and the night-log line queued there, so the record never waits
+on a loop. With no loop running a subscriber is served inline, as before, and one
 whose loop has closed is skipped: its reader is gone.
+
+The night file is written by a thread of its own (#878). The write used to be
+open-append-close on the caller's thread, which for most callers is the event
+loop, so a stalled disk stalled every request and websocket for as long as each
+line's write took, and the stall's own warnings were published from the loop
+too. :meth:`NightLogWriter.append` now puts the line on a queue and one daemon
+thread writes the queue in order. Readers of the file, the server's shutdown
+and an exit hook drain it first (:func:`flush_night_logs`), so a clean stop
+loses nothing; a crash loses what was queued. A queue that fills behind a disk
+that never comes back drops the newest lines, counts them, and says how many
+once it has drained.
 """
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
+import queue
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -72,6 +86,17 @@ LOG_READ_MAX = 20000
 #: seconds the night-log writer stays paused after a failed write before it
 #: tries again. It retries for as long as the process lives.
 NIGHTLOG_RETRY_S = 60.0
+#: night-file lines that may wait for the writer thread (#878). Past this the
+#: newest line is not queued, is counted, and the writer owes the log one line
+#: saying how many (``take_notice``). It bounds memory across a disk that
+#: never comes back; it is not meant to be reached by a stall of minutes.
+NIGHTLOG_QUEUE_MAX = 10000
+#: seconds a reader of the night file waits for the writer to catch up first,
+#: so a line published a moment ago is in what it reads. It stops waiting
+#: after this, and reads what is on disk.
+NIGHTLOG_FLUSH_S = 3.0
+#: seconds the exit hook and the server's shutdown give the writer to drain.
+NIGHTLOG_EXIT_S = 10.0
 #: identical log lines that go through untouched before a storm is collapsed.
 STORM_PASS = 3
 #: the window a storm is measured over; a repeat this far apart is new news.
@@ -139,11 +164,86 @@ def night_key(ts: float | None = None) -> str:
                                                      else time.time()) - 12 * 3600))
 
 
+#: Night-file lines waiting for the writer thread, from every
+#: :class:`NightLogWriter`: ``(writer, event, night, path)``, or a
+#: :class:`threading.Event` that :func:`flush_night_logs` queued as a marker.
+#: A ``SimpleQueue`` because ``put`` is one C call that takes no Python frame
+#: and no lock the caller could be holding, which is what lets ``append`` be
+#: cheap and total on the 2026-09-06 RecursionError path (#878).
+_QUEUE: "queue.SimpleQueue[Any]" = queue.SimpleQueue()
+_WRITER_LOCK = threading.Lock()
+_WRITER: threading.Thread | None = None
+
+
+def _writer_loop() -> None:
+    """The one thread that touches the night files (#878): it takes lines off
+    the queue in the order they were queued and writes each. A stalled disk
+    stalls this thread and nothing else."""
+    while True:
+        item = _QUEUE.get()
+        try:
+            if isinstance(item, threading.Event):
+                item.set()                  # everything queued before it is written
+            else:
+                writer, ev, night, path = item
+                writer._write(ev, night, path)
+        except Exception:                   # noqa: BLE001 - this thread never dies
+            pass
+
+
+def _ensure_writer() -> None:
+    """Start the writer thread if it is not running. Started on the first
+    line rather than at import, so a process that never logs (``create-admin``)
+    never has it, and restarted if it ever died."""
+    global _WRITER
+    t = _WRITER
+    if t is not None and t.is_alive():
+        return
+    with _WRITER_LOCK:
+        if _WRITER is None or not _WRITER.is_alive():
+            _WRITER = threading.Thread(target=_writer_loop,
+                                       name="nightlog-writer", daemon=True)
+            _WRITER.start()
+
+
+def flush_night_logs(timeout: float = NIGHTLOG_FLUSH_S) -> bool:
+    """Wait until every night-file line queued before this call is written.
+
+    True when the queue drained, False when ``timeout`` ran out first (the
+    disk is stalled; the lines stay queued). Called off the event loop only:
+    it waits. The readers of the night file call it, the server's shutdown
+    and the exit hook call it, and a test calls it before it looks at a
+    file."""
+    if _WRITER is None and _QUEUE.empty():
+        return True                         # nothing was ever queued
+    marker = threading.Event()
+    try:
+        _QUEUE.put(marker)
+        _ensure_writer()
+    except Exception:                       # noqa: BLE001 - total by design
+        return False
+    return marker.wait(timeout)
+
+
+atexit.register(flush_night_logs, NIGHTLOG_EXIT_S)
+
+
 class NightLogWriter:
     """Append-only per-night JSONL log store under ``captures/logs``.
 
+    ``append`` only QUEUES the line (#878). One daemon thread, shared by every
+    writer in the process, takes the queue in order and does the disk work:
+    the ``mkdir`` on a night roll, the open-append-close, the prune. So a
+    disk that stalls stalls that thread, and ``bus.log`` on the event loop
+    does not wait for it. What a crash can lose is what is queued, and the
+    readers, the server's shutdown and the exit hook all drain it first
+    (:func:`flush_night_logs`).
+
     The directory is resolved LIVE off ``hub.CAPTURE_DIR`` (like the report
-    store) so a test that monkeypatches the capture root redirects the logs too.
+    store) so a test that monkeypatches the capture root redirects the logs
+    too, but at the moment the line is queued: a line goes to the root that
+    was current when it was published, not the one that is by the time the
+    thread gets to it.
     Every method is total: a failed write PAUSES persistence for
     ``NIGHTLOG_RETRY_S`` (``self.failed`` means "paused right now") rather than
     propagating into a ``bus.publish`` on the capture path — and rather than
@@ -160,6 +260,11 @@ class NightLogWriter:
         #: ``"pause"`` / ``"resume"`` owed to the log; the bus formats and
         #: publishes it, off the failing write's stack. See ``_pause``.
         self._notice: str | None = None
+        #: lines ``append`` did not queue because the queue was full, not yet
+        #: told to the log. Both of these are set from the writer thread or
+        #: the caller's, so they go through ``_lock``.
+        self._lost = 0
+        self._lock = threading.Lock()
         self._last_night: str | None = None
         self._pruned_for: str | None = None
 
@@ -178,46 +283,79 @@ class NightLogWriter:
     # -- write ---------------------------------------------------------------
 
     def append(self, ev: "Event") -> None:
-        """Persist one log event. Never raises.
+        """Queue one log event for the writer thread. Never raises, and never
+        waits on the disk (#878).
 
-        A failed write pauses the writer for ``NIGHTLOG_RETRY_S`` and then tries
-        again, indefinitely: a disk that is full at 22:13 usually is not at
-        23:13, and the night the writer gives up is the night the operator most
-        needs the file."""
+        The line is on the queue when this returns, not yet in the file;
+        :func:`flush_night_logs` is what waits for the file. A failed write
+        (on the writer thread, see ``_write``) pauses the writer for
+        ``NIGHTLOG_RETRY_S`` and then tries again, indefinitely: a disk that
+        is full at 22:13 usually is not at 23:13, and the night the writer
+        gives up is the night the operator most needs the file.
+
+        A full queue does not queue the line. It is counted, and
+        ``take_notice`` says how many once the writer has caught up."""
         if self.failed and _now() < self._retry_at:
             return                              # paused; the ring still has it
         try:
             night = night_key(ev.ts)
+            item = (self, ev, night, self.path_for(night))
+            if _QUEUE.qsize() >= NIGHTLOG_QUEUE_MAX:
+                with self._lock:
+                    self._lost += 1
+                return
+            _QUEUE.put(item)
+            _ensure_writer()
+        except Exception as exc:                # noqa: BLE001 - total by design
+            # A RecursionError arriving from the caller's stack, or a thread
+            # that would not start: pause, do not stop.
+            self._pause(exc)
+
+    def _write(self, ev: "Event", night: str, path: Path) -> None:
+        """Write one queued line. Runs on the writer thread only; never raises.
+
+        Everything the disk costs is here, in queue order: ``mkdir`` on a night
+        roll, the open-append-close, the prune. A night roll needs no flush of
+        its own, because the previous night's lines are earlier in the queue
+        and are already written when the first line of the new night is."""
+        if self.failed and _now() < self._retry_at:
+            return                              # paused since it was queued
+        try:
             rolled = night != self._last_night
             if rolled:
-                self.dir().mkdir(parents=True, exist_ok=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
                 self._last_night = night
-            with open(self.path_for(night), "a", encoding="utf-8") as fh:
+            with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(ev.to_json(), separators=(",", ":")) + "\n")
             if rolled:
                 # after the write, so tonight's file counts toward the retention
-                self._prune(night)
+                self._prune(night, path.parent)
         except Exception as exc:                # noqa: BLE001 - total by design
-            # Disk full / read-only / permission / a RecursionError arriving from
-            # the caller's stack: pause, do not stop.
+            # Disk full / read-only / permission: pause, do not stop.
             self._pause(exc)
             return
         if self.failed:
             self._resume()
 
+    def flush(self, timeout: float = NIGHTLOG_FLUSH_S) -> bool:
+        """Wait for the writer to catch up; see :func:`flush_night_logs`."""
+        return flush_night_logs(timeout)
+
     def _pause(self, exc: BaseException) -> None:
         """Record a failed write with the least possible work.
 
-        This runs inside the failing ``append``, which sits on the publish path
-        — and on 2026-09-06 that path was the bottom of a runaway
-        recursion in the sequence engine, which is where the RecursionError came
-        from. Anything that needs stack here (formatting, logging, a re-entrant
-        publish) can raise RecursionError *again out of the handler* and take the
-        publish down with it. So this does stores only, inside a guard, and the
-        notice line is formatted and published later by the bus, on the next
-        publish, at sane depth."""
+        A failed disk write is handled on the writer thread (``_write``); a
+        failure to queue the line at all is handled inside ``append``, which
+        sits on the publish path — and on 2026-09-06 that path was the bottom
+        of a runaway recursion in the sequence engine, which is where the
+        RecursionError came from. Anything that needs stack here (formatting,
+        logging, a re-entrant publish) can raise RecursionError *again out of
+        the handler* and take the publish down with it. So this does stores
+        only, inside a guard, and the notice line is formatted and published
+        later by the bus, on the next publish, at sane depth."""
         self.failed = True                      # a store: cannot itself fail
-        self._notice = "pause"
+        with self._lock:
+            self._notice = "pause"
         self._last_night = None                 # so a retry re-does the mkdir
         try:
             now = _now()
@@ -231,14 +369,33 @@ class NightLogWriter:
         """A write worked again after a pause."""
         self.failed = False
         self._paused_for = max(0.0, _now() - self._paused_at)
-        self._notice = "resume"
+        with self._lock:
+            self._notice = "resume"
 
     def take_notice(self) -> tuple[str, str] | None:
         """The one ``(level, message)`` this writer owes the log, or ``None``.
 
         Formatted here rather than in ``append`` because the caller is the bus,
-        at ordinary stack depth, and not inside the failing write."""
-        tag, self._notice = self._notice, None
+        at ordinary stack depth, and not inside the failing write.
+
+        A count of lines ``append`` found no room for is owed too, and is
+        told only once the queue has drained to half: the notice is itself a
+        log line, so told into a full queue it would be lost, be counted,
+        and be told again on the next publish, for as long as the disk
+        stalled."""
+        if self._notice is None and not self._lost:
+            return None
+        with self._lock:
+            tag, self._notice = self._notice, None
+            lost = 0
+            if (tag is None and self._lost
+                    and _QUEUE.qsize() <= NIGHTLOG_QUEUE_MAX // 2):
+                lost, self._lost = self._lost, 0
+        if lost:
+            return ("warning",
+                    f"night log file writer fell behind: {lost} lines were "
+                    "not written to the night file; the live log still has "
+                    "the recent ones")
         if tag == "pause":
             return ("warning",
                     f"night log file writer paused: "
@@ -249,13 +406,14 @@ class NightLogWriter:
                             f"{self._paused_for:.0f} s")
         return None
 
-    def _prune(self, current: str) -> None:
-        """Keep the newest ``keep_nights`` files (current one included)."""
+    def _prune(self, current: str, logs: Path | None = None) -> None:
+        """Keep the newest ``keep_nights`` files (current one included).
+        ``logs`` is the directory the line was written to."""
         if self._pruned_for == current:
             return
         self._pruned_for = current
         try:
-            files = sorted(self.dir().glob("*.jsonl"))
+            files = sorted((logs or self.dir()).glob("*.jsonl"))
             for old in files[:max(0, len(files) - self.keep_nights)]:
                 old.unlink(missing_ok=True)
         except OSError:
@@ -275,7 +433,11 @@ class NightLogWriter:
         size has read that moment even with every row withheld. The count of
         the unflagged lines grows only when a line the reader may see lands.
         A past night's size is left as the file's: it no longer moves, so it
-        dates nothing."""
+        dates nothing.
+
+        Waits first for the writer to catch up (:func:`flush_night_logs`), so
+        a line published a moment ago is counted; so does :meth:`read`."""
+        self.flush()
         out: list[dict[str, Any]] = []
         try:
             for p in self.dir().glob("*.jsonl"):
@@ -325,6 +487,7 @@ class NightLogWriter:
         rows are the newest N the reader may see: sliced first, a viewer
         polling ``limit=1`` would see the answer go empty at the moment a
         flagged line landed, which is the moment the flag withholds."""
+        self.flush()
         rows: list[dict[str, Any]] = []
         try:
             with open(self.path_for(night), "r", encoding="utf-8") as fh:
@@ -524,9 +687,11 @@ class EventBus:
     def _deliver(self, ev: Event) -> None:
         """Ring, disk, subscribers — the fan-out, past the storm limiter.
 
-        The ring and the night file are written here, on the caller's
-        thread, whichever it is: the record of a line never waits on a loop
-        (#480). Only the subscribers' queues belong to a loop."""
+        The ring is written here, and the night-file line queued, on the
+        caller's thread, whichever it is: the record of a line never waits on
+        a loop (#480). The file itself is written by the writer thread, so the
+        loop does not wait on the disk either (#878). Only the subscribers'
+        queues belong to a loop."""
         if ev.type == "log":
             self._history.append(ev)
             if not is_site_derived(ev.to_json()):

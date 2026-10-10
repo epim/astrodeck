@@ -212,6 +212,7 @@ def test_old_nights_are_pruned(tmp_path, monkeypatch):
     bus = EventBus()
     bus.night_log.keep_nights = 3
     bus.log("info", "tonight", "hub")
+    bus.night_log.flush()                       # the prune runs off-thread now
     kept = sorted(p.stem for p in d.glob("*.jsonl"))
     assert len(kept) == 3
     assert night_key() in kept

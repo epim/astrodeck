@@ -1259,6 +1259,12 @@ def _never_touch_the_real_captures():
         try:
             with pytest.MonkeyPatch.context() as mp:
                 _point_the_capture_root_at(mp, Path(d) / "session")
+                # The night-log writer thread (#878) starts on the first
+                # line a process logs. Start it here, so a test that counts
+                # threads sees the same count whether or not it is the first
+                # on its worker to log.
+                from astrodeck import events
+                events._ensure_writer()
                 yield
         finally:
             _CaptureRoots.parent = None
@@ -1293,6 +1299,11 @@ def _captures_are_the_tests_own(_never_touch_the_real_captures, monkeypatch):
     # a writer a test left stuck must not hang the suite.
     from astrodeck.devices import fingerprint
     fingerprint.wait_idle(10.0)
+    # A night-log line is queued for the writer thread (#878). Let what this
+    # test published land before its root is removed, or it fails to open a
+    # file in a directory that is gone and pauses a writer for nothing.
+    from astrodeck import events
+    events.flush_night_logs()
     shutil.rmtree(root, ignore_errors=True)
 
 
