@@ -836,7 +836,10 @@ export function HealthStrip({
           className="flex items-center gap-2 border border-bad/60 bg-bad/10 px-3 py-2 text-xs text-bad"
         >
           <Icon name={iss.icon} size={14} className="shrink-0" />
-          <span className="font-semibold">{iss.text}</span>
+          <span className="min-w-0">
+            <span className="font-semibold">{iss.text}</span>
+            {iss.detail && <span className="block font-normal text-ink">{iss.detail}</span>}
+          </span>
         </div>
       ))}
       {notices.length > 0 && (
@@ -847,7 +850,7 @@ export function HealthStrip({
               className="inline-flex items-center gap-1.5 border border-warn/50 bg-warn/10 px-2 py-1 text-[11px] text-warn"
             >
               <Icon name={iss.icon} size={11} className="shrink-0" />
-              {iss.text}
+              {iss.detail ? `${iss.text} ${iss.detail}` : iss.text}
             </span>
           ))}
         </div>

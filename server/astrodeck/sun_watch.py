@@ -86,8 +86,11 @@ Sun is above the dawn-park threshold it says one error line in fixed words
 (cover the tube; Trust position only for a tube really at home, else bring
 it home by eye with a pad key first), repeated on the blind cadence, and
 publishes the state beside the blind fields; below it, one info hold in the
-same safe order. Trust position clears the latch and the net resumes on the next
-tick (`SunWatch._position_unknown_tick`).
+same safe order. With no site set the Sun cannot be judged at all (#895), so
+the net cannot tell day from night and takes the fail-safe answer: a warning
+in the same safe order on the same cadence, never the quiet night hold.
+Trust position clears the latch and the net resumes on the next tick
+(`SunWatch._position_unknown_tick`).
 
 A telescope object that does not exist at all (``tel is None``) is a rig that
 was never connected, or was deliberately disconnected. That stays a latched info
@@ -202,12 +205,27 @@ POSITION_UNKNOWN_DAYLIGHT = (
     f"{POSITION_UNKNOWN_SAFE_ORDER} It will not park: a park is aimed from "
     f"that position")
 #: The info hold while the position is unknown and the Sun is below the
-#: dawn-park threshold (or there is no site to compute it for), said through
-#: ``_hold`` with its "sun watch held off: " prefix (#888 round 3). The same
-#: safe order, never a goto: 20 + 27 + 86 = 133 characters to the end of the
-#: action.
+#: dawn-park threshold, said through ``_hold`` with its "sun watch held off: "
+#: prefix (#888 round 3). The same safe order, never a goto: 20 + 27 + 86 = 133
+#: characters to the end of the action.
 POSITION_UNKNOWN_NIGHT_HOLD = (
     f"position unknown, no park: {POSITION_UNKNOWN_SAFE_ORDER}")
+#: The warning while the position is unknown and this net CANNOT JUDGE THE SUN:
+#: no site is set, so it cannot tell day from night (#895; the helper's other
+#: "cannot tell", a Sun that will not compute, lands here too, so the cause is
+#: said as both). Not knowing is not night: the fail-safe answer is the daylight
+#: one, so it covers the tube as the daylight line does, at warning level (the
+#: AlertDispatcher routes warning and error) on the blind cadence. Fixed words,
+#: no figure: with no site there is none to carry. 39 + 86 = 125 characters to
+#: the end of the action, inside the UI's 137-character cut. The cause and
+#: the remedy (set the site) follow it, so they are in the paged message and the
+#: durable log but not in the UI's cut of the line.
+POSITION_UNKNOWN_SUN_UNKNOWN = (
+    f"sun watch: position unknown, cover it; {POSITION_UNKNOWN_SAFE_ORDER} "
+    f"It cannot judge the Sun (no site set, or the Sun cannot be computed), "
+    f"so it cannot tell day from night. It will not park: a park is aimed "
+    f"from that position. If no site is set, set one and the net can judge "
+    f"the Sun")
 
 
 def sun_watch_disabled() -> bool:
@@ -329,10 +347,14 @@ class SunWatch:
         # seen the rig's position unknown (``position_known_for_motion``
         # False), or None. While it is set the net parks nothing and changes
         # no tracking, and ``_unknown_daylight_ticks`` counts the ticks the
-        # Sun has been above the dawn-park threshold, for the error line's
-        # cadence (`_position_unknown_tick`).
+        # Sun has been above the dawn-park threshold or could not be judged
+        # (no site), for the alert line's cadence (`_position_unknown_tick`).
+        # ``_unknown_judged`` is whether the last latched tick could judge the
+        # Sun at all: the count belongs to ONE of the two lines (the no-site
+        # warning or the daylight error), so it restarts when that changes.
         self._unknown_since: float | None = None
         self._unknown_daylight_ticks = 0
+        self._unknown_judged: bool | None = None
         # The other park paths reach this net through the hub, so hub.py and
         # api/app.py carry no wiring for it: the attach-yourself shape
         # ``DewController`` uses for ``hub.dew_controller``. Total: a hub that
@@ -1059,25 +1081,52 @@ class SunWatch:
         the AlertDispatcher routes warning and error logs to every configured
         sink, the channel the blind-in-daylight line pages through. The Sun
         going back below the threshold resets the count, so the next dawn
-        says it at once. Below the threshold, or with no site to compute the
-        Sun for, one info hold says why the net stands down. Published on
-        ``/api/safety/state`` (``state()``), times and booleans only.
-        Synchronous, touches no device, never raises."""
+        says it at once. Below the threshold one info hold says why the net
+        stands down.
+
+        WITH NO SITE THE SUN CANNOT BE JUDGED (#895), and a net that cannot
+        tell day from night must not resolve the doubt to night: a mount whose
+        position is unknown in full daylight on a rig with no site (a first run,
+        a reset) got one info line, which the AlertDispatcher does not route,
+        and never a page. It takes the daylight answer instead, on the same
+        cadence, one level down because it does not know the Sun is up:
+        ``POSITION_UNKNOWN_SUN_UNKNOWN`` at warning level, which the dispatcher
+        does route. There is no figure in it and none to give. The cadence
+        count is shared with the daylight error, so it restarts whenever the
+        net goes from unable to able to judge the Sun, or back (a site set or
+        lost mid-latch): the daylight error is said on the first tick the Sun
+        is known to be up, not when the warning's cadence next comes round.
+
+        Published on ``/api/safety/state`` and the status frame (``state()``),
+        times and booleans only. Synchronous, touches no device, never raises."""
         if self._unknown_since is None:
             self._unknown_since = self._clock()
             self._unknown_daylight_ticks = 0
+            self._unknown_judged = None
         self._drop_blind()
         self._last_good = None
         self._acted = False
         verdict = self._sun_against_dawn_threshold(cfg)
-        if verdict is None or not verdict[0]:
+        # The no-site warning and the daylight error share ONE count, so a
+        # change of what the net can judge (a site set or lost mid-latch)
+        # starts the new line at once instead of waiting out the other's
+        # cadence: the daylight error is the page, and it must not be late
+        # because the warning had been counting.
+        judged = verdict is not None
+        if judged != self._unknown_judged:
+            self._unknown_judged = judged
+            self._unknown_daylight_ticks = 0
+        if verdict is not None and not verdict[0]:
             self._unknown_daylight_ticks = 0
             self._hold(POSITION_UNKNOWN_NIGHT_HOLD, None)
             return
         n = self._unknown_daylight_ticks
         self._unknown_daylight_ticks = n + 1
         if n % BLIND_LOG_EVERY == 0:
-            bus.log("error", POSITION_UNKNOWN_DAYLIGHT, "safety")
+            if verdict is None:
+                bus.log("warning", POSITION_UNKNOWN_SUN_UNKNOWN, "safety")
+            else:
+                bus.log("error", POSITION_UNKNOWN_DAYLIGHT, "safety")
 
     def _latched_at_park(self, tel, cfg) -> bool:
         """The one gate, asked again at the park itself (#888, owner ruling
@@ -1096,6 +1145,7 @@ class SunWatch:
         position-unknown state, with no line (#888)."""
         self._unknown_since = None
         self._unknown_daylight_ticks = 0
+        self._unknown_judged = None
 
     def _clear_blind(self) -> None:
         """Forget a blindness streak once the position is readable again, so

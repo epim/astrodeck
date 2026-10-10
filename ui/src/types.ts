@@ -328,6 +328,12 @@ export interface RigStatus {
   //: directly. Absent on a server older than 2026-08-05 — treat as unknown, not
   //: as idle.
   busy_lanes?: string[];
+  //: The sun watch's own account of itself (#894), the net under a tube the Sun
+  //: is coming to. Server: `hub.py poll_status`, from `sun_watch.py state()`.
+  //: ABSENT on a server older than #894 or a hub with no net attached - treat as
+  //: unknown, never as "all clear" and never as "off". Times and booleans only,
+  //: so a viewer reads it: no pointing, no Sun, nothing derived from the site.
+  sun_watch?: SunWatchState;
   nina_link?: {
     active: boolean;
     last_ok_age_s: number | null;   // seconds since last successful NINA HTTP call
@@ -1855,6 +1861,27 @@ export interface SafetyState {
   connected: boolean;
   reading: SafetyReading | null;
   streak: number;                       // consecutive unsafe reads (engine streak)
+}
+
+/** What the sun watch publishes about itself (#137, #888, #894): `status.sun_watch`
+ *  on every status frame and `sun_watch` on `/api/safety/state`. Server:
+ *  `sun_watch.py SunWatch.state()`. Times are server epoch seconds. The two
+ *  states are exclusive on the server (the position latch ends a blind streak).
+ *
+ *  `blind`: the net cannot read the mount, so it cannot see the Sun closing on
+ *  the tube. `position_unknown`: the rig's position latch is set (the mount
+ *  reports its home position wherever the tube is), so the net judges no
+ *  approach and parks nothing, because a park is aimed from that position
+ *  (owner ruling 4B). `armed`: the net's task is alive; false when it is
+ *  switched off on the server. `last_position_at`: when any position was last
+ *  read, null if none since boot. */
+export interface SunWatchState {
+  blind: boolean;
+  blind_since: number | null;
+  position_unknown: boolean;
+  position_unknown_since: number | null;
+  last_position_at: number | null;
+  armed: boolean;
 }
 
 // ----------------------------------------------------------- per-target schedule
