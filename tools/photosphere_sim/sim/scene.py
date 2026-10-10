@@ -11,22 +11,27 @@ world (``x`` east, ``y`` north, ``z`` up). There are no geodetic coordinates
 anywhere in the simulator.
 
 What ``load`` checks is structure only: the schema version, that every object
-kind is one this simulator can intersect, that palette indices exist, and that
-every id a surface landmark or a test obstacle refers to is a real object. The
-scene's stylistic invariants (object colours are never palette colours and
-have a channel spread below 60) are asserted by the tests rather than here, so
-that they read as claims about the chart yard rather than as loader behaviour.
+kind is one this simulator can intersect, that palette indices exist, that an
+object's optional ``material`` is one the renderer can paint (SPEC-v2 13.4),
+and that every id a surface landmark or a test obstacle refers to is a real
+object. A material is a rendering detail: :mod:`sim.truth` never reads it,
+because it changes no geometry, so it is checked here and drawn only by
+``renderer/materials.js``. The scene's stylistic invariants (object colours
+are never palette colours and have a channel spread below 60) are asserted by
+the tests rather than here, so that they read as claims about the chart yard
+rather than as loader behaviour.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .palette import PALETTE
 
-__all__ = ["OBJECT_KINDS", "SCHEMA", "Scene", "load"]
+__all__ = ["MATERIAL_KINDS", "OBJECT_KINDS", "SCHEMA", "Scene", "load"]
 
 SCHEMA = 1
 
@@ -37,6 +42,25 @@ OBJECT_KINDS = {
     "cylinder": ("base", "radius", "height"),
     "sphere": ("centre", "radius"),
 }
+
+#: The material kinds ``renderer/materials.js`` can paint, with the keys each
+#: one requires. A material carries exactly these and nothing else, so a
+#: misspelt key is an error here rather than a default the renderer invents.
+#: Every key is required and none has a default, because a default would be a
+#: second copy of the recipe for the Python and JavaScript sides to keep equal.
+MATERIAL_KINDS = {
+    "flat": (),
+    "noise": ("seed", "cells", "octaves", "mod"),
+    "stripes": ("count", "duty", "colour2"),
+}
+
+#: ``cells * 2**(octaves - 1)``, the finest octave's lattice width, is capped
+#: so that one bad scene cannot ask the renderer for a lattice of billions.
+MAX_NOISE_COLUMNS = 4096
+
+#: A stripe narrower than two of the 256 texels it is drawn with is not a
+#: stripe, so ``count`` stops at half the texture width.
+MAX_STRIPES = 128
 
 
 @dataclass(frozen=True)
@@ -102,6 +126,8 @@ def load(path) -> Scene:
                 raise ValueError(f"{path}: {kind} {obj.get('id')!r} needs {key!r}")
         if len(obj.get("colour", ())) != 3:
             raise ValueError(f"{path}: object {obj.get('id')!r} needs an rgb colour")
+        if "material" in obj:
+            _check_material(path, obj)
 
     for lm in scene.landmarks:
         _check_palette(path, lm)
@@ -114,6 +140,74 @@ def load(path) -> Scene:
             raise ValueError(f"{path}: obstacle {obstacle.get('id')!r} is on no object")
 
     return scene
+
+
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_number(value) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
+def _check_material(path: Path, obj: dict) -> None:
+    """Check an object's optional ``material`` against SPEC-v2 13.4.
+
+    ``flat`` is the object's own colour and carries nothing. ``noise`` needs a
+    ``seed`` (an unsigned 32-bit integer, the lattice hash's range), ``cells``
+    (at least 2, the smallest lattice with a row to interpolate), ``octaves``
+    and ``mod``, the factor range ``[lo, hi]`` with ``0 <= lo <= hi``.
+    ``stripes`` needs a ``count``, a ``duty`` strictly between 0 and 1, and a
+    ``colour2`` of three 8-bit channels.
+
+    A plane can only be ``flat``: the renderer re-centres the ground on the
+    camera every frame so that it stays infinite, and a texture on it would
+    swim across the floor as the camera moved.
+    """
+    name = obj.get("id")
+    material = obj["material"]
+
+    def fail(why: str):
+        raise ValueError(f"{path}: object {name!r} material {why}")
+
+    if not isinstance(material, dict):
+        fail(f"must be an object, not {type(material).__name__}")
+    kind = material.get("kind")
+    if kind not in MATERIAL_KINDS:
+        fail(f"has kind {kind!r}, expected one of {sorted(MATERIAL_KINDS)}")
+    required = MATERIAL_KINDS[kind]
+    for key in required:
+        if key not in material:
+            fail(f"{kind} needs {key!r}")
+    unknown = sorted(set(material) - {"kind", *required})
+    if unknown:
+        fail(f"{kind} has unknown keys {unknown}")
+    if kind != "flat" and obj.get("kind") == "plane":
+        fail(f"{kind} is not allowed on a plane; the ground follows the camera")
+
+    if kind == "noise":
+        seed, cells, octaves, mod = (material[k] for k in required)
+        if not _is_int(seed) or not 0 <= seed <= 0xFFFFFFFF:
+            fail(f"noise seed {seed!r} must be an integer in 0..4294967295")
+        if not _is_int(cells) or cells < 2:
+            fail(f"noise cells {cells!r} must be an integer of at least 2")
+        if not _is_int(octaves) or octaves < 1:
+            fail(f"noise octaves {octaves!r} must be an integer of at least 1")
+        if cells * 2 ** (octaves - 1) > MAX_NOISE_COLUMNS:
+            fail(f"noise cells {cells} x 2^{octaves - 1} exceeds {MAX_NOISE_COLUMNS} columns")
+        if (not isinstance(mod, (list, tuple)) or len(mod) != 2
+                or not all(_is_number(m) for m in mod) or not 0 <= mod[0] <= mod[1]):
+            fail(f"noise mod {mod!r} must be [lo, hi] with 0 <= lo <= hi")
+    elif kind == "stripes":
+        count, duty, colour2 = (material[k] for k in required)
+        if not _is_int(count) or not 1 <= count <= MAX_STRIPES:
+            fail(f"stripes count {count!r} must be an integer in 1..{MAX_STRIPES}")
+        if not _is_number(duty) or not 0 < duty < 1:
+            fail(f"stripes duty {duty!r} must be a number strictly between 0 and 1")
+        if (not isinstance(colour2, (list, tuple)) or len(colour2) != 3
+                or not all(_is_int(c) and 0 <= c <= 255 for c in colour2)):
+            fail(f"stripes colour2 {colour2!r} must be three integers in 0..255")
 
 
 def _check_palette(path: Path, landmark: dict) -> None:

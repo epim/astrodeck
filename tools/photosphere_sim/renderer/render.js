@@ -33,6 +33,10 @@
  *   management is off, the output colour space is linear and textures carry
  *   no colour space, so an 8-bit colour goes in and the same 8-bit colour
  *   comes out. Nothing here may introduce a tone map or a transfer function.
+ * - An object's optional `material` (SPEC-v2 13.4) is a 256 x 256 texture on
+ *   that same unlit material, built by `renderer/materials.js`; the geometry
+ *   is untouched, so the truth never sees it, and an object with no `material`
+ *   is drawn exactly as it always was.
  *
  * Two choices the contract leaves open, made here and stated so a reader does
  * not have to infer them:
@@ -59,6 +63,10 @@ import {
   TEXTURE_WIDTH,
   backgroundTextureRGBA,
 } from './texture.js';
+
+// Object materials (SPEC-v2 13.4) are built in their own module for the same
+// reason: the texel recipe runs under plain node in tests/test_scene_materials.py.
+import { hasTexture, materialTexture } from './materials.js';
 
 const DEG = Math.PI / 180;
 
@@ -135,10 +143,36 @@ function backgroundTexture(sceneJson) {
   return texture;
 }
 
+/**
+ * An object's material: its colour, or its texture where `material` asks for
+ * one. A textured object is drawn with a white colour so that the texel is the
+ * whole answer. Objects with the same material and colour share one, which
+ * matters for a scene with fifty trees of one kind.
+ *
+ * A plane cannot be textured. The ground follows the camera (see the module
+ * docstring), so a texture on it would slide as the camera moved, and
+ * sim/scene.py refuses the combination; the check here is for a scene that
+ * reached the page some other way.
+ */
+function objectMaterial(obj, cache) {
+  if (!hasTexture(obj.material)) return basicMaterial(obj.colour);
+  if (obj.kind === 'plane') {
+    throw new Error(`object ${obj.id}: a ${obj.material.kind} material on a plane`);
+  }
+  const key = JSON.stringify([obj.material, obj.colour]);
+  if (!cache.has(key)) {
+    cache.set(key, basicMaterial([255, 255, 255], {
+      map: materialTexture(THREE, obj.material, obj.colour),
+    }));
+  }
+  return cache.get(key);
+}
+
 function buildObjects(sceneJson, scene) {
   const grounds = [];
+  const materials = new Map();
   for (const obj of sceneJson.objects || []) {
-    const material = basicMaterial(obj.colour);
+    const material = objectMaterial(obj, materials);
     let mesh;
     if (obj.kind === 'plane') {
       mesh = new THREE.Mesh(new THREE.PlaneGeometry(PLANE_SIZE, PLANE_SIZE), material);
