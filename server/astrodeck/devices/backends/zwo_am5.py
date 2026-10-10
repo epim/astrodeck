@@ -307,6 +307,24 @@ def _sync_reply(reply: str) -> tuple[str, str]:
     return "unrecognised", "an unrecognised reply"
 
 
+def _reply_words(reply: str | None) -> tuple[str, str]:
+    """``(code, words)`` for any other command's reply, to put in an error
+    text or onto an exception (#863).
+
+    The rule is ``_sync_reply``'s: the reply is quoted only when it has the
+    safe short shape of a code (``base.quotable_sync_reply``: ``0``, ``e6``),
+    because the code is the only part a firmware can be searched for. Anything
+    else is named by its SIZE, never its bytes. A desynchronised link can
+    hand an ack-class command a ``:GR#``-shaped answer, and at the home
+    position that is the local sidereal time, a site oracle (#140, #166); the
+    command itself is already in the text that carries these words."""
+    reply = reply or ""
+    code, words = _sync_reply(reply)
+    if code == "unrecognised":
+        words = f"{words} of {len(reply)} bytes"
+    return code, words
+
+
 def _moved_deg(a: tuple[float, float], b: tuple[float, float]) -> float:
     """How far apart two (RA hours, Dec degrees) reads are, in the units the
     ``SETTLE_DEG`` criterion uses: the larger of the RA step times 15 and the
@@ -880,7 +898,8 @@ class ZwoAm5Telescope(Telescope):
         if reply == lx200.REFUSED:
             raise await self._refused_error(what)
         if reply != lx200.ACK_OK:
-            raise DeviceError(f"{self.name}: {what} rejected (reply {reply!r})")
+            raise DeviceError(
+                f"{self.name}: {what} rejected ({_reply_words(reply)[1]})")
 
     async def _get(self, cmd: str) -> str:
         # NOT routed through _link_error, deliberately. The busiest caller of
@@ -889,6 +908,11 @@ class ZwoAm5Telescope(Telescope):
         # to decide whether to halt the mount. Rewriting its own reads into "the
         # mount is slewing" would be circular and would hide a link that died
         # mid-goto. Reads keep reporting what the wire did.
+        #
+        # ``{exc}`` is safe to interpolate only because the link says how many
+        # bytes of a timed-out reply arrived and never which (#863): a half
+        # ``:GR#`` reply is half a coordinate. tests/test_863_* drives a real
+        # SerialLink through this method to hold it to that.
         try:
             return await self._request(cmd, reply="hash")
         except LinkError as exc:
@@ -920,7 +944,8 @@ class ZwoAm5Telescope(Telescope):
             ident = await self._get("GVP")
             if "AM5" not in ident:
                 raise DeviceError(
-                    f"{self.name}: device on port is not an AM5 (GVP={ident!r})")
+                    f"{self.name}: device on port is not an AM5 "
+                    f"(:GVP# gave {_reply_words(ident)[1]})")
             self.firmware = await self._get("GV")
             for cmd in lx200.utc_init_cmds(_utcnow()):
                 await self._cmd_ack(cmd, f"clock init {cmd}")
@@ -1022,10 +1047,16 @@ class ZwoAm5Telescope(Telescope):
         try:
             ra = lx200.parse_ra(raw_ra)
             dec = lx200.parse_dec(raw_dec)
-        except ValueError as exc:   # mount garbage -> the driver's error type
+        except ValueError:          # mount garbage -> the driver's error type
+            ra = dec = None
+        if ra is None or dec is None:
+            # SIZES, NEVER THE REPLIES (#863). At home these two ARE the pole
+            # and the local sidereal time (#140, #166), and one of them may be
+            # a good read. Raised outside the handler, so the parser's own
+            # words (they quote the offending field) are not on the chain.
             raise DeviceError(
-                f"{self.name}: unparseable position reply "
-                f"(RA={raw_ra!r} Dec={raw_dec!r})") from exc
+                f"{self.name}: unparseable position reply (:GR# gave "
+                f"{len(raw_ra)} bytes, :GD# gave {len(raw_dec)} bytes)")
         self._last_pos = (ra, dec)
         # END OF A HALT WINDOW, measured rather than timed (see _note_halt).
         # Two reads taken after the halt, one SETTLE_DEG apart or less, are the
@@ -1541,12 +1572,15 @@ class ZwoAm5Telescope(Telescope):
         # is the only part a firmware can be searched for, and the class says
         # "the mount said no" so a caller need not read the prose to know it.
         if reply != "0":
-            words = _goto_refusal_words(reply)
+            # ``code`` is the reply only when it has the shape of a code
+            # (#863): it is an attribute a caller may print.
+            code, said = _reply_words(reply)
+            words = _goto_refusal_words(code)
             # The MESSAGE keeps the words and the code; the REASON is fixed
             # words only, because the resume ladder makes it a hold reason.
             raise GotoRefused(
-                f"{self.name}: goto rejected ({words}; reply {reply!r})",
-                code=reply, reason=_goto_refusal_reason(reply))
+                f"{self.name}: goto rejected ({words}; {said})",
+                code=code, reason=_goto_refusal_reason(code))
         self._slewing = True
         try:
             loop = asyncio.get_running_loop()
@@ -2086,8 +2120,9 @@ class ZwoAm5Telescope(Telescope):
                 if pulse.start_reply is not None:
                     if pulse.start_reply == lx200.REFUSED:
                         raise await self._refused_error(what_start)
-                    raise DeviceError(f"{self.name}: {what_start} rejected "
-                                      f"(reply {pulse.start_reply!r})")
+                    raise DeviceError(
+                        f"{self.name}: {what_start} rejected "
+                        f"({_reply_words(pulse.start_reply)[1]})")
                 exc = pulse.error
                 if isinstance(exc, LinkError):
                     raise self._link_error(what_start, exc) from exc
@@ -2110,14 +2145,15 @@ class ZwoAm5Telescope(Telescope):
                 # means tracking did not resume: the star now drifts east at
                 # sidereal rate, which the guider must be told rather than
                 # left to infer.
+                stop_said = _reply_words(pulse.stop_reply)[1]
                 bus.log("warning",
                         f"{self.name}: could not stop the pulse -- the mount "
-                        f"refused :{stop[0]}# (reply {pulse.stop_reply!r})",
+                        f"refused :{stop[0]}# ({stop_said})",
                         "mount")
                 if pulse.stop_reply == lx200.REFUSED:
                     raise await self._refused_error(what_stop)
                 raise DeviceError(f"{self.name}: {what_stop} rejected "
-                                  f"(reply {pulse.stop_reply!r})")
+                                  f"({stop_said})")
 
     async def is_slewing(self) -> bool:
         # DELIBERATELY not widened to include the halt window. "_halting" means
