@@ -260,6 +260,14 @@ const control = {
 };
 rmSync(controlDir, { recursive: true, force: true });
 const frameIds = new Set(pan.frames.map(f => f.frameId));
+/** S32 at the start of this pan. The phone is still for its first 0.5 s, its change-driven relative stream is silent and, the axis
+ *  mapping being unconfirmed, no quiet gyro vouches for it (S41), so the pose falls to the compass and the scan's first keyframe is
+ *  taken from it; when the pan starts the relative stream returns, that keyframe is withdrawn with its capture record and the
+ *  first keyframe is taken again (the tracker's S32 re-anchor). The keyframe event and the live snapshot the replay wrote at the
+ *  first commit stay in events.jsonl and live.jsonl: `firstKeptAt` is the event of the first keyframe that survived (its capture is
+ *  the first accepted one, read and committed on one frame) and `withdrawn` the keyframe events before it. */
+const firstKeptAt = replayed.events.findIndex(e => e.frame_id === replayed.captures.find(c => c.outcome === 'accepted')?.frame_id);
+const withdrawn = replayed.events.slice(0, firstKeptAt).filter(e => e.keyframe).length;
 
 await test('replay --scanner pano: panorama.png and horizon.json (v2) follow 13.7', () => {
   const { panorama, horizon } = replayed;
@@ -332,7 +340,9 @@ await test('replay --scanner pano: events.jsonl and captures.jsonl follow 13.7, 
     if (c.outcome === 'accepted') { assert.equal(c.kf, accepted); accepted++; }
   }
   assert.ok(accepted >= 15, `${accepted} keyframes over 100 degrees`);
-  assert.equal(events.filter(e => e.keyframe).length, accepted, 'a keyframe event per accepted capture');
+  assert.ok(firstKeptAt >= 0, 'the first accepted capture names a frame of the pan');
+  assert.equal(events.slice(firstKeptAt).filter(e => e.keyframe).length, accepted, 'a keyframe event per accepted capture');
+  assert.ok(withdrawn <= 1, `${withdrawn} keyframe events before the first that survived: only the first keyframe is ever withdrawn (S32)`);
 });
 
 await test('replay --scanner pano: summary.json, first_seen.bin, diagnostics.json and live.jsonl follow 13.7', () => {
@@ -378,13 +388,16 @@ await test('replay --scanner pano: summary.json, first_seen.bin, diagnostics.jso
     assert.equal(k.frame_id, accepted[i].frame_id);
     assert.equal(k.t_ms, capture.get(k.frame_id as string));
   });
-  assert.equal(live.length, kfs.length, 'one live snapshot per keyframe');
-  live.forEach((s, i) => {
+  // One live snapshot per keyframe that survived, after the snapshot a withdrawn first commit left (keyframe 0, S32).
+  assert.equal(live.length, withdrawn + kfs.length, 'one live snapshot per keyframe');
+  live.slice(0, withdrawn).forEach(s => assert.equal(s.kf, 0, 'the withdrawn commit was keyframe 0'));
+  const current = live.slice(withdrawn);
+  current.forEach((s, i) => {
     assert.deepEqual(Object.keys(s), ['t_ms', 'kf', 'painted_fraction', 'closure_state', 'focal_state']);
     assert.equal(s.kf, i);
     assert.equal(s.closure_state, 'open');
     assert.ok((s.painted_fraction as number) > 0 && (s.painted_fraction as number) <= 1);
-    if (i) assert.ok((s.painted_fraction as number) >= (live[i - 1].painted_fraction as number), 'the painted fraction grows');
+    if (i) assert.ok((s.painted_fraction as number) >= (current[i - 1].painted_fraction as number), 'the painted fraction grows');
   });
 });
 
@@ -812,9 +825,11 @@ await test('an encoder exception stops recording frames, not the scan (S24)', as
     const failedAt = r.captureAt.size ? pan.frames[2].tPresentMs : 0;
     assert.ok(rec.some(l => l.kind === 'motion' && (l.t_receive_ms as number) > failedAt + 1000), 'events are still recorded');
     assert.deepEqual(rec.slice(-2).map(l => l.kind), ['action', 'report']);
-    // After the failure, only the tracker reads back.
+    // After the failure, only the tracker reads back. A readback the log does not name is the first commit that the S32 re-anchor
+    // withdrew with its capture record (this pan starts with a pose from the compass): at most one, before the first keyframe kept.
     const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'waiting-sharper').map(x => x.frameId));
-    assert.ok(camera.reads.filter(n => n > 3).every(n => trackerReads.has(n)));
+    const unlogged = camera.reads.filter(n => n > 3 && !trackerReads.has(n));
+    assert.ok(unlogged.length <= 1 && unlogged.every(n => n < ins.tracker.keyframes[0].frameId), `readbacks the tracker did not log: ${unlogged.join(', ')}`);
   } finally {
     end(r);
   }

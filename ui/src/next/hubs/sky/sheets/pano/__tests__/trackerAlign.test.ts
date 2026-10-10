@@ -7,6 +7,14 @@
 // sit behind the tracker, and `onFrame`, `hold`, `commit` and `pump` are called in the order of the frame callback. Frames
 // carry the simulator's sensor noise (luma sd 2 per channel, S37).
 //
+// The rate the tracker is handed is PoseTrack's `rateAt`, which is the mapped gyro's magnitude only once the axis mapping
+// has confirmed (S41); before that it is the orientation chord (S10), good to 4 % at the median and a fifth at worst through
+// the browser pump's age. A steady pan at one pitch turns two body axes into one signal and the chord's jitter hides the rest,
+// so these pans never confirm (the fit stays at 0.47 on the default ring), and the cases below, calibrated on a gyro that
+// speaks, would be grading the chord. `run` therefore starts the pose track with a confirmed identity mapping, as a phone has
+// once its fit has seen a pan that moves more than one body axis (poseTrack.test.ts grades the fit itself), and
+// `axis: 'unconfirmed'` runs the same pan without it: the last case of section 1 grades the tracker on chord rates alone.
+//
 // Mutants this file must catch (SPEC-v2 7.2 and the T27 brief), each against the cases named; every one was applied to
 // tracker.ts from a byte backup and turned the cases below red (the first failing line of each is in the T27 report):
 //   * the focal term dropped from Sigma_img (`iy = cy` in `fuse`, no `(sdF dPsi)^2`): 'pre-lock, the chain follows the gyro
@@ -38,7 +46,7 @@ import { PoseTrack } from '../poseTrack';
 import { angleBetweenDeg, basisFromQuat, deviceOrientationFromQuat, elevationDeg, headingDeg, logSO3, priorFNorm, qinv, qmul, qrotate, quatFromBasis, worldYaw } from '../rotation';
 import { Tracker, innovationGateDeg, predictorVarianceDeg2 } from '../tracker';
 import { PANO_H, PANO_W, PixClass } from '../types';
-import type { AnalysisFrame, BandPanoramaLike, FocalLike, Intrinsics, Keyframe, LatencyLike, Prediction, PredictorMode, Quat } from '../types';
+import type { AnalysisFrame, AxisMapping, BandPanoramaLike, FocalLike, Intrinsics, Keyframe, LatencyLike, Prediction, PredictorMode, Quat } from '../types';
 import { DEFAULT_PAN, makeSynthScene, renderView, synthPan, writeReplayInput, type SynthPan, type SynthPanOptions, type SynthScene } from './synth/synth';
 
 // A failing case is reported and the file carries on, so a mutant shows every case it turns red, not only the first
@@ -173,6 +181,9 @@ const SCENE = makeSynthScene({ seed: 3 });
 const FRAME_NOISE = 2;
 /** Rate limit at 30 fps (rateMaxFromInterval of a 33 ms median interval). */
 const RATE_MAX = 40;
+/** The mapping a phone's pose track has confirmed a few seconds into a pan: the W3C identity, in deg/s, as synth.ts and
+ *  modulatedPan report their gyro. */
+const CONFIRMED_AXIS: AxisMapping = { perm: [0, 1, 2], sign: [1, 1, 1], unit: 'deg', fit: 1, confirmed: true, samples: 100 };
 
 interface RunOptions {
   pan?: Partial<SynthPanOptions>;
@@ -193,6 +204,9 @@ interface RunOptions {
   /** The rate onFrame is given: the mapped gyro's as PoseTrack gives it, or none (the tracker then has only its own chord;
    *  hold() still gets the rate, which only classes the keyframe). */
   rate?: 'gyro' | 'none';
+  /** 'confirmed' (the default) starts the pose track with its axis mapping confirmed, so `rateAt` is the gyro's magnitude;
+   *  'unconfirmed' leaves it as a fresh track has it, and `rateAt` is the orientation chord for the whole pan (S41). */
+  axis?: 'confirmed' | 'unconfirmed';
   /** A factor on the rate handed in: pi / 180 is a gyro in rad/s read as deg/s (S33), which reads quiet while turning. */
   rateScale?: number;
   sensorOnly?: boolean;
@@ -211,6 +225,7 @@ function run(o: RunOptions = {}): Run {
   const prior = fTrue * (o.priorScale ?? 1);
   const focal: FocalLike = o.makeFocal ? o.makeFocal(prior) : new FocalEstimator({ fNorm: prior, source: 'default', sdPct: PRIOR_SD_PCT });
   const track = new PoseTrack();
+  if (o.axis !== 'unconfirmed') (track as unknown as { axisMap: AxisMapping | null }).axisMap = CONFIRMED_AXIS;
   const latency = o.makeLatency ? o.makeLatency(track.latency) : track.latency;
   const pano = new BandPanorama();
   pano.begin(0);
@@ -429,6 +444,31 @@ test('correctionYawAt is the yaw of C at each keyframe, linear between them, hel
   assert.ok(Math.abs(yawOf(k.length - 1)) > 1.0, `C has turned by ${yawOf(k.length - 1)} degrees: the test is not on the identity`);
 });
 
+// The same ring with the pose track as a fresh one has it. The mapping never confirms on this steady pan, so `rateAt` is the
+// orientation chord all the way round (S41): good to 4 % at the median and a fifth at worst through the pump's age (S31), where
+// the gyro is good to 0.1 deg/s. The steady spans of 4.8 are rarer on rates that jitter by 3 deg/s, so the lock comes at keyframe 16
+// against 8 and lands 3.8 % high against 1.5. The case grades that the chain still aligns, locks and beats the gyro on chord
+// rates. It does not grade the latency estimate: a dOmega that jitters by 3 deg/s feeds the estimator 20 to 33 pairs on a steady
+// ring, and over five seeds it applies a tau between -20 and 100 ms where the truth is 50.
+const chordRing = run({ priorScale: 1.1, frameGain: EXPOSURE, axis: 'unconfirmed' });
+
+test('with the axis mapping unconfirmed the ring runs on chord rates: it aligns and locks, later and less exactly (S41)', () => {
+  const kfs = chordRing.tracker.keyframes;
+  assert.equal(chordRing.track.axis?.confirmed ?? false, false, 'a steady pan does not confirm the mapping');
+  assert.ok(kfs.length >= 70 && kfs.length <= 92, `${kfs.length} keyframes`);
+  const aligned = kfs.filter(k => k.cls === 'aligned').length;
+  assert.ok(aligned / kfs.length >= 0.9, `${aligned} of ${kfs.length} aligned`);
+  const lock = chordRing.lock;
+  assert.ok(lock && lock.kf <= 30 && lock.ratios >= 5 && lock.ratios <= 12, `lock ${JSON.stringify(lock)}`);
+  assert.equal(chordRing.focal.state, 'locked');
+  near(chordRing.focal.fBest / (chordRing.fTrue / (1 + SG)) - 1, 0, 0.06, 'f within 6 % of f_true / (1 + s_g)');
+  const chainWorst = Math.max(...kfs.map(k => Math.abs(yawError(chordRing, k.pose, k, 1))));
+  const gyroWorst = Math.max(...kfs.map(k => Math.abs(yawError(chordRing, k.pred, k, 1))));
+  assert.ok(chainWorst < gyroWorst, `the chain is ${chainWorst} degrees off, the gyro ${gyroWorst}`);
+  // The signed rate of every keyframe after the start is the chord's: 20.4 deg/s with the sign of the turn, to the chord's jitter.
+  for (const w of omegasOf(chordRing).slice(3)) near(w as number, 20.4, 5, 'heading rate from the chord');
+});
+
 // ---- 2. Before the lock ----------------------------------------------------------------------------------------------
 
 /** A FocalEstimator that never locks: the whole run stays in the pre-lock regime. */
@@ -471,7 +511,8 @@ test('a wide lens locks: the gate before the lock is the wide one, so matches th
 });
 
 // The same lock turning the other way: a sign error in a ratio shows only as a lock that never comes (S19).
-const backwards = run({ priorScale: 1.1, pan: { turnDeg: -80 } });
+const BACKWARDS_TURN = -80;
+const backwards = run({ priorScale: 1.1, pan: { turnDeg: BACKWARDS_TURN } });
 
 test('turning the other way locks too: the ratio is positive whichever way the image and the gyro turn (S19)', () => {
   assert.ok(backwards.lock && backwards.lock.ratios >= 5 && backwards.lock.ratios <= 12, `lock ${JSON.stringify(backwards.lock)}`);
@@ -479,7 +520,13 @@ test('turning the other way locks too: the ratio is positive whichever way the i
   // focal reads a yaw 0.932 of the truth where 0.909 is expected (isolated in align: the same 4.7-degree step at f0 = 1.1 f).
   near(backwards.focal.fBest / (backwards.fTrue / (1 + SG)) - 1, 0, 0.05, 'f within 5 %');
   assert.ok(backwards.tracker.keyframes.slice(1).every(k => k.cls === 'aligned'));
-  for (const w of omegasOf(backwards).slice(3)) near(w as number, -20.4, 2, 'heading rate, signed');
+  // The pan slows to a stop over its last half second, and a keyframe taken then reads a gyro under the cruise rate (the last one,
+  // 17.4 against 20.4), so the signed rate is graded on the keyframes of the cruise: it ends the turn over the speed after the
+  // start hold, and a frame's time is its exposure plus the capture lag.
+  const cruiseEnd = (DEFAULT_PAN.startHoldS + Math.abs(BACKWARDS_TURN) / DEFAULT_PAN.speedDegS) * 1000 + (DEFAULT_PAN.captureLagMs ?? 0);
+  const cruising = omegasOf(backwards).filter((_, i) => i >= 3 && backwards.tracker.keyframes[i].t <= cruiseEnd);
+  assert.ok(cruising.length >= 10, `${cruising.length} keyframes in the cruise`);
+  for (const w of cruising) near(w as number, -20.4, 2, 'heading rate, signed');
 });
 
 // ---- 3. The gate -----------------------------------------------------------------------------------------------------
