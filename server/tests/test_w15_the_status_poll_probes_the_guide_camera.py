@@ -54,6 +54,14 @@ assertion is quoted, with the case that raised it. All are in ``hub.py``
   nobody retrieved``. (Observed first as a SURVIVOR: the case polled once, and
   the hub holds the latest probe, so nothing was ever dropped to report. It now
   polls twice, because the second poll is what drops the first.)
+* h7_guide_step_reached_later (#813) -- two ``await asyncio.sleep(0)`` before
+  ``gcam = self.devices.get("guide_camera")``, i.e. the guide-probe step is two
+  trips round the event loop further into ``poll_status`` than it was. With the
+  hub's status loop left running, the healthy-camera control failed four runs
+  of four, ``assert 4 == 3``: the loop's first poll reached the step after the
+  case had registered its camera, and read it once itself. It is green under
+  the same mutant now that the loop is stopped
+  (``_no_background_status_poll``).
 """
 from __future__ import annotations
 
@@ -128,6 +136,34 @@ def _record_logs(monkeypatch) -> list[tuple[str, str, str]]:
         lines.append((level, message, source))
     monkeypatch.setattr(events_mod.bus, "log", record)
     return lines
+
+
+@pytest.fixture(autouse=True)
+async def _no_background_status_poll(sim_hub):
+    """Stop the hub's own 2 s status loop before the case starts (#813).
+
+    ``Hub.connect_sim`` starts ``_status_loop``, and its first poll runs while
+    the case is still registering its guide camera. Whether that poll reaches
+    its guide-probe step before or after the registration depends on how many
+    trips round the event loop ``poll_status`` makes on the way, so a case that
+    grades a read COUNT was graded against a task it did not start: one read
+    too many when the poll lands after the registration. Every case here calls
+    ``poll_status`` itself and counts what THOSE calls do, so the loop goes.
+
+    So does a probe it may have left in flight on the sim's own guide camera.
+    The hub keeps ONE probe, and a poll that finds it unfinished waits on it
+    instead of asking the camera under test.
+    """
+    poll = sim_hub._status_task
+    if poll is not None and not poll.done():
+        poll.cancel()
+        await asyncio.gather(poll, return_exceptions=True)
+    assert poll is None or poll.done(), "premise: the hub's status loop is off"
+    stale = getattr(sim_hub, "_guide_probe", None)
+    if stale is not None:
+        await asyncio.wait({stale}, timeout=5.0)
+        assert stale.done(), "premise: no probe is left in flight"
+    yield
 
 
 async def _with_guide_camera(hub, adapter) -> NativeCamera:

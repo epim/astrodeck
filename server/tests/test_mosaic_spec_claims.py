@@ -2830,13 +2830,18 @@ def test_5_9_and_6_15_say_abort_and_a_disarm_stop_the_ladder_and_it_says_so():
         session no longer stops the ladder; 5.9 says both do
         assert []
 
-    RED under the code mutant "arming another does not stop the ladder"
-    (app.py scratch copy, the singleton loop's ``stop_recovery`` call made
-    a no-op):
+    The arm-another clause is NOT read from the source here any more (#844).
+    ``test_resume_ladder_stops.py``'s ``arm_another`` case grades it on
+    behaviour, and is RED under the code mutant "arming another does not stop
+    the ladder" (the ``on_disarm`` hook PATCH hands
+    ``SequenceEngine._arm_exclusively`` made a no-op), observed:
 
-        AssertionError: a PATCH that arms another session no longer stops the
-        ladder recovering the one it disarms; 5.9 says it does
-        assert []
+        AssertionError: the ladder went on after the disarm: ['solve', 'goto']
+        assert ['solve', 'goto'] == ['solve']
+
+    The syntax-tree pin that stood here was GREEN under the mutant "the shared
+    loop never calls its hook" (``on_disarm(other)`` in ``_arm_exclusively``
+    made ``pass``) while that case was RED.
 
     RED under the code mutant "delete stops the ladder for any session"
     (app.py scratch copy, DELETE's ``session_id=session_id`` removed):
@@ -2940,8 +2945,7 @@ def test_5_9_and_6_15_say_abort_and_a_disarm_stop_the_ladder_and_it_says_so():
     assert disarms, ("sequence_abort no longer disarms the session the ladder "
                      "was recovering; 6.15 says it does")
     # PATCH, from its syntax tree: the one condition that stops the ladder
-    # for a disarm and for an abandon, and the singleton's loop that stops it
-    # for the session another arm disarms. Each names its session, so that
+    # for a disarm and for an abandon. It names its session, so that
     # withdrawing any other session leaves the ladder running.
     patch_tree = ast.parse(textwrap.dedent(_app_function("patch_session")))
 
@@ -2963,31 +2967,13 @@ def test_5_9_and_6_15_say_abort_and_a_disarm_stop_the_ladder_and_it_says_so():
                          for s in n.body for c in _stops(s))]
     assert withdrawn, ("a PATCH that disarms or abandons the recovered "
                        "session no longer stops the ladder; 5.9 says both do")
-    # DELIBERATE PIN CHANGE (#837, wave 17 integration): the singleton's loop
-    # used to be written out in ``patch_session`` (``for other in
-    # session_store.load_all(): ... resume_arm.stop_recovery(...,
-    # session_id=other.id)``). It is ``SequenceEngine._arm_exclusively`` now,
-    # shared with ``engine.start`` and the queue's promotion, and the route's
-    # one difference is the HOOK it hands that loop: a lambda over the session
-    # about to be disarmed that stops the ladder naming that session. The claim
-    # pinned is the same (a PATCH that arms another session stops the ladder
-    # recovering the one it disarms, naming it), read from the new shape.
-    singleton = []
-    for call in ast.walk(patch_tree):
-        if not (isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr == "_arm_exclusively"):
-            continue
-        hook = _keyword_node(call, "on_disarm")
-        if (isinstance(hook, ast.Lambda) and len(hook.args.args) == 1
-                and any(ast.unparse(_keyword_node(c, "session_id") or
-                                    ast.Constant(None))
-                        == f"{hook.args.args[0].arg}.id"
-                        for c in _stops(hook))):
-            singleton.append(call)
-    assert singleton, ("a PATCH that arms another session no longer stops "
-                       "the ladder recovering the one it disarms; 5.9 says "
-                       "it does")
+    # The singleton's half (a PATCH that arms another session stops the ladder
+    # recovering the one it disarms) is not read from the source here (#844).
+    # It was a loop written out in ``patch_session``, then the ``on_disarm``
+    # hook the route hands ``SequenceEngine._arm_exclusively`` (#837), and each
+    # refactor broke a pin that read where the code sat, while a shared loop
+    # that never called the hook still matched it. test_resume_ladder_stops.py's
+    # ``arm_another`` case grades the behaviour.
     delete_tree = ast.parse(textwrap.dedent(_app_function("delete_session")))
     scoped = [c for t in (patch_tree, delete_tree) for c in _stops(t)]
     assert _stops(delete_tree), ("a DELETE of the recovered session no "
