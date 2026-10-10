@@ -2005,6 +2005,41 @@ def _unknown_keys(raw: dict) -> dict:
     return {k: v for k, v in raw.items() if k not in known}
 
 
+def _repair_stored_horizon(raw: dict) -> tuple[dict, str | None]:
+    """``raw`` with ``safety.horizon`` brought inside the horizon rule, and the
+    sentence to log once the config has loaded, or ``(raw, None)`` when the
+    stored horizon already passed it (#982).
+
+    The third door into one safety floor. ``POST /api/config`` and
+    ``PUT /api/locations/{id}`` both refuse what ``normalize_horizon_points``
+    refuses, but ``SafetyConfig.horizon`` is a bare ``list[tuple[float,
+    float]]``, so a file written before that rule, restored from a ``.bak`` or
+    edited by hand loaded with a NaN in it: ``GET /api/config`` then answered
+    500 and the obstruction floor fell to ``min_alt_deg``. The unusable points
+    are dropped, the horizon becomes ``None`` if none is left, and the load goes
+    on -- refusing would stop the server, which is the worse failure. The file on
+    disk is not rewritten here; the next settings save does that.
+
+    Both load paths (``ConfigStore._load`` and ``_restore_from_bak``) call this
+    before the model is built. The sentence names the rule and how many points
+    broke it, never a value."""
+    safety = raw.get("safety")
+    if not isinstance(safety, dict) or "horizon" not in safety:
+        return raw, None
+    from .locations import sanitize_horizon_points  # local: locations imports config
+    points, problems = sanitize_horizon_points(safety["horizon"])
+    if not problems:
+        return raw, None
+    broke = "; ".join(f"{rule} (x{n})" for rule, n in problems.items())
+    left = ("no usable point remained, so no horizon is set" if points is None
+            else f"{len(points)} usable point(s) kept")
+    return ({**raw, "safety": {**safety, "horizon": points}},
+            "safety.horizon in the stored config broke the horizon rule and "
+            + f"was repaired on load: {broke}; {left}. The file on disk is "
+              "rewritten by the next settings save; until then this is said "
+              "again at every start.")
+
+
 def _apply_migrations(cfg: AppConfig, stored: int) -> None:
     """Run every one-shot migration the file on disk still owes, in order.
 
@@ -2162,10 +2197,13 @@ class ConfigStore:
             if not isinstance(raw, dict):
                 raise ValueError("configuration backup must contain a JSON object")
             stored = _stored_schema(raw)
+            raw, horizon_note = _repair_stored_horizon(raw)
             cfg = AppConfig(**{**raw, "schema_version": stored})
         except Exception as exc:
             raise RuntimeError("configuration backup is invalid") from exc
         bus.log("warning", "config restored from backup (.bak)", "config")
+        if horizon_note:
+            bus.log("warning", horizon_note, "config")
         # The backup owes the same migrations a primary does, and stamping it
         # current is what stops the next boot owing them again. A newer
         # file's stamp is never lowered (the `<` below).
@@ -2220,6 +2258,7 @@ class ConfigStore:
             # on a file that has no stamp would invent one and destroy the only
             # evidence that the file predates the marker.
             stored = _stored_schema(raw)
+            raw, horizon_note = _repair_stored_horizon(raw)
             cfg = AppConfig(**{**raw, "schema_version": stored})
         except Exception as exc:  # invalid shape
             recovered = self._restore_from_bak()
@@ -2228,6 +2267,9 @@ class ConfigStore:
             raise RuntimeError(
                 "configuration is invalid and no valid backup is available"
             ) from exc
+
+        if horizon_note:
+            bus.log("warning", horizon_note, "config")
 
         # A FILE FROM A NEWER BUILD IS NOT OURS TO REWRITE. `AppConfig` is a
         # plain BaseModel, so pydantic's default `extra="ignore"` drops every
