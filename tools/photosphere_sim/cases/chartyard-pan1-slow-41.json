@@ -1,0 +1,50 @@
+{
+  "case_id": "chartyard-pan1-slow-41",
+  "scene": "chartyard",
+  "route": "pan1-p23-y75",
+  "camera": {"width": 180, "height": 320, "fov_short_deg": 41.14},
+  "fps": 30,
+  "seed": 7,
+  "expected": "positive",
+  "profile": "realism-v1",
+  "grading": {"still_pivot": true, "fully_observable": false, "daylight": true, "north_graded": false, "expect_closure": true},
+  "scanner_options": {"focal_prior_scale": 1.1, "sensor_only": false, "declination_deg": 7.5},
+  "realism": {
+    "gyro_scale_err": 0.02,
+    "relative": {
+      "yaw_zero_deg": "random",
+      "drift_deg_min": 2.0,
+      "noise_deg": 0.05,
+      "quant_deg": 0.1,
+      "threshold_deg": 0.1,
+      "pump_hz": 20,
+      "latency_ms": 5,
+      "spikes": null
+    },
+    "absolute": {
+      "bias_deg": 0,
+      "declination_deg": 7.5,
+      "sinusoid": {"amp_deg": 2.0, "phase_deg": 40.0},
+      "noise": {"sigma_deg": 3.0, "tau_s": 5.0},
+      "steps": [],
+      "quant_deg": 0.1,
+      "threshold_deg": 0.1,
+      "pump_hz": 60,
+      "latency_ms": 5,
+      "spikes": {"rate_hz": 0.2, "size_deg": 15}
+    },
+    "motion": {"bias_deg_s": 0.01, "noise_deg_s": 0.018, "round_deg_s": 0.1, "pump_hz": 60, "latency_ms": 5},
+    "streams": "both",
+    "gyro": true,
+    "capture_time": {"mode": "delivery", "lag_ms": 50},
+    "frames": {
+      "exposure_ms": 4,
+      "subframes": 4,
+      "ae": {"min_gain": 0.6, "max_gain": 1.6, "tau_s": 0.5, "target_luma": 118},
+      "noise_sigma": 2.0,
+      "rolling_shutter_ms": 25,
+      "eis": {"tau_s": 0.2, "margin_deg": 1.8, "jitter_deg": 0.05},
+      "aliasing": null
+    }
+  }
+}

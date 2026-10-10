@@ -1,7 +1,8 @@
 # Committed fixture cases
 
-Two case directories that are IN the repository, so the replay-backed tests
-run on a clean checkout and in CI. The full-length recordings under `cache/`
+Three case directories that are IN the repository, so the replay-backed tests
+run on a clean checkout and in CI: two for the legacy scanner and one for the
+panorama scanner (the last section). The full-length recordings under `cache/`
 are git-ignored (`.gitignore`, `tools/photosphere_sim/cache/`) and are about
 42 MB each, which is why they are not; issue #68 is that every test standing
 on them therefore ran on one machine and nowhere else.
@@ -10,9 +11,11 @@ on them therefore ran on one machine and nowhere else.
 |---|---|---|---|---|---|---|
 | `chartyard-shortpan-60` | chartyard | shortpan | 95 | 240 x 320, 5 fps | 60 | 1 575 845 |
 | `chartyard-shortpan-70` | chartyard | shortpan | 95 | 240 x 320, 5 fps | 70 | 1 669 521 |
+| `treeline-panshort-41` | treeline | panshort-p23 | 103 | 90 x 160, 12 fps | 41.14 | 1 287 894 |
 
-3 245 366 bytes for the pair, of which 2.69 MB is the 190 frame PNGs, 0.41 MB
-the two `truth/` directories and 0.14 MB the observation streams.
+3 245 366 bytes for the first pair, of which 2.69 MB is the 190 frame PNGs,
+0.41 MB the two `truth/` directories and 0.14 MB the observation streams. The
+third is described under its own heading below.
 
 ## How they were sized
 
@@ -116,3 +119,94 @@ one, and a test run writes nothing into the repository.
 that no `result/` appeared inside these directories afterwards. Pointing a
 replay at a case directory it does not own is how a recursive delete reaches
 the recording it was measuring.
+
+## `treeline-panshort-41`: the panorama scanner's fixture
+
+The horizon panorama scanner's committed case (SPEC-v2 7.5, T26), replayed with
+`--scanner pano` by
+`ui/src/next/hubs/sky/sheets/pano/__tests__/panoFixtureReplay.test.ts` on a
+clean checkout. It is the treeline scene (`scenes/treeline.json`) panned
+through 120 degrees at 20 deg/s on `routes/panshort-p23.json`: a still pivot, a
+1 s hold at each end, 0.3 degrees rms of tremor. The case definition is
+`cases/treeline-panshort-41.json`. It carries the 13.2 sensor realism (a
+relative and an absolute stream, a motion stream, delivery capture time with a
+50 ms lag) with a synthetic declination of 7.25 degrees in both the absolute
+stream and `input/scanner.json`, whose focal prior is 10 % wrong
+(`focal_prior_scale` 1.1). It has no grading flags: it is replayed and checked
+for shape, and is not scored, though `truth/` is complete (including
+`visibility.json` and `route.json`) and `python -m sim score` can score a
+replay of it.
+
+| | |
+|---|---|
+| frames | 103 PNGs, 998 517 bytes (9.5 KB each) |
+| camera | 90 x 160, 12 fps, `fov_short_deg` 41.14 |
+| `input/` other than frames | 183 435 bytes (1 405 observations: 791 orientation, 511 motion, 103 frame) |
+| `truth/` | 104 445 bytes |
+| whole directory | 116 files, 1 287 894 bytes (the budget is 1.5 MB) |
+
+### How it was sized
+
+SPEC-v2 asks for "120 degrees, about 100 frames at 180 x 320" in about 1.2 MB
+and no more than 1.5 MB. The three cannot all hold, and the cap is the one that
+was kept. A PNG of a treeline frame is 27.5 KB at 180 x 320 whatever the frame
+rate, so 100 frames at that size is 2.8 MB. Each row is a build of this route
+and a replay with the pano scanner, measured:
+
+| camera | fps | frames | per frame | directory | ring band painted |
+|---|---|---|---|---|---|
+| 180 x 320 | 30 | 256 | 27.5 KB | 7.56 MB | 0.989 |
+| 180 x 320 | 15 | 128 | 27.5 KB | 3.90 MB | 0.988 |
+| 90 x 160 | 15 | 128 | 9.5 KB | 1.54 MB | 0.988 |
+| 90 x 160 | 12 | 103 | 9.5 KB | 1.29 MB | 0.987 |
+| 90 x 160 and frame noise 2.0 | 12 | 103 | 17.6 KB | 2.14 MB | 0.987 |
+
+Three choices, each forced by the arithmetic above:
+
+- **Half the resolution.** 90 x 160 is the size of the scanner's own live
+  source (SPEC-v2 4.2). The replay harness scales a frame to the 180 x 320
+  analysis canvas, as it does for the 45 x 80 frames of the synthetic scans in
+  `scannerV0.test.ts`, so the scanner sees the same canvas with softer detail.
+- **12 fps.** The 15 fps row is 3 % over the cap, and at 12 fps the pan is still
+  well sampled (1.7 degrees between frames against a 6 degree wide slit).
+  The scanner's speed limit is 12 deg/s at 12 fps (4.3), under the 20 deg/s of
+  the pan, so the cue reads "Too fast" on 72 of the 103 frames and the keyframes
+  are classed `blurred` (4.3 classes a fast keyframe, it does not refuse it).
+  The arc is painted all the same, and the 12 fps row is the measurement. A
+  later tracker that refuses a keyframe above the limit would thin this arc, and
+  the fixture test would say so, and the fix then belongs to the fixture (a
+  slower route, or a higher frame rate within the size cap), not to the 0.9 bar.
+- **No frame noise.** `frames.noise_sigma` is 0, where the graded cases use
+  2.0. Noise is what a PNG cannot compress: it adds 8 KB to every frame. The
+  fixture therefore does not exercise noise robustness. The 17 graded cases do,
+  and they need the cache.
+
+The other 13.5 effects stay at their defaults: 4 ms exposure in 4 sub-frames,
+auto-exposure, a 25 ms rolling shutter and the stabiliser.
+
+### What the test asserts
+
+Every result file of 13.7 exists and parses to its shape, and `columns.json`
+(legacy only) does not exist. The ring band is painted: the band is raster
+altitudes 0 to 45, the arc is what is left of the ring once the largest
+unpainted run is removed, and the fraction is the share of band pixels in the
+arc with alpha 255. Measured 0.987 over an arc of 126.0 degrees (120 degrees of
+pan and a 3 degree half-slit at each end). The test file defines the measure
+and checks that it reads a hole in the arc as a hole. Nothing here grades
+accuracy: a registration regression that leaves the arc painted passes. The
+graded cases do that, and so does the control of SPEC-v2 7.7.
+
+### Rebuilding it
+
+```
+cd tools/photosphere_sim
+python -m sim make-case treeline-panshort-41 --out fixtures
+```
+
+Two builds on one machine gave 116 files, all byte identical (compared by
+SHA-256, `manifest.json` included), so the hashes in `manifest.json` are
+stable. As with the first pair, a different Chromium or Three.js may not
+reproduce it, which is why the frames are committed. The bytes are pinned
+through git by the same `.gitattributes` rule, which covers everything under
+`fixtures/`. `tests/test_manifest_hashes.py` reads every directory here, so a
+changed byte in any frame of this one turns it red.

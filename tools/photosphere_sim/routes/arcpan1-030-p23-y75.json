@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "arcpan1-030-p23-y75",
+  "kind": "pan",
+  "pivot": [0, 0.75, 0],
+  "radius_m": 0.3,
+  "height_m": 1.4,
+  "reference": "axis",
+  "start_hold_s": 1.0,
+  "end_hold_s": 1.0,
+  "rate_cap_deg_s": 45,
+  "pans": [
+    {"alt": 22.98, "from_az": 0, "turn_deg": 385, "speed_deg_s": 20, "ramp_s": 0.5, "direction": "cw"}
+  ],
+  "tremor": {"yaw_deg": 0.3, "pitch_deg": 0.3, "roll_deg": 0.3, "band_hz": [0.5, 3.0]}
+}

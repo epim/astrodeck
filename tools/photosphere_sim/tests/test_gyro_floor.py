@@ -40,7 +40,17 @@ QUIET_DRIFT_DEG = 0.5
 
 
 def _cases():
-    return sorted((ROOT / "cases").glob("chartyard-*.json"))
+    """The legacy chart-yard cases, those with no ``realism`` block.
+
+    A case with one takes its gyro from ``realism.motion`` (spec 13.2), whose
+    defaults are Chromium's: bias 0.01 and noise 0.018 deg/s rounded to 0.1,
+    which read an exact zero triple on 96 % of a still hold on purpose (ruling
+    S21). Those cases are the panorama scanner's and `test_sensor_realism.py`
+    grades their streams; the floor pinned here is the ``gyro_noise_deg_s`` of a
+    case built the old way (issue #76).
+    """
+    return sorted(p for p in (ROOT / "cases").glob("chartyard-*.json")
+                  if "realism" not in _case(p))
 
 
 def _case(path):
