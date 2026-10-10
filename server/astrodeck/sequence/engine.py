@@ -10580,6 +10580,19 @@ class SequenceEngine:
         self._last_frame_at = time.time()
         self._progress_expected = True
         for si, step in enumerate(target.steps):
+            key = f"{target.id}:{step.id}"
+            # A STEP THE LEDGER HOLDS IN FULL IS NOT TOUCHED (#910). On a later
+            # start (an auto-resume, a hand CONTINUE) the frame loop below
+            # shoots nothing for it, but the flat metering ahead of that loop
+            # did not ask: it closed the cover, lit the lamp and took trial
+            # exposures through whichever filter was in the beam (the wheel is
+            # moved only for a step that owes frames), and an unconverged solve
+            # then said "none of its N flats are shot" for a step that needed
+            # none. A step that owes nothing moves nothing: no wheel, no
+            # lamp, no trial exposure, no warning, and no `_flat_metered`
+            # entry, so nothing is recorded for it either.
+            if self._done.get(key, 0) >= step.count:
+                continue
             # PRO-5: a Flat step with adu_target > 0 turns the panel on, solves the
             # per-filter exposure via bounded trial captures, then shoots the count
             # at the SOLVED exposure. adu_target == 0 keeps the fixed-exposure path
@@ -10594,7 +10607,6 @@ class SequenceEngine:
             # _panel_off_safe never runs and the panel would burn through every
             # following target's frames.
             try:
-                key = f"{target.id}:{step.id}"
                 # A calibration step carries a filter exactly like a light step
                 # does, and this call used to live in _run_step ALONE — so for
                 # the one target type calibration frames are actually shot
@@ -10603,10 +10615,10 @@ class SequenceEngine:
                 # and bias never drove to the blackout slot that exists for
                 # them. Placed ahead of the flat metering below, because a trial
                 # exposure solved through the wrong filter solves the wrong
-                # filter. Skipped for a step a resume has already finished, so
-                # recovery does not move the wheel for frames it will not shoot.
-                if self._done.get(key, 0) < step.count:
-                    await self._apply_filter(step)
+                # filter. Not reached for a step a resume has already finished
+                # (above), so recovery does not move the wheel for frames it
+                # will not shoot.
+                await self._apply_filter(step)
                 if flat_auto:
                     # METERING IS NOT THE PANEL'S JOB. This whole block used to
                     # sit behind `"covercalibrator" in self.hub.devices`, so on

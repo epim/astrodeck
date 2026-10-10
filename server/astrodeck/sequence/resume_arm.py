@@ -544,6 +544,19 @@ NOTHING_TONIGHT = ("none of this session's remaining frames can be captured "
                    "past their observing windows, or never above their minimum "
                    "start altitude; waiting until the next night before slewing")
 
+#: The same refusal, said for a session whose flats would not meter (#911).
+#: NOTHING_TONIGHT names a window, a floor and a set-aside, and a session held
+#: because its lamp, its cover or its sky would not give a flat exposure read
+#: as one of those; only the run's own warning line said otherwise. Words
+#: only, no site and no number, and the same latch and retry as the sentence
+#: above (``_ladder_nothing_tonight``): ``flats_would_not_meter`` chooses
+#: between them, and nothing else about the refusal differs.
+NOTHING_TONIGHT_UNMETERED = (
+    "none of this session's remaining frames can be captured tonight: its "
+    "flat exposures would not meter, so they are set aside for tonight; "
+    "check the lamp, the cover and the sky. It tries again next night, or "
+    "CONTINUE it by hand once fixed")
+
 #: The gating states the run drops a target for without shooting it
 #: (``_run_scheduled``), and so the re-centre leaves out (#283).
 _DROPPED_STATES = ("window_closed", "never_rises")
@@ -930,6 +943,28 @@ def nothing_to_shoot_tonight(session: Session,
                     and (t.id, s.id) not in aside
                     for t in owing for s in t.steps)
     return (light or bool(owing)) and not shootable
+
+
+def flats_would_not_meter(session: Session, night: str) -> bool:
+    """True when a calibration step ``session`` still owes is set aside for
+    ``night`` because its flat exposure would not meter (#911): a record of
+    kind ``"unmetered"``, as ``SequenceEngine._record_flat_metering`` writes
+    it. The question the ladder asks AFTER ``nothing_to_shoot_tonight`` has
+    refused, to choose the words (``NOTHING_TONIGHT_UNMETERED`` rather than
+    ``NOTHING_TONIGHT``); it is not a refusal of its own.
+
+    ANY OWED STEP, NOT ALL. A session can be out of tonight for a light
+    target's window and for an unmetered flat at once. The window is nothing
+    an operator can change tonight, and the flat is, so the words name the
+    flat. A record of another kind, a record from another night and a record
+    for a step the session no longer owes say nothing here. Words only, and
+    a pure function of the session: nothing site-derived is read."""
+    remaining = session.remaining()
+    owed = {(t.id, s.id) for t in session.plan.targets if t.calibration
+            for s in t.steps if remaining.get(s.id, 0) > 0}
+    return any(r.get("kind") == "unmetered"
+               and (r.get("target_id"), r.get("step_id")) in owed
+               for r in session.set_aside_on(night))
 
 
 def spent_tonight(session: Session, site, twilight_deg: float,
@@ -2300,7 +2335,12 @@ class ResumeArm:
             twilight_deg=cfg.safety.twilight_deg if cfg else -12.0, now=now)
         if nothing_to_shoot_tonight(session, candidates, night_key(now)):
             self._ladder_nothing_tonight = True
-            return NOTHING_TONIGHT
+            # THE SAME REFUSAL, WITH THE CAUSE THE RUN FOUND (#911): flats that
+            # would not meter are the operator's to fix, and the window and
+            # floor words would send them looking at the plan's windows.
+            return (NOTHING_TONIGHT_UNMETERED
+                    if flats_would_not_meter(session, night_key(now))
+                    else NOTHING_TONIGHT)
 
         # 0. IS IT SAFE TO BE OUT AT ALL — before anything moves.
         #

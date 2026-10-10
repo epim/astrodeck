@@ -28,7 +28,9 @@ do not try again tonight" is (``Session.set_aside``, spec 3.4):
 * ``nothing_to_shoot_tonight`` reads the record for calibration steps, so a
   session whose every owed calibration step is set aside tonight (and which
   has no light target the run can still shoot) holds in words
-  (``NOTHING_TONIGHT``) on the ten-minute retry, said once a night;
+  (``NOTHING_TONIGHT_UNMETERED``, which names the flats and what to check,
+  #911; ``NOTHING_TONIGHT`` for every other cause) on the ten-minute retry,
+  said once a night;
 * the NEXT night reads none of tonight's records and meters afresh, which is
   what ``resume_across_nights`` promises;
 * a start BY HAND is not held by it: the person who presses CONTINUE has
@@ -48,6 +50,7 @@ the md5 compared); the observed failure is quoted in the case that catches it.
 """
 from __future__ import annotations
 
+import re
 import time
 
 import astrodeck.sequence.engine as engine_module
@@ -56,8 +59,11 @@ from _simhub import sim_hub  # noqa: F401 (fixture import)
 from astrodeck.sequence.engine import SequenceEngine
 from astrodeck.sequence.models import (DuskFlatsPlan, ExposureStep,
                                        SequencePlan, Target)
-from astrodeck.sequence.resume_arm import (NOTHING_TONIGHT, RETRY_INTERVAL_S,
-                                           ResumeArm, nothing_to_shoot_tonight,
+from astrodeck.sequence.resume_arm import (NOTHING_TONIGHT,
+                                           NOTHING_TONIGHT_UNMETERED,
+                                           RETRY_INTERVAL_S, ResumeArm,
+                                           flats_would_not_meter,
+                                           nothing_to_shoot_tonight,
                                            spent_tonight)
 from astrodeck.sequence.session import Session, SessionFrame, session_store
 
@@ -130,6 +136,19 @@ class Tap:
         monkeypatch.setattr(hub, "capture", capture)
 
 
+class Lamp:
+    """Every time the engine lights the flat panel: the brightness asked."""
+
+    def __init__(self, hub, monkeypatch):
+        self.lit: list[int] = []
+        real = hub.calibrator_on
+
+        async def calibrator_on(brightness):
+            self.lit.append(brightness)
+            await real(brightness)
+        monkeypatch.setattr(hub, "calibrator_on", calibrator_on)
+
+
 async def _run_to_its_end(eng: SequenceEngine, plan: SequencePlan) -> Session:
     eng.start(plan)
     await eng._task
@@ -200,7 +219,7 @@ async def test_a_session_whose_flat_will_not_meter_is_not_restarted_each_tick(
         f"ResumeArm restarted a session whose flat cannot meter on "
         f"{len(starts)} of {len(TICK_GAPS_S)} ticks")
     held = arm.hold
-    assert held is not None and held["reason"] == NOTHING_TONIGHT, held
+    assert held is not None and held["reason"] == NOTHING_TONIGHT_UNMETERED, held
     assert held["session_id"] == s.id and held["owed"] == 6, held
     again = session_store.load(s.id)
     assert (again.status, again.auto_resume) == ("dormant", True), (
@@ -362,18 +381,26 @@ async def test_a_later_run_that_meters_a_step_clears_its_earlier_record(
 
 async def test_a_step_the_session_no_longer_owes_is_not_recorded(
         sim_hub, monkeypatch, bus_lines):
-    """``_run_calibration`` meters a flat step before it looks at how many
-    frames the step still owes, so a step the ledger holds in full is metered
-    again on a later start. If that solve fails (here R's lamp is taken away
-    on the second start) there is nothing to set aside: the session owes R
-    nothing, and a record for it would hold a session that has other work.
-    L, which is owed, is recorded.
+    """A step the ledger holds in full is not metered on a later start (#910),
+    so a lamp that has gone for it (here R's, taken away on the second start)
+    says nothing and sets nothing aside: the session owes R nothing, and a
+    warning or a record for it would be about a step that needed no flat. L,
+    which is owed, is metered, fails, and is recorded.
 
-    MUTANT "a step nothing is owed on is recorded too" (``_record_flat_
-    metering``: the ``remaining.get(s.id, 0) > 0`` clause removed) turns this
-    red, observed:
+    This case used to PIN THE DEFECT (#910): ``_run_calibration`` metered R
+    before it looked at what R still owed, and the case asserted that
+    "did not converge on R" was said. It now asserts the opposite. MUTANT "a
+    finished step is metered again" (``_run_calibration``: the
+    ``self._done.get(key, 0) >= step.count`` skip removed) turns it red,
+    observed:
 
-        AssertionError: ['L', 'R'] != ['L']
+        AssertionError: R, which the ledger holds in full, was metered again
+        (warnings: ['... flat exposure did not converge on R (too_dim_at_max)
+        - none of its 3 flats are shot, and the next step goes on'])
+
+    The ``remaining.get(s.id, 0) > 0`` clause of ``_record_flat_metering``
+    is no longer what this case grades: the engine does not meter a step the
+    session owes nothing on, so there is no outcome for the clause to drop.
     """
     Night(monkeypatch)
     eng = SequenceEngine(sim_hub)
@@ -385,8 +412,12 @@ async def test_a_step_the_session_no_longer_owes_is_not_recorded(
     bus_lines.clear()
     eng.start(again.plan, session=again)
     await eng._task
+    said = [m for lvl, m, _s in bus_lines if "did not converge on R " in m]
+    assert not said, (f"R, which the ledger holds in full, was metered again "
+                      f"(warnings: {said})")
     assert [m for lvl, m, _s in bus_lines
-            if "did not converge on R " in m], "premise: R was metered again"
+            if "did not converge on L " in m], (
+        "premise: L, which is owed, was metered and did not converge")
 
     s = session_store.load(s.id)
     by_step = {st.id: st.filter for st in s.plan.targets[0].steps}
@@ -394,11 +425,65 @@ async def test_a_step_the_session_no_longer_owes_is_not_recorded(
     assert standing == ["L"], f"{standing} != ['L']"
 
 
+async def test_a_step_the_ledger_holds_in_full_is_not_metered_again(
+        sim_hub, monkeypatch, bus_lines):
+    """#910. R is first in the plan and its lamp works; L, second, has no
+    lamp. The first run shoots R in full and cannot meter L. The lamp is then
+    fixed for L and the wheel is left on G (whichever filter is in the beam),
+    and the session is started again: it owes L three frames and R none.
+
+    The start meters L, through L, and shoots it. It does not close the
+    cover, light the lamp or take a trial exposure for R, which the ledger
+    holds in full: unfixed, R's metering ran first, with the wheel on G
+    (the filter move is skipped for a step that owes nothing, the metering
+    was not), so the trial exposures of the start included G's.
+
+    MUTANT "a finished step is metered again" (``_run_calibration``: the
+    ``self._done.get(key, 0) >= step.count`` skip removed) turns this red,
+    observed:
+
+        AssertionError: trial exposures through ['G', 'G', 'L', 'L']; a step
+        the ledger holds in full was metered
+
+    The same mutant turns the case above it red as well, on the warning.
+    """
+    Night(monkeypatch)
+    eng = SequenceEngine(sim_hub)
+    s = await _run_to_its_end(
+        eng, _plan(brightness={"R": 100}, filters=("R", "L")))
+    assert s.owed() == 3 and len(s.frames) == 3, "premise: R shot, L not"
+    fw = sim_hub.devices["filterwheel"]
+    await fw.set_position(fw.filter_names.index("G"))
+
+    again = session_store.load(s.id)
+    again.plan.targets[0].steps[1].panel_brightness = 100     # L's lamp fixed
+    tap = Tap(sim_hub, monkeypatch)
+    lamp = Lamp(sim_hub, monkeypatch)
+    bus_lines.clear()
+    eng.start(again.plan, session=again)
+    await eng._task
+    assert eng._task.exception() is None, eng._task.exception()
+
+    assert tap.trials, "premise: L was metered"
+    assert set(tap.trials) == {"L"}, (
+        f"trial exposures through {tap.trials}; a step the ledger holds in "
+        f"full was metered")
+    assert lamp.lit == [100], (
+        f"the lamp was lit {len(lamp.lit)} times for a start that owes one "
+        f"step")
+    warned = [m for lvl, m, _s in bus_lines
+              if lvl == "warning" and "flat exposure did not converge" in m]
+    assert warned == [], warned
+    s = session_store.load(s.id)
+    assert (s.status, s.owed(), len(s.frames)) == ("complete", 0, 6)
+
+
 def _calibration_session(*, light_done: bool = False,
-                         aside: tuple[str, ...] = ("L", "R")) -> Session:
+                         aside: tuple[str, ...] = ("L", "R"),
+                         kind: str | None = "unmetered") -> Session:
     """A session owing the flats of ``plan`` (and, with ``light_done`` False,
     a light target's frame), with the flats named in ``aside`` set aside for
-    ``NIGHT_ONE``."""
+    ``NIGHT_ONE`` by a record of ``kind``."""
     flats = _plan().targets[0]
     light = Target(name="M31", ra_hours=0.7, dec_deg=41.0, center=False,
                    autofocus_first=False,
@@ -412,7 +497,7 @@ def _calibration_session(*, light_done: bool = False,
     for step in flats.steps:
         if step.filter in aside:
             s.note_set_aside(flats.id, "would not meter", night=NIGHT_ONE,
-                             step_id=step.id, kind="unmetered")
+                             step_id=step.id, kind=kind)
     return s
 
 
@@ -467,3 +552,137 @@ def test_the_wind_down_counts_tonights_unmetered_flats_as_spent():
     s = _calibration_session(light_done=True)
     assert spent_tonight(s, None, -12.0, _evening_of(NIGHT_ONE))
     assert not spent_tonight(s, None, -12.0, _evening_of(NIGHT_TWO))
+
+
+async def test_the_hold_for_flats_that_will_not_meter_says_so(
+        sim_hub, monkeypatch, bus_lines):
+    """#911, graded across ticks like the loop above. The Monitor's hold and
+    the one warning the night gets name the flats and what to check, not a
+    window or a start altitude; the hold carries no site-derived sentence;
+    and the refusal keeps the once-a-night latch and the ten-minute retry it
+    shares with ``NOTHING_TONIGHT`` (four ticks, one warning, the retry from
+    the last tick).
+
+    MUTANT "the refusal ignores the cause" (``ResumeArm._recover``: the
+    ``flats_would_not_meter`` choice made ``NOTHING_TONIGHT`` always; 4
+    failed, 25 passed) turns this red, observed:
+
+        AssertionError: {'owed': 6, 'reason': "none of this session's
+        remaining frames can be captured tonight: the remaining targets are
+        set aside for tonight, past their observing windows, or never above
+        their minimum start altitude; waiting until the next night before
+        slewing", ...}
+
+    MUTANT "the kind is not read" (``flats_would_not_meter``: the
+    ``r.get("kind") == "unmetered"`` clause removed; 2 failed, 27 passed)
+    turns the two controls red instead: a record of another kind, and flats
+    set aside for another reason, get the unmetered words.
+    """
+    night = Night(monkeypatch)
+    eng = SequenceEngine(sim_hub)
+    await _run_to_its_end(eng, _plan())
+    arm = _arm(eng, sim_hub, monkeypatch, night)
+    bus_lines.clear()
+
+    await _tick_through(eng, arm, night)
+
+    held = arm.hold
+    assert held is not None and held["reason"] == NOTHING_TONIGHT_UNMETERED, held
+    assert "site_detail" not in held, held
+    warned = [m for lvl, m, _s in bus_lines
+              if lvl == "warning" and m.startswith("auto-resume held:")]
+    assert len(warned) == 1 and NOTHING_TONIGHT_UNMETERED in warned[0], warned
+    assert "observing windows" not in warned[0], warned
+    assert arm._retry_at == night.t + RETRY_INTERVAL_S, arm._retry_at
+
+
+def test_the_words_for_flats_that_will_not_meter_name_the_cause_and_the_cure():
+    """The sentence is words only (#233): the hold's ``reason`` reaches a
+    viewer, so it carries no digit, and it names the flats, the three things
+    to check and the way back in."""
+    words = NOTHING_TONIGHT_UNMETERED
+    assert not re.search(r"\d", words), words
+    for part in ("flat exposures would not meter", "the lamp", "the cover",
+                 "the sky", "next night", "CONTINUE"):
+        assert part in words, (part, words)
+    assert words != NOTHING_TONIGHT
+
+
+class TestFlatsWouldNotMeter:
+    """Which words the refusal is said in is a pure function of the session
+    and the night it is asked on."""
+
+    def test_an_owed_flat_set_aside_as_unmetered_tonight_is(self):
+        s = _calibration_session(light_done=True)
+        assert flats_would_not_meter(s, NIGHT_ONE)
+
+    def test_another_nights_record_is_not(self):
+        s = _calibration_session(light_done=True)
+        assert not flats_would_not_meter(s, NIGHT_TWO)
+
+    def test_a_record_of_another_kind_is_not(self):
+        for kind in (None, "deferred", "centring"):
+            s = _calibration_session(light_done=True, kind=kind)
+            assert not flats_would_not_meter(s, NIGHT_ONE), kind
+
+    def test_a_flat_the_session_no_longer_owes_is_not(self):
+        s = _calibration_session(light_done=True)
+        flats = s.plan.targets[1]
+        for st in flats.steps:
+            for _ in range(st.count):
+                s.frames.append(SessionFrame(target_id=flats.id, step_id=st.id,
+                                             ts=1.0, night=NIGHT_ONE))
+        assert s.owed() == 0
+        assert not flats_would_not_meter(s, NIGHT_ONE)
+
+    def test_one_unmetered_flat_among_owed_steps_is(self):
+        s = _calibration_session(light_done=True, aside=("L",))
+        assert flats_would_not_meter(s, NIGHT_ONE)
+
+    def test_a_light_target_out_of_tonight_does_not_hide_an_unmetered_flat(self):
+        s = _calibration_session(light_done=False)
+        light = s.plan.targets[0]
+        s.note_set_aside(light.id, "window", night=NIGHT_ONE)
+        assert nothing_to_shoot_tonight(s, [], night=NIGHT_ONE)
+        assert flats_would_not_meter(s, NIGHT_ONE)
+
+
+class TestTheLadderSaysWhichWayItRefused:
+    """``ResumeArm._recover``, unmodified, over sessions that need no device:
+    the refusal comes before the safety read, the focuser or the solve."""
+
+    async def _refusal(self, sim_hub, monkeypatch, s: Session) -> str | None:
+        night = Night(monkeypatch)
+        arm = _arm(SequenceEngine(sim_hub), sim_hub, monkeypatch, night)
+        return await arm._recover(s)
+
+    async def test_unmetered_flats_are_said_as_such(self, sim_hub,
+                                                    monkeypatch):
+        s = _calibration_session(light_done=True)
+        got = await self._refusal(sim_hub, monkeypatch, s)
+        assert got == NOTHING_TONIGHT_UNMETERED, got
+
+    async def test_flats_set_aside_for_another_reason_keep_the_generic_words(
+            self, sim_hub, monkeypatch):
+        s = _calibration_session(light_done=True, kind=None)
+        got = await self._refusal(sim_hub, monkeypatch, s)
+        assert got == NOTHING_TONIGHT, got
+
+    async def test_a_light_target_out_of_tonight_alone_keeps_the_generic_words(
+            self, sim_hub, monkeypatch):
+        light = Target(name="M31", ra_hours=0.7, dec_deg=41.0, center=False,
+                       autofocus_first=False,
+                       steps=[ExposureStep(filter="L", exposure_s=60.0,
+                                           count=1)])
+        s = Session(status="dormant", auto_resume=True,
+                    plan=SequencePlan(name="p", targets=[light]))
+        s.note_set_aside(light.id, "window", night=NIGHT_ONE)
+        got = await self._refusal(sim_hub, monkeypatch, s)
+        assert got == NOTHING_TONIGHT, got
+
+    async def test_a_light_target_out_of_tonight_beside_unmetered_flats_names_the_flats(
+            self, sim_hub, monkeypatch):
+        s = _calibration_session(light_done=False)
+        s.note_set_aside(s.plan.targets[0].id, "window", night=NIGHT_ONE)
+        got = await self._refusal(sim_hub, monkeypatch, s)
+        assert got == NOTHING_TONIGHT_UNMETERED, got
