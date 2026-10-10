@@ -766,7 +766,7 @@ times, and equal kinds in file order.
     "absolute": {"bias_deg": 0, "declination_deg": 0, "sinusoid": {"amp_deg": 0, "phase_deg": 0},
                  "noise": {"sigma_deg": 3.0, "tau_s": 0.3}, "steps": [], "quant_deg": 0.1,
                  "threshold_deg": 0.1, "pump_hz": 60, "latency_ms": 5, "spikes": null},
-    "motion": {"bias_deg_s": 0.05, "noise_deg_s": 0.03, "round_deg_s": 0.1, "pump_hz": 60, "latency_ms": 5},
+    "motion": {"bias_deg_s": 0.01, "noise_deg_s": 0.018, "round_deg_s": 0.1, "pump_hz": 60, "latency_ms": 5},
     "streams": "both",
     "gyro": true,
     "capture_time": {"mode": "delivery", "lag_ms": 50},
