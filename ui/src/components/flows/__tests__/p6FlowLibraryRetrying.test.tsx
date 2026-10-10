@@ -16,6 +16,11 @@
 //       starts another GET while one is out).
 //   (c) UX8: delete FlowLibrary's useRetryOnReturn (a load that settled as
 //       failed is never re-asked when the tab comes back).
+//   (#877) U1: the load line reads `libraryError` instead of
+//       `libraryLoadError` (the screen pointed back at the shared field):
+//       (e) and (f).
+//   (#877) U2: the open's line is the `else` of the retrying line, so it hides
+//       behind it: (d).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -89,7 +94,7 @@ function seed(fields: Record<string, unknown>) {
   useStore.setState({
     flows: {
       ...st.flows, cards: [], folders: FOLDERS, libraryLoaded: false,
-      libraryError: null, libraryRetry: null, libraryLoading: false,
+      libraryError: null, libraryLoadError: null, libraryRetry: null, libraryLoading: false,
       ui: { ...st.flows.ui, query: "", folderChip: "all", highlightId: null },
       ...fields,
     },
@@ -126,14 +131,14 @@ await test("(a) while it asks again the retrying line shows and RETRY does not",
   assert(!/Could not read the flow library/.test(document.body.textContent || ""),
     "the error shows while the app is still asking");
 
-  seed({ libraryError: "request timed out — server not responding" });
+  seed({ libraryLoadError: "request timed out — server not responding" });
   await mount();
   assert(!document.querySelector("[data-flows-retrying]"), "a retrying line after the tries are spent");
   assert(retryButton(), "no RETRY once the tries are spent");
 });
 
 await test("(b) a re-ask never stacks on a load in flight", async () => {
-  seed({ libraryError: "request timed out — server not responding" });
+  seed({ libraryLoadError: "request timed out — server not responding" });
   await mount();
   assert(flowsGets() === 1, `precondition: the mount asked once (asked ${flowsGets()})`);
   assert(useStore.getState().flows.libraryLoading, "precondition: the mount's load is in flight");
@@ -151,7 +156,7 @@ await test("(c) a load that settled as failed is asked once more when the tab co
     await settle();
     assert(flowsGets() === 4, `precondition: the mount's load tried four times (asked ${flowsGets()})`);
     const f = useStore.getState().flows;
-    assert(!!f.libraryError && !f.libraryLoading && !f.libraryLoaded,
+    assert(!!f.libraryLoadError && !f.libraryLoading && !f.libraryLoaded,
       "precondition: the load settled as failed");
     getMode = "hold";
     asked = [];
@@ -161,6 +166,46 @@ await test("(c) a load that settled as failed is asked once more when the tab co
     getMode = "hold";
     setRetrySleepForTests(null);
   }
+});
+
+// #877: an open's or a save's failure (`libraryError`) is its own line, beside
+// the load's (`libraryLoadError`, or the retrying line) and never behind it.
+const OPEN_REASON = "no flow named gone";
+const LOAD_REASON = "request timed out — server not responding";
+const actionLine = () => document.querySelector("[data-flows-action-error]");
+const loadLine = () => Array.from(document.querySelectorAll('[role="status"]'))
+  .find((el) => /Could not read the flow library/.test(el.textContent || ""));
+
+await test("(d) #877 an open's failure shows beside the retrying line, not behind it", async () => {
+  seed({ libraryRetry: { attempt: 2, of: 4 }, libraryError: OPEN_REASON });
+  await mount();
+  assert(document.querySelector("[data-flows-retrying]"), "no retrying line while libraryRetry is set");
+  const line = actionLine();
+  assert(line, "the open's failure is hidden while the load retries");
+  assert((line!.textContent || "").includes(OPEN_REASON), `the line reads "${line!.textContent}"`);
+  assert(!loadLine(), "the open's failure was labelled as the library's");
+});
+
+await test("(e) #877 a failed load and a failed open are two lines, each with its own reason", async () => {
+  seed({ libraryLoadError: LOAD_REASON, libraryError: OPEN_REASON });
+  await mount();
+  const load = loadLine();
+  assert(load, "no load-failure line");
+  assert((load!.textContent || "").includes(LOAD_REASON), `the load line reads "${load!.textContent}"`);
+  assert(!(load!.textContent || "").includes(OPEN_REASON), "the open's reason shows as the library's");
+  assert(retryButton(), "no RETRY for the failed load");
+  const open = actionLine();
+  assert(open, "no open-failure line");
+  assert((open!.textContent || "").includes(OPEN_REASON), `the open line reads "${open!.textContent}"`);
+  assert(!(open!.textContent || "").includes(LOAD_REASON), "the load's reason shows as the open's");
+});
+
+await test("(f) #877 an open's failure alone is not reported as an unreadable library", async () => {
+  seed({ libraryError: OPEN_REASON });
+  await mount();
+  assert(actionLine(), "no open-failure line");
+  assert(!loadLine(), "an open's failure was reported as 'could not read the flow library'");
+  assert(!retryButton(), "a RETRY for a library that did not fail");
 });
 
 unmount();

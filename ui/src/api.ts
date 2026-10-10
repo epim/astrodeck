@@ -79,38 +79,68 @@ function timeoutSignal(ms: number): { signal: AbortSignal; done(): void } {
   return { signal: ac.signal, done() { clearTimeout(t); } };
 }
 
+const isTimeout = (e: unknown): boolean => e instanceof DOMException && e.name === "TimeoutError";
+
+/** The one ApiError a spent budget becomes, whether it ran out waiting for the
+ *  headers or for the body (#870). */
+const timedOutError = (): ApiError => new ApiError("request timed out — server not responding", 0, true);
+
+/** Holds a body read to the request's budget (#870).
+ *
+ *  The budget covers the whole request, not only `fetch()`: headers can arrive
+ *  at once while a large body (the flow list, a report, the session listing)
+ *  is still streaming when the 15 s run out. Without this a native
+ *  `AbortSignal.timeout` rejects the read with a raw DOMException, which no
+ *  `instanceof ApiError` / `.timedOut` caller recognises, and the fallback
+ *  timer, cleared once `fetch()` resolved, never fires at all. A read is
+ *  also raced against the signal itself, because a fetch implementation that
+ *  does not cancel its body stream on abort would otherwise leave it pending
+ *  for good. */
+function withinBudget<T>(read: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const spent = () => reject(timedOutError());
+    if (signal.aborted) spent();
+    else signal.addEventListener("abort", spent, { once: true });
+    read
+      .then(resolve, (e) => reject(isTimeout(e) ? timedOutError() : e))
+      .finally(() => signal.removeEventListener("abort", spent));
+  });
+}
+
 async function req<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   const { signal, done } = timeoutSignal(timeoutFor(path));
-  let res: Response;
+  // `done()` runs after the body has been read, not when the headers arrive:
+  // on the fallback path it is what clears the timer, and the timer is the
+  // budget the body read is held to (#870).
   try {
-    res = await fetch(BASE + path, {
-      method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal,
-    });
-  } catch (e) {
-    const timedOut = e instanceof DOMException && e.name === "TimeoutError";
-    throw new ApiError(
-      timedOut ? "request timed out — server not responding" : "network error — server unreachable",
-      0,
-      timedOut,
-    );
+    let res: Response;
+    try {
+      res = await fetch(BASE + path, {
+        method,
+        headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
+      });
+    } catch (e) {
+      throw isTimeout(e) ? timedOutError() : new ApiError("network error — server unreachable", 0);
+    }
+    if (!res.ok) {
+      let body: unknown;
+      try {
+        body = await withinBudget(res.json(), signal);
+      } catch (e) {
+        // A body that never finished arriving is a timeout, not an absent body.
+        if (e instanceof ApiError) throw e;
+        /* no/invalid JSON body; parseApiError falls back to statusText */
+      }
+      const { message, code, id } = parseApiError(res.status, body, res.statusText);
+      // `body`, not just the three fields parsed out of it — see ApiError.body.
+      throw new ApiError(message, res.status, false, code, id, body);
+    }
+    return await withinBudget(res.json() as Promise<T>, signal);
   } finally {
     done();
   }
-  if (!res.ok) {
-    let body: unknown;
-    try {
-      body = await res.json();
-    } catch {
-      /* no/invalid JSON body; parseApiError falls back to statusText */
-    }
-    const { message, code, id } = parseApiError(res.status, body, res.statusText);
-    // `body`, not just the three fields parsed out of it — see ApiError.body.
-    throw new ApiError(message, res.status, false, code, id, body);
-  }
-  return res.json() as Promise<T>;
 }
 
 export const api = {
