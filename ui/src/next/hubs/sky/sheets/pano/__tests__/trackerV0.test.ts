@@ -3,23 +3,32 @@
 // T19: the tracker v0, the keyframe rule of SPEC-v2 4.3 with placement by the predictor, and the pure functions of
 // 4.7 against its worked numbers.
 //
-// Mutant this file must catch (SPEC-v2 7.2): the window replaced by "commit the first frame at d >= S".
-// `best-of-window commits the slowest candidate` asserts that the frame committed from a window of rates
-// 30, 20, 25, 35 is the rate-20 frame, read back second; under the mutant the rate-30 frame commits at once.
+// Mutants this file must catch (SPEC-v2 7.2):
+// - the window replaced by "commit the first frame at d >= S". `best-of-window commits the slowest candidate` asserts
+//   that the frame committed from a window of rates 30, 20, 25, 35 is the rate-20 frame, read back second; under the
+//   mutant the rate-30 frame commits at once.
+// - rule 8 removed (ruling S27): `rule 8 closes the ring seam` reads gapDeg 5-9.5 after 375 degrees.
+// - the kept strip held at +-10 degrees for a trailing fill (ruling S12): `a 10-degree trailing fill at d = 14` finds
+//   alpha-0 columns and unpainted coverage cells between the two slices on the real raster.
+// - noteReadFailed not clearing the pending read (ruling S28): `noteReadFailed logs read-failed` finds hold() accepted
+//   after a failed readback.
 //
 // The rule tests run in sensor-only mode. The rule is the same in both modes, but T27 adds alignment and rule 5
 // (revisits) to the other mode only, and a revisit would commit the slow frames these tests use to probe the
 // window. Sensor-only mode keeps the v0 path exactly (T27), so these cases stay true after it. BandPanoramaLike,
 // FocalLike and LatencyLike are stubs; the panorama stub marks a simplified footprint in `coverage` (below) so
-// that `gapDeg` and `coveredDeg` can be read end to end. Poses are level (pitch 0) unless a case says otherwise,
-// so an axis distance is an azimuth difference and the trailing-fill numbers are exact.
+// that `gapDeg` and `coveredDeg` can be read end to end, and the cases that need the real raster's alpha and
+// coverage (S12, and the seam at the design point) paint through T08's BandPanorama. Poses are level (pitch 0)
+// unless a case says otherwise, so an axis distance is an azimuth difference and the trailing-fill numbers are exact.
 import assert from 'node:assert/strict';
 import { lookBasis } from '../../photosphereGeometry';
+import { BandPanorama } from '../bandPanorama';
 import { headingDeg, intrinsicsAt, qinv, qmul, qrotate, quatFromBasis, worldYaw } from '../rotation';
 import {
   FIRST_KF_MAX_WAIT_MS, MAX_KEYFRAMES, STEP_DEG, STRIP_HALF_DEG, TRAILING_MAX_DEG, Tracker, WINDOW_DEG,
   innovationGateDeg, placementSigmaDeg, predictorVarianceDeg2,
 } from '../tracker';
+import { PANO_H, PANO_W, PROFILE_BINS } from '../types';
 import type {
   BandPanoramaLike, DirtyRect, FocalLike, FrameStep, KeyClass, LatencyLike, Prediction, Quat, SliceSource, TrackerOptions, V3,
 } from '../types';
@@ -41,7 +50,8 @@ const CLASS_VALUE: Record<KeyClass, number> = { sensor: 1, blurred: 2, aligned: 
 
 /** Records every paint and clear. Its coverage is a simplified footprint: the cells whose centres lie within 2
  *  degrees of the slice's heading (feather weight >= 0.5), widened on the trailing side by trailingDeg, never past
- *  the strip's 10 degrees. Side -1 is the image's left, which for an upright camera is the lower azimuth. */
+ *  the edge of the strip (a slice paints only what its strip holds). Side -1 is the image's left, which for an
+ *  upright camera is the lower azimuth. */
 class StubPano implements BandPanoramaLike {
   readonly rgba = new Uint8ClampedArray(4);
   readonly cls = new Uint8Array(1);
@@ -54,8 +64,9 @@ class StubPano implements BandPanoramaLike {
   paint(s: SliceSource, nowMs: number): DirtyRect {
     this.paints.push({ s, nowMs });
     const h = headingDeg(s.pose);
-    const left = Math.min(2 + (s.trailingSide === -1 ? s.trailingDeg : 0), STRIP_HALF_DEG);
-    const right = Math.min(2 + (s.trailingSide === 1 ? s.trailingDeg : 0), STRIP_HALF_DEG);
+    const edge = (px: number) => Math.atan(px / s.k0.f) * 180 / Math.PI;
+    const left = Math.min(2 + (s.trailingSide === -1 ? s.trailingDeg : 0), edge(s.k0.cx - s.stripX0));
+    const right = Math.min(2 + (s.trailingSide === 1 ? s.trailingDeg : 0), edge(s.stripX0 + s.stripW - s.k0.cx));
     for (let i = 0; i < 720; i++) {
       const off = ((((i + 0.5) / 2 - h) % 360) + 540) % 360 - 180;
       if (off >= -left && off <= right) this.coverage[i] = Math.max(this.coverage[i], CLASS_VALUE[s.cls]);
@@ -82,20 +93,21 @@ const W = 180, H = 320;
 const poseAt = (az: number, alt = 0): Quat => quatFromBasis(lookBasis(az, alt));
 const upOf = (q: Quat): V3 => qrotate(qinv(q), [0, 0, 1]);
 
-interface Rig {
-  tracker: Tracker; pano: StubPano; focal: Mutable<FocalLike>; latency: Mutable<LatencyLike>;
+interface Rig<P extends BandPanoramaLike = StubPano> {
+  tracker: Tracker; pano: P; focal: Mutable<FocalLike>; latency: Mutable<LatencyLike>;
   rgba: Uint8ClampedArray; frameNo: number; reads: number;
   /** Per frame id read back: the azimuth and the prediction handed to hold(). */
   heldAz: Map<number, number>; heldPred: Map<number, Quat>;
 }
-function rig(o: Partial<TrackerOptions> = {}, rgba = new Uint8ClampedArray(W * H * 4)): Rig {
-  const pano = new StubPano(), focal = stubFocal(), latency = stubLatency();
-  const tracker = new Tracker({ pano, focal, latency, frameW: W, frameH: H, sensorOnly: true, ...o });
-  return { tracker, pano, focal, latency, rgba, frameNo: 0, reads: 0, heldAz: new Map(), heldPred: new Map() };
+/** A tracker on the stub, or on `pano` when one is given (the real raster). */
+function rig<P extends BandPanoramaLike = StubPano>(o: Partial<TrackerOptions> = {}, rgba = new Uint8ClampedArray(W * H * 4), pano?: P): Rig<P> {
+  const p = (pano ?? new StubPano()) as P, focal = stubFocal(), latency = stubLatency();
+  const tracker = new Tracker({ pano: p, focal, latency, frameW: W, frameH: H, sensorOnly: true, ...o });
+  return { tracker, pano: p, focal, latency, rgba, frameNo: 0, reads: 0, heldAz: new Map(), heldPred: new Map() };
 }
 /** One frame: onFrame, then hold() on a read and commit() on a commit, as 3.5 steps 3, 5 and 6 do. A null azimuth
  *  is a null prediction. */
-function step(r: Rig, t: number, az: number | null, rate: number | null, alt = 0): FrameStep {
+function step(r: Rig<BandPanoramaLike>, t: number, az: number | null, rate: number | null, alt = 0): FrameStep {
   r.frameNo++;
   const pred: Prediction | null = az === null ? null : { q: poseAt(az, alt), t: t - 50, mode: 'relative', extrapolatedMs: 0, held: false };
   const s = r.tracker.onFrame(t, pred, rate);
@@ -109,21 +121,34 @@ function step(r: Rig, t: number, az: number | null, rate: number | null, alt = 0
   if (s.commit) r.tracker.commit();
   return s;
 }
+/** One frame whose readback fails (3.5 step 5): onFrame asks to read, the readback is null, and the scanner calls
+ *  noteReadFailed and neither hold() nor commit(). */
+function failRead(r: Rig, t: number, az: number, rate: number): FrameStep {
+  r.frameNo++;
+  const s = r.tracker.onFrame(t, { q: poseAt(az), t: t - 50, mode: 'relative', extrapolatedMs: 0, held: false }, rate);
+  assert.ok(s.read, 'a frame that asks to read');
+  r.tracker.noteReadFailed(t);
+  return s;
+}
 /** A steady turn at 30 frames/s from one azimuth to another; returns the time after the last frame. */
-function sweep(r: Rig, t: number, from: number, to: number, rate: number, alt = 0): number {
+function sweep(r: Rig<BandPanoramaLike>, t: number, from: number, to: number, rate: number, alt = 0): number {
   const dir = Math.sign(to - from), perFrame = rate / 30;
   for (let az = from; dir * (to - az) >= 0; az += dir * perFrame, t += 1000 / 30) step(r, t, az, rate, alt);
   return t;
 }
-/** A first keyframe at `az`, from one steady frame. */
-function started(az = 0, o: Partial<TrackerOptions> = {}): Rig {
-  const r = rig(o);
+/** A first keyframe at (`az`, `alt`), from one steady frame. */
+function started<P extends BandPanoramaLike = StubPano>(az = 0, o: Partial<TrackerOptions> = {}, alt = 0, pano?: P): Rig<P> {
+  const r = rig(o, undefined, pano);
   r.tracker.setActive(true);
-  assert.deepEqual(step(r, 0, az, 5), { read: true, commit: true, why: 'first' });
+  assert.deepEqual(step(r, 0, az, 5, alt), { read: true, commit: true, why: 'first' });
   return r;
 }
 const newest = (r: Rig) => r.tracker.keyframes[r.tracker.keyframes.length - 1];
 const lastSlice = (r: Rig) => r.pano.paints[r.pano.paints.length - 1].s;
+/** Reaches the protected re-render hook that T27 and T28 call. */
+class ProbeTracker extends Tracker {
+  rerender(): void { this.scheduleRerender(); }
+}
 
 // ---- The pure functions of 4.7 ------------------------------------------------
 
@@ -296,6 +321,76 @@ test('a null prediction reads nothing and is counted for one second', () => {
   step(r, 1300, 4.5, 20);
   assert.equal(r.tracker.staleInLastSecond, 0);
   assert.equal(r.tracker.keyframes.length, 1, 'the stale run committed nothing');
+
+  // The window is (t - 1000, t]: a refusal 999 ms old is counted, one exactly 1000 ms old is not (ruling S29).
+  const e = started(0);
+  step(e, 100, null, 20);
+  step(e, 1099, 1, 20);
+  assert.equal(e.tracker.staleInLastSecond, 1, '999 ms old');
+  step(e, 1100, 1.5, 20);
+  assert.equal(e.tracker.staleInLastSecond, 0, 'exactly 1000 ms old');
+});
+
+test('an unknown rate is never steady and never replaces a known candidate (S29)', () => {
+  // Rule 0: a null rate is not a steady frame, so only the 300 ms timeout takes it.
+  const a = rig();
+  a.tracker.setActive(true);
+  assert.deepEqual(step(a, 0, 0, null), { read: false, commit: false, why: 'waiting-sharper' });
+  assert.deepEqual(step(a, 299, 0.2, null), { read: false, commit: false, why: 'waiting-sharper' });
+  assert.deepEqual(step(a, 300, 0.4, null), { read: true, commit: true, why: 'first' });
+
+  // The window: the first frame with a null rate is held, not committed at once; a null rate never replaces a
+  // candidate whose rate is known, however fast that one was.
+  const b = started(0);
+  assert.deepEqual(step(b, 100, 4.2, null), { read: true, commit: false, why: 'step' });
+  const c = started(0);
+  step(c, 100, 4.2, 30);
+  const kept = c.frameNo;
+  assert.deepEqual(step(c, 133, 4.6, null), { read: false, commit: false, why: 'waiting-sharper' });
+  step(c, 166, 6.1, 30);
+  assert.equal(c.tracker.keyframes[1].frameId, kept);
+});
+
+test('noteReadFailed logs read-failed, drops the step and keeps an earlier candidate (S28)', () => {
+  // A failed first readback in the window: logged with the onFrame count as its frame id, the read is closed, nothing
+  // is held, and the next frame in the window reads again.
+  const a = started(0);
+  assert.deepEqual(failRead(a, 100, 4.2, 20), { read: true, commit: false, why: 'step' });
+  assert.equal(a.frameNo, 2);
+  assert.deepEqual({ ...a.tracker.log[a.tracker.log.length - 1] }, { at: 100, frameId: 2, outcome: 'read-failed' });
+  const pred: Prediction = { q: poseAt(4.2), t: 50, mode: 'relative', extrapolatedMs: 0, held: false };
+  assert.throws(() => a.tracker.hold({ frameId: 2, t: 100, w: W, h: H, rgba: a.rgba, readbackMs: 1 }, pred, 20, upOf(pred.q)),
+    /did not ask for a read/, 'no hold() after a failed readback');
+  assert.throws(() => a.tracker.commit(), /no candidate is held/);
+  assert.deepEqual(step(a, 133, 4.8, 20), { read: true, commit: false, why: 'step' }, 'the next frame reads again');
+  step(a, 166, 6.1, 20);
+  assert.equal(a.tracker.keyframes.length, 2);
+  assert.equal(a.tracker.keyframes[1].frameId, 3);
+
+  // A failed replacement (20 < 0.8 x 30) keeps the old candidate, and S + 2 commits it.
+  const b = started(0);
+  step(b, 100, 4.2, 30);
+  const kept = b.frameNo;
+  assert.deepEqual(failRead(b, 133, 4.6, 20), { read: true, commit: false, why: 'step' });
+  assert.equal(b.tracker.log[b.tracker.log.length - 1].outcome, 'read-failed');
+  assert.deepEqual(step(b, 166, 6.1, 30), { read: false, commit: true, why: 'step' });
+  assert.equal(b.tracker.keyframes[1].frameId, kept);
+  near(headingDeg(b.tracker.keyframes[1].pose), 4.2, 1e-9);
+
+  // A failed read that would have committed at once (a steady replacement, a frame past the window) commits nothing.
+  const c = started(0);
+  step(c, 100, 4.2, 30);
+  assert.deepEqual(failRead(c, 133, 4.6, 10), { read: true, commit: true, why: 'step' });
+  assert.equal(c.tracker.keyframes.length, 1);
+  step(c, 166, 6.1, 30);
+  assert.equal(c.tracker.keyframes[1].frameId, 2, 'the old candidate');
+  const d = started(0);
+  d.tracker.setActive(false);
+  step(d, 100, 5, 30);
+  d.tracker.setActive(true);
+  assert.deepEqual(failRead(d, 400, 9, 5), { read: true, commit: true, why: 'step' });
+  assert.equal(d.tracker.keyframes.length, 1);
+  assert.deepEqual(step(d, 433, 9.1, 5), { read: true, commit: true, why: 'step' }, 'the next frame reads again');
 });
 
 test('inactive frames do nothing', () => {
@@ -341,7 +436,52 @@ test('trailing fill for a 9-degree jump meets the previous slice on its side', (
   step(far, 400, 20, 5);
   near(lastSlice(far).trailingDeg, TRAILING_MAX_DEG, 1e-12);
   assert.equal(far.tracker.log[far.tracker.log.length - 1].detail, 'gap');
-  assert.equal(far.tracker.gapDeg, 8, 'covered to 2 by the first slice, from 10 by the second');
+  assert.equal(far.tracker.gapDeg, 6, 'covered to 2 by the first slice, from 8 by the second (2 + 10 back, inside its strip)');
+});
+
+test('a 10-degree trailing fill at d = 14 meets the previous slice through the real BandPanorama (S12)', () => {
+  // The fill paints the trailing side out to 3 + 10 = 13 degrees, weight 1 to 11 and 0.5 at 12, and the first slice's
+  // feather is 0.5 at 2 and 0 at 3, 14 degrees away, so the two meet with no alpha or coverage hole only if the strip
+  // holds that side out to 13 degrees. The plain strip ends 9.93 degrees left of the centre (columns 50-130 of 180),
+  // which left an alpha-0 sliver from 3 to 4.07 degrees and unpainted coverage from 2 to 4.07. The case is level, so
+  // these tangent angles are azimuths. 13 degrees is 228.5 tan 13 = 52.75 px from the centre (90),
+  // so the strip runs from column 37 (turning clockwise, the previous slice on the left) or to column 143 (turning
+  // counter-clockwise); the leading side keeps the plain edge. Every pixel carries its column, so the copy is checked.
+  const rgba = new Uint8ClampedArray(W * H * 4);
+  for (let p = 0; p < W * H; p++) { rgba[p * 4] = p % W; rgba[p * 4 + 3] = 255; }
+  for (const [from, to, x0, x1] of [[0, 14, 37, 131], [100, 86, 50, 143]] as const) {
+    const pano = new BandPanorama();
+    pano.begin(0);
+    const r = rig({}, rgba, pano);
+    r.tracker.setActive(true);
+    step(r, 0, from, 5);
+    assert.deepEqual(step(r, 400, to, 5), { read: true, commit: true, why: 'step' }, 'past the window with nothing held');
+
+    // Between the two slice centres: every column painted at every row from altitude 20 down to -10, and every
+    // coverage cell painted. The lists name what is not.
+    const lo = Math.min(from, to), hi = Math.max(from, to);
+    const rowTop = Math.ceil((90 - 20) * (PANO_H - 1) / 100);
+    const unseen: string[] = [], unpainted: string[] = [];
+    for (let x = 0; x < PANO_W; x++) {
+      const az = (x + 0.5) * 360 / PANO_W;
+      if (az <= lo || az >= hi) continue;
+      let rows = 0;
+      for (let y = rowTop; y < PANO_H; y++) if (pano.rgba[(y * PANO_W + x) * 4 + 3] !== 255) rows++;
+      if (rows > 0) unseen.push(`column ${x} (azimuth ${az.toFixed(2)}): ${rows} rows`);
+    }
+    for (let i = 0; i < PROFILE_BINS; i++) {
+      const az = (i + 0.5) * 360 / PROFILE_BINS;
+      if (az > lo && az < hi && pano.coverage[i] === 0) unpainted.push(`cell ${i} (azimuth ${az})`);
+    }
+    assert.deepEqual(unseen, [], `${from} to ${to}: alpha-0 columns between the slices`);
+    assert.deepEqual(unpainted, [], `${from} to ${to}: unpainted coverage cells between the slices`);
+    assert.equal(r.tracker.gapDeg, null);
+
+    const kf = r.tracker.keyframes[1];
+    assert.deepEqual([kf.stripX0, kf.stripX0 + kf.stripW], [x0, x1], `${from} to ${to}: the strip reaches 13 degrees on the trailing side only`);
+    assert.equal(kf.strip.length, kf.stripW * H * 3);
+    for (const c of [0, kf.stripW - 1]) assert.equal(kf.strip[(H - 1) * kf.stripW * 3 + c * 3], kf.stripX0 + c, `strip column ${c}`);
+  }
 });
 
 test('the cap: 140 keyframes by default, then nothing more is committed', () => {
@@ -367,16 +507,19 @@ test('gapDeg: the largest unpainted run of 2 degrees or more inside the swept ra
   assert.equal(r.tracker.gapDeg, null, 'a steady turn leaves none');
   assert.ok(r.tracker.coveredDeg > 35 && r.tracker.coveredDeg < 45, 'while most of the ring is unpainted beyond the ends');
 
-  // 2.5 degrees cleared inside the swept range count; the same outside it do not.
+  // 2.5 degrees cleared inside the swept range count, and exactly 2 (the threshold is inclusive, ruling S29); the same
+  // outside it do not.
   r.pano.coverage.fill(0, 40, 45);
   assert.equal(r.tracker.gapDeg, 2.5);
-  r.pano.coverage.fill(1, 40, 45);
+  r.pano.coverage.fill(1, 44, 45);
+  assert.equal(r.tracker.gapDeg, 2, 'exactly 2 degrees');
+  r.pano.coverage.fill(1, 40, 44);
   r.pano.coverage.fill(0, 100, 105);
   assert.equal(r.tracker.gapDeg, null, '50 degrees is past the newest keyframe: not yet turned to');
   r.pano.coverage.fill(0, 40, 43);
   assert.equal(r.tracker.gapDeg, null, '1.5 degrees is under 2');
 
-  // A 13-degree jump fills to within 1 degree of the first slice (a 20-degree jump, above, leaves 8).
+  // A 13-degree jump fills to the first slice: 2 + 9 degrees back reaches 2 (a 20-degree jump, above, leaves 6).
   const j = started(0);
   j.tracker.setActive(false);
   step(j, 100, 6, 30);
@@ -384,17 +527,29 @@ test('gapDeg: the largest unpainted run of 2 degrees or more inside the swept ra
   step(j, 400, 13, 5);
   assert.equal(j.tracker.gapDeg, null);
 
-  // The seam. Steady frames every 0.3 degrees commit at 4.2-degree spacing, so the last keyframe is at 352.8 and
-  // the frames after it are within S of keyframe 0: 3.0 degrees (354.8 to 358) stay unpainted. That is ahead of
-  // the user until the turn passes 360, and behind them after.
+  // The seam. Steady frames every 0.3 degrees commit at 4.2-degree spacing, so the last window keyframe is at 352.8
+  // and the frames after it are within S of keyframe 0: the window never opens on the 7.2 degrees between them, and
+  // 3.0 degrees (354.8 to 358) would stay unpainted. Rule 8 reads and commits the frame where the axis crosses their
+  // midpoint, 356.4 (or the next frame, 356.7, when rounding leaves 356.4 a hair nearer 352.8), which paints the run.
   const seam = started(0);
   let t = 100;
   for (let i = 1; i * 0.3 <= 359; i++) step(seam, t += 33, i * 0.3, 10);
-  near(headingDeg(newest(seam).pose), 352.8, 1e-9, 'the last keyframe');
-  assert.equal(seam.tracker.gapDeg, null, 'at 359 degrees the seam is still ahead');
+  near(headingDeg(seam.tracker.keyframes[84].pose), 352.8, 1e-9, 'the last window keyframe');
+  const mid = headingDeg(newest(seam).pose);
+  assert.ok(mid > 356.4 - 1e-9 && mid < 356.7 + 1e-9, `rule 8 at the midpoint: ${mid}`);
+  assert.equal(seam.tracker.keyframes.length, 86);
+  assert.equal(seam.tracker.gapDeg, null);
+  // Unpainted cells past the newest keyframe are ahead of the user until the turn passes 360, and behind them after;
+  // the cells are cleared by hand only while no frame runs, so rule 8 never sees them.
+  const painted = seam.pano.coverage.slice();
+  seam.pano.coverage.fill(0, 714, 720);
+  assert.equal(seam.tracker.gapDeg, null, 'at 359 degrees, 357 to 360 is still ahead');
+  seam.pano.coverage.set(painted);
   for (let i = 1; i <= 10; i++) step(seam, t += 33, 359 + i * 0.3, 10);
-  assert.equal(seam.tracker.keyframes.length, 85, 'no keyframe past the seam');
-  assert.equal(seam.tracker.gapDeg, 3, 'past 360 the seam is a gap behind the turn');
+  assert.equal(seam.tracker.keyframes.length, 86, 'no keyframe past the seam');
+  assert.equal(seam.tracker.gapDeg, null);
+  seam.pano.coverage.fill(0, 714, 720);
+  assert.equal(seam.tracker.gapDeg, 3, 'past 360 the same cells are a gap behind the turn');
 
   // After the full turn the whole ring is inside, and a run across azimuth 0 is one run. The coverage is set by
   // hand so that only the cleared cells are unpainted.
@@ -420,7 +575,82 @@ test('coveredDeg counts the painted coverage cells / 2', () => {
   step(j, 100, 10, 30);
   j.tracker.setActive(true);
   step(j, 400, 20, 5);
-  assert.equal(j.tracker.coveredDeg, 16, '8 cells around the first slice and 24 from 10 to 22 degrees');
+  assert.equal(j.tracker.coveredDeg, 18, '8 cells around the first slice and 28 from 8 to 22 degrees');
+});
+
+// ---- Rule 8, the bracketed gap (ruling S27) -------------------------------------
+
+test('rule 8 closes the ring seam: a steady ring at 15, 20 and 30 deg/s, pitch 0 and 23, leaves no gap after 375 degrees', () => {
+  // Keyframes the same rings commit without rule 8 (the T19 tracker, this frame path), which left seams of 5 to 9.5
+  // degrees: between keyframes w apart the window opens only for w >= 8 and commits only for w >= 12.
+  const before: Record<number, Record<number, number>> = { 0: { 15: 83, 20: 82, 30: 79 }, 23: { 15: 78, 20: 76, 30: 71 } };
+  const gaps: string[] = [], extras: string[] = [];
+  for (const alt of [0, 23]) for (const rate of [15, 20, 30]) {
+    const r = started(0, {}, alt);
+    sweep(r, 33, rate / 30, 375, rate, alt);
+    const what = `pitch ${alt} at ${rate} deg/s`, extra = r.tracker.keyframes.length - before[alt][rate];
+    if (r.tracker.gapDeg !== null) gaps.push(`${what}: ${r.tracker.gapDeg}`);
+    if (extra < 1 || extra > 2) extras.push(`${what}: ${extra}`);
+  }
+  assert.deepEqual(gaps, [], 'gapDeg after the full turn');
+  assert.deepEqual(extras, [], 'keyframes more than without rule 8, outside 1 to 2');
+
+  // The design point through the real raster, whose coverage cells read the painted classes between altitude -2 and
+  // +10, where a slice at pitch 23 is about 2 degrees of azimuth either side.
+  const pano = new BandPanorama();
+  pano.begin(0);
+  const real = started(0, {}, 23, pano);
+  sweep(real, 33, 20 / 30, 375, 20, 23);
+  assert.equal(real.tracker.gapDeg, null, 'the real raster: no gap after the full turn');
+  const extra = real.tracker.keyframes.length - before[23][20];
+  assert.ok(extra >= 1 && extra <= 2, `the real raster: ${extra} keyframes more than without rule 8`);
+});
+
+test('rule 8: a reversal over normal keyframes adds none', () => {
+  // Neighbours S to S + one frame step apart leave no unpainted run of 2 degrees, so crossing their midpoints back
+  // and forth reads nothing and commits nothing. In five of the six cases a candidate is held at the far end (all but
+  // pitch 0 at 20 deg/s), which a rule 8 fired without its gap test would commit.
+  for (const alt of [0, 23]) for (const rate of [15, 20, 30]) {
+    const r = started(0, {}, alt);
+    let t = sweep(r, 33, rate / 30, 90, rate, alt);
+    const n = r.tracker.keyframes.length, reads = r.reads;
+    t = sweep(r, t, 88, 2, rate, alt);
+    t = sweep(r, t, 2, 88, rate, alt);
+    sweep(r, t, 88, 2, rate, alt);
+    assert.equal(r.tracker.keyframes.length, n, `pitch ${alt} at ${rate} deg/s: no keyframe`);
+    assert.equal(r.reads, reads, `pitch ${alt} at ${rate} deg/s: no readback`);
+  }
+});
+
+test('rule 8 fires on a bracketed run of exactly 2 degrees, the gap threshold, and not on 1.5', () => {
+  // Keyframes at 0 and 4.3 leave cell 4 (2.0-2.5) unpainted; clearing cells 2-5 by hand makes the run between them
+  // exactly 2 degrees, and 2-4 makes it 1.5. Turning back across their midpoint (2.15) is the crossing.
+  for (const [clearTo, commits] of [[6, true], [5, false]] as const) {
+    const r = started(0);
+    assert.deepEqual(step(r, 100, 4.3, 12), { read: true, commit: true, why: 'step' });
+    r.pano.coverage.fill(0, 2, clearTo);
+    assert.equal(step(r, 133, 3.0, 12).why, 'covered', 'nearest is the new keyframe: not a crossing');
+    assert.deepEqual(step(r, 166, 2.0, 12), commits ? { read: true, commit: true, why: 'step' } : { read: false, commit: false, why: 'covered' },
+      `a run of ${(clearTo - 2) / 2} degrees`);
+    assert.equal(r.tracker.keyframes.length, commits ? 3 : 2);
+  }
+});
+
+test('rule 8 waits while a re-render is pending, because the raster is then cleared on purpose', () => {
+  const pano = new StubPano(), focal = stubFocal(), latency = stubLatency();
+  const r: Rig = { tracker: new ProbeTracker({ pano, focal, latency, frameW: W, frameH: H, sensorOnly: true }), pano, focal, latency,
+    rgba: new Uint8ClampedArray(W * H * 4), frameNo: 0, reads: 0, heldAz: new Map(), heldPred: new Map() };
+  r.tracker.setActive(true);
+  step(r, 0, 0, 5);
+  let t = sweep(r, 33, 0.6, 40, 20);
+  const n = r.tracker.keyframes.length, reads = r.reads;
+  (r.tracker as ProbeTracker).rerender();
+  t = sweep(r, t, 38, 2, 20);
+  assert.equal(r.tracker.keyframes.length, n, 'every midpoint crossed over a cleared raster, nothing committed');
+  assert.equal(r.reads, reads);
+  assert.equal(r.tracker.pump(100), 0);
+  sweep(r, t, 2, 38, 20);
+  assert.equal(r.tracker.keyframes.length, n, 'nor once it is repainted');
 });
 
 test('livePose = C . pred, with C = P_k . G_k^-1 of the newest keyframe', () => {
@@ -527,10 +757,6 @@ test('sigmaDeg comes from placementSigmaDeg with keyframe 0 as the only anchor',
   const far = kfs[kfs.length - 1];
   assert.ok(far.sigmaDeg > 3.6 && far.sigmaDeg < 4.5, `about 200 degrees out: ${far.sigmaDeg}`);
 });
-
-class ProbeTracker extends Tracker {
-  rerender(): void { this.scheduleRerender(); }
-}
 
 test('renderAll and pump clear and repaint, renderAll with worldYaw composed; sliceMsP50', () => {
   const pano = new StubPano(), focal = stubFocal(), latency = stubLatency();
