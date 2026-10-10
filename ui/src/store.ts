@@ -1413,11 +1413,20 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
         // coalesce forever and timed ones coalesce for as long as they are up
         // (floor of TOAST_DEDUPE_MS so rapid repeats of a short success toast
         // still merge). The ×N chip is exactly the channel for this.
+        //
+        // IDENTICAL MEANS THE DETAIL TOO (#933). The key used to be title and
+        // level alone, and the merge keeps the FIRST toast's detail, so a second
+        // failure under the same title with a different reason ("That flow did
+        // not open" / "no flow named X", then / "disk full") was counted as a
+        // repeat of the first and the operator read a stale reason for a new
+        // failure. A different reason is a different toast; no detail equals no
+        // detail.
         const dupe = toasts.find(
           (t) =>
             t.kind === "generic" &&
             t.title === input.title &&
             t.level === level &&
+            (t.detail ?? "") === (input.detail ?? "") &&
             (t.ttl === 0 || now - t.createdAt < Math.max(TOAST_DEDUPE_MS, t.ttl)),
         );
         if (dupe) {
