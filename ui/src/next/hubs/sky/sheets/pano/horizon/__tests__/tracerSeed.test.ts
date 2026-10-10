@@ -36,7 +36,7 @@
 //     than a lone bin (both Tall); within it a lone bin is already sky. The pair that vouches for itself is gone.
 //   - The MUTATION notes named `seedFor`, which no longer exists. They are rewritten from a per-case run of the mutants
 //     against the ported tracer (the T10 report's ids). The mutant that stood in for "return seed unconditionally",
-//     the window model pooled from the whole ring (W03), is caught in horizonTrace.test.ts, not here: the ring sky
+//     the window model pooled from the whole ring (W03), is caught in horizonTraceRules.test.ts, not here: the ring sky
 //     makes a pooled model and a window model agree on every arc this file builds.
 // DROPPED: none. The closing note of the old file (the dark-row-0 zenith rule) is dropped with the zenith.
 import assert from 'node:assert/strict';

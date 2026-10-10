@@ -31,7 +31,7 @@
 //   - 27-35 "A nearby house reaching 75 degrees ...": `projectSweepColumns` of band frames. Projection.
 //   - 36-44 "Overhead tilt needs no heading ...": cameraElevation and the overhead band.
 //   - 45-61 "Near-overhead branches survive ...": projection of three bands. The floating-branch fact it pinned
-//     (a 14 degree floating obstruction qualifies on its own) is a new case in horizonTrace.test.ts.
+//     (a 14 degree floating obstruction qualifies on its own) is a new case in horizonTraceRules.test.ts.
 //   - 165-174 "A bright zenith row ...", 175-191 "A dark zenith SAMPLE ...", 192-201 "A zenith that is really
 //     covered ...": the shared zenith sample. The raster has none (SPEC-v2 5.1); the tracer has no zenith rule.
 //   - 449-454 "Returning to the lower elevation cannot erase a high obstruction", 455-459 "An unscanned upper
@@ -39,7 +39,7 @@
 //   - 460-466 "A blocked zenith remains blocked ...": projection and zenith.
 //   - 467-470 "Manual review can retain obstructions all the way to 90 degrees": `altFromY` and `movePoint`, the
 //     editor, which is not touched and keeps its own test.
-// The two mutants named by SPEC-v2 7.2 are held in horizonTrace.test.ts.
+// The two mutants named by SPEC-v2 7.2 are held in horizonTraceRules.test.ts.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { AZ_DEPARTURE, RE_EXPOSURE_BAND_PCT, RE_EXPOSURE_PCT, TRACE, robustSpread } from '../horizonTrace';

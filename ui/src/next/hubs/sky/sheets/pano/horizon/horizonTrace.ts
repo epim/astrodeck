@@ -182,8 +182,18 @@ export function robustSpread(values: number[]): number {
   return MAD_TO_SIGMA * percentile(values.map(v => Math.abs(v - middle)), 0.5);
 }
 
-/** The k-th smallest of a[0..n) (0-based), reordering `a`. Wirth's selection; every value must be finite. */
-function kth(a: Float64Array, n: number, k: number): number {
+/** The k-th smallest of a[0..n) (0-based), reordering `a`. Wirth's selection. The answer is an order statistic only
+ *  where every value is finite (NaN has no place in an order), but the loop ENDS for any contents, NaN and the
+ *  infinities included, so a stray NaN can spoil one number and can never stall the thread:
+ *    1. The first scan of a pass stops no later than the pivot's own slot k (`a[k] < x` and `x < a[k]` are both false
+ *       for the value it was read from), so i <= k <= j and the first swap always happens.
+ *    2. A swap puts the value that stopped the left scan (not below the pivot) into the slot j stood on, and the one
+ *       that stopped the right scan (not above it) into the slot i stood on. Each scan therefore stops at those
+ *       slots at the latest (a NaN fails both tests, so it stops both scans): i and j stay inside [l, m], and a
+ *       pass ends with i > j.
+ *    3. Then either j < k, and l moves up to i > l, or k <= j < i, and m moves down to j < m. [l, m] shrinks every pass.
+ *  Exported for the test that drives it with NaN, infinities and empty ranges. */
+export function kth(a: Float64Array, n: number, k: number): number {
   let l = 0, m = n - 1;
   while (l < m) {
     const x = a[k];
@@ -210,8 +220,9 @@ function medianRange(a: Float32Array, from: number, to: number): number {
 }
 
 /** The last `cap` values pushed, kept sorted, so the follow model's median, p95 and MAD cost a few dozen
- *  operations a row instead of a sort. Nearest-rank, like `percentile`. */
-class RollingWindow {
+ *  operations a row instead of a sort. Nearest-rank, like `percentile`; `spread` is `robustSpread` of the same values.
+ *  Finite values only (a NaN pushed in has no place in the order). Exported for the test that holds both. */
+export class RollingWindow {
   private readonly sorted: Float64Array;
   private readonly ring: Float64Array;
   n = 0;
@@ -221,39 +232,54 @@ class RollingWindow {
     this.ring = new Float64Array(cap);
   }
   clear(): void { this.n = 0; this.head = 0; }
-  private lowerBound(v: number): number {
-    let lo = 0, hi = this.n;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (this.sorted[mid] < v) lo = mid + 1; else hi = mid;
-    }
-    return lo;
-  }
+  /** Push `v`; once full, the oldest value leaves and `v` takes its place in the order. Only the values between the
+   *  two positions move, one place each: the window is pushed once per row of every column, in two channels, so two
+   *  block copies of the whole window per push were a fifth of the extraction. */
   push(v: number): void {
-    if (this.n === this.cap) {
-      const at = this.lowerBound(this.ring[this.head]);
-      this.sorted.copyWithin(at, at + 1, this.n);
-      this.n--;
+    const s = this.sorted;
+    const n = this.n;
+    if (n < this.cap) {
+      this.ring[this.head] = v;
+      this.head = (this.head + 1) % this.cap;
+      let i = n;
+      while (i > 0 && s[i - 1] > v) { s[i] = s[i - 1]; i--; }
+      s[i] = v;
+      this.n = n + 1;
+      return;
     }
+    const old = this.ring[this.head];
     this.ring[this.head] = v;
     this.head = (this.head + 1) % this.cap;
-    const at = this.lowerBound(v);
-    this.sorted.copyWithin(at + 1, at, this.n);
-    this.sorted[at] = v;
-    this.n++;
+    // The evicted value's place: the first slot not below it (it is in the window, so that slot holds an equal one).
+    let lo = 0, hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (s[mid] < old) lo = mid + 1; else hi = mid;
+    }
+    let i = lo;
+    if (old < v) { while (i + 1 < n && s[i + 1] < v) { s[i] = s[i + 1]; i++; } }
+    else { while (i > 0 && s[i - 1] > v) { s[i] = s[i - 1]; i--; } }
+    s[i] = v;
   }
   at(p: number): number { return this.sorted[rank(this.n, p)]; }
-  /** 1.4826 x the median absolute deviation, the k-th smallest deviation found by walking out from the median. */
+  /** 1.4826 x the median absolute deviation. The deviations of the values below the median, nearest first, are
+   *  ascending, and so are those above it; the MAD is the `mi`-th smallest of the two runs together, which halving
+   *  finds in a handful of steps where walking out from the median took `mi` of them for each channel of each row. */
   spread(): number {
     const n = this.n;
     if (n === 0) return 0;
     const s = this.sorted, mi = rank(n, 0.5), m = s[mi];
-    let l = mi - 1, r = mi + 1, dev = 0;
-    for (let step = 0; step < mi; step++) {
-      const dl = l >= 0 ? m - s[l] : Infinity, dr = r < n ? s[r] - m : Infinity;
-      if (dl <= dr) { dev = dl; l--; } else { dev = dr; r++; }
+    if (mi === 0) return 0;
+    // Take `lo` deviations from the lower run and `mi - lo` from the upper: the `mi` smallest of all. Raise `lo`
+    // while the farthest upper deviation taken (slot mi + mi - lo) is larger than the nearest lower one left out
+    // (slot mi - 1 - lo). mi <= n - 1 - mi, so the upper run always has the `mi` deviations asked of it.
+    let lo = 0, hi = mi;
+    while (lo < hi) {
+      const i = (lo + hi) >> 1;
+      if (s[mi + mi - i] - m > m - s[mi - 1 - i]) lo = i + 1; else hi = i;
     }
-    return MAD_TO_SIGMA * dev;
+    const dl = lo > 0 ? m - s[mi - lo] : -Infinity, dr = mi - lo > 0 ? s[mi + mi - lo] - m : -Infinity;
+    return MAD_TO_SIGMA * (dl > dr ? dl : dr);
   }
 }
 
