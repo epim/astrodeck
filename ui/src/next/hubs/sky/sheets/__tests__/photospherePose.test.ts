@@ -1,7 +1,7 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
-import { CameraPoseHistory, MotionStability, viewVouchesFor,
+import { CameraPoseHistory, MotionStability, ZERO_TRUST_MS, viewVouchesFor,
   MOTION_STALE_MS, QUIET_DRIFT_DEG, QUIET_RATE_DEG_S } from '../photospherePose';
 import { lookBasis, orientationBasis } from '../photosphereGeometry';
 // The fixture's dispatch predicate lives in this tracked helper (the fixture
@@ -333,6 +333,31 @@ test('A Chromium gyro, which rounds to 0.1 deg/s, keeps vouching through the exa
   // The run reaches back exactly to its first non-zero sample and no further.
   assert.deepEqual(view?.lastBreak,{from:first*16,to:first*16});
   assert.equal(viewVouchesFor(first*16-500,view),false,'the zeros ahead of the first non-zero sample vouched for a reading they did not watch');
+});
+test('A gyro that worked and then died stuck at zero stops vouching within ZERO_TRUST_MS (issues #106, #952)',()=>{
+  // A real Chromium still stream for 2 s opens a quiet run, then the driver
+  // dies and reports exact zeros at 60 Hz for 8 s more. Zeros inside
+  // ZERO_TRUST_MS of the last non-zero triple are still readings; after it they
+  // are not samples, `at` stops, and the witness goes stale.
+  // Mutation: count every zero once any non-zero was seen (the first #952
+  // rule, `if(!this.measured)return;`). Observed red: 'a gyro dead at zero
+  // for 8 s still vouched'.
+  const m=new MotionStability();
+  const live=chromiumStill(125);
+  live.forEach((rate,i)=>m.observe(i*16,rate));
+  let lastLive=-1;
+  live.forEach((rate,i)=>{if(!isZero(rate))lastLive=i*16;});
+  assert.ok(lastLive>=0,'the live stream has no non-zero triple');
+  const zero={alpha:0,beta:0,gamma:0};
+  let at=124*16;
+  while(at<10000){at+=16;m.observe(at,zero);}
+  assert.equal(m.witness(lastLive+ZERO_TRUST_MS-100),'quiet','zeros inside the trust window stopped counting');
+  assert.equal(m.witness(at),'stale','a gyro dead at zero for 8 s still vouched');
+  // A still phone whose non-zero triples keep coming is unaffected for as long
+  // as it holds: 10 s of the Chromium stream still reads quiet at its end.
+  const held=new MotionStability();
+  chromiumStill(625,11).forEach((rate,i)=>held.observe(i*16,rate));
+  assert.equal(held.witness(624*16),'quiet','a still Chromium phone lost its witness on a 10 s hold');
 });
 console.log(`photospherePose.test: ${passed}/${passed} passed`);
 export const result={passed,failed:0,total:passed};

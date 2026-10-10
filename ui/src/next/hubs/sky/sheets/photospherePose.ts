@@ -256,6 +256,17 @@ export const QUIET_DRIFT_DEG = 0.5;
  *  changes. */
 export const MOTION_STALE_MS = 200;
 
+/** How long after this stream's last NON-ZERO triple an exact `{0, 0, 0}` is
+ *  still a reading (issue #952, and #106's "died" half). Chromium rounds rates
+ *  to 0.1 deg/s, so a still phone with 0.02 deg/s rms of noise shows a non-zero
+ *  triple about once every 0.45 s at 60 Hz; the chance that 5 s pass without
+ *  one is about 5e-6. A gyro that worked and then died stuck at zero therefore
+ *  stops vouching within 5 s and the witness goes stale, which is the refusal
+ *  direction. A phone quieter than that noise floor loses the witness on a long
+ *  still hold, which is also the refusal direction; #48's device pass is what
+ *  can tune the number. */
+export const ZERO_TRUST_MS = 5000;
+
 /** THE SECOND WITNESS, for the one view the first cannot see.
  *
  *  `VisualStability` vouches for a reading by watching the PICTURE, and over a
@@ -287,12 +298,11 @@ export class MotionStability {
   private stillSince: number | null = null;
   private lastBreak: { from: number; to: number } | null = null;
   private drift: [number, number, number] = [0, 0, 0];
-  /** Has this session's stream delivered any NON-ZERO, finite triple (issue
-   *  #952)? Until it has, an exact `{0, 0, 0}` is not a sample - see `observe`.
-   *  Cleared only by `clear`, so it is a fact about the session's stream and
-   *  not about the current run. */
-  private measured = false;
-  clear(){this.at=-Infinity;this.stillSince=null;this.lastBreak=null;this.drift=[0,0,0];this.measured=false;}
+  /** When this stream last delivered a NON-ZERO, finite triple (issue #952).
+   *  An exact `{0, 0, 0}` is a sample only within ZERO_TRUST_MS of it - see
+   *  `observe`. Cleared only by `clear`. */
+  private lastNonZero = -Infinity;
+  clear(){this.at=-Infinity;this.stillSince=null;this.lastBreak=null;this.drift=[0,0,0];this.lastNonZero=-Infinity;}
 
   /** One `devicemotion` sample: `at` on the performance clock, `rate` the
    *  event's own `rotationRate` in degrees per second.
@@ -323,11 +333,12 @@ export class MotionStability {
    *  witness dead for those samples: the occasional non-zero one is the only
    *  sample that advanced `at`, so the run broke on the stale bound and the
    *  featureless hold (#63) could rarely be vouched for. So a zero triple is a
-   *  real sample once this stream has delivered ANY non-zero, finite triple
-   *  (`measured`): a stream that has shown it can say something else is a gyro,
-   *  and its zeros are readings. A stream that has not is still refused, which is
-   *  all that #106's case needs - a channel of nothing but zeros never opens a
-   *  run, and zeros ahead of the first non-zero sample are dropped.
+   *  real sample while this stream has delivered a non-zero, finite triple
+   *  within ZERO_TRUST_MS (`lastNonZero`): a stream that has lately shown it can
+   *  say something else is a gyro, and its zeros are readings. A stream that has
+   *  not is still refused, which is all that #106's case needs - a channel of
+   *  nothing but zeros never opens a run, and zeros ahead of the first non-zero
+   *  sample are dropped.
    *
    *  "No gyro" therefore means no non-zero sample at all, and it can only be
    *  CONCLUDED once the orientation stream shows at least 10 degrees of motion,
@@ -336,12 +347,11 @@ export class MotionStability {
    *  orientation stream and does not need to: in both states it vouches for
    *  nothing, which is the direction it is written to fail in.
    *
-   *  What it costs, and the cost is real: a gyro that WORKED and then dies stuck
-   *  at zero keeps its flag, so its zeros go on advancing `at` and vouching - the
-   *  case #106 once caught by the stale bound. Nothing in the stream tells that
-   *  apart from a still phone on a device whose non-zero samples are rare; a
-   *  bound on the age of the last non-zero sample would, and its number is one
-   *  only #48's device pass can supply (it depends on the phone's noise floor).
+   *  A gyro that WORKED and then dies stuck at zero is the case #106 once
+   *  caught by the stale bound: its zeros stop counting ZERO_TRUST_MS after its
+   *  last non-zero triple, `at` stops advancing, and the witness goes stale
+   *  MOTION_STALE_MS later. The number depends on the phone's noise floor, and
+   *  #48's device pass can tune it.
    *
    *  A real stream that interleaves the occasional empty event is unharmed
    *  either way: the real samples on each side of one still bound their own
@@ -352,8 +362,8 @@ export class MotionStability {
     const axes=[rate?.alpha,rate?.beta,rate?.gamma];
     if(!axes.every((v):v is number=>typeof v==='number'&&Number.isFinite(v)))return;
     const [a,b,c]=axes as number[];
-    if(a===0&&b===0&&c===0){if(!this.measured)return;}
-    else this.measured=true;
+    if(a===0&&b===0&&c===0){if(at-this.lastNonZero>ZERO_TRUST_MS)return;}
+    else this.lastNonZero=at;
     const previousAt=this.at,gap=at-previousAt;
     this.at=at;
     // Nothing watched the phone before the first sample, or across a gap wider
