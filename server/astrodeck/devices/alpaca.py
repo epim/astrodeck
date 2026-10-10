@@ -589,10 +589,11 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         ctype = r.headers.get("content-type", "")
         if "imagebytes" in ctype:
             return self._parse_imagebytes(r.content)
-        body = r.json()
-        if body.get("ErrorNumber", 0) != 0:
-            raise DeviceError(body.get("ErrorMessage", "image download failed"))
-        arr = np.array(body["Value"], dtype=np.int32)  # Alpaca arrays are [x][y]
+        # The JSON fallback is an ordinary Alpaca reply, so it is unwrapped like
+        # one: a failure names the status, the route and the ASCOM error
+        # number, never the driver's ErrorMessage (#926, the #906 rule).
+        value = self.conn._unwrap(r, f"camera/{self.dev_num}/imagearray")
+        arr = np.array(value, dtype=np.int32)  # Alpaca arrays are [x][y]
         return np.clip(arr.T, 0, 65535).astype(np.uint16)
 
     @staticmethod

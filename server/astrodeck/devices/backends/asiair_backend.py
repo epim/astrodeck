@@ -255,6 +255,32 @@ def _is_busy(exc: BaseException) -> bool:
             and hasattr(exc, "activity") and hasattr(exc, "requested"))
 
 
+#: Said after a libasi failure so a bare class name does not read as a bug.
+_NOT_QUOTED = "libasi's own message is not quoted"
+
+
+def _shown_failure(exc: BaseException) -> str:
+    """How a libasi exception is named in a ``DeviceError`` and in
+    ``last_error``: its class, plus the box's numeric ``code`` when it carries
+    one. NEVER ``str(exc)`` (#927).
+
+    libasi's ``ASIAIRError`` builds its message from the ``error`` string of
+    the box's reply (``asiair/transport.py``: ``raise ASIAIRError(result
+    ["error"], ...)``), and nothing bounds what the box writes there. The box
+    reports the mount's position (``scope_get_info``) and is sent one
+    (``scope_sync``, ``start_auto_goto``), so an error about either can quote
+    it. At the home position the mount points at the pole, so a figure it
+    quotes is a site oracle (#140, #166) in a line that reaches the logs and
+    the status surfaces. The class and the code can be looked up; the words
+    cannot be trusted. The same rule as ``alpaca._shown_error_number`` (#906)
+    and the AM5's (#863)."""
+    name = type(exc).__name__
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and not isinstance(code, bool):
+        return f"{name} code {code}"
+    return name
+
+
 # ------------------------------------------------------------------- the link
 
 class _Link:
@@ -284,9 +310,11 @@ class _Link:
         try:
             await asyncio.to_thread(self.client.connect, True)
         except Exception as exc:  # noqa: BLE001
-            self.last_error = str(exc)[:200]
+            shown = _shown_failure(exc)
+            self.last_error = f"connect: {shown}"[:200]
             raise DeviceError(
-                f"ASIAIR {self.host}: could not connect — {exc}") from exc
+                f"ASIAIR {self.host}: could not connect — {shown} "
+                f"({_NOT_QUOTED})") from exc
         self.connected = True
         self.last_ok = time.time()
 
@@ -305,7 +333,10 @@ class _Link:
         """Run ONE blocking libasi call off the event loop, under the lock.
 
         Maps libasi's exceptions onto ``DeviceError`` with a message that says
-        what failed and (for BusyError) what the box is doing instead.
+        what failed and (for BusyError) what the box is doing instead. A
+        failure is named by its class and code, never by libasi's own text,
+        which can quote the box's reply (``_shown_failure``, #927); the
+        original stays on ``__cause__``, where ``sync`` reads its class.
 
         A CANCEL KEEPS THE LOCK UNTIL THE THREAD RETURNS. A cancel (a bound
         such as the engine's ``_bounded`` or the sync read-back's, a STOP)
@@ -328,9 +359,11 @@ class _Link:
             except Exception as exc:  # noqa: BLE001 — one honest DeviceError out
                 if _is_busy(exc):
                     raise DeviceError(self._busy_message(exc, what)) from exc
-                self.last_error = f"{what}: {exc}"[:200]
+                shown = _shown_failure(exc)
+                self.last_error = f"{what}: {shown}"[:200]
                 raise DeviceError(
-                    f"ASIAIR {self.host}: {what} failed — {exc}") from exc
+                    f"ASIAIR {self.host}: {what} failed — {shown} "
+                    f"({_NOT_QUOTED})") from exc
         finally:
             if not orphaned:
                 self._lock.release()
