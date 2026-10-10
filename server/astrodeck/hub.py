@@ -1601,7 +1601,15 @@ class Hub:
         # replaced or the rig torn down (session-leak fix); close the one we are
         # replacing so its keep-alive sockets don't accumulate per reconnect.
         self._alpaca_sessions[role] = session
-        if old:
+        # The SAME Alpaca device again (reconnect_role rebuilds one from its
+        # record, #966) is not disconnected: the server keeps one Connected
+        # state per device, so the old object's Connected=False would undo the
+        # connect that just succeeded and the new object would answer 0x407.
+        replaced_same = old is not None and tuple(
+            str(getattr(old, a, None)).lower()
+            for a in ("host", "port", "dev_type", "dev_num")
+        ) == tuple(str(v).lower() for v in (host, port, dev_type, dev_num))
+        if old and not replaced_same:
             try:
                 await old.disconnect()
             except Exception:
