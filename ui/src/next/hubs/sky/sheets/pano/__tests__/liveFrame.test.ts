@@ -3,9 +3,17 @@
 // T15: the live-frame mesh of the panorama scanner (SPEC-v2 4.11, D19).
 //
 // Mutant this file must catch (SPEC-v2 7.2): a single row of cells, `rows` defaulting to 1 instead of 8. The first
-// test below measures the mesh against the exact projection at 36 interior points per triangle and fails on the
-// 0.21 ribbon-degree bound (1.61 degrees with one row). It runs first, and on the default options, so the
-// mutant is reported on that line and not on a count.
+// test below measures the mesh against the exact projection at 36 lattice points per triangle, the triangle edges
+// included (barycentric step 1/7, where the drawn error peaks: 0.2088 at pitch 23), and fails on the 0.21
+// ribbon-degree bound (1.71 degrees with one row). It runs first, and on the default options, so the mutant is
+// reported on that line and not on a count.
+//
+// The altitude cap (ruling S23) is graded by sweeping it: the cap test puts the cap between every two consecutive
+// vertex altitudes, with the camera rolled by +-20 degrees so that no two vertices share an altitude, and compares
+// the mesh with the triangles whose three vertices are all under the cap. Its tally shows that each of the three
+// vertex positions of a triangle is, in some swept case, the only vertex over the cap. Mutants it was checked
+// against: the cap test missing the first vertex of a triangle (the one the earlier test, with three fixed caps and
+// no roll, let live), the second, and the third.
 //
 // Mutants the other tests were checked against: the altitude cap ignored, the azimuth not wrapped in `ribbonPoint`,
 // the over-the-pole guard removed, `b` and `c` swapped in `affineFromTriangle`, `srcW` and `srcH` ignored, and the
@@ -63,19 +71,21 @@ function exactRibbon(basis: CameraBasis, k: Intrinsics, view: RibbonView, x: num
   return [view.widthPx / 2 + shortWay(az - view.centreAz) * view.pxPerDeg, (view.altTop - alt) * view.pxPerDeg];
 }
 
-/** The 36 strictly interior points of a triangle cut into ten: barycentric (i, j, 10 - i - j) / 10 with all three >= 1. */
-const INTERIOR: [number, number, number][] = [];
-for (let i = 1; i <= 8; i++) for (let j = 1; i + j <= 9; j++) INTERIOR.push([i / 10, j / 10, (10 - i - j) / 10]);
+/** The 36 lattice points of a triangle cut into seven, its edges and vertices included: barycentric
+ *  (i, j, 7 - i - j) / 7 with i, j >= 0. The drawn error peaks on the edges, which a strictly interior lattice (the 36
+ *  points of a triangle cut into ten, all three weights >= 1 / 10) never reaches: it reads 0.1926 where this reads 0.2088. */
+const LATTICE: [number, number, number][] = [];
+for (let i = 0; i <= 7; i++) for (let j = 0; i + j <= 7; j++) LATTICE.push([i / 7, j / 7, (7 - i - j) / 7]);
 
 const apply = (m: readonly number[], x: number, y: number): [number, number] => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 
-/** Worst departure, in ribbon degrees, of the drawn mesh from the exact projection over the interior points of every
+/** Worst departure, in ribbon degrees, of the drawn mesh from the exact projection over the lattice points of every
  *  triangle. "Drawn" is the affine transform the canvas would be given, applied to the point's source pixel. */
 function meshError(tris: LiveTriangle[], cam: { basis: CameraBasis }, k: Intrinsics, view: RibbonView): number {
   let worst = 0;
   for (const t of tris) {
     const m = affineFromTriangle(t);
-    for (const [wa, wb, wc] of INTERIOR) {
+    for (const [wa, wb, wc] of LATTICE) {
       const x = wa * t.src[0] + wb * t.src[2] + wc * t.src[4], y = wa * t.src[1] + wb * t.src[3] + wc * t.src[5];
       const [dx, dy] = apply(m, x, y), [ex, ey] = exactRibbon(cam.basis, k, view, x, y);
       worst = Math.max(worst, Math.hypot(dx - ex, dy - ey) / view.pxPerDeg);
@@ -86,8 +96,8 @@ function meshError(tris: LiveTriangle[], cam: { basis: CameraBasis }, k: Intrins
 
 // ---- The proof row ---------------------------------------------------------
 
-test('the 4 x 8 mesh matches the exact projection within 0.21 ribbon degrees at 36 interior points per triangle (pitch 23)', () => {
-  assert.equal(INTERIOR.length, 36);
+test('the 4 x 8 mesh matches the exact projection within 0.21 ribbon degrees at 36 lattice points per triangle, edges included (pitch 23)', () => {
+  assert.equal(LATTICE.length, 36);
   let worst = 0, checked = 0;
   // The mesh does not depend on the azimuth; four headings, one of them across the 359/0 seam.
   for (const az of [0, 90.5, 200, 355]) {
@@ -95,9 +105,11 @@ test('the 4 x 8 mesh matches the exact projection within 0.21 ribbon degrees at 
     const tris = liveFrameMesh(cam.pose, K1, 90, 160, view);
     assert.ok(tris.length > 0, `no triangles at azimuth ${az}`);
     worst = Math.max(worst, meshError(tris, cam, K1, view));
-    checked += tris.length * INTERIOR.length;
+    checked += tris.length * LATTICE.length;
   }
   assert.ok(worst < 0.21, `worst departure ${worst.toFixed(4)} ribbon degrees, not under 0.21`);
+  // The lattice must reach the edges, where the peak is: a lattice that misses them reads 0.1926 and would pass the bound too easily.
+  assert.ok(worst > 0.2, `worst departure ${worst.toFixed(4)} ribbon degrees: the lattice does not reach the peak of 0.2088`);
   assert.equal(checked, 4 * 64 * 36);
 });
 
@@ -184,6 +196,38 @@ test('no vertex is above altCapDeg: a triangle with any vertex over the cap is d
     for (const t of capped) assert.ok(maxAlt(t) <= cap + 1e-9, `a vertex of a kept triangle is at ${maxAlt(t)} over the cap ${cap}`);
   }
   assert.deepEqual(liveFrameMesh(cam.pose, K1, 90, 160, view, { altCapDeg: -20 }), [], 'a cap under the whole frame leaves nothing');
+});
+
+/** The altitude (degrees) of the three vertices of a triangle, from the exact projection of each source pixel and not
+ *  from the ribbon pixels the mesh computed. */
+const vertexAltitudes = (t: LiveTriangle, cam: { basis: CameraBasis }, view: RibbonView): number[] =>
+  [0, 1, 2].map(v => altOfY(view, exactRibbon(cam.basis, K1, view, t.src[2 * v], t.src[2 * v + 1])[1]));
+
+test('a cap between any two consecutive vertex altitudes keeps exactly the triangles whose three vertices are under it (pitch 23, roll 0 and +-20)', () => {
+  // How many swept caps left vertex 0, 1 or 2 of some triangle as the only one over it, per vertex position.
+  const sole = [0, 0, 0];
+  for (const roll of [0, 20, -20]) {
+    const cam = cameraAt(40, 23, roll), view = viewFor(40);
+    const all = liveFrameMesh(cam.pose, K1, 90, 160, view);
+    assert.equal(all.length, 64, `roll ${roll}: the default cap of 90 drops nothing`);
+    const alts = all.map(t => vertexAltitudes(t, cam, view));
+    const levels = [...new Set(alts.flat().map(a => a.toFixed(9)))].map(Number).sort((p, q) => p - q);
+    // At roll 0 the frame mirrors about its vertical axis and its vertices pair up; a roll gives all 45 their own altitude.
+    if (roll === 0) assert.ok(levels.length < 45, `roll 0: ${levels.length} distinct altitudes`);
+    else assert.equal(levels.length, 45, `roll ${roll}: ${levels.length} distinct altitudes`);
+    for (let n = 0; n + 1 < levels.length; n++) {
+      const cap = (levels[n] + levels[n + 1]) / 2;
+      const expected = all.filter((_, i) => Math.max(...alts[i]) <= cap);
+      const capped = liveFrameMesh(cam.pose, K1, 90, 160, view, { altCapDeg: cap });
+      const where = `roll ${roll}, cap ${cap.toFixed(4)} between ${levels[n].toFixed(4)} and ${levels[n + 1].toFixed(4)}`;
+      assert.equal(capped.length, expected.length, `${where}: ${capped.length} triangles kept, ${expected.length} expected`);
+      assert.deepEqual(capped, expected, where);
+      if (roll === 0) continue;
+      const over = alts.map(a => a.map(v => v > cap));
+      for (let v = 0; v < 3; v++) if (over.some(o => o[v] && !o[(v + 1) % 3] && !o[(v + 2) % 3])) sole[v]++;
+    }
+  }
+  assert.ok(sole.every(c => c > 0), `each vertex position must be the only one over the cap in some swept case: ${sole.join(', ')}`);
 });
 
 test('a triangle over the pole is dropped: no triangle is wider than 180 ribbon degrees', () => {
