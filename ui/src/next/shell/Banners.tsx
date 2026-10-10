@@ -41,6 +41,9 @@
 //
 // Dismissals are per-session and keyed by the banner's IDENTITY, not its slot:
 // dismissing "report 2026-09-09 is ready" must not also dismiss the next one.
+// The one exception is the SEQUENCE banner, whose dismissal the store owns
+// alone (`dismissRunBanner`): its natural key is the plan name, which the next
+// run of the same plan shares.
 
 import { useState, type JSX, type ReactNode } from "react";
 import {
@@ -361,13 +364,18 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
           text={e.text}
           cta={e.cta}
           onDismiss={e.standing ? undefined : () => {
+            // The run banner's dismissal lives in the STORE ONLY. Its key is
+            // the plan name, which the next run of the same plan shares, so a
+            // copy kept here outlived the run it was made for and hid every
+            // later banner of that name until a reload (#983). `runBanner`
+            // goes null and the next rising edge raises a new one.
+            if (e.key.startsWith("run:")) { dismissRunBanner(); return; }
             setDismissed((d) => ({ ...d, [e.key]: true }));
             // The banners whose dismissal state lives elsewhere are dismissed
             // THERE as well, or the other reader would keep showing what this
             // one just cleared.
             e.onOwnerDismiss?.();
             if (e.key.startsWith("armed:")) dismissArmedBanner();
-            if (e.key.startsWith("run:")) dismissRunBanner();
           }}
           data-testid={`banner-${e.kind}`}
         />
