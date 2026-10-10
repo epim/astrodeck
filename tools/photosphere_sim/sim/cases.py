@@ -79,6 +79,12 @@ def _hash_concatenated_digests(paths: list) -> str:
     return digest.hexdigest()
 
 
+def _delivery_ms(record: dict):
+    """The time a record reaches the page: a frame's presentation time, an
+    event's receive time. ``observations.jsonl`` is sorted by it."""
+    return record["t_present_ms"] if record["kind"] == "frame" else record["t_receive_ms"]
+
+
 def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
     """Write one case directory under ``out_root`` and return its path.
 
@@ -86,7 +92,26 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
     array per frame, in ``frames`` order. Writes ``input/`` and ``truth/`` and
     ``manifest.json``; ``result/`` is the replay's to create, not this
     function's.
+
+    A case definition may carry three optional blocks (the panorama scanner's
+    spec 13.2), each used only when present:
+
+    - ``realism``: the sensor faults of :mod:`sim.sensors`. A case WITHOUT one
+      takes exactly the code path it always has and writes the bytes it always
+      wrote, with its gyro noise drawn from ``default_rng(0)`` through
+      ``gyro_noise_deg_s`` (the legacy rule). A case with one seeds every
+      source from its own ``seed`` instead (issue #901), and the block's
+      ``motion.noise_deg_s`` replaces ``gyro_noise_deg_s``;
+    - ``grading`` and ``scanner_options``: what the scorer and the replay need
+      to know about the case. ``scanner_options`` is also written as
+      ``input/scanner.json``, the file the replay reads.
+
+    All three are copied into ``manifest.json`` as written.
     """
+    realism = case_def.get("realism")
+    # Resolved before anything is created or rendered, so a block that cannot
+    # mean anything fails in milliseconds and leaves nothing behind.
+    spec = sensors.resolve_realism(realism) if realism is not None else None
     out_dir = Path(out_root) / case_def["case_id"]
     frames_dir = out_dir / "input" / "frames"
     truth_dir = out_dir / "truth"
@@ -120,23 +145,30 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
             "height": camera.height,
             "file": record["file"],
         }
-        for record in sensors.frame_records(traj)
+        for record in sensors.frame_records(
+            traj, capture_time=spec["capture_time"] if spec is not None else None)
     ]
-    orientation_obs = sensors.orientation_events(traj)
-    # The SECOND witness (issue #105). Orientation is change-driven, so a phone
-    # holding still goes silent and its samples alone cannot tell a steady view
-    # from a lost sensor; `devicemotion` fires at a fixed rate whether or not
-    # anything moved. Until this existed no recorded case could exercise the
-    # gyro witness at all, and the replay could only report that it changed
-    # nothing where there was no gyro.
-    motion_obs = sensors.motion_events(
-        traj, noise_deg_s=float(case_def.get("gyro_noise_deg_s", 0.0) or 0.0))
-    observations = sorted(
-        frame_obs + orientation_obs + motion_obs,
-        key=lambda r: r["t_present_ms"] if r["kind"] == "frame" else r["t_receive_ms"],
-    )
+    if spec is None:
+        orientation_obs = sensors.orientation_events(traj)
+        # The SECOND witness (issue #105). Orientation is change-driven, so a phone
+        # holding still goes silent and its samples alone cannot tell a steady view
+        # from a lost sensor; `devicemotion` fires at a fixed rate whether or not
+        # anything moved. Until this existed no recorded case could exercise the
+        # gyro witness at all, and the replay could only report that it changed
+        # nothing where there was no gyro.
+        motion_obs = sensors.motion_events(
+            traj, noise_deg_s=float(case_def.get("gyro_noise_deg_s", 0.0) or 0.0))
+        observations = sorted(frame_obs + orientation_obs + motion_obs, key=_delivery_ms)
+    else:
+        # The same file order as above (frames, then readings, stable over
+        # equal delivery times); the replay puts readings first regardless.
+        observations = sorted(
+            frame_obs + sensors.realism_readings(traj, spec, case_def["seed"]),
+            key=_delivery_ms)
     observations_path = out_dir / "input" / "observations.jsonl"
     _write_jsonl(observations_path, observations)
+    if case_def.get("scanner_options") is not None:
+        _write_json(out_dir / "input" / "scanner.json", case_def["scanner_options"])
 
     last_present_ms = max(r["t_present_ms"] for r in frame_obs)
     actions = [{"t_ms": 0, "action": "begin"},
@@ -216,6 +248,12 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
         "hashes": hashes,
         "versions": versions,
     }
+    # What the case was graded and degraded against, carried like ``profile``
+    # so a result can name it from the case directory alone. Only when the
+    # definition has them: a legacy manifest keeps exactly its old keys.
+    for key in ("grading", "realism", "scanner_options"):
+        if case_def.get(key) is not None:
+            manifest[key] = case_def[key]
     _write_json(out_dir / "manifest.json", manifest)
 
     return out_dir
