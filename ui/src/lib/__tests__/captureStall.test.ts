@@ -64,14 +64,19 @@ function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(m
 const eq = (a: unknown, b: unknown, m: string) =>
   assert(Object.is(a, b), `${m}: expected ${String(b)}, got ${String(a)}`);
 
-/** Feed the store one `sequence` bus event, the way the socket would. */
-function seqEvent(state: string, framesDone: number | null): void {
+/** Feed the store one `sequence` bus event, the way the socket would.
+ *  `calibrationDone` is the engine's `progress.calibration_frames_done`;
+ *  left out, the key is absent, as an engine that predates it sends. */
+function seqEvent(state: string, framesDone: number | null,
+                  calibrationDone?: number): void {
   useStore.getState().handleEvent({
     type: "sequence",
     data: {
       state, plan_name: "n", detail: "",
       progress: framesDone == null ? undefined : {
         frames_done: framesDone, total: 150, percent: 0, rejected: 0,
+        ...(calibrationDone === undefined
+          ? {} : { calibration_frames_done: calibrationDone }),
       },
     },
   } as any);
@@ -168,6 +173,48 @@ test("an unchanged frames_done does not move the clock either", () => {
     "a progress refresh with no new frame reset the stall clock");
   const ageS = (Date.now() - anchor!) / 1000;
   eq(stallLevel("running", ageS, 30), "red", "120s with no frame on a 30s exposure");
+});
+
+// ------------------------------------------- calibration frames are frames
+test("#939: a DUSK FLATS frame landing moves the capture clock", () => {
+  // The stage runs before the first light, for as long as its sets take, and
+  // the plan's own counter does not move for it (the flats are not the plan's
+  // frames). A clock fed by that counter alone aged through the whole stage and
+  // read it as a capture that had stopped, and the 'NO PROGRESS' card, which
+  // offers STOP THE RUN, was raised over a rig that was shooting flats.
+  reset();
+  seqEvent("running", 0, 0);
+  const start = useStore.getState().lastCaptureAtMs as number;
+  advance(40_000);
+  seqEvent("running", 0, 1);            // a flat landed, the plan's count did not move
+  const afterFlat = useStore.getState().lastCaptureAtMs as number;
+  assert(afterFlat > start,
+    "a calibration frame landed and the capture clock did not move");
+  eq(afterFlat, Date.now(), "the capture clock after the flat");
+  eq(stallLevel("running", (Date.now() - afterFlat) / 1000, 3), "none",
+    "a rig shooting flats reads as");
+});
+
+test("#939: a progress refresh with no new calibration frame does not move it", () => {
+  reset();
+  seqEvent("running", 0, 2);
+  const anchor = useStore.getState().lastCaptureAtMs;
+  advance(120_000);
+  seqEvent("running", 0, 2);
+  eq(useStore.getState().lastCaptureAtMs, anchor,
+    "a refresh with the same calibration count reset the stall clock");
+});
+
+test("#939: an engine that sends no calibration count is read as it was", () => {
+  reset();
+  seqEvent("running", 3);
+  const anchor = useStore.getState().lastCaptureAtMs;
+  advance(5_000);
+  seqEvent("running", 4);               // no calibration_frames_done at all
+  eq(useStore.getState().lastCaptureAtMs, Date.now(),
+    "a plan frame landed and the clock did not move");
+  assert((useStore.getState().lastCaptureAtMs as number) > (anchor as number),
+    "the clock did not advance");
 });
 
 // ------------------------------------------------------------ no-run states

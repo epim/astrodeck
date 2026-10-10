@@ -13,6 +13,7 @@
 
 import type { JSX } from "react";
 
+import { activePlanTarget } from "../../../../lib/planTarget";
 import { targetProgress } from "../../../../lib/sessions";
 import { useSeq } from "../../../../store";
 import { Pill } from "../../../ui";
@@ -25,13 +26,15 @@ export function PoolChips(): JSX.Element | null {
   if (!plan || plan.targets.length <= 1) return null;
 
   const rows = targetProgress(plan, session?.frames ?? []);
-  const current = seq.target_index ?? 0;
+  // Null while a calibration set the plan does not hold is exposing: no chip
+  // is "now", rather than the first one (#941).
+  const current = activePlanTarget(seq);
 
   return (
     <div data-testid="now-pool" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
       {rows.map((r, i) => {
         const done = r.total > 0 && r.accepted >= r.total;
-        const now = i === current && !done;
+        const now = current !== null && i === current && !done;
         const word = done ? "done" : now ? "now" : "next";
         const tone = done ? "good" : now ? "accent" : "dim";
         return (

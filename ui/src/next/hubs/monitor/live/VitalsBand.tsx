@@ -151,6 +151,13 @@ export function nextTargetFace(seq: SequenceState, plan: SequencePlan): TileFace
   }
   const n = targets.length;
   const idx = seq.target_index;
+  // A cloud-hold dark is exposing (`target_index` null, #941): the target the
+  // hold is for is not published, so the one after it cannot be named, and
+  // "the first target" below would be a guess. Before the first target, and
+  // through DUSK FLATS, the first one IS next.
+  if (idx === null && seq.hold) {
+    return { value: "--", sub: "held for cloud", tone: "dim" };
+  }
   if (idx == null) {
     const startsAt = seq.schedule?.start_ts;
     const starts = seq.schedule?.state === "waiting" && startsAt

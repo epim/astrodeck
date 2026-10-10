@@ -1350,6 +1350,10 @@ class SequenceEngine:
         self._paused.set()  # set = not paused
         self.state: dict[str, Any] = {"state": "idle"}
         self._frames_done = 0
+        #: Frames of the calibration targets the engine builds for itself (day
+        #: darks, DUSK FLATS, cloud-hold darks): shot, but not the plan's, so
+        #: not in ``_frames_done`` (#939). Published beside it.
+        self._calibration_frames_done = 0
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         #: consecutive dither SETTLE failures; the walking-field gate
@@ -2187,6 +2191,7 @@ class SequenceEngine:
         self._session = session
         self._done = dict(session.done_map()) if resume else {}
         self._frames_done = sum(self._done.values())
+        self._calibration_frames_done = 0
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         #: consecutive dither SETTLE failures; the walking-field gate
@@ -2978,6 +2983,10 @@ class SequenceEngine:
                 "frames_done": self._frames_done,
                 "frames_total": total,
                 "percent": round(100 * self._frames_done / total, 1) if total else 0,
+                # Shot and not the plan's (#939). A client that watches the
+                # frame counter for a stall must see these land too: the DUSK
+                # FLATS stage moves no other counter for as long as it runs.
+                "calibration_frames_done": self._calibration_frames_done,
                 "elapsed_s": round(self._elapsed_s()),   # paused-aware (spec §5.1)
                 "rejected": self._rejected,
             }
@@ -10612,8 +10621,14 @@ class SequenceEngine:
         plan_ti = self._plan_index(ti, target)
         # this target is now actually starting — clear any stale waiting sub-state
         # a prior gated wait published (wave-3 §2).
-        self._set_state(target=target.name, target_index=ti, detail=f"calibration: {target.name}",
-                        schedule=None)
+        #
+        # `target_index` IS THE PLAN'S TARGET OR NULL (#941). It is published
+        # as an explicit null (the key present) for a target the plan does not
+        # hold: the placeholder it was handed named plan target 0, or the held
+        # target, so the Plan editor lit a target that was not exposing and
+        # the run header read "1 of N" through the flats.
+        self._set_state(target=target.name, target_index=plan_ti,
+                        detail=f"calibration: {target.name}", schedule=None)
         bus.log("info", f"calibration target: {target.name}", "sequence")
         # calibration frames flow immediately — arm the watchdog + anchor its clock.
         self._last_frame_at = time.time()
@@ -11574,7 +11589,9 @@ class SequenceEngine:
         """
         cfg = self._cfg
         action = self._reject_action()
-        ti = self._index_of_target(target)
+        # None for a calibration target the plan does not hold: `_index_of_target`
+        # answers 0 for it, which is the FIRST LIGHT target's index (#940).
+        ti = self._plan_index(self._index_of_target(target), target)
 
         if action == "warn":
             return False        # keep + record normally
@@ -11592,29 +11609,37 @@ class SequenceEngine:
             return True
 
         if action == "retake":
-            spent = self._retakes_per_target.get(ti, 0)
+            # THE BUDGET IS A PLAN TARGET'S (#940). A throwaway calibration
+            # frame (cloud-hold, day or dusk) has no index in the plan and
+            # spends none: it used to be filed under 0, so one retaken dark
+            # used up the first light target's retakes for the night. Each
+            # rejected frame is retaken once and never again (below), so
+            # leaving it out of the budget leaves it bounded.
+            spent = self._retakes_per_target.get(ti, 0) if ti is not None else 0
             cap = cfg.escalation.hfr_retake_limit_per_target if cfg else 0
-            if cap and spent >= cap:
+            if ti is not None and cap and spent >= cap:
                 bus.log("warning", f"{target.name}: retake cap reached — discarding",
                         "sequence")
                 self._end_discarded_frame()
                 return True
-            self._retakes_per_target[ti] = spent + 1
-            self._set_state(detail=f"retaking (HFR reject) [{spent + 1}/{cap or '∞'}]")
-            bus.log("warning", f"{target.name}: retaking a poor frame "
-                               f"({spent + 1}/{cap or 'unlimited'})", "sequence")
+            if ti is not None:
+                self._retakes_per_target[ti] = spent + 1
+            tally = f"{spent + 1}/{cap or '∞'}" if ti is not None else None
+            self._set_state(detail="retaking (HFR reject)"
+                                   + (f" [{tally}]" if tally else ""))
+            bus.log("warning", f"{target.name}: retaking a poor frame"
+                               + (f" ({spent + 1}/{cap or 'unlimited'})"
+                                  if tally else ""), "sequence")
             self._frame_had_event = True   # retake wall-time is not per-frame overhead
             # The same frame again, so the place it had: taken from this
             # call's own arguments, NOT from `_active_step`. That is shared
             # state, and an instruction that fires on the reject, which the
             # engine runs BEFORE a retake, can expose frames of its own in
             # between (`on_frame_rejected` -> `hold_for_clear` shoots hold
-            # darks through `_begin_frame`). `_plan_index` is None for a
-            # calibration frame the plan does not hold, which publishes no
-            # step (#842).
+            # darks through `_begin_frame`). `ti` is None for a calibration
+            # frame the plan does not hold, which publishes no step (#842).
             si = next((k for k, s in enumerate(target.steps) if s is step), 0)
-            self._begin_frame(self._plan_index(ti, target), si,
-                              step.exposure_s)
+            self._begin_frame(ti, si, step.exposure_s)
             new_info = await self._capture(step, target)
             # This retake's OWN exposure (#134): the guider may have come
             # back, or gone down, since the frame that was rejected. Read
@@ -13734,8 +13759,22 @@ class SequenceEngine:
             self._set_state(
                 detail=f"held for cloud - dark {self._hold_darks_taken}"
                        f"/{self._hold_darks_want} at {step.exposure_s:g}s")
-            await self._run_calibration(self._index_of_target(target)
-                                        if target is not None else 0, dark)
+            try:
+                await self._run_calibration(self._index_of_target(target)
+                                            if target is not None else 0, dark)
+            finally:
+                # THE HOLD GOES ON FOR THE HELD TARGET (#941). The dark
+                # published its own name and no plan target, and nothing else
+                # on the way back to the frame loop publishes the target
+                # again (a hop does), so the held target's name was left
+                # replaced by the dark's for the rest of its frames; with the
+                # dark's index null as well, the run would read as being on no
+                # target at all. Said again here, before the next look at the
+                # sky.
+                held = (self._plan_index(self._index_of_target(target), target)
+                        if target is not None else None)
+                if held is not None:
+                    self._set_state(target=target.name, target_index=held)
             return True
         except SafetyAbort:
             raise
@@ -15306,7 +15345,17 @@ class SequenceEngine:
         self._last_frame_at = now              # watchdog progress stamp (§1.9-F)
         self._frame_started_at = 0.0   # frame complete — no longer in flight
         self._done[key] = i + 1
-        self._frames_done += 1
+        # THE PLAN'S PROGRESS COUNTS THE PLAN'S FRAMES (#939). `_frames_done`
+        # is read against `plan.total_frames()`, which sums the plan's own
+        # targets, so a frame of a calibration target the plan does not hold
+        # (day darks, DUSK FLATS, cloud-hold darks) made the bar read 75
+        # percent before a light was shot, shortened the ETA's
+        # `frames_remaining`, and ended the night past its own total. A
+        # calibration target the plan DOES hold is in that total and counts.
+        if self._plan_index(self._index_of_target(target), target) is None:
+            self._calibration_frames_done += 1
+        else:
+            self._frames_done += 1
         # A banked frame is evidence that recovery actually worked ONLY WHEN
         # IT IS EVIDENCE GUIDING HELD (#134): every recorded frame used to
         # clear the bound, rejected-but-kept ones included, so a trailed
@@ -21335,8 +21384,12 @@ class SequenceEngine:
                     if parked is False:
                         await self._stop_after_a_failed_park()
                     raise asyncio.CancelledError()
-        elif self._frames_done and not getattr(
+        elif (self._frames_done or self._calibration_frames_done) and not getattr(
                 self, "_ended_position_unknown", False):
+            # EITHER COUNTER (#939): a night of cloud-hold darks alone still
+            # leaves the mount tracking, and this line used to be said for it
+            # because the one counter held them.
+            #
             # A position-unknown stop is not a run "set not to park": it
             # stopped tracking on purpose and says so itself
             # (`_confirm_quiet_stop`), and "Dawn park will park it" would be

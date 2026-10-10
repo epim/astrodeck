@@ -113,7 +113,7 @@ function live(sid: string, frames: number, state: SequenceState["state"] = "runn
   return {
     state, plan_name: "Flow f1", target: "t1",
     session: { id: sid, name: "Flow f1", count_mode: "attempts", accepted: frames },
-    progress: { frames_done: frames, frames_total: 315, percent: 0, elapsed_s: 0, rejected: 0 },
+    progress: { frames_done: frames, calibration_frames_done: 0, frames_total: 315, percent: 0, elapsed_s: 0, rejected: 0 },
   };
 }
 /** The publish that ends a run: the session sub-state is cleared with it. */
