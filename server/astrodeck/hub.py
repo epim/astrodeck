@@ -1660,12 +1660,16 @@ class Hub:
             if old and not replaced_same:
                 try:
                     await old.connect()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.say_swallowed(
+                        "reconnecting the previous device after a failed "
+                        "rebuild", exc)
             try:
                 await session.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                self.say_swallowed(
+                    "closing the replacement session after a failed connect",
+                    exc)
             raise
         dev.role = role                        # device identity for Profiles (A.6)
         self.devices[role] = dev
