@@ -241,6 +241,19 @@ const replayed = {
   live: lines(resultFile('live.jsonl').toString('utf8')),
 };
 rmSync(replayDir, { recursive: true, force: true });
+/** The same pan through the control (`sensor_only: true`, 7.7): no alignment, so the focal stays the prior and every keyframe is
+ *  placed by its prediction, in the live view and at Finish alike. The S30 case grades first_seen.bin against its panorama. */
+const controlDir = mkdtempSync(join(tmpdir(), 'pano-v0-control-'));
+writeReplayInput(controlDir, pan);
+writeFileSync(join(controlDir, 'input', 'scanner.json'), JSON.stringify({ declination_deg: DECLINATION, sensor_only: true }), 'utf8');
+await replayCase(controlDir, { scanner: 'pano' });
+const controlFile = (name: string) => readFileSync(join(controlDir, 'result', name));
+const control = {
+  panorama: decodePng(controlFile('panorama.png')),
+  firstSeen: controlFile('first_seen.bin'),
+  diagnostics: JSON.parse(controlFile('diagnostics.json').toString('utf8')) as Row,
+};
+rmSync(controlDir, { recursive: true, force: true });
 const frameIds = new Set(pan.frames.map(f => f.frameId));
 
 await test('replay --scanner pano: panorama.png and horizon.json (v2) follow 13.7', () => {
@@ -360,29 +373,36 @@ await test('replay --scanner pano: summary.json, first_seen.bin, diagnostics.jso
 });
 
 await test('first_seen.bin lines up with panorama.png under a non-zero world yaw (S30)', () => {
-  const { panorama, firstSeen, diagnostics: d } = replayed;
-  const north = d.north as { offset_deg: number };
-  // The world yaw Finish composed: the magnetic north offset plus the declination scanner.json gave, in raster columns.
-  const shift = ((Math.round((north.offset_deg + DECLINATION) * 3) % PANO_W) + PANO_W) % PANO_W;
-  assert.ok(Math.min(shift, PANO_W - shift) >= 15, `the world yaw is ${shift} columns: big enough to tell the frames apart`);
-  const painted = new Uint8Array(PANO_W * PANO_H), seen = new Uint8Array(PANO_W * PANO_H), unshifted = new Uint8Array(PANO_W * PANO_H);
-  const begin = d.begin_ms as number;
-  let latest = 0;
-  for (let i = 0; i < painted.length; i++) {
-    painted[i] = panorama.pixels[i * 4 + 3] ? 1 : 0;
-    const v = firstSeen.readUInt16LE(i * 2);
-    seen[i] = v > 0 ? 1 : 0;
-    latest = Math.max(latest, v);
-    // The same snapshot moved back by the yaw: what an exporter that forgot the shift would have written.
-    const y = Math.floor(i / PANO_W), x = i % PANO_W;
-    unshifted[y * PANO_W + ((x - shift + PANO_W) % PANO_W)] = seen[i];
+  // Graded on two replays of the pan. In the control the two masks overlap by 0.9994 and a single column of error costs 0.005
+  // (0.9928-0.9940), so the floor reads one column. With alignment on the live paints before the focal locks were made at the prior
+  // focal and the Finish render at the locked one, and first_seen.bin is never reset by clear() (S30): the vertical edge of each
+  // slice moves a row, about 0.6 % of the union and nearly all of it on the one row at each edge of the band, so the masks overlap
+  // by 0.994 and the floor reads a world yaw that is three columns out (0.02), not one.
+  for (const [what, r, floor] of [['control', control, 0.995], ['aligned', replayed, 0.99]] as const) {
+    const { panorama, firstSeen, diagnostics: d } = r;
+    assert.equal(d.sensor_only, what === 'control', `${what}: the replay is the one asked for`);
+    const north = d.north as { offset_deg: number };
+    // The world yaw Finish composed: the magnetic north offset plus the declination scanner.json gave, in raster columns.
+    const shift = ((Math.round((north.offset_deg + DECLINATION) * 3) % PANO_W) + PANO_W) % PANO_W;
+    assert.ok(Math.min(shift, PANO_W - shift) >= 15, `${what}: the world yaw is ${shift} columns: big enough to tell the frames apart`);
+    const painted = new Uint8Array(PANO_W * PANO_H), seen = new Uint8Array(PANO_W * PANO_H), unshifted = new Uint8Array(PANO_W * PANO_H);
+    const begin = d.begin_ms as number;
+    let latest = 0;
+    for (let i = 0; i < painted.length; i++) {
+      painted[i] = panorama.pixels[i * 4 + 3] ? 1 : 0;
+      const v = firstSeen.readUInt16LE(i * 2);
+      seen[i] = v > 0 ? 1 : 0;
+      latest = Math.max(latest, v);
+      // The same snapshot moved back by the yaw: what an exporter that forgot the shift would have written.
+      const y = Math.floor(i / PANO_W), x = i % PANO_W;
+      unshifted[y * PANO_W + ((x - shift + PANO_W) % PANO_W)] = seen[i];
+    }
+    // Deciseconds since Begin, so begin_ms + first_seen x 100 lands inside the scan.
+    assert.ok(latest > 0 && begin + latest * 100 <= FINISH_AT, `${what}: latest stamp ${latest}`);
+    const aligned = iou(painted, seen), apart = iou(painted, unshifted);
+    assert.ok(aligned >= floor, `${what}: first_seen.bin and panorama.png overlap by ${aligned.toFixed(4)}`);
+    assert.ok(apart < 0.9, `${what}: the unshifted snapshot would overlap by ${apart.toFixed(4)}, so the case tells them apart`);
   }
-  // Deciseconds since Begin, so begin_ms + first_seen x 100 lands inside the scan.
-  assert.ok(latest > 0 && begin + latest * 100 <= FINISH_AT, `latest stamp ${latest}`);
-  // Aligned they overlap by 0.9994 on this pan; a single column of error costs 0.005 (0.9928-0.9940) and three cost 0.02.
-  const aligned = iou(painted, seen), apart = iou(painted, unshifted);
-  assert.ok(aligned >= 0.995, `first_seen.bin and panorama.png overlap by ${aligned.toFixed(4)}`);
-  assert.ok(apart < 0.9, `the unshifted snapshot would overlap by ${apart.toFixed(4)}, so the case tells them apart`);
 });
 
 // ---- 2. canBegin, blocked, stop ------------------------------------------------------------------
@@ -672,8 +692,11 @@ await test('finish(previous) keeps the previous line where nothing was photograp
   assert.equal(h.tau, withDecl.result.tau);
   assert.equal(withDecl.result.partial, true);
   assert.equal(withDecl.result.endedBy, 'user');
-  // No previous line: nothing to keep.
-  assert.equal(withoutDecl.result.draft.state.filter(s => s === BinState.Kept).length, kept.length, 'the same previous line, the same Kept bins');
+  // The same scan finished without a declination keeps the same previous line, to within the bins its footprint moves: the two
+  // Finishes compose world yaws a fractional number of columns apart, and each of the two ends of the swept range falls into its
+  // bin or the next (503 against 502 with alignment on; equal under v0's predictor-only poses).
+  const keptWithout = withoutDecl.result.draft.state.filter(s => s === BinState.Kept).length;
+  assert.ok(Math.abs(keptWithout - kept.length) <= 2, `${keptWithout} Kept bins without a declination, ${kept.length} with`);
 });
 
 await test('the live mesh is drawn from the live source at L1 intrinsics, 90 x 160 at 9:16', () => {
