@@ -2059,24 +2059,25 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
         if (!runIsLive(seq)) {
           // idle / complete / aborted / error / nina_native → clear the banner.
           runBanner = null;
-        } else if (seq.state === "running" || seq.state === "holding") {
-          // "holding" raises as well as "running": a page opened (or reloaded)
-          // mid-hold gets "holding" as its FIRST frame, from the cold default,
-          // and a running-only rule never raised the banner for that browser
-          // at all.
-          if (RUN_RISING_FROM.has(prevState)) {
-            runBanner = { active: true, plan_name: seq.plan_name, percent };
-            pin = null;
-          } else if (runBanner) {
-            runBanner = { ...runBanner, percent };
-          }
+        } else if (RUN_RISING_FROM.has(prevState)) {
+          // EVERY live state raises, not only "running" and "holding" (#984). A
+          // page opened (or reloaded) mid-run gets whatever the rig is doing as
+          // its FIRST frame, from the cold default: "holding" mid-hold,
+          // "paused" mid-pause, "aborting" in the wind-down. A rule that raised
+          // for two of the four never gave that browser a banner, and when the
+          // pause lifted the next "running" came from "paused", which is not
+          // in RUN_RISING_FROM, so nothing raised it for the rest of the run.
+          runBanner = { active: true, plan_name: seq.plan_name, percent };
+          pin = null;
         } else if (runBanner) {
-          // paused / aborting. "aborting" is NOT terminal: the engine publishes
-          // it for the whole wind-down (types.ts). Clearing the banner there
-          // took the run off every other screen — and the banner is the only
-          // thing outside the Monitor that says a run is happening — while the
-          // rig was still stopping. It clears when "aborted" lands, which is
-          // when it is true.
+          // live to live: running / paused / holding / aborting. Only a banner
+          // that is up follows the run, so one the operator dismissed (null)
+          // stays dismissed until the next rising edge. "aborting" is NOT
+          // terminal: the engine publishes it for the whole wind-down
+          // (types.ts). Clearing the banner there took the run off every other
+          // screen — and the banner is the only thing outside the Monitor that
+          // says a run is happening — while the rig was still stopping. It
+          // clears when "aborted" lands, which is when it is true.
           runBanner = { ...runBanner, percent };
         }
         // CAPTURE LIVENESS, from the SERVER'S OWN COUNTER (#206).
