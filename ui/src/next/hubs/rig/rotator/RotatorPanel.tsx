@@ -40,7 +40,9 @@
 //   each would turn or re-calibrate the camera under the run's frames; the panel
 //   used to show that sentence only after the press. Each of those controls now
 //   carries its route's sentence as its lock reason, word for word (`SEQUENCE_*`
-//   below). HALT is not one of them, and neither is REVERSE: the rig answers both.
+//   below). REVERSE joined them with #822: the rig refuses it during a run too,
+//   because flipping the direction convention under a run changes what every
+//   later rotation means. HALT is not one of them: the rig answers it.
 //
 //   THE ARC STAYS DISPLAY-ONLY. See `RotatorArc.tsx`.
 //
@@ -128,13 +130,17 @@ const SEQUENCE_PREFLIGHT = sequenceSentence(
   "rotator preflight",
   "it turns the rotator about 22 degrees and takes four plate solves, which "
   + "would ruin the run's frames");
+const SEQUENCE_REVERSE = sequenceSentence(
+  "rotator reverse",
+  "it would flip the rotator's direction convention under the run, changing "
+  + "what every later rotation means");
 
 /** Said once, beside the dim buttons: which they are, and what is still live.
  *  The per-button sentences are the rig's; this is the panel's own, and it
  *  carries what none of them can say, that HALT stays pressable. */
 const SEQUENCE_LOCK_NOTE =
-  "A sequence is running, so GO, the nudges, ROTATE TO PA, SYNC TO SKY and "
-  + "TEST ROTATOR are locked until it stops. HALT stays live.";
+  "A sequence is running, so GO, the nudges, ROTATE TO PA, SYNC TO SKY, "
+  + "TEST ROTATOR and REVERSE are locked until it stops. HALT stays live.";
 
 /** The one line of what the rig knows about this rotator: whether the sky
  *  angle's sign has been measured, and whether the camera was seen to follow a
@@ -269,9 +275,9 @@ export function RotatorPanel({ rot }: { rot: RotatorStatus }): JSX.Element {
   // the capability sentence, which stays true after it ends, is the one to say.
   const moveBase = lockNote(motionLane.lockedReason, MOTION_LOCK_NOTE);
   const moveReason = moveBase ?? (runLive ? SEQUENCE_MOVE : null) ?? inFlight;
-  // REVERSE is a move-lane control the rig does not refuse during a run, so it
-  // keeps the lock it had before the run's sentences.
-  const reverseReason = moveBase ?? inFlight;
+  // REVERSE re-orients every later rotation, and the rig refuses it during a
+  // run (#822), so it takes the run's lock with its own sentence.
+  const reverseReason = moveBase ?? (runLive ? SEQUENCE_REVERSE : null) ?? inFlight;
   const haltReason = motionNote;
   const solveBase = motionNote ?? lockNote(solveLane.lockedReason, MOTION_LOCK_NOTE);
   const solveReason = solveBase ?? (runLive ? SEQUENCE_ROTATE : null) ?? inFlight;

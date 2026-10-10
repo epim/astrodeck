@@ -30,6 +30,7 @@ import {
   profileResolvesRealMotion, saveAssignments, simAssignments,
   type AssignmentMap,
 } from "../../../../lib/equipment";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { useStore } from "../../../../store";
 import { PROFILES_CAP, forceNeedsBackend, sentenceFrom } from "../profiles/profilesModel";
 import { accessPhrase, capAllowed } from "../../../../lib/caps";
@@ -60,10 +61,10 @@ const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
 
 /** Is a sequence holding the rig right now? Read at the moment of asking, not
  *  from a render-time prop, because the dialog it feeds is the last word before
- *  a teardown aborts that sequence. */
+ *  a teardown aborts that sequence. `runIsLive`, not running-or-paused: a cloud
+ *  hold and an abort's wind-down are the same live run to the rig (#821). */
 function sequenceRunning(): boolean {
-  const s = useStore.getState().sequence?.state;
-  return s === "running" || s === "paused";
+  return runIsLive(useStore.getState().sequence);
 }
 
 /**
