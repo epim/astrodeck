@@ -95,9 +95,16 @@ export function resample(rgba: Uint8ClampedArray, W: number, H: number, w: numbe
 /** The metadata a `requestVideoFrameCallback` receives, as the case describes
  *  the frame. The scanner reads `captureTime` and nothing else, but the whole
  *  object is handed over so a later reader of the callback finds what a browser
- *  would have given it. */
+ *  would have given it.
+ *
+ *  `captureTime: null` is a frame whose metadata carries none, which some
+ *  browsers deliver. The key is then LEFT OFF what the callback receives
+ *  rather than set to null or undefined:
+ *  `'captureTime' in metadata` is the test a page can make, and a scanner that
+ *  guards with `!== undefined` and one that guards with `!= null` must both see
+ *  a frame without one. */
 export interface FrameMetadata {
-  captureTime: number;
+  captureTime: number | null;
   mediaTime: number;
   presentationTime: number;
   expectedDisplayTime: number;
@@ -106,20 +113,35 @@ export interface FrameMetadata {
   presentedFrames: number;
 }
 
+/** What the video-frame callback is actually handed: `FrameMetadata` with
+ *  `captureTime` present only when the frame has one. */
+export type DeliveredMetadata = Omit<FrameMetadata, 'captureTime'> & { captureTime?: number };
+
 /** A `devicemotion` reading: the rate of turn about the device's own axes, in
  *  degrees per second. `MotionStability` reads `hypot(alpha, beta, gamma)` and
- *  nothing else. */
+ *  nothing else. `rate` is null for an event that carries no `rotationRate`,
+ *  and a component is null where the browser delivered null for it. */
 export interface MotionReading {
   timeStamp: number;
-  rate: { alpha: number; beta: number; gamma: number };
+  rate: { alpha: number | null; beta: number | null; gamma: number | null } | null;
 }
+
+/** The two events a phone can raise for its attitude. The recorded cases of
+ *  the legacy scanner carry only `deviceorientationabsolute`, so that is what
+ *  an unlabelled reading is. */
+export type OrientationEventType = 'deviceorientation' | 'deviceorientationabsolute';
 
 export interface OrientationReading {
   timeStamp: number;
-  alpha: number;
-  beta: number;
-  gamma: number;
-  absolute: boolean;
+  /** Null where the browser blocks the sensor but still fires the event. */
+  alpha: number | null;
+  beta: number | null;
+  gamma: number | null;
+  /** The event's own flag. Null leaves the property off the event entirely,
+   *  which is an event that has none. */
+  absolute: boolean | null;
+  /** Which event to fire. Absent means `deviceorientationabsolute`. */
+  event?: OrientationEventType;
 }
 
 export interface ReplayHarness {
@@ -130,7 +152,13 @@ export interface ReplayHarness {
   now(): number;
   /** The picture the camera is showing from now on. */
   setFrame(frame: Raster, captureMs: number): void;
+  /** Fire the reading as `reading.event`, `deviceorientationabsolute` when it
+   *  names none. */
   dispatchOrientation(reading: OrientationReading): void;
+  /** Turn the screen: `screen.orientation.angle` reads `deg` from now on and
+   *  the stub's `change` event fires, as a browser does when the phone is
+   *  rotated with auto-rotate on. It starts at 0 (portrait). */
+  setScreenAngle(deg: number): void;
   /** The SECOND witness (issue #105). `deviceorientation` is change-driven,
    *  so a phone holding still goes silent; `devicemotion` fires at a fixed
    *  rate whether or not anything moved. Until the recordings carried this
@@ -139,16 +167,41 @@ export interface ReplayHarness {
   dispatchMotion(reading: MotionReading): void;
   /** Run the scanner's stored video-frame callback, if it has registered one.
    *  Returns false when it has not - which is itself a finding, not a silence
-   *  to swallow: the scanner would then be on its interval fallback. */
+   *  to swallow: the scanner would then be on its interval fallback. A
+   *  `captureTime` of null is left off what the callback receives. */
   deliverFrame(metadata: FrameMetadata): boolean;
   dispose(): void;
 }
 
+/** The 2D context a scanner draws through. `drawImage`, `getImageData` and
+ *  `createImageData` do real work (below); the rest of the surface exists so a
+ *  scanner that paints a canvas - a ribbon, a live frame - runs under the
+ *  replay without a TypeError, and does nothing: no path, clip or transform is
+ *  modelled, so nothing a scanner reads back depends on one. The properties
+ *  are plain and settable, which is all a scanner asks of them. */
 interface StubContext {
+  imageSmoothingEnabled: boolean;
+  imageSmoothingQuality: string;
+  globalAlpha: number;
+  globalCompositeOperation: string;
+  fillStyle: unknown;
+  strokeStyle: unknown;
+  lineWidth: number;
   drawImage(image: unknown, x: number, y: number, width: number, height: number): void;
   getImageData(x: number, y: number, width: number, height: number): { data: Uint8ClampedArray };
   createImageData(width: number, height: number): { data: Uint8ClampedArray };
   putImageData(): void;
+  save(): void;
+  restore(): void;
+  clearRect(x: number, y: number, width: number, height: number): void;
+  fillRect(x: number, y: number, width: number, height: number): void;
+  setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void;
+  beginPath(): void;
+  moveTo(x: number, y: number): void;
+  lineTo(x: number, y: number): void;
+  closePath(): void;
+  clip(): void;
+  stroke(): void;
 }
 
 export function createHarness(options: { videoWidth: number; videoHeight: number }): ReplayHarness {
@@ -171,10 +224,23 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
   };
 
   for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLVideoElement', 'HTMLCanvasElement',
-    'Element', 'Node', 'Event', 'localStorage', 'requestAnimationFrame', 'cancelAnimationFrame'])
+    'Element', 'Node', 'Event', 'localStorage', 'requestAnimationFrame', 'cancelAnimationFrame', 'screen'])
     replace(g, key, key === 'window' ? w : w[key]);
   w.DeviceOrientationEvent = class { };
   Object.defineProperty(w, 'isSecureContext', { value: true, configurable: true });
+
+  // `screen.orientation`: jsdom has none, and a scanner reads `.angle` from it
+  // on every orientation event (the legacy one through
+  // `window.screen?.orientation?.angle ?? 0`). It is an EventTarget so a
+  // scanner can listen for `change`, and the angle moves only when the driver
+  // says so (`setScreenAngle`): a replay does not rotate a phone by itself.
+  let screenAngle = 0;
+  const screenOrientation = new w.EventTarget();
+  Object.defineProperty(screenOrientation, 'angle', { get: () => screenAngle, configurable: true });
+  Object.defineProperty(screenOrientation, 'type', {
+    get: () => (screenAngle % 180 === 0 ? 'portrait-primary' : 'landscape-primary'), configurable: true,
+  });
+  Object.defineProperty(w.screen, 'orientation', { value: screenOrientation, configurable: true });
 
   let clock = 0;
   replace(performance, 'now', () => clock);
@@ -197,9 +263,18 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
   Object.defineProperty(w.HTMLVideoElement.prototype, 'ended', { get: () => false, configurable: true });
   Object.defineProperty(w.HTMLVideoElement.prototype, 'readyState', { get: () => 2, configurable: true });
   w.HTMLVideoElement.prototype.play = async function () { };
+  // Frames the page has been handed, which is what `totalVideoFrames` counts in
+  // a browser: a scanner without `requestVideoFrameCallback` polls it. Nothing
+  // is ever dropped or corrupt here - the case recorded the frames that arrived.
+  let presented = 0;
+  w.HTMLVideoElement.prototype.getVideoPlaybackQuality = function () {
+    return {
+      creationTime: clock, totalVideoFrames: presented, droppedVideoFrames: 0, corruptedVideoFrames: 0, totalFrameDelay: 0,
+    };
+  };
 
-  let frameCallback: ((now: number, metadata: FrameMetadata) => void) | null = null;
-  w.HTMLVideoElement.prototype.requestVideoFrameCallback = function (fn: (now: number, metadata: FrameMetadata) => void) {
+  let frameCallback: ((now: number, metadata: DeliveredMetadata) => void) | null = null;
+  w.HTMLVideoElement.prototype.requestVideoFrameCallback = function (fn: (now: number, metadata: DeliveredMetadata) => void) {
     frameCallback = fn;
     return 1;
   };
@@ -212,6 +287,8 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
   function makeContext(): StubContext {
     let drawnWidth = 0, drawnHeight = 0;
     return {
+      imageSmoothingEnabled: true, imageSmoothingQuality: 'low', globalAlpha: 1, globalCompositeOperation: 'source-over',
+      fillStyle: '#000000', strokeStyle: '#000000', lineWidth: 1,
       drawImage(_image, _x, _y, width, height) { drawnWidth = width; drawnHeight = height; },
       getImageData(_x, _y, width, height) {
         // A canvas nothing has been drawn to is transparent black, and reading
@@ -229,6 +306,8 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
       },
       createImageData(width, height) { return { data: new Uint8ClampedArray(width * height * 4) }; },
       putImageData() { },
+      save() { }, restore() { }, clearRect() { }, fillRect() { }, setTransform() { },
+      beginPath() { }, moveTo() { }, lineTo() { }, closePath() { }, clip() { }, stroke() { },
     };
   }
   w.HTMLCanvasElement.prototype.getContext = function (this: object) {
@@ -276,18 +355,23 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
       w.dispatchEvent(event);
     },
     dispatchOrientation(reading: OrientationReading) {
-      const event = new w.Event('deviceorientationabsolute');
+      const event = new w.Event(reading.event ?? 'deviceorientationabsolute');
       Object.defineProperty(event, 'timeStamp', { value: reading.timeStamp, configurable: true });
-      Object.assign(event, {
-        alpha: reading.alpha, beta: reading.beta, gamma: reading.gamma, absolute: reading.absolute,
-      });
+      Object.assign(event, { alpha: reading.alpha, beta: reading.beta, gamma: reading.gamma });
+      if (reading.absolute !== null) Object.assign(event, { absolute: reading.absolute });
       w.dispatchEvent(event);
     },
+    setScreenAngle(deg: number) {
+      screenAngle = deg;
+      screenOrientation.dispatchEvent(new w.Event('change'));
+    },
     deliverFrame(metadata: FrameMetadata) {
+      presented++;
       const fn = frameCallback;
       if (!fn) return false;
       frameCallback = null;
-      fn(clock, metadata);
+      const { captureTime, ...rest } = metadata;
+      fn(clock, captureTime === null ? rest : { captureTime, ...rest });
       return true;
     },
     dispose() {
@@ -296,4 +380,25 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
       for (const restore of restores.reverse()) restore();
     },
   };
+}
+
+/** How long a fixed loop of floating-point work takes on this machine, in ms:
+ *  the median of five runs. A replay's cost numbers are wall time, and wall time
+ *  moves with the machine, the load and the power plan; dividing by this gives
+ *  cost in units of "that loop", which a slow laptop and a fast one agree on
+ *  far better than they agree on milliseconds. The loop is pinned (SPEC-v2
+ *  7.4): changing its body or its count changes what every recorded unit means.
+ *  The `s < 0` test is never true and exists so the loop's result is used. */
+export function referenceLoopMs(): number {
+  const runs: number[] = [];
+  for (let r = 0; r < 5; r++) {
+    const t0 = process.hrtime.bigint();
+    let s = 0;
+    for (let i = 0; i < 10_000_000; i++) s += (i & 1023) * 1.0000001;
+    const t1 = process.hrtime.bigint();
+    if (s < 0) throw new Error('unreachable');
+    runs.push(Number(t1 - t0) / 1e6);
+  }
+  runs.sort((a, b) => a - b);
+  return runs[2];
 }

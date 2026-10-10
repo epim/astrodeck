@@ -25,6 +25,24 @@ implementation goes quietly wrong.
 - A missing file is evidence of absence, not an excuse to skip a metric: no
   capture log means no hold was captured, and a blank panorama means every
   landmark was omitted.
+
+Version 2 (CONTRACT.md "Version 2"). A case is scored the version 2 way when
+its route is a pan, its ``horizon.json`` is version 2, or it carries a
+``grading`` block or a ``visibility.json``; every other case takes the legacy
+path below byte for byte and writes the same ``scores.json`` keys it always
+did. The version 2 additions are the places a plausible-looking implementation
+goes quietly wrong, so the reasons are kept beside the code:
+
+- The polyline is graded over Measured bins only, and an EMPTY Measured set
+  is not a clean result: a scanner that blocks everything has measured
+  nothing, and 36 or more visible bins say there was something to measure.
+- Coverage on a pan route is judged against the CLAIMED footprint (the slit
+  the scanner paints), not the frustum of every frame. A perfect slit painter
+  covers 0.9397 of the frustum, so the frustum rule cannot be passed by the
+  design it is meant to grade.
+- The overlay is graded after ONE global yaw is removed, because the scan
+  frame's zero is arbitrary for the relative modes. Absolute yaw belongs to
+  the north gates.
 """
 
 from __future__ import annotations
@@ -39,13 +57,15 @@ from PIL import Image
 
 from . import blobs as blobs_module
 from .cases import CASES_DIR
-from .geometry import angle_between, sky_vector
+from .geometry import angle_between, sky_angles, sky_vector
 from .palette import PALETTE
 # The face-normal tolerance the truth paints a surface landmark with. Imported
 # rather than copied: the expected-area model has to move with it.
 from .truth import _NORMAL_DOT
 
-__all__ = ["first_line_per_frame", "score_case"]
+__all__ = ["delivery_window", "first_line_per_frame", "footprint_pass",
+           "global_yaw_deg", "matrix_to_quat", "quat_to_matrix", "rotate_about_up",
+           "rotation_angle_deg", "score_case", "truth_matrix"]
 
 #: The result panorama's shape, from CONTRACT.md's "Result directory". These
 #: four are the one definition of the raster mapping in this package:
@@ -90,6 +110,61 @@ GATE_COVERAGE = 0.95
 MOVING_RATE_DEG_S = 2.0
 #: How late after a hold closes a capture may still land and count.
 CAPTURE_GRACE_MS = 1500
+
+# --- Version 2 (pan routes and the 720-bin profile), spec 7.6 -----------------
+
+#: The published profile: 720 bins of half a degree. Bin ``i`` covers
+#: ``[i / 2, (i + 1) / 2)`` degrees of azimuth.
+PROFILE_BINS = 720
+PROFILE_BIN_DEG = 360.0 / PROFILE_BINS
+#: ``BinState`` of the scanner's ``HorizonDraft``, by value. Overhead is
+#: reserved; Edited and Kept are bins a person or an earlier scan settled.
+STATE_MEASURED, STATE_LOW, STATE_UNKNOWN, STATE_TALL = 0, 1, 2, 3
+STATE_OVERHEAD, STATE_EDITED, STATE_KEPT = 4, 5, 6
+STATE_NAMES = {0: "measured", 1: "low", 2: "unknown", 3: "tall",
+               4: "overhead", 5: "edited", 6: "kept"}
+#: ``no_unresolved_boundary`` fails on any of these: a bin the scanner blocked
+#: because it could not say.
+UNRESOLVED_STATES = (STATE_LOW, STATE_UNKNOWN, STATE_TALL, STATE_OVERHEAD)
+#: ``measured_share`` counts these as a boundary the scanner stood behind.
+SETTLED_STATES = (STATE_MEASURED, STATE_EDITED)
+
+GATE_HORIZON_P99 = 2.0
+#: A percentile gate is "below" its limit with this much float noise forgiven:
+#: a polyline shifted exactly one degree reads 1.0 plus or minus the last bit
+#: of an interpolation, and a verdict that depends on that bit is a coin toss.
+GATE_EPSILON = 1e-9
+#: The empty-Measured rule (RS M1): this many visible bins or more, and a
+#: result with nothing Measured has failed rather than abstained.
+EMPTY_MEASURED_VISIBLE_BINS = 36
+GATE_MEASURED_SHARE = 0.85
+GATE_MEASURED_AT_UNOBSERVABLE = 0.05
+#: A boundary is only expected to be Measured when this much sky above it is
+#: inside the footprint (spec 5.2: the top 6 degrees must match the sky model).
+SKY_ABOVE_MEASURED_DEG = 6.0
+
+#: The claimed footprint (RS B2): the slit a scanner paints from one frame.
+#: Half-width across the short axis, and the fraction of the long half-axis.
+FOOTPRINT_HALF_WIDTH_DEG = 3.0
+FOOTPRINT_LONG_FRACTION = 0.9
+#: The live-fill rule looks at the central part of the slit only.
+LIVE_HALF_WIDTH_DEG = 2.0
+GATE_LIVE_FILL_P95_MS = 1000
+#: A cell the scan entered and the scanner never reported seen.
+LIVE_FILL_NEVER_MS = 10000.0
+#: ``first_seen.bin`` counts deciseconds since Begin.
+FIRST_SEEN_UNIT_MS = 100.0
+
+GATE_OVERLAY_COMPLETE = 0.95
+GATE_LOOP_RESIDUAL_DEG = 0.25
+GATE_FOCAL_ERR = 0.005
+GATE_NORTH_ERR_DEG = 1.0
+NORTH_SIGMA_FACTOR = 2.5
+#: Expected landmarks on a pan route keep this much clear sky around the disc.
+LANDMARK_FOOTPRINT_MARGIN_DEG = 1.5
+#: The scene's own flags, read from ``manifest.grading``.
+GRADING_FLAGS = ("still_pivot", "fully_observable", "daylight",
+                 "north_graded", "expect_closure")
 
 
 # --------------------------------------------------------------------------
@@ -280,7 +355,7 @@ def _score_landmarks(scene: dict, landmarks: list, c_ref: np.ndarray,
         best = hits[0] if hits else None
         area, _ = areas.get(name, (0.0, -1))
         cell = cell_az_equator * max(math.cos(math.radians(landmark["alt"])), cos_floor)
-        per_landmark.append({
+        row = {
             "id": name,
             "observable": observable,
             "truth": {"az": landmark["az"], "alt": landmark["alt"]},
@@ -288,7 +363,12 @@ def _score_landmarks(scene: dict, landmarks: list, c_ref: np.ndarray,
             "error_deg": None if best is None else best["error_deg"],
             "expected_px": area / (cell * cell_alt),
             "status": status,
-        })
+        }
+        # Only a pan route narrows the expectation to the claimed footprint,
+        # and says so: a legacy row keeps exactly the keys it always had.
+        if "in_footprint" in landmark:
+            row["in_footprint"] = bool(landmark["in_footprint"])
+        per_landmark.append(row)
         if status == "found":
             found += 1
             errors.append(best["error_deg"])
@@ -397,7 +477,7 @@ EDITOR_MIN_WIDTH_DEG = 18.0 / (1040.0 * 4.0 / 360.0)
 
 def _score_obstacles(reference: dict, truth_bins: int, step: float,
                      alt: np.ndarray, resolved: np.ndarray,
-                     product_bins: int) -> list:
+                     product_bins: int, expected: np.ndarray | None = None) -> list:
     """Every declared test obstacle, scored against its own silhouette.
 
     The envelope cannot answer this question. The chart yard's trunk stands
@@ -478,6 +558,12 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
     resolved over it. A scanner that reported no boundary has not found the
     obstacles; suppressing the verdict for want of a bin width would let a
     silent scanner score better than a wrong one.
+
+    ``expected`` is the version 2 addition: a boolean mask over the truth bins
+    saying where a scanner could be asked to have measured anything. An
+    obstacle is only visible, and so only expected, where its bins are inside
+    it; one that lies wholly in the dark, or wholly above the footprint, has
+    nothing to miss. ``None`` is every bin, which is the legacy rule.
     """
     bin_width_deg = (360.0 / product_bins) if product_bins else None
     scored = []
@@ -492,6 +578,8 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
             raise ValueError(f"{obstacle['id']} profile has {profile.size} bins, "
                              f"not the truth's {truth_bins}")
         visible = profile > -10.0
+        if expected is not None:
+            visible = visible & expected
         measurable = visible & resolved
         visible_width_deg = float(np.count_nonzero(visible)) * step
 
@@ -668,8 +756,69 @@ def first_line_per_frame(events: list) -> list:
     return kept
 
 
-def _score_overlay(events: list, frames: list) -> dict:
+def rotate_about_up(vector, deg: float) -> list:
+    """Turn a world vector east by ``deg`` degrees about the vertical.
+
+    Azimuth runs clockwise from north, so adding to the azimuth of
+    ``[sin az cos alt, cos az cos alt, sin alt]`` is
+    ``x' = x cos d + y sin d``, ``y' = y cos d - x sin d``. The scorer removes
+    a global yaw with it and `sim.corrupt` puts one in, so there is one copy.
+    """
+    radians = math.radians(deg)
+    cos, sin = math.cos(radians), math.sin(radians)
+    x, y, z = (float(v) for v in vector)
+    return [x * cos + y * sin, y * cos - x * sin, z]
+
+
+def _heading_deg(vector) -> float | None:
+    """Azimuth of a world direction, or ``None`` when it is vertical."""
+    x, y = float(vector[0]), float(vector[1])
+    if math.hypot(x, y) < 1e-9:
+        return None
+    return math.degrees(math.atan2(x, y))
+
+
+def global_yaw_deg(events: list, truth: dict) -> float:
+    """The one yaw that best explains reported against true forward heading.
+
+    The circular mean of reported-minus-truth heading over every delivered
+    frame that carries a basis (RS B3). The scan frame's zero is arbitrary for
+    the relative predictor modes, so a result turned as a whole is not wrong
+    about where the camera pointed relative to itself; where north is, the
+    north gates grade. A mean of the raw differences would call 359 and 1
+    degrees 180 apart, which is why it is taken on the circle.
+    """
+    sin_sum = cos_sum = 0.0
+    count = 0
+    for event in first_line_per_frame(events):
+        basis, frame = event.get("basis"), truth.get(event.get("frame_id"))
+        if basis is None or frame is None:
+            continue
+        reported, actual = _heading_deg(basis["forward"]), _heading_deg(frame["forward"])
+        if reported is None or actual is None:
+            continue
+        difference = math.radians(reported - actual)
+        sin_sum += math.sin(difference)
+        cos_sum += math.cos(difference)
+        count += 1
+    if not count:
+        return 0.0
+    return math.degrees(math.atan2(sin_sum, cos_sum))
+
+
+def _score_overlay(events: list, frames: list, remove_yaw: bool = False,
+                   window_ids: set | None = None) -> dict:
     """Overlay attitude error per delivered frame, moving and settled apart.
+
+    ``remove_yaw`` and ``window_ids`` are the pan-route additions (spec 7.6).
+    With ``remove_yaw`` one global yaw (:func:`global_yaw_deg`) is taken out
+    of every reported basis before it is compared, and the block gains
+    ``yaw_removed_deg``. ``window_ids`` are the frame ids delivered between
+    Begin and Finish: the block gains ``frames_in_window``,
+    ``frames_with_basis`` and ``complete_fraction``, the share of those frames
+    the scanner put a pose on (#898). The denominator is the frames delivered,
+    never the lines the scanner wrote: a scanner that stops writing lines has
+    not shrunk the denominator.
 
     Issue #59: the error is the MAXIMUM of the three angles between measured
     and true `forward`, `right` and `up`, not `forward` alone. `forward`
@@ -700,6 +849,9 @@ def _score_overlay(events: list, frames: list) -> dict:
             repeats[frame_id] = repeats.get(frame_id, 0) + 1
     duplicate_ids = sum(1 for count in repeats.values() if count > 1)
 
+    yaw = global_yaw_deg(events, truth) if remove_yaw else 0.0
+    posed_ids = set()
+
     moving, settled = [], []
     missing = 0
     considered = 0
@@ -714,6 +866,10 @@ def _score_overlay(events: list, frames: list) -> dict:
         if basis is None or frame is None:
             missing += 1
             continue
+        posed_ids.add(frame_id)
+        if remove_yaw:
+            basis = {key: rotate_about_up(basis[key], -yaw)
+                     for key in ("right", "up", "forward")}
         forward_error = angle_between(basis["forward"], frame["forward"])
         right_error = angle_between(basis["right"], frame["right"])
         up_error = angle_between(basis["up"], frame["up"])
@@ -741,7 +897,7 @@ def _score_overlay(events: list, frames: list) -> dict:
 
     over_gate = (sum(1 for s in moving if s["error"] > GATE_OVERLAY_MOVING_P95)
                  + sum(1 for s in settled if s["error"] > GATE_OVERLAY_SETTLED_P95))
-    return {
+    result = {
         "samples": len(moving) + len(settled),
         "missing_fraction": (missing / considered) if considered else None,
         "frames_over_gate": over_gate,
@@ -749,6 +905,14 @@ def _score_overlay(events: list, frames: list) -> dict:
         "moving": block(moving),
         "settled": block(settled),
     }
+    if remove_yaw:
+        result["yaw_removed_deg"] = yaw
+    if window_ids is not None:
+        with_basis = len(posed_ids & window_ids)
+        result["frames_in_window"] = len(window_ids)
+        result["frames_with_basis"] = with_basis
+        result["complete_fraction"] = (with_basis / len(window_ids)) if window_ids else None
+    return result
 
 
 def _score_capture(holds: list, captures: list) -> dict:
@@ -871,6 +1035,518 @@ def _score_coverage(panorama: np.ndarray, camera: dict, frames: list,
 
 
 # --------------------------------------------------------------------------
+# Version 2: the pan route's footprint, the profile and the diagnostics
+# --------------------------------------------------------------------------
+
+
+def delivery_window(case_dir) -> tuple[float, float]:
+    """The ``(begin, finish)`` times, in ms, of the actions the replay was given.
+
+    From ``input/actions.jsonl``, which is the case's own record of when the
+    user pressed Begin and Finish, and not from anything the scanner reports
+    about itself: a scanner that began late or finished early must not get to
+    shrink the set of frames it is asked about. A case with no actions file
+    (a hand-built one) is every frame.
+    """
+    actions = _read_jsonl(Path(case_dir) / "input" / "actions.jsonl")
+    begin = next((a["t_ms"] for a in actions if a.get("action") == "begin"), None)
+    finish = next((a["t_ms"] for a in actions if a.get("action") == "finish"), None)
+    return (float("-inf") if begin is None else float(begin),
+            float("inf") if finish is None else float(finish))
+
+
+def footprint_pass(shape, camera: dict, frames: list,
+                   first_half_width_deg: float = LIVE_HALF_WIDTH_DEG):
+    """The claimed footprint region, and when each cell was first inside a slit.
+
+    Returns ``(region, first_index)``, both shaped like the raster. A frame's
+    claimed footprint (RS B2) is the directions in front of the camera whose
+    camera-frame coordinates under the truth pose satisfy ``|x / z| <= tan 3``
+    degrees and ``|y / z| <= 0.9 tan(long / 2)``: ``y`` is the long axis of
+    the portrait image, so its half-extent is ``cy / fy``. ``region`` is the
+    union of those over ``frames``. ``first_index`` is, per cell, the index in
+    ``frames`` of the first frame whose slit narrowed to ``first_half_width_deg``
+    contains it, or -1: the live-fill gate times the central part of the slit
+    only, and ``sim.ideal`` times the whole claimed slit. The test is written
+    without dividing by ``z``, and parallax is ignored, as for the legacy
+    observable region.
+
+    ``frames`` must be in delivery order. Poses are NOT collapsed here, since
+    the order is the answer to "first".
+    """
+    height, width = shape[:2]
+    az, alt = _raster_grid(height, width)
+    grid_az, grid_alt = np.meshgrid(np.radians(az), np.radians(alt))
+    cos_alt = np.cos(grid_alt)
+    cells = np.stack([np.sin(grid_az) * cos_alt,
+                      np.cos(grid_az) * cos_alt,
+                      np.sin(grid_alt)], axis=-1).reshape(-1, 3).astype(np.float32)
+
+    region = np.zeros(cells.shape[0], dtype=bool)
+    first = np.full(cells.shape[0], -1, dtype=np.int64)
+    if not frames:
+        return region.reshape(height, width), first.reshape(height, width)
+
+    poses = np.array([list(f["right"]) + list(f["up"]) + list(f["forward"])
+                      for f in frames], dtype=np.float32)
+    k_claimed = math.tan(math.radians(FOOTPRINT_HALF_WIDTH_DEG))
+    k_first = math.tan(math.radians(first_half_width_deg))
+    k_long = FOOTPRINT_LONG_FRACTION * float(camera["cy"]) / float(camera["fy"])
+    for start in range(0, poses.shape[0], 32):
+        batch = poses[start:start + 32]
+        z = cells @ batch[:, 6:9].T
+        x = np.abs(cells @ batch[:, 0:3].T)
+        y = np.abs(cells @ batch[:, 3:6].T)
+        along = (z > 0.0) & (y <= k_long * z)
+        region |= (along & (x <= k_claimed * z)).any(axis=1)
+        inside = along & (x <= k_first * z)
+        hit = inside.any(axis=1) & (first < 0)
+        first[hit] = start + inside[hit].argmax(axis=1)
+    return region.reshape(height, width), first.reshape(height, width)
+
+
+def quat_to_matrix(q) -> np.ndarray:
+    """The rotation matrix of a ``[w, x, y, z]`` quaternion, camera to world.
+
+    The camera frame is x right, y up, looking along -z, so the columns are
+    ``right``, ``up`` and ``-forward`` (CONTRACT.md "Frames and units").
+    """
+    w, x, y, z = (float(v) for v in q)
+    norm = math.sqrt(w * w + x * x + y * y + z * z)
+    if norm == 0.0:
+        raise ValueError("the zero quaternion is not a rotation")
+    w, x, y, z = w / norm, x / norm, y / norm, z / norm
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def matrix_to_quat(matrix) -> list:
+    """The ``[w, x, y, z]`` quaternion of a rotation matrix, ``w >= 0``."""
+    m = np.asarray(matrix, dtype=np.float64)
+    trace = float(m[0, 0] + m[1, 1] + m[2, 2])
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        q = [0.25 * s, (m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s,
+             (m[1, 0] - m[0, 1]) / s]
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = math.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2.0
+        q = [(m[2, 1] - m[1, 2]) / s, 0.25 * s, (m[0, 1] + m[1, 0]) / s,
+             (m[0, 2] + m[2, 0]) / s]
+    elif m[1, 1] > m[2, 2]:
+        s = math.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2.0
+        q = [(m[0, 2] - m[2, 0]) / s, (m[0, 1] + m[1, 0]) / s, 0.25 * s,
+             (m[1, 2] + m[2, 1]) / s]
+    else:
+        s = math.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2.0
+        q = [(m[1, 0] - m[0, 1]) / s, (m[0, 2] + m[2, 0]) / s,
+             (m[1, 2] + m[2, 1]) / s, 0.25 * s]
+    norm = math.sqrt(sum(float(v) * float(v) for v in q))
+    q = [float(v) / norm for v in q]
+    return q if q[0] >= 0.0 else [-v for v in q]
+
+
+def truth_matrix(frame: dict) -> np.ndarray:
+    """A trajectory frame's camera-to-world rotation, ``[right, up, -forward]``."""
+    return np.column_stack([np.asarray(frame["right"], dtype=np.float64),
+                            np.asarray(frame["up"], dtype=np.float64),
+                            -np.asarray(frame["forward"], dtype=np.float64)])
+
+
+def rotation_angle_deg(matrix) -> float:
+    """The angle of a rotation matrix in degrees.
+
+    ``atan2`` of the sine and cosine rather than ``acos`` of the cosine alone:
+    near zero ``acos`` has no precision left, and the loop gate lives at a
+    quarter of a degree where an ideal result reads zero.
+    """
+    m = np.asarray(matrix, dtype=np.float64)
+    sine = 0.5 * float(np.linalg.norm([m[2, 1] - m[1, 2], m[0, 2] - m[2, 0],
+                                       m[1, 0] - m[0, 1]]))
+    cosine = 0.5 * (float(m[0, 0] + m[1, 1] + m[2, 2]) - 1.0)
+    return math.degrees(math.atan2(sine, cosine))
+
+
+def _floats(values, size: int):
+    """``values`` as a float64 vector of ``size`` with ``None`` as NaN, or ``None``."""
+    if not isinstance(values, list) or len(values) != size:
+        return None
+    try:
+        return np.array([math.nan if v is None else float(v) for v in values],
+                        dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_horizon_v2(raw: dict) -> dict:
+    """The version 2 ``horizon.json`` as arrays.
+
+    A file that does not parse (a missing array, a wrong length) is an EMPTY
+    boundary rather than an exception: every bin Unknown at 90, no polyline,
+    and ``note`` says what was wrong. Silence is not a flat horizon, and a
+    scanner that wrote something unreadable has measured nothing.
+    """
+    profile = _floats(raw.get("profile"), PROFILE_BINS)
+    traced = _floats(raw.get("profile_traced"), PROFILE_BINS)
+    state = _floats(raw.get("profile_state"), PROFILE_BINS)
+    points = []
+    for point in raw.get("points") or []:
+        try:
+            points.append((float(point["az"]) % 360.0, float(point["alt"])))
+        except (KeyError, TypeError, ValueError):
+            points = None
+            break
+    if profile is None or traced is None or state is None or points is None:
+        note = ("horizon.json version 2 is unreadable (profile, profile_traced, "
+                f"profile_state of {PROFILE_BINS} entries and a points list "
+                "of az and alt are required): scored as an empty boundary")
+        return {"profile": np.full(PROFILE_BINS, 90.0),
+                "traced": np.full(PROFILE_BINS, math.nan),
+                "state": np.full(PROFILE_BINS, STATE_UNKNOWN, dtype=np.int64),
+                "points": [], "tau": None, "note": note}
+    return {"profile": profile, "traced": traced,
+            "state": np.nan_to_num(state, nan=STATE_UNKNOWN).astype(np.int64),
+            "points": points, "tau": raw.get("tau"), "note": None}
+
+
+def _polyline_alt(points: list, az) -> np.ndarray | None:
+    """The published polyline at ``az``: linear between points, wrapped at 360.
+
+    The same reading the planner gives a stored horizon. ``None`` for a
+    polyline with no points, which has no altitude anywhere.
+    """
+    if not points:
+        return None
+    ordered = sorted(points)
+    return np.interp(np.asarray(az, dtype=np.float64) % 360.0,
+                     [p[0] for p in ordered], [p[1] for p in ordered],
+                     period=360.0)
+
+
+def _parse_visibility(raw: dict | None):
+    """``(visible, footprint_top)`` as 720-long arrays, or ``None`` without a file."""
+    if not raw:
+        return None
+    visible = raw.get("visible")
+    top = _floats(raw.get("footprint_top_deg"), PROFILE_BINS)
+    if not isinstance(visible, list) or len(visible) != PROFILE_BINS or top is None:
+        raise ValueError("visibility.json needs 720 visible flags and 720 "
+                         "footprint_top_deg values")
+    return np.array([bool(v) for v in visible], dtype=bool), top
+
+
+def _truth_bin_boundary(truth: np.ndarray, owner: np.ndarray) -> np.ndarray:
+    """A, the maximum of the 0.1-degree truth over each of the 720 bins."""
+    boundary = np.zeros(PROFILE_BINS, dtype=np.float64)
+    np.maximum.at(boundary, owner, truth)
+    return boundary
+
+
+def _score_horizon_v2(reference: dict, parsed: dict, visibility) -> dict:
+    """The version 2 boundary: the polyline over Measured bins, and the profile.
+
+    The polyline is sampled at the truth's own 0.1-degree azimuths and graded
+    only where the bin under it is Measured: a bin the scanner blocked at 90
+    because it could not say is not a measurement, and grading the polyline
+    there would punish the honesty the profile exists to express.
+
+    ``expected`` is the bins a perfect scanner is asked to have Measured:
+    visible, with the boundary plus 6 degrees inside the footprint top. It
+    feeds ``measured_share`` and decides which test obstacles can be missed.
+    """
+    truth_raw = np.asarray(reference["alt_max"], dtype=np.float64)
+    truth_bins = int(reference.get("bins", truth_raw.size))
+    truth = np.clip(truth_raw, 0.0, 90.0)
+    step = 360.0 / truth_bins
+    centres = (np.arange(truth_bins) + 0.5) * step
+    owner = np.minimum((centres / PROFILE_BIN_DEG).astype(np.int64), PROFILE_BINS - 1)
+    state = parsed["state"]
+
+    polyline = _polyline_alt(parsed["points"], centres)
+    resolved = (state == STATE_MEASURED)[owner]
+    if polyline is None:
+        # No polyline means no altitude anywhere: nothing is graded as
+        # measured, and the profile check below cannot pass.
+        alt = np.zeros(truth_bins)
+        resolved = np.zeros(truth_bins, dtype=bool)
+    else:
+        alt = polyline
+
+    visible = top = None
+    if visibility is not None:
+        visible, top = visibility
+    boundary = _truth_bin_boundary(truth, owner)
+    expected = None
+    if visible is not None:
+        expected = (visible & np.isfinite(top)
+                    & (boundary + SKY_ABOVE_MEASURED_DEG <= top))
+
+    signed = alt[resolved] - truth[resolved]
+    absolute = np.abs(signed)
+
+    cell = math.radians(HORIZON_CELL_DEG)
+    alt_centres = np.arange(0.0, 90.0, HORIZON_CELL_DEG) + HORIZON_CELL_DEG / 2.0
+    cos_cumulative = np.concatenate(
+        [[0.0], np.cumsum(np.cos(np.radians(alt_centres)) * cell * cell)])
+    column_sr = float(cos_cumulative[-1])
+    below_truth = _area_below(cos_cumulative, alt_centres, truth[resolved])
+    below_measured = _area_below(cos_cumulative, alt_centres, alt[resolved])
+    difference = below_truth - below_measured
+    unresolved_samples = np.isin(state, UNRESOLVED_STATES)[owner]
+
+    # Rounded to 1e-9 degree before the obstacle rule: a deficit of exactly one
+    # degree must not depend on the last bit of an interpolation.
+    obstacles = _score_obstacles(
+        reference, truth_bins, step, np.round(alt, 9), resolved, PROFILE_BINS,
+        expected=None if expected is None else expected[owner])
+    missed = [o["id"] for o in obstacles if o["missed"]]
+
+    steps = int(round(NORTH_OFFSET_LIMIT_DEG / step))
+    north_offset = None
+    best_mean = None
+    for shift in sorted(range(-steps, steps + 1), key=lambda k: (abs(k), k)):
+        rolled_alt = np.roll(alt, -shift)
+        rolled_resolved = np.roll(resolved, -shift)
+        if not rolled_resolved.any():
+            continue
+        mean = float(np.abs(rolled_alt[rolled_resolved] - truth[rolled_resolved]).mean())
+        if best_mean is None or mean < best_mean:
+            best_mean, north_offset = mean, shift * step
+
+    # G1 at the bin edges, and at any vertex inside a bin: between vertices the
+    # line is linear, so its lowest point over a bin is at one of those.
+    edges = np.arange(PROFILE_BINS) * PROFILE_BIN_DEG
+    if polyline is None:
+        below = PROFILE_BINS
+    else:
+        profile = parsed["profile"]
+        left = _polyline_alt(parsed["points"], edges)
+        right = _polyline_alt(parsed["points"], edges + PROFILE_BIN_DEG)
+        low = (left < profile - 1e-6) | (right < profile - 1e-6)
+        for point_az, point_alt in parsed["points"]:
+            bin_index = min(int(point_az / PROFILE_BIN_DEG), PROFILE_BINS - 1)
+            if point_alt < profile[bin_index] - 1e-6:
+                low[bin_index] = True
+        below = int(low.sum())
+
+    counts = {STATE_NAMES[code]: int(np.count_nonzero(state == code))
+              for code in STATE_NAMES}
+    share = unobservable = None
+    if expected is not None:
+        wanted = int(expected.sum())
+        settled = int((expected & np.isin(state, SETTLED_STATES)).sum())
+        share = {"expected": wanted, "settled": settled,
+                 "share": (settled / wanted) if wanted else None}
+        dark = ~visible
+        dark_total = int(dark.sum())
+        dark_measured = int((dark & (state == STATE_MEASURED)).sum())
+        unobservable = {"not_visible": dark_total, "measured": dark_measured,
+                        "share": (dark_measured / dark_total) if dark_total else None}
+
+    return {
+        "version": 2,
+        "truth_bins": truth_bins,
+        "measured_bins": PROFILE_BINS,
+        "measured_resolution_deg": PROFILE_BIN_DEG,
+        "signed_error_deg": {
+            "median": float(np.median(signed)) if signed.size else None,
+            "p95": _percentile(absolute, 95),
+            "p99": _percentile(absolute, 99),
+            "max": float(absolute.max()) if absolute.size else None,
+        },
+        "error_samples": int(absolute.size),
+        "empty_measured": not bool(resolved.any()),
+        "visible_bins": None if visible is None else int(visible.sum()),
+        "states": counts,
+        "unresolved_bins": int(np.isin(state, UNRESOLVED_STATES).sum()),
+        "below_profile_bins": below,
+        "polyline_points": len(parsed["points"]),
+        "tau": parsed["tau"],
+        "measured_share": share,
+        "unknown_where_unobservable": unobservable,
+        "false_open_sr": float(np.clip(difference, 0.0, None).sum()),
+        "false_blocked_sr": float(np.clip(-difference, 0.0, None).sum()),
+        "unresolved_sr": float(np.count_nonzero(unresolved_samples) * column_sr),
+        "obstacles": obstacles,
+        "missed_obstructions": missed,
+        "north_offset_deg": north_offset,
+        "note": parsed["note"] or (
+            "truth alt_max clipped to [0, 90]; the polyline is graded at the "
+            "truth's own azimuths over Measured bins only"),
+    }
+
+
+def _landmark_footprint(landmarks: list, scene: dict, c_ref: np.ndarray,
+                        region: np.ndarray) -> list:
+    """Landmarks with ``observable`` narrowed to the claimed footprint (7.6).
+
+    A slit painter paints a band, so a landmark outside the band is not
+    omitted, it was never asked for. Expected is: observable from ``c_ref``
+    AND the whole disc, grown by 1.5 degrees, inside the footprint region. The
+    region comes from the route's frusta and the truth poses, never from the
+    scanner's alpha: a scanner must not be able to narrow its own exam. Each
+    entry gains ``in_footprint`` so a report can say why a landmark is not
+    expected.
+    """
+    radii = {lm["id"]: float(lm["radius_deg"]) for lm in scene.get("landmarks", [])}
+    for lm in scene.get("surface_landmarks", []):
+        distance = float(np.linalg.norm(np.asarray(lm["centre"], dtype=np.float64) - c_ref))
+        radii[lm["id"]] = math.degrees(math.atan2(float(lm["radius_m"]), distance))
+    height, width = region.shape
+    angles = np.linspace(0.0, 2.0 * math.pi, 24, endpoint=False)
+
+    def inside(az: float, alt: float, radius: float) -> bool:
+        centre = sky_vector(az, alt)
+        helper = (np.array([0.0, 0.0, 1.0]) if abs(centre[2]) < 0.99
+                  else np.array([1.0, 0.0, 0.0]))
+        u = np.cross(centre, helper)
+        u /= np.linalg.norm(u)
+        v = np.cross(centre, u)
+        rho = math.radians(radius)
+        probes = [centre] + [math.cos(rho) * centre
+                             + math.sin(rho) * (math.cos(t) * u + math.sin(t) * v)
+                             for t in angles]
+        for probe in probes:
+            probe_az, probe_alt = sky_angles(probe)
+            row = int(round((PANORAMA_ALT_TOP - probe_alt) / PANORAMA_ALT_SPAN
+                            * max(height - 1, 1)))
+            column = int(probe_az / 360.0 * width) % width
+            if not 0 <= row < height or not region[row, column]:
+                return False
+        return True
+
+    narrowed = []
+    for landmark in landmarks:
+        radius = radii.get(landmark["id"], 0.0) + LANDMARK_FOOTPRINT_MARGIN_DEG
+        covered = inside(float(landmark["az"]), float(landmark["alt"]), radius)
+        entry = dict(landmark)
+        entry["in_footprint"] = covered
+        entry["observable"] = bool(landmark["observable"]) and covered
+        narrowed.append(entry)
+    return narrowed
+
+
+def _heading_of_quat(q) -> float:
+    """The azimuth of the optical axis of a camera-to-world quaternion."""
+    forward = -quat_to_matrix(q)[:, 2]
+    return math.degrees(math.atan2(forward[0], forward[1]))
+
+
+def _score_loop(diagnostics: dict | None, truth: dict) -> dict:
+    """The loop-closure residual against the truth poses (RS m4).
+
+    ``qinv(q_early) q_late`` from the keyframes ``loop.match`` names, against
+    the same relative rotation between their truth poses, as the angle of the
+    rotation that carries one onto the other. A relative rotation is
+    unchanged by any yaw applied to the whole world, so a result with the
+    wrong north is not charged for it here. Closure by the gyro, or no
+    closure, has no image match to measure and is reported as such.
+    """
+    loop = (diagnostics or {}).get("loop") or {}
+    block = {"closed": bool(loop.get("closed")), "method": loop.get("method"),
+             "match": loop.get("match"), "residual_deg": None, "note": None}
+    match = loop.get("match")
+    if not match:
+        return block
+    try:
+        keyframes = {int(k["id"]): k for k in diagnostics.get("keyframes") or []}
+        early, late = keyframes[int(match["early_kf"])], keyframes[int(match["late_kf"])]
+        reported = quat_to_matrix(early["q"]).T @ quat_to_matrix(late["q"])
+        actual = truth_matrix(truth[early["frame_id"]]).T @ truth_matrix(truth[late["frame_id"]])
+        block["residual_deg"] = rotation_angle_deg(reported.T @ actual)
+    except (KeyError, TypeError, ValueError) as error:
+        block["note"] = f"loop.match could not be resolved to truth poses: {error!r}"
+    return block
+
+
+def _score_focal(diagnostics: dict | None, camera: dict) -> dict:
+    """``|f_norm x short px - truth fx| / truth fx``, as a fraction."""
+    focal = (diagnostics or {}).get("focal") or {}
+    short_px = float(min(camera["width"], camera["height"]))
+    block = {"f_norm": focal.get("f_norm"), "short_px": short_px,
+             "truth_fx": float(camera["fx"]), "state": focal.get("state"),
+             "error_fraction": None}
+    if isinstance(block["f_norm"], (int, float)) and not isinstance(block["f_norm"], bool):
+        block["error_fraction"] = (abs(float(block["f_norm"]) * short_px - block["truth_fx"])
+                                   / block["truth_fx"])
+    return block
+
+
+def _score_north(diagnostics: dict | None, truth: dict) -> dict:
+    """The north error: the circular mean of heading(q) minus truth heading.
+
+    Over the diagnostics keyframes whose frame the case delivered. The
+    reported ``sigma_deg`` is carried beside it, because the honesty gate asks
+    whether the scanner knew how wrong it was.
+    """
+    north = (diagnostics or {}).get("north")
+    sigma = north.get("sigma_deg") if isinstance(north, dict) else None
+    block = {"error_deg": None, "keyframes": 0, "reported": isinstance(north, dict),
+             "sigma_deg": float(sigma) if isinstance(sigma, (int, float)) else None}
+    sin_sum = cos_sum = 0.0
+    for keyframe in (diagnostics or {}).get("keyframes") or []:
+        frame = truth.get(keyframe.get("frame_id"))
+        if frame is None:
+            continue
+        try:
+            reported = _heading_of_quat(keyframe["q"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        actual = _heading_deg(frame["forward"])
+        if actual is None:
+            continue
+        difference = math.radians(reported - actual)
+        sin_sum += math.sin(difference)
+        cos_sum += math.cos(difference)
+        block["keyframes"] += 1
+    if block["keyframes"]:
+        block["error_deg"] = math.degrees(math.atan2(sin_sum, cos_sum))
+    return block
+
+
+def _score_live_fill(first_seen_path: Path, diagnostics: dict | None,
+                     first_index: np.ndarray, window: list) -> dict:
+    """Per raster cell, how long after the slit reached it the scanner said so.
+
+    From the first delivered frame whose central 2-degree slit contains the
+    cell, to ``begin_ms + first_seen x 100``. A cell the scan entered and the
+    scanner never reported seen counts 10 000 ms, so omission is a number and
+    not a missing sample. Under the frozen replay clock this grades
+    keyframe-selection latency only, not compute (RS m2).
+    """
+    block = {"cells": int(np.count_nonzero(first_index >= 0)), "never": None,
+             "p95_ms": None, "median_ms": None, "max_ms": None, "note": None}
+    begin = (diagnostics or {}).get("begin_ms")
+    if not first_seen_path.is_file():
+        block["note"] = "no first_seen.bin"
+        return block
+    if not isinstance(begin, (int, float)) or isinstance(begin, bool):
+        block["note"] = "diagnostics.json carries no begin_ms"
+        return block
+    data = first_seen_path.read_bytes()
+    wanted = 2 * PANORAMA_HEIGHT * PANORAMA_WIDTH
+    if len(data) != wanted:
+        block["note"] = (f"first_seen.bin is {len(data)} bytes, not {wanted} "
+                         f"({PANORAMA_WIDTH} x {PANORAMA_HEIGHT} little-endian uint16)")
+        return block
+    seen = np.frombuffer(data, dtype="<u2").reshape(PANORAMA_HEIGHT, PANORAMA_WIDTH)
+    entered = first_index >= 0
+    times = np.array([float(f["t_capture_ms"]) for f in window], dtype=np.float64)
+    first_ms = (times[np.where(entered, first_index, 0)] if times.size
+                else np.zeros(first_index.shape))
+    reported = float(begin) + FIRST_SEEN_UNIT_MS * seen.astype(np.float64)
+    delay = np.where(seen > 0, reported - first_ms, LIVE_FILL_NEVER_MS)[entered]
+    block["never"] = int(np.count_nonzero((seen == 0) & entered))
+    if delay.size:
+        block["p95_ms"] = _percentile(delay, 95)
+        block["median_ms"] = _percentile(delay, 50)
+        block["max_ms"] = float(delay.max())
+    return block
+
+
+# --------------------------------------------------------------------------
 # Gates
 # --------------------------------------------------------------------------
 
@@ -928,6 +1604,91 @@ def _gates(landmarks: dict, horizon: dict, overlay: dict, capture: dict,
     return gates
 
 
+def _gates_v2(gates: dict, *, pan: bool, horizon: dict, overlay: dict,
+              coverage: dict, flags: dict, compass_bias: bool, has_diagnostics: bool,
+              loop: dict | None, focal: dict | None, north: dict | None,
+              live: dict | None) -> dict:
+    """The legacy gates, amended and extended for version 2 (spec 7.6).
+
+    ``gates`` is `_gates`' answer. A gate that does not apply to this case is
+    absent rather than true, so a table of gates lists exactly what graded the
+    case. The two hold gates are the exception on a pan route: there is no
+    hold to photograph on a route that only turns, so they stay in the table,
+    vacuously true, and ``capture`` still reports what the scanner logged.
+    The two overlay gates that compare against a still pose are retired there
+    (RS B3) and are removed, with their numbers still in ``overlay``.
+    """
+    gates = dict(gates)
+    gates.pop("pass", None)
+
+    if pan:
+        gates.pop("overlay_settled_p95_lt_0_5", None)
+        gates.pop("overlay_max_lt_10", None)
+        gates["capture_p95_le_1500"] = True
+        gates["every_hold_captured"] = True
+        footprint = coverage.get("footprint_fraction_covered")
+        gates["coverage_ge_0_95"] = footprint is not None and footprint >= GATE_COVERAGE
+        complete = overlay.get("complete_fraction")
+        gates["overlay_complete"] = complete is not None and complete >= GATE_OVERLAY_COMPLETE
+
+    if horizon.get("version") == 2:
+        visible = horizon["visible_bins"]
+        # Without a visibility file every bin is taken as visible: a missing
+        # file is no reason to excuse a result that measured nothing.
+        asked_for_something = (PROFILE_BINS if visible is None else visible) >= EMPTY_MEASURED_VISIBLE_BINS
+        errors = horizon["signed_error_deg"]
+
+        def within(key: str, limit: float) -> bool:
+            if horizon["empty_measured"]:
+                return not asked_for_something
+            return errors[key] is not None and errors[key] < limit - GATE_EPSILON
+
+        gates["horizon_p95_lt_1"] = within("p95", GATE_HORIZON_P95)
+        gates["never_below_profile"] = horizon["below_profile_bins"] == 0
+        gates["measured_is_honest"] = within("p99", GATE_HORIZON_P99)
+        if flags["daylight"] and flags["still_pivot"]:
+            share = horizon["measured_share"]
+            gates["measured_share"] = (
+                share is not None
+                and (share["share"] is None or share["share"] >= GATE_MEASURED_SHARE))
+        unobservable = horizon["unknown_where_unobservable"]
+        if unobservable is not None:
+            gates["unknown_where_unobservable"] = (
+                unobservable["share"] is None
+                or unobservable["share"] <= GATE_MEASURED_AT_UNOBSERVABLE)
+        if flags["fully_observable"]:
+            gates["no_unresolved_boundary"] = horizon["unresolved_bins"] == 0
+        else:
+            gates.pop("no_unresolved_boundary", None)
+
+    if pan:
+        if flags["expect_closure"]:
+            gates["loop_residual_lt_0_25"] = (
+                loop["closed"] and loop["method"] == "image"
+                and loop["residual_deg"] is not None
+                and loop["residual_deg"] < GATE_LOOP_RESIDUAL_DEG)
+        if flags["still_pivot"]:
+            gates["focal_err_lt_0_5pct"] = (focal["error_fraction"] is not None
+                                            and focal["error_fraction"] < GATE_FOCAL_ERR)
+        if flags["north_graded"]:
+            gates["north_err_lt_1"] = (north["error_deg"] is not None
+                                      and abs(north["error_deg"]) < GATE_NORTH_ERR_DEG)
+        if not compass_bias:
+            if not has_diagnostics:
+                honest = False
+            elif not north["reported"]:
+                honest = True
+            else:
+                honest = (north["error_deg"] is not None and north["sigma_deg"] is not None
+                          and abs(north["error_deg"]) <= NORTH_SIGMA_FACTOR * north["sigma_deg"])
+            gates["north_sigma_honest"] = honest
+        gates["live_fill_p95_le_1000"] = (live["p95_ms"] is not None
+                                          and live["p95_ms"] <= GATE_LIVE_FILL_P95_MS)
+
+    gates["pass"] = all(gates.values())
+    return gates
+
+
 # --------------------------------------------------------------------------
 
 
@@ -937,6 +1698,13 @@ def score_case(case_dir, result_dir=None) -> dict:
     ``result_dir`` defaults to ``case_dir / "result"``; Task 8's corruption
     tests point it at a copy instead, so nothing here assumes the result sits
     inside the case.
+
+    A legacy case (no pan route, a version 1 horizon, no visibility file, no
+    grading block) is scored exactly as it always was and writes the same
+    keys. Anything else is a version 2 case: it additionally reads
+    ``truth/route.json``, ``truth/visibility.json``, ``input/actions.jsonl``
+    and the result's ``diagnostics.json`` and ``first_seen.bin``, and
+    ``scores.json`` gains the blocks described in CONTRACT.md "Version 2".
     """
     case_dir = Path(case_dir)
     result_dir = Path(result_dir) if result_dir is not None else case_dir / "result"
@@ -952,15 +1720,48 @@ def score_case(case_dir, result_dir=None) -> dict:
     holds = _read_json(truth_dir / "holds.json", []) or []
     frames = _read_jsonl(truth_dir / "trajectory.jsonl")
 
+    route = _read_json(truth_dir / "route.json")
+    pan = isinstance(route, dict) and route.get("kind") == "pan"
+    visibility_raw = _read_json(truth_dir / "visibility.json")
+    horizon_raw = _read_json(result_dir / "horizon.json")
+    horizon_v2 = isinstance(horizon_raw, dict) and horizon_raw.get("version") == 2
+    grading = manifest.get("grading") or {}
+    extended = pan or horizon_v2 or visibility_raw is not None or bool(grading)
+    flags = {name: bool(grading.get(name)) for name in GRADING_FLAGS}
+
     panorama, panorama_info = _load_panorama(result_dir / "panorama.png")
     summary = _read_json(result_dir / "summary.json")
+    events = _read_jsonl(result_dir / "events.jsonl")
+
+    region = first_index = None
+    window = frames
+    if pan:
+        begin, finish = delivery_window(case_dir)
+        window = [f for f in frames if begin <= float(f["t_capture_ms"]) <= finish]
+        region, first_index = footprint_pass(panorama.shape, camera, window)
+        landmarks = _landmark_footprint(landmarks, scene, c_ref, region)
 
     landmark_scores = _score_landmarks(scene, landmarks, c_ref, panorama)
-    horizon_scores = _score_horizon(reference_horizon,
-                                    _read_json(result_dir / "horizon.json"))
-    overlay_scores = _score_overlay(_read_jsonl(result_dir / "events.jsonl"), frames)
+    if horizon_v2:
+        horizon_scores = _score_horizon_v2(reference_horizon, _parse_horizon_v2(horizon_raw),
+                                           _parse_visibility(visibility_raw))
+    else:
+        horizon_scores = _score_horizon(reference_horizon, horizon_raw)
+    if pan:
+        overlay_scores = _score_overlay(
+            events, frames, remove_yaw=True,
+            window_ids={f["frame_id"] for f in window})
+    else:
+        overlay_scores = _score_overlay(events, frames)
     capture_scores = _score_capture(holds, _read_jsonl(result_dir / "captures.jsonl"))
     coverage_scores = _score_coverage(panorama, camera, frames, summary)
+    if pan:
+        _, alt = _raster_grid(*panorama.shape[:2])
+        weight = np.repeat(np.cos(np.radians(alt))[:, None], panorama.shape[1], axis=1)
+        claimed = float((weight * region).sum())
+        coverage_scores["footprint_fraction_covered"] = (
+            float((weight * region * (panorama[:, :, 3] == 255)).sum() / claimed)
+            if claimed else None)
 
     case_id = manifest.get("case_id", case_dir.name)
     hashes = manifest.get("hashes", {})
@@ -991,6 +1792,32 @@ def score_case(case_dir, result_dir=None) -> dict:
         "gates": _gates(landmark_scores, horizon_scores, overlay_scores,
                         capture_scores, coverage_scores),
     }
+
+    if extended:
+        diagnostics = _read_json(result_dir / "diagnostics.json")
+        truth_by_id = {f["frame_id"]: f for f in frames}
+        loop = focal = north = live = None
+        if pan:
+            loop = _score_loop(diagnostics, truth_by_id)
+            focal = _score_focal(diagnostics, camera)
+            north = _score_north(diagnostics, truth_by_id)
+            live = _score_live_fill(result_dir / "first_seen.bin", diagnostics,
+                                    first_index, window)
+        compass_bias = bool(((manifest.get("realism") or {}).get("absolute") or {})
+                            .get("bias_deg"))
+        scores["gates"] = _gates_v2(
+            scores["gates"], pan=pan, horizon=horizon_scores, overlay=overlay_scores,
+            coverage=coverage_scores, flags=flags, compass_bias=compass_bias,
+            has_diagnostics=diagnostics is not None, loop=loop, focal=focal,
+            north=north, live=live)
+        scores["route"] = {"kind": route.get("kind") if isinstance(route, dict) else None}
+        scores["flags"] = flags
+        scores["visibility"] = {"present": visibility_raw is not None}
+        if pan:
+            scores["loop"], scores["focal"], scores["north"] = loop, focal, north
+            scores["live_fill"] = live
+        scores["cost_ms"] = (summary or {}).get("cost_ms")
+
     (result_dir / "scores.json").write_text(
         json.dumps(scores, separators=(",", ":")), encoding="utf-8", newline="\n")
     return scores

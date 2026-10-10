@@ -21,6 +21,13 @@
 // ASSUMPTION: `movePoint`/neighbour clamping expects `points` already sorted
 // by `az` (as the prototype's stored horizon arrays are) - callers that add a
 // point out of order should re-sort (see `insertPoint`, which does).
+//
+// `insertPoint`/`movePoint` take an optional `grid` (degrees). Left out, they
+// behave exactly as they always have (whole degrees, neighbours +-1, ends at
+// 0/359), which is what the classic editor and the old scanner rely on. Given,
+// the panorama review editor (SPEC-v2 2.9) rounds both coordinates to the grid
+// and keeps a moved point `grid` clear of its neighbours and inside
+// [0, 360 - grid].
 
 export { horizonVerdict } from "../../lib/horizon";
 export type { HorizonVerdict } from "../../lib/horizon";
@@ -55,19 +62,49 @@ export function isObstructed(points: HorizonPoint[], alt: number, az: number): b
   return alt <= horizonAltAt(points, az);
 }
 
-/** Add a point (az/alt rounded to whole degrees) and keep the array az-sorted. */
-export function insertPoint(points: HorizonPoint[], az: number, alt: number): HorizonPoint[] {
-  const next = [...points, { az: Math.round(az), alt: Math.round(alt) }];
+/** `grid` must be a positive finite step; anything else is a caller bug, not an input to guess at. */
+function checkGrid(grid: number): void {
+  if (!(grid > 0 && Number.isFinite(grid))) throw new RangeError(`horizonModel: grid must be a positive finite number, got ${String(grid)}`);
+}
+
+/** `v` rounded to the nearest multiple of `grid` (halves up, as Math.round); the `+ 0` turns a -0 into 0. */
+function onGrid(v: number, grid: number): number {
+  return Math.round(v / grid) * grid + 0;
+}
+
+/** Add a point and keep the array az-sorted. The point's az/alt are rounded to whole degrees, or, with `grid`, to
+ *  the grid, with az held inside [0, 360 - grid] (a point at 360 is the point at 0). */
+export function insertPoint(points: HorizonPoint[], az: number, alt: number, grid?: number): HorizonPoint[] {
+  if (grid !== undefined) checkGrid(grid);
+  const at = grid === undefined
+    ? { az: Math.round(az), alt: Math.round(alt) }
+    : { az: Math.min(360 - grid, Math.max(0, onGrid(az, grid))), alt: onGrid(alt, grid) };
+  const next = [...points, at];
   next.sort((p, q) => p.az - q.az);
   return next;
 }
 
 /** Move point `i`, clamping az strictly between its neighbours (or 0/359 at
  *  the ends) and alt to -8..90, including overhead obstructions, so a
- *  dragged point can never cross a neighbour or invert the polyline. */
-export function movePoint(points: HorizonPoint[], i: number, az: number, alt: number): HorizonPoint[] {
+ *  dragged point can never cross a neighbour or invert the polyline.
+ *
+ *  With `grid`, both coordinates are rounded to the grid first, and the az
+ *  clamp keeps the point `grid` from each neighbour and inside
+ *  [0, 360 - grid]; alt is still clamped to -8..90 and then rounded. Rounding
+ *  comes before the clamp so an off-grid neighbour is never crossed. */
+export function movePoint(points: HorizonPoint[], i: number, az: number, alt: number, grid?: number): HorizonPoint[] {
+  if (grid !== undefined) checkGrid(grid);
   if (i < 0 || i >= points.length) return points;
   const next = points.map((p) => ({ ...p }));
+  if (grid !== undefined) {
+    const gLo = i > 0 ? next[i - 1].az + grid : 0;
+    const gHi = i < next.length - 1 ? next[i + 1].az - grid : 360 - grid;
+    next[i] = {
+      az: Math.min(360 - grid, Math.max(0, Math.max(gLo, Math.min(gHi, onGrid(az, grid))))),
+      alt: onGrid(Math.max(-8, Math.min(90, alt)), grid),
+    };
+    return next;
+  }
   const lo = i > 0 ? next[i - 1].az + 1 : 0;
   const hi = i < next.length - 1 ? next[i + 1].az - 1 : 359;
   next[i] = {

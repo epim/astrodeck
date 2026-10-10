@@ -26,6 +26,14 @@ profiles come from ``truth/reference-horizon.json`` and ``result/horizon.json``,
 and the overlay series is the angle between each event's ``forward`` and its
 frame's truth ``forward``. The recomputation is presentation only; every
 number in a table comes from ``scores.json`` exactly as the scorer wrote it.
+
+A version 2 result (``scores.json`` carries ``flags``) adds to that, and a
+legacy page is byte for byte what it was. The gates table lists the version 2
+gates by name, the measurements gain the profile, the footprint coverage, the
+loop, focal, north and live-fill figures and the cost, the boundary plot draws
+the published polyline with the profile's states shaded and the bins nobody
+could see marked, and, on a pan route, the overlay timeline is drawn with the
+one global yaw removed that the gate removes.
 """
 
 from __future__ import annotations
@@ -48,7 +56,9 @@ from .scene import load as load_scene
 # second copy of either would let the picture and the table disagree while
 # both looked right.
 from .score import (PANORAMA_ALT_SPAN, PANORAMA_ALT_TOP, PANORAMA_HEIGHT,
-                    PANORAMA_WIDTH, first_line_per_frame)
+                    PANORAMA_WIDTH, PROFILE_BIN_DEG, STATE_LOW, STATE_MEASURED,
+                    STATE_TALL, first_line_per_frame, global_yaw_deg,
+                    rotate_about_up)
 
 __all__ = ["render"]
 
@@ -230,8 +240,98 @@ def _polyline(points, colour: str, width: float = 1.0, dash: str = "") -> str:
             f'{extra} points="{body}" />')
 
 
+def _horizon_svg_v2(case_dir: Path, result_dir: Path, measured: dict) -> str:
+    """Truth against the published polyline, with the profile's states shaded.
+
+    Bins that are not Measured are shaded by state (Low amber, Unknown purple,
+    Tall red) because the polyline over them is a block at 90 and not a
+    measurement; the bins the visibility file says nobody could see are marked
+    along the top; the traced altitude, which exists where a boundary was
+    found but not trusted, is dashed green. The polyline is closed at azimuths
+    0 and 360 by its own wrap, so the plot has no gap at north.
+    """
+    left, right, top, bottom = 46.0, 12.0, 12.0, 28.0
+    plot_width, plot_height = 1080.0 - left - right, 250.0 - top - bottom
+    total_height = 250.0
+
+    def x_of(az):
+        return left + float(az) / 360.0 * plot_width
+
+    def y_of(alt):
+        return top + (90.0 - float(alt)) / 100.0 * plot_height
+
+    parts = [f'<svg viewBox="0 0 1080 {total_height:.0f}" width="100%" '
+             f'role="img" class="plot">']
+    parts.append(f'<rect x="{left}" y="{top}" width="{plot_width}" '
+                 f'height="{plot_height}" class="panel" />')
+
+    state = list(measured.get("profile_state") or [])
+    for code, css in ((STATE_LOW, "state-low"), (STATE_TALL, "state-tall")):
+        for start, stop in _runs([value == code for value in state]):
+            x0, x1 = x_of(start * PROFILE_BIN_DEG), x_of(stop * PROFILE_BIN_DEG)
+            parts.append(f'<rect x="{x0:.1f}" y="{top}" width="{max(x1 - x0, 0.6):.1f}" '
+                         f'height="{plot_height}" class="{css}" />')
+    others = [value not in (STATE_MEASURED, STATE_LOW, STATE_TALL) for value in state]
+    for start, stop in _runs(others):
+        x0, x1 = x_of(start * PROFILE_BIN_DEG), x_of(stop * PROFILE_BIN_DEG)
+        parts.append(f'<rect x="{x0:.1f}" y="{top}" width="{max(x1 - x0, 0.6):.1f}" '
+                     f'height="{plot_height}" class="unresolved" />')
+
+    visibility = _read_json(Path(case_dir) / "truth" / "visibility.json")
+    if visibility and visibility.get("visible"):
+        for start, stop in _runs([not flag for flag in visibility["visible"]]):
+            x0, x1 = x_of(start * PROFILE_BIN_DEG), x_of(stop * PROFILE_BIN_DEG)
+            parts.append(f'<rect x="{x0:.1f}" y="{top}" width="{max(x1 - x0, 0.6):.1f}" '
+                         f'height="6" class="dark" />')
+
+    for alt in (-10, 0, 30, 60, 90):
+        y = y_of(alt)
+        parts.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_width}" '
+                     f'y2="{y:.1f}" class="grid" />')
+        parts.append(f'<text x="{left - 6}" y="{y + 4:.1f}" class="tick end">{alt}</text>')
+    for az in (0, 90, 180, 270, 360):
+        x = x_of(az)
+        parts.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" '
+                     f'y2="{top + plot_height}" class="grid" />')
+        parts.append(f'<text x="{x:.1f}" y="{total_height - 8}" '
+                     f'class="tick mid">{az}</text>')
+
+    reference = _read_json(Path(case_dir) / "truth" / "reference-horizon.json")
+    if reference:
+        truth = np.clip(np.asarray(reference["alt_max"], dtype=np.float64), 0.0, 90.0)
+        step = 360.0 / truth.size
+        parts.append(_polyline(
+            [(x_of((index + 0.5) * step), y_of(value)) for index, value in enumerate(truth)],
+            "#7aa2ff", 1.2))
+
+    traced = measured.get("profile_traced") or []
+    found = [value is not None for value in traced]
+    for start, stop in _runs(found):
+        parts.append(_polyline(
+            [(x_of((index + 0.5) * PROFILE_BIN_DEG), y_of(traced[index]))
+             for index in range(start, stop)], "#6fcf97", 1.0, dash="3 3"))
+
+    points = sorted((float(p["az"]) % 360.0, float(p["alt"])) for p in measured.get("points") or [])
+    if points:
+        wrapped = np.interp([0.0, 360.0], [p[0] for p in points], [p[1] for p in points],
+                            period=360.0)
+        line = [(0.0, float(wrapped[0]))] + points + [(360.0, float(wrapped[1]))]
+        parts.append(_polyline([(x_of(az), y_of(alt)) for az, alt in line], "#ff8a3d", 1.2))
+
+    parts.append(f'<text x="{left}" y="{top - 2}" class="tick">'
+                 'altitude (deg) against azimuth (deg): truth in blue, the published '
+                 'polyline in orange, the traced altitude dashed green, Low shaded '
+                 'amber, Unknown purple, Tall red, bins nobody could see marked grey '
+                 'along the top</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def _horizon_svg(case_dir: Path, result_dir: Path) -> str:
     """Truth against measured boundary, azimuth 0..360, altitude -10..90."""
+    version2 = _read_json(Path(result_dir) / "horizon.json")
+    if isinstance(version2, dict) and version2.get("version") == 2:
+        return _horizon_svg_v2(case_dir, result_dir, version2)
     left, right, top, bottom = 46.0, 12.0, 12.0, 28.0
     plot_width, plot_height = 1080.0 - left - right, 250.0 - top - bottom
     total_height = 250.0
@@ -304,35 +404,44 @@ def _horizon_svg(case_dir: Path, result_dir: Path) -> str:
     return "".join(parts)
 
 
-def _overlay_series(case_dir: Path, result_dir: Path):
+def _overlay_series(case_dir: Path, result_dir: Path, pan: bool = False):
     """(t_ms, error_deg, moving) per event line that can be scored.
 
     A frame id that arrives more than once is plotted once, from its first
     line, through the scorer's own `first_line_per_frame`. A timeline that
     drew a sample the scorer did not score would put a point on the page that
     no percentile and no gate in the tables beside it can account for.
+
+    On a pan route the one global yaw the scorer removes is removed here too,
+    and the error is the scorer's: the largest of the three axes' angles.
     """
     frames = {frame["frame_id"]: frame for frame
               in _read_jsonl(Path(case_dir) / "truth" / "trajectory.jsonl")}
+    events = _read_jsonl(Path(result_dir) / "events.jsonl")
+    yaw = global_yaw_deg(events, frames) if pan else 0.0
     series = []
-    for event in first_line_per_frame(_read_jsonl(Path(result_dir) / "events.jsonl")):
+    for event in first_line_per_frame(events):
         frame_id = event.get("frame_id")
         basis = event.get("basis")
         frame = frames.get(frame_id)
         if basis is None or frame is None:
             continue
-        series.append((float(event.get("t_ms", 0)),
-                       angle_between(basis["forward"], frame["forward"]),
+        if pan:
+            error = max(angle_between(rotate_about_up(basis[key], -yaw), frame[key])
+                        for key in ("forward", "right", "up"))
+        else:
+            error = angle_between(basis["forward"], frame["forward"])
+        series.append((float(event.get("t_ms", 0)), error,
                        float(frame["angular_rate_deg_s"]) > 2.0))
     series.sort(key=lambda row: row[0])
     return series
 
 
-def _overlay_svg(case_dir: Path, result_dir: Path) -> str:
+def _overlay_svg(case_dir: Path, result_dir: Path, pan: bool = False) -> str:
     left, right, top, bottom = 46.0, 12.0, 12.0, 28.0
     plot_width, plot_height = 1080.0 - left - right, 200.0 - top - bottom
     total_height = 200.0
-    series = _overlay_series(case_dir, result_dir)
+    series = _overlay_series(case_dir, result_dir, pan)
 
     parts = [f'<svg viewBox="0 0 1080 {total_height:.0f}" width="100%" '
              f'role="img" class="plot">']
@@ -357,7 +466,11 @@ def _overlay_svg(case_dir: Path, result_dir: Path) -> str:
         x1 = x_of(series[min(stop, len(series) - 1)][0])
         parts.append(f'<rect x="{x0:.1f}" y="{top}" width="{max(x1 - x0, 0.6):.1f}" '
                      f'height="{plot_height}" class="moving" />')
-    for gate, label in ((GATE_SETTLED, "settled gate 0.5"), (GATE_MOVING, "moving gate 1.0")):
+    gate_lines = ((GATE_SETTLED, "settled gate 0.5"), (GATE_MOVING, "moving gate 1.0"))
+    if pan:
+        # The settled gate is retired on a pan route (RS B3).
+        gate_lines = gate_lines[1:]
+    for gate, label in gate_lines:
         y = y_of(gate)
         parts.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_width}" '
                      f'y2="{y:.1f}" class="gate" />')
@@ -370,9 +483,10 @@ def _overlay_svg(case_dir: Path, result_dir: Path) -> str:
                      f'{value:.2f}</text>')
 
     parts.append(_polyline([(x_of(t), y_of(error)) for t, error, _ in series], "#ff8a3d", 1.0))
+    removed = "; one global yaw removed" if pan else ""
     parts.append(f'<text x="{left}" y="{top - 2}" class="tick">'
                  f'overlay error (deg, full scale {error_max:.2f}) against time '
-                 f'(ms, full scale {t_max:.0f}); moving frames shaded</text>')
+                 f'(ms, full scale {t_max:.0f}); moving frames shaded{removed}</text>')
     parts.append(f'<text x="{left + plot_width / 2:.1f}" y="{total_height - 8}" '
                  f'class="tick mid">time (ms)</text>')
     parts.append("</svg>")
@@ -510,8 +624,83 @@ def _summary_table(scores: dict) -> str:
          f'cells {_num(coverage["cells_covered_fraction"], 4)}'),
         ("panorama", _escape(json.dumps(scores["panorama"]))),
     ]
+    if scores.get("flags") is not None:
+        rows.extend(_version2_rows(scores))
     return _table(["measurement", "value"],
                   [[(_escape(name), ""), (value, "")] for name, value in rows])
+
+
+def _version2_rows(scores: dict) -> list:
+    """The measurements only a version 2 case has, as (name, text) rows.
+
+    Every figure is read from ``scores.json`` as the scorer wrote it, and a
+    block the case did not produce (a non-pan case has no loop) is left out
+    rather than shown as a dash that would read as a failed measurement.
+    """
+    horizon, overlay, coverage = scores["horizon"], scores["overlay"], scores["coverage"]
+    flags = scores["flags"]
+    rows = [("case kind",
+             f'route {_escape(scores.get("route", {}).get("kind"))}; flags: '
+             + (", ".join(name for name, on in flags.items() if on) or "none"))]
+    if horizon.get("version") == 2:
+        errors = horizon["signed_error_deg"]
+        states = ", ".join(f"{name} {count}" for name, count in horizon["states"].items()
+                           if count)
+        rows.append(("profile (version 2)",
+                     f'bins {states}; visible bins {_num(horizon["visible_bins"], 0)}; '
+                     f'polyline {horizon["polyline_points"]} points, '
+                     f'tau {_num(horizon.get("tau"), 2)}; '
+                     f'below the profile at {horizon["below_profile_bins"]} bins; '
+                     f'empty Measured set {_num(horizon["empty_measured"])}'))
+        rows.append(("polyline error over Measured bins (deg)",
+                     f'p95 {_num(errors["p95"])}, p99 {_num(errors["p99"])}, '
+                     f'max {_num(errors["max"])}, samples {horizon["error_samples"]}'))
+        share = horizon.get("measured_share")
+        if share is not None:
+            rows.append(("measured share",
+                         f'{share["settled"]} of {share["expected"]} expected bins '
+                         f'Measured or Edited ({_num(share["share"], 4)})'))
+        dark = horizon.get("unknown_where_unobservable")
+        if dark is not None:
+            rows.append(("Measured where nobody could see",
+                         f'{dark["measured"]} of {dark["not_visible"]} not-visible bins '
+                         f'({_num(dark["share"], 4)})'))
+    if "footprint_fraction_covered" in coverage:
+        rows.append(("coverage of the claimed footprint",
+                     f'{_num(coverage["footprint_fraction_covered"], 4)}, against '
+                     f'{_num(coverage["observable_fraction_covered"], 4)} of the frustum '
+                     'of every frame'))
+    if "yaw_removed_deg" in overlay:
+        rows.append(("overlay, one global yaw removed",
+                     f'yaw removed {_num(overlay["yaw_removed_deg"], 3)} deg; '
+                     f'{overlay["frames_with_basis"]} of {overlay["frames_in_window"]} '
+                     f'delivered frames carry a pose '
+                     f'({_num(overlay["complete_fraction"], 4)})'))
+    if scores.get("loop") is not None:
+        loop, focal, north = scores["loop"], scores["focal"], scores["north"]
+        rows.append(("loop closure",
+                     f'closed {_num(loop["closed"])}, method {_escape(loop["method"])}, '
+                     f'residual {_num(loop["residual_deg"], 4)} deg'
+                     + (f'; {_escape(loop["note"])}' if loop.get("note") else "")))
+        rows.append(("focal length",
+                     f'f_norm {_num(focal["f_norm"], 4)} of a short edge of '
+                     f'{_num(focal["short_px"], 0)} px, truth fx '
+                     f'{_num(focal["truth_fx"], 3)}; error {_num(focal["error_fraction"], 5)}'))
+        rows.append(("north",
+                     f'error {_num(north["error_deg"], 3)} deg over {north["keyframes"]} '
+                     f'keyframes; reported sigma {_num(north["sigma_deg"], 2)} deg'))
+    live = scores.get("live_fill")
+    if live is not None:
+        rows.append(("live fill",
+                     f'{live["cells"]} cells entered; never reported seen {_num(live["never"], 0)}; '
+                     f'delay median {_num(live["median_ms"], 0)} ms, p95 '
+                     f'{_num(live["p95_ms"], 0)} ms, max {_num(live["max_ms"], 0)} ms'
+                     + (f'; {_escape(live["note"])}' if live.get("note") else "")))
+    cost = scores.get("cost_ms")
+    if cost:
+        rows.append(("cost (ms, reported, not gated)",
+                     _escape(json.dumps(cost, separators=(",", ":")))))
+    return rows
 
 
 def _legend() -> str:
@@ -563,6 +752,13 @@ ul.legend .swatch { display: inline-block; width: 11px; height: 11px;
                     margin-right: 6px; border-radius: 50%; }
 """
 
+#: Added to ``STYLE`` on a version 2 page only, so a legacy page stays as it was.
+STYLE_V2 = """
+svg .state-low { fill: #4a3d1c; }
+svg .state-tall { fill: #4a2424; }
+svg .dark { fill: #8a8a96; }
+"""
+
 
 def render(case_dir, scores: dict, out_path, result_dir=None, ideal_panorama=None) -> Path:
     """Write ``out_path`` and return it.
@@ -588,7 +784,7 @@ def render(case_dir, scores: dict, out_path, result_dir=None, ideal_panorama=Non
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{_escape(title)}</title>",
-        f"<style>{STYLE}</style>",
+        f"<style>{STYLE + (STYLE_V2 if scores.get('flags') is not None else '')}</style>",
         "</head><body>",
         f"<h1>{_escape(scores['case_id'])}</h1>",
         f'<p class="verdict {_verdict(gates["pass"]).lower()}">'
@@ -606,7 +802,7 @@ def render(case_dir, scores: dict, out_path, result_dir=None, ideal_panorama=Non
         "<h2>Boundary</h2>",
         _horizon_svg(case_dir, result_dir),
         "<h2>Overlay error through time</h2>",
-        _overlay_svg(case_dir, result_dir),
+        _overlay_svg(case_dir, result_dir, scores.get("route", {}).get("kind") == "pan"),
         "<h2>Landmarks, worst first</h2>",
         f'<div class="scroll">{_landmarks_table(scores["landmarks"])}</div>',
         "<h2>Rasters</h2>",

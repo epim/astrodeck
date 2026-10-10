@@ -26,6 +26,7 @@ import numpy as np
 import PIL
 from PIL import Image
 
+from . import frames_post
 from . import scene as scene_module
 from . import sensors
 from . import trajectory as trajectory_module
@@ -79,6 +80,19 @@ def _hash_concatenated_digests(paths: list) -> str:
     return digest.hexdigest()
 
 
+def _delivery_ms(record: dict):
+    """The time a record reaches the page: a frame's presentation time, an
+    event's receive time. ``observations.jsonl`` is sorted by it."""
+    return record["t_present_ms"] if record["kind"] == "frame" else record["t_receive_ms"]
+
+
+def _read_delivered_frames(frames_dir: Path, frames: list) -> Iterator[np.ndarray]:
+    """The case's frames as written to disk, one ``(H, W, 3)`` uint8 array each."""
+    for frame in frames:
+        with Image.open(frames_dir / f"{frame.frame_id}.png") as image:
+            yield np.asarray(image.convert("RGB"))
+
+
 def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
     """Write one case directory under ``out_root`` and return its path.
 
@@ -86,7 +100,41 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
     array per frame, in ``frames`` order. Writes ``input/`` and ``truth/`` and
     ``manifest.json``; ``result/`` is the replay's to create, not this
     function's.
+
+    A case definition may carry three optional blocks (the panorama scanner's
+    spec 13.2), each used only when present:
+
+    - ``realism``: the sensor faults of :mod:`sim.sensors`. A case WITHOUT one
+      takes exactly the code path it always has and writes the bytes it always
+      wrote, with its gyro noise drawn from ``default_rng(0)`` through
+      ``gyro_noise_deg_s`` (the legacy rule). A case with one seeds every
+      source from its own ``seed`` instead (issue #901), and the block's
+      ``motion.noise_deg_s`` replaces ``gyro_noise_deg_s``;
+    - ``grading`` and ``scanner_options``: what the scorer and the replay need
+      to know about the case. ``scanner_options`` is also written as
+      ``input/scanner.json``, the file the replay reads.
+
+    All three are copied into ``manifest.json`` as written.
+
+    A ``realism`` block may itself carry a ``frames`` block (spec 13.5): the
+    camera's exposure blur, auto-exposure, noise, rolling shutter and
+    stabiliser, and the aliasing option. A case that has one renders each frame
+    as :mod:`sim.frames_post` asks (several sub-frame renders, drawn from poses
+    the stabiliser has moved, then developed) and writes
+    ``truth/visibility.json`` (spec 13.8) from the frames as delivered. A case
+    without one takes the loop it always has.
+
+    A ``pan`` route (spec 13.3) also writes ``truth/route.json``, the route
+    definition as built; no other kind does, so a legacy case's ``truth/``
+    keeps exactly the files, and the hash, it always had.
     """
+    realism = case_def.get("realism")
+    # Resolved before anything is created or rendered, so a block that cannot
+    # mean anything fails in milliseconds and leaves nothing behind.
+    spec = sensors.resolve_realism(realism) if realism is not None else None
+    frames_spec = None
+    if spec is not None and spec.get("frames") is not None:
+        frames_spec = frames_post.resolve_frames(spec["frames"])
     out_dir = Path(out_root) / case_def["case_id"]
     frames_dir = out_dir / "input" / "frames"
     truth_dir = out_dir / "truth"
@@ -100,15 +148,30 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
     camera = Camera(camera_def["width"], camera_def["height"], camera_def["fov_short_deg"])
     fps = case_def["fps"]
 
-    traj = trajectory_module.build(route, fps)
+    # The case's own seed, for the one thing a route draws: a pan route's
+    # tremor (child 3 of the same SeedSequence the sensors use). The other
+    # route kinds ignore it and build the bytes they always have.
+    traj = trajectory_module.build(route, fps, seed=case_def["seed"])
 
     # ``strict`` for two reasons: a renderer that yields the wrong number of
     # frames is a defect rather than a short case, and it makes zip ask the
     # renderer for one frame past the last, which is what lets a generator
     # holding a browser open (``sim.render.CaseRenderer``) run its own
     # shutdown here instead of whenever the garbage collector gets to it.
-    for frame, image in zip(traj.frames, renderer(scene, camera, traj.frames), strict=True):
-        Image.fromarray(image, mode="RGB").save(frames_dir / f"{frame.frame_id}.png")
+    if frames_spec is None:
+        for frame, image in zip(traj.frames, renderer(scene, camera, traj.frames), strict=True):
+            Image.fromarray(image, mode="RGB").save(frames_dir / f"{frame.frame_id}.png")
+    else:
+        # Imported here as the CLI imports the Chromium driver: a build that
+        # does not use it does not pay for it.
+        from . import render as render_module
+
+        post = frames_post.FramePost(frames_spec, camera, traj, case_def["seed"])
+        drawn = render_module.render_exposures(
+            renderer, scene, camera, post.exposures(), scale=post.factor)
+        for k, (frame, images) in enumerate(zip(traj.frames, drawn, strict=True)):
+            Image.fromarray(post.process(k, images), mode="RGB").save(
+                frames_dir / f"{frame.frame_id}.png")
 
     frame_obs = [
         {
@@ -120,23 +183,30 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
             "height": camera.height,
             "file": record["file"],
         }
-        for record in sensors.frame_records(traj)
+        for record in sensors.frame_records(
+            traj, capture_time=spec["capture_time"] if spec is not None else None)
     ]
-    orientation_obs = sensors.orientation_events(traj)
-    # The SECOND witness (issue #105). Orientation is change-driven, so a phone
-    # holding still goes silent and its samples alone cannot tell a steady view
-    # from a lost sensor; `devicemotion` fires at a fixed rate whether or not
-    # anything moved. Until this existed no recorded case could exercise the
-    # gyro witness at all, and the replay could only report that it changed
-    # nothing where there was no gyro.
-    motion_obs = sensors.motion_events(
-        traj, noise_deg_s=float(case_def.get("gyro_noise_deg_s", 0.0) or 0.0))
-    observations = sorted(
-        frame_obs + orientation_obs + motion_obs,
-        key=lambda r: r["t_present_ms"] if r["kind"] == "frame" else r["t_receive_ms"],
-    )
+    if spec is None:
+        orientation_obs = sensors.orientation_events(traj)
+        # The SECOND witness (issue #105). Orientation is change-driven, so a phone
+        # holding still goes silent and its samples alone cannot tell a steady view
+        # from a lost sensor; `devicemotion` fires at a fixed rate whether or not
+        # anything moved. Until this existed no recorded case could exercise the
+        # gyro witness at all, and the replay could only report that it changed
+        # nothing where there was no gyro.
+        motion_obs = sensors.motion_events(
+            traj, noise_deg_s=float(case_def.get("gyro_noise_deg_s", 0.0) or 0.0))
+        observations = sorted(frame_obs + orientation_obs + motion_obs, key=_delivery_ms)
+    else:
+        # The same file order as above (frames, then readings, stable over
+        # equal delivery times); the replay puts readings first regardless.
+        observations = sorted(
+            frame_obs + sensors.realism_readings(traj, spec, case_def["seed"]),
+            key=_delivery_ms)
     observations_path = out_dir / "input" / "observations.jsonl"
     _write_jsonl(observations_path, observations)
+    if case_def.get("scanner_options") is not None:
+        _write_json(out_dir / "input" / "scanner.json", case_def["scanner_options"])
 
     last_present_ms = max(r["t_present_ms"] for r in frame_obs)
     actions = [{"t_ms": 0, "action": "begin"},
@@ -167,11 +237,24 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
     _write_jsonl(truth_dir / "trajectory.jsonl", trajectory_records)
 
     _write_json(truth_dir / "landmarks.json", truth_module.landmark_directions(scene, traj.c_ref))
-    _write_json(truth_dir / "reference-horizon.json", truth_module.horizon(scene, traj.c_ref))
+    reference_horizon = truth_module.horizon(scene, traj.c_ref)
+    _write_json(truth_dir / "reference-horizon.json", reference_horizon)
     _write_json(truth_dir / "holds.json", [
         {"index": h.index, "az": h.az, "alt": h.alt, "from_ms": h.from_ms, "to_ms": h.to_ms}
         for h in traj.holds
     ])
+    if frames_spec is not None:
+        # Imported here because the scorer, which it takes the footprint from,
+        # imports this module.
+        from . import visibility as visibility_module
+
+        _write_json(truth_dir / "visibility.json", visibility_module.build(
+            traj.frames, _read_delivered_frames(frames_dir, traj.frames), camera,
+            reference_horizon, frames_spec["noise_sigma"]))
+    if route["kind"] == "pan":
+        # The route as it was built. The scorer reads ``kind: "pan"`` from it,
+        # and only from it, to know the case is a pan case.
+        _write_json(truth_dir / "route.json", route)
 
     frame_names = sorted(p.name for p in frames_dir.glob("*.png"))
     truth_paths = sorted((p for p in truth_dir.rglob("*") if p.is_file()),
@@ -216,6 +299,12 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
         "hashes": hashes,
         "versions": versions,
     }
+    # What the case was graded and degraded against, carried like ``profile``
+    # so a result can name it from the case directory alone. Only when the
+    # definition has them: a legacy manifest keeps exactly its old keys.
+    for key in ("grading", "realism", "scanner_options"):
+        if case_def.get(key) is not None:
+            manifest[key] = case_def[key]
     _write_json(out_dir / "manifest.json", manifest)
 
     return out_dir

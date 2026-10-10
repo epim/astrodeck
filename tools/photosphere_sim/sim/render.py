@@ -42,7 +42,10 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["CHROMIUM_ARGS", "CaseRenderer", "ThreeRenderer"]
+from .geometry import Camera
+
+__all__ = ["CHROMIUM_ARGS", "CaseRenderer", "ThreeRenderer", "render_exposures",
+           "scaled_camera"]
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -304,3 +307,51 @@ class CaseRenderer:
                         f"{frame.frame_id} came back a single value ({int(image.flat[0])}); "
                         f"the chart yard has no such view, so the frame is not a picture")
                 yield image
+
+
+def scaled_camera(camera, scale: int):
+    """``camera`` at ``scale`` times the resolution and the same field of view.
+
+    The pinhole's focal length scales with the image, so every direction lands
+    on the same point of the larger frame; ``scale`` of 1 is the camera itself.
+    This is the aliasing option's 4x render (spec 13.5).
+    """
+    if int(scale) != scale or scale < 1:
+        raise ValueError(f"scale must be a whole number of at least 1, got {scale!r}")
+    if scale == 1:
+        return camera
+    return Camera(camera.width * int(scale), camera.height * int(scale), camera.fov_short_deg)
+
+
+def render_exposures(renderer, scene, camera, exposures, *, scale: int = 1):
+    """The renders of every exposure's sub-frames, grouped by exposure.
+
+    ``renderer`` is :func:`sim.cases.build_case`'s renderer argument, any
+    callable of ``(scene, camera, frames)`` that yields one ``(H, W, 3)`` uint8
+    array per frame, and ``exposures`` is a sequence of lists of poses (objects
+    with ``frame_id``, ``position`` and ``basis``): the sub-frames of one frame
+    each. Yields one list of images per exposure, drawn with ``camera`` at
+    ``scale`` times the resolution. The renderer is asked for all the poses as
+    one run, so a Chromium behind it starts once, and it is read to the end
+    here: a generator that holds a browser open shuts it down before this one
+    finishes, and a renderer that yields too few or too many images, or one of
+    the wrong size, raises rather than shifting every later frame by one.
+    """
+    render_camera = scaled_camera(camera, scale)
+    poses = (pose for exposure in exposures for pose in exposure)
+    images = iter(renderer(scene, render_camera, poses))
+    shape = (render_camera.height, render_camera.width, 3)
+    for index, exposure in enumerate(exposures):
+        group = []
+        for pose in exposure:
+            image = next(images, None)
+            if image is None:
+                raise RuntimeError(
+                    f"the renderer ran out of images at {pose.frame_id} (exposure {index})")
+            if image.shape != shape:
+                raise RuntimeError(
+                    f"{pose.frame_id} came back {image.shape}, expected {shape}")
+            group.append(image)
+        yield group
+    if next(images, None) is not None:
+        raise RuntimeError("the renderer yielded more images than it was asked for")

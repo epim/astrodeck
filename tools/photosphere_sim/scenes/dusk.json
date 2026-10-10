@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "name": "dusk",
+  "seed": 19,
+  "background": {
+    "kind": "directional",
+    "distance_m": 4000,
+    "texture": {
+      "kind": "value-noise",
+      "seed": 19,
+      "octaves": 4,
+      "cells": 16,
+      "grey": [8, 20],
+      "stripes": {"count": 0, "tilt_deg": 23, "grey": 20, "width_deg": 1.5}
+    }
+  },
+  "landmarks": [
+    {"id": "L0", "palette": 0, "az": 17, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L1", "palette": 2, "az": 84, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L2", "palette": 3, "az": 139, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L3", "palette": 8, "az": 208, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L4", "palette": 9, "az": 265, "alt": 45.5, "radius_deg": 1.0},
+    {"id": "L5", "palette": 11, "az": 323, "alt": 45.5, "radius_deg": 1.0}
+  ],
+  "objects": [
+    {"id": "ground", "kind": "plane", "z": 0, "colour": [12, 11, 8]},
+    {"id": "lit-wall", "kind": "box", "min": [6.0, -5.0, 0], "max": [6.3, 5.0, 3.4], "colour": [200, 190, 170], "material": {"kind": "noise", "seed": 41, "cells": 24, "octaves": 4, "mod": [0.8, 1.1]}},
+    {"id": "forest-N", "kind": "box", "min": [-54, 46, 0], "max": [54, 54, 12.0], "colour": [5, 8, 5], "material": {"kind": "noise", "seed": 940, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "forest-E", "kind": "box", "min": [46, -54, 0], "max": [54, 54, 14.0], "colour": [5, 8, 5], "material": {"kind": "noise", "seed": 941, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "forest-S", "kind": "box", "min": [-54, -54, 0], "max": [54, -46, 11.5], "colour": [5, 8, 5], "material": {"kind": "noise", "seed": 942, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "forest-W", "kind": "box", "min": [-54, -54, 0], "max": [-46, 54, 13.0], "colour": [5, 8, 5], "material": {"kind": "noise", "seed": 943, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-00", "kind": "cylinder", "base": [4.5, 25.6, 0], "radius": 0.23, "height": 8.7, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 550, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-00", "kind": "sphere", "centre": [4.5, 25.6, 8.7], "radius": 3.9, "colour": [3, 5, 3], "material": {"kind": "noise", "seed": 500, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-01", "kind": "cylinder", "base": [23.7, 22.9, 0], "radius": 0.23, "height": 9.2, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 551, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-01", "kind": "sphere", "centre": [23.7, 22.9, 9.2], "radius": 4.0, "colour": [9, 12, 9], "material": {"kind": "noise", "seed": 501, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-02", "kind": "cylinder", "base": [28.8, 3.0, 0], "radius": 0.26, "height": 12.3, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 552, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-02", "kind": "sphere", "centre": [28.8, 3.0, 12.3], "radius": 5.6, "colour": [3, 5, 3], "material": {"kind": "noise", "seed": 502, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-03", "kind": "cylinder", "base": [21.2, -11.3, 0], "radius": 0.21, "height": 6.3, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 553, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-03", "kind": "sphere", "centre": [21.2, -11.3, 6.3], "radius": 2.8, "colour": [9, 12, 9], "material": {"kind": "noise", "seed": 503, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-04", "kind": "cylinder", "base": [14.6, -27.4, 0], "radius": 0.26, "height": 11.8, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 554, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-04", "kind": "sphere", "centre": [14.6, -27.4, 11.8], "radius": 5.4, "colour": [3, 5, 3], "material": {"kind": "noise", "seed": 504, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-05", "kind": "cylinder", "base": [-3.1, -21.8, 0], "radius": 0.21, "height": 6.9, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 555, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-05", "kind": "sphere", "centre": [-3.1, -21.8, 6.9], "radius": 3.1, "colour": [9, 12, 9], "material": {"kind": "noise", "seed": 505, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-06", "kind": "cylinder", "base": [-23.6, -24.5, 0], "radius": 0.29, "height": 15.1, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 556, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-06", "kind": "sphere", "centre": [-23.6, -24.5, 15.1], "radius": 7.0, "colour": [3, 5, 3], "material": {"kind": "noise", "seed": 506, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-07", "kind": "cylinder", "base": [-26.7, -3.8, 0], "radius": 0.21, "height": 7.3, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 557, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-07", "kind": "sphere", "centre": [-26.7, -3.8, 7.3], "radius": 3.2, "colour": [9, 12, 9], "material": {"kind": "noise", "seed": 507, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-08", "kind": "cylinder", "base": [-20.3, 10.8, 0], "radius": 0.24, "height": 9.6, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 558, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-08", "kind": "sphere", "centre": [-20.3, 10.8, 9.6], "radius": 4.4, "colour": [3, 5, 3], "material": {"kind": "noise", "seed": 508, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}},
+    {"id": "trunk-09", "kind": "cylinder", "base": [-13.2, 27.0, 0], "radius": 0.25, "height": 10.7, "colour": [6, 5, 4], "material": {"kind": "noise", "seed": 559, "cells": 24, "octaves": 4, "mod": [0.7, 1.2]}},
+    {"id": "canopy-09", "kind": "sphere", "centre": [-13.2, 27.0, 10.7], "radius": 4.8, "colour": [9, 12, 9], "material": {"kind": "noise", "seed": 509, "cells": 24, "octaves": 4, "mod": [0.6, 1.3]}}
+  ],
+  "test_obstacles": [
+    {"id": "lit-wall", "object": "lit-wall", "min_width_deg": 10}
+  ]
+}
