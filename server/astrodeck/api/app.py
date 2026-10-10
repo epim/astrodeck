@@ -38,7 +38,7 @@ from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
                       field_validator)
 
 from ..aio import reap
-from ..alerting import AlertDispatcher
+from ..alerting import AlertDispatcher, deadman_url_problem
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_VIEW_SITE_DERIVED,
                     CAP_CONFIG_BACKEND, CAP_CONFIG_SAFETY, CAP_CONFIG_SITE_OPTICS,
@@ -5187,6 +5187,21 @@ def create_app(*, bind_host: str | None = None,
             if body.deadman_url or not config_store.cfg().deadman_url:
                 config_store.set_deadman(body.deadman_url)
 
+    def _require_deadman_url_usable(body: ConfigPatchBody) -> None:
+        """422 for a ``deadman_url`` the ping could never be sent to (#812),
+        BEFORE any block of the body is written: ``_persist_config_patch``
+        writes block by block, so a refusal found at the deadman's turn would
+        leave the blocks before it saved under an error. Nothing to check for
+        an empty value (the redacted round-trip, 'unchanged') or when the same
+        body clears it. The reason never echoes the url (#694)."""
+        if body.clear_deadman_url or not body.deadman_url:
+            return
+        problem = deadman_url_problem(body.deadman_url)
+        if problem is not None:
+            raise HTTPException(422, detail={
+                "detail": f"dead-man's-switch url not saved: {problem}",
+                "code": "invalid_deadman_url"})
+
     def _require_config_field_caps(body: ConfigPatchBody,
                                    principal: Principal) -> None:
         """Field-level RBAC for ``POST /api/config`` (plan field-level map).
@@ -5300,6 +5315,7 @@ def create_app(*, bind_host: str | None = None,
         caller); ``_require_config_field_caps`` then atomically enforces the
         per-block capability before any write."""
         _require_config_field_caps(body, principal)
+        _require_deadman_url_usable(body)
         await asyncio.to_thread(_persist_config_patch, body)
         if body.site is not None:
             push = getattr(hub, "push_site_to_mount", None)
