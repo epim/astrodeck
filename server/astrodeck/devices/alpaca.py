@@ -180,9 +180,11 @@ def _shown_error_number(number: int) -> str:
 
 
 #: ASCOM InvalidWhileParked. NOT 0x400 (NotImplemented) for "does not support
-#: sync": the comhost reports EVERY COM driver exception as 0x400
-#: (``comhost/server.py`` ``_ALPACA_DRIVER_ERROR``), so that mapping would
-#: mislabel a COM driver's "not tracking" or link timeout.
+#: sync": until #872 the comhost reported EVERY COM driver exception as 0x400,
+#: so that mapping would have mislabeled a COM driver's "not tracking" or link
+#: timeout. The comhost now maps each to its own number
+#: (``comhost/server.py`` ``_alpaca_error_number``); the read-back still treats
+#: any ErrorNumber as a refusal and singles out only this one.
 _ASCOM_INVALID_WHILE_PARKED = 0x408
 
 

@@ -22,9 +22,63 @@ from .device import ComDevice, ComTimeoutError
 # Registered by the device-type tasks (COM-T3/T4/T5); "connected" is universal.
 DEVICE_API: dict[str, dict[str, dict[str, Callable[[Any, dict], Any]]]] = {}
 
-_ALPACA_DRIVER_ERROR = 1024  # generic ASCOM driver error number
+# Alpaca ErrorNumbers (#872). 0x400 is NotImplemented and nothing else: a client
+# reads it as "this driver cannot do that", so a driver FAILURE must never wear
+# it. 0x500 is the first driver-specific number, the honest answer for a driver
+# exception that names nothing more specific.
+_ALPACA_NOT_IMPLEMENTED = 0x400
+_ALPACA_DRIVER_ERROR = 0x500
+
+# An ASCOM driver raises its error as HRESULT 0x80040000 + the Alpaca number, so
+# the low 12 bits of 0x80040400..0x80040FFF ARE the ErrorNumber: 0x401
+# InvalidValue, 0x402 ValueNotSet, 0x407 NotConnected, 0x408 InvalidWhileParked,
+# 0x409 InvalidWhileSlaved, 0x40B InvalidOperation, 0x500..0xFFF a driver's own.
+_ASCOM_HRESULT_FIRST = 0x80040400
+_ASCOM_HRESULT_LAST = 0x80040FFF
+# IDispatch::Invoke reports a driver's exception as this HRESULT and carries the
+# driver's own HRESULT in the EXCEPINFO scode (comtypes COMError.details[4]).
+_DISP_E_EXCEPTION = 0x80020009
+# Generic HRESULTs a driver (or the .NET interop under it) raises for the same
+# conditions the ASCOM codes name.
+_GENERIC_HRESULT_NUMBER = {
+    0x80004001: _ALPACA_NOT_IMPLEMENTED,  # E_NOTIMPL
+    0x80020003: _ALPACA_NOT_IMPLEMENTED,  # DISP_E_MEMBERNOTFOUND
+    0x80070057: 0x401,  # E_INVALIDARG
+    0x80131502: 0x401,  # COR_E_ARGUMENTOUTOFRANGE
+    0x80131509: 0x40B,  # COR_E_INVALIDOPERATION
+}
 _txn_lock = threading.Lock()
 _server_txn = 0
+
+
+def _com_hresult(exc: BaseException) -> "int | None":
+    """The unsigned HRESULT a COM exception (comtypes COMError: hresult, text,
+    details) carries, or None for an exception that is not a COM one. A
+    DISP_E_EXCEPTION is unwrapped to the driver's own HRESULT when it gave one."""
+    hr = getattr(exc, "hresult", None)
+    if isinstance(hr, bool) or not isinstance(hr, int):
+        return None
+    hr &= 0xFFFFFFFF
+    if hr == _DISP_E_EXCEPTION:
+        try:
+            scode = exc.details[4]  # type: ignore[attr-defined]
+        except (AttributeError, TypeError, IndexError):
+            return hr
+        if isinstance(scode, int) and not isinstance(scode, bool) and scode:
+            return scode & 0xFFFFFFFF
+    return hr
+
+
+def _alpaca_error_number(exc: BaseException) -> int:
+    """The Alpaca ErrorNumber for an exception a COM driver call raised."""
+    if isinstance(exc, NotImplementedError):
+        return _ALPACA_NOT_IMPLEMENTED
+    hr = _com_hresult(exc)
+    if hr is None:
+        return _ALPACA_DRIVER_ERROR
+    if _ASCOM_HRESULT_FIRST <= hr <= _ASCOM_HRESULT_LAST:
+        return hr & 0xFFF
+    return _GENERIC_HRESULT_NUMBER.get(hr, _ALPACA_DRIVER_ERROR)
 
 
 def _next_server_txn() -> int:
@@ -113,9 +167,13 @@ class ComHost:
             # Unknown route / no driver -> HTTP 500 so the client's _unwrap raises
             # DeviceError immediately (fast, honest failure; spec §4). No device
             # slot to evict (either none was created or the method is unmapped).
-            return 500, self._err(str(e), ctid), "application/json"
+            # This is the host's OWN route table saying it serves no such method,
+            # so NotImplemented is true here (unlike a driver exception below).
+            return 500, self._err(str(e), ctid, _ALPACA_NOT_IMPLEMENTED), \
+                "application/json"
         except Exception as e:  # a COM/driver exception -> Alpaca ErrorNumber
-            return 200, self._err(str(e), ctid), "application/json"
+            return 200, self._err(str(e), ctid, _alpaca_error_number(e)), \
+                "application/json"
 
     def _dispatch(self, verb: str, dev_type: str, dev_num: int, method: str,
                   params: dict) -> Any:
@@ -151,8 +209,8 @@ class ComHost:
                 "ServerTransactionID": _next_server_txn()}
 
     @staticmethod
-    def _err(message: str, ctid: int) -> dict:
-        return {"Value": None, "ErrorNumber": _ALPACA_DRIVER_ERROR,
+    def _err(message: str, ctid: int, number: int = _ALPACA_DRIVER_ERROR) -> dict:
+        return {"Value": None, "ErrorNumber": number,
                 "ErrorMessage": message, "ClientTransactionID": ctid,
                 "ServerTransactionID": _next_server_txn()}
 
