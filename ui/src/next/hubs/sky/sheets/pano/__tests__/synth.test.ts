@@ -10,7 +10,12 @@
 //   * the Chromium duplicate dropped from `absolute-only`: the shape case fails;
 //   * the motion slots permuted (beta and gamma swapped): the W3C slots case fails;
 //   * the camera's y axis flipped in `renderView`: the projected-pixel cases fail;
-//   * the motion bias at its old 0.05 deg/s: the exact-zero hold case fails (S2).
+//   * the motion bias at its old 0.05 deg/s: the exact-zero hold case fails (S2);
+//   * `horizonAlt` reading the skyline at the raw azimuth: the horizonAlt wrap case fails (S25);
+//   * no reading age on the pump (every `age` 0): the relative stream delivers all 900 ticks of the 15 s window,
+//     over the 885 bound of the silent-in-a-hold case (S25);
+//   * a forward difference in the motion stream (the window starts at the sample, not half a period before it): the
+//     ramp-time motion case fails (S25).
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -78,6 +83,25 @@ await test('makeSynthScene: periodic in azimuth, continuous across north, and ho
   const skylines = Array.from({ length: 360 }, (_, az) => a.horizonAlt(az));
   assert.ok(Math.min(...skylines) > 0 && Math.max(...skylines) < 10, 'the default skyline stays within 0..10 degrees');
   assert.ok(Math.max(...skylines) - Math.min(...skylines) > 3, 'and is not flat');
+});
+
+await test('horizonAlt wraps its azimuth as sample does: horizonAlt(370) is the skyline drawn at 10 (S25)', () => {
+  // The default skyline is periodic, so it cannot tell a wrapped azimuth from a raw one. This one is not: it stands
+  // 3.1 degrees at azimuth 10, where a raw 370 would read 6.7.
+  const lean = makeSynthScene({ seed: 9, skyline: az => 3 + az / 100, textureContrast: 0 });
+  // The skyline as drawn: the altitude at which `sample` turns from ground (red 96, flat) to sky (red 118 or more).
+  const drawn = (az: number) => {
+    let lo = -5, hi = 20;
+    for (let i = 0; i < 50; i++) { const mid = (lo + hi) / 2; if (lean.sample(az, mid)[0] < 107) lo = mid; else hi = mid; }
+    return (lo + hi) / 2;
+  };
+  near(drawn(10), 3.1, 1e-9, 'sample draws 3.1 at 10');
+  near(drawn(370), 3.1, 1e-9, 'and the same at 370');
+  near(lean.horizonAlt(10), 3.1, 1e-12, 'horizonAlt(10)');
+  near(lean.horizonAlt(370), 3.1, 1e-12, 'horizonAlt(370)');
+  near(lean.horizonAlt(370), drawn(10), 1e-9, 'horizonAlt(370) is the skyline drawn at 10');
+  for (const az of [-290, -0.5, 0, 359.5, 360, 725]) near(lean.horizonAlt(az), drawn(az), 1e-9, `horizonAlt(${az}) is what sample draws`);
+  near(lean.horizonAlt(360), 3, 1e-12, 'north is 0 and 360');
 });
 
 await test('makeSynthScene: a blank sector is one flat colour, ground and sky alike, fading out over 4 degrees', () => {
@@ -296,7 +320,8 @@ await test('the relative stream integrates to turn x (1 + scale): the end-to-end
 });
 
 await test('the relative stream drifts by driftDegMin', () => {
-  // Still for 60 s at 6 deg/min: the relative yaw ramps 0.1 deg/s, fitted to 2 %.
+  // Still for 60 s at 6 deg/min: the relative yaw ramps 0.1 deg/s, fitted to 2 %. The sign is the one `synth.ts`
+  // states (S25): a positive drift turns the heading clockwise, so the slope is +0.1, not -0.1 as `sensors.py` would give.
   const still = synthPan({ ...DEFAULT_PAN, scene, turnDeg: 0, startHoldS: 60, endHoldS: 0, driftDegMin: 6, fps: 2 });
   const rel = relativeOf(still);
   assert.ok(rel.length > 30, `${rel.length} relative readings in a still minute`);
@@ -328,11 +353,18 @@ await test('the relative stream is silent in a hold, and delivered on nearly eve
   const rel = relativeOf(pan);
   assert.equal(rel.filter(r => r.t_event_ms > 0 && r.t_event_ms < 1000).length, 0, 'silent through the 1 s start hold');
   assert.equal(rel[0].t_event_ms, 0);
-  const moving = rel.filter(r => r.t_event_ms >= 3000 && r.t_event_ms < 18000);
+  const inWindow = (r: Obs) => r.t_event_ms >= 3000 && r.t_event_ms < 18000;
+  const moving = rel.filter(inWindow);
   // 20 deg/s is 0.33 degree per 60 Hz tick, above the 0.1 degree threshold, so a tick is delivered unless its reading
   // age ran 5 ms or more ahead of the next one's (a change under 0.1 degree): the spacing of two readings is
-  // triangular on 0..33 ms, which loses 4.5 % of 900 ticks.
-  assert.ok(moving.length >= 840 && moving.length <= 900, `${moving.length} readings in 15 s of turning`);
+  // triangular on 0..33 ms, which loses 4.5 % of 900 ticks. That is 860 expected (sd about 6; 840 to 872 over 30
+  // seeds, 860 on this one). With no reading age every tick changes by 0.33 degree and all 900 are delivered, so the
+  // upper bound is what grades the age (S25).
+  assert.ok(moving.length >= 840 && moving.length <= 885, `${moving.length} readings in 15 s of turning`);
+  // The compass stream is aged the same way, and its own error moves the change test by up to 0.08 degree a tick, so
+  // it delivers fewer (765 here; 758 to 792 over 30 seeds), but never all 900.
+  const compass = absoluteOf(pan).filter(inWindow);
+  assert.ok(compass.length >= 700 && compass.length <= 885, `${compass.length} compass readings in 15 s of turning`);
 });
 
 await test('motion is 60 Hz, in the W3C slots (x, y, z), with the gyro scale and Chromium rounding', () => {
@@ -352,6 +384,32 @@ await test('motion is 60 Hz, in the W3C slots (x, y, z), with the gyro scale and
     for (const v of Object.values(m.rate) as number[]) near(Math.round(v * 10) / 10, v, 1e-9, 'rounded to 0.1');
   }
   assert.equal(motionOf(synthPan({ ...DEFAULT_PAN, scene, gyro: false })).length, 0);
+});
+
+await test('a motion sample inside a speed ramp reads the analytic rate at its t_event_ms, not 8 ms later (S25)', () => {
+  // The first leg's speed rises as a smoothstep over 0.5 s from the end of the 1 s hold, holds at 20 deg/s, and falls
+  // the same way to the end of the leg at 20.75 s. The gyro reads (1 + scale) of that, centred on the sample. A window
+  // that starts at the sample (a forward difference) reads the rate 8.3 ms later: high on the way up, low on the way
+  // down, by 2.04 (u - u^2) deg/s at u of the way through the ramp, 0.51 at its steepest and 0.34 on average.
+  const smooth = (u: number) => { const c = Math.min(Math.max(u, 0), 1); return c * c * (3 - 2 * c); };
+  const peak = DEFAULT_PAN.speedDegS * (1 + DEFAULT_PAN.gyroScaleErr), ramp = 500;
+  const start = DEFAULT_PAN.startHoldS * 1000, end = start + DEFAULT_PAN.turnDeg / DEFAULT_PAN.speedDegS * 1000 + ramp;
+  const mot = motionOf(pan);
+  // The sample is a rate vector in the device frame; its length is the turn rate, whatever the pitch. A margin of one
+  // window (8.3 ms) keeps each sample's window inside its ramp, where the speed has no kink.
+  const errors = (from: number, to: number, rateAt: (tMs: number) => number) => mot
+    .filter(m => m.t_event_ms >= from + 10 && m.t_event_ms <= to - 10)
+    .map(m => Math.hypot(m.rate.alpha, m.rate.beta, m.rate.gamma) - rateAt(m.t_event_ms));
+  const up = errors(start, start + ramp, t => peak * smooth((t - start) / ramp));
+  const down = errors(end - ramp, end, t => peak * smooth((end - t) / ramp));
+  for (const [name, list] of [['rising', up], ['falling', down]] as const) {
+    assert.ok(list.length >= 25, `${list.length} samples in the ${name} ramp`);
+    // Noise (0.03 deg/s) and rounding (0.05) leave each sample within 0.09 of the analytic rate here; the mean of 29
+    // is within 0.01. The two ramps are graded apart because a late window errs in opposite directions on them.
+    for (const e of list) assert.ok(Math.abs(e) <= 0.2, `a ${name} sample is ${e.toFixed(3)} deg/s from the analytic rate`);
+    const mean = list.reduce((a, b) => a + b, 0) / list.length;
+    near(mean, 0, 0.05, `mean error in the ${name} ramp`);
+  }
 });
 
 await test('the motion stream integrates to turn x (1 + scale) about the vertical', () => {
