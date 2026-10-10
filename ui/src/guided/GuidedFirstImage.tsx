@@ -10,6 +10,7 @@ import { Icon } from "../components/icons";
 import { atPosition, stepBlocker, useStepBlocker } from "./setup";
 import { motionBlocker, slewAndWait } from "./motion";
 import { useExperience } from "./experience";
+import { GuidedTrustPosition, usePositionGate } from "./GuidedTrustPosition";
 
 /** Check current server ownership, including work started by another client. */
 export function firstImageOperationBlocker(s=useStore.getState()): string|null {
@@ -45,6 +46,7 @@ export default function GuidedFirstImage() {
   const inFlight=useRef(false);
   const canMove=useCanControlMount(),canCapture=useCanControlCapture();
   const blocked=useStepBlocker("image");
+  const position=usePositionGate();
   const status=useStore(s=>s.status);
   const previews=useStore(s=>s.previews);
   const live=useStore(s=>s.wsPhase==="up"&&!s.telemetryStale);
@@ -71,7 +73,7 @@ export default function GuidedFirstImage() {
     if(blocker){setError(blocker);return;}
     inFlight.current=true;setBusy("moving");setError(null);setArrived(false);setFrame(null);
     const abort=new AbortController();controller.current=abort;
-    try{await slewAndWait(target,true,abort.signal);setArrived(true);}catch(e){setError(e instanceof Error?e.message:"Pointing wasn't confirmed.");}finally{setBusy(null);inFlight.current=false;}
+    try{await slewAndWait(target,true,abort.signal);setArrived(true);}catch(e){if(!position.refusedBy(e))setError(e instanceof Error?e.message:"Pointing wasn't confirmed.");}finally{setBusy(null);inFlight.current=false;}
   };
   const capture=async()=>{
     const seconds=Number(exposure);
@@ -121,7 +123,7 @@ export default function GuidedFirstImage() {
         <button className="btn" disabled={!!busy} onClick={()=>void load()}>{busy==="finding"?"Finding targets…":"Refresh targets"}</button>
       </section>
       {target&&<section className="guided-choice-card"><h2>{arrived&&atTarget?"Ready for a first exposure":`Point at ${target.name||target.id}`}</h2>
-        {!arrived||!atTarget?<><p>Check that cables can move freely and the telescope has room to turn. This moves the mount and takes short images to center the target.</p><button className="btn btn-accent" disabled={!!busy||!!blocked||!!operationBlock||!canMove} onClick={()=>void point()}>{busy==="moving"?"Pointing and checking…":"Point telescope at this target"}</button></>:<>
+        {!arrived||!atTarget?position.needed&&busy!=="moving"?<GuidedTrustPosition onTrusted={position.clear}/>:<><p>Check that cables can move freely and the telescope has room to turn. This moves the mount and takes short images to center the target.</p><button className="btn btn-accent" disabled={!!busy||!!blocked||!!operationBlock||!canMove} onClick={()=>void point()}>{busy==="moving"?"Pointing and checking…":"Point telescope at this target"}</button></>:<>
           <label className="guided-field">Exposure in seconds<input type="number" min=".1" max="30" step=".1" value={exposure} disabled={!!busy} onChange={e=>setExposure(e.target.value)}/></label>
           <p>Try 5 seconds first. This keeps the first image quick; faint detail may need longer exposures later. Your camera's current gain and binning are retained.</p>
           <button className="btn btn-accent" disabled={!!busy||!!blocked||!!operationBlock||!canCapture||!exposure.trim()||!Number.isFinite(Number(exposure))||Number(exposure)<.1||Number(exposure)>30} onClick={()=>void capture()}><Icon name="capture" size={22}/>{busy==="capturing"?"Taking and saving your image…":returning?"Take tonight's first image":"Take my first image"}</button>
