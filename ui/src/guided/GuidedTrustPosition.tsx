@@ -12,6 +12,10 @@
 // at the place the point button would be, and the pages show it INSTEAD of a
 // button the server would refuse.
 //
+// The Polar tool hosts it too (#985), in Guided and in Pro: Start Alignment is a
+// move from the believed position, refused by the same gate (`/api/polar/start`),
+// and PolarView had no control the refusal's advice could name.
+//
 // Like the other two it advises no slew: the way out for a tube that is not at
 // home is a pad key held by eye, and the pad lives in Pro's Mount tool.
 import { useEffect, useState } from "react";
@@ -20,7 +24,7 @@ import { confirmDialog } from "../components/ConfirmDialog";
 import { useCanControlMount } from "../lib/caps";
 import {
   TRUST_POSITION_CONFIRM_BODY, TRUST_POSITION_CONFIRM_LABEL, TRUST_POSITION_CONFIRM_TITLE,
-  TRUST_POSITION_LABEL, positionKnown,
+  POSITION_UNKNOWN_CODE, TRUST_POSITION_LABEL, positionKnown,
 } from "../lib/slewController";
 import { useStore } from "../store";
 
@@ -34,7 +38,7 @@ function usePositionUnknown(): boolean {
 /** Is this the server's refusal of a move from an unknown position? The status
  *  normally flags the state first; this catches a goto that raced it. */
 function isPositionRefusal(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 409 && e.code === "position_unknown";
+  return e instanceof ApiError && e.status === 409 && e.code === POSITION_UNKNOWN_CODE;
 }
 
 /** What a guided page asks before it offers to point the telescope.
@@ -66,7 +70,10 @@ function trustBlocker(canMove: boolean, slewing: boolean, sending: boolean): str
   return null;
 }
 
-export function GuidedTrustPosition({ onTrusted }: { onTrusted?: () => void }) {
+/** `inPro`: the block is hosted by a Pro tool (the Polar tool, #985), where
+ *  "switch to Pro" would send the operator to where they already are; Mount is
+ *  one tab away. Everything else is the same words as in Guided. */
+export function GuidedTrustPosition({ onTrusted, inPro = false }: { onTrusted?: () => void; inPro?: boolean }) {
   const canMove = useCanControlMount();
   const slewing = useStore(s => !!s.status?.mount?.slewing || !!s.status?.busy_lanes?.includes("goto"));
   const [sending, setSending] = useState(false);
@@ -107,7 +114,7 @@ export function GuidedTrustPosition({ onTrusted }: { onTrusted?: () => void }) {
   return <div className="guided-position-unknown" data-testid="guided-position-unknown">
     <h3>The mount doesn't know where the telescope points</h3>
     <p>It is reporting its home position, as it does after any power-up. Pointing is paused until it knows where the telescope really is.</p>
-    <p>If the telescope is at its home or park position now, press {TRUST_POSITION_LABEL}. If it is anywhere else, switch to Pro, open Mount and hold a pad key to bring it home by eye, then press {TRUST_POSITION_LABEL} there.</p>
+    <p>If the telescope is at its home or park position now, press {TRUST_POSITION_LABEL}. If it is anywhere else, {inPro ? "open Mount" : "switch to Pro, open Mount"} and hold a pad key to bring it home by eye, then press {TRUST_POSITION_LABEL} there.</p>
     <button className="btn btn-accent" disabled={!!blocker} aria-busy={sending || undefined} title={blocker ?? undefined} onClick={() => void trust()}>{TRUST_POSITION_LABEL}</button>
     {blocker && !sending && <p role="status">{blocker}</p>}
     {problem && <p role="alert" className="guided-warning">{problem}</p>}
