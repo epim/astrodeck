@@ -1287,6 +1287,12 @@ def _captures_are_the_tests_own(_never_touch_the_real_captures, monkeypatch):
     root = _CaptureRoots.parent / f"t{next(_CaptureRoots.serial)}"
     _CaptureRoots.moved = _point_the_capture_root_at(monkeypatch, root)
     yield root
+    # The device fingerprint is written by a background thread (#884). Let any
+    # write this test's status polls handed it land before the root it names is
+    # removed, so it cannot recreate the directory behind the rmtree. Bounded:
+    # a writer a test left stuck must not hang the suite.
+    from astrodeck.devices import fingerprint
+    fingerprint.wait_idle(10.0)
     shutil.rmtree(root, ignore_errors=True)
 
 

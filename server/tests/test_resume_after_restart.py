@@ -258,6 +258,9 @@ async def test_the_boot_poll_does_not_destroy_the_power_cut_record(fp):
     assert fp.verdict(focuser_position=before_the_cut).focus_trusted is True, (
         "the pre-cut number must still be the basis — a blanket 'untrusted' "
         "would pass the assertion above while remembering nothing")
+    # The poll hands the write to the fingerprint's background writer (#884);
+    # the file is whole once that has finished, not when the poll returns.
+    assert fp.wait_idle(30.0), "the background writer never finished"
     raw = fp.read_json_or(fp._path(), None)
     assert raw["focuser_position"] == live, (
         "the file still records what the device reports; only the COMPARISON "
@@ -361,6 +364,8 @@ async def test_poll_status_records_the_fingerprint(fp, monkeypatch):
         await h.poll_status()
     finally:
         await h.disconnect_all()
+    # The poll hands the write to the background writer (#884).
+    assert fp.wait_idle(30.0), "the background writer never finished"
     raw = fp.read_json_or(fp._path(), None)
     assert isinstance(raw, dict), "poll_status never wrote a fingerprint"
     assert "focuser_position" in raw and "parked" in raw

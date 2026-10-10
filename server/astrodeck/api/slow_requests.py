@@ -54,7 +54,8 @@ How to read a line. ``loop stall N s`` present: something blocked the event
 loop itself (sync disk I/O on the loop, for example), and every request in
 flight waited for it. ``loop stall`` absent: the loop ran. The request waited
 on its own work, OR on a worker thread queued behind a lock or a busy default
-executor (#858 N6: ``/api/status`` waits for the fingerprint write). "No loop
+executor (#858 N6: ``/api/status`` used to wait for the fingerprint write, #884;
+a route that parks a thread on a lock reads the same way). "No loop
 stall" does not mean the route's own code is slow.
 
 The line is a log line only (drawer and night file). It carries no figures in
