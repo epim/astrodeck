@@ -455,18 +455,122 @@ class _AlpacaDevice:
         }
 
     async def _get(self, method: str, **params: Any) -> Any:
+        """The reply's value, MEASURING ``connected`` off what comes back, both
+        ways: a transport failure (``_note_link_lost``) or a NotConnected
+        answer (``_note_not_connected``) says the device is not there, and a
+        good reply from a device whose link was lost (``_note_answered``) says
+        it is back. Every other answered error leaves it alone."""
         try:
-            return await self.conn.get(self.dev_type, self.dev_num, method, **params)
+            value = await self.conn.get(self.dev_type, self.dev_num, method, **params)
         except AlpacaReplyError as e:
             self._note_not_connected(e)
             raise
+        except httpx.TransportError:
+            self._note_link_lost()
+            raise
+        self._note_answered(method)
+        return value
 
     async def _put(self, method: str, **params: Any) -> Any:
+        """As ``_get`` above, for PUT."""
         try:
-            return await self.conn.put(self.dev_type, self.dev_num, method, **params)
+            value = await self.conn.put(self.dev_type, self.dev_num, method, **params)
         except AlpacaReplyError as e:
             self._note_not_connected(e)
             raise
+        except httpx.TransportError:
+            self._note_link_lost()
+            raise
+        self._note_answered(method)
+        return value
+
+    #: True from a measured transport failure on a connected device until it is
+    #: heard from again (``_note_answered``, ``probe_link``) or told to connect
+    #: or disconnect. ``connected`` is False meanwhile, so the reconnect gate
+    #: sees the drop; this says the device is IN DOUBT, not absent
+    #: (``base.is_present``).
+    link_lost: bool = False
+
+    def _note_link_lost(self) -> None:
+        """``connected`` is MEASURED, not remembered (issue #16, every device
+        type since #989).
+
+        It used to be a pure memory of "the Connected=True PUT once
+        succeeded", never touched again until an explicit ``disconnect()`` --
+        so a device whose Alpaca server vanished mid-night still read
+        'connected' to the reconnect gate
+        (``sequence/engine.py._reconnect_gate``) forever, the same shape of
+        bug ``zwo_am5.py`` fixed for the mount's serial link. Only the camera
+        measured it until #989.
+
+        Only a TRANSPORT failure (``httpx.TransportError`` -- no HTTP response
+        came back at all) measures it false here. A ``DeviceError`` means the
+        driver DID answer -- a non-200 status or an ASCOM ``ErrorNumber`` --
+        and answering, even to refuse the call, is proof the device is still
+        there; folding that in too would reconnect a device that is merely
+        busy or was asked for something it declined. The one exception is
+        NotConnected (0x407), which says the device is NOT there
+        (``_note_not_connected``, #966).
+
+        THE MEASUREMENT RUNS BOTH WAYS. An HTTP client has no link to reopen:
+        a ReadTimeout on one slow call, or a server restarting for a minute,
+        is over by the next request, and a flag that only ``connect()`` could
+        put back made one blip a permanent 'no telescope connected' (the
+        mount STOP route, the roof's never-crush guard and the safety poller
+        all ask). So a device that was connected also records ``link_lost``,
+        which ``_note_answered`` and ``probe_link`` clear, and which every
+        consumer that must not mistake a blip for an absence reads
+        (``base.is_present``). A device that was NOT connected (never
+        connected, disconnected on purpose) records nothing: a failed read of
+        it is no news, and nothing may later 'heal' a device the operator
+        disconnected."""
+        if self.connected:
+            self.link_lost = True
+        self.connected = False
+
+    def _note_answered(self, method: str) -> None:
+        """A good reply from a device whose link was lost proves it is back
+        (the #16 rule read the other way: an answer proves the device is
+        there). Not the ``connected`` property itself: that one is the
+        question ``probe_link`` asks, and the VALUE of its answer decides,
+        which a bare 'a reply came back' does not."""
+        if self.link_lost and method.lower() != "connected":
+            self.connected = True
+            self.link_lost = False
+
+    async def probe_link(self) -> bool:
+        """Ask the server whether this device is connected, for a device whose
+        link was lost. True, and ``connected`` restored, only on an answer of
+        Connected=True. The hub runs this on its status cadence for every
+        device in doubt (`Hub._kick_link_probes`), because a device that reads
+        not-connected is not polled by anything else, so nothing would ever
+        hear it come back.
+
+        An answer of Connected=False, or NotConnected (0x407), says the server
+        is up and the device is NOT connected there (a restarted server that
+        lost its state): that is no longer a blip, so the doubt ends with
+        ``connected`` still False and only ``connect()`` (the reconnect gate,
+        an operator's reconnect) restores it. Any other failure leaves the
+        doubt standing. Never raises."""
+        if not self.link_lost:
+            return self.connected
+        try:
+            up = await self.conn.get(self.dev_type, self.dev_num, "connected")
+        except AlpacaReplyError as e:
+            self._note_not_connected(e)
+            return False
+        except Exception:      # noqa: BLE001 - still unreachable, or unreadable
+            return False
+        if not self.link_lost:
+            # disconnect() or connect() ran while the question was out: its
+            # word stands, not this reply's.
+            return self.connected
+        if up is True:
+            self.connected = True
+            self.link_lost = False
+            return True
+        self.link_lost = False
+        return False
 
     def _note_not_connected(self, exc: AlpacaReplyError) -> None:
         """A server that answers NotConnected (0x407) has told us the device is
@@ -476,19 +580,38 @@ class _AlpacaDevice:
 
         Without this, a comhost device that was fault-evicted (#937) kept
         reading 'connected' while every request answered 0x407, and was polled
-        forever."""
+        forever.
+
+        Not a blip, so no ``link_lost``: the server is up and says the device
+        is not connected there, and only ``connect()`` changes that."""
         if exc.error_number == _ASCOM_NOT_CONNECTED:
             self.connected = False
+            self.link_lost = False
 
     async def connect(self) -> None:
         await self._put("connected", Connected=True)
         self.connected = True
+        self.link_lost = False
+
+    def _connected_after_probes(self) -> None:
+        """For a ``connect()`` that goes on to run best-effort probes: raise if
+        the link was lost while they ran. The probes swallow their own errors
+        (a mount that lacks a property is business as usual), and a transport
+        failure among them now measures ``connected`` false, so without this
+        the connect returned normally for a device that read not connected
+        and the hub registered it as connected (#989)."""
+        if not self.connected:
+            self.link_lost = False
+            raise DeviceError(
+                f"{self.name}: the Alpaca server stopped answering while the "
+                f"device was connecting")
 
     async def disconnect(self) -> None:
         try:
             await self._put("connected", Connected=False)
         finally:
             self.connected = False
+            self.link_lost = False
 
 
 _SENSOR_TYPES = {0: None, 1: None, 2: "RGGB", 3: "CMYG", 4: "CMYG2", 5: "LRGB"}
@@ -509,38 +632,6 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         self._exposing = False
         self.full_well = None
         self.can_report_cooler_power = False
-
-    async def _get(self, method: str, **params: Any) -> Any:
-        """As ``_AlpacaDevice._get``, but MEASURES ``connected`` (issue #16).
-
-        ``connected`` used to be a pure memory of "the Connected=True PUT once
-        succeeded", never touched again until an explicit ``disconnect()`` —
-        so a camera whose Alpaca server vanished mid-night still read
-        'connected' to the reconnect gate
-        (``sequence/engine.py._reconnect_gate``) forever, the same shape of
-        bug ``zwo_am5.py`` fixed for the mount's serial link.
-
-        Only a TRANSPORT failure (``httpx.TransportError`` — no HTTP response
-        came back at all) measures it false here. A ``DeviceError`` means the
-        driver DID answer — a non-200 status or an ASCOM ``ErrorNumber`` — and
-        answering, even to refuse the call, is proof the device is still
-        there; folding that in too would reconnect a camera that is merely
-        busy or was asked for something it declined. The one exception is
-        NotConnected (0x407), which says the device is NOT there
-        (``_AlpacaDevice._note_not_connected``, #966)."""
-        try:
-            return await super()._get(method, **params)
-        except httpx.TransportError:
-            self.connected = False
-            raise
-
-    async def _put(self, method: str, **params: Any) -> Any:
-        """As ``_get`` above, for PUT — see its docstring."""
-        try:
-            return await super()._put(method, **params)
-        except httpx.TransportError:
-            self.connected = False
-            raise
 
     async def connect(self) -> None:
         await _AlpacaDevice.connect(self)
@@ -627,16 +718,25 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         """Prefer the binary ImageBytes protocol; fall back to JSON arrays."""
         url = f"{self.conn.base}/camera/{self.dev_num}/imagearray"
         params = {"ClientID": _client_id, "ClientTransactionID": _next_txn()}
-        r = await self.conn.http.get(
-            url, params=params, headers={"Accept": "application/imagebytes"}
-        )
+        # This read goes through the client directly, not through ``_get``, so
+        # it measures ``connected`` itself (#989, #966, #990).
+        try:
+            r = await self.conn.http.get(
+                url, params=params, headers={"Accept": "application/imagebytes"}
+            )
+        except httpx.TransportError:
+            self._note_link_lost()
+            raise
         ctype = r.headers.get("content-type", "")
-        if "imagebytes" in ctype:
-            return self._parse_imagebytes(r.content)
         # The JSON fallback is an ordinary Alpaca reply, so it is unwrapped like
         # one: a failure names the status, the route and the ASCOM error
-        # number, never the driver's ErrorMessage (#926, the #906 rule).
+        # number, never the driver's ErrorMessage (#926, the #906 rule). The
+        # ImageBytes arm carries its error number in the header instead and
+        # raises the same error type, so a NotConnected (0x407) is read alike
+        # on both (#990).
         try:
+            if "imagebytes" in ctype:
+                return self._parse_imagebytes(r.content)
             value = self.conn._unwrap(r, f"camera/{self.dev_num}/imagearray")
         except AlpacaReplyError as e:
             self._note_not_connected(e)
@@ -649,7 +749,12 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         (meta_ver, err_no, _ctxn, _stxn, data_start, _img_type, tx_type,
          rank, dim1, dim2, dim3) = struct.unpack_from("<11i", buf, 0)
         if err_no != 0:
-            raise DeviceError(f"ImageBytes error {err_no}")
+            # The header's number only: the message the spec puts after it is
+            # a driver's text and is never read (#906). Typed, so the caller
+            # can tell NotConnected from any other refusal (#990).
+            raise AlpacaReplyError(
+                f"ImageBytes error {_shown_error_number(err_no)}",
+                http_status=200, error_number=err_no)
         dtypes = {1: np.int16, 2: np.int32, 3: np.float64, 4: np.float32,
                   6: np.uint8, 8: np.uint16, 9: np.uint32}
         dt = dtypes.get(tx_type)
@@ -805,6 +910,9 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
             await self._probe_axis_rotation()
         except Exception:
             pass
+        # Every probe above swallowed its own error; a link lost among them
+        # is not a connect that worked (#989).
+        self._connected_after_probes()
 
     async def get_position(self) -> tuple[float, float]:
         ra = await self._get("rightascension")
@@ -1404,6 +1512,7 @@ class AlpacaDome(_AlpacaDevice, Dome):
             self.can_bind = bool(await self._get("canslave"))
         except (DeviceError, httpx.HTTPError, OSError):
             self.can_bind = False
+        self._connected_after_probes()
 
     async def shutter_state(self) -> DomeShutterState:
         # A state read must NEVER raise (dossier: like PierSide/CoverState): any
@@ -1490,6 +1599,7 @@ class AlpacaCoverCalibrator(_AlpacaDevice, CoverCalibrator):
             self.has_cover = int(await self._get("coverstate")) != 0
         except (DeviceError, httpx.HTTPError, OSError, TypeError, ValueError):
             self.has_cover = False
+        self._connected_after_probes()
 
     async def get_brightness(self) -> int:
         return int(await self._get("brightness"))

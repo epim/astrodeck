@@ -44,8 +44,8 @@ from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
 from .. import capture_geometry, naming
 from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
                             PierSide, SyncRefused, SyncUnverified,
-                            position_known_for_motion, quotable_sync_reply,
-                            rig_position_known)
+                            is_present, position_known_for_motion,
+                            quotable_sync_reply, rig_position_known)
 from ..mount_offset import (POSITION_UNKNOWN_MOTION_DETAIL,
                             POSITION_UNKNOWN_SAFE_ORDER)
 from ..events import SITE_DERIVED_KEY, bus, night_key
@@ -11915,7 +11915,7 @@ class SequenceEngine:
             # branch below. Absent and disconnected are the same situation to an
             # operator and were opposite situations to this code.
             await self._no_safety_source(target)
-        elif not getattr(mon, "connected", False):
+        elif not is_present(mon):
             await self._on_unsafe("safety monitor disconnected", stale=True,
                                   target=target)
         else:
@@ -12470,7 +12470,7 @@ class SequenceEngine:
             await self._checkpoint()
             await asyncio.sleep(SAFETY_PAUSE_POLL_S)
             mon = self.hub.devices.get("safety")
-            if mon is not None and not getattr(mon, "connected", False):
+            if mon is not None and not is_present(mon):
                 self._unsafe_streak += 1            # disconnected → unsafe
                 continue
             reading = await self._read_safety()
@@ -12517,7 +12517,7 @@ class SequenceEngine:
         # NOT fall through to the warn/pause/abort branches below.
         dome = self.hub.devices.get("dome")
         closing = bool(cfg and cfg.safety.close_dome_on_unsafe
-                       and dome is not None and getattr(dome, "connected", False))
+                       and dome is not None and is_present(dome))
         act = self._escalated_action(act, closing=closing, cfg=cfg)
         self._record_safety(reason, act)
         # ONE producer per verdict edge (UX #33): the hub's own-cadence poller has
@@ -21654,7 +21654,7 @@ class SequenceEngine:
                 "close_roof_failed")
         elif close_dome:
             dome = self.hub.devices.get("dome")
-            if dome is not None and getattr(dome, "connected", False):
+            if dome is not None and is_present(dome):
                 from .roof import close_observatory
                 tel = self.hub.devices.get("telescope")
                 ok = await close_observatory(dome, tel, log=bus.log)
