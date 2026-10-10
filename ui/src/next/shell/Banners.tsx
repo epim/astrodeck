@@ -50,6 +50,7 @@ import {
 import { bannerState, authRequiredForBanner } from "../../lib/connection";
 import { sunWatchNotice } from "../../lib/sunWatch";
 import { fmtHm } from "../../lib/weather";
+import { runBannerLabel } from "../../lib/stateMeta";
 import { BannerCard } from "../ui";
 import { nav, type Route } from "../router";
 import { useSessionBanners } from "../hubs/session/crossHub";
@@ -250,7 +251,7 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
       key: `run:${runBanner.plan_name ?? ""}:${paused ? "paused" : "running"}`,
       kind: "run",
       tone: "info",
-      text: <><b>{paused ? "SEQUENCE PAUSED" : "SEQUENCE RUNNING"}</b>{name}{pct}</>,
+      text: <><b>{runBannerLabel(sequence.state)}</b>{name}{pct}</>,
       cta: { label: "open live", onPress: () => nav.go("/session/now") },
     });
   }

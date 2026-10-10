@@ -2019,31 +2019,47 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
         const percent = seq.progress?.percent;
 
         // --- monitor runBanner (monitor §3.2): persistent, NOT the focal toast ---
-        // Rising edge (not-running → running) raises the banner; subsequent
-        // progress refreshes percent; any terminal/idle state clears it.
+        // Rising edge (not-live → running/holding) raises the banner; subsequent
+        // progress refreshes percent; any state that is not a live run clears it.
         let runBanner: RunBanner = get().runBanner;
         // A pin belongs to the frames that were on screen when it was made. A
         // NEW run makes it a claim about a different session, so retire it on
         // the rising edge — otherwise a frame pinned while focusing before the
         // run rides the whole night on the stage, which is what happened.
         let pin = get().selectedPreviewId;
-        if (seq.state === "running") {
+        //
+        // THE CLEAR IS KEYED ON runIsLive, not on a list of states to keep. The
+        // old branch listed what survived (running, paused, aborting) and let
+        // every other string fall into the clear, so "holding" cleared the
+        // banner by omission (#959). A cloud hold is a live run — the engine
+        // promotes a routine `running` publish to "holding" for the hours the
+        // sky is bad, the rig still probing and shooting hold darks — and when
+        // it lifted the next `running` came from "holding", which is not in
+        // RUN_RISING_FROM, so nothing raised the banner again for the rest of
+        // the night. A state added to SequenceState now has to be classified in
+        // runIsLive to keep the banner, and cannot lose it by being forgotten.
+        if (!runIsLive(seq)) {
+          // idle / complete / aborted / error / nina_native → clear the banner.
+          runBanner = null;
+        } else if (seq.state === "running" || seq.state === "holding") {
+          // "holding" raises as well as "running": a page opened (or reloaded)
+          // mid-hold gets "holding" as its FIRST frame, from the cold default,
+          // and a running-only rule never raised the banner for that browser
+          // at all.
           if (RUN_RISING_FROM.has(prevState)) {
             runBanner = { active: true, plan_name: seq.plan_name, percent };
             pin = null;
           } else if (runBanner) {
             runBanner = { ...runBanner, percent };
           }
-        } else if (seq.state === "paused" || seq.state === "aborting") {
-          // "aborting" is NOT terminal: the engine publishes it for the whole
-          // wind-down (types.ts). Clearing the banner there took the run off
-          // every other screen — and the banner is the only thing outside the
-          // Monitor that says a run is happening — while the rig was still
-          // stopping. It clears when "aborted" lands, which is when it is true.
-          if (runBanner) runBanner = { ...runBanner, percent };
-        } else {
-          // idle / complete / aborted / error / nina_native → clear the banner.
-          runBanner = null;
+        } else if (runBanner) {
+          // paused / aborting. "aborting" is NOT terminal: the engine publishes
+          // it for the whole wind-down (types.ts). Clearing the banner there
+          // took the run off every other screen — and the banner is the only
+          // thing outside the Monitor that says a run is happening — while the
+          // rig was still stopping. It clears when "aborted" lands, which is
+          // when it is true.
+          runBanner = { ...runBanner, percent };
         }
         // CAPTURE LIVENESS, from the SERVER'S OWN COUNTER (#206).
         //
