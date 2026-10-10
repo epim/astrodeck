@@ -2185,7 +2185,14 @@ export class PhotosphereSweep {
     this.deviceId = stream.getVideoTracks?.()[0]?.getSettings?.().deviceId ?? preferred ?? "";
     video.srcObject = this.stream;
     try { await video.play(); }
-    catch { this.stop(); throw new Error("The camera opened but its preview could not play. Try opening the camera again."); }
+    catch {
+      // A newer start() (or a stop()) replaced this one while play() was
+      // pending: the element's reload rejects a pending play() with
+      // AbortError. That is not a failed preview, and this.stop() would stop
+      // the NEWER start's stream and bump the generation under it (#1003).
+      if (generation !== this.generation) return;
+      this.stop(); throw new Error("The camera opened but its preview could not play. Try opening the camera again.");
+    }
     if (generation !== this.generation) return;
     this.ready = true;
     // The baseline reading, taken now that the element is playing: the timer
@@ -2207,10 +2214,13 @@ export class PhotosphereSweep {
       this.ready = false; this.recording = false; this.trackEnded = true;
     }));
 
-    if (motionPermission && await motionPermission !== "granted") {
+    const motion = motionPermission ? await motionPermission : "granted";
+    // Checked before the verdict is written: a start() superseded while the
+    // permission prompt was open must not put its answer on the newer one (#1003).
+    if (generation !== this.generation) return;
+    if (motion !== "granted") {
       this.issue = "Motion access was denied. Allow motion sensors to scan, or draw the horizon by hand.";
     }
-    if (generation !== this.generation) return;
     // `orientationSupported` rather than a second copy of the same test: the
     // else below turns on exactly the fact that flag records, and two spellings
     // of one condition is one that will be changed and one that will not.
@@ -2901,8 +2911,14 @@ export class PhotosphereSweep {
     // next one a cue about a lens the next one has not yet been refused over.
     this.mediaGateRefusals = 0; this.mediaGateRefusalRun = 0; this.overlapWaitRun = 0;
     this.lastMediaTime = null; this.lastMediaAdvanceAt = -Infinity; this.presentedFrameId = null; this.lastCapturedFrameId = null; this.imageGate = null;
-    this.stream?.getTracks().forEach((t) => t.stop());
+    const stream = this.stream;
+    stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    if (this.video) this.video.srcObject = null;
+    // The element is shared: horizon.tsx keeps ONE <video> across scans and
+    // hands it to each new sweep. So it is cleared only while it still shows
+    // THIS sweep's stream. A stop() that runs late (the caller's own, on return
+    // from a start() it no longer owns) must not blank a newer sweep's picture,
+    // and a sweep that has no stream left owns nothing on the element (#1003).
+    if (this.video && stream && this.video.srcObject === stream) this.video.srcObject = null;
   }
 }

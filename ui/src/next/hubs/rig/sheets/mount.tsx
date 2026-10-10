@@ -71,7 +71,7 @@ import { useTouchSettings } from "../../../../lib/touchStore";
 import {
   POSITION_UNKNOWN_NOTE, POSITION_UNKNOWN_STEPS_REASON, TRUST_POSITION_CONFIRM_BODY,
   TRUST_POSITION_CONFIRM_LABEL, TRUST_POSITION_CONFIRM_TITLE, TRUST_POSITION_LABEL,
-  believedRaDec, positionKnown, type Axis, type Dir,
+  believedPointing, believedRaDec, positionKnown, type Axis, type Dir,
 } from "../../../../lib/slewController";
 import { altTone, fmtAlt, fmtMag } from "../../../../lib/catalogFormat";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
@@ -236,7 +236,10 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // the server redacts them (api/redact.py _MOUNT_DERIVED_KEYS) because an
   // altitude pins the observer to a circle on the Earth. RA/Dec stay, so
   // `m` itself is still truthy; only the two derived fields go missing.
-  const altAzKnown = !!m && typeof m.alt === "number" && typeof m.az === "number";
+  // The ALT / AZ tile's value and tone read this and nothing else (#996): the
+  // ONE gate for the horizontal reading (#791), null for an unknown position,
+  // an absent angle and a non-finite one alike.
+  const believedAltAz = believedPointing(m);
   // #144: false after a power-up or reset, until the operator trusts the
   // position or a sync from a solved frame. Only an explicit false counts (an
   // engine older than the flag sends none). Everything below that is computed from "where the mount
@@ -815,26 +818,29 @@ export function MountSheet(_props: SheetProps): JSX.Element {
         {/* While the mount does not know where it points, what it reports is
             its HOME position: an altitude read there is the site latitude, and
             neither angle says where the tube is. No alt, az, RA or Dec is shown
-            (#144, #140); the tile says whose reading it would have been. */}
+            (#144, #140); the tile says whose reading it would have been. The
+            angles are printed only when `believedPointing` returns them, so
+            the arm that names the home reading chooses a word and withholds
+            nothing: deleting it cannot print the pole. */}
         <ReadoutTile
           label="ALT / AZ"
           value={
             !m ? "-"
+              : believedAltAz ? `${believedAltAz.alt}° / ${believedAltAz.az}°`
               : !positionIsKnown ? "unknown"
-              : altAzKnown ? `${m.alt}° / ${m.az}°`
               : "hidden"
           }
           sub={
             !m ? "no pointing reported"
               : !positionIsKnown ? "the mount's home reading, not the tube"
-              : altAzKnown
+              : believedAltAz
                 ? (believedEq?.ra_str && believedEq.dec_str
                   ? `RA ${believedEq.ra_str} · Dec ${believedEq.dec_str}`
                   : "RA / Dec not reported")
               : `needs ${accessPhrase("view.site_derived")}`
           }
           tone={!positionIsKnown && m ? "warn"
-            : altAzKnown && m.alt < 20 ? "warn" : undefined}
+            : believedAltAz && believedAltAz.alt < 20 ? "warn" : undefined}
           data-testid="tile-altaz"
         />
         <ReadoutTile
