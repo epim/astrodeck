@@ -9931,9 +9931,9 @@ def create_app(*, bind_host: str | None = None,
     def _refuse_while_sequence_runs(refused: str, why: str, *,
                                     lane: str) -> None:
         """Raise 409 ``sequence_running`` while a run is going, or return
-        (#698, backlog ruling for WP-114). The ONE refusal the rotator's move
-        and solving routes share, so a fourth route that turns or calibrates
-        the camera takes the guard by calling it.
+        (#698, backlog ruling for WP-114). The ONE refusal the rotator's move,
+        solving and reverse routes share, so a further route that turns,
+        calibrates or re-orients the camera takes the guard by calling it.
 
         THE ROUTES, NOT THE HUB. ``hub.rotate_to_pa`` is what the engine
         itself calls for every rotating panel, so a refusal in the hub would
@@ -10033,6 +10033,18 @@ def create_app(*, bind_host: str | None = None,
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def rotator_reverse(body: RotatorReverseBody):
+        """Refused while a sequence runs (#822): REVERSE flips the direction
+        convention between the sky angle and the camera frame, so flipping it
+        under a run changes what every later rotation of that run means and
+        invalidates the sign the nightly self-test learned. Nothing is sent to
+        the device. The guard sits ahead of the capability check, as on the
+        other rotator routes, so a live run is named whatever the rotator
+        supports."""
+        _refuse_while_sequence_runs(
+            "rotator reverse",
+            "it would flip the rotator's direction convention under the run, "
+            "changing what every later rotation means",
+            lane="rotator")
         try:
             rot = hub.require("rotator")
         except DeviceError as e:

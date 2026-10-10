@@ -55,6 +55,7 @@ import {
   liveRoleCount, profileActivateConfirm, profileConnectsNothing,
   profileResolvesRealMotion,
 } from "../../../../lib/equipment";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { profileDeleteConfirm, profileDeleteLock } from "../../../../lib/profileDelete";
 import { parseProfileFile, profileExportFilename } from "../../../../lib/profileFile";
 import { useStore } from "../../../../store";
@@ -185,10 +186,9 @@ export function ProfilesEditor({ onRows }: {
           ? profileResolvesRealMotion(full)
           : row.mode !== "empty" && row.mode !== "alpaca",
         liveDevices: liveRoleCount(useStore.getState().status),
-        sequenceRunning: (() => {
-          const state = useStore.getState().sequence?.state;
-          return state === "running" || state === "paused";
-        })(),
+        // `runIsLive`: a cloud hold and an abort's wind-down are the same live
+        // run to the rig, and the teardown aborts it (#821).
+        sequenceRunning: runIsLive(useStore.getState().sequence),
       });
       if (spec && !(await confirmDialog(spec))) return;
       await activateAndWait(row, false);

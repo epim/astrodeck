@@ -3,6 +3,8 @@
 // w16RotatorSequenceLock.test.tsx - the ROTATOR sheet locks GO, the nudges,
 // ROTATE TO PA, SYNC TO SKY and TEST ROTATOR while a run is live, with the
 // rig's own sentence, BEFORE the press (#751; WP-145, wave 16). Mounted.
+// REVERSE is locked the same way since #822 (WP-158, wave 18): the rig refuses
+// `/api/rotator/reverse` during a run too.
 //
 //   Run directly:  npx tsx src/next/hubs/rig/rotator/__tests__/w16RotatorSequenceLock.test.tsx
 //   Also run by `npm test` (run-tests.mjs).
@@ -99,13 +101,22 @@
 //      (`{runLive && !motionNote && (` made `{runLive && (`), 16/17: "x a
 //      principal without control.capture is told the capability, not the run: a
 //      principal who cannot move the rotator is shown the run's note"
-//   Y12 "REVERSE is locked by a run" (`const reverseReason = moveBase ?? inFlight;`
-//      made `= moveReason;`; the independent verifier's case: the claim that the
-//      rig does not refuse reverse was unpinned), SURVIVED at 17/17, then 17/18:
-//      "x running: REVERSE is not locked by the run, and a press posts the reverse
-//      route: REVERSE is locked while a run is live (title "a sequence is running;
-//      rotator move refused, because it would turn the camera under the run's
-//      frames. Stop the run first"), which the rig does not refuse"
+//   Y12 (retired by #822, WP-158, wave 18). It was "REVERSE is locked by a run"
+//      (`const reverseReason = moveBase ?? inFlight;` made `= moveReason;`): the
+//      rig did not refuse `/api/rotator/reverse` then, and this file pinned
+//      REVERSE live and failed the day the route took the guard. The route takes
+//      it now, so REVERSE is the sixth control in the list.
+//   Y13 "REVERSE is not locked by a run" (`const reverseReason = moveBase ?? (runLive
+//      ? SEQUENCE_REVERSE : null) ?? inFlight;` made `= moveBase ?? inFlight;`;
+//      run from a byte backup of RotatorPanel.tsx, restored byte-identically,
+//      md5sum compared), 12/18: "x running: GO, the nudges, ROTATE TO PA, SYNC TO
+//      SKY, TEST ROTATOR and REVERSE are locked with the rig's sentence:
+//      rotator-reverse is ARMED while the run is running: the rig answers it 409
+//      sequence_running" (and paused, holding, aborting), "x running: a press on
+//      each locked button states the reason and reaches nothing: rotator-reverse
+//      refused in silence: toasts were []" and "x a run ending arms REVERSE, and
+//      a press posts the reverse route: premise: REVERSE is locked while the run
+//      is live"
 //
 // Before the change the file read 8/16 (the cases that assert nothing is locked
 // without a run, HALT, the capability order and the reader guard passed).
@@ -247,6 +258,7 @@ const SENTENCE = {
   rotate: () => serverSentence("rotator_rotate_to_pa"),
   sync: () => serverSentence("rotator_sync_to_sky"),
   preflight: () => serverSentence("rotator_preflight"),
+  reverse: () => serverSentence("rotator_reverse"),
 };
 
 test("the parser reads the rig's template and its four sentences (a vacuity guard)", () => {
@@ -257,6 +269,9 @@ test("the parser reads the rig's template and its four sentences (a vacuity guar
   eq(SENTENCE.preflight(),
     "a sequence is running; rotator preflight refused, because it turns the rotator about 22 degrees and takes four plate solves, which would ruin the run's frames. Stop the run first",
     "the preflight sentence (two adjacent literals) was not read as one");
+  eq(SENTENCE.reverse(),
+    "a sequence is running; rotator reverse refused, because it would flip the rotator's direction convention under the run, changing what every later rotation means. Stop the run first",
+    "the reverse sentence (two adjacent literals) was not read from app.py as written");
 });
 
 // -------------------------------------------------------------------- seeding
@@ -334,11 +349,13 @@ const LOCKED_BY_A_RUN: Array<[string, () => string]> = [
   ["rotator-solve", SENTENCE.rotate],
   ["rotator-sync", SENTENCE.sync],
   ["rotator-preflight", SENTENCE.preflight],
+  // Locked by #822: the rig refuses the reverse route during a run too.
+  ["rotator-reverse", SENTENCE.reverse],
 ];
 
 // =========================================== every live state locks, per route
 for (const state of ["running", "paused", "holding", "aborting"]) {
-  test(`${state}: GO, the nudges, ROTATE TO PA, SYNC TO SKY and TEST ROTATOR are locked with the rig's sentence`, () => {
+  test(`${state}: GO, the nudges, ROTATE TO PA, SYNC TO SKY, TEST ROTATOR and REVERSE are locked with the rig's sentence`, () => {
     seed({ state });
     mount();
     for (const [testid, sentence] of LOCKED_BY_A_RUN) {
@@ -414,26 +431,24 @@ await testAsync("running: HALT is live and a press posts the halt route", async 
   assert(commands()[0].url.endsWith("/api/rotator/halt"), `HALT posted ${commands()[0].url}`);
 });
 
-// ====================================================== REVERSE is not one of the five
-// The sheet leaves it live during a run ONLY because the rig does: `/api/rotator/
-// reverse` does not call `_refuse_while_sequence_runs` (a defect of its own,
-// reported with WP-145). This case reads that off `app.py`, so the day the rig
-// guards it this fails with the instruction to lock REVERSE with the rig's
-// sentence, and does not leave the sheet offering a control that can only fail.
-await testAsync("running: REVERSE is not locked by the run, and a press posts the reverse route", async () => {
-  const at = APP_PY.indexOf("async def rotator_reverse(");
-  assert(at >= 0, "app.py no longer defines rotator_reverse");
-  const body = APP_PY.slice(at, APP_PY.indexOf("async def ", at + 10));
-  assert(!body.includes("_refuse_while_sequence_runs("),
-    "the rig now refuses the reverse route while a run is live: lock REVERSE with its "
-    + "sentence, as the other five are (#751)");
+// ========================================================= REVERSE is one of the six
+// `/api/rotator/reverse` calls `_refuse_while_sequence_runs` since #822 (the sheet
+// left REVERSE live before that only because the rig answered it). Its sentence
+// is read from `app.py` like the other five (`SENTENCE.reverse` throws if the
+// route stops calling the guard), and REVERSE is in `LOCKED_BY_A_RUN`, so every
+// live state, the press-explains-and-sends-nothing case and the capability-first
+// case grade it with the rest. This one is the control: once the run ends the
+// switch is armed and a press posts the reverse route.
+await testAsync("a run ending arms REVERSE, and a press posts the reverse route", async () => {
   seed({ state: "running" });
   mount();
+  assert(locked(id("rotator-reverse")), "premise: REVERSE is locked while the run is live");
+  act(() => { useStore.setState({ sequence: { state: "complete" } } as never); });
+  await settle();
   const rev = id("rotator-reverse");
   assert(rev != null, "REVERSE is not on the sheet for a rotator that can reverse");
   assert(!locked(rev),
-    `REVERSE is locked while a run is live (title ${JSON.stringify(titleOf(rev))}), which the rig does not refuse`);
-  assert(!/sequence is running/.test(titleOf(rev)), "REVERSE carries a run's sentence the rig never gives it");
+    `REVERSE is still locked after the run ended (title ${JSON.stringify(titleOf(rev))})`);
   asked.length = 0;
   click(rev);
   await settle();

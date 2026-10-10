@@ -60,6 +60,7 @@ import {
   type AssignmentMap,
 } from "../lib/equipment";
 import { confirmDialog } from "../components/ConfirmDialog";
+import { runIsLive } from "../lib/lastSessionFrame";
 import { FilterNamesModal } from "../components/capture/FilterNamesModal";
 import TasksPanel from "../components/equipment/TasksPanel";
 import { DEFAULT_PROVIDERS } from "../lib/providerWrite";
@@ -480,8 +481,9 @@ export default function EquipmentView(): JSX.Element {
       // page never quotes two different sizes for one rig (it read "drops 10
       // connected devices" three inches under "save the 11 connected devices").
       const live = connectedCount;
-      const seqState = useStore.getState().sequence?.state;
-      const running = seqState === "running" || seqState === "paused";
+      // `runIsLive`: a cloud hold and an abort's wind-down are the same live
+      // run to the rig, and the teardown aborts it (#821).
+      const running = runIsLive(useStore.getState().sequence);
       const ok = await confirmDialog({
         title: "Disconnect the whole rig?",
         body: running
@@ -883,7 +885,6 @@ export default function EquipmentView(): JSX.Element {
           /* fall through: still confirm on the teardown, just without the
              "puts nothing back" escalation we could not verify */
         }
-        const seqState = useStore.getState().sequence?.state;
         const spec = profileActivateConfirm({
           name: row.name,
           connectsNothing: full ? profileConnectsNothing(full) : false,
@@ -891,7 +892,8 @@ export default function EquipmentView(): JSX.Element {
             ? profileResolvesRealMotion(full)
             : row.mode !== "empty" && row.mode !== "alpaca",
           liveDevices: connectedCount,
-          sequenceRunning: seqState === "running" || seqState === "paused",
+          // `runIsLive`: see doDisconnect above (#821).
+          sequenceRunning: runIsLive(useStore.getState().sequence),
         });
         if (spec && !(await confirmDialog(spec))) return;
         await activateProfile(row.id);

@@ -49,6 +49,7 @@ import { confirmDialog } from "../ConfirmDialog";
 import { Panel, Led, HoldButton, EmptyState, Field, LockedChip } from "../ui";
 import { Icon } from "../icons";
 import { parseProfileFile, profileExportFilename } from "../../lib/profileFile";
+import { runIsLive } from "../../lib/lastSessionFrame";
 import { profileDeleteConfirm, profileDeleteLock } from "../../lib/profileDelete";
 import {
   liveRoleCount,
@@ -281,7 +282,6 @@ export default function ProfileList(): JSX.Element {
         /* fall back to the row's mode heuristic below */
       }
       const live = liveRoleCount(useStore.getState().status);
-      const seqState = useStore.getState().sequence?.state;
       const spec = profileActivateConfirm({
         name: row.name,
         connectsNothing: full ? profileConnectsNothing(full) : false,
@@ -289,7 +289,9 @@ export default function ProfileList(): JSX.Element {
           ? profileResolvesRealMotion(full)
           : row.mode !== "empty" && row.mode !== "alpaca",
         liveDevices: live,
-        sequenceRunning: seqState === "running" || seqState === "paused",
+        // `runIsLive`: a cloud hold and an abort's wind-down are the same live
+        // run to the rig, and the teardown aborts it (#821).
+        sequenceRunning: runIsLive(useStore.getState().sequence),
       });
       if (spec && !(await confirmDialog(spec))) return;
       await activateAndWait(row, false);
