@@ -18,9 +18,10 @@ libasi raised into the ``DeviceError`` and into ``last_error``. libasi's
 (``asiair/transport.py``: ``raise ASIAIRError(result["error"], ...)``, message
 ``[code] method: error``), and Python's own errors out of its reply parsing
 can quote a token of it, so no libasi text is known to be free of a reply. A
-failure is now named by its class and the call. The original exception stays
-on ``__cause__``: ``AsiairTelescope.sync`` reads its class to tell a refusal
-from a dead link.
+failure is now named by its class and the call. The original exception no
+longer stays on ``__cause__`` (#955): a printed traceback would re-quote it, so
+the error carries the kind of failure for ``AsiairTelescope.sync`` instead
+(see ``test_955_asiair_error_chain``).
 """
 from __future__ import annotations
 
@@ -212,7 +213,8 @@ async def test_asiair_a_failed_call_names_the_class_and_the_call(
         fake, make, named):
     """The ``DeviceError`` and ``last_error`` name the exception class (and the
     box's numeric code), the call and the host; libasi's text is in neither.
-    The original stays on ``__cause__`` for ``sync``'s classification.
+    The chain is not kept either (#955); ``sync`` classifies on the error's
+    own ``cause_kind``.
 
     MUTANT L1 "the text back in the message" (``{exc}`` in place of ``{shown}``
     in the ``DeviceError`` of ``_Link.call``): RED on the leak assertion.
@@ -238,8 +240,9 @@ async def test_asiair_a_failed_call_names_the_class_and_the_call(
         assert last is not None
         _assert_no_position(last)
         assert last == f"read mount info: {named}", last
-        # The class of the original is what sync() classifies on.
-        assert exc.value.__cause__ is injected
+        # The class of the original is on the error, not behind it.
+        assert exc.value.cause_class == type(injected).__name__
+        assert exc.value.__cause__ is None and exc.value.__context__ is None
     finally:
         await session.close()
 
@@ -295,7 +298,8 @@ async def test_asiair_a_failed_connect_names_the_class_not_the_text(
     assert link.connected is False
     assert link.last_error == f"connect: {named}", link.last_error
     _assert_no_position(link.last_error)
-    assert exc.value.__cause__ is injected
+    assert exc.value.cause_class == type(injected).__name__
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
 
 
 async def test_asiair_a_failed_open_through_the_backend_says_no_position(fake):
@@ -338,7 +342,8 @@ async def test_asiair_health_and_the_probe_say_no_position(fake):
 
 async def test_asiair_a_failed_sync_is_still_classified_by_the_cause(fake):
     """The text is gone from the message, but ``sync`` still tells a dead link
-    from an answer by the class on ``__cause__``: an ``OSError`` is an
+    from an answer by the kind of the failure (#955: read off the error's own
+    ``cause_kind``, no longer off ``__cause__``): an ``OSError`` is an
     unverified link failure, a box error is an unclear one, and neither
     message says where the mount was."""
     session = await _open()
