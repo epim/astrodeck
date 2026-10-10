@@ -926,8 +926,9 @@ HOLD_RESOLVE_SETTLE_S = 5.0
 
 # FIXED WORDS (#618, D-03): the StopTarget and abort texts below carry no
 # figure, code or reply, so two passes that failed the same way read as one
-# rig-side reason. None carries a pair the UI's humanizer rewrites ("plate"
-# with "solve", "guid" with "lost", "camera", "nina"). The figures go in the
+# rig-side reason. None carries a pair the UI's humanizer still rewrites
+# ("camera" with "timeout", "nina" with "error"), nor "plate" beside "solve" or
+# "guid" beside "lost", which it stopped reading in #792. The figures go in the
 # one warning logged beside each.
 CENTRING_DID_NOT_MOVE = "the mount did not move to correct the pointing"
 CENTRING_TOO_FAR = "the field is too far off target to image"
@@ -965,7 +966,8 @@ _SAFE_ORDER_SHORT = POSITION_UNKNOWN_SAFE_ORDER
 #: The error line when a roof that needs a parked tube is left open because
 #: the position is unknown, so nothing parked the tube under it (#888): the
 #: auto-reopen close (`_close_for_reopen`) and ``POST /api/dome/close``.
-#: The cause and the safe order first, 120 characters, inside the UI's cut.
+#: The cause and the safe order first, 120 characters: inside the UI's old
+#: 137-character cut, and far inside its 400-character budget since #792.
 ROOF_LEFT_OPEN_POSITION_UNKNOWN = (
     f"roof left open, position unknown: {_SAFE_ORDER_SHORT} A park is aimed "
     f"from that position, so the tube was not parked under the roof")
@@ -975,7 +977,8 @@ ROOF_CLOSE_WITHOUT_PARK = "The roof close does not park first"
 #: park skips a mount whose position is unknown (#874), so the usual "Dawn
 #: park will park it" would be false. The cause, then the shared safe order
 #: (a bare "until Trust position" left out the tube-at-home condition and the
-#: pad key): 134 characters, inside the UI's cut.
+#: pad key): 134 characters, inside the UI's old 137-character cut and far
+#: inside its 400-character budget since #792.
 NOT_PARKED_POSITION_UNKNOWN = (
     f"Unparked, position unknown; dawn park skips it: {_SAFE_ORDER_SHORT}")
 
@@ -3969,8 +3972,9 @@ class SequenceEngine:
                 self._session.auto_resume = False
                 # THE ACTION FIRST, THE NAME LAST: with the name in front, a
                 # name over 15 characters pushed "arm it from the session
-                # list" past the UI's 137-character cut. Both things that
-                # clear the doubt are named (``Telescope.position_known``).
+                # list" past the UI's old 137-character cut (400 since #792).
+                # Both things that clear the doubt are named
+                # (``Telescope.position_known``).
                 bus.log("info",
                         f"auto-resume disarmed, position unknown: once Trust "
                         f"position or a sync away from the pole clears it, "
@@ -9149,8 +9153,8 @@ class SequenceEngine:
     #: out of centring and so is NOT stopped (#850): without it the operator
     #: reads "the mount refused the sync" and then sees the run carry on, with
     #: nothing saying why. It comes straight after the cause and BEFORE the
-    #: figure and the reply (`_sync_not_taken_line`), so humanizeLog's cut at
-    #: 137 takes the figure and the reply first and never this.
+    #: figure and the reply (`_sync_not_taken_line`), so the cut humanizeLog
+    #: once made at 137 took the figure and the reply first and never this.
     _SYNC_NOT_TAKEN_GOES_ON = "; centring is off, so imaging goes on"
 
     @staticmethod
@@ -9186,7 +9190,7 @@ class SequenceEngine:
         stopped) gets the outcome BEFORE the figure: "M31: re-centring after
         the meridian flip: the mount refused the sync; centring is off, so
         imaging goes on (152.3' off, reply 'e11')". The outcome is why the
-        run carries on, so it must survive the cut at 137 (FIXES4 H3); the
+        run carries on, so it came before the old cut at 137 (FIXES4 H3); the
         figure and the reply share one bracket after it, each left out when
         there is nothing to say, and the bracket too when both are.
 
@@ -9206,14 +9210,16 @@ class SequenceEngine:
         rule); any other reply is "an unrecognised reply", and an empty one
         says nothing.
 
-        THE FIGURE COMES BEFORE THE REPLY, because humanizeLog cuts a line
-        longer than 140 characters to 137 and an ellipsis: with a long name
-        and the longest ``where`` the reply is what goes, never half a
-        number. No figure clause when the figure is unknown.
+        THE FIGURE COMES BEFORE THE REPLY, because humanizeLog used to cut a
+        line longer than 140 characters to 137 and an ellipsis: with a long
+        name and the longest ``where`` the reply was what went, never half a
+        number. It keeps whole sentences up to 400 now (#792) and the order
+        stays. No figure clause when the figure is unknown.
 
-        THE UI'S HUMANIZER (ui/src/lib/humanize.ts) replaces a line carrying
-        "plate" and "solve", or "guid" and "lost", with its own words, so
-        neither pair appears here or in any ``where``."""
+        THE UI'S HUMANIZER (ui/src/lib/humanize.ts) once replaced a line
+        carrying "plate" and "solve", or "guid" and "lost", with its own
+        words, so neither pair appears here or in any ``where``. It reads a
+        whole failure or loss report only now (#792), and the wording stays."""
         refused = bool(result.get("sync_refused"))
         what = ("the mount refused the sync" if refused
                 else "the mount did not confirm the sync")
@@ -9382,8 +9388,9 @@ class SequenceEngine:
     def _centring_miss_line(self, result, target, where: str, *,
                             goes_on: bool) -> str:
         """The ONE warning beside a centring miss: the outcome FIRST and the
-        figures last, because the UI cuts a line at 137 characters plus an
-        ellipsis, so the cut can only ever take a figure. No coordinates:
+        figures last, because the UI used to cut a line at 137 characters plus
+        an ellipsis (it keeps whole sentences up to 400 since #792), so the cut
+        could only ever take a figure. No coordinates:
         the figures are a separation from the target and a field limit."""
         name = getattr(target, "name", "this target")
         err = self._arcmin(result.get("error_arcmin")) \
@@ -17786,9 +17793,11 @@ class SequenceEngine:
         if recentres:
             self._set_state(detail="re-centring after guiding loss")
             await self._recentre_for_hold(
-                # Not "guiding was lost": the UI's humanizer rewrites any
-                # line carrying "guid" and "lost" as "Guiding was lost -
-                # recovering", and the operator would never read the stop.
+                # Not "guiding was lost": until #792 the UI's humanizer
+                # rewrote any line carrying "guid" and "lost" as "Guiding was
+                # lost - recovering", and the operator would never read the
+                # stop. It maps only a bare loss report now, so the words stay
+                # as fixed words.
                 # (A literal: test_850's scan grades every site's fixed
                 # words, and a resume shares this site, #849.)
                 target, "re-centring after the guide star went missing",
@@ -17805,12 +17814,15 @@ class SequenceEngine:
                 # Nothing was charged, so nothing is given back below. The
                 # exception text has its own line, so that L_RESUME_FAIL, the
                 # operator's line, carries no raw text and always reaches the
-                # UI whole. The evidence line itself is NOT protected: every
-                # native guider error starts "native guider:", and one that
-                # also says "lost" (a walk that lost its star) is shown by the
-                # UI's humanizer as a lost guide star, as the existing
-                # "guiding recovery failed: ..." line always was. Its raw
-                # text stays in the night log and the log drawer.
+                # UI whole. The evidence line itself is shielded only by its
+                # prefix: every native guider error starts "native guider:",
+                # and one that also said "lost" (a walk that lost its star) was
+                # shown by the UI's humanizer as a lost guide star until #792.
+                # It maps only a line that is nothing but a loss report now, so
+                # this one reaches the operator as written, and the "guiding
+                # recovery failed: ..." line below can still be mapped when the
+                # error is itself a bare loss report. The raw text is in the
+                # night log and the log drawer either way.
                 bus.log("warning", L_RESUME_FAIL, "sequence")
                 bus.log("warning", f"resume: the restart failed with: {e}",
                         "sequence")
@@ -19576,8 +19588,8 @@ class SequenceEngine:
         # (`_stop_if_centring_missed`); a mount that did not carry out the
         # correction inside the ceiling gets ruling R3's line there. Said
         # here too, it would be a second line contradicting the first.
-        # "Ended", not "converged", and no "plate" beside "solve": the UI's
-        # humanizer rewrites that pair into a solve failure of its own.
+        # "Ended", not "converged", and no "plate" beside "solve": until #792
+        # the UI's humanizer rewrote that pair into a solve failure of its own.
         if (not centred and report_centring
                 and self._sync_not_taken(centring) is None
                 and self._centring_miss(centring, target) is None
@@ -19908,7 +19920,8 @@ class SequenceEngine:
         self._rms_unit_warned = True
         # #854: the gate still judges pixels through the floor
         # (`policy.guide_rms_floor_arcsec`), so only a runaway is caught. The
-        # action comes first so the humanizer's 137 characters keep it.
+        # action comes first, where the humanizer's old 137-character cut kept
+        # it.
         ceiling = self._policy.max_guide_rms
         bus.log("warning",
                 "Set the guide scope focal length in Settings > Optics: the "
@@ -21380,8 +21393,9 @@ class SequenceEngine:
             self, ending: str = "The run ends without parking",
             who: str = "The run") -> None:
         """The wind-down's park replaced, for a mount whose position is
-        unknown (#886, `_wind_down_park`): one warning, the action first and
-        inside the UI's cut, then the tracking stop, read back and asked
+        unknown (#886, `_wind_down_park`): one warning, the action first
+        (inside the UI's old 137-character cut, and far inside its 400 since
+        #792), then the tracking stop, read back and asked
         again on its own bounded clock when it does not take
         (`_confirm_quiet_stop`). Nothing aimed, never raises.
 

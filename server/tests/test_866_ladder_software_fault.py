@@ -7,9 +7,10 @@ Step 2 of the ladder (the blind solve and sync after a restart) ended in a
 catch-all that worded every exception it did not name as "blind plate solve
 failed after restart (...)". On the #850 branch a stub hub missing the new
 ``refusal_level`` keyword raised ``TypeError`` and 54 tests held in those
-words; the UI's humanizer rewrites any line holding "plate" and "solve" into
-"Plate-solve failed - check focus/exposure", so an operator would have been
-sent to the optics for a code bug.
+words; the UI's humanizer then rewrote any line holding "plate" and "solve"
+into "Plate-solve failed - check focus/exposure", so an operator would have
+been sent to the optics for a code bug (#792 narrowed that rule to a bare
+failed-solve line).
 
 Now ``TypeError``, ``AttributeError``, ``NameError`` (with
 ``UnboundLocalError``) and ``KeyError`` out of the blind solve hold in fixed
@@ -17,9 +18,11 @@ words of their own (``SOLVE_SOFTWARE_FAULT_WORDS``), and a warning beside the
 hold names the type and where it was raised, as ``basename:function:line``
 frames with no absolute path and no message text, said once a night per
 session; the traceback goes to stderr through the module logger. Solver,
-camera and device failures keep the failed-solve words. A humanizer key in
-a frame or type name ("nina", "camera", "plate", "guid") is broken by a
-hyphen, so the UI never swaps the warning for its own sentence.
+camera and device failures keep the failed-solve words. A humanizer key that
+can still pair in a frame or type name ("nina", "camera") is broken by a
+hyphen, so the UI never swaps the warning for its own sentence; "plate" and
+"guid" are no longer keys (#961) and a frame in plate.py or guider.py is named
+whole.
 
 Each test names the mutant of resume_arm.py it was shown red under; the
 mutants were applied to a byte copy of resume_arm.py and the file was
@@ -332,15 +335,17 @@ async def test_a_start_between_two_faults_makes_the_second_news(
     assert len(faults) == 2, faults
 
 
-#: (module file, function name) pairs whose names hold a humanizer key, each
-#: beside a partner the warning already carries: "Error" (the type) and a 5
-#: (the line number) for nina; "timeout" for camera; "solve" (our own words)
-#: for plate; "lost" for guid.
+#: (module file, function name, the file as the warning names it, the file as
+#: it is) for names that hold a humanizer key, each beside a partner the
+#: warning already carries: "Error" (the type) for nina; "timeout" for camera.
+#: The last two rows are names that held a key until #961 and are left whole
+#: now: the plate-solve and guiding rules read a whole report, which this
+#: warning is not.
 _TRIPPING_FRAMES = [
     ("nina.py", "expose", "ni-na.py", "nina.py"),
     ("camera.py", "timeout_read", "ca-mera.py", "camera.py"),
-    ("plate.py", "read_result", "pl-ate.py", "plate.py"),
-    ("guider.py", "lost_star", "gu-ider.py", "guider.py"),
+    ("plate.py", "read_result", "plate.py", "plate.py"),
+    ("guider.py", "lost_star", "guider.py", "guider.py"),
 ]
 
 
@@ -359,13 +364,16 @@ def _raiser_in(module_file: str, func: str):
 async def test_the_fault_warning_never_trips_the_humanizer(
         monkeypatch, bus_lines, module_file, func, broken, whole):
     """A fault raised from a module whose name holds a humanizer key (a NINA
-    rig's nina.py, a camera module, a plate module, the guider) reaches the
-    operator in our words: the key is broken by a hyphen, so the UI does not
-    replace the warning with "NINA reported an error" or its like. Premise in
-    the same test: with the key whole, the line WOULD be rewritten.
+    rig's nina.py, a camera module) reaches the operator in our words: the key
+    is broken by a hyphen, so the UI does not replace the warning with "NINA
+    reported an error" or its like. Premise in the same test: with the key
+    whole, the line WOULD be rewritten. A plate module and the guider hold no
+    key now (#961): their frames are named whole, as the files are called.
 
     NAMED MUTANT M866o "keys left whole" (``_unpaired`` returns ``text``
-    unchanged): RED on all four.
+    unchanged): RED on nina and camera. NAMED MUTANT M961 "plate and guid
+    broken again" (``_HUMANIZER_KEYS`` back to ``nina|camera|plate|guid``): RED
+    on plate and guid.
     """
     raiser = _raiser_in(module_file, func)
 
@@ -382,7 +390,8 @@ async def test_the_fault_warning_never_trips_the_humanizer(
     said = arm._ladder_software_fault
     assert said is not None
     assert f"{broken}:{func}:15" in said, said
-    assert _humanizer_rewrites(said.replace(broken, whole)), (
-        "premise: with the key whole the line trips the humanizer", said)
-    assert not _humanizer_rewrites(said), said
+    if broken != whole:
+        assert _humanizer_rewrites(said.replace(broken, whole)), (
+            "premise: with the key whole the line trips the humanizer", said)
+        assert not _humanizer_rewrites(said), said
     _no_absolute_path(said)

@@ -1623,7 +1623,7 @@ async def _sync_not_taken_is_not_a_failed_solve(solve_and_sync) -> None:
     The driver's message carries no coordinates and no raw link bytes, and
     its action (for ``e11``, the driver's e11 words, in the safe order)
     comes early, so the 16-character prefix still leaves it before the UI's
-    137-character cut.
+    old 137-character cut (the UI keeps whole sentences up to 400 since #792).
 
     Takes the method, not its coroutine: ``_spawn`` closes the coroutine it
     is handed when it refuses the lane (409), and closing this wrapper

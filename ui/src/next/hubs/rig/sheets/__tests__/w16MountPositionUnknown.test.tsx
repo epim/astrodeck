@@ -369,8 +369,10 @@ test("the reason says what a step is, why it cannot run, and what unlocks it", (
 // anywhere but home it lands somewhere unknown, which is how a tube meets a
 // pier. The safe order is TRUST POSITION when the tube really is at home, and a
 // pad key held to bring it home by eye first when it is not (hold-to-move
-// computes no destination). None holds "plate" beside "solve" either:
-// `humanizeLog` rewrites such a line to "Plate-solve failed".
+// computes no destination). None holds "plate" beside "solve" either, a habit
+// from when `humanizeLog` rewrote such a line to "Plate-solve failed". It maps
+// only a line that IS a failed solve now (#792); the copy keeps the habit and
+// this test keeps the copy to it.
 const GOTO_ADVICE: readonly RegExp[] = [
   /go to a target/i, /target away from the pole/i, /goto/i, /go-to/i, /slew/i,
 ];
@@ -386,7 +388,7 @@ test("no copy advises a goto or a slew while the mount does not know where it po
     assert(!/refuses every sync/.test(s),
       `${name} states the at-home refusal as a rule about any mount reporting home: ${s}`);
     assert(!(/plate/i.test(s) && /solve/i.test(s)),
-      `${name} holds "plate" beside "solve", which the humanizer rewrites: ${s}`);
+      `${name} holds "plate" beside "solve", which the copy avoids: ${s}`);
     assert(!/[—–]/.test(s), `${name}: an em or en dash in a new-UI string`);
   }
 });

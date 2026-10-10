@@ -250,10 +250,12 @@ export default function SlewPad(props: SlewPadProps = {}) {
             // tube would be sent to wherever the believed position plus 0.25
             // degrees lands. Refused out loud, so the tap is never swallowed
             // in silence - and through `enqueueToast`, NOT `showToast`: that
-            // runs the sentence through `humanizeLog`, whose "plate" + "solve"
-            // rule replaces any message containing both with "Plate-solve
-            // failed - check focus/exposure", the opposite of what this says,
-            // and which truncates anything past 140 characters.
+            // runs the sentence through `humanizeLog`, which maps a few exact
+            // reports (a plate solve that failed, guiding lost) and shortens a
+            // line past CLIP_AT characters. This sentence is neither and fits
+            // under it, so `showToast` would pass it whole today; `enqueueToast`
+            // shows it as written without depending on those rules staying
+            // narrow.
             if (!knownRef.current) {
               useStore.getState().enqueueToast({
                 level: "warning", title: POSITION_UNKNOWN_STEPS_REASON,

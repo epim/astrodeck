@@ -310,14 +310,23 @@ test("showToast: a sentence that mentions a plate-solve sync is shown, not 'Plat
   eq(toasts()[0].title, sentence, "the refusal was replaced by a failure notice:");
 });
 
-test("a real solve failure on the log stream still reads as a plate-solve failure", () => {
+test("a bare solve failure on the log stream still reads as a plate-solve failure", () => {
   reset();
   useStore.getState().handleEvent({
     type: "log", ts: 0,
-    data: { level: "error", source: "solve", message: "solve failed: plate solve failed: not enough stars" },
+    data: { level: "error", source: "solve", message: "solve failed: plate solve failed" },
   });
   eq(toasts()[0].title, "Plate-solve failed - check focus/exposure, or solve manually.",
     "the rewrite stopped firing on the report it exists for:");
+});
+
+test("a solve failure that names its cause reaches the toast with the cause (#960)", () => {
+  reset();
+  const message = "solve failed: plate solve failed: no plate solver is available on this rig";
+  useStore.getState().handleEvent({
+    type: "log", ts: 0, data: { level: "error", source: "solve", message },
+  });
+  eq(toasts()[0].title, message, "the cause was replaced by the generic advice:");
 });
 
 test("a long error log line is never cut in the middle of a sentence", () => {
