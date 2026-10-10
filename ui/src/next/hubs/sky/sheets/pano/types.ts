@@ -116,7 +116,7 @@ export interface FocalLike {
   readonly fMeasure: number;    // fNorm that LK runs at: the prior until the lock, then the locked value
   readonly fBest: number;       // fNorm: prior, then f0 x median ratio, then locked, then closed
   readonly state: FocalState;
-  readonly sdPct: number;       // relative sd, percent: the prior's 20; after the lock 1.4826 x MAD / median / sqrt(n) x 100; after closure 0.139
+  readonly sdPct: number;       // relative sd, percent: the prior's 20; after the lock max(1.4826 x MAD / median / sqrt(n) x 100, 0.55); after closure 0.139
   readonly ratios: number;
   addRatio(imgYawDeg: number, gyroYawDeg: number): 'collecting' | 'locked-now' | 'locked';
   closeLoop(thetaImgDeg: number, thetaGyroDeg: number, trueDeg: number): { fNorm: number; gyroScale: number };
@@ -156,7 +156,7 @@ export interface Keyframe {
   up: V3;                  // world up seen in the camera frame, from gravity
   sigmaDeg: number;        // placement sigma (4.7), updated after a lock or closure
   gainRGB: [number, number, number];
-  strip: Uint8Array; stripX0: number; stripW: number; stripH: number;   // L0 RGB within +-10 degrees of the centre
+  strip: Uint8Array; stripX0: number; stripW: number; stripH: number;   // L0 RGB within +-10 degrees of the centre; to 3 + trailingDeg on the trailing side of a trailing-fill commit (S12)
   pyr: Pyramid | null;     // null when the tracker runs sensor-only
   skyLuma: number;         // median luma of the top 10 % of rows of the analysis frame
 }
@@ -248,7 +248,7 @@ export interface CameraSourceLike {
   onFrame(cb: ((meta: FrameMeta) => void) | null): void;   // one call per new frame; re-registers itself; null detaches
   readback(meta: FrameMeta): AnalysisFrame | null;          // the current frame into the fixed analysis canvas (4.2); null on failure
   readbackTiny(): Uint8Array | null;                        // 45 x 80 luma of the current frame, for the watchdog
-  refreshLiveSource(): void;                                // GPU draw of the current frame into the 90 x 160 live source; never read back
+  refreshLiveSource(): void;                                // GPU draw of the current frame into the live source (L1 size: 90 x 160, or 120 x 160 at 3:4); never read back
   liveSource(): HTMLCanvasElement | null;
   readonly settings: CameraSettingsReport;
   readonly bench: CameraBench | null;
@@ -280,7 +280,7 @@ export interface ScanStatus {
   pace: 'idle' | 'good' | 'fast' | 'too-fast'; rateMaxDegS: number;
   coverage: Uint8Array;            // 720 cells, PixClass
   coveredDeg: number; gapDeg: number | null;
-  tallSpans: { from: number; to: number }[];
+  tallSpans: { from: number; to: number }[];   // scan-frame azimuths in [0, 360), the frame of ribbon.pixels() while scanning; to < from wraps
   mode: PredictorMode; north: NorthEstimate | null;
   focal: { state: FocalState; shortFovDeg: number };
   loop: LoopState; keyframes: number;

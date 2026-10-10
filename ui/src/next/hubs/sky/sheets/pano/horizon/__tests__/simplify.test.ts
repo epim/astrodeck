@@ -318,11 +318,11 @@ test('chart yard fixture: the 720 maxima of the committed 0.1-degree truth, clam
 });
 
 // The chart yard counts. Derivation: SPEC-v2 5.4's algorithm run on this fixture's 720 maxima as the draft holds them,
-// in a Float32Array. The Python prototype of 5.4 (scratchpad/pano/sensorfirst_simplify.py, `simplify`) on the same
-// values after a float32 round trip gives 100 / 49 / 35 vertices at tau 0.25 / 0.5 / 1 with 45 / 12 / 9 shoulders, and
-// this port gives the same. On the unrounded doubles the prototype gives 102 / 48 / 35, which is SPEC-v2's table
-// (computed on the cache's slightly different c_ref): float32 merges values that differ only in their last double
-// digits, so a few steps disappear and a few tolerances land differently. Both are far under 60.
+// in a Float32Array, gives 100 / 49 / 35 vertices at tau 0.25 / 0.5 / 1 with 45 / 12 / 9 shoulders, and this port
+// gives the same, as does the 5.4 prototype on the same values after a float32 round trip. On unrounded doubles the
+// prototype gives 102 / 48 / 35, the counts in SPEC-v2 5.4's table (computed on a slightly different reference
+// profile): float32 merges values that differ only in their last double digits, so a few steps disappear and a few
+// tolerances land differently. Both are far under 60.
 const CHARTYARD_POINTS = { 0.25: 100, 0.5: 49, 1: 35 } as const;
 const CHARTYARD_SHOULDERS = { 0.25: 45, 0.5: 12, 1: 9 } as const;
 
