@@ -307,7 +307,7 @@ export class PoseTrack {
     this.usable = true;
     this.motion.push({ t: e.t, raw });
     this.motion.trimBefore(e.t - KEEP_MS);
-    this.noteRate('motion', e.t, this.magnitudeDeg(raw));
+    this.noteRate('motion', e.t, this.magnitudeDeg(raw) ?? this.chordRateAt(e.t));
 
     const axis = this.axisMap;
     if (axis?.confirmed && this.lastMoveT !== null && e.t - this.lastMoveT >= STILL_FOR_MS) {
@@ -347,19 +347,8 @@ export class PoseTrack {
   rateAt(t: number): number | null {
     this.advance(t);
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
-    if (m) return this.magnitudeDeg(m.raw);
-    // No gyro: a chord of G ending at the newest sample at or before t, never two consecutive samples (S10). The chord
-    // starts at the newest sample MORE than CHORD_MIN_MS older: on a regular 60 Hz stream the sample exactly 100 ms
-    // back makes a 6-interval chord, whose median pump-age error is 4.9 %; one interval more is 4.2 %. A chord
-    // longer than CHORD_MAX_MS spans a pause, and the rate is unknown.
-    const i = this.g.floor(t);
-    if (i < 1) return null;
-    const b = this.g.at(i);
-    let j = this.g.floor(b.t - CHORD_MIN_MS);
-    if (j >= 0 && this.g.at(j).t === b.t - CHORD_MIN_MS) j--;
-    if (j < 0) return null;
-    const a = this.g.at(j);
-    return b.t - a.t <= CHORD_MAX_MS ? angleBetweenDeg(a.q, b.q) / ((b.t - a.t) / 1000) : null;
+    // A motion sample speaks only once the mapping has confirmed its unit; otherwise, and without a sample, the chord (S41).
+    return (m ? this.magnitudeDeg(m.raw) : null) ?? this.chordRateAt(t);
   }
 
   omegaBodyAt(t: number): V3 | null {
@@ -496,7 +485,9 @@ export class PoseTrack {
     if (last) {
       const dt = t - last.t;
       const m = this.motion.nearest(t, MOTION_FRESH_MS);
-      const w = m ? this.magnitudeDeg(m.raw) : angleBetweenDeg(last.q, q) / (dt / 1000);
+      // Until the unit is confirmed the rate is the interval's own angle over dt, not a chord (S41): this only asks whether
+      // the interval is motion (the 2 deg/s line), and a chord could not end at the sample being pushed.
+      const w = (m ? this.magnitudeDeg(m.raw) : null) ?? angleBetweenDeg(last.q, q) / (dt / 1000);
       if (w >= STALE_MOTION_DEG_S) this.staleIntervals.push({ t, dt });
     }
     this.g.push({ t, q });
@@ -565,9 +556,28 @@ export class PoseTrack {
 
   // ---- Internals: rates, bias and the axis mapping ----
 
-  private unitScale(): number { return this.axisMap?.unit === 'rad' ? 1 / DEG : 1; }
-  /** |rate| in deg/s: the magnitude needs only the unit, which defaults to deg. */
-  private magnitudeDeg(raw: V3): number { return norm3(raw) * this.unitScale(); }
+  /** |rate| of a motion sample in deg/s, or null until the axis mapping is confirmed (S41). The unit is the mapping's,
+   *  and an unconfirmed fit is a guess: a transient one read `rad` and turned a 12 deg/s pan into 703 deg/s, and a gyro
+   *  that reports rad/s reads as quiet while moving (S33). So a motion sample is a rate only once the mapping vouches for
+   *  its unit, and until then every caller takes the orientation chord (S10) instead. */
+  private magnitudeDeg(raw: V3): number | null {
+    const a = this.axisMap;
+    return a?.confirmed ? norm3(raw) * (a.unit === 'rad' ? 1 / DEG : 1) : null;
+  }
+  /** |omega| over a chord of 100-300 ms of G samples ending at the newest one at or before t, never over two
+   *  consecutive samples (S10). The chord starts at the newest sample MORE than CHORD_MIN_MS older: on a regular 60 Hz
+   *  stream the sample exactly 100 ms back makes a 6-interval chord, whose median pump-age error is 4.9 %; one interval
+   *  more is 4.2 %. A chord longer than CHORD_MAX_MS spans a pause, and the rate is unknown. */
+  private chordRateAt(t: number): number | null {
+    const i = this.g.floor(t);
+    if (i < 1) return null;
+    const b = this.g.at(i);
+    let j = this.g.floor(b.t - CHORD_MIN_MS);
+    if (j >= 0 && this.g.at(j).t === b.t - CHORD_MIN_MS) j--;
+    if (j < 0) return null;
+    const a = this.g.at(j);
+    return b.t - a.t <= CHORD_MAX_MS ? angleBetweenDeg(a.q, b.q) / ((b.t - a.t) / 1000) : null;
+  }
   private mappedDeg(raw: V3, a: AxisMapping): V3 {
     const k = a.unit === 'rad' ? 1 / DEG : 1;
     return [a.sign[0] * raw[a.perm[0]] * k, a.sign[1] * raw[a.perm[1]] * k, a.sign[2] * raw[a.perm[2]] * k];
@@ -586,16 +596,22 @@ export class PoseTrack {
     return m ? this.bodyRad(m.raw, a) : null;
   }
 
-  /** A quiet gyro: a motion sample within 100 ms of t reads under 0.5 deg/s. */
+  /** A quiet gyro: a motion sample within 100 ms of t, and a rate under 0.5 deg/s. The rate is the sample's once the
+   *  mapping is confirmed and the orientation chord's before (S33, S41): the sample then only shows that the gyro is
+   *  delivering, and a chord that is unknown does not vouch. This narrows S6 until the mapping confirms: a silent
+   *  relative stream is held only while a chord of G reads quiet. */
   private quietGyro(t: number): boolean {
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
-    return m !== null && this.magnitudeDeg(m.raw) < HOLD_RATE_DEG_S;
+    if (m === null) return false;
+    const w = this.magnitudeDeg(m.raw) ?? this.chordRateAt(t);
+    return w !== null && w < HOLD_RATE_DEG_S;
   }
 
-  /** The rate of a stream at its newest sample: the gyro's magnitude when fresh, else the stream's own chord. */
+  /** The rate of a stream at its newest sample: the gyro's magnitude when fresh and its unit confirmed (S41), else the
+   *  stream's own chord. */
   private omegaFor(series: Series<Sample>, t: number): number | null {
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
-    return m ? this.magnitudeDeg(m.raw) : chordRateDeg(series, CHORD_MIN_MS, false);
+    return (m ? this.magnitudeDeg(m.raw) : null) ?? chordRateDeg(series, CHORD_MIN_MS, false);
   }
 
   /** An interval's rate is the smaller of its two ends, so the gap that ends a pause is not counted as moving. An end
