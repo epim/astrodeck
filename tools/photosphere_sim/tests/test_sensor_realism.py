@@ -494,6 +494,30 @@ class Motion(unittest.TestCase):
             for v in e["rate"].values():
                 self.assertTrue(_is_multiple(v, 0.1), e)
 
+    def test_a_still_hold_with_the_default_motion_faults_reads_96_percent_zero_triples(self):
+        """Ruling S21: the DEFAULT motion block (bias 0.01 deg/s, noise 0.018
+        deg/s, rounded to 0.1) is the Chromium figure, not a number a case has
+        to patch in. A triple rounds to exact zero when each axis lands in
+        (-0.05, 0.05), which is ``(Phi((0.05 - b) / s) - Phi((-0.05 - b) / s))^3``
+        = 0.960 for b 0.01, s 0.018; the binomial sd over the 600 samples of a
+        10 s hold is 0.008, so 0.93-0.99 is a window of nearly four of them, and
+        it holds for every seed tried. The 0.05 and 0.03 that T01 first shipped
+        sit on the rounding boundary and read 0.125; 0.01 with the old 0.03
+        reads 0.70.
+
+        MUTATION: put ``REALISM_DEFAULTS["motion"]["bias_deg_s"]`` back to 0.05.
+        Observed: the fraction is about 0.13 and the window refuses it."""
+        spec = sensors.resolve_realism({})
+        still = yaw_trajectory(0.0, 23.0, 10.0)
+        for seed in (7, 0, 1, 2, 3):
+            with self.subTest(seed=seed):
+                stream = motion(readings(still, spec, seed=seed))
+                self.assertEqual(len(stream), 10 * 60 + 1)
+                zeros = [e for e in stream if all(v == 0.0 for v in e["rate"].values())]
+                fraction = len(zeros) / len(stream)
+                self.assertGreaterEqual(fraction, 0.93, f"{len(zeros)} of {len(stream)}")
+                self.assertLessEqual(fraction, 0.99, f"{len(zeros)} of {len(stream)}")
+
     def test_bias_and_scale_are_added_to_every_axis_and_the_turn(self):
         still = yaw_trajectory(0.0, 23.0, 2.0)
         biased = motion(readings(still, clean(motion={"bias_deg_s": 0.3})))
@@ -581,6 +605,8 @@ class ResolveRealism(unittest.TestCase):
         self.assertEqual(spec["absolute"]["noise"], {"sigma_deg": 3.0, "tau_s": 5.0})
         self.assertEqual(spec["absolute"]["sinusoid"], {"amp_deg": 2.0, "phase_deg": 40.0})
         self.assertEqual(spec["absolute"]["bias_deg"], 0.0)
+        self.assertEqual(spec["motion"], {"bias_deg_s": 0.01, "noise_deg_s": 0.018,
+                                          "round_deg_s": 0.1, "pump_hz": 60, "latency_ms": 5})
         self.assertEqual(spec["capture_time"], {"mode": "delivery", "lag_ms": 50})
         self.assertEqual(spec["streams"], "both")
         self.assertIs(spec["gyro"], True)

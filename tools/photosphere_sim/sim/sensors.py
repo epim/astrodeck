@@ -285,7 +285,11 @@ REALISM_DEFAULTS = {
                  "noise": {"sigma_deg": 3.0, "tau_s": 5.0}, "steps": [],
                  "tilt_noise_deg": 0.05, "quant_deg": 0.1, "threshold_deg": 0.1,
                  "pump_hz": 60, "latency_ms": 5, "spikes": None},
-    "motion": {"bias_deg_s": 0.05, "noise_deg_s": 0.03, "round_deg_s": 0.1,
+    # Bias 0.01 and noise 0.018 are what make a still phone read an exact zero
+    # triple on 96 % of samples after the 0.1 rounding, Chromium's figure
+    # (ruling S21). 0.05 sits on the rounding boundary and gives 12.5 %, and 0.01
+    # with a noise of 0.03 gives 69.6 %.
+    "motion": {"bias_deg_s": 0.01, "noise_deg_s": 0.018, "round_deg_s": 0.1,
                "pump_hz": 60, "latency_ms": 5},
     "streams": "both",
     "gyro": True,
