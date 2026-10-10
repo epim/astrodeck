@@ -196,14 +196,23 @@ def _result_from_ini(kv: dict, wcs: "WcsSolution | None") -> SolveResult:
 
     No CROTA2 is "no rotation reported", not "rotation 0" (#146): every imaging
     solve now calibrates the rotator, and a 0 that meant "unknown" would re-sync
-    it to PA 0. ``rotation_known`` carries the difference."""
+    it to PA 0. ``rotation_known`` carries the difference.
+
+    The scale is the same shape (#973): CDELT2 when the .ini has it, else the
+    scale of the CD matrix in ``wcs``, else None. A 0.0 for "not stated" would
+    read as a scale of zero on a solve that succeeded."""
     if kv.get("PLTSOLVD") != "T":
         return SolveResult(False, message=kv.get("ERROR", "no solution"))
     ra_deg = float(kv["CRVAL1"])
     dec_deg = float(kv["CRVAL2"])
     rot_raw = kv.get("CROTA2")
     rot = float(rot_raw) if rot_raw is not None else 0.0
-    scale = abs(float(kv.get("CDELT2", 0))) * 3600
+    if "CDELT2" in kv:
+        scale = abs(float(kv["CDELT2"])) * 3600
+    else:
+        scale = wcs.pixel_scale_arcsec() if wcs is not None else None
+    if not scale or not math.isfinite(scale):
+        scale = None
     return SolveResult(True, ra_hours=ra_deg / 15.0, dec_deg=dec_deg,
                        rotation_deg=rot, pixel_scale_arcsec=scale,
                        wcs=wcs, message="solved by ASTAP",

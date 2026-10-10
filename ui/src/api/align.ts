@@ -8,7 +8,8 @@ export interface GuideOffsetSolve {
   ra_hours: number;
   dec_deg: number;
   rotation_deg: number;
-  scale: number;
+  /** Arcsec per pixel; null when the solve failed or the solver did not state one. */
+  scale: number | null;
   message: string;
 }
 

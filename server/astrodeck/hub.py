@@ -1036,6 +1036,12 @@ def solve_failure_reason(exc: BaseException) -> str | None:
     return None
 
 
+def _scale_text(scale: float | None) -> str:
+    """A solve's plate scale for a note: ``1.55"/px``, or ``scale unknown``
+    when the solver did not state one (#973), never ``0.00"/px``."""
+    return "scale unknown" if scale is None else f'{scale:.2f}"/px'
+
+
 def _sharing_violation(e: BaseException) -> bool:
     """True for a Windows sharing violation, the transient this retries."""
     return (isinstance(e, PermissionError)
@@ -7686,8 +7692,8 @@ class Hub:
             main_pa_deg=main.rotation_deg, guide_ra_hours=guide.ra_hours,
             guide_dec_deg=guide.dec_deg, measured_ts=time.time(),
             camera=cam.name, guide_camera=guide_cam.name,
-            note=f"main {main.pixel_scale_arcsec:.2f}\"/px, "
-                 f"guide {guide.pixel_scale_arcsec:.2f}\"/px")
+            note=f"main {_scale_text(main.pixel_scale_arcsec)}, "
+                 f"guide {_scale_text(guide.pixel_scale_arcsec)}")
         out["offset"] = {
             "sep_arcsec": off.sep_arcsec, "pa_deg": off.pa_deg,
             "measured_ts": off.measured_ts, "measured_pa_deg": off.measured_pa_deg,
