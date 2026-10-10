@@ -41,7 +41,7 @@ import {
   REVIEW_HIT_PX, REVIEW_STRIP_PX, REVIEW_ZOOM_MAX,
 } from "./horizonStrip";
 import {
-  PhotosphereSweep, checkPhotosphereSupport, traceSweep, OVERHEAD_BAND,
+  PhotosphereSweep, checkPhotosphereSupport, traceSweep, OVERHEAD_BAND, MOTION_BLOCKED_LABEL,
 } from "./photosphere";
 import { PhotosphereDome } from './PhotosphereDome';
 import { readPanorama, writePanorama } from './photosphereStorage';
@@ -399,6 +399,9 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const scanning = sweep?.isRecording ?? false;
   const compassReady = sweep?.compassReady ?? false;
   const tiltReady = sweep?.tiltReady ?? false;
+  // The hint prints the blocked-sensors sentence; the Start lock reason and the
+  // bearing line say the same thing in a few words instead of a wait (#976).
+  const motionBlocked = sweep?.motionBlocked ?? false;
   const nextBand = sweep?.nextBand ?? 0;
   const elevation = Math.round(sweep?.currentAltitude ?? 0);
   const band = sweep?.currentBand;
@@ -526,7 +529,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
         <div className="photosphere-preview">
           <video ref={videoRef} muted playsInline autoPlay aria-label="Live surroundings camera" data-testid="photosphere-video" />
           <PhotosphereDome sweep={sweep} active={capturing && !openingCamera}/>
-          <div className="photosphere-bearing">{tiltReady ? band === OVERHEAD_BAND ? `${elevation}° up · Overhead` : `${elevation}° up · ${compassReady ? ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round((sweep?.currentHeading ?? 0) / 45) % 8] : "Waiting for compass"}` : "Waiting for tilt sensor"}</div>
+          <div className="photosphere-bearing">{tiltReady ? band === OVERHEAD_BAND ? `${elevation}° up · Overhead` : `${elevation}° up · ${compassReady ? ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round((sweep?.currentHeading ?? 0) / 45) % 8] : "Waiting for compass"}` : motionBlocked ? MOTION_BLOCKED_LABEL : "Waiting for tilt sensor"}</div>
           {openingCamera && <div className="photosphere-opening">Opening camera…</div>}
         </div>
         <p role="status" className="photosphere-hint">{scanHint}</p>
@@ -579,7 +582,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
             <NxIcon name="camera" size={22}/>Capture overhead
           </ActionButton>}
           {!scanning ? <ActionButton kind="primary" size="lg" onPress={() => { sweep?.begin(); setFrameTick(t => t + 1); }}
-            lockedReason={openingCamera ? "Opening camera" : !compassReady ? "Waiting for compass" : sweep?.error ?? null}
+            lockedReason={openingCamera ? "Opening camera" : !compassReady ? (motionBlocked ? MOTION_BLOCKED_LABEL : "Waiting for compass") : sweep?.error ?? null}
             data-testid="start-horizon-scan">Start scan</ActionButton>
             : <ActionButton kind="primary" size="lg" onPress={stopAndTrace}
               lockedReason={sweep?.frameCount ? null : "Capture a patch of your surroundings first."} data-testid="stop-and-trace">{sweep?.complete ? 'Scan complete' : 'Review partial scan'}</ActionButton>}

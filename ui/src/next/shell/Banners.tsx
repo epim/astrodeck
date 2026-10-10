@@ -1,7 +1,8 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
 // Banners.tsx - the notification strip under the header (README "Cross-hub
-// chrome"): at most two, dismissible, the whole text is the CTA.
+// chrome"): at most two, dismissible except the one STANDING safety condition
+// (item 5 below), the whole text is the CTA.
 //
 // Green is good news, cyan is tonight's information, amber is something wrong.
 // The order below is a PRIORITY, not a layout: everything eligible is collected
@@ -71,6 +72,11 @@ interface Entry {
   cta?: { label: string; onPress: () => void };
   /** The owner's own dismissal, for the entries whose state lives elsewhere. */
   onOwnerDismiss?: () => void;
+  /** A safety condition that stays true until someone fixes it, not news. It is
+   *  drawn with no dismiss button: hiding it for the session would leave nothing
+   *  on screen saying the hazard is still there, and the entry leaves by itself
+   *  the moment the condition does. */
+  standing?: boolean;
 }
 
 /** Worst total cloud in the next 12 hours, and when. Null when the feed has no
@@ -182,10 +188,12 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
   // 1b. The sun watch cannot protect the tube (#894): BLIND (it cannot read the
   //     mount) or STANDING DOWN (the position is unknown, so it will not park).
   //     The server published both on `/api/safety/state`, which no screen read.
-  //     A standing condition, so the key carries the episode's start: a new one
-  //     re-announces after the last was dismissed. Not shown on Monitor - Live,
-  //     whose health strip says the same thing in its own place, and "not
-  //     running" is that strip's notice alone (a choice, not news).
+  //     It comes in episodes, so the key carries the episode's start: a new one
+  //     re-announces after the last was dismissed. Unlike item 5 it IS
+  //     dismissible, as #894 shipped it (the classic root's banner has no X).
+  //     Not shown on Monitor - Live, whose health strip says the same thing in
+  //     its own place, and "not running" is that strip's notice alone (a
+  //     choice, not news).
   const sun = sunWatchNotice(
     status?.sun_watch, !!status?.connected?.telescope?.connected, nowMs / 1000);
   if (sun && sun.tier === 2 && !(route.hub === "monitor" && route.sub === "live")) {
@@ -258,13 +266,17 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
 
   // 5. Auto-resume armed with nothing watching the sky. A STANDING CONDITION,
   //    not news: it stops being true when a monitor is connected or the arm is
-  //    cleared, which is why it carries no dismiss.
+  //    cleared, which is why it carries no dismiss (`standing`, honoured where
+  //    the strip renders). It is a SAFETY warning, and a dismissal would hide
+  //    the only line outside Session - Now saying nothing is watching for rain
+  //    while a run is armed; `now/NowBanners.tsx` draws its copy with no X too.
   const autoArmed = resumeArm?.armed != null;
   if (autoArmed && safety?.connected === false && !onSessionNow) {
     entries.push({
       key: "arm:nosafety",
       kind: "no-safety",
       tone: "warn",
+      standing: true,
       text: NO_SAFETY_TEXT,
       cta: { label: "safety", onPress: () => nav.go("/rig/devices/safety") },
     });
@@ -348,7 +360,7 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
           tone={e.tone}
           text={e.text}
           cta={e.cta}
-          onDismiss={() => {
+          onDismiss={e.standing ? undefined : () => {
             setDismissed((d) => ({ ...d, [e.key]: true }));
             // The banners whose dismissal state lives elsewhere are dismissed
             // THERE as well, or the other reader would keep showing what this
