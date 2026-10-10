@@ -56,11 +56,18 @@ export function cameraErrorText(e: unknown): string {
   return typeof message === 'string' && message !== '' ? message : 'Could not open the camera. Try again or draw the horizon by hand.';
 }
 
+/** A frame older than this when its callback runs, or stamped later than the callback, is not believed (the old scanner's
+ *  `STALE_FRAME_MS`, photosphere.ts:2252; 3.2, S14). */
+const STALE_FRAME_MS = 1000;
+
 /** A frame's time on the `performance.now()` timeline (3.2): the capture time when the browser gives one, else the
- *  presentation time, else the moment the callback ran. A value that is not a finite number is absent. */
+ *  presentation time, else the moment the callback ran. A value is believed only when it is a finite number, no later
+ *  than the callback and no more than `STALE_FRAME_MS` before it; otherwise it is absent, and the next source is tried. */
 export function frameTime(meta: { captureTime?: number; presentationTime?: number }, callbackNow: number): number {
-  if (typeof meta.captureTime === 'number' && Number.isFinite(meta.captureTime)) return meta.captureTime;
-  if (typeof meta.presentationTime === 'number' && Number.isFinite(meta.presentationTime)) return meta.presentationTime;
+  const believed = (v: number | undefined): v is number =>
+    typeof v === 'number' && Number.isFinite(v) && v <= callbackNow && v >= callbackNow - STALE_FRAME_MS;
+  if (believed(meta.captureTime)) return meta.captureTime;
+  if (believed(meta.presentationTime)) return meta.presentationTime;
   return callbackNow;
 }
 
@@ -218,8 +225,8 @@ export class CameraSource implements CameraSourceLike {
    *  one survive `close()`, because the report is built after the camera is released.
    *
    *  A superseded call (a `close()` or another `open()` while this one awaits) releases whatever it holds and returns
-   *  without error; it never touches the session that replaced it. The motion permission is NOT asked here: iOS wants
-   *  it from the tap before any await, so the caller asks `requestIosMotionPermission()` first. */
+   *  without error, whatever fails later; it never touches the session that replaced it. The motion permission is NOT
+   *  asked here: iOS wants it from the tap before any await, so the caller asks `requestIosMotionPermission()` first. */
   async open(video: HTMLVideoElement, deviceId?: string): Promise<void> {
     this.close();
     const generation = this.generation;
@@ -260,9 +267,9 @@ export class CameraSource implements CameraSourceLike {
       video.srcObject = stream;
       try { await video.play(); }
       catch {
-        // A play() that fails because a newer open replaced the stream is that open's business, not an error here.
+        // A play() that fails because a newer open replaced the stream is that open's business, not an error here. The
+        // release is the outer catch's: closing here would bump the generation and make this failure look superseded.
         if (stale()) return;
-        this.close();
         throw new Error('The camera opened but its preview could not play. Try opening the camera again.');
       }
       if (stale()) return;
@@ -277,7 +284,10 @@ export class CameraSource implements CameraSourceLike {
       this.startExposureProbe(generation);
       this.startFrames(video, generation);
     } catch (e) {
-      if (!stale()) this.close();
+      // A superseded call resolves quietly whatever fails later (S14): a late NotAllowedError from a replaced request must
+      // neither close the session that replaced it nor reach the caller as the error of a camera that is working.
+      if (stale()) return;
+      this.close();
       throw e;
     }
   }

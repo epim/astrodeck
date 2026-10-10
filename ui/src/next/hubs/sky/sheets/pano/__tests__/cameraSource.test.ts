@@ -12,6 +12,12 @@
 //   (`VideoFrame pairing`); the exposure probe flagging a single value (`exposure probe`); the second permission request
 //   made after the first resolves (`iOS motion permission`); a farbling threshold of `>= 2` (`farblingProbe`).
 //
+// Mutants of the S14 round (FB3), each named by the test that carries it: the stale check in `open()`'s catch removed (`a
+// superseded open whose getUserMedia rejects late`, which fails because the late rejection reaches the caller and closes
+// the newer session); the `frameTime` bound removed, either half (`frameTime believes a time only when` and `a frame whose
+// captureTime is 3000 ms old`); the benchmark order changed (`the benchmark draws exactly A, B, A, B`); a frame path that
+// reads the exposure (`exposure probe: no frame`); a truncated luma (`readbackTiny`, where (0, 255, 0) reads 150).
+//
 // The harness is today's `createHarness` (SHEETS/__sim__/harness.ts), read only. Its canvas context is a stub that draws
 // nothing and answers `getImageData` from the current frame at the size last drawn, so every pixel assertion here is an
 // assertion about the SIZE and ORDER of the draws; the canvases are wrapped to log them.
@@ -109,6 +115,7 @@ function instrument(h: ReplayHarness, cost?: (role: Role, fromCanvas: boolean) =
   const original = proto.getContext;
   const logs: CanvasLog[] = [];
   const sizeSets = new WeakMap<object, { w: number; h: number }>();
+  const order: string[] = [];
   const state = { throwOn: null as Role | null };
   for (const key of ['width', 'height'] as const) {
     const d = Object.getOwnPropertyDescriptor(proto, key);
@@ -136,6 +143,7 @@ function instrument(h: ReplayHarness, cost?: (role: Role, fromCanvas: boolean) =
     wrapped = {
       drawImage: (...args: unknown[]) => {
         log.draws.push({ argc: args.length, source: args[0] });
+        order.push(`${role}<-${args[0] === h.video ? 'video' : (args[0] as any)?.tagName === 'CANVAS' ? 'canvas' : 'other'}`);
         if (state.throwOn === role) throw new Error('draw refused');
         if (cost) h.setClock(h.now() + cost(role, (args[0] as any)?.tagName === 'CANVAS'));
         return inner.drawImage(...args);
@@ -151,6 +159,8 @@ function instrument(h: ReplayHarness, cost?: (role: Role, fromCanvas: boolean) =
   };
   return {
     logs, sizeSets,
+    /** Every draw of every canvas, in the order it was made, as `role<-source`. */
+    order,
     /** The newest canvas made for this role. */
     of(role: Role): CanvasLog {
       for (let i = logs.length - 1; i >= 0; i--) if (logs[i].role === role) return logs[i];
@@ -207,6 +217,31 @@ await test('pipeline A wins a tie; the benchmark alternates A then B over the fi
     assert.equal(analysis.draws.filter(d => d.source === h.video).length, 6);
     assert.equal(gpu.draws.length, 5);
   });
+});
+
+await test('the benchmark draws exactly A, B, A, B, ... over the first ten frames, one pipeline per frame (S14)', async () => {
+  // What one frame drew, as the draws in the order they were made: pipeline A is one draw of the video into the analysis
+  // canvas; pipeline B is the video into the GPU canvas, then that canvas into the analysis canvas.
+  const A = 'analysis<-video', B = 'gpu<-video analysis<-canvas';
+  const perFrame = async (readEveryFrame: boolean) => {
+    const drew: string[] = [];
+    await withCamera(PORTRAIT, async (h, cam, ins) => {
+      h.setClock(1000);
+      if (readEveryFrame) cam.onFrame(m => { cam.readback(m); });
+      let seen = 0;
+      for (let i = 1; i <= 12; i++) {
+        deliver(h, i);
+        drew.push(ins.order.slice(seen).join(' '));
+        seen = ins.order.length;
+      }
+    });
+    return drew;
+  };
+  // mutants: B first; five A then five B
+  assert.deepEqual(await perFrame(false), [A, B, A, B, A, B, A, B, A, B, '', ''],
+    'ten frames alternate, A first; once the benchmark has chosen, a frame nobody reads is not drawn');
+  assert.deepEqual(await perFrame(true), [A, B, A, B, A, B, A, B, A, B, A, A],
+    'a scanner that reads every frame changes neither the order nor the count; afterwards the winner (A, on a tie) is used');
 });
 
 await test('the benchmark chooses B when B is faster, and the later readbacks go through B', async () => {
@@ -386,6 +421,12 @@ await test('readbackTiny is 45 x 80 Rec. 601 luma of the current frame', async (
     assert.equal(u[0], 40); assert.equal(u[TINY_W - 1], 200);
     assert.equal(u[(TINY_H - 1) * TINY_W], 40);
     assert.notEqual(u, t, 'a fresh array each call');
+    // a colour whose luma is not a whole number: (0, 255, 0) is 149.685, which rounds to 150 where a truncation reads 149 (S14)
+    assert.equal(Math.round(pixelLuminance(0, 255, 0)), 150);
+    h.setFrame(solid(720, 1280, 0, 255, 0), 30);
+    const green = cam.readbackTiny()!;
+    assert.equal(green.length, TINY_W * TINY_H);
+    assert.ok(green.every(v => v === 150), 'rounded, not truncated');   // mutant: Math.floor
   });
 });
 
@@ -438,6 +479,51 @@ await test('frameTime follows 3.2: capture, then presentation, then the callback
   assert.equal(frameTime({ captureTime: 0 }, 30), 0, 'zero is a time');
   assert.equal(frameTime({ captureTime: Number.NaN, presentationTime: 5 }, 30), 5);
   assert.equal(frameTime({ captureTime: Number.POSITIVE_INFINITY }, 30), 30);
+});
+
+await test('frameTime believes a time only when finite, no later than the callback and at most 1000 ms before it (S14)', () => {
+  const now = 5000;
+  // a captureTime 3000 ms old is not believed; the presentation time is tried next, then the callback   (mutant: bound removed)
+  assert.equal(frameTime({ captureTime: 2000 }, now), now);
+  assert.equal(frameTime({ captureTime: 2000, presentationTime: 4990 }, now), 4990);
+  // a captureTime later than the callback is not believed either
+  assert.equal(frameTime({ captureTime: 5001 }, now), now);
+  assert.equal(frameTime({ captureTime: 5001, presentationTime: 4990 }, now), 4990);
+  assert.equal(frameTime({ captureTime: 1e9 }, now), now, 'a clock on another timeline');
+  // the presentation time is held to the same bound
+  assert.equal(frameTime({ presentationTime: 2000 }, now), now);
+  assert.equal(frameTime({ presentationTime: 5001 }, now), now);
+  assert.equal(frameTime({ captureTime: 2000, presentationTime: 3000 }, now), now, 'neither is believed');
+  assert.equal(frameTime({ captureTime: 5001, presentationTime: 2000 }, now), now);
+  assert.equal(frameTime({ captureTime: 2000, presentationTime: Number.NaN }, now), now);
+  // the edges are inside: the callback's own moment, and exactly 1000 ms before it
+  assert.equal(frameTime({ captureTime: 5000 }, now), 5000);
+  assert.equal(frameTime({ captureTime: 4000 }, now), 4000);
+  assert.equal(frameTime({ captureTime: 3999 }, now), now, '1001 ms before is out');
+  assert.equal(frameTime({ presentationTime: 4000 }, now), 4000);
+  assert.equal(frameTime({ presentationTime: 3999 }, now), now);
+  // the bound moves with the callback
+  assert.equal(frameTime({ captureTime: 100 }, 1100), 100);
+  assert.equal(frameTime({ captureTime: 100 }, 1101), 1101);
+  // a believed capture time beats a believed presentation time
+  assert.equal(frameTime({ captureTime: 4967, presentationTime: 4990 }, now), 4967);
+});
+
+await test('a frame whose captureTime is 3000 ms old, or later than the callback, is stamped with the next time (S14)', async () => {
+  await withCamera(PORTRAIT, async (h, cam) => {
+    h.setClock(5000);
+    const metas = collect(cam);
+    deliver(h, 1, { captureTime: 2000, presentationTime: 4960 });   // 3000 ms old
+    deliver(h, 2, { captureTime: 5020, presentationTime: 4980 });   // later than the callback
+    deliver(h, 3, { captureTime: 2000, presentationTime: 2040 });   // both old
+    deliver(h, 4, { captureTime: 4967, presentationTime: 5007 });   // the usual: the presentation time is ahead of the callback
+    deliver(h, 5, { captureTime: 6000, presentationTime: 6040 });   // both ahead
+    assert.deepEqual(metas.map(m => m.t), [4960, 4980, 5000, 4967, 5000]);
+    // the metadata keeps what the browser said, since the report counts the lag from it; only `t` is judged
+    assert.deepEqual(metas.map(m => m.captureTime), [2000, 5020, 2000, 4967, 6000]);
+    assert.equal(cam.readback(metas[0])!.t, 4960, 'the analysis frame carries the judged time');
+    assert.equal(cam.readback(metas[2])!.t, 5000);
+  }, { benchFrames: 0 });
 });
 
 /** A rAF the test steps by hand: the shared manual queue (testing/rafPolyfill.ts), installed over the harness's own,
@@ -770,6 +856,87 @@ await test('a newer open supersedes an older one without being closed by it', as
   }
 });
 
+await test('a superseded open whose getUserMedia rejects late resolves quietly, and the newer session keeps playing (S14)', async () => {
+  const h = createHarness(PORTRAIT);
+  const md = g.navigator.mediaDevices;
+  const requests: { grant: (s: unknown) => void; refuse: (e: unknown) => void }[] = [];
+  md.getUserMedia = () => new Promise((grant, refuse) => { requests.push({ grant, refuse }); });
+  const cam = new CameraSource();
+  try {
+    // the outcome is taken as a value, so a rejection that arrives early is a failed assertion and not an unhandled one
+    const first = cam.open(h.video).then(() => 'resolved', (e: any) => `rejected with ${e?.name}: ${e?.message}`);
+    while (requests.length < 1) await Promise.resolve();
+    const second = cam.open(h.video);   // closes the first
+    while (requests.length < 2) await Promise.resolve();
+    const track = fakeTrack();
+    requests[1].grant(fakeStream(track));
+    await second;
+    assert.equal(cam.playing, true);
+    // the browser now refuses the request the first open made: a late NotAllowedError, to a camera that is working
+    requests[0].refuse(new g.window.DOMException('Permission denied', 'NotAllowedError'));
+    assert.equal(await first, 'resolved', 'the superseded open resolves without error');   // mutant: the stale check removed
+    assert.equal(cam.playing, true, 'the newer session was not closed by it');
+    assert.equal(track.stopped, 0, 'its stream was not stopped');
+    assert.equal(cam.activeId, 'rear');
+    assert.equal(h.deliverFrame(fm(1)), true, 'and it still delivers frames');
+  } finally {
+    cam.close();
+    h.dispose();
+  }
+});
+
+await test('a superseded open whose reopen request rejects late resolves quietly too (S14)', async () => {
+  const h = createHarness(PORTRAIT);
+  const md = g.navigator.mediaDevices;
+  let listings = 0, asked = 0;
+  md.enumerateDevices = async () => ++listings === 1
+    ? [device('ultra', ''), device('main', '')]
+    : [device('ultra', 'Back ultra wide camera'), device('main', 'Back main wide camera')];
+  const wrong = fakeTrack({ getSettings: () => ({ deviceId: 'ultra' }) });
+  let refuse!: (e: unknown) => void;
+  md.getUserMedia = () => {
+    asked++;
+    // the first request is granted with the wrong lens; the labelled list then asks for the main one, and that request waits
+    if (asked === 1) return Promise.resolve(fakeStream(wrong));
+    return new Promise((_grant, reject) => { refuse = reject; });
+  };
+  const cam = new CameraSource();
+  try {
+    const outcome = cam.open(h.video).then(() => 'resolved', (e: any) => `rejected with ${e?.name}`);
+    while (asked < 2) await Promise.resolve();
+    cam.close();   // the sheet is closed while the second request waits
+    refuse(new g.window.DOMException('Permission denied', 'NotAllowedError'));
+    assert.equal(await outcome, 'resolved');   // mutant: the stale check removed
+    assert.ok(wrong.stopped >= 1, 'the first stream was released');
+    assert.equal(cam.playing, false);
+    assert.equal(h.deliverFrame(fm(1)), false, 'no frame loop was started');
+  } finally {
+    cam.close();
+    h.dispose();
+  }
+});
+
+await test('an open nothing replaced still fails with the browser\'s own error, and the source can open again (S14)', async () => {
+  const h = createHarness(PORTRAIT);
+  const md = g.navigator.mediaDevices;
+  md.getUserMedia = async () => { throw new g.window.DOMException('Permission denied', 'NotAllowedError'); };
+  const cam = new CameraSource();
+  try {
+    await assert.rejects(cam.open(h.video), (e: any) => e.name === 'NotAllowedError' && e.message === 'Permission denied');
+    assert.equal(cam.playing, false);
+    assert.equal(h.deliverFrame(fm(1)), false);
+    // a failed open leaves the source usable, not wedged in a superseded state
+    const script = scriptMedia({});
+    await cam.open(h.video);
+    assert.equal(script.requests.length, 1);
+    assert.equal(cam.playing, true);
+    assert.equal(h.deliverFrame(fm(1)), true);
+  } finally {
+    cam.close();
+    h.dispose();
+  }
+});
+
 await test('a play() that rejects after a newer open replaced the stream leaves the newer open alone', async () => {
   const h = createHarness(PORTRAIT);
   scriptMedia({});
@@ -1004,6 +1171,77 @@ await test('exposure probe: asks ImageCapture to refresh the setting before it r
     g.setInterval = realSet; g.clearInterval = realClear;
     cam.close();
     h.dispose();
+  }
+});
+
+await test('exposure probe: no frame, readback or live-source call reads the track settings or asks ImageCapture (S14)', async () => {
+  const realSet = g.setInterval, realClear = g.clearInterval;
+  const timers = new Map<number, () => void>();
+  let id = 0;
+  g.setInterval = (fn: () => void) => { timers.set(++id, fn); return id; };
+  g.clearInterval = (i: number) => { timers.delete(i); };
+  let settingsReads = 0, refreshed = 0;
+  g.ImageCapture = class { getPhotoCapabilities() { refreshed++; return Promise.resolve({}); } };
+  const settle = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+  const probed = () => scriptMedia({ track: () => fakeTrack({ getSettings: () => { settingsReads++; return { deviceId: 'rear' }; } }) });
+  // everything the scanner does with a frame, as its frame callback does it
+  const useFrame = (cam: CameraSource, m: FrameMeta) => {
+    cam.readback(m); cam.readbackTiny(); cam.refreshLiveSource();
+    void cam.playing; void cam.settings; void cam.lag; void cam.slips; void cam.exposureReadable; void cam.lastFrameAt;
+  };
+  try {
+    // frames from requestVideoFrameCallback...
+    const h = createHarness(PORTRAIT);
+    probed();
+    const cam = new CameraSource();
+    try {
+      cam.onFrame(m => useFrame(cam, m));
+      await cam.open(h.video);
+      await settle();
+      assert.equal(refreshed, 1, 'the probe asked once, at open');
+      assert.ok(settingsReads >= 1, 'and read the settings');
+      const atOpen = { settingsReads, refreshed };
+      for (let i = 1; i <= 12; i++) deliver(h, i);   // the benchmark frames and the ones after it
+      await settle();
+      assert.equal(settingsReads, atOpen.settingsReads, 'twelve frames read no setting');   // mutant: a probe in the frame path
+      assert.equal(refreshed, atOpen.refreshed, 'and asked ImageCapture for nothing');
+      // the timer is what reads, once per tick
+      assert.equal(timers.size, 1);
+      [...timers.values()][0]();
+      await settle();
+      assert.equal(refreshed, atOpen.refreshed + 1);
+      assert.ok(settingsReads > atOpen.settingsReads);
+    } finally {
+      cam.close();
+      h.dispose();
+    }
+    // ...or from the rAF poll, which reads the media clock and the playback quality and nothing of the track's settings
+    const hf = createHarness(PORTRAIT);
+    const raf = manualRaf();
+    g.window.HTMLVideoElement.prototype.requestVideoFrameCallback = undefined;
+    g.window.HTMLVideoElement.prototype.getVideoPlaybackQuality = undefined;
+    settingsReads = 0; refreshed = 0;
+    probed();
+    const camf = new CameraSource();
+    try {
+      let frames = 0;
+      camf.onFrame(m => { frames++; useFrame(camf, m); });
+      hf.setClock(2000); hf.setFrame(pattern(720, 1280), 0);
+      await camf.open(hf.video);
+      await settle();
+      const atOpen = { settingsReads, refreshed };
+      for (let i = 1; i <= 12; i++) { hf.setClock(2000 + 33 * i); hf.setFrame(pattern(720, 1280), 33 * i); raf.step(); }
+      await settle();
+      assert.equal(frames, 12, 'the poll delivered the frames');
+      assert.equal(settingsReads, atOpen.settingsReads, 'the poll path reads no setting either');
+      assert.equal(refreshed, atOpen.refreshed);
+    } finally {
+      camf.close();
+      hf.dispose();
+    }
+  } finally {
+    delete g.ImageCapture;
+    g.setInterval = realSet; g.clearInterval = realClear;
   }
 });
 
