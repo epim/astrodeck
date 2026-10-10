@@ -30,6 +30,7 @@ import { frameTime } from '../cameraSource';
 import { ERROR_TEXT } from '../copy';
 import { PRIOR_SD_PCT } from '../focal';
 import { tracer } from '../horizon/horizonTrace';
+import { STALE_LIMIT_MIN_MS } from '../poseTrack';
 import { elevationDeg, headingDeg, quatFromDeviceOrientation } from '../rotation';
 import { PanoramaScanner } from '../scanner';
 import { BinState, ColState, PANO_H, PANO_W } from '../types';
@@ -145,7 +146,11 @@ interface Run {
 /** Start a scanner in a fresh harness, play `p` into it, and begin() at the first delivery where it can, as the replay
  *  does. The caller finishes it and calls `end`. With `offset`, the camera opens at that clock time and every time in
  *  the pan is played that much later; `after`, `beganAt` and `captureAt` stay in the pan's own times. */
-async function play(p: SynthPan, o: { camera?: StubCamera; encoder?: FrameEncoder; recording?: boolean; declination?: number | null; offset?: number } = {}): Promise<Run> {
+async function play(p: SynthPan, o: {
+  camera?: StubCamera; encoder?: FrameEncoder; recording?: boolean; declination?: number | null; offset?: number;
+  /** Called after each frame the scanner has seen once the scan has begun, with the frame's time in the pan's own clock. */
+  onFrame?: (scanner: PanoramaScanner, at: number) => void;
+} = {}): Promise<Run> {
   const harness = createHarness({ videoWidth: p.k0.w, videoHeight: p.k0.h });
   const scanner = new PanoramaScanner({ camera: o.camera, encoder: o.encoder });
   const off = o.offset ?? 0;
@@ -187,7 +192,7 @@ async function play(p: SynthPan, o: { camera?: StubCamera; encoder?: FrameEncode
           }), 'the camera took the frame');
         }
       }
-      if (begun) after.push({ item, frameNo });
+      if (begun) { after.push({ item, frameNo }); if (item.kind === 'frame') o.onFrame?.(scanner, at); }
       else if (scanner.canBegin) { scanner.begin(); begun = true; beganAt = at; }
     }
     assert.ok(begun, 'the scan began');
@@ -301,7 +306,18 @@ await test('replay --scanner pano: events.jsonl and captures.jsonl follow 13.7, 
     assert.equal(typeof e.keyframe, 'boolean');
     assert.ok(e.keyframe ? ['aligned', 'blurred', 'sensor'].includes(e.cls as string) : e.cls === null, `cls ${String(e.cls)}`);
   });
-  assert.ok(events.slice(5).every(e => e.basis !== null), 'a live pose once the predictor has samples');
+  // A live pose whenever the relative stream is speaking. This steady pan never confirms its axis mapping (the fit stays
+  // at 0.2 to 0.4), so a gyro sample is no rate and a pause is held only on a chord that reads quiet (S33, S41): the
+  // holds either side of the pan may have no pose, the pan itself may not.
+  const relativeAt = pan.observations
+    .filter(o => o.kind === 'orientation' && o.event === 'deviceorientation' && !o.absolute).map(o => o.t_receive_ms as number);
+  const speaking = events.map((_, k) => {
+    const t = pan.frames[k].tCaptureMs ?? pan.frames[k].tPresentMs;
+    return relativeAt.some(r => r <= t && t - r <= STALE_LIMIT_MIN_MS);
+  });
+  assert.ok(speaking.filter(Boolean).length > 100, `the relative stream speaks at ${speaking.filter(Boolean).length} of ${events.length} frames`);
+  assert.deepEqual(events.map((e, k) => (k >= 5 && speaking[k] && e.basis === null ? k : -1)).filter(k => k >= 0), [],
+    'a live pose at every frame after the fifth where the relative stream is speaking');
   const allowed = ['at', 'frame_id', 'outcome', 'detail', 'kf', 'step_deg', 'rate_deg_s', 'psr', 'zncc', 'innovation_deg', 'w_yaw', 'extrapolated_ms'];
   const outcomes = ['accepted', 'revisit', 'waiting-sharper', 'inactive', 'stale-pose', 'read-failed', 'cap'];
   let accepted = 0;
@@ -556,15 +572,26 @@ interface Recorded {
   after: Run['after']; beganAt: number; meshSrcMax: [number, number]; meshCount: number;
 }
 
+/** The middle of the pan, where the relative stream speaks; the end hold may have no pose (S41). */
+const MID_PAN_MS = pan.frames[pan.frames.length >> 1].tPresentMs;
+
 async function recordedScan(declination: number | null, offset = 0): Promise<Recorded> {
-  const r = await play(pan, { recording: true, encoder: pngEncoder, declination, offset });
-  try {
-    const live = r.scanner.status;
-    const tris = r.scanner.ribbon.liveMesh({ centreAz: live.headingDeg ?? 0, altTop: 60, altBottom: -10, pxPerDeg: 2.6, widthPx: 390 }) ?? [];
-    const meshSrcMax: [number, number] = [0, 0];
+  // The live mesh is read at the first frame at or after the middle of the pan.
+  const meshSrcMax: [number, number] = [0, 0];
+  let meshCount = 0, meshRead = false;
+  const readMesh = (scanner: PanoramaScanner, at: number) => {
+    if (meshRead || at < MID_PAN_MS) return;
+    meshRead = true;
+    const live = scanner.status;
+    const tris = scanner.ribbon.liveMesh({ centreAz: live.headingDeg ?? 0, altTop: 60, altBottom: -10, pxPerDeg: 2.6, widthPx: 390 }) ?? [];
+    meshCount = tris.length;
     for (const t of tris) for (let i = 0; i < 6; i += 2) {
       meshSrcMax[0] = Math.max(meshSrcMax[0], t.src[i]); meshSrcMax[1] = Math.max(meshSrcMax[1], t.src[i + 1]);
     }
+  };
+  const r = await play(pan, { recording: true, encoder: pngEncoder, declination, offset, onFrame: readMesh });
+  try {
+    assert.ok(meshRead, 'the pan reached its middle');
     r.harness.setClock(FINISH_AT + offset);
     const result = r.scanner.finish(PREVIOUS, 'user');
     const report = r.scanner.report();
@@ -573,7 +600,7 @@ async function recordedScan(declination: number | null, offset = 0): Promise<Rec
     const ins = r.scanner.inspect();
     return {
       result, report, recording: lines(text), keyframes: ins.tracker.keyframes, log: ins.tracker.log.map(x => ({ ...x })),
-      after: r.after, beganAt: r.beganAt, meshSrcMax, meshCount: tris.length,
+      after: r.after, beganAt: r.beganAt, meshSrcMax, meshCount,
     };
   } finally {
     end(r);
@@ -820,7 +847,11 @@ await test('a null readback logs read-failed and ends the step; the next frame r
     const log = r.scanner.inspect().tracker.log;
     const [first, second] = camera.reads;
     assert.equal(second, first + 1, 'the frame after a failed readback reads again');
-    assert.deepEqual(log.slice(0, 3).map(x => [x.outcome, x.frameId]), [['read-failed', first], ['read-failed', second], ['accepted', second + 1]],
+    // Until the axis mapping confirms, the start hold has no pose (S41) and its frames log stale-pose with no readback.
+    const failedAt = log.findIndex(x => x.outcome === 'read-failed');
+    assert.ok(failedAt >= 0, 'a readback failed');
+    assert.ok(log.slice(0, failedAt).every(x => x.outcome === 'stale-pose' && x.frameId < first), 'before it, only frames that read nothing');
+    assert.deepEqual(log.slice(failedAt, failedAt + 3).map(x => [x.outcome, x.frameId]), [['read-failed', first], ['read-failed', second], ['accepted', second + 1]],
       'the first keyframe is the first frame whose readback worked');
     assert.equal(r.scanner.inspect().tracker.keyframes[0].frameId, second + 1);
     assert.ok(r.scanner.inspect().tracker.keyframes.length >= 15, 'the scan carried on');

@@ -18,6 +18,13 @@
 // - the quiet-gyro clause removed from the mode rule: `a still phone with a silent relative stream` (S6);
 // - `rateAt` over two consecutive samples: `rateAt with no motion sample reads a chord` (S10);
 // - the 85 % inlier share removed from stability: `NorthAnchor: a 60/40 compass split` (S11);
+// - the axis mapping's unit applied to a motion sample whether or not the mapping is confirmed: `an unconfirmed fit's
+//   unit scales no motion sample` (S41; a 12 deg/s pan reads 703 deg/s), and a motion sample read as a rate before the
+//   mapping is confirmed by `quietGyro`, `noteRate`, `rateAt` or `omegaFor`: `a gyro whose unit is not confirmed` (S33,
+//   S41), or by `pushG`'s stale intervals: `stale limit: the intervals during motion are judged by the orientation`; the
+//   unit dropped from a confirmed rad mapping (the last part of the S41 case); an unknown chord taken to vouch for a
+//   silent stream, an unconfirmed gyro never vouching, or the chord's quiet line moved from 0.5 to 1.5 deg/s: `an
+//   unconfirmed gyro vouches for a silent relative stream`;
 // and the reviewer's surviving mutants, each by the case named: stale intervals counted whatever the rate (O1,
 // `intervals during motion only`), a turning handoff into absolute-only without the median of 3 (O2, `a moving phone
 // with a dead relative stream`), predictAt before the oldest kept sample held instead of null (O8, `before the oldest
@@ -86,6 +93,19 @@ function panA(az0: number): Traj {
       az: az0 + 20 * s + 4 * pw / (2 * Math.PI) * (1 - Math.cos(2 * Math.PI * s / pw)),
       alt: 25 + 4 * Math.sin(2 * Math.PI * s / palt),
       roll: 3 * Math.sin(2 * Math.PI * s / proll),
+    };
+  };
+}
+/** A slow hand-held pan: `rate` deg/s +- 20 % over a 1.25 s cycle, with a nod and a roll rock of 0.4 degrees (2 to 2.5
+ *  deg/s) so that more than one body axis is excited. The total rate stays within a quarter of `rate`. */
+function panB(az0: number, rate: number): Traj {
+  const pw = 1.25;
+  return t => {
+    const s = t / 1000;
+    return {
+      az: az0 + rate * s + 0.2 * rate * pw / (2 * Math.PI) * (1 - Math.cos(2 * Math.PI * s / pw)),
+      alt: 25 + 0.4 * Math.sin(2 * Math.PI * s),
+      roll: 0.4 * Math.sin(2 * Math.PI * s / pw),
     };
   };
 }
@@ -159,6 +179,16 @@ function player(track: PoseTrack, evs: readonly Ev[]): (t: number) => void {
   return t => { while (i < evs.length && evs[i].e.t <= t) feed(track, [evs[i++]]); };
 }
 const lastTick = (t1: number, hz: number) => { const ts = ticks(0, t1, hz); return ts[ts.length - 1]; };
+/** The newest 60 Hz motion tick at or before t, by the same product `ticks` makes. */
+function motionTick(t: number): number {
+  const period = 1000 / 60;
+  let k = Math.floor(t / period);
+  while (k * period > t) k--;
+  while ((k + 1) * period <= t) k++;
+  return k * period;
+}
+/** A gyro that reports rad/s, the unit rotationRate once had on some browsers. */
+const radGyro = (w: V3): [number, number, number] => [w[0] * DEG, w[1] * DEG, w[2] * DEG];
 const orient = (t: number, alpha: number | null, beta: number | null, gamma: number | null,
   type: OrientationIn['type'] = 'deviceorientation', absolute: boolean | null = false): OrientationIn =>
   ({ t, type, alpha, beta, gamma, absolute, compassHeading: null });
@@ -183,11 +213,14 @@ test('slerp between samples 16 ms apart at 30 deg/s is within 0.05 degrees of th
 });
 
 test('a quiet gyro holds the newest sample through change-driven silence with no time limit, and only while it vouches (S6)', () => {
-  const traj = piecewise([[0, steady(0, 0, 20)], [1000, still({ az: 20, alt: 25, roll: 0 })]]), track = new PoseTrack();
-  // The relative stream is change-driven: silent once the phone stops. The gyro keeps reporting, exact zeros, to 12 s.
-  const upTo = player(track, [...events(traj, 0, 1000, { rel: { hz: 60 }, motion: { hz: 60 } }), ...events(traj, 1000, 12000, { motion: { hz: 60 } })]);
-  const tn = lastTick(1000, 60);
+  // The mapping confirms during the pan, so the gyro is a rate with a known unit; before that the orientation chord
+  // judges the silence (S41, the cases below).
+  const stop = 5000, traj = piecewise([[0, panA(10)], [stop, still({ az: 110, alt: 25, roll: 0 })]]), track = new PoseTrack();
+  // The relative stream is change-driven: silent once the phone stops. The gyro keeps reporting, exact zeros, to 16 s.
+  const upTo = player(track, [...events(traj, 0, stop, { rel: { hz: 60 }, motion: { hz: 60 } }), ...events(traj, stop, 16000, { motion: { hz: 60 } })]);
+  const tn = lastTick(stop, 60);
   upTo(tn);
+  assert.ok(track.axis?.confirmed, 'the mapping confirmed during the pan');
   const last = track.predictAt(tn)!;
   // v2's 2000 ms cap is gone: 10 s of silence is held.
   for (const g of [100, 2000, 2001, 10000]) {
@@ -200,7 +233,7 @@ test('a quiet gyro holds the newest sample through change-driven silence with no
   assert.equal(track.facts().staleRefusals, 0);
   // The gyro's last sample: 99 ms after it, it still vouches; 101 ms after, nothing does and the gap is far past the
   // stale limit.
-  const tm = lastTick(12000, 60);
+  const tm = lastTick(16000, 60);
   upTo(tm);
   assert.ok(track.predictAt(tm + 99), 'a motion sample within 100 ms');
   assert.equal(track.predictAt(tm + 101), null);
@@ -430,19 +463,23 @@ const chromiumGyro = (r: () => number) => (w: V3): [number, number, number] =>
 
 test('a still phone with a silent relative stream, a quiet gyro and a 3-degree compass stays relative for 10 s, before and after the latch (S6)', () => {
   // T06's finding: by the bare 500 ms window the phone fell to absolute-only and G's yaw followed the compass's
-  // Ornstein-Uhlenbeck wander (3 degrees, tau 5 s: 2.85 degrees sd over 3 s) before the mapping could confirm. A
-  // short pan first, so the relative stream has spoken and the gyro has read something other than zeros.
-  const stop = 1000, traj = piecewise([[0, steady(0, 0, 20)], [stop, still({ az: 20, alt: 25, roll: 0 })]]);
-  const ou = ouSeries(51, 22, 60, 5, 3), err = (t: number) => ou[Math.round(t * 60 / 1000)];
+  // Ornstein-Uhlenbeck wander (3 degrees, tau 5 s: 2.85 degrees sd over 3 s) before the mapping could confirm. A pan
+  // first, so the relative stream has spoken, the gyro has read something other than zeros and the mapping has
+  // confirmed: until it has, the orientation chord judges the silence and a stopped pan is not vouched for (S41).
+  const stop = 5000, traj = piecewise([[0, panA(10)], [stop, still({ az: 110, alt: 25, roll: 0 })]]);
+  const ou = ouSeries(51, 26, 60, 5, 3), err = (t: number) => ou[Math.round(t * 60 / 1000)];
   const gyro = chromiumGyro(rng(52)), track = new PoseTrack();
   const upTo = player(track, [
     ...events(traj, 0, stop + 1, { rel: { hz: 60, yaw0: 77 }, abs: { hz: 60, err }, motion: { hz: 60, map: gyro } }),
-    ...events(traj, stop + 1, 21000, { abs: { hz: 60, err }, motion: { hz: 60, map: gyro } }),
+    ...events(traj, stop + 1, 25000, { abs: { hz: 60, err }, motion: { hz: 60, map: gyro } }),
   ]);
-  // The relative stream's last reading is the one at the stop (tick 60, a hair after 1000 ms).
+  // The relative stream's last reading is the one at the stop (tick 300, at 5000 ms).
   upTo(stop + 1);
+  assert.ok(track.axis?.confirmed, 'the mapping confirmed during the pan');
   assert.equal(track.mode, 'relative');
-  const ref = headingDeg(track.predictAt(stop + 1)!.q);
+  // Read at the sample itself: a millisecond later the confirmed mapping extrapolates the gyro's tick at the stop, a
+  // central difference across the stop that reads 10 deg/s.
+  const ref = headingDeg(track.predictAt(lastTick(stop + 1, 60))!.q);
   const hold = (from: number, to: number) => {
     let worst = 0;
     for (let t = from; t <= to; t += 50) {
@@ -454,16 +491,15 @@ test('a still phone with a silent relative stream, a quiet gyro and a 3-degree c
     }
     return worst;
   };
-  const before = hold(stop + 50, 11000);
+  const before = hold(stop + 50, 15000);
   assert.ok(before < 0.01, `predicted yaw moved ${before} degrees before the latch`);
-  assert.equal(track.latch(11000), 'relative');
-  const after = hold(11050, 21000);
+  assert.equal(track.latch(15000), 'relative');
+  const after = hold(15050, 25000);
   assert.ok(after < 0.01, `predicted yaw moved ${after} degrees after the latch`);
   const f = track.facts();
   assert.equal(f.modeAtBegin, 'relative'); assert.deepEqual(f.modeChanges, []); assert.equal(f.staleRefusals, 0);
-  assert.equal(f.axis?.confirmed ?? false, false, 'the mapping never confirmed');
   // The compass did wander: what G's yaw would have followed.
-  const seen = ou.slice(0, 1261);
+  const seen = ou.slice(300, 1501);
   assert.ok(Math.max(...seen) - Math.min(...seen) > 3, 'the compass wandered by more than 3 degrees');
 });
 
@@ -587,7 +623,7 @@ test('zero triples are dropped before a non-zero sample and accepted after one; 
   for (let t = 140; t <= 300; t += 20) track.onMotion(motionEv(t, 0, -0, 0));
   f = track.facts();
   assert.equal(f.gyroSeenNonZero, true); assert.equal(f.gyroZeroTriples, 9);
-  assert.equal(track.rateAt(300), 0);
+  assert.equal(track.rateAt(300), null, 'no mapping and no orientation stream: the gyro alone is no rate (S41)');
   track.onMotion({ t: 320, rate: null });
   track.onMotion(motionEv(340, null, 0, 0));
   track.onMotion(motionEv(360, NaN, 0, 0));
@@ -595,7 +631,15 @@ test('zero triples are dropped before a non-zero sample and accepted after one; 
   track.onMotion(motionEv(250, 50, 0, 0));   // backwards
   f = track.facts();
   assert.equal(f.events[2].total, 21); assert.equal(f.events[2].nullReadings, 4);
-  assert.equal(track.rateAt(250), 0, 'the backwards sample was dropped');
+  // With a confirmed mapping the gyro is a rate, and a backwards sample is dropped: a 90 deg/s sample 30 ms before the
+  // newest would be the nearest sample to the newest tick.
+  const live = new PoseTrack(), traj = piecewise([[0, panA(10)], [5000, steady(110, 5000, 20)]]);
+  feed(live, events(traj, 0, 5500, { rel: { hz: 60 }, motion: { hz: 60 } }));
+  assert.ok(live.axis?.confirmed);
+  const tn = lastTick(5500, 60);
+  near(live.rateAt(tn)!, 20, 1e-6, 'from the motion sample');
+  live.onMotion(motionEv(tn - 30, 90, 0, 0));
+  near(live.rateAt(tn)!, 20, 1e-6, 'the backwards sample was dropped');
 });
 
 test('the run-time fit confirms the W3C mapping and the permuted #897 shape during a pan; omegaBodyAt follows', () => {
@@ -641,7 +685,7 @@ test('rateAt with no motion sample reads a chord: a 60 Hz pump-aged stream at 20
   }
 });
 
-test('rateAt reads a fresh motion sample, else a 100-300 ms chord of predictor samples', () => {
+test('rateAt reads a 100-300 ms chord of predictor samples, and a fresh motion sample only once the mapping is confirmed', () => {
   const traj = steady(0, 0, 20), track = new PoseTrack();
   assert.equal(track.rateAt(0), null);
   feed(track, events(traj, 0, 1000, { rel: { hz: 60 } }));
@@ -657,12 +701,172 @@ test('rateAt reads a fresh motion sample, else a 100-300 ms chord of predictor s
     const r = slow.rateAt(1999);
     if (rate === null) assert.equal(r, null, `${hz} Hz`); else near(r!, rate, 1e-6, `${hz} Hz`);
   }
+  // A gyro that reads 1.5x is never read here: a steady pan excites at most one body axis, so the mapping never confirms
+  // and the chord answers, with a motion sample within 100 ms or without (S41). The last motion sample is at 983.3 ms.
   const withGyro = new PoseTrack();
   feed(withGyro, events(traj, 0, 1000, { rel: { hz: 60 }, motion: { hz: 60, map: w => [w[0] * 1.5, w[1] * 1.5, w[2] * 1.5] } }));
-  near(withGyro.rateAt(990)!, 30, 1e-6, 'from the gyro, which reads 1.5x here');
-  // The last motion sample is at 983.3 ms.
-  near(withGyro.rateAt(1050)!, 30, 1e-6, 'a motion sample within 100 ms');
-  near(withGyro.rateAt(1100)!, 20, 1e-6, 'none within 100 ms: back to the predictor');
+  assert.equal(withGyro.axis?.confirmed ?? false, false);
+  for (const t of [990, 1050, 1100]) near(withGyro.rateAt(t)!, 20, 1e-6, `at ${t}`);
+});
+
+test('an unconfirmed fit\'s unit scales no motion sample: rateAt reads the orientation chord until the mapping is confirmed, then the gyro (S41)', () => {
+  // T22's finding: a transient unconfirmed fit read `rad` and a 12 deg/s pan came out of rateAt as 703 deg/s, because the
+  // unit was applied to the motion sample whether or not the mapping had confirmed it. Here the gyro reports radians for
+  // its first 1.4 s (the unit its first ten pairs show), so the first fit reads `rad` and cannot confirm on ten pairs;
+  // from then on it reports degrees, which is what the phone really has, and the mixed pairs never confirm.
+  const traj = panB(10, 12), rel = { hz: 60, yaw0: 40 };
+  const track = new PoseTrack();
+  const upTo = player(track, [
+    ...events(traj, 0, 1400, { rel, motion: { hz: 60, map: radGyro } }),
+    ...events(traj, 1400, 7000, { rel, motion: { hz: 60 } }),
+  ]);
+  let guessed = 0, worst = 12;
+  for (let t = 100; t < 7000; t += 1000 / 30) {
+    upTo(t);
+    const a = track.axis;
+    if (!a || a.confirmed || a.unit !== 'rad') continue;
+    // The branch under test: an unconfirmed `rad` fit, a fresh motion sample in degrees, and a phone really panning.
+    assert.ok(Math.hypot(...bodyRateDeg(traj, motionTick(t))) > 8, 'the phone is panning');
+    const w = track.rateAt(t);
+    assert.ok(w !== null, `a rate at ${t}`);
+    guessed++;
+    if (Math.abs(w / 12 - 1) > Math.abs(worst / 12 - 1)) worst = w;
+  }
+  assert.ok(guessed >= 20, `the unconfirmed rad fit was visited ${guessed} times`);
+  assert.ok(Math.abs(worst / 12 - 1) <= 0.25, `a 12 deg/s pan read ${worst.toFixed(1)} deg/s under an unconfirmed rad fit (703 before S41)`);
+
+  // The gyro reads 1.3x here: a scale error the fit accepts (slope 0.77, inside the deg band), so the mapping confirms in
+  // deg. Before that the chord speaks (about 12, not 15.6); after it the motion sample does, to the digit.
+  const scaled = new PoseTrack(), k = 1.3;
+  const upScaled = player(scaled, events(traj, 0, 8000, { rel, motion: { hz: 60, map: w => [w[0] * k, w[1] * k, w[2] * k] } }));
+  let before = 0, after = 0, firstConfirmed = -1;
+  for (let t = 200; t < 8000; t += 1000 / 30) {
+    upScaled(t);
+    const w = scaled.rateAt(t);
+    assert.ok(w !== null, `a rate at ${t}`);
+    if (!scaled.axis?.confirmed) {
+      before++;
+      assert.ok(Math.abs(w / 12 - 1) <= 0.25, `unconfirmed, at ${t}: ${w} deg/s from a gyro reading ${k}x`);
+    } else {
+      if (firstConfirmed < 0) firstConfirmed = t;
+      after++;
+      near(w, k * Math.hypot(...bodyRateDeg(traj, motionTick(t))), 1e-6, `confirmed, at ${t}: the motion sample`);
+    }
+  }
+  assert.equal(scaled.axis?.unit, 'deg');
+  assert.ok(before >= 60 && after >= 20, `${before} unconfirmed and ${after} confirmed queries (confirmed from ${firstConfirmed})`);
+
+  // A gyro that reports rad/s, 1.3x, from the first sample: the mapping confirms in rad (slope 44, inside the 40-75
+  // band), and only then is the sample scaled by 1 / DEG. The chord answers before, the scaled sample after.
+  const radTrack = new PoseTrack();
+  const upRad = player(radTrack, events(traj, 0, 8000, { rel, motion: { hz: 60, map: w => radGyro([w[0] * k, w[1] * k, w[2] * k]) } }));
+  let radBefore = 0, radAfter = 0;
+  for (let t = 200; t < 8000; t += 1000 / 30) {
+    upRad(t);
+    const w = radTrack.rateAt(t);
+    assert.ok(w !== null, `a rate at ${t}`);
+    if (!radTrack.axis?.confirmed) {
+      radBefore++;
+      assert.ok(Math.abs(w / 12 - 1) <= 0.25, `unconfirmed, at ${t}: ${w} deg/s from a gyro reporting radians`);
+    } else {
+      radAfter++;
+      near(w, k * Math.hypot(...bodyRateDeg(traj, motionTick(t))), 1e-6, `confirmed rad, at ${t}: the motion sample, scaled`);
+    }
+  }
+  assert.equal(radTrack.axis?.unit, 'rad');
+  assert.ok(radBefore >= 30 && radAfter >= 20, `${radBefore} unconfirmed and ${radAfter} confirmed queries`);
+});
+
+test('a gyro whose unit is not confirmed is no rate: quietGyro, noteRate and rateAt take the orientation chord (S33, S41)', () => {
+  // A gyro that reports radians turning at 20 deg/s reads 0.35, under the 0.5 quiet line. The mapping cannot confirm
+  // on a steady pan (one body axis is excited at most), so the unit stays a guess for the whole case.
+  const traj = steady(0, 0, 20), tn = lastTick(2000, 60), track = new PoseTrack();
+  const upTo = player(track, [
+    ...events(traj, 0, 2000, { rel: { hz: 60 }, abs: { hz: 60 }, motion: { hz: 60, map: radGyro } }),
+    ...events(traj, 2000, 3500, { abs: { hz: 60 }, motion: { hz: 60, map: radGyro } }),
+  ]);
+  upTo(tn);
+  assert.equal(track.latch(tn), 'relative');
+  near(track.rateAt(tn)!, 20, 1e-6, 'the chord, not the 0.35 the gyro reads');
+  // rateAt: the gyro is fresh for 100 ms after its last sample and still not read.
+  upTo(tn + 60);
+  near(track.rateAt(tn + 60)!, 20, 1e-6, 'a fresh unconfirmed motion sample is not read');
+  // quietGyro: the relative stream dies while the phone turns on. The gyro reads as quiet, the chord says 20 deg/s, so
+  // nothing vouches for the silence: no hold past the stale limit, and the mode leaves `relative` at 500 ms.
+  upTo(tn + 200);
+  assert.equal(track.predictAt(tn + 200), null, 'a hold vouched for by a gyro whose unit nobody confirmed');
+  assert.equal(track.facts().staleRefusals, 1);
+  upTo(3500);
+  assert.equal(track.axis?.confirmed ?? false, false);
+  assert.equal(track.mode, 'absolute-only');
+  const changes = track.facts().modeChanges;
+  assert.equal(changes.length, 1); assert.equal(changes[0].from, 'relative'); assert.equal(changes[0].to, 'absolute-only');
+  assert.ok(changes[0].tMs > tn + 499 && changes[0].tMs < tn + 520, `change at ${changes[0].tMs}`);
+  // noteRate: the motion stream was moving at 20 deg/s the whole time the relative stream spoke, whatever the gyro's
+  // unit; read as degrees it would never have reached the 10 deg/s line.
+  const hzMoving = track.facts().movingHz.motion;
+  assert.ok(hzMoving !== null && Math.abs(hzMoving - 60) < 0.5, `motion stream moving rate ${hzMoving}`);
+  // The same goes for the orientation streams' own rate: the relative stream spoke at 60 Hz for the first 2 s and the
+  // absolute stream for all 3.5 s, all of it moving.
+  const { relative, absolute } = track.facts().movingHz;
+  assert.ok(relative !== null && Math.abs(relative - 60) < 1.5, `relative stream moving rate ${relative}`);
+  assert.ok(absolute !== null && Math.abs(absolute - 60) < 1.5, `absolute stream moving rate ${absolute}`);
+});
+
+test('an unconfirmed gyro vouches for a silent relative stream only through a chord that reads quiet (S33, S41)', () => {
+  // The relative stream is change-driven and the gyro reads quiet (Chromium's 0.1 deg/s rounding), but the mapping has
+  // not confirmed the gyro's unit, so the gyro's own reading is no rate.
+  const gyro = { hz: 60, map: (): [number, number, number] => [0.1, 0, 0] };
+  // (a) Three relative samples over 33 ms and then silence: under 100 ms of stream, so there is no chord, no rate, and
+  // nothing to vouch for the silence. The hold ends at the stale limit, as it would with no gyro at all.
+  const short = new PoseTrack(), p0 = still({ az: 20, alt: 25, roll: 0 });
+  feed(short, [...events(p0, 0, 50, { rel: { hz: 60 } }), ...events(p0, 0, 700, { motion: gyro })]);
+  assert.equal(short.rateAt(300), null, 'no chord, and a gyro that is not a rate');
+  assert.ok(short.predictAt(33 + 40), 'held within the stale limit');
+  assert.equal(short.predictAt(33 + 200), null, 'a gyro whose unit is unconfirmed does not vouch past the stale limit');
+  assert.equal(short.facts().staleRefusals, 1);
+  // (b) A phone creeping at 0.2 deg/s, reported every 125 ms: a 125 ms chord reads 0.2 deg/s, under the 0.5 line, so the
+  // quiet chord and the delivering gyro together hold the pose, with no time limit.
+  const creep = new PoseTrack(), traj = steady(20, 0, 0.2);
+  const upCreep = player(creep, [...events(traj, 0, 1000, { rel: { hz: 8 } }), ...events(traj, 0, 10000, { motion: gyro })]
+    .sort((a, b) => a.e.t - b.e.t));
+  const tn = lastTick(1000, 8);
+  upCreep(tn);
+  near(creep.rateAt(tn)!, 0.2, 1e-6, 'the chord');
+  for (const gap of [60, 1000, 5000]) {
+    upCreep(tn + gap);
+    const p = creep.predictAt(tn + gap);
+    assert.ok(p, `held ${gap} ms after the last relative sample`);
+    assert.equal(p.held, true);
+  }
+  assert.equal(creep.facts().staleRefusals, 0);
+  // (c) The same stream creeping at 1 deg/s, over the 0.5 line: the chord reads 1.0, so nothing vouches and the hold
+  // ends at the stale limit, as the 0.5 deg/s line says.
+  const quick = new PoseTrack(), trajQ = steady(20, 0, 1.0);
+  const upQuick = player(quick, [...events(trajQ, 0, 1000, { rel: { hz: 8 } }), ...events(trajQ, 0, 10000, { motion: gyro })]
+    .sort((a, b) => a.e.t - b.e.t));
+  upQuick(tn);
+  near(quick.rateAt(tn)!, 1.0, 1e-6, 'the chord');
+  upQuick(tn + 40);
+  assert.ok(quick.predictAt(tn + 40), 'held inside the 50 ms stale limit');
+  upQuick(tn + 1000);
+  assert.equal(quick.predictAt(tn + 1000), null, 'a chord over the quiet line does not vouch');
+  assert.equal(quick.facts().staleRefusals, 1);
+});
+
+test('stale limit: the intervals during motion are judged by the orientation while the unit of the gyro is unconfirmed (S41)', () => {
+  // A 20 Hz relative stream at 20 deg/s and a gyro that reports radians, so it reads 0.35: under the 2 deg/s line that
+  // makes an interval "during motion", so read as a rate it would count none and the limit would be the default 50 ms.
+  // The orientation says 20 deg/s, the intervals count, and the limit is 1.5 x 50 = 75 ms.
+  const traj = steady(0, 0, 20), track = new PoseTrack();
+  feed(track, events(traj, 0, 3000, { rel: { hz: 20 }, motion: { hz: 60, map: radGyro } }));
+  assert.equal(track.axis?.confirmed ?? false, false);
+  const tn = lastTick(3000, 20);
+  const inside = track.predictAt(tn + 74);
+  assert.ok(inside, 'held just inside 75 ms'); assert.equal(inside.held, true);
+  assert.equal(track.predictAt(tn + 76), null, 'null beyond 75 ms');
+  const f = track.facts();
+  assert.equal(f.staleRefusals, 1); assert.equal(f.staleLimitMs.p50, 75); assert.equal(f.staleLimitMs.max, 75);
 });
 
 test('elevationAt and rollAt come from gravity; a tilt-only reading can say where the camera points vertically', () => {
@@ -687,14 +891,17 @@ test('facts() fills every SensorFacts field; moving rates count only |omega| >= 
   const f = track.facts();
   assert.deepEqual(Object.keys(f).sort(), ['axis', 'blocked', 'events', 'gyroSeenNonZero', 'gyroZeroTriples', 'latency',
     'modeAtBegin', 'modeChanges', 'movingHz', 'rateByOmega', 'staleLimitMs', 'staleRefusals']);
-  near(f.movingHz.relative!, 60, 0.5, 'relative while moving'); near(f.movingHz.absolute!, 60, 0.5, 'absolute while moving');
+  // A rate is a chord of 100 ms or more (S10) while the mapping is unconfirmed, and it is (S41): the slowdown at 2000 ms
+  // is seen late, so the first 30 Hz intervals after it still count as moving.
+  near(f.movingHz.relative!, 60, 1.5, 'relative while moving'); near(f.movingHz.absolute!, 60, 1.5, 'absolute while moving');
   near(f.movingHz.motion!, 60, 0.5, 'motion while moving');
   assert.deepEqual(f.rateByOmega.map(b => [b.omegaFrom, b.omegaTo]), [[0, 2], [2, 5], [5, 10], [10, 20], [20, 40]]);
   near(f.rateByOmega[1].relativeHz!, 30, 0.5, '2-5 deg/s'); near(f.rateByOmega[1].absoluteHz!, 30, 0.5);
   near(f.rateByOmega[4].relativeHz!, 60, 0.5, '20-40 deg/s');
-  // The streams' first samples have no rate yet (the gyro's sample at t = 0 arrives after them), so nothing lands in
-  // 0-2; 5-10 and 10-20 were never visited.
-  for (const i of [0, 2, 3]) { assert.equal(f.rateByOmega[i].relativeHz, null); assert.equal(f.rateByOmega[i].absoluteHz, null); }
+  // The streams' first samples have no rate yet (a chord needs 100 ms of them), so nothing lands in 0-2. The chord's lag
+  // at the slowdown visits 5-10 and 10-20, at the 30 Hz of that stretch.
+  assert.equal(f.rateByOmega[0].relativeHz, null); assert.equal(f.rateByOmega[0].absoluteHz, null);
+  for (const i of [2, 3]) { near(f.rateByOmega[i].relativeHz!, 30, 0.5, `row ${i}`); near(f.rateByOmega[i].absoluteHz!, 30, 0.5, `row ${i}`); }
   assert.deepEqual(f.latency, { priorMs: 50, tauMs: 50, sigmaMs: 40, pairs: 0, applied: false });
   assert.equal(f.blocked, false); assert.equal(f.modeAtBegin, null); assert.deepEqual(f.modeChanges, []);
   assert.equal(f.gyroSeenNonZero, true); assert.equal(f.staleRefusals, 0);
