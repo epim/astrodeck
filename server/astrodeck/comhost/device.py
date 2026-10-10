@@ -37,7 +37,14 @@ _THREAD_JOIN_TIMEOUT_S = 5.0
 
 
 class ComTimeoutError(Exception):
-    """A marshaled COM call exceeded its per-call deadline."""
+    """A marshaled COM call exceeded its per-call deadline. ``device`` is the
+    ComDevice whose call it was: the host evicts THAT object, never whatever
+    currently sits in the slot, because a timeout is reported a deadline after
+    its call began and the slot may have been rebuilt in between (#988)."""
+
+    def __init__(self, message: str, *, device: "ComDevice"):
+        super().__init__(message)
+        self.device = device
 
 
 def _co_init() -> None:
@@ -120,7 +127,7 @@ class ComDevice:
         if not done:
             raise ComTimeoutError(
                 f"COM call on {self.progid} exceeded "
-                f"{self._timeout_s:.0f}s deadline")
+                f"{self._timeout_s:.0f}s deadline", device=self)
         return fut.result()
 
     def connect(self) -> None:

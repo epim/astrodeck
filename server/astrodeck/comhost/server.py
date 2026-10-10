@@ -131,18 +131,28 @@ class ComHost:
         with self._lock:
             self._devices.pop((dev_type, dev_num), None)
 
-    def _evict(self, dev_type: str, dev_num: int) -> None:
+    def _evict(self, dev_type: str, dev_num: int, dev: ComDevice) -> None:
         """Fault-evict a wedged device (COM-T6 obligation 1): pop its slot and
         abandon its (blocked) STA thread. The next _get_or_create reconstructs a
         fresh ComDevice on a fresh thread, so a single timeout does not brick the
-        device for the host's lifetime. Best-effort — abandon() never raises."""
+        device for the host's lifetime. Best-effort — abandon() never raises.
+
+        Only if the slot still holds ``dev``, the device that timed out (#988).
+        Two calls queued behind one wedge time out a deadline apart; the first
+        evicts, the client reconnects into a fresh slot, and the second's late
+        timeout is about the OLD object. Popping by key would tear down the
+        healthy device that replaced it. A device that is no longer in its slot
+        was already abandoned (evicted) or disconnected, so there is nothing
+        left to do for it."""
+        key = (dev_type, dev_num)
         with self._lock:
-            dev = self._devices.pop((dev_type, dev_num), None)
-        if dev is not None:
-            try:
-                dev.abandon()
-            except Exception:  # pragma: no cover - abandon is already best-effort
-                pass
+            if self._devices.get(key) is not dev:
+                return
+            del self._devices[key]
+        try:
+            dev.abandon()
+        except Exception:  # pragma: no cover - abandon is already best-effort
+            pass
 
     def close(self) -> None:
         with self._lock:
@@ -169,7 +179,7 @@ class ComHost:
             # ComDevice on a FRESH thread — recovery is per-device, NOT "restart
             # the whole host". Then surface the fault as HTTP 500 (client _unwrap
             # -> DeviceError).
-            self._evict(dev_type, dev_num)
+            self._evict(dev_type, dev_num, e.device)
             return 500, self._err(str(e), ctid), "application/json"
         except KeyError as e:
             # Unknown route / no driver -> HTTP 500 so the client's _unwrap raises

@@ -11,11 +11,43 @@ endpoint before delegating, so the real Alpaca device classes drive the host.
 from __future__ import annotations
 
 import sys
+from typing import Awaitable, Callable
 
 from astrodeck import __version__ as _app_version
 
+from ..alpaca import AlpacaConnection
 from ..backend import ConnSpec, register
 from .native_backend import NativeSession
+
+
+class ComhostConnection(AlpacaConnection):
+    """The Alpaca connection to the managed comhost, which follows the comhost
+    across a respawn (#992).
+
+    ``ComHostManager`` respawns a dead comhost on a NEW ephemeral port, and a
+    plain connection keeps the port it was built with: a reconnect after the
+    respawn put its ``Connected=true`` to a port nothing listens on, so a dead
+    comhost could never be recovered by reconnecting its devices. A
+    ``Connected=true`` PUT is a (re)connect, so it first asks the manager where
+    the comhost is now (``current_port`` is the manager's ``ensure``, which also
+    respawns a dead one) and repoints before sending. The devices sharing this
+    connection read their address from it, so they all follow.
+
+    ``current_port=None`` is a connection that never follows (a session built
+    on a fixed port)."""
+
+    def __init__(self, host: str, port: int,
+                 current_port: "Callable[[], Awaitable[int]] | None" = None):
+        super().__init__(host, port)
+        self._current_port = current_port
+
+    async def put(self, dev_type: str, dev_num: int, method: str, **params):
+        if (self._current_port is not None and method == "connected"
+                and params.get("Connected") is True):
+            port = await self._current_port()
+            if port != self.port:
+                self.repoint(port)
+        return await super().put(dev_type, dev_num, method, **params)
 
 
 class AscomLocalSession(NativeSession):
@@ -23,9 +55,14 @@ class AscomLocalSession(NativeSession):
 
     name = "ascom-local"
 
-    def __init__(self, port: int):
+    def __init__(self, port: int,
+                 current_port: "Callable[[], Awaitable[int]] | None" = None):
         super().__init__(host="127.0.0.1")
         self._port = port
+        self._current_port = current_port
+
+    def _new_connection(self, host, port) -> object:
+        return ComhostConnection(host, port, self._current_port)
 
     async def get_device(self, role: str, conn: ConnSpec) -> object:
         # Force the endpoint onto the managed comhost; keep the caller's
@@ -58,8 +95,9 @@ class AscomLocalBackend:
 
     async def open(self, conn: ConnSpec) -> AscomLocalSession:
         from ...comhost.manager import get_manager
-        port = await get_manager().ensure()
-        return AscomLocalSession(port)
+        manager = get_manager()
+        port = await manager.ensure()
+        return AscomLocalSession(port, current_port=manager.ensure)
 
     async def discover(self) -> list[dict]:
         """The native scan: registry-enumerated COM drivers (role-tagged)."""
