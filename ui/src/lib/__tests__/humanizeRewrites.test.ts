@@ -18,7 +18,15 @@
 // EACH CASE BELOW IS PAIRED. A line the rule was written for still maps (so a
 // fix that simply deleted the rule fails), and a line that only shares its
 // words survives whole (so the unfixed code fails).
+//
+// THE PLATE-SOLVE RULE IS PAIRED A SECOND TIME (#960). The report it was written
+// for is a failure that names no cause. A failure that names one ("... failed:
+// no light: the optic is capped", "... failed: no plate solver is available on
+// this rig") is already the answer, and the generic "check focus/exposure" sent
+// the operator to the wrong part of the rig.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { humanizeLog, CLIP_AT } from "../humanize";
 
 let passed = 0;
@@ -66,21 +74,75 @@ test("a plate solve that did not fail is not a failure", () => {
   }
 });
 
-test("a real plate-solve failure still maps", () => {
+test("a bare plate-solve failure, with no cause in the line, still maps", () => {
   for (const message of [
     "plate solve failed",
     "Plate-solve failed",
     "plate solving failed",
-    // A failure that names a cause the sky does own ("Not enough stars") is the
-    // one this advice fits. A rig-side cause ("no plate solver is available on
-    // this rig") is mapped to the same sentence today, which is wrong advice;
-    // it is left out so this test does not make that advice part of the spec.
-    "solve failed: plate solve failed: Not enough stars.",
-    "centering: plate solve failed (no stars); using raw GoTo",
-    "Plate solve error: timed out",
+    "Plate solve error",
     "the plate solve timed out",
+    "plate solve failed.",
+    "  Plate solve failed  ",
+    // A source or a stage in front of the failure is a label, not a cause.
+    "solve failed: plate solve failed",
+    "centering: plate solve failed.",
+    "rotator sync: solve failed: the plate solve timed out",
   ]) {
     eq(line(message, "solve"), SOLVE_FAILED, `"${message}" was not mapped:`);
+  }
+});
+
+// THE DEFECT OF #960. The advice above is "check focus/exposure, or solve
+// manually", right for a failure that says nothing and wrong for one that says
+// what is wrong: a lens cap on, no solver on the rig. The fixtures marked
+// "server" are read out of the server's own source so they cannot drift from the
+// words the rig really logs; the rest are the shapes its callers wrap around a
+// cause.
+
+/** The string a Python module constant is set to: one literal, or the adjacent
+ *  literals of a parenthesised group, joined. Reads the server's source rather
+ *  than a copy of it, as laneConflict.test.ts does for the lane table. */
+function serverConst(file: string, name: string): string {
+  const path = fileURLToPath(new URL(`../../../../server/astrodeck/${file}`, import.meta.url));
+  const src = readFileSync(path, "utf8");
+  const m = new RegExp(`^${name} = \\(?\\s*((?:"[^"\\n]*"\\s*)+)\\)?`, "m").exec(src);
+  if (!m) throw new Error(`cannot find ${name} in ${file}: the scan is broken, so the cases below prove nothing`);
+  return [...m[1].matchAll(/"([^"\n]*)"/g)].map((x) => x[1]).join("");
+}
+
+const SOLVER_MISSING = serverConst("hub.py", "SOLVE_REASON_SOLVER_MISSING");
+const FILE_LOCKED = serverConst("hub.py", "SOLVE_REASON_FILE_LOCKED");
+const NO_LIGHT_WORDS = serverConst("solve/light.py", "NO_LIGHT_WORDS");
+
+test("the server's own failure words are read, not guessed - the vacuity guard", () => {
+  assert(SOLVER_MISSING.startsWith("plate solve failed: "), `server constant is "${SOLVER_MISSING}"`);
+  assert(FILE_LOCKED.startsWith("plate solve failed: "), `server constant is "${FILE_LOCKED}"`);
+  assert(NO_LIGHT_WORDS.startsWith("no light: "), `server constant is "${NO_LIGHT_WORDS}"`);
+});
+
+test("a plate-solve failure that names its cause is shown as written (#960)", () => {
+  for (const message of [
+    // server: the rig-side reasons, as _spawn writes them behind "solve failed: "
+    `solve failed: ${SOLVER_MISSING}`,
+    SOLVER_MISSING,
+    `solve failed: ${FILE_LOCKED}`,
+    // server: NoLightError (solve/light.py error_for) - a capped optic
+    `solve failed: plate solve failed: ${NO_LIGHT_WORDS} (the frame reads at the level this `
+      + "camera reads with no light on it; the solver said: Not enough stars.)",
+    // the sky's own cause is a cause too; the line already says it
+    "solve failed: plate solve failed: Not enough stars.",
+    // a cause and what the system did about it
+    "centering: plate solve failed (no stars); using raw GoTo",
+    "plate solve failed - used raw GoTo",
+    "Plate solve error: timed out",
+    // a cause in front of the failure is not a label
+    "no stars were found, so the plate solve failed",
+  ]) {
+    assert(message.length <= CLIP_AT, `fixture is ${message.length} chars: the default would shorten it`);
+    const out = line(message, "solve");
+    eq(out, message, `"${message}" lost its cause:`);
+    assert(!/check focus/i.test(out), `"${message}" was sent to focus and exposure: ${out}`);
+    eq(humanizeLog(message, { verbatim: true }), message, `verbatim changed "${message}":`);
   }
 });
 

@@ -130,9 +130,10 @@ const ANNOTATED: Port[] = [
 /** `power_guard._REFUSAL` with the port name filled in, spelled out HERE rather
  *  than imported from the module under test - a test that quotes the code it is
  *  checking cannot notice the code changing. Every clause matters: the name, the
- *  consequence, and BOTH ways out. It is 178 characters, which is also what
- *  makes it a truncation detector: `showToast` runs its argument through
- *  `humanizeLog`, which cuts at 137 and would take the second way out with it. */
+ *  consequence, and BOTH ways out. With a short name it is under `CLIP_AT`, so
+ *  `showToast` would pass it whole; a truncation detector needs a name long
+ *  enough to take it past the budget, where `humanizeLog` keeps the first
+ *  sentence and drops the second way out (see the 409 case below). */
 const refusalFor = (name: string): string =>
   `${name} is protected while a run is live: switching it now would cut power to `
   + "something the sequence is using. Stop the run, or clear the protection for "
@@ -192,6 +193,7 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
+const { CLIP_AT } = await import("../../../../lib/humanize");
 const { PowerSheet, powerLiveLine, legacyLockReason, SESSION_CRITICAL } =
   await import("../sheets/power");
 const {
@@ -639,7 +641,10 @@ await testAsync("FOLLOW DEW sends only follow_dew, and says what it will do to T
 await testAsync("a 409 port_protected shows the wire's sentence, whole and verbatim", async () => {
   asked.length = 0;
   act(() => { useStore.setState({ toasts: [] } as never); });
-  const sentence = refusalFor("Bench light");
+  // A port label long enough to take the sentence past the humanizer's budget:
+  // the default toast path keeps the first sentence and drops the second way out.
+  const longName = `Bench light ${"on the north side of the pier, ".repeat(8)}`;
+  const sentence = refusalFor(longName);
   // The nested FastAPI shape the server actually sends (`s7l-patches.md` From
   // S7h patch 4), so `code` is where the client must read it from.
   setFail = {
@@ -655,9 +660,9 @@ await testAsync("a 409 port_protected shows the wire's sentence, whole and verba
   assert(titles.includes(sentence),
     `the refusal was not shown verbatim (${JSON.stringify(titles)}) - the second way `
     + "out is the clause that gets lost, and it is the one the user is standing in front of");
-  assert(sentence.length > 137,
-    "the fixture sentence is short enough to survive humanizeLog, so this test "
-    + "no longer proves the toast is not truncated");
+  assert(sentence.length > CLIP_AT,
+    `the fixture sentence is ${sentence.length} characters, inside humanizeLog's budget of ${CLIP_AT}, `
+    + "so this test no longer proves the toast is not truncated");
   eq(puts().length, 0, "the refusal triggered a settings write");
 });
 

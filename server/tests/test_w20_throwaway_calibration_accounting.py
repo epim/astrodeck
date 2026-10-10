@@ -253,9 +253,9 @@ async def test_the_mount_still_tracking_line_counts_throwaway_frames_too(
 def _rejecting(eng, monkeypatch, bad: tuple[int, ...]):
     """Reject the Nth quality check of the run (1-based), light, calibration
     and retake alike, and retake what is rejected. ONE counter, not one per
-    kind: a retaken frame is graded with ``calibration=False`` whatever it is
-    (`_handle_reject`'s own re-check), so a count that splits on the flag
-    mislabels the retake of a dark as a light's check."""
+    kind: the stub is asked in the order the frames are graded, whatever
+    they are, so the Nth check is the Nth frame (a retake is graded with
+    its target's own ``calibration`` flag since #968, a light's with False)."""
     seen = {"n": 0}
 
     def check(info, *, record=True, calibration=False):

@@ -48,6 +48,7 @@ import { openSettingsPanel } from "./lib/settingsNavigation";
 import { effectiveProviders } from "./lib/effective";
 import { believedPointing, believedRaDec, positionKnown } from "./lib/slewController";
 import { runIsLive } from "./lib/lastSessionFrame";
+import { runBannerLabel } from "./lib/stateMeta";
 
 const GuidedHome = lazy(() => import("./guided/GuidedHome"));
 
@@ -448,6 +449,10 @@ export default function App() {
   // the store's guarded rising-edge logic (monitor §3.2) — the banner is the
   // never-forced, always-dismissible affordance (resolves A3/B6).
   const showRunBanner = !!runBanner?.active && view !== "monitor";
+  // The banner outlives "running" (paused, a cloud hold, an abort's wind-down),
+  // so what it prints is read off the state, not off its being up.
+  const runBannerWarn = sequence.state === "paused" || sequence.state === "holding"
+    || sequence.state === "aborting";
 
   // ARMED IS NEWS TOO. A run that will start by itself deserves the same
   // announcement as one already going: dim text in the middle of an empty
@@ -813,11 +818,11 @@ export default function App() {
                 Unlabelled for the same reason as the armed banner's LED: the
                 SEQUENCE PAUSED / RUNNING beside it is its name (#231). */}
             <span className={sequence.state === "paused" ? "shrink-0" : "blink shrink-0"}>
-              <Led state={sequence.state === "paused" ? "warn" : "busy"} />
+              <Led state={runBannerWarn ? "warn" : "busy"} />
             </span>
             <span className="min-w-0 truncate text-ink">
-              <span className={`font-display tracking-wider ${sequence.state === "paused" ? "text-warn" : "text-accent"}`}>
-                {sequence.state === "paused" ? "SEQUENCE PAUSED" : "SEQUENCE RUNNING"}
+              <span className={`font-display tracking-wider ${runBannerWarn ? "text-warn" : "text-accent"}`}>
+                {runBannerLabel(sequence.state)}
               </span>
               {runBanner?.plan_name && <span className="text-dim"> · {runBanner.plan_name}</span>}
               {typeof runBanner?.percent === "number" && (

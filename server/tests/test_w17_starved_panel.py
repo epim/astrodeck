@@ -11,7 +11,9 @@ panels for weeks. The chain this file grades, end to end:
 * ``Session.set_aside_streak(target_id)``: on how many CONSECUTIVE observing
   nights (ending with the newest the session ran) the session holds a
   whole-panel set-aside record of a STARVING kind for the target AND banked
-  no effective frame of it that night, and the kind of the newest record;
+  no effective frame of it that night, and the kind of the newest record (a
+  night the session ran but held nothing of the panel from is stepped over,
+  neither counted nor a break, #970);
 * ``GroupRun._count_failure``: a streak of guide-start failures and nothing
   else is a ``guide_start`` set-aside, as a streak of centring misses is a
   ``centring`` one (it was ``deferred``), so the Campaign can say "no guide
@@ -218,9 +220,21 @@ class TestTheStreak:
         s.set_aside[2]["cleared"] = True
         assert s.set_aside_streak(PANEL) == (3, "centring")
 
-    def test_a_night_with_no_record_ends_it(self):
+    def test_a_night_with_no_record_is_stepped_over(self):
+        """The session ran on 15 and held nothing of the panel from it: no
+        record and no frame, so the panel was not reached that night (a
+        cloud-out, the dawn, a night spent on the neighbours). It neither
+        counts nor ends the streak (#970; it ended it, strictly, until then:
+        test_w21_cloud_out_streak.py holds the cases around it).
+
+        Mutant "an untouched night breaks the walk" (the ``reached`` test
+        made ``if False``). RED, observed:
+        AssertionError: assert (1, 'centring') == (2, 'centring')
+        At index 0 diff: 1 != 2
+        Use -v to get more diff
+        """
         s = _session([14, 15, 16], aside=[(14, CENTRING), (16, CENTRING)])
-        assert s.set_aside_streak(PANEL) == (1, "centring")
+        assert s.set_aside_streak(PANEL) == (2, "centring")
 
     def test_a_night_the_session_did_not_run_is_not_a_night(self):
         """Records exist for 14, 15 and 16 but the session ran only on 14

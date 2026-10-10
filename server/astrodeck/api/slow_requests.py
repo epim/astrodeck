@@ -62,11 +62,16 @@ The line is a log line only (drawer and night file). It carries no figures in
 any fixed-words field, names no operator action and no movement, and never
 contains a raw path, a query string, a client address or any coordinate.
 
-The route in the line has every UI humanizer key broken by a hyphen
-(``/api/connect/ni-na``). ``humanizeLog`` (ui/src/lib/humanize.ts) replaces a
-whole line holding "nina" beside any "5", so a NINA connect that answered 200
-after 15.2 s was shown as "NINA reported an error" (int-review finding 6).
-The figures are this module's to print; the route name is what gets broken.
+The route in the line has the UI humanizer keys that can still pair broken by
+a hyphen (``/api/connect/ni-na``). ``humanizeLog`` (ui/src/lib/humanize.ts)
+replaces a whole line holding "nina" beside an HTTP 5xx status, "http" or
+"error", or "camera" beside "disconnect", "timeout" or "not responding". It
+used to do so for "nina" beside any "5", so a NINA connect that answered 200
+after 15.2 s was shown as "NINA reported an error" (int-review finding 6); the
+figures no longer trip it, but a NINA route that answered 500 still would. Its
+plate-solve and guiding rules now read a whole failure report, which a route
+label never is, so "plate" and "guid" are left whole (#961). The figures are
+this module's to print; the route name is what gets broken.
 """
 from __future__ import annotations
 
@@ -129,14 +134,15 @@ def route_label(scope: dict) -> str:
     return UNROUTED_LABEL
 
 
-#: The UI humanizer's keys (ui/src/lib/humanize.ts ``humanizeLog``). Every
-#: rewrite there needs one of these words beside a partner ("nina" with "5",
-#: "http" or "error"; "camera" with "not responding", "timeout" or
-#: "disconnect"; "plate" with "solve"; "guid" with "lost"), so a line with no
-#: whole key in it cannot trip any of them. The same rule as
-#: ``sequence.resume_arm._unpaired``, kept here so the HTTP layer does not
-#: import the sequence package.
-_HUMANIZER_KEYS = re.compile(r"nina|camera|plate|guid", re.IGNORECASE)
+#: The UI humanizer's keys that are still bare words (ui/src/lib/humanize.ts
+#: ``humanizeLog``): "nina" beside an HTTP 5xx status, "http" or "error", and
+#: "camera" beside "not responding", "timeout" or "disconnect". A line with no
+#: whole key in it cannot trip either. Its plate-solve and guiding rules need a
+#: whole failure or loss report (#792), which a route label is not, so "plate"
+#: and "guid" are left alone and ``/api/guide/start`` reads as written (#961).
+#: The same rule as ``sequence.resume_arm._unpaired``, kept here so the HTTP
+#: layer does not import the sequence package.
+_HUMANIZER_KEYS = re.compile(r"nina|camera", re.IGNORECASE)
 
 
 def unpaired_label(label: str) -> str:

@@ -209,8 +209,9 @@ export function settingsRefusal(err: unknown): string {
  *  BY CODE, never by matching the message: the wire's `detail` is the engine's
  *  own sentence and is the whole answer - it names the port, says what
  *  switching it would do, and gives BOTH ways out. Returned VERBATIM, which is
- *  why the caller must not put it through `showToast` (that runs `humanizeLog`,
- *  which truncates at 137 characters and this sentence is longer). `null` means
+ *  why the caller must not put it through `showToast` without `{ verbatim:
+ *  true }` (that runs `humanizeLog`, which shortens a line past CLIP_AT
+ *  characters, and a long port name takes this sentence past it). `null` means
  *  this was not a protection refusal and the caller's ordinary error path owns
  *  it. */
 export function switchRefusal(err: unknown): string | null {

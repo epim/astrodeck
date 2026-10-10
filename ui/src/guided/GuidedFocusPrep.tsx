@@ -8,6 +8,7 @@ import { Icon } from "../components/icons";
 import { useGuidedSetup, stepBlocker, type SkyPosition } from "./setup";
 import { motionBlocker, slewAndWait } from "./motion";
 import { GuidedFocusSky } from "./GuidedFocusSky";
+import { GuidedTrustPosition, usePositionGate } from "./GuidedTrustPosition";
 import type { alignmentSky } from "./focusSky";
 
 interface FieldPlan {field: (SkyPosition & {alt:number;az:number;clearance_deg:number}) | null; expires_at:number; config_version:number; arc_deg:number; reason:string|null; simulation?:boolean;sky?:NonNullable<ReturnType<typeof alignmentSky>>;}
@@ -17,6 +18,7 @@ export function GuidedFocusPrep() {
   const [clear,setClear] = useState(false);
   const field = useGuidedSetup(s=>s.field);
   const canMove=useCanControlMount();
+  const position=usePositionGate();
   const controller=useRef<AbortController|null>(null);
   const inFlight=useRef(false), mounted=useRef(true), generation=useRef(0);
   const version=useStore(s=>s.config?.version);
@@ -46,7 +48,7 @@ export function GuidedFocusPrep() {
       if(!mounted.current||abort.signal.aborted)return;
       if(useStore.getState().config?.version!==plan.config_version){setError("Settings changed during the move. Check the sky again before focusing.");return;}
       useGuidedSetup.getState().setField(plan.field);
-    }catch(e){if(mounted.current)setError(e instanceof Error?e.message:"The move failed.");}
+    }catch(e){if(mounted.current&&!position.refusedBy(e))setError(e instanceof Error?e.message:"The move failed.");}
     finally{inFlight.current=false;if(mounted.current)setBusy(null);}
   };
   return <section className="guided-choice-card guided-focus-prep">
@@ -61,8 +63,10 @@ export function GuidedFocusPrep() {
       <button className="btn btn-accent" disabled={!!busy} onClick={()=>void find()}><Icon name="atlas" size={22}/>{busy==="finding"?"Checking the sky…":plan?.field?"Check the sky again":"Find an alignment field"}</button>
       {plan?.field && <div className="guided-field-plan"><p>Suggested field: {plan.field.alt.toFixed(0)}° above the horizon, compass bearing {plan.field.az.toFixed(0)}°. The {plan.arc_deg.toFixed(0)}° measurement arc clears the saved horizon.</p>
         {expired&&!busy&&<p role="status">This sky check has expired or your settings changed. Check the sky again before moving.</p>}
+        {position.needed&&busy!=="moving"?<GuidedTrustPosition onTrusted={position.clear}/>:<>
         <label><input type="checkbox" checked={clear} disabled={!!busy||expired} onChange={e=>setClear(e.target.checked)}/> I've roughly positioned the equatorial mount and checked cables and clearance for this move.</label>
         <button className="btn btn-accent" disabled={!!busy||!clear||!canMove||!!blocker||expired} onClick={()=>void point()}>{busy==="moving"?"Moving to the field…":"Point telescope here"}</button>
+        </>}
       </div>}
       {plan?.reason && <p role="status">{plan.reason}</p>}
     </>}

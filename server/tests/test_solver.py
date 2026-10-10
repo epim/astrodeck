@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from _simhub import sim_hub  # noqa: F401 (fixture import)
 from astrodeck.solve import SimSolver, get_solver
 from astrodeck.solve.astap import AstapSolver
 
@@ -298,3 +299,162 @@ def test_sim_wcs_cd_matches_canonical_crota(tmp_path):
     z = _sim_wcs(tmp_path / "absent.fits", 5.5, 41.2, 0.0, scale_arcsec)
     assert z.cd12 == 0.0 and z.cd21 == 0.0
     assert z.cd11 == pytest.approx(-scale) and z.cd22 == pytest.approx(scale)
+
+
+# ------------------------------------ an unstated scale is None, never 0.0 (#973)
+# `_result_from_ini` read `abs(float(kv.get("CDELT2", 0))) * 3600`, so a solve
+# that succeeded and whose .ini had no CDELT2 reported a pixel scale of zero.
+# The scale is now CDELT2 when the .ini states it, else the scale of the CD
+# matrix the same solve produced, else None.
+
+async def _solve_with_files(tmp_path, monkeypatch, ini_cards, headerlet=None):
+    """``AstapSolver.solve`` against a fake ``astap_cli`` that leaves a
+    successful .ini holding ``ini_cards`` (and a headerlet, when given)."""
+    import asyncio
+    image = tmp_path / "light.fits"
+    image.write_bytes(b"")
+
+    async def fake_exec(*args, **kwargs):
+        _write_ini(image.with_suffix(".ini"), ini_cards, PLTSOLVD="T")
+        if headerlet is not None:
+            _write_headerlet(image.with_suffix(".wcs"), headerlet)
+        return _FakeAstapProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    return await AstapSolver("astap_cli").solve(image)
+
+
+def _rotated_cd(deg: float) -> dict:
+    import math
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return {"CD1_1": -_PIXEL_DEG * c, "CD1_2": _PIXEL_DEG * s,
+            "CD2_1": -_PIXEL_DEG * s, "CD2_2": -_PIXEL_DEG * c}
+
+
+#: (.ini cards, headerlet cards or None). No case has a CDELT2 in the .ini.
+_SCALE_FROM_THE_WCS = {
+    "CD in the .ini": ({**_USABLE["north-up CD"]}, None),
+    "CD in the headerlet": ({}, _USABLE["north-up CD"]),
+    "rotated CD in the .ini": (_rotated_cd(33.0), None),
+    "CDELT1 alone in the .ini": ({"CDELT1": -_PIXEL_DEG}, None),
+}
+_SCALE_NOT_STATED = {
+    "no CD and no CDELT": ({}, None),
+    "all-zero CD": (_UNUSABLE["all-zero CD"], None),
+    "singular CD": (_UNUSABLE["singular CD"], None),
+    "CDELT2 of zero": ({"CDELT1": -_PIXEL_DEG, "CDELT2": 0.0}, None),
+    "NaN CDELT2": ({"CDELT1": -_PIXEL_DEG, "CDELT2": "nan"}, None),
+}
+
+
+@pytest.mark.parametrize("case", list(_SCALE_FROM_THE_WCS.values()),
+                         ids=list(_SCALE_FROM_THE_WCS))
+async def test_astap_scale_comes_from_the_cd_matrix_when_cdelt2_is_absent(
+        tmp_path, monkeypatch, case):
+    """RED under mutation "the old read" (the scale lines of
+    ``_result_from_ini`` back to ``scale = abs(float(kv.get('CDELT2', 0))) *
+    3600``), observed on every case:
+
+        E   assert 0.0 == 1.549799... +- 1.5e-06
+    """
+    ini_cards, headerlet = case
+    res = await _solve_with_files(tmp_path, monkeypatch, ini_cards, headerlet)
+    assert res.success
+    assert res.pixel_scale_arcsec == pytest.approx(_PIXEL_DEG * 3600.0)
+
+
+@pytest.mark.parametrize("case", list(_SCALE_NOT_STATED.values()),
+                         ids=list(_SCALE_NOT_STATED))
+async def test_astap_scale_is_none_when_the_solve_states_none(
+        tmp_path, monkeypatch, case):
+    """A solve that succeeded and states no scale reports it unknown, which a
+    consumer can tell from a scale of zero.
+
+    RED under the same mutation, observed on every case:
+
+        E   assert 0.0 is None
+    """
+    ini_cards, headerlet = case
+    res = await _solve_with_files(tmp_path, monkeypatch, ini_cards, headerlet)
+    assert res.success
+    assert res.pixel_scale_arcsec is None
+
+
+async def test_astap_scale_still_reads_cdelt2_when_the_ini_has_it(
+        tmp_path, monkeypatch):
+    """The control: the path every real ASTAP .ini takes is unchanged."""
+    res = await _solve_with_files(
+        tmp_path, monkeypatch,
+        {"CDELT1": -_PIXEL_DEG, "CDELT2": _PIXEL_DEG, "CROTA2": 12.5})
+    assert res.pixel_scale_arcsec == pytest.approx(_PIXEL_DEG * 3600.0)
+
+
+def test_result_from_ini_without_cdelt2_is_not_a_scale_of_zero():
+    """The issue's own shape: `_result_from_ini` fed an .ini with no CDELT2."""
+    from astrodeck.solve.astap import _result_from_ini
+    base = {"PLTSOLVD": "T", "CRVAL1": "150.0", "CRVAL2": "20.0",
+            "CROTA2": "0.0"}
+    res = _result_from_ini(base, None)
+    assert res.success and res.pixel_scale_arcsec is None
+    assert _result_from_ini({**base, "CDELT2": "0.0003"},
+                            None).pixel_scale_arcsec == pytest.approx(1.08)
+
+
+@pytest.mark.parametrize("terms,expected", [
+    (dict(cd11=-_PIXEL_DEG, cd12=0.0, cd21=0.0, cd22=_PIXEL_DEG), 1.0),
+    (dict(cd11=-2 * _PIXEL_DEG, cd12=0.0, cd21=0.0, cd22=_PIXEL_DEG / 2), 1.0),
+    (dict(cdelt1=-_PIXEL_DEG, cdelt2=_PIXEL_DEG, crota2=12.5), 1.0),
+    (dict(cdelt1=-_PIXEL_DEG), 1.0),
+    (dict(cd11=0.0, cd12=0.0, cd21=0.0, cd22=0.0), None),
+    (dict(cdelt1=_PIXEL_DEG, cdelt2=0.0), None),
+    (dict(), None),
+], ids=["CD", "CD with unequal axes (geometric mean)", "CDELT pair",
+        "CDELT1 alone", "all-zero CD", "zero CDELT2", "no scale cards"])
+def test_wcs_solution_states_its_pixel_scale(terms, expected):
+    from astrodeck.solve.base import WcsSolution
+    sol = WcsSolution(**{k.lower(): v for k, v in _REF_CARDS.items()}, **terms)
+    got = sol.pixel_scale_arcsec()
+    if expected is None:
+        assert got is None
+    else:
+        assert got == pytest.approx(_PIXEL_DEG * 3600.0 * expected)
+
+
+async def test_guide_offset_note_says_unknown_for_a_scale_the_solve_did_not_state(
+        sim_hub, tmp_path, monkeypatch):
+    """The consumer #973 names: ``measure_guide_offset`` printed the scale into
+    the stored offset's note. The imaging solve states none (its .ini has no
+    CDELT2 and no CD), the guide solve states one.
+
+    RED under mutation "the old read" (see above), observed:
+
+        E   AssertionError: {'camera': 'Sim Camera 533MM', 'guide': {...}, ...
+        E   assert 0.0 is None
+
+    and under mutation "the note prints a number whatever it is" (``_scale_text``
+    of ``hub.py`` -> ``return f'{scale or 0.0:.2f}"/px'``), observed:
+
+        E   assert 'main 0.00"/p...uide 1.55"/px' == 'main scale u...uide 1.55"/px'
+    """
+    import asyncio
+    import astrodeck.providers as providers
+
+    async def fake_exec(*args, **kwargs):
+        image = Path(args[args.index("-f") + 1])
+        stated = ({"CDELT1": -_PIXEL_DEG, "CDELT2": _PIXEL_DEG}
+                  if "guide_offset_guide" in image.name else {})
+        _write_ini(image.with_suffix(".ini"), {**stated, "CROTA2": 10.0},
+                   PLTSOLVD="T")
+        return _FakeAstapProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(providers, "pick_solver",
+                        lambda hub: AstapSolver("astap_cli"))
+
+    out = await sim_hub.measure_guide_offset(exposure_s=0.05,
+                                             guide_exposure_s=0.05)
+
+    assert out["main"]["ok"] and out["guide"]["ok"], out
+    assert out["main"]["scale"] is None, out
+    assert out["guide"]["scale"] == pytest.approx(_PIXEL_DEG * 3600.0), out
+    assert out["offset"]["note"] == 'main scale unknown, guide 1.55"/px', out

@@ -100,10 +100,11 @@ function parts(input: LogInput): { source: string; message: string } {
 // ------------------------------------------------------- keyword rewrites
 //
 // A rewrite REPLACES the line it matches, so it may only fire on a line that IS
-// the report it was written for. Each rule below is keyed on that report's own
-// shape, never on two words that happen to sit somewhere in the same text. The
-// bare keyword pairs these replaced rewrote honest copy they were never written
-// for, and showToast routes EVERY message through here:
+// the report it was written for. The plate-solve and guiding rules below, and
+// the HTTP 5xx arm of the NINA rule, are keyed on that report's own shape, never
+// on two words that happen to sit somewhere in the same text. The bare keyword
+// pairs these replaced rewrote honest copy they were never written for, and
+// showToast routes EVERY message through here:
 //
 //   "... a plate-solve sync, or TRUST POSITION, unlocks them"   (#792)
 //       became "Plate-solve failed - check focus/exposure", the opposite of it;
@@ -112,15 +113,31 @@ function parts(input: LogInput): { source: string; message: string } {
 //   "slow request GET /api/nina/health: still waiting after 15.0 s"
 //       became "NINA reported an error" because "15.0" holds a 5.
 //
-// Server code has been wording its lines around these pairs (see
-// api/slow_requests.py `_HUMANIZER_KEYS`); a new line that mentions a plate
-// solve, guiding or NINA in its own words should not have to.
+// A new line that mentions a plate solve or guiding in its own words need not
+// avoid the words. Two arms are still bare words: "nina" beside "http" or
+// "error", and "camera" beside "not responding", "timeout" or "disconnect" (the
+// camera rule in humanizeLog below). A server line that can hold those pairs
+// still breaks them apart (api/slow_requests.py `_HUMANIZER_KEYS`).
 
-/** A plate solve that FAILED, as a statement. "plate solve" with no failure
- *  after it ("plate solve: filter L -> Lum", "a plate-solve sync") is not one,
- *  and neither is a hypothetical ("if the plate solve fails"). Past tense or the
- *  noun, because that is how the server and NINA word a failure. */
-const PLATE_SOLVE_FAILED = /\bplate[- ]?solv(?:e|ing)\s+(?:failed|failure|error|timed out)\b/;
+/** A plate solve that FAILED, as a bare statement, and nothing else in the line.
+ *  The replacement sends the operator to focus and exposure: right for a failure
+ *  that names no cause, wrong for one that does. "... failed: no light: the
+ *  optic is capped" and "... failed: no plate solver is available on this rig"
+ *  ARE the answer, and replacing them sent an operator with a lens cap on, or a
+ *  rig with no solver, to the focuser (#960). So the line must BE the failure:
+ *  an optional "label: " (a source or a stage, "solve failed: "), an optional
+ *  article, the failure phrase, and closing punctuation. Anything after the
+ *  phrase is a cause or a consequence ("... failed: <cause>", "... failed (no
+ *  stars); using raw GoTo", "... error: timed out") and the line is kept as
+ *  written.
+ *
+ *  "plate solve" with no failure after it ("plate solve: filter L -> Lum", "a
+ *  plate-solve sync") is not a failure, and neither is a hypothetical ("if the
+ *  plate solve fails"). Past tense or the noun, because that is how the server
+ *  and NINA word a failure. A label starts on a non-space and holds no colon of
+ *  its own, so the repeat cannot split one run of spaces two ways. */
+const PLATE_SOLVE_FAILED =
+  /^\s*(?:[^\s:;][^:;]{0,29}:\s*)*(?:(?:the|a)\s+)?plate[- ]?solv(?:e|ing)\s+(?:failed|failure|error|timed out)\b[\s.!]*$/;
 
 /** An HTTP 5xx status as a TOKEN: three digits starting with 5, standing alone
  *  and not followed by a unit or a decimal part. The 5 in "15.0 s" or "5 in

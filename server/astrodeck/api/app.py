@@ -1623,7 +1623,7 @@ async def _sync_not_taken_is_not_a_failed_solve(solve_and_sync) -> None:
     The driver's message carries no coordinates and no raw link bytes, and
     its action (for ``e11``, the driver's e11 words, in the safe order)
     comes early, so the 16-character prefix still leaves it before the UI's
-    137-character cut.
+    old 137-character cut (the UI keeps whole sentences up to 400 since #792).
 
     Takes the method, not its coroutine: ``_spawn`` closes the coroutine it
     is handed when it refuses the lane (409), and closing this wrapper
@@ -5202,6 +5202,33 @@ def create_app(*, bind_host: str | None = None,
                 "detail": f"dead-man's-switch url not saved: {problem}",
                 "code": "invalid_deadman_url"})
 
+    def _require_horizon_usable(body: ConfigPatchBody) -> None:
+        """422 for a drawn horizon the obstruction rule could not read (#899),
+        BEFORE any block of the body is written.
+
+        ``POST /api/config {safety}`` is the active site's door to
+        ``config.safety.horizon`` and ``PUT /api/locations/{id}`` is a saved
+        location's; only the second one validated. ``SafetyConfig.horizon`` is a
+        bare ``list[tuple[float, float]]``, so 501 points, an altitude of 999, an
+        azimuth of 720 and a NaN were all stored. A point at altitude 120 is a
+        floor no target clears, so every slew at that azimuth is denied, and a
+        NaN is dropped by the ``max()`` in ``effective_floor``, which is a false
+        OPEN. Both doors now run ``normalize_horizon_points``, so what one
+        refuses the other does.
+
+        The rule only REFUSES. The points are stored as sent: ``interp_wrap``
+        sorts and wraps for itself, and a valid horizon must save as it always
+        did. Nothing to check when the block carries none (``None`` is "no drawn
+        horizon", and ``[]`` passes as the explicit clear)."""
+        if body.safety is None or body.safety.horizon is None:
+            return
+        try:
+            normalize_horizon_points(body.safety.horizon)
+        except ValueError as e:
+            raise HTTPException(422, detail={
+                "detail": f"horizon not saved: {e}",
+                "code": "invalid_horizon"})
+
     def _require_config_field_caps(body: ConfigPatchBody,
                                    principal: Principal) -> None:
         """Field-level RBAC for ``POST /api/config`` (plan field-level map).
@@ -5316,6 +5343,7 @@ def create_app(*, bind_host: str | None = None,
         per-block capability before any write."""
         _require_config_field_caps(body, principal)
         _require_deadman_url_usable(body)
+        _require_horizon_usable(body)
         await asyncio.to_thread(_persist_config_patch, body)
         if body.site is not None:
             push = getattr(hub, "push_site_to_mount", None)
@@ -7276,8 +7304,11 @@ def create_app(*, bind_host: str | None = None,
         setting time, not one value computed from a clock and the site: a
         key-name filter cannot withhold a value a route computes and names
         itself (#19), so the only safe answer is never to compute one.
-        ``flow_progress`` takes no site, clock or config, and the keys it
-        emits are held to an allow-list at the wire by
+        ``flow_progress`` takes no site and no config and reads no clock of
+        its own; the one ``now`` it is handed is this route's request clock,
+        and it only keys a night (``events.night_key``, for ``continue_night``
+        and a dormant session's ``set_aside`` list), never an altitude or a
+        transit. The keys it emits are held to an allow-list at the wire by
         tests/test_flows_progress_route.py, with the session's ``armed`` and
         ``plan_saved_ts`` (S7, #473): a status and a flag, and the moment an
         operator pressed Save, none of them from the site. Its ``nights``
@@ -7536,10 +7567,11 @@ def create_app(*, bind_host: str | None = None,
             hop_cost_s=rig.hop_cost_s,
             rig=rig,
             # Tonight reads the progress answer's blocks and never its
-            # session, and the clock handed in moves one thing it reads: the
-            # night a panel's `starved` count leaves out while that night's
-            # run has set nothing aside yet (#942), so the Campaign says what
-            # the progress card says.
+            # session. The payload takes the request's clock, which keys the
+            # night of CONTINUE and of a dormant session's set-aside list,
+            # and none of what Tonight reads moves with it: a panel's
+            # `starved` count is the ledger's alone (#970), so the Campaign
+            # says what the progress card says.
             progress=lambda: _flow_progress_payload(rec, flow_id, can_cool,
                                                     rig, time.time()))
 
@@ -9213,7 +9245,9 @@ def create_app(*, bind_host: str | None = None,
 
     # ---------------------------------------------------------------- mount
 
-    async def _plain_goto(ra_hours: float, dec_deg: float) -> None:
+    async def _plain_goto(ra_hours: float, dec_deg: float,
+                          jnow: bool | None = None,
+                          epoch: int | None = None) -> None:
         """Slew to an absolute J2000 target with NO centring pass, in the frame
         the mount expects (#861).
 
@@ -9221,19 +9255,29 @@ def create_app(*, bind_host: str | None = None,
         lane. It was a closure over ``body``; a nudge computes its own
         destination and has no body to close over, and copying the motion fence
         into a second handler is how two paths that must agree stop agreeing.
+
+        ``epoch`` is the motion fence a caller read BEFORE its own awaits. A
+        nudge reads the mount and asks its frame before it spawns this, and a
+        STOP that lands in those awaits has already advanced the epoch this
+        would read at its start, so it would pass the check below and slew.
+        None (a goto, which awaits nothing first) reads it here.
         """
         tel = hub.require("telescope")
         # Motion fence (W3.7): serialize the device-touching commit under the
         # hub motion lock and re-check the epoch immediately before dispatch,
         # so a STOP/abort that lands while this is awaiting (e.g. a stale
         # REMOTE goto racing a LOCAL abort) is fenced out at the mount.
-        epoch = hub._motion_epoch
+        if epoch is None:
+            epoch = hub._motion_epoch
         # #861: the target is J2000, the mount may want JNOW. Converted AFTER
         # the epoch is read, so a STOP that lands while the conversion awaits
         # (its EquatorialSystem probe is a device read) is still fenced out
         # below. The nudge route hands this J2000 too (it converts its READ
-        # back with from_mount_frame), so nothing converts twice.
-        slew_ra, slew_dec = await hub.to_mount_frame(tel, ra_hours, dec_deg)
+        # back with from_mount_frame), so nothing converts twice. ``jnow`` is
+        # the nudge's one frame decision (#962), used here as it was used for
+        # the read; a goto has no read to agree with, passes None, and asks.
+        slew_ra, slew_dec = await hub.to_mount_frame(tel, ra_hours, dec_deg,
+                                                     jnow=jnow)
         async with hub._motion_lock:
             if not hub._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")
@@ -9301,6 +9345,12 @@ def create_app(*, bind_host: str | None = None,
         NOT ``center=True``: a nudge is a small deliberate offset, and
         re-centring on a plate solve would undo the very thing that was asked
         for."""
+        # Motion fence (W3.7), read BEFORE the first await below: the position
+        # read and the frame probe are device reads, and a STOP that lands in
+        # either must still stop this nudge. It is handed to ``_plain_goto``,
+        # which re-checks it at the mount; read there instead, it would be the
+        # epoch the STOP had already advanced.
+        entry_epoch = hub._motion_epoch
         try:
             tel = hub.require("telescope")
         except DeviceError as e:
@@ -9329,7 +9379,17 @@ def create_app(*, bind_host: str | None = None,
         # Convert FIRST and slew J2000 - the frame every other target on this
         # server is in. Nudging in the mount's frame and slewing the answer as
         # J2000 would add a precession-sized error to EVERY tap.
-        from_ra, from_dec = await hub.from_mount_frame(tel, cur_ra, cur_dec)
+        #
+        # ONE FRAME DECISION for both ends (#962). The read and the slew used
+        # to decide the mount's frame separately, by different rules (the read
+        # honours the reprobe hold-off and the status bound, the slew always
+        # asks), so a J2000 mount whose first probe failed or was slow had its
+        # start precessed backwards and its target sent as it stood. Asked
+        # once, the way a slew asks, and the answer used by the read here and
+        # by the slew in ``_plain_goto``.
+        jnow = await hub.decide_mount_frame(tel)
+        from_ra, from_dec = await hub.from_mount_frame(tel, cur_ra, cur_dec,
+                                                       jnow=jnow)
         moved = nudge_offset(from_ra, from_dec, body.axis, arcmin)
         to_ra, to_dec = moved.ra_hours, moved.dec_deg
         # The DESTINATION passes the same two gates a goto does. A nudge is
@@ -9341,7 +9401,7 @@ def create_app(*, bind_host: str | None = None,
         solar = _solar_block(to_ra, to_dec)
         if solar is not None:
             raise HTTPException(409, detail=solar)
-        started = _spawn("goto", _plain_goto(to_ra, to_dec))
+        started = _spawn("goto", _plain_goto(to_ra, to_dec, jnow, entry_epoch))
         return {**started,
                 "from": {"ra_hours": from_ra, "dec_deg": from_dec},
                 "to": {"ra_hours": to_ra, "dec_deg": to_dec},

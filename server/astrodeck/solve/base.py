@@ -59,6 +59,22 @@ class WcsSolution:
         return det != 0.0 and all(
             math.isfinite(float(v)) for v in (det, *terms, *others))
 
+    def pixel_scale_arcsec(self) -> float | None:
+        """The plate scale in arcsec per pixel, the geometric mean of the two
+        axes (``sqrt(|det|)`` of the CD matrix, or of the CDELT pair), or None
+        when this solution has no usable scale. The scale ``has_usable_scale``
+        vouches for, read the same way ``fitsio._apply_wcs`` writes it."""
+        if not self.has_usable_scale():
+            return None
+        if self.cd11 is not None:
+            cd = [0.0 if t is None else float(t)
+                  for t in (self.cd11, self.cd12, self.cd21, self.cd22)]
+            det = cd[0] * cd[3] - cd[1] * cd[2]
+        else:
+            d1 = float(self.cdelt1)
+            det = d1 * (d1 if self.cdelt2 is None else float(self.cdelt2))
+        return math.sqrt(abs(det)) * 3600.0
+
 
 @dataclass
 class SolveResult:
@@ -66,7 +82,11 @@ class SolveResult:
     ra_hours: float = 0.0
     dec_deg: float = 0.0
     rotation_deg: float = 0.0
-    pixel_scale_arcsec: float = 0.0
+    #: None when the solver did not state a scale (#973): a 0.0 here reads as
+    #: a scale of zero, as a missing CROTA2 read as rotation 0 (#146). A
+    #: consumer that prints it says "unknown"; one that computes with it
+    #: falls back, as ``polar.native`` does with ``or``.
+    pixel_scale_arcsec: float | None = None
     message: str = ""
     #: False when the solver did not report a rotation at all (issue #146).
     #: ``rotation_deg`` then reads 0.0 for the consumers that need a float, and

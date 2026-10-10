@@ -188,7 +188,9 @@ def _build_app(rig: _Rig) -> FastAPI:
     def _solar_block(ra_hours: float, dec_deg: float) -> dict | None:
         return rig.solar
 
-    async def _plain_goto(ra_hours: float, dec_deg: float) -> None:
+    async def _plain_goto(ra_hours: float, dec_deg: float,
+                          jnow: bool | None = None,
+                          epoch: int | None = None) -> None:
         rig.slews.append((ra_hours, dec_deg))
 
     # --- BEGIN mirror of the S7L app.py patch --------------------------------
@@ -196,6 +198,9 @@ def _build_app(rig: _Rig) -> FastAPI:
               dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.slew"})
     async def nudge(body: NudgeBody):
+        # The motion fence, read before the first await, as the shipped route
+        # reads it and hands it to the plain goto.
+        entry_epoch = app_module.hub._motion_epoch
         try:
             tel = app_module.hub.require("telescope")
         except DeviceError as e:
@@ -212,9 +217,11 @@ def _build_app(rig: _Rig) -> FastAPI:
         # The mount reports its OWN frame; a real Alpaca mount reports JNOW.
         # Convert FIRST and slew J2000 - the frame every other target on this
         # server is in. Nudging in the mount's frame and slewing the answer as
-        # J2000 would add a precession-sized error to EVERY tap.
+        # J2000 would add a precession-sized error to EVERY tap. One frame
+        # decision for both ends (#962), as the shipped route makes it.
+        jnow = await app_module.hub.decide_mount_frame(tel)
         from_ra, from_dec = await app_module.hub.from_mount_frame(
-            tel, cur_ra, cur_dec)
+            tel, cur_ra, cur_dec, jnow=jnow)
         moved = mount_offset.nudge(from_ra, from_dec, body.axis, arcmin)
         to_ra, to_dec = moved.ra_hours, moved.dec_deg
         blocked = _horizon_block(to_ra, to_dec)
@@ -223,7 +230,8 @@ def _build_app(rig: _Rig) -> FastAPI:
         solar = _solar_block(to_ra, to_dec)
         if solar is not None:
             raise HTTPException(409, detail=solar)
-        started = app_module._spawn("goto", _plain_goto(to_ra, to_dec))
+        started = app_module._spawn(
+            "goto", _plain_goto(to_ra, to_dec, jnow, entry_epoch))
         return {**started,
                 "from": {"ra_hours": from_ra, "dec_deg": from_dec},
                 "to": {"ra_hours": to_ra, "dec_deg": to_dec},

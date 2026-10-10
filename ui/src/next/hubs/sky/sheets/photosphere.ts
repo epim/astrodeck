@@ -1387,6 +1387,11 @@ const NO_POSE_STREAM_CUE = 'This browser does not report which way the phone is 
  *  silence, and so a clock) that a reading arriving late must be able to
  *  retract, so `issueAt` works it out each time it is asked. */
 const MOTION_BLOCKED_CUE = 'Motion sensors are blocked for this site. In Brave or Chrome, open Site settings > Motion sensors and allow this site, then reopen the scan.';
+/** The same verdict in the few words the Start control's lock reason and the
+ *  bearing line have room for (issue #976). Both used to keep saying "Waiting
+ *  for compass" / "Waiting for tilt sensor" beside the sentence above, a wait
+ *  that a blocked sensor can never end. */
+export const MOTION_BLOCKED_LABEL = 'Motion sensors blocked';
 /** How long an all-null `deviceorientation` event may stand with no reading
  *  after it before the sensors are called blocked. A sensor that is only slow
  *  to start delivers inside it, and the first reading withdraws the verdict. */
@@ -1577,6 +1582,10 @@ export class PhotosphereSweep {
   get cameraChoices(): SweepCamera[] { return this.cameras; }
   get activeCameraId(): string { return this.deviceId; }
   get error(): string | null { return this.issueAt(performance.now()); }
+  /** Is `error` the blocked-sensors sentence right now? True only while the
+   *  verdict holds AND nothing outranks it in `issueAt`, so a short label read
+   *  from this can never name a cause the hint beside it does not (issue #976). */
+  get motionBlocked(): boolean { return this.issue === null && this.motionBlockedAt(performance.now()); }
   /** What is stopping the scan, if anything: the reason `issue` was set to, or
    *  the blocked-sensors verdict, which is a measurement and so is read at the
    *  instant of asking (issue #951). `issue` wins, so the iOS denial and the

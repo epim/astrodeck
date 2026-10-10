@@ -449,8 +449,7 @@ class Session(BaseModel):
 
     def set_aside_streak(
             self, target_id: str, *, before: str | None = None,
-            kinds: tuple[str, ...] = STARVING_KINDS,
-            open_night: str | None = None) -> tuple[int, str | None]:
+            kinds: tuple[str, ...] = STARVING_KINDS) -> tuple[int, str | None]:
         """On how many CONSECUTIVE observing nights, ending with the newest
         this session ran, ``target_id`` was starved, and the kind of the
         newest record: ``(0, None)`` when it was not (#180 part A, backlog
@@ -463,9 +462,7 @@ class Session(BaseModel):
         wants at its start, whether or not tonight has a record yet.
         ``kinds`` narrows which records count (default ``STARVING_KINDS``,
         the answer progress serves, unchanged); the walk stops at the first
-        night with none of them. ``open_night`` (#942) is a night key too:
-        the night that is still going on, which the caller knows from its
-        clock and this method has none (see TONIGHT below).
+        night the panel was reached on with none of them.
 
         A NIGHT COUNTS when the session holds a whole-panel record for the
         target on it (``step_id`` None: a step the reject guard set aside
@@ -477,6 +474,33 @@ class Session(BaseModel):
         its own night there and matches no record. The walk stops at the
         first night that does not count: a panel shot once since is not
         starved, however often it was set aside before.
+
+        A NIGHT THAT NEVER REACHED THE PANEL IS STEPPED OVER (#970): it
+        neither counts nor stops the walk. A night is REACHED when the
+        session holds anything of the target from it, a set-aside record of
+        any kind or step (expired and cleared included) or a frame of any
+        grade (a rejected one was centred and exposed). A night that holds
+        neither is one the panel was not tried on: clouded out before its
+        turn, cut by the dawn, or spent on the mosaic's other panels. The
+        ledger has no evidence about the panel from it, in either direction,
+        so the walk goes on to the night before and the streak is a run of
+        the nights the panel WAS tried. Read as a break it made a panel set
+        aside on three nights answer ``(0, None)`` the night after a night
+        that never got to it, which is when the Campaign should still name
+        it and the group driver (``earlier_starved_nights``) should still
+        give it the one held pass. A reached night that does not count
+        (a frame banked, a kind outside ``kinds``, one step only) ends the
+        streak as before. A night the panel was tried on whose set-aside had
+        not landed when the run stopped looks like one it never reached, and
+        is stepped over too.
+
+        TONIGHT IS THE SAME CASE (#942). A run that has started has tonight
+        in ``nights`` (``engine.start`` appends its report id) and, until the
+        panel is set aside, no record of it: tonight is stepped over while it
+        holds nothing of the panel and counted once when the record lands, so
+        the earlier nights are not dropped as the run begins and not counted
+        twice. No clock is needed to tell tonight from a night that closed
+        untouched, because both are stepped over.
 
         EXPIRED AND CLEARED RECORDS COUNT. Both stay as history of what the
         night did (a centring set-aside that expired and struck out again, a
@@ -490,55 +514,21 @@ class Session(BaseModel):
         text that can carry a solver's error, and what is built from this
         answer is served to a viewer.
 
-        TONIGHT IS COUNTED ONCE, AND ONLY WHEN IT IS STILL OPEN AND HOLDS
-        NOTHING YET (#942). A run that has started has tonight in ``nights``
-        (``engine.start`` appends its report id) and, until the panel is set
-        aside, no record of it, so a walk that broke at that night answered
-        ``(0, None)`` for a panel set aside whole on the three nights
-        before, from the moment the run began until the set-aside landed
-        (and then ``(4, kind)``). With ``open_night`` given, the newest
-        observing night is left out of the walk when it IS that night and
-        the session holds NOTHING of the target from it: no set-aside record
-        of any kind or step, no frame of any grade (the night is still open
-        for the panel). The record landing turns the night into one the walk
-        counts, so the earlier nights are counted once and tonight once; a
-        panel shot tonight, or set aside tonight for a kind that is not
-        starving, is not left out and ends the streak.
-
-        THE CLOCK DECIDES, NOT THE LEDGER. A newest night that holds nothing
-        of the panel is either still open or a night that ran and closed
-        without reaching the panel (clouded out first), and the ledger
-        cannot tell the two apart. The second is a night the panel was not
-        set aside on, so it ends the streak, as it does once a later night
-        has started. Left out, it would keep the Campaign saying "set aside
-        on 3 nights running" for every day after it and drop the sentence
-        the moment the next run started, while the group driver
-        (``earlier_starved_nights``, which asks with ``before``) already
-        read 0 at that start. So the caller hands in the key of the night
-        its clock is in (``events.night_key``), and only a newest night that
-        equals it is left out. No ``open_night`` (None, the default) leaves
-        nothing out, and a newest night whose run id carries no stamp is
-        keyed by the id itself and so never equals a night key: both answer
-        as the walk did before #942. Only the NEWEST night is ever left out,
-        and not when ``before`` is given: that caller has said where the walk
-        ends, and the night before it was a night that ran.
-        NOTHING HERE IS SITE-DERIVED: nights and kinds, no time. The night
-        key is the server's own local noon-to-noon date."""
+        NOTHING HERE IS SITE-DERIVED: nights and kinds, no clock and no time.
+        The night key is the server's own local noon-to-noon date."""
         banked = {report_night(f.night) or f.night for f in self.frames
                   if f.target_id == target_id and f.effective()}
+        reached = {r.get("night") for r in self.set_aside
+                   if r.get("target_id") == target_id}
+        reached |= {report_night(f.night) or f.night for f in self.frames
+                    if f.target_id == target_id}
         nights = self.observing_nights()
         if before is not None and before in nights:
             nights = nights[:nights.index(before)]
-        elif (before is None and open_night is not None and nights
-                and nights[-1] == open_night):
-            held = {r.get("night") for r in self.set_aside
-                    if r.get("target_id") == target_id}
-            held |= {report_night(f.night) or f.night for f in self.frames
-                     if f.target_id == target_id}
-            if open_night not in held:
-                nights = nights[:-1]
         streak, kind = 0, None
         for night in reversed(nights):
+            if night not in reached:
+                continue
             records = [r for r in self.set_aside
                        if r.get("target_id") == target_id
                        and r.get("step_id") is None
@@ -557,7 +547,9 @@ class Session(BaseModel):
         session set ``target_id`` aside whole for one of ``kinds`` and shot
         none of it (``set_aside_streak``), or 0 (#835). What the group driver
         reads at its start to give up sooner on a panel that has not centred
-        for nights running.
+        for nights running. A night in between that never reached the panel
+        is stepped over (#970), so a cloud-out does not give it the six
+        passes back.
 
         ZERO WHEN THE OPERATOR BROUGHT THE PANEL BACK ON ``night``
         (``note_set_aside_cleared``, backlog ruling D-07): the retry is the

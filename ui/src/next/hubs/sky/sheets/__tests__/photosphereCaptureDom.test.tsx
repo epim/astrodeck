@@ -802,6 +802,85 @@ await test('One all-null deviceorientation event and then silence is called bloc
     lastSensor = priorSensor;
   }
 });
+await test('Blocked sensors: the Start lock reason and the bearing line say so instead of waiting for a compass and a tilt sensor (#976)', async () => {
+  // #951 made the HINT say the motion sensors are blocked and left the two
+  // short labels beside it describing a wait: the Start control stayed locked
+  // on "Waiting for compass" and the bearing line on "Waiting for tilt sensor",
+  // for sensors that no amount of waiting will deliver. Through the real sheet
+  // and the real button, because the labels have to be right where the user is
+  // looking; a locked control carries its reason as its `title`.
+  // The control comes first: before the verdict is due the ordinary waits stand,
+  // which also proves the two elements being graded are on the page, so a later
+  // absence of 'Waiting for' cannot be a blank panel.
+  // Mutation: in horizon.tsx put `"Waiting for compass"` back as the Start
+  // `lockedReason` for `!compassReady` (drop the `motionBlocked` arm). Observed
+  // red: 'the Start control still gives a wait as its lock reason for sensors
+  // that are blocked'.
+  // Mutation: in horizon.tsx drop the `motionBlocked ? MOTION_BLOCKED_LABEL :`
+  // arm of the bearing line. Observed red: 'the bearing line still waits for a
+  // tilt sensor that a blocked setting will never deliver'.
+  // Mutation: delete `this.issue === null &&` from `motionBlocked`. Observed
+  // red: 'a label named the blocked sensors beside a sentence that names
+  // something else'.
+  const priorSensor = lastSensor;
+  const labelsRoot = createRoot(document.getElementById('root')!);
+  try {
+    await act(async () => labelsRoot.render(createElement(HorizonSheet, { depth: 0, params: { site: 'current' }, guided: true })));
+    await settle();
+    await click(byTest('capture-photosphere'));
+    nullOrientation();
+    await repaint();
+    const start = () => byTest('start-horizon-scan');
+    const bearing = () => document.querySelector('.photosphere-bearing')!.textContent!;
+    const hint = () => document.querySelector('.photosphere-hint')!.textContent!;
+    assert.equal(start().getAttribute('title'), 'Waiting for compass', 'the premise did not hold: no ordinary wait before the verdict is due');
+    assert.equal(bearing(), 'Waiting for tilt sensor', 'the premise did not hold: no ordinary tilt wait before the verdict is due');
+    sensorNow += 1000;
+    await repaint();
+    assert.ok(hint().startsWith('Motion sensors are blocked for this site.'),
+      `the premise did not hold: the hint does not call the sensors blocked: "${hint()}"`);
+    assert.equal(start().getAttribute('aria-disabled'), 'true');
+    assert.equal(start().getAttribute('title'), 'Motion sensors blocked',
+      `the Start control still gives a wait as its lock reason for sensors that are blocked: "${start().getAttribute('title')}"`);
+    assert.equal(bearing(), 'Motion sensors blocked',
+      `the bearing line still waits for a tilt sensor that a blocked setting will never deliver: "${bearing()}"`);
+    assert.doesNotMatch(byTest('photosphere-capturing').textContent!, /Waiting for (compass|tilt)/,
+      'a wait is still printed in the capture panel beside the blocked sentence');
+    // A reading arriving after the verdict withdraws the labels with the
+    // sentence: the setting may have been fixed in another tab.
+    heading(80);
+    await repaint();
+    assert.doesNotMatch(hint(), /blocked/, 'the premise did not hold: the hint outlived the reading');
+    assert.doesNotMatch(bearing(), /blocked/, 'a compass reading arrived and the bearing line still said the sensors are blocked');
+    assert.notEqual(start().getAttribute('title'), 'Motion sensors blocked',
+      'a compass reading arrived and the Start control still said the sensors are blocked');
+  } finally {
+    await act(async () => labelsRoot.unmount());
+    lastSensor = priorSensor;
+  }
+  // The driver's own answer, so the short labels are graded at the seam too.
+  // The iOS denial outranks the blocked verdict in the hint, so the label that
+  // would name the verdict stays off beside a sentence that names something else.
+  const originalDOE = w.DeviceOrientationEvent;
+  try {
+    let sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    assert.equal(sweep.motionBlocked, false, 'a scan with no event yet was called blocked');
+    nullOrientation(); sensorNow += 3000;
+    assert.equal(sweep.motionBlocked, true, 'the premise did not hold: one empty event and three seconds of silence is the verdict');
+    sweep.stop();
+    w.DeviceOrientationEvent = class { static requestPermission = async () => 'denied'; };
+    sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    nullOrientation(); sensorNow += 3000;
+    assert.ok((sweep.error ?? '').startsWith('Motion access was denied.'), 'the premise did not hold: the iOS denial did not outrank the verdict');
+    assert.equal(sweep.motionBlocked, false, 'a label named the blocked sensors beside a sentence that names something else');
+    sweep.stop();
+  } finally {
+    w.DeviceOrientationEvent = originalDOE;
+    lastSensor = priorSensor;
+  }
+});
 await test('Repeated empty events count from the first, and a reading, iOS and a missing constructor keep their own sentences (#951)', async () => {
   // The driver, with no sheet: every case is one fact and one sentence.
   // Mutation: make the heading handler overwrite `orientationNullAt` on every
