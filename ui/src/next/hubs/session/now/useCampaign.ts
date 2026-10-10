@@ -47,6 +47,7 @@ import { flowsApi } from "../../../../lib/flowsApi";
 import { listReports } from "../../../../api/reports";
 import { endReasonMeta } from "../../../../lib/reportChart";
 import { useCan } from "../../../../lib/caps";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { useResumeArm, useSeq, useStore } from "../../../../store";
 import type { SessionReportSummary } from "../../../../types";
 import { useActiveSession, useFlowLibrary } from "./sessionData";
@@ -453,8 +454,12 @@ export function useCampaign(): CampaignState {
     kind: "past",
   }));
 
-  const live = seq.state === "running" || seq.state === "holding" || seq.state === "paused";
-  if (live) {
+  // Tonight's cell is the night in progress, and its hours are already inside
+  // `bankedH` above (the live ledger, not a report). An abort's wind-down still
+  // has the run: leaving the cell out for those ~210 s drew a strip whose
+  // total counted hours its cells did not show, and disagreed with the
+  // cross-hub banner, which says live there (`runIsLive`, #931).
+  if (runIsLive(seq)) {
     cells.push({
       key: "tonight",
       label: `tonight ${tonightH.toFixed(1)}h`,
