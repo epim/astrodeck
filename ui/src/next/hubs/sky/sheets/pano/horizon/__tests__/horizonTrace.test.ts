@@ -18,6 +18,11 @@
 //   - the sigma of an open column read away from altitude 0;
 //   - the sky above A counted from the A row (17 rows of height read as 18);
 //   - an unmeasurable contrast read as 0 instead of unknown.
+// The fix round B (ruling S15, T10 re-review) adds two more:
+//   - the dark test on the model the column is walked against only (the substituted ring sky): 'UnknownDark reads the
+//     column's own window sky as well as the ring sky: a dark sector in a lit ring is too dark, not Tall';
+//   - the sigma test back to `sigma > TRACE.measuredMaxSigmaDeg`, which a NaN sigma passes: 'every comparison fails
+//     closed: an unknown axis altitude is a NaN sigma, which is Low and never Measured'.
 // Every case below opens with a 'Mutation:' note naming the mutants it was seen to turn red, as the old suites did
 // (the ids are those of the T10 report's mutant run, which lists the edit of each).
 import assert from 'node:assert/strict';
@@ -597,6 +602,54 @@ test('lowLight is the MEDIAN of the window sky models: a dark minority does not 
   assert.equal(ring(0.3).lowLight, false, 'under a third of the compass at 17');
   assert.equal(ring(0.7).lowLight, true, 'most of the compass at 17');
   assert.equal(ring(0.3).state[col(250)], ColState.UnknownDark);
+});
+
+test('UnknownDark reads the column\'s own window sky as well as the ring sky: a dark sector in a lit ring is too dark, not Tall', () => {
+  // Mutation: the dark test on the model the column is walked against only (D01, the substituted model): the sector's
+  //   own sky is replaced by the lit ring sky before the test and the sector reads Tall; the dark test dropped (M34).
+  // S15: the ring sky stands in for a window model that departs from it, and the stand-in is lit, so a sector whose own
+  // sky is 20 to 38 (under the floor of 40) came out Tall: an obstruction, when the camera simply saw too little.
+  // The sector is 80 degrees wide and the columns asserted lie 16 degrees or more inside it, where the window of a
+  // column holds nothing but the sector.
+  const sector = (lum: number, ring: number) => extract(scene((az, alt, x, y) => (alt > RING_TOP || alt < -8 ? null
+    : { lum: (inSector(az, 100, 180) ? lum : ring) + 2 * gauss(x, y, 5), blue: 0 })));
+  for (const lum of [20, 30, 38]) {
+    const h = sector(lum, SKY);
+    for (let x = col(116); x < col(164); x++) {
+      assert.equal(h.state[x], ColState.UnknownDark, `a dark sector of ${lum}: column ${x} is state ${h.state[x]}`);
+      assert.ok(Number.isNaN(h.alt[x]), `a dark sector of ${lum}: column ${x} carries an altitude`);
+    }
+    // The lit sky around it is still read, and the sector did not darken the ring: low light is about the compass.
+    for (const x of [col(40), col(250), col(330)]) assert.equal(h.state[x], ColState.Measured, `lit column ${x}`);
+    assert.equal(h.lowLight, false);
+  }
+  // The edge of the rule is the same 40 as for a whole dark sky: a sector at 44 is another exposure, which is Tall.
+  const edge = sector(44, SKY);
+  for (let x = col(116); x < col(164); x++) assert.equal(edge.state[x], ColState.Tall, `a sector of 44: column ${x}`);
+  // And the other way round: a lit sector in a dark ring is walked against the dark ring sky, which is too dark.
+  const lit = sector(SKY, 30);
+  for (let x = col(116); x < col(164); x++) assert.equal(lit.state[x], ColState.UnknownDark, `a lit sector in a dark ring: column ${x}`);
+});
+
+test('every comparison fails closed: an unknown axis altitude is a NaN sigma, which is Low and never Measured', () => {
+  // Mutation: the sigma test back to `sigma > TRACE.measuredMaxSigmaDeg` (S01): NaN > 1 is false, and with axisAltDeg
+  //   NaN and no keyframes all 1080 columns of a clean raster read Measured.
+  const clean = scene(() => ({ lum: SKY }));
+  const lost = extract(clean, { axisAltDeg: NaN });
+  for (let x = 0; x < PANO_W; x++) {
+    assert.ok(Number.isNaN(lost.sigmaDeg[x]), `column ${x}: the sigma of a boundary off an unknown axis is ${lost.sigmaDeg[x]}`);
+    assert.equal(lost.state[x], ColState.Low, `column ${x} is state ${lost.state[x]} with no axis altitude`);
+    assert.equal(lost.alt[x], 0, 'the trace is still there: it is the suggestion of a Low column');
+  }
+  // The same raster with the axis known is the open measurement it should be: the NaN is what made the difference.
+  assert.equal(extract(clean, { axisAltDeg: 20 }).state[col(250)], ColState.Measured);
+  // A boundary with a contrast is held the same way: the wall is Low off an unknown axis and Measured off a known one.
+  const wall = scene(wallScene(100, 108, 30));
+  assert.equal(extract(wall, { axisAltDeg: 20 }).state[col(104)], ColState.Measured);
+  const walled = extract(wall, { axisAltDeg: NaN });
+  assert.equal(walled.state[col(104)], ColState.Low);
+  near(walled.alt[col(104)], 30, 0.5, 'the wall top, kept as the suggestion:');
+  assert.ok(!Array.from(walled.state).includes(ColState.Measured), 'a Measured column off an unknown axis');
 });
 
 test('Measured needs 6 degrees of sky above A itself: 17 rows of height are 5.7 degrees, 18 are 6.0', () => {

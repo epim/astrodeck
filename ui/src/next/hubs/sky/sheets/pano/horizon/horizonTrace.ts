@@ -304,9 +304,17 @@ interface ColumnRun {
 }
 interface Noise { lum: number; blue: number; texFloor: number }
 interface Analysis {
-  col: ColData | null; model: SkyModel | null;
+  /** `own` is the column's window model; `model` is what it is walked against: its own, or the ring sky where its own
+   *  departs from it. The dark test reads both (`tooDark`), the walk and `lowLight` the second. */
+  col: ColData | null; own: SkyModel | null; model: SkyModel | null;
   wide: ColumnRun[]; candidates: ColumnRun[]; vouched: ColumnRun | null;
 }
+
+/** Too dark to read (5.2, ruling S15): the column's own window sky is under the floor, or so is the sky it is walked
+ *  against. Neither alone will do: the ring sky stands in for a window model that departs from it, so a dark sector
+ *  in a lit ring is walked against a lit sky, and only its own model says it is dark. */
+const tooDark = (own: SkyModel, walkedAgainst: SkyModel): boolean =>
+  own.lum < TRACE.darkLuma || walkedAgainst.lum < TRACE.darkLuma;
 
 /** The altitude a boundary at row `top` publishes: the row above the first blocked one, the lowest still open. */
 const altOfTop = (top: number): number => Math.max(0, Math.min(90, rowAlt(top - 1)));
@@ -634,8 +642,8 @@ class Extraction {
   }
 
   /** A column's placement among the states that need no walk: no run at all, a coverage gap, a dark sky. */
-  private readyToWalk(col: ColData | null, model: SkyModel | null): boolean {
-    return col !== null && model !== null && col.bottomAlt <= COVER_BOTTOM_ALT && model.lum >= TRACE.darkLuma;
+  private readyToWalk(col: ColData | null, own: SkyModel | null, model: SkyModel | null): boolean {
+    return col !== null && own !== null && model !== null && col.bottomAlt <= COVER_BOTTOM_ALT && !tooDark(own, model);
   }
 
   analysis(x: number): Analysis {
@@ -644,15 +652,17 @@ class Extraction {
     const col = this.col(x);
     // A window model that is not the sky of the ring is an obstruction wider than the window (or an exposure the rest
     // of the compass does not share): the column is walked against the ring sky, and what departs from it at the very
-    // top is Tall. The dark test, the walk and `lowLight` all read the model the column is walked against.
-    let model = this.model(x);
+    // top is Tall. The walk and `lowLight` read the model the column is walked against; the dark test reads that and
+    // the column's own, which is kept (S15): a dark sector in a lit ring is too dark, not an obstruction.
+    const own = this.model(x);
+    let model = own;
     const ring = model !== null ? this.ringSky() : null;
     if (model !== null && ring !== null && departsFromSky(model, ring)) model = ring;
-    let a: Analysis = { col, model, wide: [], candidates: [], vouched: null };
-    if (this.readyToWalk(col, model)) {
+    let a: Analysis = { col, own, model, wide: [], candidates: [], vouched: null };
+    if (this.readyToWalk(col, own, model)) {
       const wide = columnRuns(col!, model!, TRACE.lumaFrac, TRACE.blueFrac, this.noise);
       const narrow = this.azimuthSupportActive ? columnRuns(col!, model!, TRACE.localTol, TRACE.localTol, this.noise) : [];
-      a = { col, model, wide, candidates: [...wide, ...narrow], vouched: wide.find(r => r.qualifies) ?? null };
+      a = { col, own, model, wide, candidates: [...wide, ...narrow], vouched: wide.find(r => r.qualifies) ?? null };
     }
     return (this.analyses[x] = a);
   }
@@ -794,8 +804,8 @@ function extract(p: BandPanoramaLike, o: ExtractOptions): ColumnHorizon {
     if (a.col !== null) { out.top[x] = a.col.topAlt; out.bottom[x] = a.col.bottomAlt; }
     if (a.model !== null) skyLumas.push(a.model.lum);
     // No run holding altitude 0, nothing to pool, or a coverage gap between -2 degrees and the boundary: unseen.
-    if (a.col === null || a.model === null || a.col.bottomAlt > COVER_BOTTOM_ALT) continue;
-    if (a.model.lum < TRACE.darkLuma) { out.state[x] = ColState.UnknownDark; continue; }
+    if (a.col === null || a.own === null || a.model === null || a.col.bottomAlt > COVER_BOTTOM_ALT) continue;
+    if (tooDark(a.own, a.model)) { out.state[x] = ColState.UnknownDark; continue; }
     const { alt, chosen } = ex.settle(x);
     out.alt[x] = alt;
     // The boundary pixel: the first blocked row of the deciding run, or the horizon row when the column is open.
@@ -817,13 +827,14 @@ function extract(p: BandPanoramaLike, o: ExtractOptions): ColumnHorizon {
     // Tall is about the TOP of the evidence: a boundary within 2 degrees of the photo top, or a top that does not match
     // the sky. Less than 2 degrees of sky above a boundary that is not at the top (a wire, a disc) is a boundary found
     // and not measured, which is Low; TRACE.skyAboveLowDeg is the foot of the Low range and coincides with the Tall rule
-    // wherever the sky run ends at the photo top.
+    // wherever the sky run ends at the photo top. Every comparison fails closed (5.2, S15): a NaN contrast or a NaN sigma
+    // (`axisAltDeg` NaN with no keyframes) is never Measured, so the tests read `!(x >= y)` and `!(sigma <= y)`.
     if (!topMatches || boundaryRow - a.col.first < TALL_ROWS) {
       out.state[x] = ColState.Tall;
     } else if (chosen !== null && !(contrast >= TRACE.lowContrast)) {
       out.state[x] = ColState.UnknownContrast;
     } else if ((chosen !== null && !(contrast >= TRACE.measuredContrast)) || skyAbove < TRACE.skyAboveMeasuredDeg
-      || sigma > TRACE.measuredMaxSigmaDeg) {
+      || !(sigma <= TRACE.measuredMaxSigmaDeg)) {
       out.state[x] = ColState.Low;
     } else {
       out.state[x] = ColState.Measured;
