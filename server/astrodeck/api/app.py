@@ -9213,7 +9213,9 @@ def create_app(*, bind_host: str | None = None,
 
     # ---------------------------------------------------------------- mount
 
-    async def _plain_goto(ra_hours: float, dec_deg: float) -> None:
+    async def _plain_goto(ra_hours: float, dec_deg: float,
+                          jnow: bool | None = None,
+                          epoch: int | None = None) -> None:
         """Slew to an absolute J2000 target with NO centring pass, in the frame
         the mount expects (#861).
 
@@ -9221,19 +9223,29 @@ def create_app(*, bind_host: str | None = None,
         lane. It was a closure over ``body``; a nudge computes its own
         destination and has no body to close over, and copying the motion fence
         into a second handler is how two paths that must agree stop agreeing.
+
+        ``epoch`` is the motion fence a caller read BEFORE its own awaits. A
+        nudge reads the mount and asks its frame before it spawns this, and a
+        STOP that lands in those awaits has already advanced the epoch this
+        would read at its start, so it would pass the check below and slew.
+        None (a goto, which awaits nothing first) reads it here.
         """
         tel = hub.require("telescope")
         # Motion fence (W3.7): serialize the device-touching commit under the
         # hub motion lock and re-check the epoch immediately before dispatch,
         # so a STOP/abort that lands while this is awaiting (e.g. a stale
         # REMOTE goto racing a LOCAL abort) is fenced out at the mount.
-        epoch = hub._motion_epoch
+        if epoch is None:
+            epoch = hub._motion_epoch
         # #861: the target is J2000, the mount may want JNOW. Converted AFTER
         # the epoch is read, so a STOP that lands while the conversion awaits
         # (its EquatorialSystem probe is a device read) is still fenced out
         # below. The nudge route hands this J2000 too (it converts its READ
-        # back with from_mount_frame), so nothing converts twice.
-        slew_ra, slew_dec = await hub.to_mount_frame(tel, ra_hours, dec_deg)
+        # back with from_mount_frame), so nothing converts twice. ``jnow`` is
+        # the nudge's one frame decision (#962), used here as it was used for
+        # the read; a goto has no read to agree with, passes None, and asks.
+        slew_ra, slew_dec = await hub.to_mount_frame(tel, ra_hours, dec_deg,
+                                                     jnow=jnow)
         async with hub._motion_lock:
             if not hub._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")
@@ -9301,6 +9313,12 @@ def create_app(*, bind_host: str | None = None,
         NOT ``center=True``: a nudge is a small deliberate offset, and
         re-centring on a plate solve would undo the very thing that was asked
         for."""
+        # Motion fence (W3.7), read BEFORE the first await below: the position
+        # read and the frame probe are device reads, and a STOP that lands in
+        # either must still stop this nudge. It is handed to ``_plain_goto``,
+        # which re-checks it at the mount; read there instead, it would be the
+        # epoch the STOP had already advanced.
+        entry_epoch = hub._motion_epoch
         try:
             tel = hub.require("telescope")
         except DeviceError as e:
@@ -9329,7 +9347,17 @@ def create_app(*, bind_host: str | None = None,
         # Convert FIRST and slew J2000 - the frame every other target on this
         # server is in. Nudging in the mount's frame and slewing the answer as
         # J2000 would add a precession-sized error to EVERY tap.
-        from_ra, from_dec = await hub.from_mount_frame(tel, cur_ra, cur_dec)
+        #
+        # ONE FRAME DECISION for both ends (#962). The read and the slew used
+        # to decide the mount's frame separately, by different rules (the read
+        # honours the reprobe hold-off and the status bound, the slew always
+        # asks), so a J2000 mount whose first probe failed or was slow had its
+        # start precessed backwards and its target sent as it stood. Asked
+        # once, the way a slew asks, and the answer used by the read here and
+        # by the slew in ``_plain_goto``.
+        jnow = await hub.decide_mount_frame(tel)
+        from_ra, from_dec = await hub.from_mount_frame(tel, cur_ra, cur_dec,
+                                                       jnow=jnow)
         moved = nudge_offset(from_ra, from_dec, body.axis, arcmin)
         to_ra, to_dec = moved.ra_hours, moved.dec_deg
         # The DESTINATION passes the same two gates a goto does. A nudge is
@@ -9341,7 +9369,7 @@ def create_app(*, bind_host: str | None = None,
         solar = _solar_block(to_ra, to_dec)
         if solar is not None:
             raise HTTPException(409, detail=solar)
-        started = _spawn("goto", _plain_goto(to_ra, to_dec))
+        started = _spawn("goto", _plain_goto(to_ra, to_dec, jnow, entry_epoch))
         return {**started,
                 "from": {"ra_hours": from_ra, "dec_deg": from_dec},
                 "to": {"ra_hours": to_ra, "dec_deg": to_dec},
