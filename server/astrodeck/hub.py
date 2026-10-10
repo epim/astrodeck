@@ -3686,14 +3686,30 @@ class Hub:
         already been burned by is a FILTER card naming the wrong slot (every
         frame before 2026-08-02 is off by one). Two questions about one instant
         get one read; two instants get two.
+
+        BOUNDED (#999), by ``STATUS_DEVICE_READ_TIMEOUT_S`` through
+        ``_status_read``, as the status poll's own read of this wheel is. This
+        read follows the exposure of every capture, centring solve, rotate,
+        rotator sync and guide offset, and feeds a header card and a
+        judgement; a native wheel whose SDK read stalls in USB never trips a
+        transport timeout, so unbounded it held the caller for ever with the
+        camera lane already released. A read that does not return answers
+        None, the answer a read that raised gives: the slot is unknown, the
+        FILTER card is left off and no blackout slot is named, and the frame
+        goes on to be saved and published. The status bound and not the wheel
+        MOVE bound (``SOLVE_WHEEL_MOVE_TIMEOUT_S``): this is a read, and a
+        minute and a half a frame is no better than for ever on a live loop.
+        ``_status_read`` keeps ONE read in flight per wheel, so a stalled read
+        is never stacked under the next frame's, and says the stall once.
         """
         try:
             fw = self.devices.get("filterwheel")
             if not fw or not getattr(fw, "connected", False):
                 return None
-            pos = await fw.get_position()
+            pos = await self._status_read(
+                set(), "filterwheel", "position", fw, fw.get_position)
             return None if pos is None else int(pos)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - incl. StatusReadStalled
             return None
 
     async def _opaque_slot_in_beam(self, slot: int | None = ...) -> int | None:
