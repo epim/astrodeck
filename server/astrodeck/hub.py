@@ -541,13 +541,37 @@ def precess_jnow_to_j2000(ra_hours: float, dec_deg: float,
     return icrs.ra.hourangle % 24.0, float(icrs.dec.deg)
 
 
-async def _target_in_mount_frame(hub, tel, ra_hours: float,
-                                 dec_deg: float) -> tuple[float, float]:
+async def _precess_for_mount(hub, tel, ra_hours: float,
+                             dec_deg: float) -> tuple[float, float]:
+    """The J2000 -> mount-frame conversion behind ``Hub.to_mount_frame`` and
+    ``Hub.mount_frame_for_question``. A module function, not a method, so a
+    test double that binds either method onto a bare namespace still has it.
+
+    Fail-safe: if the astropy transform raises (e.g. an IERS hiccup on an
+    offline Pi), fall back to the raw coordinates and log."""
+    if not await hub._mount_expects_jnow(tel):
+        return ra_hours, dec_deg
+    try:
+        return await asyncio.to_thread(precess_j2000_to_jnow, ra_hours, dec_deg)
+    except Exception as e:  # noqa: BLE001 - availability over precision here
+        bus.log("warning", f"J2000->JNOW precession failed ({e}); "
+                           "slewing raw coordinates", "mount")
+        return ra_hours, dec_deg
+
+
+async def _target_in_mount_frame(hub, tel, ra_hours: float, dec_deg: float,
+                                 question: bool = False) -> tuple[float, float]:
     """A J2000 target as the mount expects it: ``Hub.to_mount_frame``, or the
     pair unchanged for a hub double that has none (the engine's own tests
     drive the slew and the pier guard with bare doubles; those pass the pair
-    through, as every non-Alpaca mount does)."""
-    convert = getattr(hub, "to_mount_frame", None)
+    through, as every non-Alpaca mount does).
+
+    ``question``: the caller only ASKS the mount about the target and does not
+    move to it, so it converts through ``Hub.mount_frame_for_question``, which
+    leaves the read path's reprobe hold-off alone. A double without that
+    method converts through ``to_mount_frame``."""
+    convert = (getattr(hub, "mount_frame_for_question", None) if question
+               else None) or getattr(hub, "to_mount_frame", None)
     if convert is not None:
         return await convert(tel, ra_hours, dec_deg)
     return ra_hours, dec_deg
@@ -584,7 +608,7 @@ async def destination_pier_side_in_mount_frame(hub, tel, ra_hours: float,
     the wrong side. Same conversion, same fail-safe, same bound (the caller
     wraps this in ``engine._pier_guard_read``)."""
     ra_hours, dec_deg = await _target_in_mount_frame(hub, tel, ra_hours,
-                                                     dec_deg)
+                                                     dec_deg, question=True)
     return await tel.destination_pier_side(ra_hours, dec_deg)
 
 
@@ -3352,14 +3376,18 @@ class Hub:
         a slew, and a J2000 mount is never sent a precessed target because
         an earlier probe failed."""
         self._mount_jnow_reprobe = None
-        if not await self._mount_expects_jnow(tel):
-            return ra_hours, dec_deg
-        try:
-            return await asyncio.to_thread(precess_j2000_to_jnow, ra_hours, dec_deg)
-        except Exception as e:  # noqa: BLE001 - availability over precision here
-            bus.log("warning", f"J2000->JNOW precession failed ({e}); "
-                               "slewing raw coordinates", "mount")
-            return ra_hours, dec_deg
+        return await _precess_for_mount(self, tel, ra_hours, dec_deg)
+
+    async def mount_frame_for_question(self, tel, ra_hours: float,
+                                       dec_deg: float) -> tuple[float, float]:
+        """``to_mount_frame`` for a QUESTION about a target rather than a move
+        to it: the slew gate's pier guard (#881). The same conversion, but the
+        read path's reprobe hold-off stays as it is. The guard asks at every
+        selection, once per live member, so clearing the hold-off there made
+        a mount whose EquatorialSystem probe keeps failing take one failing
+        probe per member per selection, and the next 2 s status poll probe
+        again. The slew that follows a guard still clears it and asks."""
+        return await _precess_for_mount(self, tel, ra_hours, dec_deg)
 
     async def from_mount_frame(self, tel, ra_hours: float,
                                dec_deg: float) -> tuple[float, float]:

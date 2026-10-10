@@ -259,6 +259,53 @@ async def test_the_conversion_runs_inside_the_guards_bound(monkeypatch):
     assert fake.destination_asks() == []
 
 
+async def test_the_guard_leaves_the_status_polls_reprobe_hold_off_alone(
+        monkeypatch):
+    """A mount whose EquatorialSystem probe keeps failing is asked again by
+    the read path only after its hold-off (#861 N6). The guard asks at every
+    selection, once per live member, so it must not clear that hold-off as a
+    slew does: one failed probe, then the guard's questions and the next
+    status poll ask nothing more. The slew still clears it and asks.
+
+    MUTANT "the guard clears the hold-off" (``question=True`` dropped from
+    ``destination_pier_side_in_mount_frame``'s conversion, so it goes through
+    ``to_mount_frame``): RED, every guard question probes again."""
+    from astrodeck.devices.base import DeviceError
+
+    _stub_precession(monkeypatch)
+    fake = PierMount(pier=WEST, equatorial_system=1)
+    e, hub = _guarded_engine(fake)
+    hub._mount_jnow_reprobe = None
+    hub._precess_memo = None
+    hub.mount_frame_for_question = Hub.mount_frame_for_question.__get__(hub)
+    hub.from_mount_frame = Hub.from_mount_frame.__get__(hub)
+    real_get = hub.tel._get
+    probes: list[str] = []
+
+    async def failing_probe(method, **params):
+        if method == "equatorialsystem":
+            probes.append(method)
+            raise DeviceError("Alpaca HTTP 500: fake")
+        return await real_get(method, **params)
+
+    hub.tel._get = failing_probe
+    t = _target(name="Fictional F", ra_hours=TARGET_RA, dec_deg=TARGET_DEC)
+
+    # The status poll's read asks once and fails: the hold-off is set.
+    await hub.from_mount_frame(hub.tel, 10.0, 40.0)
+    assert probes == ["equatorialsystem"]
+    # Three selections' worth of guard questions, then another status poll.
+    for _ in range(3):
+        await e._mount_floor_verdict(t)
+    await hub.from_mount_frame(hub.tel, 10.0, 40.0)
+    assert probes == ["equatorialsystem"], (
+        f"the guard re-probed a failing frame probe: {len(probes)} probes")
+    assert len(fake.destination_asks()) == 3
+    # A slew still asks.
+    await hub.to_mount_frame(hub.tel, TARGET_RA, TARGET_DEC)
+    assert probes == ["equatorialsystem", "equatorialsystem"]
+
+
 async def test_a_hub_with_no_frame_conversion_asks_the_pair_as_given():
     """A bare hub double has no ``to_mount_frame`` (the engine's own tests
     drive the guard with them), and the guard asks the pair unchanged, as
