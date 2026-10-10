@@ -61,6 +61,7 @@ import {
 import { POLAR_REASON, isPolarBusy } from "../capture/captureGate";
 import { resolveRoleConnected, useCanViewWeather } from "../../../../lib/caps";
 import { warmReadout } from "../../../../lib/cooling";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { suggestSubLength } from "../../../../lib/photometry";
 import { api } from "../../../../api";
 import {
@@ -301,7 +302,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
   // live through an alignment and came back as a raw 409.
   const polarOwns = isPolarBusy(polar.state, status?.busy_lanes) ? POLAR_REASON : null;
   const seqState = sequence?.state ?? null;
-  const flowOwns = seqState === "running" || seqState === "paused";
+  const flowOwns = runIsLive(sequence);
   const ownExtra = !flowOwns ? null
     : seqState === "paused" ? FLOW_OWNS_CAMERA_PAUSED : FLOW_OWNS_CAMERA;
 

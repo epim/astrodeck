@@ -14,6 +14,7 @@ import {
   Field, Led, LockedChip, LockedNote, Panel, SegmentedControl, Stat, Toggle,
 } from "../components/ui";
 import { accessPhrase, useCanControlCapture } from "../lib/caps";
+import { runIsLive } from "../lib/lastSessionFrame";
 import { isExposureInvalid } from "../lib/exposure";
 import { CAPTURE_PRESETS } from "../lib/capturePresets";
 import PickerButton from "../components/ui/PickerButton";
@@ -423,7 +424,8 @@ export default function CaptureView() {
   // A sequence (incl. PAUSED — it still holds the camera between frames, not
   // released back to manual control) owns the camera end-to-end; manual
   // Single/Loop racing it just 409s at the capture lock (r1 CAP-01 / R2-CAP-01).
-  const seqOwnsCamera = sequence.state === "running" || sequence.state === "paused";
+  // A cloud hold and an abort's wind-down own it too (`runIsLive`, #922).
+  const seqOwnsCamera = runIsLive(sequence);
   const captureBlocked = polarBusy || seqOwnsCamera; // can't expose while blocked
 
   // Exposure ≤0 silently produced a blank frame + a misleading "few stars"
@@ -1492,7 +1494,10 @@ export default function CaptureView() {
                Single/Loop must read as blocked here instead of 409ing after the tap. ---- */}
           {seqOwnsCamera && (
             <p className="text-[11px] text-warn mt-2 leading-snug">
-              {sequence.state === "paused" ? "Sequence paused" : "Sequence running"} — camera reserved.
+              {sequence.state === "paused" ? "Sequence paused"
+                : sequence.state === "holding" ? "Sequence holding"
+                  : sequence.state === "aborting" ? "Sequence stopping"
+                    : "Sequence running"} — camera reserved.
             </p>
           )}
 

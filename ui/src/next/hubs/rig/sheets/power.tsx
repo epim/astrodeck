@@ -57,6 +57,7 @@ import { nav } from "../../../router";
 import { useLock } from "../../../lib/gateHook";
 import { useEquipConnected, useSequence, useStatus, useStore } from "../../../../store";
 import { resolveRoleConnected } from "../../../../lib/caps";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
   getSwitchPorts, putSwitchPortSettings, setSwitchPort,
   type SwitchPortSettings,
@@ -132,8 +133,7 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
 
   const role = resolveRoleConnected("switch", status?.backend_links, status?.connected, equipConnected);
   const connected = role.connected;
-  const seqState = sequence?.state ?? null;
-  const runOwns = seqState === "running" || seqState === "paused";
+  const runOwns = runIsLive(sequence);
 
   const { lockedReason: capReason, onExplain } = useLock({
     cap: "control.power", needsRole: "switch",

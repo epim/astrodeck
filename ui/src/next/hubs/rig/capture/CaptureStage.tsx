@@ -23,6 +23,7 @@
 import { useRef, type JSX } from "react";
 import { PreviewStage, type StageControls } from "../../../../components/preview/PreviewStage";
 import { useLastSessionFrame } from "../../../../components/preview/useLastSessionFrame";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import ActivityRing from "../../../../components/ui/ActivityRing";
 import {
   useStore, usePreviews, useLivePreview, useSelectedPreviewId, useLivePreviewId,
@@ -119,7 +120,7 @@ export function CaptureStage(props: CaptureStageProps): JSX.Element {
     ? previews.filter((p) => p.id > selectedPreviewId).length
     : 0;
 
-  const runOwnsMount = sequence.state === "running" || sequence.state === "paused";
+  const runOwnsMount = runIsLive(sequence);
   const point = pointingLine({
     runOwnsMount,
     seqTarget: sequence.target ?? null,
