@@ -1619,17 +1619,8 @@ class Hub:
                         extra={"name": name})
         session = await get_backend("native").open(conn)
         dev = await session.get_device(role, conn)
-        await dev.connect()
-        dev.role = role                        # device identity for Profiles (A.6)
         old = self.devices.get(role)
         old_session = self._alpaca_sessions.get(role)
-        self.devices[role] = dev
-        self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
-        self._mount_jnow_reprobe = None
-        # retain the session so its httpx client is aclosed when this role is later
-        # replaced or the rig torn down (session-leak fix); close the one we are
-        # replacing so its keep-alive sockets don't accumulate per reconnect.
-        self._alpaca_sessions[role] = session
         # The SAME Alpaca device again (reconnect_role rebuilds one from its
         # record, #966) is not disconnected: the server keeps one Connected
         # state per device, so the old object's Connected=False would undo the
@@ -1643,6 +1634,37 @@ class Hub:
                 await old.disconnect()
             except Exception:
                 pass
+        # The new device's connect comes AFTER the old one's disconnect, never
+        # before (#987, #991). The comparison above reads two spellings of one
+        # endpoint ('localhost' and '127.0.0.1', a LAN name and its address) as
+        # two devices, and the server keeps one Connected state per device, so
+        # the last word on the slot must be the new device's.
+        try:
+            await dev.connect()
+        except (Exception, asyncio.CancelledError):
+            # The replacement never took and the hub keeps the old device, so
+            # put it back as it was: connect the old device again (it was
+            # disconnected above; a server that is gone fails this too, and the
+            # device then reads disconnected for the reconnect gate) and close
+            # the session opened for the replacement instead of leaking it.
+            if old and not replaced_same:
+                try:
+                    await old.connect()
+                except Exception:
+                    pass
+            try:
+                await session.close()
+            except Exception:
+                pass
+            raise
+        dev.role = role                        # device identity for Profiles (A.6)
+        self.devices[role] = dev
+        self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
+        self._mount_jnow_reprobe = None
+        # retain the session so its httpx client is aclosed when this role is later
+        # replaced or the rig torn down (session-leak fix); close the one we are
+        # replacing so its keep-alive sockets don't accumulate per reconnect.
+        self._alpaca_sessions[role] = session
         if old_session is not None:
             try:
                 await old_session.close()
