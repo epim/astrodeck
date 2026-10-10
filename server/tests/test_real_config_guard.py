@@ -261,6 +261,112 @@ def test_the_guard_body_names_a_reach_and_passes_a_clean_test(tmp_path,
         "(the real config file)."), str(cached.value)
 
 
+def _cached_read_verdict(tmp_path, monkeypatch) -> str | None:
+    """Load a store on a stand-in real config file in one guard window and
+    read it from its cache in the next, as the cached probe above does; the
+    second window's verdict, or None when it named nothing."""
+    from conftest import _config_reads_stay_off_the_real_one
+    real = tmp_path / "real" / "astrodeck.json"
+    with monkeypatch.context() as m:
+        m.setattr(_RealConfig, "files", frozenset({_RealConfig._key(real)}))
+        m.setattr(_RealConfig, "reads", [])
+        guard = _config_reads_stay_off_the_real_one("probe::load")
+        next(guard)
+        leaky = ConfigStore(path=real)
+        leaky.cfg()
+        with pytest.raises(AssertionError):
+            next(guard)
+        guard = _config_reads_stay_off_the_real_one("probe::cached")
+        next(guard)
+        leaky.cfg()
+        try:
+            next(guard)
+        except AssertionError as named:
+            return str(named)
+        except StopIteration:
+            return None
+    raise AssertionError("the guard's window yielded twice")
+
+
+def test_a_second_conftest_is_refused_and_cached_reads_stay_named(
+        tmp_path, monkeypatch):
+    """conftest.py executed a second time in this process is refused before
+    it changes anything, and after it the guard still names a read served
+    from a store's cache (#980).
+
+    conftest.py arms the guard at its own import: it wraps the disk methods
+    and ``cfg`` of ``ConfigStore`` and ``ProfileLibrary`` at the class and
+    moves ``config_store`` and ``CONFIG_DIR`` to a throwaway directory.
+    test_w15_tests_tree_guard.py's label case loaded the file by path to
+    reach ``_TheTreeMustNotMove``, which armed a SECOND guard over the first
+    for the rest of that worker. Both sets of wrappers keep the cached-real
+    marker under one key on the store, and the outer ``_load``, judging the
+    stand-in by its own record of the real file, popped the marker the inner
+    one had just set. Under ``--dist worksteal`` a worker that ran the w15
+    file before this one then failed the cached probe of the case above
+    with ``StopIteration``: in both full runs after backlog wave 20, and
+    every time the two cases run in that order under ``-n 0``. A full run
+    in which this file landed on another worker passed, which is why it
+    looked intermittent.
+
+    RED with the refusal removed (``if armed_by:`` at the top of
+    ``_watch_the_real_config`` made ``if False:``), observed:
+
+        >           assert verdict is not None and verdict.startswith(
+        E           AssertionError: after a second execution of conftest.py
+        the guard named no read from a store's cache: None
+        E           assert (None is not None)
+
+    and the case above, run after it, still passed (the ``finally`` below
+    took the second guard off). The other way round, the label case as it
+    was, run against the refusal, fails at its own line and leaves the
+    case above green:
+
+        E           RuntimeError: the real-config guard is already armed in
+        this process, by module 'conftest', and conftest.py is being
+        executed again, as module '_w15_conftest_probe' (#980). ...
+    """
+    import importlib.util
+    import shutil
+
+    seams = ((ConfigStore, "_load"), (ConfigStore, "cfg"),
+             (ConfigStore, "_save"), (ProfileLibrary, "_all"),
+             (ProfileLibrary, "get"), (ProfileLibrary, "save"),
+             (ProfileLibrary, "delete"))
+    watchers = [cls.__dict__[name] for cls, name in seams]
+    store = config_mod.config_store
+    path, cached, config_dir = store._path, store._cfg, config_mod.CONFIG_DIR
+    spec = importlib.util.spec_from_file_location("_980_second_conftest",
+                                                  _CONFTEST)
+    second = importlib.util.module_from_spec(spec)
+    refused = None
+    try:
+        try:
+            spec.loader.exec_module(second)
+        except RuntimeError as exc:
+            refused = str(exc)
+        verdict = _cached_read_verdict(tmp_path, monkeypatch)
+        assert verdict is not None and verdict.startswith(
+            "probe::cached reached the developer's real config: "
+            "ConfigStore.cfg (the real config file)."), (
+            "after a second execution of conftest.py the guard named no read "
+            f"from a store's cache: {verdict!r}")
+        assert refused is not None, "conftest.py armed a second guard"
+        assert ("already armed" in refused
+                and "'_980_second_conftest'" in refused), refused
+        assert [cls.__dict__[name] for cls, name in seams] == watchers
+        assert store._path == path and store._cfg is cached
+        assert config_mod.CONFIG_DIR == config_dir
+    finally:
+        if refused is None and hasattr(second, "_unwatch_real_config_guard"):
+            # A run without the refusal: take the second guard off again,
+            # so the rest of this worker is graded by one.
+            second._unwatch_real_config_guard()
+            store._path, store._cfg = path, cached
+            config_mod.CONFIG_DIR = config_dir
+            shutil.rmtree(second._CONFIG_COLLECTION_DIR, ignore_errors=True)
+
+
 #: The modules the S5 scan found singletons in, and the app, which binds
 #: most of them: imported before the scan below, so it cannot pass on a run
 #: that never loaded them.

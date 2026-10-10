@@ -174,13 +174,16 @@ def test_control_a_quiescent_run_reports_nothing(tmp_path):
 def test_the_default_label_keeps_the_original_headline():
     """`_TheTreeMustNotMove(root)` with no label is what it always was, so a
     caller written before the label existed (test_suite_guards_report_once.py
-    builds it that way) reads the same words."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_w15_conftest_probe", _CONFTEST)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert mod._TheTreeMustNotMove(Path(".")).HEADLINE == _SOURCE_HEADLINE
-    assert (mod._TheTreeMustNotMove(Path("."), label="test tree").HEADLINE
+    builds it that way) reads the same words.
+
+    From the conftest this run loaded, not a second copy loaded by path:
+    conftest.py arms the real-config guard at its own import, and this case
+    executing it again armed a second guard over the first, which then
+    named no cached read for the rest of the worker (#980). A second
+    execution is now refused (test_real_config_guard.py)."""
+    from conftest import _TheTreeMustNotMove
+    assert _TheTreeMustNotMove(Path(".")).HEADLINE == _SOURCE_HEADLINE
+    assert (_TheTreeMustNotMove(Path("."), label="test tree").HEADLINE
             == _TESTS_HEADLINE)
 
 
