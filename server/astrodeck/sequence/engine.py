@@ -11659,7 +11659,16 @@ class SequenceEngine:
             # the rejected original was NOT folded into the running median (only
             # ACCEPTED frames anchor it now), so let an accepted retake contribute
             # its single good sample — one logical frame, at most one median sample.
-            accepted = self._check_quality(new_info)
+            #
+            # GRADED AS THE KIND OF FRAME IT IS (#968). `_run_calibration`
+            # graded the frame this retake replaces with ``calibration=True``,
+            # which leaves out the star floor, the guide-RMS ceiling and the
+            # eccentricity ceiling: a dark has no stars and a flat is not
+            # guided. The retake used to be graded without it, so a retaken
+            # dark was thrown away as "shot with the guider stopped" and the
+            # retake was spent for a frame the first check would have kept.
+            accepted = self._check_quality(new_info,
+                                           calibration=target.calibration)
             self._reporter_record(target, step, new_info, accepted=accepted)
             if accepted:
                 self._record_frame(key, i, target, step, new_info,
@@ -15334,12 +15343,24 @@ class SequenceEngine:
     def _record_frame(self, key: str, i: int, target: Target, step, info: dict,
                       *, accepted: bool = True, guided: bool = True) -> None:
         now = time.time()
+        # A calibration target the plan does not hold (day darks, DUSK FLATS,
+        # cloud-hold darks) is not the plan's frame (#939, #969); the two
+        # readers below both ask.
+        plan_frame = self._plan_index(self._index_of_target(target),
+                                      target) is not None
         # Per-frame overhead EMA: cadence minus exposure, EXCLUDING any frame that
         # carried a dither/AF/flip (those are accounted analytically, so folding
         # them into the per-frame overhead would double-count and whipsaw the
         # finish clock). α=0.1 keeps one cloud-slowed frame from whipsawing it
         # (spec §5.2).
-        if self._last_frame_done > 0 and self._cur_exposure_s > 0 \
+        #
+        # AND EXCLUDING A THROWAWAY CALIBRATION FRAME (#969): the EMA prices
+        # the plan's frames (``frames_remaining * _overhead_ema``) and its
+        # sample count is what lets the ETA call itself confident. A 20-flat
+        # DUSK FLATS stage reached ETA_MIN_FRAMES before the first light, so
+        # the clock was confident on a cadence measured from flats, and the
+        # lights' overhead was an average that included them.
+        if plan_frame and self._last_frame_done > 0 and self._cur_exposure_s > 0 \
                 and not getattr(self, "_frame_had_event", False):
             overhead = (now - self._last_frame_done) - self._cur_exposure_s
             if overhead > 0:
@@ -15361,7 +15382,7 @@ class SequenceEngine:
         # percent before a light was shot, shortened the ETA's
         # `frames_remaining`, and ended the night past its own total. A
         # calibration target the plan DOES hold is in that total and counts.
-        if self._plan_index(self._index_of_target(target), target) is None:
+        if not plan_frame:
             self._calibration_frames_done += 1
         else:
             self._frames_done += 1
