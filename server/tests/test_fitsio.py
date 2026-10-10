@@ -1,16 +1,20 @@
 # Copyright (c) 2026 James Penick
 # SPDX-License-Identifier: Apache-2.0
 """FITS header correctness (save_fits)."""
+import math
 import re
 
 import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.time import Time
+from astropy.wcs import WCS
+from astropy.wcs.utils import proj_plane_pixel_scales
 
 from astrodeck import __version__
 from astrodeck.devices.base import CameraFrame
-from astrodeck.imaging.fitsio import FrameMeta, save_fits
+from astrodeck.imaging.fitsio import FrameMeta, save_fits, write_wcs
+from astrodeck.solve.base import WcsSolution
 
 # FITS 4.0 sec 4.4.2: 'YYYY-MM-DDThh:mm:ss[.s...]' with NO timezone designator.
 _DATE_OBS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$")
@@ -155,6 +159,116 @@ def test_wcs_writeback_roundtrips(tmp_path):
     # +Y: Dec increases ~scale north (cd22 > 0), RA ~unchanged
     assert py[1] == pytest.approx(world[1] + scale, abs=5e-5)
     assert py[0] == pytest.approx(world[0], abs=1e-5)
+
+
+# --------------------------------------- a degenerate solution, stamped (#786)
+# wcslib reads an all-zero CD matrix as a CDELT of 1, so a frame stamped with
+# one reads back as a 1 deg/pixel solution: a field of view thousands of
+# degrees across that every consumer of the header (the coverage check, the
+# frame overlay, the field identification) would believe. The contract is the
+# same for both writers (save_fits' solve-then-save and write_wcs' post-hoc):
+# a solution with no usable scale, or a number in it that is not finite, leaves
+# NO celestial WCS in the file. A NaN is the same defect another way: astropy
+# refuses it half way through the block, and write_wcs flushes what it had
+# written so far -- CTYPE and CRVAL, no scale -- which reads as 1 deg/pixel.
+
+_NAN = float("nan")
+_INF = float("inf")
+_REF = dict(crval1=83.8221, crval2=-5.3911, crpix1=8.5, crpix2=8.5)
+_WCS_KEYS = ("CTYPE1", "CTYPE2", "CUNIT1", "CUNIT2", "CRVAL1", "CRVAL2",
+             "CRPIX1", "CRPIX2", "CD1_1", "CD1_2", "CD2_1", "CD2_2",
+             "CDELT1", "CDELT2", "CROTA2")
+_ARCSEC = 1.5 / 3600.0
+
+_DEGENERATE = {
+    "no scale at all": dict(),
+    "all-zero CD": dict(cd11=0.0, cd12=0.0, cd21=0.0, cd22=0.0),
+    "singular CD": dict(cd11=1e-4, cd12=1e-4, cd21=1e-4, cd22=1e-4),
+    "CD with only its first term": dict(cd11=-_ARCSEC),
+    "NaN in the CD": dict(cd11=_NAN, cd12=0.0, cd21=0.0, cd22=_ARCSEC),
+    "inf in the CD": dict(cd11=-_ARCSEC, cd12=_INF, cd21=0.0, cd22=_ARCSEC),
+    "zero CDELT pair": dict(cdelt1=0.0, cdelt2=0.0),
+    "one zero CDELT": dict(cdelt1=-_ARCSEC, cdelt2=0.0),
+    "NaN CDELT": dict(cdelt1=_NAN, cdelt2=_ARCSEC),
+    "NaN CROTA2": dict(cdelt1=-_ARCSEC, cdelt2=_ARCSEC, crota2=_NAN),
+    "NaN reference point": dict(cd11=-_ARCSEC, cd12=0.0, cd21=0.0,
+                                cd22=_ARCSEC, crval1=_NAN),
+    "NaN equinox": dict(cd11=-_ARCSEC, cd12=0.0, cd21=0.0, cd22=_ARCSEC,
+                        equinox=_NAN),
+}
+
+
+def _stamp(tmp_path, how, **cards):
+    """A 16x16 light carrying ``WcsSolution(**cards)`` by writer ``how``."""
+    solution = WcsSolution(**{**_REF, **cards})
+    if how == "save_fits":
+        return save_fits(_frame(), tmp_path / "light.fits",
+                         meta=FrameMeta(wcs=solution))
+    path = save_fits(_frame(), tmp_path / "light.fits")
+    return write_wcs(path, solution)
+
+
+@pytest.mark.parametrize("how", ["save_fits", "write_wcs"])
+@pytest.mark.parametrize("cards", list(_DEGENERATE.values()),
+                         ids=list(_DEGENERATE))
+def test_a_degenerate_solution_leaves_no_celestial_wcs(tmp_path, how, cards):
+    """RED under mutation "the guard back to the scale-less test" (the
+    ``if not _has_usable_scale(wcs):`` of ``_apply_wcs`` -> ``if wcs.cd11 is
+    None and wcs.cdelt1 is None:``), observed on every case but the first,
+    which that guard already caught:
+
+        >       assert [k for k in _WCS_KEYS if k in header] == []
+        E       AssertionError: assert ['CTYPE1', 'C...'CRVAL2', ...] == []
+        E         Left contains 12 more items, first extra item: 'CTYPE1'
+
+    and, out of ``save_fits`` for the NaN and inf cases,
+    ``ValueError: Floating point nan values are not allowed in FITS headers``.
+    """
+    path = _stamp(tmp_path, how, **cards)
+    header = fits.getheader(path)
+    assert [k for k in _WCS_KEYS if k in header] == []
+    assert not WCS(header).has_celestial
+    # the frame itself is untouched by the refusal
+    assert header["NAXIS1"] == 16 and header["EXPTIME"] == 1.0
+
+
+_S = _ARCSEC
+_C30, _S30 = math.cos(math.radians(30.0)), math.sin(math.radians(30.0))
+
+#: (cards, expected degrees per pixel along x and along y)
+_USABLE_SCALE = {
+    "north-up CD": (dict(cd11=-_S, cd12=0.0, cd21=0.0, cd22=_S), (_S, _S)),
+    "CD rotated 30 degrees": (
+        dict(cd11=-_S * _C30, cd12=-_S * _S30, cd21=-_S * _S30,
+             cd22=_S * _C30), (_S, _S)),
+    "mirrored CD (positive determinant)": (
+        dict(cd11=_S, cd12=0.0, cd21=0.0, cd22=_S), (_S, _S)),
+    "different scale on each axis": (
+        dict(cd11=-_S, cd12=0.0, cd21=0.0, cd22=2.0 * _S), (_S, 2.0 * _S)),
+    "a tenth of an arcsecond per pixel": (
+        dict(cd11=-_S / 15.0, cd12=0.0, cd21=0.0, cd22=_S / 15.0),
+        (_S / 15.0, _S / 15.0)),
+    "CDELT and CROTA2": (
+        dict(cdelt1=-_S, cdelt2=_S, crota2=30.0), (_S, _S)),
+    "CDELT1 alone": (dict(cdelt1=-_S), (_S, _S)),
+}
+
+
+@pytest.mark.parametrize("how", ["save_fits", "write_wcs"])
+@pytest.mark.parametrize("cards,scales", list(_USABLE_SCALE.values()),
+                         ids=list(_USABLE_SCALE))
+def test_a_solution_with_a_scale_is_stamped_at_that_scale(
+        tmp_path, how, cards, scales):
+    """The refusal above must not reach a real solution: each of these reads
+    back as a celestial WCS whose pixel scale is the one that went in."""
+    path = _stamp(tmp_path, how, **cards)
+    w = WCS(fits.getheader(path))
+    assert w.has_celestial
+    assert tuple(proj_plane_pixel_scales(w)) == pytest.approx(scales, rel=1e-9)
+    # one pixel from the reference pixel is one scale away on the sky, not
+    # one degree: the stamp does not read as the 1 deg/px default
+    footprint = w.calc_footprint(axes=(16, 16), center=False)
+    assert max(abs(footprint[:, 1] - _REF["crval2"])) < 20.0 * max(scales)
 
 
 # ------------------------------------------------------- GN-07 (mount lies)
