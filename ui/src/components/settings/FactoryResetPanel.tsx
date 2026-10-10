@@ -37,6 +37,7 @@ import { Panel, HonestButton, LockedNote, LOCKED_CLASS } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
 import { accessPhrase, useCanAdminUsers } from "../../lib/caps";
+import { runIsLive } from "../../lib/lastSessionFrame";
 
 /** The typed-word interlock. MUST agree with the server's check in
  *  `api/app.py::factory_reset_apply` (trimmed + case-folded): a phone keyboard
@@ -182,11 +183,12 @@ export default function FactoryResetPanel(): JSX.Element {
   // the sentence on screen holds still: inside a run, busy_label flickers
   // between "capturing" and null between subs, and the verdict is "blocked"
   // either way — only the reason named would have jittered. A paused sequence
-  // still owns the engine task, so it blocks too.
+  // still owns the engine task, so it blocks too - and so do a cloud hold and
+  // an abort's wind-down (`runIsLive`, #922).
   const rig = useStatus();
-  const seqState = useSequence().state;
+  const sequence = useSequence();
   const rigBlocker = rig
-    ? seqState === "running" || seqState === "paused"
+    ? runIsLive(sequence)
       ? "a sequence is running"
       : rig.busy
         ? `rig is ${rig.busy}`

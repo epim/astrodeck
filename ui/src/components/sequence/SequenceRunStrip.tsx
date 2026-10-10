@@ -16,6 +16,7 @@
    single client-side timer. */
 import type { JSX } from "react";
 import { useStore } from "../../store";
+import { runIsLive } from "../../lib/lastSessionFrame";
 import ActivityRing from "../ui/ActivityRing";
 
 function fmtEta(s: number): string {
@@ -26,9 +27,9 @@ function fmtEta(s: number): string {
 
 export default function SequenceRunStrip(): JSX.Element | null {
   const seq = useStore((s) => s.sequence);
-  const live = seq.state === "running" || seq.state === "paused"
-    || seq.state === "aborting";
-  if (!live) return null;
+  // A cloud hold is the strip's longest-lived state on a cloudy night, so it is
+  // live here exactly as it is everywhere else (`runIsLive`, #922).
+  if (!runIsLive(seq)) return null;
 
   const p = seq.progress;
   const exposure = p?.current_exposure_s;
@@ -48,12 +49,13 @@ export default function SequenceRunStrip(): JSX.Element | null {
                       flex items-center gap-3 min-h-10">
         <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${
           seq.state === "running" ? "bg-accent blink"
-            : seq.state === "aborting" ? "bg-warn blink" : "bg-warn"}`} />
+            : seq.state === "paused" ? "bg-warn" : "bg-warn blink"}`} />
         <span className="min-w-0">
           <span className="text-[11px] tracking-widest uppercase text-dim block truncate"
             aria-live="polite">
             {seq.state === "running" ? (seq.target || seq.plan_name || "running")
-              : seq.state === "aborting" ? "stopping…" : "paused"}
+              : seq.state === "aborting" ? "stopping…"
+                : seq.state === "holding" ? "holding" : "paused"}
           </span>
           {p && (
             <span className="text-[10px] text-faint mono tabular-nums block">

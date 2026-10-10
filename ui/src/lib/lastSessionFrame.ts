@@ -44,8 +44,10 @@ import { viewWidthFor } from "./frameView";
  * shooting is not published to us, so the target test below could never pass —
  * including it would only buy a library walk whose result is always refused.
  *
- * NOT the same predicate as SequenceRunStrip's, which still omits "holding" and
- * so still vanishes during a hold. That is its own defect in its own file.
+ * THE ONE PREDICATE. Every surface that means "a run is live" calls this
+ * instead of spelling the states out (#821, #922): a hand-written
+ * `running || paused` reads a cloud hold or an abort's wind-down as no run at
+ * all, while the rig's `engine.running` is true in both.
  */
 export function runIsLive(seq: SequenceState | null | undefined): boolean {
   const s = seq?.state;

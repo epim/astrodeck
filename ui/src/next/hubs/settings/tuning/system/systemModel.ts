@@ -15,6 +15,8 @@
 // render tree into the lazily-split next bundle).
 
 import { accessPhrase } from "../../../../../lib/caps";
+import { runIsLive } from "../../../../../lib/lastSessionFrame";
+import type { SequenceState } from "../../../../../types";
 
 // ============================================================ the typed word
 
@@ -123,12 +125,13 @@ export function phaseLabel(phase: string | undefined | null): string {
  *  only so the sentence holds still: inside a run, busy_label flickers between
  *  "capturing" and null between subs, and the verdict is "blocked" either way -
  *  only the reason named would have jittered. A paused sequence still owns the
- *  engine task, so it blocks too. */
+ *  engine task, so it blocks too - and so does a cloud hold, the long-lived
+ *  state on a cloudy night, and an abort's wind-down (`runIsLive`, #922). */
 export function rigBlocker(
-  seqState: string | undefined | null,
+  seqState: SequenceState["state"] | undefined | null,
   busyWord: string | undefined | null,
 ): string | null {
-  if (seqState === "running" || seqState === "paused") return "a sequence is running";
+  if (seqState && runIsLive({ state: seqState })) return "a sequence is running";
   if (busyWord) return `rig is ${busyWord}`;
   return null;
 }

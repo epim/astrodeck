@@ -25,6 +25,7 @@
 
 import { accessPhrase, capAllowed } from "../../../../lib/caps";
 import { isExposureInvalid } from "../../../../lib/exposure";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { lockReason } from "../../../lib/gate";
 import type { Principal, RigStatus, SequenceState, WsPhase } from "../../../../types";
 
@@ -40,7 +41,8 @@ export interface CaptureGateInput {
   wsPhase: WsPhase;
   /** `polar.state` is running or paused - alignment owns the camera. */
   polarBusy: boolean;
-  /** The sequence's own state; running AND paused both hold the camera. */
+  /** The sequence's own state; every live state holds the camera (running,
+   *  paused, holding for cloud, aborting: `seqIsLive`). */
   seqState: SequenceState["state"] | null;
   /** The RAW draft strings, never numbers: "", "1e9" and "-3" have to be able
    *  to block the shutter, and binding these to a number is what silently
@@ -72,7 +74,18 @@ export const POLAR_NOTICE = "Can't capture during polar alignment - stop alignme
 export function sequenceNotice(seqState: SequenceState["state"] | null): string | null {
   if (seqState === "paused") return "Sequence paused - camera reserved.";
   if (seqState === "running") return "Sequence running - camera reserved.";
+  // The other two live states hold the camera exactly as the first two do: a
+  // refused button with a reason and no notice under it is half an explanation.
+  if (seqState === "holding") return "Sequence holding - camera reserved.";
+  if (seqState === "aborting") return "Sequence stopping - camera reserved.";
   return null;
+}
+
+/** Is a run live, from the bare state word the gate input carries. The shared
+ *  `runIsLive` takes the slice; a cloud hold and an abort's wind-down are live
+ *  and own the camera exactly as running and paused do (#922). */
+export function seqIsLive(seqState: SequenceState["state"] | null | undefined): boolean {
+  return seqState != null && runIsLive({ state: seqState });
 }
 
 // -------------------------------------------------------------- VIDEO (D-RIG-1)
@@ -147,7 +160,7 @@ export function videoRefusal(
   const access = accessReason(inp);
   if (access) return access;
   if (inp.polarBusy) return POLAR_REASON;
-  if (inp.seqState === "running" || inp.seqState === "paused") return SEQUENCE_REASON;
+  if (seqIsLive(inp.seqState)) return SEQUENCE_REASON;
   if (inp.looping) return VIDEO_LIVE_LOOP_REASON;
   if (v.starting) return VIDEO_STARTING_REASON;
   if (v.recording) return VIDEO_RECORDING_REASON;
@@ -262,7 +275,8 @@ export function exposeReason(inp: CaptureGateInput): string | null {
   if (inp.polarBusy) return POLAR_REASON;
   // PAUSED still holds the camera between frames - it is not released back to
   // manual control, and racing it just 409s at the capture lock (r1 CAP-01).
-  if (inp.seqState === "running" || inp.seqState === "paused") return SEQUENCE_REASON;
+  // So does a cloud hold (hold darks, cloud probes) and an abort's wind-down.
+  if (seqIsLive(inp.seqState)) return SEQUENCE_REASON;
   if (isExposureInvalid(inp.exposureRaw)) return EXPOSURE_FIX_REASON;
   if (isGainInvalid(inp.gainRaw, inp.maxGain)) return GAIN_FIX_REASON;
   // A start the rig has accepted but not yet confirmed still owns the camera.

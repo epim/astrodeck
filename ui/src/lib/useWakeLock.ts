@@ -15,6 +15,7 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import { useMonitorAwake } from "./touchStore";
+import { runIsLive } from "./lastSessionFrame";
 
 // Minimal structural types so we don't depend on lib.dom's WakeLock typings being
 // present in every toolchain (older @types/* lack them).
@@ -118,9 +119,10 @@ export function useWakeLock(active: boolean): { supported: boolean } {
  * narrow store selectors so it doesn't widen App's subscription (R27).
  */
 export function useMonitorWakeLock(): { supported: boolean; active: boolean } {
-  const seqRunning = useStore(
-    (s) => s.sequence.state === "running" || s.sequence.state === "paused",
-  );
+  // `runIsLive`, not running-or-paused: a cloud hold is the long-lived state on
+  // a cloudy night and an abort's wind-down is minutes long, and the screen of a
+  // monitor tablet must stay awake through both (#922).
+  const seqRunning = useStore((s) => runIsLive(s.sequence));
   const monitorAwake = useMonitorAwake();
   const active = seqRunning || monitorAwake;
   const { supported } = useWakeLock(active);

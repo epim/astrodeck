@@ -47,6 +47,7 @@ import "./guided/guided.css";
 import { openSettingsPanel } from "./lib/settingsNavigation";
 import { effectiveProviders } from "./lib/effective";
 import { believedPointing, positionKnown } from "./lib/slewController";
+import { runIsLive } from "./lib/lastSessionFrame";
 
 const GuidedHome = lazy(() => import("./guided/GuidedHome"));
 
@@ -433,7 +434,8 @@ export default function App() {
   const Active = EAGER_VIEWS[view];
   const camConnected = !!status?.connected?.camera?.connected;
   const mountConnected = !!status?.connected?.telescope?.connected;
-  const seqRunning = sequence.state === "running" || sequence.state === "paused";
+  // A cloud hold and an abort's wind-down are the run too (`runIsLive`, #922).
+  const seqRunning = runIsLive(sequence);
   const believed = believedPointing(status?.mount);
   const seqError = sequence.state === "error";
   const dim = linkDown || telemetryStale;
