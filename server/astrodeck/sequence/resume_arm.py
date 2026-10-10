@@ -955,7 +955,8 @@ def spent_tonight(session: Session, site, twilight_deg: float,
 
     def nothing_at(at: float) -> bool:
         return nothing_to_shoot_tonight(session, recentre_candidates(
-            session, night, site=site, twilight_deg=twilight_deg, now=at))
+            session, night, site=site, twilight_deg=twilight_deg, now=at),
+            night)
 
     if not nothing_at(now):
         return False

@@ -57,7 +57,8 @@ from astrodeck.sequence.engine import SequenceEngine
 from astrodeck.sequence.models import (DuskFlatsPlan, ExposureStep,
                                        SequencePlan, Target)
 from astrodeck.sequence.resume_arm import (NOTHING_TONIGHT, RETRY_INTERVAL_S,
-                                           ResumeArm, nothing_to_shoot_tonight)
+                                           ResumeArm, nothing_to_shoot_tonight,
+                                           spent_tonight)
 from astrodeck.sequence.session import Session, SessionFrame, session_store
 
 NIGHT_ONE = "2026-03-10"
@@ -453,3 +454,16 @@ class TestNothingToShootTonightReadsCalibrationRecords:
                                                  ts=1.0, night=NIGHT_ONE))
         assert s.owed() == 0
         assert not nothing_to_shoot_tonight(s, [], night=NIGHT_ONE)
+
+
+def test_the_wind_down_counts_tonights_unmetered_flats_as_spent():
+    """The wind-down's cooler question (``spent_tonight``, #887) asks the
+    refusal the ladder asks, so it must read tonight's records too: a session
+    whose every owed flat would not meter tonight is spent, and its cooler may
+    warm, as the ladder will not restart it. Asked on the next night the same
+    session is not spent. MUTANT "spent_tonight asks without the night" (the
+    ``night`` argument dropped from its ``nothing_to_shoot_tonight`` call)
+    turns the first assertion red."""
+    s = _calibration_session(light_done=True)
+    assert spent_tonight(s, None, -12.0, _evening_of(NIGHT_ONE))
+    assert not spent_tonight(s, None, -12.0, _evening_of(NIGHT_TWO))
