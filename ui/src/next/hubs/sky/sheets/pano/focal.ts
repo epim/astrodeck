@@ -6,14 +6,15 @@
 // at f0, so r = f_true / (f0 (1 + s_g)) whatever came before it, and the running estimate is f0 x median(r). It is
 // never f <- f x median: that applies the correction again on every ratio and the series runs away from the truth.
 // The lock fires once there are LOCK_MIN_RATIOS ratios whose MAD / median is at most LOCK_MAX_MAD_PCT. It is
-// f_lock = f_true / (1 + s_g), the focal in gyro degrees, and its sd is frozen. The closure then swaps that for the
-// ring's own scale: f_closed = f_lock x Theta_img / (T_true - Theta_gyro), good to 0.139 % (0.5 degrees over 360).
+// f_lock = f_true / (1 + s_g), the focal in gyro degrees, and its sd is frozen, floored at LOCK_SD_FLOOR_PCT (S18).
+// The closure then swaps that for the ring's own scale: f_closed = f_lock x Theta_img / (T_true - Theta_gyro), good to
+// 0.139 % (0.5 degrees over 360).
 //
 // Which pairs are steady (aligned chain keyframes, |dOmega| < 2 deg/s, 0.5 s after the onset) belongs to the
 // caller. This class takes the ratios it is given and refuses only what is not a ratio.
 import type { FocalLike, FocalSource, FocalState } from './types';
 
-export const LOCK_MIN_RATIOS = 5, LOCK_MAX_MAD_PCT = 3, PRIOR_SD_PCT = 20, MIN_GYRO_YAW_DEG = 6, CLOSED_SD_PCT = 0.139;
+export const LOCK_MIN_RATIOS = 5, LOCK_MAX_MAD_PCT = 3, PRIOR_SD_PCT = 20, MIN_GYRO_YAW_DEG = 6, CLOSED_SD_PCT = 0.139, LOCK_SD_FLOOR_PCT = 0.55;
 
 /** A normal distribution's sd is 1.4826 x its MAD. */
 const MAD_TO_SD = 1.4826;
@@ -49,7 +50,7 @@ export class FocalEstimator implements FocalLike {
   /** The prior, then f0 x median ratio, then the locked value, then the closed one. */
   get fBest(): number { return this.best; }
   get state(): FocalState { return this.phase; }
-  /** The prior's sd, then the lock's (frozen), then CLOSED_SD_PCT. */
+  /** The prior's sd, then the lock's (frozen, never under LOCK_SD_FLOOR_PCT), then CLOSED_SD_PCT. */
   get sdPct(): number { return this.sd; }
   /** Accepted ratios; frozen at the lock. */
   get ratios(): number { return this.ratioList.length; }
@@ -72,7 +73,9 @@ export class FocalEstimator implements FocalLike {
 
     this.phase = 'locked';
     this.measure = this.best;
-    this.sd = MAD_TO_SD * mad / median / Math.sqrt(n) * 100;
+    // The lock fires at the fifth ratio in practice, and a 5-sample MAD is itself noisy: the spread alone understated the
+    // real lock error (S18). The floor is the sd of that error measured over seeded 60-degree pans.
+    this.sd = Math.max(MAD_TO_SD * mad / median / Math.sqrt(n) * 100, LOCK_SD_FLOOR_PCT);
     return 'locked-now';
   }
 

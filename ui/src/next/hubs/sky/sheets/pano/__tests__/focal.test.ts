@@ -15,9 +15,17 @@
 //   * sdPct recomputed after the lock instead of frozen;
 //   * CLOSED_SD_PCT not applied by `closeLoop`;
 //   * `closeLoop` working from `fBest` instead of `fMeasure` (a second closure compounds).
+//
+// S18 (the sd floor). Mutant: the floor removed, so the locked sdPct is the bare 1.4826 x MAD / median / sqrt(n) x 100.
+// The case that catches it is `over 2,000 seeded pans the lock error exceeds 3 x sdPct in at most 1 %`: with the bare
+// value the lock error exceeds 3 x sdPct on about 13 % of pans. Run against focal.ts one at a time, see the FB4 report:
+// the floor removed; the floor value changed; the floor applied as a ceiling; sqrt(n) fixed at 5 (the n = 8 lock);
+// the 3 % boundary made strict (ratios 97, 97, 100, 103, 103).
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { CLOSED_SD_PCT, FocalEstimator, LOCK_MAX_MAD_PCT, LOCK_MIN_RATIOS, MIN_GYRO_YAW_DEG, PRIOR_SD_PCT } from '../focal';
+import {
+  CLOSED_SD_PCT, FocalEstimator, LOCK_MAX_MAD_PCT, LOCK_MIN_RATIOS, LOCK_SD_FLOOR_PCT, MIN_GYRO_YAW_DEG, PRIOR_SD_PCT,
+} from '../focal';
 import type { FocalLike } from '../types';
 
 let passed = 0;
@@ -85,7 +93,7 @@ const fGyro = (gyroScale = GYRO_SCALE) => F_TRUE / (1 + gyroScale);
 // ---- Prior, ratios and the 6-degree minimum ----------------------------------------------------------------------
 
 test('constants are the block of SPEC-v2 3.4', () => {
-  assert.deepEqual([LOCK_MIN_RATIOS, LOCK_MAX_MAD_PCT, PRIOR_SD_PCT, MIN_GYRO_YAW_DEG, CLOSED_SD_PCT], [5, 3, 20, 6, 0.139]);
+  assert.deepEqual([LOCK_MIN_RATIOS, LOCK_MAX_MAD_PCT, PRIOR_SD_PCT, MIN_GYRO_YAW_DEG, CLOSED_SD_PCT, LOCK_SD_FLOOR_PCT], [5, 3, 20, 6, 0.139, 0.55]);
 });
 
 test('a new estimator is the prior: fMeasure = fBest = prior, state prior, sdPct as given, no ratios', () => {
@@ -178,11 +186,34 @@ test('the lock needs MAD / median at most 3 %, the MAD raw and not scaled by 1.4
   assert.deepEqual(states, ['collecting', 'collecting', 'collecting', 'collecting', 'collecting', 'collecting', 'collecting', 'locked-now']);
   assert.equal(f.ratios, 8);
   near(f.fBest, F_TRUE * 1.0, 1e-12);
-  // A mean in place of the median would not agree: the same eight ratios average 1.0.
+  // An n = 8 lock grades the sqrt(n) of sdPct, which the other locks here (n = 5) cannot tell from sqrt(5): MAD 0.025 over
+  // median 1.0 gives 1.4826 x 0.025 / sqrt 8 x 100 = 1.3104, above the floor, so it is the bare definition.
+  near(f.sdPct, 1.3104, 5e-5);
+  near(f.sdPct, 1.4826 * 0.025 / 1 / Math.sqrt(8) * 100, 1e-9);
+  // The first five of those ratios alone have MAD / median 5 % and do not lock. This block does not tell a mean from a
+  // median, since the five average 1.0, which is their median; the running-estimate case does, on a drifting series.
   const g = priorWith(1);
   g.addRatio(10, 10); g.addRatio(11, 10); g.addRatio(9, 10); g.addRatio(10.5, 10);
   assert.equal(g.addRatio(9.5, 10), 'collecting');
   assert.equal(g.state, 'prior');
+});
+
+test('the lock takes MAD / median of exactly 3 %: ratios 97, 97, 100, 103, 103 lock on the fifth, 3.1 % does not (S18)', () => {
+  // The ratios are the integers themselves, and the estimator is scale free, so the arithmetic is exact. As 0.97, 1.0 and
+  // 1.03 they would not lock: 1 - 0.97 and 1.03 - 1 both round to 0.030000000000000027, which reads as 3.0000000000000027 %.
+  const lockOn = (ratios: readonly number[]) => {
+    const f = priorWith(1);
+    return { f, states: ratios.map(r => f.addRatio(r * 10, 10)) };
+  };
+  const at = lockOn([97, 97, 100, 103, 103]);   // median 100, deviations 3, 3, 0, 3, 3: MAD 3
+  assert.deepEqual(at.states, ['collecting', 'collecting', 'collecting', 'collecting', 'locked-now']);
+  assert.equal(at.f.state, 'locked');
+  assert.equal(at.f.ratios, 5);
+  assert.equal(at.f.fBest, F_TRUE * 100);
+  near(at.f.sdPct, 1.4826 * 3 / 100 / Math.sqrt(5) * 100, 1e-9);   // 1.9891, over the floor
+  const past = lockOn([969, 969, 1000, 1031, 1031]);   // MAD 31 over median 1000: 3.1 %
+  assert.deepEqual(past.states, ['collecting', 'collecting', 'collecting', 'collecting', 'collecting']);
+  assert.equal(past.f.state, 'prior');
 });
 
 test('the lock freezes fMeasure, fBest, ratios and sdPct; later ratios return locked and change nothing', () => {
@@ -199,16 +230,25 @@ test('the lock freezes fMeasure, fBest, ratios and sdPct; later ratios return lo
   }
 });
 
-test('sdPct after the lock is 1.4826 x MAD / median / sqrt(n) x 100, from the ratios at the lock', () => {
-  // 1.18, 1.19, 1.20, 1.21, 1.22: median 1.20, MAD 0.01. Worked by hand: 1.4826 x 0.01 / 1.20 / sqrt 5 x 100 = 0.5525.
+test('sdPct after the lock is max(1.4826 x MAD / median / sqrt(n) x 100, 0.55), from the ratios at the lock', () => {
+  // 1.18, 1.19, 1.20, 1.21, 1.22: median 1.20, MAD 0.01. Worked by hand: 1.4826 x 0.01 / 1.20 / sqrt 5 x 100 = 0.5525,
+  // just over the floor, so the definition stands.
   const f = priorWith(1);
   for (const r of [1.18, 1.20, 1.21, 1.19, 1.22]) f.addRatio(r * 10, 10);
   near(f.sdPct, 0.5525, 5e-5);
   near(f.sdPct, 1.4826 * 0.01 / 1.2 / Math.sqrt(5) * 100, 1e-9);
-  // Identical ratios have no spread: the definition gives 0 and nothing floors it.
+  // A tight lock is floored (S18): MAD 0.005 over median 1.2 is 0.2763 by the definition, and identical ratios have no
+  // spread at all. Five ratios say little about the lock error however close they sit.
+  const tight = priorWith(1);
+  for (const r of [1.19, 1.195, 1.2, 1.205, 1.21]) tight.addRatio(r * 10, 10);
+  assert.equal(tight.state, 'locked');
+  assert.ok(1.4826 * 0.005 / 1.2 / Math.sqrt(5) * 100 < 0.28, 'the case is under the floor by its definition');
+  assert.equal(tight.sdPct, 0.55);
   const g = priorWith(1);
   for (let i = 0; i < 5; i++) g.addRatio(12, 10);
-  assert.equal(g.sdPct, 0);
+  assert.equal(g.state, 'locked');
+  assert.equal(g.sdPct, 0.55);
+  assert.equal(g.sdPct, LOCK_SD_FLOOR_PCT);
 });
 
 // ---- The synthetic 60-degree pan ---------------------------------------------------------------------------------
@@ -253,8 +293,9 @@ test('a 60-degree pan with 1.5 % gyro scale locks at 5-12 ratios, fBest within 2
       const t = runPan(seed, factor);
       const tag = `prior x ${factor.toFixed(3)} seed ${seed}`, err = Math.abs(rel(t.fAtLock, fGyro()));
       assert.ok(t.lockedAt >= 5 && t.lockedAt <= 12, `${tag}: locked at ${t.lockedAt} ratios`);
-      // The spec's figure is a two-sigma-and-a-half claim (the ratio noise is 1 % and the lock takes the median of 5):
-      // it holds on the first hundred pans of each prior, and over all 400 only the odd pan lands past it.
+      // The spec's figure is a 3.5-sigma claim, not a bound (S19): the lock error has an sd of about 0.55 % (a 1 % ratio noise
+      // through the median of 5), so 2 % is 3.6 sigma. It holds on the first hundred pans of each prior, and over all 400
+      // only the odd pan lands past it.
       if (seed <= 100) assert.ok(err < 0.02, `${tag}: fBest at the lock ${(rel(t.fAtLock, fGyro()) * 100).toFixed(2)} % off`);
       assert.ok(err < 0.035, `${tag}: fBest at the lock ${(rel(t.fAtLock, fGyro()) * 100).toFixed(2)} % off`);
       if (err >= 0.02) beyond2++;
@@ -305,21 +346,47 @@ test('the lock follows the gyro scale: f_true / (1 + s_g) for -2 %, 0 and +3 %',
   }
 });
 
-test('sdPct follows its definition on every pan: 1.4826 x MAD / median / sqrt(n) x 100 over the ratios at the lock', () => {
-  let sum = 0;
+test('sdPct follows its definition on every pan: max(1.4826 x MAD / median / sqrt(n) x 100, 0.55) over the ratios at the lock', () => {
+  let sum = 0, floored = 0;
   for (const factor of PRIOR_FACTORS) {
     for (let seed = 1; seed <= 50; seed++) {
       const t = runPan(seed, factor), seen = t.used.slice(0, t.lockedAt);
-      const expect = 1.4826 * mad(seen) / median(seen) / Math.sqrt(seen.length) * 100;
-      near(t.sdAtLock, expect, 1e-9, `prior x ${factor} seed ${seed}`);
+      const bare = 1.4826 * mad(seen) / median(seen) / Math.sqrt(seen.length) * 100;
+      near(t.sdAtLock, Math.max(bare, 0.55), 1e-9, `prior x ${factor} seed ${seed}`);
       near(t.fAtLock, t.f0 * median(seen), 1e-9, `prior x ${factor} seed ${seed}`);
-      assert.ok(t.sdAtLock > 0 && t.sdAtLock < 1.5, `sdPct ${t.sdAtLock}`);
+      assert.ok(t.sdAtLock >= 0.55 && t.sdAtLock < 1.5, `sdPct ${t.sdAtLock}`);
+      if (bare < 0.55) floored++;
       sum += t.sdAtLock;
     }
   }
-  // About a half of a percent: the 1 % ratio noise over the square root of 5.
-  const mean = sum / (PRIOR_FACTORS.length * 50);
-  assert.ok(mean > 0.15 && mean < 0.9, `mean sdPct ${mean}`);
+  const pans = PRIOR_FACTORS.length * 50;
+  // Both arms of the max have to be reached: the bare value is a 5-sample MAD, spread over 0.1 to 0.9 %, so the floor
+  // binds on a share of pans and the definition on the rest.
+  assert.ok(floored > pans * 0.2 && floored < pans * 0.8, `${floored} of ${pans} pans at the floor`);
+  const mean = sum / pans;
+  assert.ok(mean > 0.55 && mean < 0.9, `mean sdPct ${mean}`);
+});
+
+test('over 2,000 seeded pans the lock error exceeds 3 x sdPct in at most 1 % (S18: the floor)', () => {
+  // The error of fBest at the lock against f_true / (1 + s_g), in percent, against the sdPct the estimator reports. The
+  // bare value from 5 ratios is too small: the lock error exceeds 3 x of it on about 13 % of pans (T11 measured 13.7 %
+  // over 10,000). The floor puts 3 x at 1.65 %, over the error's p99 of about 1.5 %.
+  let pans = 0, over = 0, overBare = 0;
+  for (const factor of PRIOR_FACTORS) {
+    for (let seed = 1; seed <= 500; seed++) {
+      const t = runPan(seed, factor), seen = t.used.slice(0, t.lockedAt);
+      assert.ok(t.lockedAt >= 5, `prior x ${factor.toFixed(3)} seed ${seed}: no lock`);
+      const err = Math.abs(rel(t.fAtLock, fGyro())) * 100;
+      const bare = 1.4826 * mad(seen) / median(seen) / Math.sqrt(seen.length) * 100;
+      pans++;
+      if (err > 3 * t.sdAtLock) over++;
+      if (err > 3 * bare) overBare++;
+    }
+  }
+  assert.equal(pans, 2000);
+  assert.ok(over <= pans / 100, `${over} of ${pans} pans have the lock error over 3 x sdPct`);
+  // The generator has to reach the case: against the unfloored value the same pans fail by a wide margin.
+  assert.ok(overBare > pans * 0.08, `${overBare} of ${pans} pans over 3 x the unfloored value`);
 });
 
 // ---- The closure -------------------------------------------------------------------------------------------------
