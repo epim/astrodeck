@@ -792,14 +792,16 @@ class AsiairTelescope(_AsiairDevice, Telescope):
                         or _sky_delta_deg(pos, target) <= ARRIVE_EPS_DEG):
                     return
                 if asyncio.get_running_loop().time() > deadline:
+                    # The separation, never a position (#907): the last read
+                    # of a mount at its home position is the pole at the local
+                    # sidereal time, and a target can be the zenith, so either
+                    # figure in a log line is a site oracle (#140, #166).
                     raise DeviceError(
                         f"{self.name}: {what} did not settle within "
-                        f"{timeout_s:.0f}s — stopped the mount. Last read "
-                        f"RA {pos[0]:.4f}h Dec {pos[1]:+.4f}deg"
+                        f"{timeout_s:.0f}s — stopped the mount"
                         + ("" if target is None else
-                           f", {_sky_delta_deg(pos, target):.2f}deg from the "
-                           f"requested RA {target[0]:.4f}h "
-                           f"Dec {target[1]:+.4f}deg"))
+                           f"; it reports {_sky_delta_deg(pos, target):.2f} "
+                           f"deg from the target"))
         except BaseException:
             try:
                 await self._link.call(self._link.client.mount.stop,
