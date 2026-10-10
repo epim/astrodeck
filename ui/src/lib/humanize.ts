@@ -232,7 +232,37 @@ export function humanizeLog(input: LogInput, opts?: { verbatim?: boolean }): str
   return kept || "Something went wrong.";
 }
 
-/** Map a sequence error detail to a plain sentence + suggested action. */
+// ------------------------------------------------- sequence-error sentences
+//
+// humanizeSeqError holds to the rule the keyword rewrites above state: a
+// sentence REPLACES the detail, so it may only replace a detail that IS the
+// report it was written for. It used to fire on one bare keyword, so any detail
+// holding "plate" and "solve" read "check focus/exposure", the same defect as
+// #960: "plate solve failed: no light: the optic is capped" sent an operator
+// with a lens cap on to the focuser (#998). "mount", "camera", "focus", "guid"
+// and "cool" did the same to a cause on their own words ("mount refused the
+// slew: position unknown" read "check the mount is connected, unparked and
+// tracking"). A detail that goes on to name a cause is kept as written.
+
+/** `<label: >?<article >?<subject> <failure word>` and nothing else: the shape
+ *  PLATE_SOLVE_FAILED has, for the other parts of the rig humanizeSeqError names.
+ *  `subject` is a regex source. */
+function bareFailure(subject: string): RegExp {
+  return new RegExp(
+    String.raw`^\s*(?:[^\s:;][^:;]{0,29}:\s*)*(?:(?:the|a)\s+)?${subject}\s+`
+      + String.raw`(?:failed|failure|error|timed out|timeout|not responding|disconnected)\b[\s.!]*$`,
+  );
+}
+
+const CAMERA_FAILED = bareFailure("camera");
+const MOUNT_FAILED = bareFailure(String.raw`(?:mount|slew|goto)(?:\s+(?:move|slew|goto))?`);
+const FOCUS_FAILED = bareFailure("(?:auto-?)?focus(?:ing)?");
+const GUIDING_FAILED = bareFailure("guid(?:ing|er|e)");
+const COOLER_FAILED = bareFailure("cool(?:er|ing)");
+
+/** Map a sequence error detail to a plain sentence + suggested action, when the
+ *  detail is a bare report of a failure; any other detail is kept, shortened to
+ *  whole sentences the way humanizeLog does. */
 export function humanizeSeqError(detail?: string): string {
   if (!detail) return "The run stopped unexpectedly. Check the log for details.";
   const laneConflict = humanizeLaneConflict(detail);
@@ -241,17 +271,17 @@ export function humanizeSeqError(detail?: string): string {
   // "Rig page" is left standing deliberately: the new IA HAS a Rig hub, and it
   // is the one surface a disconnected camera is actually fixed on. Only the
   // screens the new shell does not have were reworded.
-  if (d.includes("camera")) return "Camera isn't responding - check the Rig page.";
-  if (d.includes("plate") && d.includes("solve")) {
+  if (CAMERA_FAILED.test(d)) return "Camera isn't responding - check the Rig page.";
+  if (PLATE_SOLVE_FAILED.test(d)) {
     return "Plate-solve failed - check focus/exposure or solve manually.";
   }
   // Same rule as the lane table above: name the thing to do, not the screen to
   // do it on - these three sentences are read on both front-ends.
-  if (d.includes("mount") || d.includes("slew")) {
+  if (MOUNT_FAILED.test(d)) {
     return "Mount move failed - check the mount is connected, unparked and tracking.";
   }
-  if (d.includes("focus")) return "Autofocus failed - re-run autofocus, or set focus by hand.";
-  if (d.includes("guid")) return "Guiding failed - re-run the calibration, or pick a brighter guide star.";
-  if (d.includes("cool")) return "Cooler didn't reach target - check the camera.";
-  return detail.length > 160 ? `${detail.slice(0, 157)}…` : detail;
+  if (FOCUS_FAILED.test(d)) return "Autofocus failed - re-run autofocus, or set focus by hand.";
+  if (GUIDING_FAILED.test(d)) return "Guiding failed - re-run the calibration, or pick a brighter guide star.";
+  if (COOLER_FAILED.test(d)) return "Cooler didn't reach target - check the camera.";
+  return clip(detail);
 }

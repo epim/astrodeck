@@ -27,8 +27,9 @@ with them:
 * ``meridian_flip`` carries the re-centre's keys through.
 
 Every surfaced line is also graded against the UI's ``humanizeLog`` rules
-(ui/src/lib/humanize.ts, mirrored by ``_humanizer_rewrites``), which would
-replace our words, and against its 140-character cut.
+(ui/src/lib/humanize.ts, mirrored by ``_humanizer_rewrites``, the one shared
+``_humanizer_mirror``), which would replace our words, and against its
+140-character cut.
 
 Every coordinate here is fictional and deliberately NON-ROUND (5.4321 h,
 +12.8765 degrees): a round pair such as (5.0, 12.5) prints as "(5.0, 12.5)",
@@ -42,6 +43,7 @@ from __future__ import annotations
 
 import pytest
 
+from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 from astrodeck.devices.base import DeviceError, SyncRefused, SyncUnverified
@@ -71,24 +73,6 @@ _E11_REASON = ("if the tube is at home, use Trust position first; then a "
 #: A stand-in for the driver's unverified read-back words (F1.1).
 _UNVERIFIED_REASON = ("the mount did not answer the position read after the "
                       "sync, so whether it took is unknown")
-
-
-def _humanizer_rewrites(text: str) -> bool:
-    """True when the UI's ``humanizeLog`` (ui/src/lib/humanize.ts:110-138)
-    would replace ``text`` with a canned sentence, so the operator would
-    never see our words. Its four text rules, in its order, lower-cased
-    substring tests."""
-    m = text.lower()
-    if "camera" in m and any(k in m for k in ("not responding", "timeout",
-                                              "disconnect")):
-        return True
-    if "nina" in m and any(k in m for k in ("5", "http", "error")):
-        return True
-    if "plate" in m and "solve" in m:
-        return True
-    if "guid" in m and "lost" in m:
-        return True
-    return False
 
 
 def _coordinate_spellings(ra: float, dec: float) -> list[str]:
@@ -179,13 +163,15 @@ def _stub_bookkeeping(sim_hub, monkeypatch) -> list:
 # ------------------------------------------------------------- the helper itself
 
 
-def test_the_humanizer_mirror_trips_on_each_of_its_four_rules():
-    """The mirror is only worth something if it can say True: one line per
-    UI rule, and the round-1 wording ("the plate solve worked but ...")."""
-    assert _humanizer_rewrites("camera not responding")
-    assert _humanizer_rewrites("NINA HTTP 500")
-    assert _humanizer_rewrites("the plate solve worked but the mount refused")
-    assert _humanizer_rewrites("re-centring after guiding was lost")
+def test_the_humanizer_mirror_trips_on_a_line_the_ui_rewrites():
+    """The mirror is only worth something if it can say True, on a line the
+    UI really rewrites (test_997_humanizer_mirror grades it rule by rule
+    against the function), and False on the two fixed reasons. It used to
+    assert True for "the plate solve worked but the mount refused" and
+    "re-centring after guiding was lost", which the UI stopped rewriting
+    (#792, #960; #997)."""
+    assert _humanizer_rewrites("plate solve failed")
+    assert not _humanizer_rewrites("the plate solve worked but the mount refused")
     assert not _humanizer_rewrites(SOLVE_REASON_SYNC_REFUSED)
     assert not _humanizer_rewrites(SOLVE_REASON_SYNC_UNVERIFIED)
 

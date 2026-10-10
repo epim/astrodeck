@@ -1,0 +1,44 @@
+{
+  "about": "What ui/src/lib/humanize.ts humanizeLog does to each line: the rule that replaces it whole (lane, camera, nina, plate, guid) or null when it reaches the operator as written. Read by server/tests/test_997_humanizer_mirror.py, which holds the Python mirror (server/tests/_humanizer_mirror.py) to it, and by ui/src/lib/__tests__/humanizeRewrites.test.ts, which holds the real function to it. Change a rule in humanize.ts and one side goes red until this file and the mirror agree again. Every line is under CLIP_AT so a line that is kept is kept whole.",
+  "cases": [
+    {"message": "the plate solve worked but the mount refused", "rule": null},
+    {"message": "the plate solve after the restart worked", "rule": null},
+    {"message": "re-centring after guiding was lost", "rule": null},
+    {"message": "re-centring after guiding was lost: the mount refused the sync, so the target was stopped", "rule": null},
+    {"message": "a plate-solve sync, or TRUST POSITION, unlocks them", "rule": null},
+    {"message": "plate solve failed: no light: the optic is capped", "rule": null},
+    {"message": "centering: plate solve failed (no stars); using raw GoTo", "rule": null},
+    {"message": "native guider: guiding stopped (lock lost)", "rule": null},
+    {"message": "guiding was lost and did not recover", "rule": null},
+    {"message": "slow request GET /api/nina/health: still waiting after 15.0 s", "rule": null},
+    {"message": "NINA has not answered for 500 ms", "rule": null},
+    {"message": "slow request GET /api/nina/health: 200 after 523.4 s", "rule": null},
+    {"message": "the mount did not confirm the sync", "rule": null},
+    {"message": "camera cooled to -10 C", "rule": null},
+    {"message": "the mount reports 'goto' is already running somewhere in a longer line", "rule": null},
+
+    {"message": "'goto' is already running", "rule": "lane"},
+    {"message": "'system.update' is already running", "rule": "lane"},
+
+    {"message": "camera not responding", "rule": "camera"},
+    {"message": "Camera timeout", "rule": "camera"},
+    {"message": "the camera disconnected", "rule": "camera"},
+    {"message": "NINA: camera not responding", "rule": "camera"},
+    {"message": "frame download timeout", "source": "capture", "rule": "camera"},
+    {"message": "frame download timeout", "source": "sequence", "rule": null},
+
+    {"message": "NINA HTTP 500", "rule": "nina"},
+    {"message": "NINA returned 503 service unavailable", "rule": "nina"},
+    {"message": "NINA error on /sequence/start", "rule": "nina"},
+
+    {"message": "plate solve failed", "rule": "plate"},
+    {"message": "  Plate-solve failed.  ", "rule": "plate"},
+    {"message": "centering: plate solve failed.", "rule": "plate"},
+    {"message": "the plate solve timed out", "rule": "plate"},
+
+    {"message": "guiding was lost", "rule": "guid"},
+    {"message": "Guiding lost.", "rule": "guid"},
+    {"message": "PHD2: guiding lost", "rule": "guid"},
+    {"message": "native guider lost the guide star (reacquire 1/3)", "rule": "guid"}
+  ]
+}

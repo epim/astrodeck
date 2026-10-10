@@ -32,6 +32,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from _humanizer_mirror import humanizer_rule
 import astrodeck.api.app as app_module
 from astrodeck.api import slow_requests
 from astrodeck.api.slow_requests import SlowRequestLog
@@ -508,36 +509,10 @@ async def test_an_open_stream_is_not_counted_in_flight(bus_lines):
 
 # ------------------------------------------- int-review finding 6 (humanizer)
 
-#: Ports of humanize.ts ``HTTP_5XX``, ``PLATE_SOLVE_FAILED`` and
-#: ``GUIDING_LOST`` as they stand after #792 and #960: the rules that read a
-#: report, not two words.
-_HTTP_5XX = re.compile(
-    r"\b5\d\d\b(?![.,]\d)(?!\s*(?:(?:ms|s|sec|secs|bytes|kb|mb|gb)\b|%))")
-_PLATE_SOLVE_FAILED = re.compile(
-    r"^\s*(?:[^\s:;][^:;]{0,29}:\s*)*(?:(?:the|a)\s+)?plate[- ]?solv(?:e|ing)"
-    r"\s+(?:failed|failure|error|timed out)\b[\s.!]*$")
-_GUIDING_LOST = re.compile(
-    r"^(?:[^:;]{0,30}:\s*)?(?:native\s+)?guid(?:ing|er|e)"
-    r"(?:\s+(?:was|has been|is))?\s+lost\b(?:\s+the\s+guide\s+star)?\s*"
-    r"(?:\([^)]*\))?[\s.!]*$")
-
-
-def _humanizer_rewrite(line: str) -> str | None:
-    """The humanizeLog rule (ui/src/lib/humanize.ts) that would replace
-    ``line`` whole, or None. A copy of its tests as they stand after #792,
-    for a line from source "http" (the camera rule's source arm is "capture",
-    so it never applies here)."""
-    m = line.lower()
-    if "camera" in m and any(w in m for w in
-                             ("not responding", "timeout", "disconnect")):
-        return "camera"
-    if "nina" in m and (_HTTP_5XX.search(m) or "http" in m or "error" in m):
-        return "nina"
-    if _PLATE_SOLVE_FAILED.search(m):
-        return "plate"
-    if _GUIDING_LOST.search(m):
-        return "guid"
-    return None
+#: The shared mirror of humanize.ts ``humanizeLog`` (#997): a line from source
+#: "http" (the camera rule's source arm is "capture", so it never applies
+#: here). Returns the rule that would replace the line whole, or None.
+_humanizer_rewrite = humanizer_rule
 
 
 def _every_route_label() -> list[str]:

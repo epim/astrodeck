@@ -24,10 +24,14 @@
 // no light: the optic is capped", "... failed: no plate solver is available on
 // this rig") is already the answer, and the generic "check focus/exposure" sent
 // the operator to the wrong part of the rig.
+//
+// humanizeSeqError holds to the same rule (#998), and the server tests' Python
+// mirror of humanizeLog is held to this function by a shared corpus (#997); both
+// are at the end of the file.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { humanizeLog, CLIP_AT } from "../humanize";
+import { humanizeLog, humanizeLaneConflict, humanizeSeqError, CLIP_AT } from "../humanize";
 
 let passed = 0;
 let failed = 0;
@@ -296,6 +300,138 @@ test("short text, verbatim text and empty text are unchanged", () => {
   eq(line("camera cooler at 3 C"), "camera cooler at 3 C");
   eq(humanizeLog(`${CAUSE} ${REPAIR}`, { verbatim: true }), `${CAUSE} ${REPAIR}`, "verbatim shortened the refusal:");
   eq(line(""), "Something went wrong.");
+});
+
+// ====================================================================
+// humanizeSeqError: the same rule, for a run's stop detail (#998)
+// ====================================================================
+//
+// It replaced a detail on ONE bare keyword: anything holding "plate" and
+// "solve" read "check focus/exposure" (the defect of #960), and anything
+// holding "camera", "mount", "slew", "focus", "guid" or "cool" read its
+// generic sentence whatever else the detail said. A detail that names its cause
+// is kept as written; a detail that IS the bare report still maps.
+//
+// Mutant "plate branch bare" (`PLATE_SOLVE_FAILED.test(d)` back to
+// `d.includes("plate") && d.includes("solve")`): RED on "names its cause",
+// "solve failed: plate solve failed: no plate solver is available on this rig"
+// is sent to focus and exposure. Mutant "mount branch bare" (`MOUNT_FAILED.test(d)`
+// back to `d.includes("mount") || d.includes("slew")`): RED on the same test and
+// on the sentence-boundary one.
+
+const SEQ_SOLVE = "Plate-solve failed - check focus/exposure or solve manually.";
+const SEQ_CAMERA = "Camera isn't responding - check the Rig page.";
+const SEQ_MOUNT = "Mount move failed - check the mount is connected, unparked and tracking.";
+const SEQ_FOCUS = "Autofocus failed - re-run autofocus, or set focus by hand.";
+const SEQ_GUIDING = "Guiding failed - re-run the calibration, or pick a brighter guide star.";
+const SEQ_COOLER = "Cooler didn't reach target - check the camera.";
+
+test("a sequence error that is a bare failure report still maps (#998)", () => {
+  for (const [detail, expected] of [
+    ["plate solve failed", SEQ_SOLVE],
+    ["Plate-solve failed.", SEQ_SOLVE],
+    ["centering: plate solve failed", SEQ_SOLVE],
+    ["the plate solve timed out", SEQ_SOLVE],
+    ["camera not responding", SEQ_CAMERA],
+    ["the camera disconnected", SEQ_CAMERA],
+    ["mount slew failed", SEQ_MOUNT],
+    ["slew failed.", SEQ_MOUNT],
+    ["goto timed out", SEQ_MOUNT],
+    ["autofocus failed", SEQ_FOCUS],
+    ["Autofocus error", SEQ_FOCUS],
+    ["guiding failed", SEQ_GUIDING],
+    ["guider not responding", SEQ_GUIDING],
+    ["cooler failed", SEQ_COOLER],
+    ["cooling timed out", SEQ_COOLER],
+  ] as const) {
+    eq(humanizeSeqError(detail), expected, `"${detail}" was not mapped:`);
+  }
+});
+
+test("a sequence error that names its cause is shown as written (#998)", () => {
+  const details = [
+    // The rig-side causes of #960, as the server words them.
+    `solve failed: ${SOLVER_MISSING}`,
+    SOLVER_MISSING,
+    `solve failed: plate solve failed: ${NO_LIGHT_WORDS} (the frame reads at the level this `
+      + "camera reads with no light on it; the solver said: Not enough stars.)",
+    "centering: plate solve failed (no stars); using raw GoTo",
+    "no stars were found, so the plate solve failed",
+    // The other parts of the rig the function names: a detail that goes on to
+    // say why is the answer, and the generic sentence would replace it.
+    "mount refused the slew: the position is unknown, so use Trust position first",
+    "mount slew failed: no response",
+    "slew refused: below the horizon limit",
+    "camera error: the frame download was cut short",
+    "camera cooler stalled at 12 C",
+    "autofocus failed: no star in the frame",
+    "autofocus curve rejected",
+    "guiding star lost for 60 s",
+    "guiding failed: the calibration step was too small",
+    "cooler timed out at 12 C, 8 C short of target",
+    // Words that appear in a line which is not a failure at all.
+    "plate solve: filter 'L' -> 'Lum' for the solve",
+    "If a plate solve fails, press TRUST POSITION instead.",
+  ];
+  for (const detail of details) {
+    assert(detail.length <= CLIP_AT, `fixture is ${detail.length} chars: the default would shorten it`);
+    const out = humanizeSeqError(detail);
+    eq(out, detail, `"${detail}" lost its cause:`);
+    assert(!/check focus|check the mount|check the camera|re-run/i.test(out),
+      `"${detail}" was sent to generic advice: ${out}`);
+  }
+  assert(details.some((d) => d.length > 160),
+    "no fixture is past the old 160-character cut: the long cause below proves nothing");
+});
+
+test("a cause is shortened on a sentence boundary, as humanizeLog does (#998)", () => {
+  // It used to cut at 157 characters wherever that fell, which in a refusal is
+  // the clause that names the repair (#792).
+  const cause = sentence("The mount refused the slew because its position is unknown, so use Trust position first", 220);
+  assert(cause.length > 160 && cause.length <= CLIP_AT, `fixture is ${cause.length} chars`);
+  eq(humanizeSeqError(cause), cause, "the cause was cut at the old limit:");
+  eq(humanizeSeqError(`${CAUSE} ${REPAIR}`), `${CAUSE} ${ELLIPSIS}`,
+    "the cut did not land on the sentence boundary:");
+  eq(humanizeSeqError(`${CAUSE} ${REPAIR}`), line(`${CAUSE} ${REPAIR}`),
+    "the two humanizers shorten differently:");
+});
+
+// ====================================================================
+// the server's mirror of humanizeLog is held to this function (#997)
+// ====================================================================
+//
+// server/tests/_humanizer_mirror.py is what the server tests ask "would the UI
+// rewrite this line?". It reads its regular expressions out of humanize.ts and
+// holds the order of the rules and their keyword tests itself, so what keeps
+// that half honest is this file of cases: the Python side asserts the mirror
+// agrees with every row (test_997_humanizer_mirror.py), and this test asserts
+// the real function does. Change a rule in humanize.ts and one of the two goes
+// red until the rows and the mirror agree again.
+
+test("the shared corpus of the server's humanizer mirror is what humanizeLog does (#997)", () => {
+  const path = fileURLToPath(new URL("../../../../server/tests/fixtures/humanizer_mirror_cases.json", import.meta.url));
+  const cases = (JSON.parse(readFileSync(path, "utf8")) as {
+    cases: { message: string; source?: string; rule: string | null }[];
+  }).cases;
+  assert(cases.length >= 20, `only ${cases.length} cases were read: the corpus is not being read`);
+  const sentences: Record<string, string> = {
+    camera: "Camera isn't responding. Check the camera connection on the Rig page.",
+    nina: NINA_ERROR,
+    plate: SOLVE_FAILED,
+    guid: GUIDING_LOST,
+  };
+  const seen = new Set<string | null>();
+  for (const c of cases) {
+    assert(c.message.length <= CLIP_AT, `"${c.message}" is longer than the cut: a kept line would be shortened`);
+    seen.add(c.rule);
+    let want: string;
+    if (c.rule === null) want = c.message;
+    else if (c.rule === "lane") want = humanizeLaneConflict(c.message) ?? "(no lane sentence)";
+    else want = sentences[c.rule] ?? `(no rule called ${c.rule})`;
+    eq(humanizeLog({ source: c.source ?? "", message: c.message }), want,
+      `"${c.message}" (source "${c.source ?? ""}", rule ${c.rule}):`);
+  }
+  assert(seen.size === 6, `the corpus covers ${[...seen].join(", ")}: every rule needs a row that fires and one that does not`);
 });
 
 const total = passed + failed;

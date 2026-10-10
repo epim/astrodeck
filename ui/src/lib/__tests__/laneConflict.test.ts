@@ -123,10 +123,12 @@ test("the four reworded lanes still say what ends them", () => {
 test("the sequence-error sentences name an action too, not a screen", () => {
   // Same file, same two shells: these three fall through to the non-lane
   // branches of humanizeSeqError, which used to read "check the Mount page".
+  // Bare reports: a detail that names a cause is kept as written, not replaced
+  // by these sentences (humanizeRewrites.test.ts, #998).
   const cases: [string, RegExp][] = [
-    ["mount slew failed: no response", /check the mount is connected, unparked and tracking/],
-    ["autofocus curve rejected", /re-run autofocus, or set focus by hand/],
-    ["guiding star lost for 60 s", /re-run the calibration, or pick a brighter guide star/],
+    ["mount slew failed", /check the mount is connected, unparked and tracking/],
+    ["autofocus failed", /re-run autofocus, or set focus by hand/],
+    ["guiding failed", /re-run the calibration, or pick a brighter guide star/],
   ];
   for (const [detail, expected] of cases) {
     const s = humanizeSeqError(detail);
