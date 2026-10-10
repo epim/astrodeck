@@ -37,8 +37,11 @@ class GotoRefused(DeviceError):
     it had to go on and one refusal looked exactly like another.
 
     ``code`` is the mount's own reply, kept because it is the only thing that
-    can be looked up against a firmware. ``reason`` is what the driver believes
-    it means in words - which is what a caller should put in front of a person.
+    can be looked up against a firmware. Only when it has the short shape of a
+    code (``quotable_sync_reply``), though: any other reply is
+    ``"unrecognised"`` (#863), because a caller may print this attribute.
+    ``reason`` is what the driver believes it means in words - which is what a
+    caller should put in front of a person.
     """
 
     def __init__(self, message: str, *, code: str, reason: str):
