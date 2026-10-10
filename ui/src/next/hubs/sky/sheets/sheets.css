@@ -39,3 +39,57 @@
 .photosphere-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
 .photosphere-actions > * { flex: 1 1 150px; }
 .photosphere-error { border-left: 3px solid #edbd80; padding: 12px; color: #ffe1b2; background: #362b1e; font: 14px/1.5 system-ui, sans-serif; }
+
+/* Horizon panorama scanner, live view (pano/ScanView.tsx, SPEC-v2 2.4-2.5). Surfaces use the palette above; status
+   colours come from the app tokens, with this file's own greens, ambers and reds as fallbacks, so the night theme
+   recolours them. The view has no buttons, and everything drawn over the video ignores pointers. */
+.pano-view { display: flex; flex-direction: column; gap: 10px; width: 100%; min-width: 0; margin: 0 auto; color: #dfebed; font: 14px/1.4 system-ui, sans-serif; }
+.pano-top { display: flex; gap: 8px; height: clamp(130px, 22svh, 190px); }
+.pano-preview { position: relative; flex: 1 1 0; min-width: 0; overflow: hidden; border-radius: 10px; background: #05090d; }
+.pano-preview video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pano-slit { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid #ffffffb3; pointer-events: none; }
+.pano-roll { position: absolute; top: 10px; left: 50%; width: 36px; height: 3px; margin-left: -18px; border-radius: 2px; background: #dfebed; pointer-events: none; }
+.pano-roll[hidden] { display: none; }
+.pano-roll[data-alert="true"] { background: var(--bad, #ff5470); }
+.pano-rail { position: relative; flex: 0 0 44px; width: 44px; box-sizing: border-box; overflow: hidden; border: 1px solid #304756; border-radius: 10px; background: #0b141b; }
+.pano-rail-band { position: absolute; left: 0; right: 0; }
+.pano-rail-band[data-band="amber"] { background: color-mix(in srgb, var(--warn, #edbd80) 40%, transparent); }
+.pano-rail-band[data-band="green"] { background: color-mix(in srgb, var(--good, #78edb9) 55%, transparent); }
+.pano-rail-target { position: absolute; left: 6px; right: 6px; height: 0; border-top: 1px dashed #dfebed; }
+.pano-rail-marker { position: absolute; left: 3px; right: 3px; height: 6px; margin-bottom: -3px; border-radius: 3px; background: #dfebed; }
+.pano-rail[data-colour="green"] .pano-rail-marker { background: var(--good, #78edb9); }
+.pano-rail[data-colour="amber"] .pano-rail-marker { background: var(--warn, #edbd80); }
+.pano-rail[data-colour="red"] .pano-rail-marker { background: var(--bad, #ff5470); }
+.pano-live-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.pano-live-group[hidden] { display: none; }
+.pano-ribbon { position: relative; max-width: 100%; align-self: center; overflow: hidden; border-radius: 10px; background-color: #1a2833; background-image: conic-gradient(from 90deg, #293b48 0 25%, transparent 0 50%, #293b48 0 75%, transparent 0); background-size: 8px 8px; }
+.pano-ribbon-track { position: absolute; left: 0; will-change: transform; }
+.pano-ribbon-canvas, .pano-tint, .pano-photo-top { position: absolute; left: 0; top: 0; display: block; pointer-events: none; }
+.pano-tint { image-rendering: pixelated; }
+.pano-live { position: absolute; left: 0; top: 0; display: block; pointer-events: none; }
+.pano-tall { position: absolute; height: 4px; background: var(--bad, #ff5470); pointer-events: none; }
+.pano-bar { position: relative; }
+.pano-cells { display: grid; grid-template-columns: repeat(720, minmax(0, 1fr)); height: 12px; overflow: hidden; border-radius: 4px; background: #354953; }
+.pano-cell { display: block; height: 100%; }
+.pano-cell-none { background: #354953; }
+.pano-cell-aligned { background: var(--good, #78edb9); }
+.pano-cell-sensor, .pano-cell-blurred { background: var(--warn, #edbd80); }
+.pano-bar-head { position: absolute; top: -2px; width: 2px; height: 16px; margin-left: -1px; background: #ffffff; pointer-events: none; }
+.pano-compass-row { position: relative; height: 16px; }
+.pano-compass { position: absolute; top: 2px; transform: translateX(-50%); color: #b8cbd0; font: 11px/14px system-ui, sans-serif; }
+.pano-pace { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.pano-pace-track { position: relative; flex: 1 1 auto; min-width: 0; height: 10px; }
+.pano-pace-zones { display: flex; height: 100%; overflow: hidden; border-radius: 5px; background: #354953; }
+.pano-pace-zone { display: block; flex: 0 0 auto; height: 100%; }
+.pano-pace-zone[data-zone="idle"] { background: #354953; }
+.pano-pace-zone[data-zone="good"] { background: color-mix(in srgb, var(--good, #78edb9) 55%, #0b141b); }
+.pano-pace-zone[data-zone="fast"] { background: color-mix(in srgb, var(--warn, #edbd80) 55%, #0b141b); }
+.pano-pace-zone[data-zone="too-fast"] { background: color-mix(in srgb, var(--bad, #ff5470) 55%, #0b141b); }
+.pano-pace-marker { position: absolute; top: -3px; width: 4px; height: 16px; margin-left: -2px; border-radius: 2px; background: #dfebed; }
+.pano-pace[data-pace="good"] .pano-pace-marker { background: var(--good, #78edb9); }
+.pano-pace[data-pace="fast"] .pano-pace-marker { background: var(--warn, #edbd80); }
+.pano-pace[data-pace="too-fast"] .pano-pace-marker { background: var(--bad, #ff5470); }
+.pano-pace-label { flex: 0 0 88px; text-align: right; color: #b8cbd0; font: 13px system-ui, sans-serif; }
+.pano-cue { box-sizing: border-box; height: 80px; margin: 0; padding-left: 10px; overflow-y: auto; border-left: 3px solid transparent; overflow-wrap: anywhere; color: #dfebed; font: 15px/20px system-ui, sans-serif; }
+.pano-cue[data-kind="warn"] { border-left-color: var(--warn, #edbd80); color: #ffe1b2; }
+.pano-cue[data-kind="block"] { border-left-color: var(--bad, #ff5470); color: #ffd2d8; }
