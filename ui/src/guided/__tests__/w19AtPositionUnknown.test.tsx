@@ -165,8 +165,13 @@ await test("position_known false: a guided slew does not complete on the home re
   let outcome = "completed";
   try { await waiting; } catch (e) { outcome = (e as Error).message; }
   clearTimeout(stop);
-  assert(/Waiting stopped/.test(outcome),
+  // It ends in the position refusal (#986) rather than waiting out the abort:
+  // the move cannot be confirmed from a position nobody vouches for, and the
+  // wait says so at once. "completed" is the failure this test exists for.
+  assert(outcome !== "completed",
     `the guided slew confirmed an arrival from a position the mount cannot vouch for (${outcome})`);
+  assert(/no longer knows where the telescope points/.test(outcome),
+    `the guided slew did not end as the position refusal (${outcome})`);
 });
 
 // ================================================ GuidedFirstImage, mounted
