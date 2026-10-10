@@ -365,6 +365,14 @@ class AlpacaConnection:
         self.base = f"http://{host}:{port}/api/v1"
         self.http = httpx.AsyncClient(timeout=30.0)
 
+    def repoint(self, port: int) -> None:
+        """Send later requests to ``port`` on the same host. The server behind
+        it moved (the managed comhost respawns on a new ephemeral port, #992);
+        the devices sharing this connection follow, since they read their
+        address from it."""
+        self.port = port
+        self.base = f"http://{self.host}:{port}/api/v1"
+
     async def get(self, dev_type: str, dev_num: int, method: str, **params: Any) -> Any:
         params |= {"ClientID": _client_id, "ClientTransactionID": _next_txn()}
         r = await self.http.get(f"{self.base}/{dev_type}/{dev_num}/{method}", params=params)
@@ -420,10 +428,18 @@ class _AlpacaDevice:
         self.dev_num = dev_num
         self.name = name
         self.connected = False
-        # connection identity — lets Profiles replay host:port + which device
-        self.host = conn.host
-        self.port = conn.port
         self.role = ""
+
+    # connection identity — lets Profiles replay host:port + which device. Read
+    # through the connection, not copied, so a device whose connection was
+    # repointed (#992) does not go on reporting the address it used to have.
+    @property
+    def host(self) -> str:
+        return self.conn.host
+
+    @property
+    def port(self) -> int:
+        return self.conn.port
 
     def describe(self) -> dict[str, Any]:
         return {
