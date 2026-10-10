@@ -9,7 +9,12 @@
 //   * TEXTURE_FLOOR raised 10x: `the thin-treeline fixture is ok` fails (refused for texture), and so does the
 //     calibration case, whose treeline must lie between 3 and 10 floors;
 //   * the gain term removed (the gain fixed at 1 in both fits of `evaluate`): `recovers injected yaw, pitch and roll`
-//     fails, because the gain reads 1 instead of 0.7, and the rotation then misses by up to 0.12 degrees.
+//     fails, because the gain reads 1 instead of 0.7, and the rotation then misses by up to 0.12 degrees;
+//   * the noise term removed from the texture test (S39: `alpha^2 trace(H) / N` with nothing subtracted, as before FD2):
+//     `a featureless frame under sensor noise is refused as untextured` fails, because noise of sd 7.5 per channel on a
+//     smooth sky reads as texture (about 110,000 against the floor of 66,000). The term taken off too much (the sd doubled),
+//     over the whole template and not the pixels that land in b, or without the gain squared, fails
+//     `a textured frame under the same sensor noise still passes`: that frame is then refused as untextured.
 //
 // Frames are the 9:16 analysis frame (180 x 320) at the 70-degree prior (fNorm 1.2694). The synth.ts fixtures carry the
 // simulator's frame noise (Gaussian, sd 2 per channel, 13.5 `noise_sigma`): without it a noiseless smooth sky quantises
@@ -104,21 +109,33 @@ function camera(rgba: Uint8ClampedArray, sigma: number, seed: number, gain: read
 
 const FRAME_NOISE = 2;
 interface Pair { tpl: Template; img: Pyramid; truth: Quat; rgbA: Uint8ClampedArray; rgbB: Uint8ClampedArray }
-/** Template keyframe at (az0, pitch), candidate at (az0 + dAz, pitch), both under the simulator's frame noise. */
-function synthPair(sc: SynthScene, az0: number, dAz: number, gainB: readonly [number, number, number] = [1, 1, 1], pitch = RING_PITCH): Pair {
+/** Template keyframe at (az0, pitch), candidate at (az0 + dAz, pitch), both under the simulator's frame noise (or `noise`
+ *  per channel). The noise draws depend on az0 alone, so two scenes at one az0 carry the same noise. */
+function synthPair(sc: SynthScene, az0: number, dAz: number, gainB: readonly [number, number, number] = [1, 1, 1], pitch = RING_PITCH,
+  noise = FRAME_NOISE): Pair {
   const qa = look(az0, pitch), qb = look(az0 + dAz, pitch);
-  const rgbA = camera(renderView(sc, qa, K0), FRAME_NOISE, 100 + az0), rgbB = camera(renderView(sc, qb, K0), FRAME_NOISE, 200 + az0, gainB);
+  const rgbA = camera(renderView(sc, qa, K0), noise, 100 + az0), rgbB = camera(renderView(sc, qb, K0), noise, 200 + az0, gainB);
   return { tpl: templateOf(rgbA), img: pyramidOf(rgbB), truth: relative(qa, qb), rgbA, rgbB };
 }
 
-/** gain^2 trace(H) / N over the template's L1 pixels that land inside b through q: the texture test of 4.6 step 4,
- *  computed here from Template jac and warpLevel alone, to read the fixtures' margins against TEXTURE_FLOOR. */
+/** gain^2 trace(H) / N over the template's L1 pixels that land inside b through q: the texture test of 4.6 step 4 before
+ *  the noise is taken off (S39), computed here from Template jac and warpLevel alone. It is what alignPair compared with
+ *  TEXTURE_FLOOR before FD2, and `netTextureOf` below takes the noise off by measurement. */
 function textureOf(tpl: Template, img: Pyramid, q: Quat, gain: number): number {
   const out = new Float32Array(K1.w * K1.h), jac = tpl.l1.jac;
   warpLevel(img.l1, rotationHomography(K1, K1, q), out, K1.w, K1.h);
   let sum = 0, n = 0;
   for (let i = 0; i < out.length; i++) if (!Number.isNaN(out[i])) { n++; sum += jac[3 * i] ** 2 + jac[3 * i + 1] ** 2 + jac[3 * i + 2] ** 2; }
   return gain * gain * sum / n;
+}
+
+/** `textureOf` less what sensor noise alone contributes (S39), by measurement and not by alignPair's estimate: a flat frame
+ *  under the same noise carries no scene, so its `textureOf` at unit gain is the noise's share per valid pixel, and it
+ *  scales with the square of the gain. Scene and noise gradients are independent, so their energies add. The flat pair
+ *  must share the pair's pose and the noise sd and draws (synthPair's seeds depend on az0 only). */
+function netTextureOf(pair: Pair, az0: number, noise: number, gain: number): number {
+  const flat = synthPair(FLAT, az0, 4, [1, 1, 1], RING_PITCH, noise);
+  return textureOf(pair.tpl, pair.img, pair.truth, gain) - gain * gain * textureOf(flat.tpl, flat.img, flat.truth, 1);
 }
 
 const refusedAsPredicted = (res: AlignResult, qPred: Quat, what: string) => {
@@ -175,6 +192,8 @@ const TREELINE = (() => {
   const base = makeSynthScene({ seed: 3 }).horizonAlt;
   return makeSynthScene({ seed: 3, skyline: az => 1 + (base(az) - 0.35) * 5 / 9.3, textureContrast: 0 });
 })();
+/** synth.ts's default scene (seed 2): value-noise ground under a skyline, a smooth sky above it. */
+const TEXTURED = makeSynthScene({ seed: 2 });
 const OVERCAST_PAIR = synthPair(OVERCAST, 40, 4), TREELINE_PAIR = synthPair(TREELINE, 40, 4);
 
 test('a blank image gives ok: false, reason texture, textured: false', () => {
@@ -198,12 +217,84 @@ test('a blank image gives ok: false, reason texture, textured: false', () => {
   assert.equal(flat.gain, 0);
 });
 
+test('a featureless frame under sensor noise is refused as untextured: noise has a gradient of its own (S39)', () => {
+  // The measure of 4.6 step 4 is a gradient energy, and independent noise has one: on a smooth sky, noise of sd 7.5 per
+  // channel reads about 110,000 against the floor of 66,000 (the simulator's frame noise is 2, which reads 10,000). The
+  // template's own noise is estimated and its share taken off, so the same frames read as what they are. A flat frame
+  // reads lower for the same noise (54,000 at sd 7.5), because b is resampled and its spread, the gain, is then smaller
+  // (0.68); it is tried at sd 14 and 20, where it reads 180,000 and 370,000, and those pin the size of the term taken off
+  // to within a fifth.
+  const cases: [string, SynthScene, number][] = [
+    ['the overcast sky', OVERCAST, 7.5], ['the overcast sky', OVERCAST, 10], ['a flat frame', FLAT, 14], ['a flat frame', FLAT, 20],
+  ];
+  for (const [what, sc, noise] of cases) for (const az0 of [40, 130]) {
+    const pair = synthPair(sc, az0, 4, [1, 1, 1], RING_PITCH, noise), name = `${what}, sd ${noise}, azimuth ${az0}`;
+    const res = alignPair(pair.tpl, pair.img, pair.truth, K, { window: 'keyframe' });
+    // Before FD2 the noise alone passed the texture test; if it did not here the case would prove nothing.
+    const raw = textureOf(pair.tpl, pair.img, pair.truth, res.gain);
+    assert.ok(raw > TEXTURE_FLOOR, `${name}: the noise reads ${raw}, under the floor ${TEXTURE_FLOOR}: the case proves nothing`);
+    refusedAsPredicted(res, pair.truth, name);
+    assert.equal(res.reason, 'texture', `${name}: reason ${res.reason}`);
+    assert.equal(res.textured, false, `${name}: textured`);
+  }
+});
+
+test('a textured frame under the same sensor noise still passes the texture test, and aligns (S39)', () => {
+  // The noise's share is taken off, not the frame's texture: the thin treeline, the hardest texture there is, keeps most
+  // of its measure under sd 7.5 per channel, and so does the same treeline with the candidate at gain 0.7.
+  for (const az0 of [40, 130]) for (const gain of [1, 0.7]) {
+    const pair = synthPair(TREELINE, az0, 4, [gain, gain, gain], RING_PITCH, 7.5), name = `thin treeline, gain ${gain}, azimuth ${az0}`;
+    const res = alignPair(pair.tpl, pair.img, pair.truth, K, { window: 'keyframe' });
+    assert.ok(res.textured, `${name}: not textured (${res.reason})`);
+    assert.ok(res.ok, `${name}: refused (${res.reason}, PSR ${res.psr}, ZNCC ${res.zncc})`);
+    const net = netTextureOf(pair, az0, 7.5, res.gain);
+    assert.ok(net > 2 * TEXTURE_FLOOR, `${name}: ${net} left of the texture, floor ${TEXTURE_FLOOR}`);
+    assert.ok(angleBetweenDeg(res.qBA, pair.truth) < 0.3, `${name}: ${angleBetweenDeg(res.qBA, pair.truth)} degrees from the truth`);
+  }
+  for (const az0 of [40, 130]) {
+    const pair = synthPair(TEXTURED, az0, 4, [1, 1, 1], RING_PITCH, 7.5), name = `textured scene, azimuth ${az0}`;
+    const res = alignPair(pair.tpl, pair.img, pair.truth, K, { window: 'keyframe' });
+    assert.ok(res.textured && res.ok, `${name}: refused (${res.reason}), textured ${res.textured}`);
+    assert.ok(angleBetweenDeg(res.qBA, pair.truth) < 0.1, `${name}: ${angleBetweenDeg(res.qBA, pair.truth)} degrees from the truth`);
+  }
+  // The noise's share is scaled like the rest of the measure: by the gain squared (the template's noise reaches the measure
+  // through the template's gradient, and the measure is gain^2 trace(H)), and over the pixels that land inside b and no
+  // others. A candidate at half the template's brightness keeps about 100,000 of the treeline's measure at sd 7.5, and
+  // subtracting the noise unscaled would leave under 25,000; a step of 20 degrees leaves 56 % of the template inside b, and a noise term summed
+  // over the whole template would be 1.8 times the size, and more than the whole measure of the textured scene at sd 20.
+  for (const az0 of [40, 130]) {
+    const pair = synthPair(TREELINE, az0, 4, [0.5, 0.5, 0.5], RING_PITCH, 7.5), name = `thin treeline, gain 0.5, azimuth ${az0}`;
+    const res = alignPair(pair.tpl, pair.img, pair.truth, K, { window: 'keyframe' });
+    const net = netTextureOf(pair, az0, 7.5, res.gain);
+    assert.ok(net > 1.3 * TEXTURE_FLOOR, `${name}: ${net} left of the texture, floor ${TEXTURE_FLOOR}`);
+    assert.ok(res.textured, `${name}: not textured (${res.reason}), though ${net} of its texture is left`);
+  }
+  for (const az0 of [40, 130]) {
+    const pair = synthPair(TEXTURED, az0, 20, [1, 1, 1], RING_PITCH, 20), name = `textured scene, 20 degree step, sd 20, azimuth ${az0}`;
+    const res = alignPair(pair.tpl, pair.img, pair.truth, K, { window: 'keyframe' });
+    assert.ok(res.overlap > 0.5 && res.overlap < 0.6, `${name}: ${res.overlap} of the template lands in b, the case needs about half`);
+    assert.ok(res.textured && res.ok, `${name}: refused (${res.reason}), textured ${res.textured}`);
+    assert.ok(angleBetweenDeg(res.qBA, pair.truth) < 1, `${name}: ${angleBetweenDeg(res.qBA, pair.truth)} degrees from the truth`);
+  }
+  // The registration scene's blocks are far above any noise: sd 14 per channel changes nothing about the verdict.
+  for (const noise of [7.5, 14]) {
+    const tpl = templateOf(camera(scene(basisFromQuat(REG_A)), noise, 11)), img = pyramidOf(camera(scene(basisFromQuat(REG_B), 0.7), noise, 12));
+    const res = alignPair(tpl, img, offBy(REG_TRUTH, 1, -2, 1), K, { window: 'keyframe' });
+    assert.ok(res.textured && res.ok, `blocks, sd ${noise}: refused (${res.reason}), textured ${res.textured}`);
+    assert.ok(angleBetweenDeg(res.qBA, REG_TRUTH) < 0.1, `blocks, sd ${noise}: ${angleBetweenDeg(res.qBA, REG_TRUTH)} degrees from the truth`);
+  }
+});
+
 test('TEXTURE_FLOOR lies between the overcast frame and the thin treeline, within 10x of the treeline', () => {
+  // The measure alignPair compares with the floor is noise-aware (S39), so the fixtures are read the same way: the raw
+  // measure less the noise's share, which the flat frame under the same noise gives by measurement.
   const over = alignPair(OVERCAST_PAIR.tpl, OVERCAST_PAIR.img, OVERCAST_PAIR.truth, K, { window: 'keyframe' });
   const tree = alignPair(TREELINE_PAIR.tpl, TREELINE_PAIR.img, TREELINE_PAIR.truth, K, { window: 'keyframe' });
-  const overcast = textureOf(OVERCAST_PAIR.tpl, OVERCAST_PAIR.img, OVERCAST_PAIR.truth, over.gain);
-  const treeline = textureOf(TREELINE_PAIR.tpl, TREELINE_PAIR.img, tree.qBA, tree.gain);
-  console.log(`  texture: overcast ${overcast.toFixed(0)}, thin treeline ${treeline.toFixed(0)}, floor ${TEXTURE_FLOOR}`);
+  const overcast = netTextureOf(OVERCAST_PAIR, 40, FRAME_NOISE, over.gain);
+  const treeline = netTextureOf(TREELINE_PAIR, 40, FRAME_NOISE, tree.gain);
+  const rawOver = textureOf(OVERCAST_PAIR.tpl, OVERCAST_PAIR.img, OVERCAST_PAIR.truth, over.gain);
+  const rawTree = textureOf(TREELINE_PAIR.tpl, TREELINE_PAIR.img, TREELINE_PAIR.truth, tree.gain);
+  console.log(`  texture less noise: overcast ${overcast.toFixed(0)}, thin treeline ${treeline.toFixed(0)}, floor ${TEXTURE_FLOOR}; raw ${rawOver.toFixed(0)} and ${rawTree.toFixed(0)}`);
   assert.ok(overcast < TEXTURE_FLOOR / 3, `overcast ${overcast} is not clear of the floor ${TEXTURE_FLOOR}`);
   assert.ok(treeline > 3 * TEXTURE_FLOOR, `treeline ${treeline} is not clear of the floor ${TEXTURE_FLOOR}`);
   assert.ok(treeline < 10 * TEXTURE_FLOOR, `treeline ${treeline}: a floor raised 10x would still pass it`);

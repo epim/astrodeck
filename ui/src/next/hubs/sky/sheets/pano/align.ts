@@ -20,7 +20,10 @@
 //      first). The Hessian is rebuilt every iteration over the valid pixels from Template jac, with those weights (S5),
 //      never taken from Template hess, which sums the whole level.
 //   4. Acceptance: every test of 4.6 step 4 (or of the closure window) must pass. The reason reported is the first
-//      that fails, in the order of AlignResult.reason: texture, no-peak, overlap, diverged, low-zncc, few-inliers.
+//      that fails, in the order of AlignResult.reason: texture, no-peak, overlap, diverged, low-zncc, few-inliers. The
+//      texture test is noise-aware (S39): the gradient energy that the template's own sensor noise would produce alone
+//      is taken off before the comparison with TEXTURE_FLOOR, because independent noise has a gradient of its own and,
+//      left in, a featureless frame in noisy light passes as texture.
 //   5. Outputs: the covariance sigma_r^2 (gain^2 H)^-1 with no focal term, up to 16 correspondences, and the RGB
 //      overlap statistics for the chained gains (4.10).
 //
@@ -34,6 +37,7 @@
 // Allocation: the per-size work buffers and the two phase-correlation scratches are made once and reused, so a call
 // allocates only its result, the correspondences and a few small arrays.
 import { pixelLuminance } from '../photosphereGeometry';
+import { noiseSigma } from './horizon/noise';
 import { makePhaseScratch, phaseCorrelate } from './phaseCorrelate';
 import { warpLevel } from './pyramid';
 import { angleBetweenDeg, expSO3, qinv, qmul, qnormalize, rotationHomography, unprojectPixel } from './rotation';
@@ -45,17 +49,24 @@ export const ACCEPT: Readonly<{ psrMin: 7; overlapMin: 0.5; znccMin: 0.7; inlier
   psrMin: 7, overlapMin: 0.5, znccMin: 0.7, inlierMin: 0.6, closureZnccMin: 0.8, closureMaxDeg: 12,
 };
 
-/** The texture test: gain^2 trace(H) / N over the valid template pixels at L1, in (luma per radian)^2 per pixel, must
- *  be above this. Calibrated per 4.6 step 4 on the two synth.ts fixtures of align.test.ts: the 180 x 320 analysis frame
- *  at the 70-degree prior (fNorm 1.2694, f = 114.2 px at L1), the template at the ring pitch 22.98, the candidate a
- *  4-degree ring step on, both under the simulator's frame noise (sd 2 per channel, 13.5):
- *    - a blank overcast frame (a smooth grey sky darkening 25 % toward the zenith, no skyline in view): 10,900. An
- *      exactly flat frame reads 0, and 4,700 under the same noise;
+/** The texture test: gain^2 (trace(H) - noise) / N over the valid template pixels at L1, in (luma per radian)^2 per
+ *  pixel, must be above this. `noise` is the trace the template's own sensor noise would add alone (S39): its sd is
+ *  estimated from the template's L1 (noiseSigma, the median of the Laplacian response) and carried through the Jacobian
+ *  (unitNoiseTrace). Independent noise has a gradient of its own, so left in it reads as texture. Calibrated per 4.6 step 4 on the two synth.ts fixtures of
+ *  align.test.ts: the 180 x 320 analysis frame at the 70-degree prior (fNorm 1.2694, f = 114.2 px at L1), the template at
+ *  the ring pitch 22.98, the candidate a 4-degree ring step on, both under the simulator's frame noise (sd 2 per channel,
+ *  13.5), first without the noise term (the measure as T21 built it) and then with it:
+ *    - a blank overcast frame (a smooth grey sky darkening 25 % toward the zenith, no skyline in view): 10,900, and 1,000
+ *      with the noise taken off. An exactly flat frame reads 0, and 4,700 under the same noise, 70 with the noise off;
  *    - a thin treeline under smooth sky (synth.ts's seed-3 skyline squeezed into 1 to 6 degrees, flat and featureless
- *      below its jagged top, sky above): 400,000 at gain 1, and 196,000 when the candidate is at gain 0.7.
- *  The floor is the geometric mean of the two, 66,000: 6.0 times the overcast frame and 6.1 times below the treeline,
- *  so a floor raised 10x (660,000) fails the treeline, and the treeline at gain 0.7 still passes by 3.0 times. Noise
- *  alone grows as its variance (4,700 at sd 2), so it would take sd 7.5 per channel to pass on its own. The test
+ *      below its jagged top, sky above): 400,000 at gain 1 and 390,000 with the noise off; 196,000 and 191,000 when the
+ *      candidate is at gain 0.7.
+ *  The floor is the geometric mean of the two raw readings, 66,000: FD2 kept it, so that what passes as texture changes
+ *  only by the noise that no longer counts. With the noise off it is 66 times the overcast frame and 5.9 times below the
+ *  treeline, so a floor raised 10x (660,000) fails the treeline, and the treeline at gain 0.7 still passes by 2.9 times.
+ *  Noise alone grows as its variance: a smooth sky under sd 7.5 per channel read 112,000 before the noise was taken off,
+ *  above the floor, and reads 5,900 now; from sd 2 to 20 per channel the overcast and flat frames read between -13,000
+ *  and 6,000 (the estimate is the median of an integer response, good to about a tenth of a luma level). The test
  *  scales with f^2 (it is per radian), so another lens moves every number here together. GRADIENT_FLOOR is not reused
  *  (4.6): it rejected that treeline. */
 export const TEXTURE_FLOOR = 66000;
@@ -191,6 +202,25 @@ function shiftRotation(k: Intrinsics, x: number, y: number, dx: number, dy: numb
   return expSO3([axis[0] / s * angle, axis[1] / s * angle, axis[2] / s * angle]);
 }
 
+/** What white noise of unit sd on the template's level adds to trace(H) = sum jac jac^T over the pixels where `warped` is
+ *  not NaN (the valid ones, as H is summed). pyramid.ts builds jac = f (gx cX + gy cY) with cX = (-XY, -(1 + X^2), Y) and
+ *  cY = (-(1 + Y^2), -XY, -X), so independent gradient errors of variance vx and vy add f^2 (vx |cX|^2 + vy |cY|^2) at a
+ *  pixel. The gradients are central differences of independent samples, variance 1/2, or one-sided ones on the border,
+ *  variance 2. The trace scales with the noise variance, so sd^2 times this is the noise's share. */
+function unitNoiseTrace(warped: Float32Array, w: number, h: number, k: Intrinsics): number {
+  const inv = 1 / k.f;
+  let sum = 0;
+  for (let y = 0, i = 0; y < h; y++) {
+    const Y = (y + 0.5 - k.cy) * inv, YY = Y * Y, vy = y > 0 && y < h - 1 ? 0.5 : 2;
+    for (let x = 0; x < w; x++, i++) {
+      if (warped[i] !== warped[i]) continue;
+      const X = (x + 0.5 - k.cx) * inv, XX = X * X, vx = x > 0 && x < w - 1 ? 0.5 : 2;
+      sum += vx * (XX * YY + (1 + XX) * (1 + XX) + YY) + vy * ((1 + YY) * (1 + YY) + XX * YY + XX);
+    }
+  }
+  return sum * k.f * k.f;
+}
+
 const finiteQuat = (q: Quat) => Number.isFinite(q[0]) && Number.isFinite(q[1]) && Number.isFinite(q[2]) && Number.isFinite(q[3]);
 
 // ---- One level: the residual image and its statistics ------------------------------------------------------------------
@@ -206,6 +236,7 @@ interface FinalEval extends LevelEval {
   sigma: number;          // 1.4826 MAD of the residuals, floored at SIGMA_FLOOR
   zncc: number; inlierFrac: number;
   hv: Float64Array;       // sum jac jac^T over the valid pixels, unweighted: the texture test and the covariance
+  noise: number;          // what white noise of unit sd on the template adds to trace(hv): unitNoiseTrace over the valid pixels
   cells: Int32Array;      // per cell of a 4 x 4 grid of the overlap, the pixel chosen for a correspondence, or -1
 }
 
@@ -311,7 +342,7 @@ function evaluate(tl: TemplateLevel, tpl: Level, img: Level, k: Intrinsics, q: Q
   }
   const zncc = vT > 0 && vI > 0 ? (sTI / cnt - mT * mI) / Math.sqrt(vT * vI) : 0;
   const hv = Float64Array.of(v00, v01, v02, v01, v11, v12, v02, v12, v22);
-  return { ...base, sigma, zncc, inlierFrac: inliers / cnt, hv, cells };
+  return { ...base, sigma, zncc, inlierFrac: inliers / cnt, hv, noise: unitNoiseTrace(warped, w, h, k), cells };
 }
 
 // ---- Outputs -----------------------------------------------------------------------------------------------------------
@@ -482,7 +513,8 @@ export function alignPair(tpl: Template, img: Pyramid, qPred: Quat,
   if (!fin) return refusal(qPred, opts, k, preFrac, psr);
 
   // 4. Acceptance.
-  const alpha = fin.alpha, texture = alpha * alpha * (fin.hv[0] + fin.hv[4] + fin.hv[8]) / fin.n;
+  const alpha = fin.alpha, sd = noiseSigma(tpl.pyr.l1.px, tpl.pyr.l1.w, tpl.pyr.l1.h);
+  const texture = alpha * alpha * (fin.hv[0] + fin.hv[4] + fin.hv[8] - sd * sd * fin.noise) / fin.n;
   const textured = texture > TEXTURE_FLOOR;
   // A keyframe result beyond the window's unambiguous half-width (16 px at L2) cannot have come from its peak; a
   // closure accepts a residual of at most 12 degrees (4.9).
