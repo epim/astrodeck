@@ -945,10 +945,12 @@ SOLVE_REASON_SOLVER_MISSING = (
 SOLVE_REASON_FILE_LOCKED = (
     "plate solve failed: another program held the solve frame's file open")
 # Not a failed solve: the solve worked and the MOUNT refused to take it (#850).
-# Rig-side and it does not clear by itself, so D-03 may match it. Kept free of
-# the words "plate" and "solve" together: the UI's humanizer turns any text
-# carrying both into "Plate-solve failed - check focus/exposure", which would
-# send the operator to the wrong part of the rig.
+# Rig-side and it does not clear by itself, so D-03 may match it. Worded
+# without "plate" beside "solve": until #792 the UI's humanizer turned any
+# text carrying both into "Plate-solve failed - check focus/exposure", which
+# sent the operator to the wrong part of the rig. It maps only a bare
+# failed-solve line now, so the words are not needed; they stay, as fixed words
+# D-03 matches.
 SOLVE_REASON_SYNC_REFUSED = (
     "the mount refused the sync, so its pointing could not be corrected")
 # The sync was not refused but could not be confirmed (``SyncUnverified``,
@@ -966,8 +968,9 @@ GOTO_NOT_ARRIVED_REASON = ("the goto did not arrive, so the tube is not on "
 
 def _goto_missed_line(attempt: int, e: GotoNotArrived) -> str:
     """The ONE warning for a centring slew that did not arrive (#860). The
-    driver's fixed words and the separation, never a coordinate; no "plate"
-    (the UI humanizer pair). At most 126 characters."""
+    driver's fixed words and the separation, never a coordinate. It avoids
+    "plate" beside "solve", a pair the UI humanizer no longer reads (#961).
+    At most 126 characters."""
     r = e.residual_deg
     fig = (f", {r:.2f} deg off"
            if isinstance(r, (int, float)) and not isinstance(r, bool)
@@ -988,8 +991,10 @@ def _sync_reply_words(code: str) -> str:
     at the home position that is the pole's RA, a site oracle (#140, #166).
     Empty is "an empty reply", and anything else, the driver's
     ``"unrecognised"`` sentinel included, is "an unrecognised reply", never
-    quoted. Short on purpose: the refusal line in ``solve_and_sync`` has to
-    fit 140 characters around the driver's 90-character e11 advice."""
+    quoted. Short on purpose: the refusal line in ``solve_and_sync`` was sized
+    to fit 140 characters around the driver's 90-character e11 advice (the
+    UI cut a line there until #792, and now keeps one up to 400), and the
+    size is kept."""
     if not code:
         return "an empty reply"
     quoted = quotable_sync_reply(code)
@@ -4621,9 +4626,9 @@ class Hub:
             self.pointing_disagreements += 1
             self.last_pointing_disagreement = {"moved_deg": float(moved),
                                                "at": time.time()}
-            # In words the UI's humanizer leaves alone: the old reason
-            # carried "plate" and "solve", which it rewrites into a solve
-            # failure.
+            # Without "plate" beside "solve": the old reason carried both,
+            # which the UI's humanizer once rewrote into a solve failure (it
+            # reads only a bare failed solve now, #792).
             self.invalidate_field_solve(
                 f"the mount's reported position moved {moved:.2f}° from the "
                 f"last solved field")
@@ -7751,18 +7756,21 @@ class Hub:
             e.solved = (result.ra_hours, result.dec_deg)
             # ONE warning, and NO COORDINATES in it: the driver's read-back at
             # the home position is the pole, and the solve there is too (#140,
-            # #166). Worded without "plate" beside "solve": the UI's log
-            # humanizer turns any line carrying both into "Plate-solve failed -
-            # check focus/exposure", which sends the operator to the optics
-            # when the cause is the mount. And never "solved & synced": both
-            # mount UIs read that line as a completed sync.
+            # #166). Worded without "plate" beside "solve": until #792 the
+            # UI's log humanizer turned any line carrying both into
+            # "Plate-solve failed - check focus/exposure", which sent the
+            # operator to the optics when the cause is the mount. It maps only
+            # a bare failed-solve line now; the wording stays. And never
+            # "solved & synced": both mount UIs read that line as a completed
+            # sync.
             #
             # The driver's reason goes EARLY and the line stays short: the
-            # UI cuts a line over 140 characters to 137 plus an ellipsis, and
+            # UI used to cut a line over 140 characters to 137 plus an
+            # ellipsis (it keeps whole sentences up to 400 since #792), and
             # the e11 reason (at most 90 characters) carries the operator's
             # action (the driver's e11 words, in the safe order). The
             # prefix is 48 characters with a three-character reply, so the
-            # e11 line is at most 138 and nothing is cut.
+            # e11 line is at most 138.
             #
             # At ``refusal_level``: a warning unless the caller said it
             # decides on the refusal itself and its own line follows.
@@ -9216,9 +9224,10 @@ class Hub:
                     #
                     # In words, without coordinates (the solve and the mount's
                     # report are site oracles at the pole, #140), and CAUSE
-                    # FIRST: the UI cuts a line over 140 characters to 137
-                    # plus an ellipsis, and "stopped" and the reason are what
-                    # the operator needs. With a three-digit arcmin figure the
+                    # FIRST: "stopped" and the reason are what the operator
+                    # needs, and the UI used to cut a line over 140 characters
+                    # to 137 plus an ellipsis (it keeps whole sentences up to
+                    # 400 since #792). With a three-digit arcmin figure the
                     # refused line is 123 characters and the unverified one
                     # 113 (both pinned in test_850_hub_sync_refused.py).
                     off = (f"the field is {refused_err * 60:.1f}' off target"

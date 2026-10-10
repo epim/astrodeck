@@ -57,6 +57,9 @@
 //     instead of `enqueueToast`. "x NINA: a tap is a relative goto from the
 //     believed position, so it is refused: the refusal did not say why:
 //     Plate-solve failed - check focus/exposure, or solve manually."
+//     (Observed before #792 narrowed the humanizer. `showToast` now passes this
+//     sentence whole, so that mutant is no longer red; the assertions below stay
+//     as the check that the refusal reaches the toast whole.)
 //   h1m1_reason_goto_back -- (lib/slewController.ts) POSITION_UNKNOWN_STEPS_REASON
 //     back to the round-3 "Go to a target away from the pole and solve and sync
 //     there, ..." (#850). 12/13: "x NINA: a tap is a relative goto from
@@ -319,12 +322,13 @@ await testAsync("NINA: a tap is a relative goto from the believed position, so i
     `a goto was computed from the believed position: ${JSON.stringify(posts)}`);
   assert(toasts().includes("measured from where the mount thinks it points"),
     `the refusal did not say why: ${toasts()}`);
-  // The WHOLE sentence, not a prefix: `showToast` runs a message through
-  // `humanizeLog`, which truncates past 140 characters and rewrites anything
-  // containing both "plate" and "solve" to "Plate-solve failed - check focus",
-  // the opposite of what the refusal says. This reason runs past 140
-  // characters; since #850 it no longer holds "plate", but the second assert
-  // stays so a reword that brings the word back is caught here too.
+  // The WHOLE sentence, not a prefix: a message sent through `showToast` runs
+  // through `humanizeLog`, which once truncated past 140 characters and
+  // rewrote anything containing both "plate" and "solve" to "Plate-solve failed
+  // - check focus", the opposite of what the refusal says. It now maps only a
+  // line that IS a failed solve and shortens only past CLIP_AT, so neither can
+  // touch this reason; the asserts stay so a reword that makes it a failure
+  // line, or a later humanizer rule that reads it, is caught here.
   assert(toasts().includes(POSITION_UNKNOWN_STEPS_REASON),
     `the refusal is not the shared reason, whole: ${toasts()}`);
   assert(!/Plate-solve failed/.test(toasts()),

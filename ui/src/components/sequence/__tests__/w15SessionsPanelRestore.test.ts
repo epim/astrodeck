@@ -74,11 +74,19 @@ const BARE = {
   id: "s-bad", name: "s-bad", status: "unreadable", unreadable: "it has no status",
   updated_ts: 1_757_000_200,
 };
-/** Long enough that a toast's 140-character cut would take the repair from it. */
+/** Long enough that `humanizeLog`'s budget (CLIP_AT, whole sentences) would take the
+ *  repair from it: a sentence is dropped from the end of a line past the budget, and
+ *  both fixtures end on the sentence that says what to do. The size is asserted below. */
 const DETAIL = "Restored s-bak.json from its backup. Frames accepted after the backup was taken are not in it; "
-  + "the FITS files are untouched. The session is dormant and auto-resume is off.";
+  + "the FITS files are untouched. The session is dormant and auto-resume is off. "
+  + "The session log lists every frame the backup knows about, and the FITS files on disk are the record "
+  + "of every frame it does not, so count the files for the night before you arm auto-resume again. "
+  + "Check the log first, then arm it from the session list.";
 const REFUSAL = "the backup cannot be read: fails validation: target 'M42', step 2 of 2 (filter 'Ha'): "
-  + "frame_type 'DarkFlat' is not one of Light, Dark, Bias, Flat (in any case)";
+  + "frame_type 'DarkFlat' is not one of Light, Dark, Bias, Flat (in any case); target 'M42', step 1 of 2 "
+  + "(filter 'L'): exposure_s must be greater than zero for a Light frame, and the backup holds none. "
+  + "The live file is not touched by a refused restore, so nothing is lost by trying again. "
+  + "Repair the step in the backup, then restore it again.";
 
 const asked: { url: string; method: string }[] = [];
 g.fetch = async (url: string, init?: { method?: string }) => {
@@ -104,6 +112,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../store");
 const { restoreBody } = await import("../../../api/sessions");
+const { CLIP_AT } = await import("../../../lib/humanize");
 const SessionsPanel = (await import("../SessionsPanel")).default;
 
 // ------------------------------------------------------------------ harness
@@ -194,6 +203,15 @@ await testAsync("RESTORE asks first, with the restore body for that row, and a c
   eq(String(second.body), restoreBody({ id: "s-orph", orphan: true }), "an orphan's confirm:");
   await answer(false);
   eq(posts().length, before, "a cancelled confirm sent a POST");
+});
+
+await testAsync("the toast fixtures are over the humanizer's budget - the vacuity guard", async () => {
+  // P4 and P5 below (`{ verbatim: true }` dropped) are only red while the default
+  // toast path would shorten these. The budget is CLIP_AT, not the 137-character cut
+  // the fixtures were first sized for, so it is read from the humanizer.
+  assert(DETAIL.length > CLIP_AT, `DETAIL is ${DETAIL.length} chars, inside the ${CLIP_AT} budget: P4 passes`);
+  assert(`Restore failed: ${REFUSAL}`.length > CLIP_AT,
+    `the refusal is ${`Restore failed: ${REFUSAL}`.length} chars, inside the ${CLIP_AT} budget: P5 passes`);
 });
 
 await testAsync("confirming posts once to the restore route, says the server's sentence whole, and re-reads the list", async () => {

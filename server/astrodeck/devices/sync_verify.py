@@ -115,7 +115,8 @@ def refused_message(name: str, reason: str, residual: float | None) -> str:
     action's place does not depend on the name's length (NINA and Alpaca
     names come from the driver and have no bound). The route's
     ``sync not taken: {e}`` line (``api/app.py``) puts 16 characters in front
-    of it, and the UI cuts a line at 137."""
+    of it, and the UI used to cut a line at 137 (it keeps whole sentences up
+    to 400 since #792)."""
     where = "" if residual is None else f"; {residual:.2f} deg off"
     return f"sync refused: {reason} ({name}{where})"
 
