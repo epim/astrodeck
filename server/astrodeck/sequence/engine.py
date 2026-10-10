@@ -21354,6 +21354,13 @@ class SequenceEngine:
         # dawn cutoff on one target while another is still up — keeps the cooler
         # where the next run needs it. Park is untouched either way: the mount
         # is stowed between runs regardless of what happens next.
+        #
+        # AN ARMED SESSION WITH NOTHING LEFT TO SHOOT TONIGHT IS NOT BEHIND IT
+        # (#887). A run that ends because its only target was set aside for the
+        # night armed that very session, and its window is still open, but the
+        # tick will refuse it (``NOTHING_TONIGHT``) until the next night. The
+        # same ``resume_expected_tonight`` asks the tick's readiness check as
+        # well, so that session answers None and the cooler warms.
         if warm:
             try:
                 from .resume_arm import resume_expected_tonight
