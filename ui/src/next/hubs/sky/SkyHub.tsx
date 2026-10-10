@@ -95,7 +95,9 @@ import {
 import { fetchPanels, framedStrip, framingPrefill, frameText } from "./frame/mosaic";
 import { openFlowWizard } from "../session/flows/wizard";
 import { effectiveOptics } from "../../../lib/effective";
-import { believedPointing, believedRaDec } from "../../../lib/slewController";
+import {
+  POSITION_UNKNOWN_COPY_DETAIL, believedPointing, believedRaDec, positionKnown,
+} from "../../../lib/slewController";
 import { DEFAULT_OVERLAP, fovFromOptics, type OpticsLike } from "../../../lib/framing";
 import { useSkyRegion, type SkyRow } from "../../../lib/skyRegion";
 import { resolveRoleConnected, useCapability } from "../../../lib/caps";
@@ -882,9 +884,21 @@ export function SkyHub(): JSX.Element {
       setFraming({ center: { ra_hours: f.target.ra_hours, dec_deg: f.target.dec_deg } });
       return;
     }
+    // The believed reading only (#928): a mount that does not know where it
+    // points reports its home position, the pole, and a recentre there would
+    // park the view on it labelled as the scope.
     const m = st.status?.mount;
-    if (m && typeof m.ra_hours === "number" && typeof m.dec_deg === "number") {
-      setFraming({ center: { ra_hours: m.ra_hours, dec_deg: m.dec_deg } });
+    const here = believedRaDec(m);
+    if (here) {
+      setFraming({ center: { ra_hours: here.ra_hours, dec_deg: here.dec_deg } });
+      return;
+    }
+    if (m && !positionKnown(m)) {
+      enqueueToast({
+        level: "warning",
+        title: "Nothing to recentre on - this framing has no object and the mount does not know where it points.",
+        detail: POSITION_UNKNOWN_COPY_DETAIL,
+      });
       return;
     }
     enqueueToast({
