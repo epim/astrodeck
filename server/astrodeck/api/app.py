@@ -5202,6 +5202,33 @@ def create_app(*, bind_host: str | None = None,
                 "detail": f"dead-man's-switch url not saved: {problem}",
                 "code": "invalid_deadman_url"})
 
+    def _require_horizon_usable(body: ConfigPatchBody) -> None:
+        """422 for a drawn horizon the obstruction rule could not read (#899),
+        BEFORE any block of the body is written.
+
+        ``POST /api/config {safety}`` is the active site's door to
+        ``config.safety.horizon`` and ``PUT /api/locations/{id}`` is a saved
+        location's; only the second one validated. ``SafetyConfig.horizon`` is a
+        bare ``list[tuple[float, float]]``, so 501 points, an altitude of 999, an
+        azimuth of 720 and a NaN were all stored. A point at altitude 120 is a
+        floor no target clears, so every slew at that azimuth is denied, and a
+        NaN is dropped by the ``max()`` in ``effective_floor``, which is a false
+        OPEN. Both doors now run ``normalize_horizon_points``, so what one
+        refuses the other does.
+
+        The rule only REFUSES. The points are stored as sent: ``interp_wrap``
+        sorts and wraps for itself, and a valid horizon must save as it always
+        did. Nothing to check when the block carries none (``None`` is "no drawn
+        horizon", and ``[]`` passes as the explicit clear)."""
+        if body.safety is None or body.safety.horizon is None:
+            return
+        try:
+            normalize_horizon_points(body.safety.horizon)
+        except ValueError as e:
+            raise HTTPException(422, detail={
+                "detail": f"horizon not saved: {e}",
+                "code": "invalid_horizon"})
+
     def _require_config_field_caps(body: ConfigPatchBody,
                                    principal: Principal) -> None:
         """Field-level RBAC for ``POST /api/config`` (plan field-level map).
@@ -5316,6 +5343,7 @@ def create_app(*, bind_host: str | None = None,
         per-block capability before any write."""
         _require_config_field_caps(body, principal)
         _require_deadman_url_usable(body)
+        _require_horizon_usable(body)
         await asyncio.to_thread(_persist_config_patch, body)
         if body.site is not None:
             push = getattr(hub, "push_site_to_mount", None)
