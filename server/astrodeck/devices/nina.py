@@ -86,6 +86,20 @@ FOCUS_ARRIVAL_TOLERANCE_STEPS = 2
 
 # --------------------------------------------------------------------- helpers
 
+#: Said, in these fixed words, after "NINA error on <path>" when NINA's own
+#: ``Error`` mentions settling. NINA's words are never quoted (#906), but the
+#: engine's walking-field gate counts a dither failure only when its text says
+#: "settle" (``SequenceEngine._note_dither_failure``), so the one fact the gate
+#: reads is carried as a fixed phrase instead of NINA's sentence.
+NINA_SETTLE_NOTE = ": NINA reports the guider did not settle"
+
+
+def _reports_settle(body: Any) -> bool:
+    """True when a ``Success: false`` reply's ``Error`` mentions settling."""
+    err = pick(body, "Error", default="")
+    return isinstance(err, str) and "settl" in err.lower()
+
+
 def pick(d: Any, *keys: str, default: Any = None) -> Any:
     """First present, non-null value among keys (defensive against NINA's
     PascalCase variations across versions)."""
@@ -221,7 +235,10 @@ class NinaClient:
             except ValueError:
                 raise DeviceError(f"NINA returned non-JSON on {path}")
             if not body.get("Success", True):
-                raise NinaReplyError(f"NINA error on {path}", http_status=200)
+                raise NinaReplyError(
+                    f"NINA error on {path}"
+                    + (NINA_SETTLE_NOTE if _reports_settle(body) else ""),
+                    http_status=200)
         except Exception as e:
             self.last_error = str(e)[:200]
             raise

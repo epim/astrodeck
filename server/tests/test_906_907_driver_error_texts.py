@@ -262,6 +262,46 @@ async def test_nina_success_false_does_not_quote_nina_s_error():
         await http.aclose()
 
 
+async def test_nina_a_settle_failure_still_reaches_the_walking_field_gate():
+    """A dither whose settle failed must still count toward the engine's
+    walking-field gate, which reads "settle" in the exception text
+    (``SequenceEngine._note_dither_failure``), while NINA's own sentence, and
+    any position in it, stays out. A reply that does not mention settling
+    gets no such note and is not counted.
+
+    MUTANT "the settle note dropped" (``NINA_SETTLE_NOTE`` arm removed from
+    the ``Success: false`` text): RED, the gate counts nothing."""
+    from astrodeck.sequence.engine import SequenceEngine
+
+    replies = [f"Dither failed: the guider did not settle within 90 s; {BODY}",
+               BODY]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"Success": False,
+                                         "Error": replies.pop(0)})
+
+    client, http = _nina(handler)
+    guider = NinaGuider.__new__(NinaGuider)
+    guider.client = client
+    gate = SequenceEngine.__new__(SequenceEngine)
+    try:
+        with pytest.raises(NinaReplyError) as settle:
+            await guider.dither()
+        said = _everything_said(settle.value)
+        _assert_no_position(said)
+        assert "did not settle" in said, said
+        gate._note_dither_failure(settle.value)
+        assert getattr(gate, "_dither_settle_fails", 0) == 1
+
+        with pytest.raises(NinaReplyError) as other:
+            await guider.dither()
+        assert "settle" not in _everything_said(other.value)
+        gate._note_dither_failure(other.value)
+        assert gate._dither_settle_fails == 1
+    finally:
+        await http.aclose()
+
+
 async def test_nina_a_binary_endpoint_error_names_status_path_and_size():
     """MUTANT N3 "the image body quoted" (``r.text[:120]`` back in
     ``get_bytes``): RED on the leak assertion."""
