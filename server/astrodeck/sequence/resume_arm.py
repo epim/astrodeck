@@ -873,12 +873,14 @@ def recentre_candidates(session: Session, night: str,
 
 
 def nothing_to_shoot_tonight(session: Session,
-                             candidates: list[Target]) -> bool:
+                             candidates: list[Target],
+                             night: str | None = None) -> bool:
     """True when the run would shoot nothing tonight although the session
-    still owes light frames: no candidate (``recentre_candidates``), a light
-    target that owes frames, and no calibration owed. Nothing this session
-    still owes can be shot tonight: each owing light target is set aside
-    for tonight, waits on a group that is, or, with the site set, has a
+    still owes frames: no candidate (``recentre_candidates``), a light
+    target that owes frames or a calibration step that does, and no
+    calibration step left that tonight has not set aside. Nothing this
+    session still owes can be shot tonight: each owing light target is set
+    aside for tonight, waits on a group that is, or, with the site set, has a
     window that closed or never clears its start floor tonight (#283).
 
     WHY THIS REFUSES (#159, #283). A run does not retry what is set aside
@@ -891,15 +893,31 @@ def nothing_to_shoot_tonight(session: Session,
     none of tonight's records and resolves its own windows. A session that
     owes no light frame at all is not this case: calibration-only work
     starts, and so does a session that owes nothing, which the run then
-    completes."""
+    completes.
+
+    EXCEPT CALIBRATION THAT TONIGHT SET ASIDE (#846). A flat step whose
+    exposure would not meter shoots none of its frames and stays owed, and
+    the run records it as set aside for ``night`` (``SequenceEngine.
+    _record_flat_metering``). Started again, it would meter the same lamp
+    behind the same cover and fail the same way, once a tick, all night; a
+    session whose every owed calibration step is set aside tonight, and
+    which has no candidate, is this case whether or not it owes a light
+    frame. ``night`` (an ``events.night_key``) is the night whose records
+    count; without it no record is read, the answer before #846."""
     if candidates:
         return False
     remaining = session.remaining()
+    aside = ({(r.get("target_id"), r.get("step_id"))
+              for r in session.set_aside_on(night)} if night else set())
     light = any(not t.calibration and _owes(t, remaining)
                 for t in session.plan.targets)
-    calibration = any(t.calibration and _owes(t, remaining)
-                      for t in session.plan.targets)
-    return light and not calibration
+    owing = [t for t in session.plan.targets
+             if t.calibration and _owes(t, remaining)]
+    shootable = any(remaining.get(s.id, 0) > 0
+                    and (t.id, None) not in aside
+                    and (t.id, s.id) not in aside
+                    for t in owing for s in t.steps)
+    return (light or bool(owing)) and not shootable
 
 
 def commanded_rotation(session: Session, target: Target,
@@ -2229,7 +2247,7 @@ class ResumeArm:
             session, night_key(now), self._walk(session, now),
             site=getattr(self.hub, "site", None),
             twilight_deg=cfg.safety.twilight_deg if cfg else -12.0, now=now)
-        if nothing_to_shoot_tonight(session, candidates):
+        if nothing_to_shoot_tonight(session, candidates, night_key(now)):
             self._ladder_nothing_tonight = True
             return NOTHING_TONIGHT
 

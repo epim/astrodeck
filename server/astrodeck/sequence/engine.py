@@ -1526,6 +1526,13 @@ class SequenceEngine:
         #: from the records whose night is tonight's. A later night's run
         #: reads none of them, so the step is tried again then.
         self._set_aside: dict[str, str] = {}
+        #: What this run's opening flat solves found, same key: None for a
+        #: step whose exposure metered, the solver's word for why for one that
+        #: did not (#846). `_run_calibration` fills it, `start()` empties it,
+        #: and `_finalize_report` turns it into tonight's set-aside records
+        #: (`_record_flat_metering`). It includes the DUSK FLATS stage's own
+        #: sets, which the plan owes nothing for and so never become records.
+        self._flat_metered: dict[str, str | None] = {}
         #: Whole targets set aside tonight, by target id, mapped to the reason
         #: recorded for them: a panel the group driver gave up on, and any
         #: target that sank below its own floor (`FloorStop`). Seeded by
@@ -2224,6 +2231,7 @@ class SequenceEngine:
         # has none. The night is asked of this module's clock, the one every
         # record was stamped with.
         self._set_aside = {}
+        self._flat_metered = {}
         self._set_aside_targets = {}
         self._set_aside_meta = {}
         tonight = getattr(session, "set_aside_on", None)
@@ -3941,6 +3949,9 @@ class SequenceEngine:
                         "sequence")
             else:
                 self._session.crash_resumes = 0
+            # WHAT THE FLAT SOLVES FOUND, FOR TONIGHT (#846).
+            if self._flat_metered:
+                self._record_flat_metering(self._session)
             saved = False
             try:
                 session_store.save(self._session)
@@ -3966,6 +3977,50 @@ class SequenceEngine:
             # engine does not pin a project's whole ledger map until the
             # next run starts.
             self._accepted_seen = None
+
+    def _record_flat_metering(self, session: Session) -> None:
+        """Set aside for TONIGHT each flat step of ``session``'s plan that this
+        run could not meter and the ledger still owes (#846).
+
+        A step whose opening solve does not converge shoots none of its
+        frames (#841), so all of them stay owed and the session ends dormant
+        and armed like any other shortfall. ResumeArm restarts such a session
+        once the engine is idle, and for a calibration-only plan its "nothing
+        to shoot tonight" refusal had no light target to ask about: the
+        restart meters the same lamp behind the same cover, fails the same
+        way and ends armed again, once a tick, all night. The record is the
+        one every other "tried tonight, do not try again tonight" is (spec
+        3.4, kind ``"unmetered"``), and `resume_arm.nothing_to_shoot_tonight`
+        reads it: the session holds in words, and the next night, which reads
+        none of tonight's records, meters afresh.
+
+        A RUN'S ANSWER REPLACES AN EARLIER ONE'S, per target: the records
+        tonight holds for a target this run metered are cleared first, so a
+        step that metered this time (the lamp was fixed, then the run was cut
+        short) is not held by the night's earlier failure, and one that
+        failed again is recorded again.
+
+        ONLY A STEP THE SESSION OWES, and only from the plan's own steps: the
+        DUSK FLATS stage runs sets of its own through ``_run_calibration``,
+        none of which the plan owes. Nothing in `_run_calibration` reads the
+        record back, so a start by hand meters again: whoever presses
+        CONTINUE has usually fixed the lamp. Words only: no site, no number."""
+        now = time.time()
+        night = night_key(now)
+        remaining = session.remaining()
+        for t in session.plan.targets:
+            asked = [s for s in t.steps
+                     if f"{t.id}:{s.id}" in self._flat_metered]
+            if not asked:
+                continue
+            session.note_set_aside_cleared([t.id], night=night)
+            for s in asked:
+                why = self._flat_metered[f"{t.id}:{s.id}"]
+                if why is not None and remaining.get(s.id, 0) > 0:
+                    session.note_set_aside(
+                        t.id, f"{s.filter or 'no filter'} flat exposure "
+                              f"would not meter ({why})",
+                        night=night, step_id=s.id, kind="unmetered", ts=now)
 
     @staticmethod
     def _arm_exclusively(
@@ -10591,6 +10646,12 @@ class SequenceEngine:
                     self._set_state(detail=f"{target.name}: solving flat exposure")
                     solved_exp, converged = await self._solve_flat_exposure(
                         step, target)
+                    # KEPT FOR THE END OF THE RUN (#846): the ledger owes the
+                    # frames of a step that did not meter, and
+                    # `_finalize_report` sets it aside for tonight so that no
+                    # automatic restart meters the same lamp again.
+                    self._flat_metered[key] = (
+                        None if converged else self._flat_solve_reason)
                     if not converged:
                         # A FLAT NOBODY METERED IS NOT A FLAT (#841). The
                         # solver gives up at a rail (the source is too dim at
