@@ -27,6 +27,10 @@
 //        #877 cases.
 //   (#877) U2  the open's line is the `else` of the retrying line, so it hides
 //        behind it: the first #877 case.
+//   (#919) X1  the DISMISS button is deleted from the open's line: the first
+//        #919 case.
+//   (#919) X2  the button's onPress does nothing (the store action is never
+//        called): the first #919 case.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 {
@@ -208,6 +212,34 @@ await test("#877 an open's failure alone is not reported as an unreadable librar
   assert(tid("flows-action-error") != null, "no open-failure line");
   assert(tid("flows-error") == null, "an open's failure was reported as 'could not read the flow library'");
   assert(tid("flows-retry") == null, "a RETRY for a library that did not fail");
+});
+
+// #919: the open's or save's failure line can be taken down. Nothing else does
+// it between opens, so a stale failure sat under a healthy list.
+const press = (el: any): void => {
+  act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
+};
+
+await test("#919 DISMISS takes the open's failure line down and leaves the load's line and RETRY", async () => {
+  seed({ libraryLoadError: LOAD_REASON, libraryError: OPEN_REASON });
+  await mountAt("#/session/flows");
+  const dismiss = tid("flows-action-error-dismiss");
+  assert(dismiss != null, "the open-failure line has no DISMISS");
+  press(dismiss);
+  await settle();
+  assert(useStore.getState().flows.libraryError === null, "DISMISS left the open's reason in the store");
+  assert(tid("flows-action-error") == null, "the open-failure line is still up after DISMISS");
+  assert(tid("flows-action-error-dismiss") == null, "DISMISS is still up after it was pressed");
+  assert(tid("flows-error") != null && tid("flows-retry") != null,
+    "DISMISS took the load's failure line, or its RETRY, down with it");
+  assert(useStore.getState().flows.libraryLoadError === LOAD_REASON, "DISMISS cleared the load's failure");
+});
+
+await test("#919 there is no DISMISS when there is no open or save failure to dismiss", async () => {
+  seed({ libraryLoadError: LOAD_REASON });
+  await mountAt("#/session/flows");
+  assert(tid("flows-action-error") == null, "an open-failure line with no open failure");
+  assert(tid("flows-action-error-dismiss") == null, "a DISMISS with nothing to dismiss");
 });
 
 await act(async () => { root.unmount(); });

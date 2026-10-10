@@ -160,6 +160,7 @@ export function FlowsScreen(): JSX.Element {
   const dirty = useStore((s) => s.flows.dirty);
   const highlightId = useStore((s) => s.flows.ui.highlightId);
   const loadLibrary = useStore((s) => s.flowsLoadLibrary);
+  const dismissLibraryError = useStore((s) => s.flowsDismissLibraryError);
   const flowsSetUi = useStore((s) => s.flowsSetUi);
   const enqueueToast = useStore((s) => s.enqueueToast);
 
@@ -534,12 +535,24 @@ export function FlowsScreen(): JSX.Element {
           never behind it (#877): the load retries for up to 82 s, and a reason
           that only showed once that ended arrived long after the press it
           explains. Nor is it "could not read the library", which is what the
-          field shared with the load made it say. */}
+          field shared with the load made it say. DISMISS is the only thing
+          that takes it down between opens (#919): a reload that works clears a
+          stale one, but nothing says the press it explains is over. */}
       {libraryError ? (
-        <div role="status">
+        <div
+          role="status"
+          style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}
+        >
           <span data-testid="flows-action-error">
             <Mono size={10.5} tone="bad">Could not open or save a flow: {libraryError}</Mono>
           </span>
+          <ActionButton
+            kind="secondary"
+            data-testid="flows-action-error-dismiss"
+            onPress={() => { dismissLibraryError(); }}
+          >
+            DISMISS
+          </ActionButton>
         </div>
       ) : null}
 

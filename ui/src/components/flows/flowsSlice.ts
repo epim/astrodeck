@@ -148,7 +148,8 @@ export interface FlowsState {
    *  `flowsCloseEditor`. The library load never SETS it: the load has its own
    *  field below, so a retrying or failed load can neither hide an open's or a
    *  save's reason nor be reported as one (#877). A load's success only
-   *  CLEARS a reason that was already there when it started. */
+   *  CLEARS a reason that was already there when it started, and the library
+   *  screens' dismiss control clears it (`flowsDismissLibraryError`, #919). */
   libraryError: string | null;
   /** Why the library LOAD failed (`flowsLoadLibrary`), and only that. Cleared
    *  by the load's success; untouched while it retries. */
@@ -353,6 +354,11 @@ export interface FlowsActions {
    *  Resolves once the record is in, or once the open failed or was refused,
    *  having written `libraryError` either way; it never rejects. */
   flowsOpen: (id: string) => Promise<void>;
+  /** Takes down the "could not open or save a flow" line the library screens
+   *  draw from `libraryError` (#919). Nothing else clears it between opens: a
+   *  failed open's or save's text otherwise sits under a healthy list until
+   *  the next open that reaches a read. */
+  flowsDismissLibraryError: () => void;
   flowsCloseEditor: () => Promise<void>;
   flowsSave: () => Promise<void>;
 
@@ -1102,6 +1108,19 @@ export function createFlowsActions(
   /** THE NEWEST LIBRARY LOAD WINS (#859). A load that is still retrying is
    *  superseded by a newer one: it writes nothing more and asks no more. */
   let libraryGen = 0;
+  /** EVERY WRITE OF `libraryError`, COUNTED (#921). Its text cannot say
+   *  whether it was written again: an open that fails twice with the same
+   *  words, or a save that fails the way the last open did, leaves a value
+   *  equal to the one a load captured when it started, and a load that decides
+   *  by comparing them reads that fresh failure as "nothing changed" and wipes
+   *  it. The load captures this count instead and clears only if it is
+   *  unchanged. Every write goes through `writeLibraryError`, the clears and
+   *  the dismissal included. */
+  let libraryErrorWrites = 0;
+  const writeLibraryError = (text: string | null): void => {
+    libraryErrorWrites++;
+    set((s) => patch(s, { libraryError: text }));
+  };
 
   /** SAVE THE CANVAS BEFORE ANYTHING READS THE STORED FLOW (#688).
    *
@@ -1430,8 +1449,10 @@ export function createFlowsActions(
       // without this the "could not open or save" line stayed under a library
       // that had just loaded - after a failed save was followed by one that
       // worked, say - until some later open. A failure another action wrote
-      // while this load was out is a different text and is kept.
-      const errorAtStart = get().flows.libraryError;
+      // while this load was out is kept, and "wrote" is a COUNT of writes
+      // (`libraryErrorWrites`), not a comparison of text (#921): the same
+      // words written again are still a new failure.
+      const writesAtStart = libraryErrorWrites;
       set((s) => patch(s, { libraryLoading: true }));
       const load = () => Promise.all([flowsApi.list(), flowsApi.folders()]);
       try {
@@ -1445,7 +1466,7 @@ export function createFlowsActions(
         if (!mine()) return;
         set((s) => patch(s, {
           cards, folders, libraryLoaded: true, libraryLoadError: null,
-          libraryError: s.flows.libraryError === errorAtStart ? null : s.flows.libraryError,
+          libraryError: libraryErrorWrites === writesAtStart ? null : s.flows.libraryError,
           libraryRetry: null, libraryLoading: false,
         }));
       } catch (e) {
@@ -1532,7 +1553,7 @@ export function createFlowsActions(
           // effect (the Sky's flow card, Tonight, the canvas host) report
           // nothing of their own, and a refusal nobody sees reads as a tap
           // that missed.
-          set((s) => patch(s, { libraryError: detail }));
+          writeLibraryError(detail);
           get().enqueueToast?.({
             level: "error", title: FLOW_NOT_OPENED, detail, source: "flows",
           });
@@ -1549,7 +1570,7 @@ export function createFlowsActions(
       // this function returns, it is this attempt's, never an earlier one's,
       // even when the server gives the identical reason twice in a row (the
       // repeated "no flow named <id>" case #555 found unproven).
-      set((s) => patch(s, { libraryError: null }));
+      writeLibraryError(null);
       try {
         const rec = (await flowsApi.get(id)) as FlowRecordRec;
         set((s) => patch(s, {
@@ -1606,9 +1627,11 @@ export function createFlowsActions(
         void fetchProgress();
         await get().flowsCompile();
       } catch (e) {
-        set((s) => patch(s, { libraryError: errText(e) }));
+        writeLibraryError(errText(e));
       }
     },
+
+    flowsDismissLibraryError: () => { writeLibraryError(null); },
 
     flowsSave: async () => {
       const { record, graph, dirty } = get().flows;
@@ -1717,7 +1740,7 @@ export function createFlowsActions(
         // only while its flow is still the one open.
         void get().flowsCompile();
       } catch (e) {
-        set((s) => patch(s, { libraryError: errText(e) }));
+        writeLibraryError(errText(e));
       } finally {
         if (saving === sent) { saving = null; savingPromise = null; }
         // THE WORD FOLLOWS THE NEWEST PUT, not this one: while a later save is
@@ -1762,7 +1785,7 @@ export function createFlowsActions(
         // refusal uses both: callers that read the door's outcome (a future
         // `leaveFlowEditor`) read `libraryError`, and the callers that close
         // from an effect, with nothing of their own to show, need the toast.
-        set((s) => patch(s, { libraryError: FLOW_OPEN_OVER_UNSAVED }));
+        writeLibraryError(FLOW_OPEN_OVER_UNSAVED);
         get().enqueueToast?.({
           level: "error", title: FLOW_NOT_OPENED, detail: FLOW_OPEN_OVER_UNSAVED, source: "flows",
         });
