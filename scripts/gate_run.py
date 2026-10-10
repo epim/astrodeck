@@ -35,7 +35,12 @@ What it does, in order:
    still changes the modification time, and the stamp is what notices it.
    The porcelain is still compared, because staging a file changes the
    status and no file's size or time.
-4. Runs the command with its cwd at `<tree>/<cwd>`, streaming its output.
+4. Runs the command with its cwd at `<tree>/<cwd>`, streaming its output, and
+   with `<tree>/server` first on PYTHONPATH (#915). The virtualenv's astrodeck
+   is an editable install of ONE checkout, so a script the command runs from
+   outside the tree, or a child it starts, would import that checkout's code
+   and grade code that is not in the tree. The caller's own PYTHONPATH follows.
+   A tree with no `server/astrodeck` is left with the environment it came in.
 5. SNAPSHOTS again. The tree is QUIET when HEAD is the same, the porcelain is
    the same and no path's stamp differs, appeared or vanished.
 6. Writes the JSON record, if asked: schema_version, command, exit_code,
@@ -117,6 +122,26 @@ def checkout_kind(tree: Path) -> str | None:
     git_dir, common_dir = (os.path.normcase(os.path.realpath(tree / line))
                            for line in lines)
     return "main" if git_dir == common_dir else "linked"
+
+
+def child_env(tree: Path) -> dict[str, str]:
+    """The environment the gate command runs in: this process's, with the
+    tree's own `server/` first on PYTHONPATH when it holds an astrodeck (#915).
+
+    Without it the command imports whichever checkout the virtualenv's
+    editable install names (the main one), unless its cwd or its own script
+    directory happens to be this tree's `server/`. The caller's PYTHONPATH
+    entries follow, minus a copy of the server directory they already hold.
+    """
+    env = dict(os.environ)
+    server = (tree / "server").resolve()
+    if not (server / "astrodeck").is_dir():
+        return env
+    here = os.path.normcase(str(server))
+    rest = [p for p in env.get("PYTHONPATH", "").split(os.pathsep)
+            if p and os.path.normcase(os.path.abspath(p)) != here]
+    env["PYTHONPATH"] = os.pathsep.join([str(server), *rest])
+    return env
 
 
 def _under(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -299,7 +324,7 @@ def main(argv: list[str]) -> int:
     started = _now()
     print(f"gate run: {' '.join(command)} in {cwd}", flush=True)
     try:
-        rc = subprocess.run(command, cwd=str(cwd)).returncode
+        rc = subprocess.run(command, cwd=str(cwd), env=child_env(tree)).returncode
     except OSError as e:
         print(f"gate run: cannot start {command[0]!r}: {e}", file=sys.stderr, flush=True)
         rc = 127

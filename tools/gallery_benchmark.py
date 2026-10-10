@@ -1,6 +1,6 @@
 # Copyright (c) 2026 James Penick
 # SPDX-License-Identifier: Apache-2.0
-"""Synthetic-only gallery benchmark. Run with server on PYTHONPATH.
+"""Synthetic-only gallery benchmark. Measures the astrodeck in this checkout.
 
 python tools/gallery_benchmark.py --frames 5000
 Never reads a configured capture library or connects equipment.
@@ -14,6 +14,14 @@ import subprocess
 import sys
 import tempfile
 import time
+
+# This checkout's server/ first, never the venv's editable install (#915). The
+# install points at the main checkout, so a run from a worktree would otherwise
+# time the main tree's code and print a result for code that is not the code
+# in front of you. The restart child below is this file, so it pins the same.
+_SERVER = str(Path(__file__).resolve().parents[1] / "server")
+if _SERVER not in sys.path:
+    sys.path.insert(0, _SERVER)
 
 
 def scan(root):

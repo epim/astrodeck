@@ -34,8 +34,23 @@ clocks, file times the OS stamps (``st_mtime``), ``ctime`` / ``asctime``,
 child processes, and any module that bound the real function before this
 hook ran. See README.md beside this file for how to run it.
 
+astropy's IERS table is the one thing a shift of more than about 30 days
+breaks on its own (#974). astropy asks its own ``Time.now()``, the shifted
+clock, how old the table's predictive values are, so every UT1 conversion
+(any ``AltAz`` transform among them) raises ``ValueError: interpolating from
+IERS_Auto using predictive values that are more than 30.0 days old``, after a
+ten second attempt to download a newer table, and the replay reports a failure
+that has nothing to do with the test. ``relax_iers`` turns off the download,
+the age check and the out-of-range error, in a shifted process and in no
+other. It runs straight after ``install``, and the order is the point: astropy
+imported BEFORE the ``datetime`` swap holds the real class, and its
+``isinstance`` checks then reject every shifted ``datetime`` (``ValueError:
+Input values for datetime class must be datetime objects``), ``Time.now()``
+included.
+
 The module imports only pytest and the standard library, never astrodeck: it
-runs before the code under test is importable at all."""
+runs before the code under test is importable at all. astropy is imported
+inside ``relax_iers``, once a shift is in force."""
 from __future__ import annotations
 
 import datetime
@@ -117,11 +132,34 @@ def install(shift_s: float) -> None:
     _shift_s = shift_s
 
 
+def relax_iers() -> None:
+    """Stop astropy reading the shifted clock as a stale IERS table (#974).
+
+    Three settings, each for a different failure: ``auto_download`` off, so a
+    shifted run never waits on (or depends on) the network for a table newer
+    than the bundled one; ``auto_max_age`` None, so a table is never too old
+    for the shifted clock; ``iers_degraded_accuracy`` "warn", so a time past
+    the end of the table degrades UT1-UTC (under a second) with a warning
+    instead of raising where astropy falls back to a table with no
+    predictions. Call it only after ``install``: it imports astropy, which
+    must come after the ``datetime`` swap (module docstring). A no-op where
+    astropy is not installed or lacks a setting."""
+    try:
+        from astropy.utils import iers
+    except ImportError:
+        return
+    iers.conf.auto_download = False
+    iers.conf.auto_max_age = None
+    if hasattr(iers.conf, "iers_degraded_accuracy"):
+        iers.conf.iers_degraded_accuracy = "warn"
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_load_initial_conftests():
     shift = parse_shift(os.environ.get(ENV))
     if shift is not None:
         install(shift)
+        relax_iers()
 
 
 def pytest_terminal_summary(terminalreporter):

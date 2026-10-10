@@ -47,6 +47,15 @@ _root_str = str(_REPO_ROOT)
 if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
 
+# A child process a test starts inherits this, so with this checkout's server/
+# first it imports THIS checkout's astrodeck (#915). The venv's editable install
+# points at one checkout, which in a worktree is the main tree: a child with no
+# PYTHONPATH of its own graded code that was not in the worktree, and passed or
+# failed for the wrong tree. A test that sets its own PYTHONPATH still wins.
+_py_path = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+if _py_path[:1] != [_server_str]:
+    os.environ["PYTHONPATH"] = os.pathsep.join([_server_str, *_py_path])
+
 #: The capture roots no test may write under (#309): the repo's captures/,
 #: which is ``hub.CAPTURE_DIR``'s default, and ASTRODECK_CAPTURE_DIR when
 #: the run was started with it. Read here, at conftest import, before any
