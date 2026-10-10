@@ -35,6 +35,13 @@ it. ``roll`` is the odd one out: it rotates ``right`` and ``up`` about their
 own ``forward`` and leaves that forward untouched, which IS a basis a real
 device can hold -- it is the fault the fix exists to catch, not another
 impossible one.
+
+Version 2 results (CONTRACT.md "Version 2") carry a 720-bin profile, a
+polyline and diagnostics beside the legacy files. Every corruption that
+touches the boundary, the poses or the north has a version 2 form, and the
+eleven corruptions written for version 2 refuse a result that does not carry
+the file they act on: a corruption that did not happen would be scored as a
+clean result and read as a scorer that cannot fail.
 """
 
 from __future__ import annotations
@@ -54,11 +61,18 @@ from .scene import load as load_scene
 # The decoder's own colour tolerance: erasing less than the decoder can see
 # would be an erasure that leaves the landmarks findable. And the raster
 # mapping the scorer reads a result by: a corruption of a known size has to be
-# expressed in the same mapping the size will be measured in.
+# expressed in the same mapping the size will be measured in. The profile
+# bins, their states and the pose maths come from the scorer for the same
+# reason: a corruption of a known size is read back in the scorer's own units.
 from .score import (COLOUR_TOLERANCE, PANORAMA_ALT_SPAN, PANORAMA_ALT_TOP,
-                    PANORAMA_HEIGHT, PANORAMA_WIDTH)
+                    PANORAMA_HEIGHT, PANORAMA_WIDTH, PROFILE_BIN_DEG,
+                    PROFILE_BINS, STATE_LOW, STATE_MEASURED, STATE_UNKNOWN,
+                    matrix_to_quat, quat_to_matrix, rotate_about_up)
 
 __all__ = ["CORRUPTIONS", "apply"]
+
+#: ``uncertain_bins`` of a version 2 horizon lists these states (spec 3.4).
+UNCERTAIN_STATES = (1, 2, 3)
 
 #: The grey that ``erase-landmarks`` paints over a landmark. No palette colour
 #: is within the decoder's tolerance of it, and it sits inside the background
@@ -124,14 +138,132 @@ def _set_horizon_altitudes(horizon: dict, values: np.ndarray) -> None:
         point["alt"] = float(value)
 
 
-def _edit_horizon(out_dir: Path, edit) -> None:
-    """Apply ``edit(horizon)`` to ``horizon.json`` if there is one to edit."""
+def _edit_horizon(out_dir: Path, edit, edit_v2=None) -> None:
+    """Apply ``edit(horizon)`` to ``horizon.json`` if there is one to edit.
+
+    A version 2 horizon is edited by ``edit_v2`` instead: its points are a
+    polyline addressed by azimuth and its bins live in the profile arrays, so
+    the version 1 edit (a point per bin) would corrupt something else. A
+    corruption with no version 2 form refuses a version 2 horizon.
+    """
     path = out_dir / "horizon.json"
     horizon = _read_json(path)
+    if horizon and horizon.get("version") == 2:
+        if edit_v2 is None:
+            raise ValueError("this corruption has no version 2 form")
+        edit_v2(horizon)
+        _write_json(path, horizon)
+        return
     if not horizon or not horizon.get("points"):
         return
     edit(horizon)
     _write_json(path, horizon)
+
+
+def _require_horizon_v2(out_dir: Path, name: str) -> dict:
+    """The version 2 horizon of ``out_dir``, or a refusal naming ``name``."""
+    horizon = _read_json(out_dir / "horizon.json")
+    if not horizon or horizon.get("version") != 2:
+        raise ValueError(f"{name} acts on a version 2 horizon.json, and this "
+                         "result does not carry one")
+    return horizon
+
+
+def _v2_arrays(horizon: dict):
+    """``(profile, traced, state)`` of a version 2 horizon as numpy arrays.
+
+    ``traced`` has NaN where the file has ``null``; ``state`` is integer.
+    """
+    profile = np.array(horizon["profile"], dtype=np.float64)
+    traced = np.array([math.nan if v is None else float(v)
+                       for v in horizon["profile_traced"]], dtype=np.float64)
+    state = np.array(horizon["profile_state"], dtype=np.int64)
+    return profile, traced, state
+
+
+def _v2_store(horizon: dict, profile, traced, state) -> None:
+    """Write the three arrays back, and re-derive ``uncertain_bins`` from them."""
+    horizon["profile"] = [float(v) for v in profile]
+    horizon["profile_traced"] = [None if math.isnan(v) else float(v) for v in traced]
+    horizon["profile_state"] = [int(v) for v in state]
+    horizon["uncertain_bins"] = [int(i) for i in np.nonzero(np.isin(state, UNCERTAIN_STATES))[0]]
+
+
+def _sorted_points(points) -> list:
+    return sorted(({"az": float(p["az"]) % 360.0, "alt": float(p["alt"])} for p in points),
+                  key=lambda p: p["az"])
+
+
+def _lift_polyline(points, profile, changed) -> list:
+    """Raise a polyline until it is again at or above ``profile`` (G1).
+
+    ``changed`` marks the bins whose profile the caller has just changed. A
+    polyline with few vertices has long straight pieces, and raising one
+    vertex of such a piece tilts the whole of it, so first every bin edge from
+    one bin before the changed bins to one bin after them gets a vertex at the
+    line's own height there. Then every vertex is lifted to the bin it sits
+    in, and every bin edge to the higher of the two bins that share it. The
+    damage is the changed bins and one shoulder bin either side, whatever the
+    polyline looked like.
+
+    Only ever raises, so what was above the profile stays above it, and a
+    result that has had its bins relabelled blocked keeps a polyline that
+    blocks them. The corruptions that change the profile call this so that the
+    only gate they break on the polyline's side is the one they are about.
+    """
+    lifted = _sorted_points(points)
+    if not lifted:
+        return lifted
+    edges = np.arange(PROFILE_BINS) * PROFILE_BIN_DEG
+    original = np.interp(edges, [p["az"] for p in lifted], [p["alt"] for p in lifted],
+                         period=360.0)
+    near = set()
+    for index in np.nonzero(changed)[0]:
+        near.update(int((index + offset) % PROFILE_BINS) for offset in (-1, 0, 1, 2))
+    for k in sorted(near):
+        if not any(abs(p["az"] - edges[k]) < 1e-9 for p in lifted):
+            lifted.append({"az": float(edges[k]), "alt": float(original[k])})
+    lifted.sort(key=lambda p: p["az"])
+    for point in lifted:
+        bin_index = min(int(point["az"] / PROFILE_BIN_DEG), PROFILE_BINS - 1)
+        point["alt"] = max(point["alt"], float(profile[bin_index]))
+    needed = np.maximum(np.roll(profile, 1), profile)
+    for k in range(PROFILE_BINS):
+        at = next((p for p in lifted if abs(p["az"] - edges[k]) < 1e-9), None)
+        if at is not None:
+            at["alt"] = max(at["alt"], float(needed[k]))
+    return lifted
+
+
+def _edit_diagnostics(out_dir: Path, edit, required: str | None = None) -> None:
+    """Apply ``edit(diagnostics)`` to ``diagnostics.json``.
+
+    Absent is a no-op for the legacy corruptions, which have always acted on
+    results that carry none. ``required`` names a version 2 corruption that
+    cannot act without it, and refuses.
+    """
+    path = out_dir / "diagnostics.json"
+    diagnostics = _read_json(path)
+    if diagnostics is None:
+        if required is not None:
+            raise ValueError(f"{required} acts on diagnostics.json, and this "
+                             "result does not carry one")
+        return
+    edit(diagnostics)
+    _write_json(path, diagnostics)
+
+
+def _turn_pose(q, deg: float) -> list:
+    """A camera-to-world quaternion turned east by ``deg`` about the vertical.
+
+    Left-multiplied, so it is the world that turns: the heading of the optical
+    axis moves by exactly ``deg`` and the relative rotation between two poses
+    turned together is unchanged.
+    """
+    turn = np.array([[math.cos(math.radians(deg)), math.sin(math.radians(deg)), 0.0],
+                     [-math.sin(math.radians(deg)), math.cos(math.radians(deg)), 0.0],
+                     [0.0, 0.0, 1.0]])
+    return matrix_to_quat(turn @ quat_to_matrix(q))
 
 
 def _edit_events(out_dir: Path, edit) -> None:
@@ -156,24 +288,18 @@ def _basis_vectors(event: dict):
 # --------------------------------------------------------------------------
 
 
-def _rotate_about_up(vector, deg: float) -> list:
-    """Turn a world vector east by ``deg`` degrees about the vertical.
-
-    Azimuth runs clockwise from north, so adding to the azimuth of
-    ``[sin az cos alt, cos az cos alt, sin alt]`` is
-    ``x' = x cos d + y sin d``, ``y' = y cos d - x sin d``.
-    """
-    radians = math.radians(deg)
-    cos, sin = math.cos(radians), math.sin(radians)
-    x, y, z = (float(v) for v in vector)
-    return [x * cos + y * sin, y * cos - x * sin, z]
-
-
 def _yaw(case_dir: Path, out_dir: Path, deg: float = 1.0) -> None:
     """Turn the whole result east by ``deg``: raster, boundary and overlay.
 
     The raster is rolled by a whole number of columns so the azimuth put in is
     exact, and the boundary is rolled by the matching whole number of bins.
+
+    A version 2 result turns the same way: the profile arrays roll by whole
+    bins, the polyline's vertices move by the same whole number of half
+    degrees, and every keyframe pose in ``diagnostics.json`` turns by ``deg``
+    exactly. The poses turn because a result with the wrong north has wrong
+    headings in every file that carries one, and a yaw that left the
+    diagnostics alone would be a yaw the north gates could not see.
     """
     deg = float(deg)
     image = _read_panorama(out_dir)
@@ -189,7 +315,16 @@ def _yaw(case_dir: Path, out_dir: Path, deg: float = 1.0) -> None:
         horizon["uncertain_bins"] = sorted(
             (int(index) + shift) % bins for index in horizon.get("uncertain_bins") or [])
 
-    _edit_horizon(out_dir, edit)
+    def edit_v2(horizon):
+        profile, traced, state = _v2_arrays(horizon)
+        shift = int(round(deg / PROFILE_BIN_DEG))
+        _v2_store(horizon, np.roll(profile, shift), np.roll(traced, shift),
+                  np.roll(state, shift))
+        horizon["points"] = _sorted_points(
+            {"az": point["az"] + shift * PROFILE_BIN_DEG, "alt": point["alt"]}
+            for point in horizon["points"])
+
+    _edit_horizon(out_dir, edit, edit_v2)
 
     def turn(events):
         for event in events:
@@ -197,9 +332,15 @@ def _yaw(case_dir: Path, out_dir: Path, deg: float = 1.0) -> None:
             if basis is None:
                 continue
             for key in ("right", "up", "forward"):
-                basis[key] = _rotate_about_up(basis[key], deg)
+                basis[key] = rotate_about_up(basis[key], deg)
 
     _edit_events(out_dir, turn)
+
+    def turn_poses(diagnostics):
+        for keyframe in diagnostics.get("keyframes") or []:
+            keyframe["q"] = _turn_pose(keyframe["q"], deg)
+
+    _edit_diagnostics(out_dir, turn_poses)
 
 
 def _rotate_about_axis(vector, axis, deg: float) -> list:
@@ -301,7 +442,14 @@ def _focal(case_dir: Path, out_dir: Path, scale: float = 1.05) -> None:
         _set_horizon_altitudes(horizon, np.clip(_warp_altitude(altitudes, scale),
                                                 0.0, 90.0))
 
-    _edit_horizon(out_dir, edit)
+    def edit_v2(horizon):
+        profile, traced, state = _v2_arrays(horizon)
+        _v2_store(horizon, np.clip(_warp_altitude(profile, scale), 0.0, 90.0),
+                  np.clip(_warp_altitude(traced, scale), 0.0, 90.0), state)
+        for point in horizon["points"]:
+            point["alt"] = float(np.clip(_warp_altitude(point["alt"], scale), 0.0, 90.0))
+
+    _edit_horizon(out_dir, edit, edit_v2)
 
     def warp(events):
         for event in events:
@@ -340,7 +488,13 @@ def _mirror(case_dir: Path, out_dir: Path) -> None:
         horizon["uncertain_bins"] = sorted(
             bins - 1 - int(index) for index in horizon.get("uncertain_bins") or [])
 
-    _edit_horizon(out_dir, edit)
+    def edit_v2(horizon):
+        profile, traced, state = _v2_arrays(horizon)
+        _v2_store(horizon, profile[::-1], traced[::-1], state[::-1])
+        horizon["points"] = _sorted_points(
+            {"az": 360.0 - point["az"], "alt": point["alt"]} for point in horizon["points"])
+
+    _edit_horizon(out_dir, edit, edit_v2)
 
     def reflect(events):
         for event in events:
@@ -404,7 +558,17 @@ def _remove_section(case_dir: Path, out_dir: Path, az0: float = 100.0,
         uncertain.update(int(i) for i in inside)
         horizon["uncertain_bins"] = sorted(uncertain)
 
-    _edit_horizon(out_dir, edit)
+    def edit_v2(horizon):
+        # Unknown at 90 with no traced altitude, and a polyline that blocks
+        # the section: the version 2 way of saying "I could not see here".
+        profile, traced, state = _v2_arrays(horizon)
+        centres = (np.arange(PROFILE_BINS) + 0.5) * PROFILE_BIN_DEG
+        inside = ((centres - float(az0)) % 360.0) < float(width)
+        profile[inside], traced[inside], state[inside] = 90.0, math.nan, STATE_UNKNOWN
+        _v2_store(horizon, profile, traced, state)
+        horizon["points"] = _lift_polyline(horizon["points"], profile, inside)
+
+    _edit_horizon(out_dir, edit, edit_v2)
 
 
 def _wrong_reference(case_dir: Path, out_dir: Path, offset_m=(1.0, 0.0, 0.0)) -> None:
@@ -513,7 +677,15 @@ def _erase_horizon_strip(case_dir: Path, out_dir: Path, alt_max: float = 15.0) -
     def edit(horizon):
         horizon["uncertain_bins"] = list(range(len(horizon["points"])))
 
-    _edit_horizon(out_dir, edit)
+    def edit_v2(horizon):
+        _, _, state = _v2_arrays(horizon)
+        profile = np.full(PROFILE_BINS, 90.0)
+        _v2_store(horizon, profile, np.full(PROFILE_BINS, math.nan),
+                  np.full(state.shape, STATE_UNKNOWN))
+        horizon["points"] = _lift_polyline(horizon["points"], profile,
+                                           np.ones(PROFILE_BINS, dtype=bool))
+
+    _edit_horizon(out_dir, edit, edit_v2)
 
 
 def _brightness(case_dir: Path, out_dir: Path, gain: float = 1.2) -> None:
@@ -573,6 +745,236 @@ def _duplicate_frame(case_dir: Path, out_dir: Path, index: int | None = None) ->
     _edit_events(out_dir, duplicate)
 
 
+# --------------------------------------------------------------------------
+# Version 2 corruptions (spec 7.6: each is the one that must fail its gate)
+# --------------------------------------------------------------------------
+
+
+def _bins_from(state: np.ndarray, wanted: int, az0: float) -> np.ndarray:
+    """Measured bins in azimuth order starting at ``az0``, the first ``wanted``."""
+    measured = np.nonzero(state == STATE_MEASURED)[0]
+    if measured.size == 0:
+        raise ValueError("no Measured bin to relabel")
+    ordered = measured[np.argsort((measured * PROFILE_BIN_DEG - float(az0)) % 360.0,
+                                  kind="stable")]
+    return ordered[:max(1, int(wanted))]
+
+
+def _flat_run_middle(profile: np.ndarray, state: np.ndarray):
+    """The middle bin of the longest run of Measured bins at one altitude."""
+    best_length, best_start = 0, None
+    start = 0
+    for index in range(1, PROFILE_BINS + 1):
+        ends = (index == PROFILE_BINS or state[index] != STATE_MEASURED
+                or abs(profile[index] - profile[start]) > 1e-9)
+        if ends:
+            if state[start] == STATE_MEASURED and index - start > best_length:
+                best_length, best_start = index - start, start
+            start = index
+    return None if best_start is None else best_start + best_length // 2
+
+
+def _shift_line_down(case_dir: Path, out_dir: Path, deg: float = 1.0) -> None:
+    """Lower the published polyline by ``deg`` degrees everywhere.
+
+    Nothing else moves: not the profile, the states or the panorama. The line
+    is now ``deg`` below what was measured, which is a degree of false-open
+    sky at every azimuth, and exactly the size the horizon gate is stated in.
+    The polyline is also below the profile it was built from, so
+    `never_below_profile` fails with it by construction.
+    """
+    horizon = _require_horizon_v2(out_dir, "shift-line-down-1")
+    for point in horizon["points"]:
+        point["alt"] = float(point["alt"]) - float(deg)
+    _write_json(out_dir / "horizon.json", horizon)
+
+
+def _dent_one_bin(case_dir: Path, out_dir: Path, bin_index=None, deg: float = 2.0) -> None:
+    """Pull the polyline ``deg`` degrees below the profile across one bin.
+
+    Both edges of the bin get a vertex ``deg`` below the bin's value, so the
+    line is under the profile at both ends of the bin (G1) and the dent is
+    local. By default the bin is the middle of the longest flat run of
+    Measured bins, where no test obstacle stands and the line is otherwise
+    exact.
+    """
+    horizon = _require_horizon_v2(out_dir, "dent-one-bin")
+    profile, _, state = _v2_arrays(horizon)
+    if bin_index is None:
+        bin_index = _flat_run_middle(profile, state)
+        if bin_index is None:
+            raise ValueError("no Measured bin to dent")
+    bin_index = int(bin_index) % PROFILE_BINS
+    level = float(profile[bin_index]) - float(deg)
+    # A vertex one bin out each side holds the line where it was, so the dent
+    # is two ramps of one bin and a floor of one, however sparse the polyline.
+    azimuths = [((bin_index + offset) % PROFILE_BINS) * PROFILE_BIN_DEG
+                for offset in (-1, 0, 1, 2)]
+    points = _sorted_points(horizon["points"])
+    held = np.interp([azimuths[0], azimuths[3]], [p["az"] for p in points],
+                     [p["alt"] for p in points], period=360.0)
+    kept = [p for p in points
+            if all(abs(p["az"] - az) > 1e-9 for az in azimuths)]
+    horizon["points"] = sorted(
+        kept + [{"az": azimuths[0], "alt": float(held[0])},
+                {"az": azimuths[1], "alt": level}, {"az": azimuths[2], "alt": level},
+                {"az": azimuths[3], "alt": float(held[1])}],
+        key=lambda p: p["az"])
+    _write_json(out_dir / "horizon.json", horizon)
+
+
+def _relabel_unknown_measured(case_dir: Path, out_dir: Path) -> None:
+    """Call every Unknown bin Measured, and change nothing else.
+
+    A scanner that claims a measurement where it had none. The published
+    altitude stays at 90, so the claim is wrong by the whole distance to the
+    truth: this fails `unknown_where_unobservable` (its own gate) and, because
+    each such bin is now graded, `measured_is_honest` and, once those bins are
+    more than 5 per cent of the Measured azimuths, `horizon_p95_lt_1`.
+    """
+    horizon = _require_horizon_v2(out_dir, "relabel-unknown-measured")
+    profile, traced, state = _v2_arrays(horizon)
+    unknown = state == STATE_UNKNOWN
+    if not unknown.any():
+        raise ValueError("relabel-unknown-measured needs a result with Unknown bins")
+    state[unknown] = STATE_MEASURED
+    _v2_store(horizon, profile, traced, state)
+    _write_json(out_dir / "horizon.json", horizon)
+
+
+def _relabel_measured_low(case_dir: Path, out_dir: Path, fraction: float = 0.2,
+                          az0: float = 0.0) -> None:
+    """Call a run of Measured bins Low: too timid to publish what it measured.
+
+    The first ``fraction`` of the Measured bins in azimuth order from ``az0``
+    become Low at 90, keeping their traced altitude, and the polyline is lifted
+    to block them. One contiguous run keeps the damage to its two ends; the
+    share of Measured bins falls by ``fraction`` and by nothing else.
+    """
+    horizon = _require_horizon_v2(out_dir, "relabel-measured-low")
+    profile, traced, state = _v2_arrays(horizon)
+    count = math.ceil(float(fraction) * int((state == STATE_MEASURED).sum()))
+    chosen = _bins_from(state, count, az0)
+    state[chosen], profile[chosen] = STATE_LOW, 90.0
+    _v2_store(horizon, profile, traced, state)
+    horizon["points"] = _lift_polyline(horizon["points"], profile,
+                                       np.isin(np.arange(PROFILE_BINS), chosen))
+    _write_json(out_dir / "horizon.json", horizon)
+
+
+def _mark_bins_unknown(case_dir: Path, out_dir: Path, count: int = 20,
+                       az0: float = 0.0) -> None:
+    """Call ``count`` contiguous Measured bins Unknown, blocked at 90.
+
+    The traced altitude goes with them (an Unknown bin has no boundary), and
+    the polyline is lifted to block the run. A fully observable case must have
+    no such bin.
+    """
+    horizon = _require_horizon_v2(out_dir, "mark-bins-unknown")
+    profile, traced, state = _v2_arrays(horizon)
+    chosen = _bins_from(state, count, az0)
+    state[chosen], profile[chosen], traced[chosen] = STATE_UNKNOWN, 90.0, math.nan
+    _v2_store(horizon, profile, traced, state)
+    horizon["points"] = _lift_polyline(horizon["points"], profile,
+                                       np.isin(np.arange(PROFILE_BINS), chosen))
+    _write_json(out_dir / "horizon.json", horizon)
+
+
+def _drop_poses(case_dir: Path, out_dir: Path, keep_every: int = 10) -> None:
+    """Null the basis on all but every ``keep_every``-th event line: 90 per cent.
+
+    The lines stay, so the frames are still delivered and still named; only
+    the pose is withheld. The poses that remain are exact.
+    """
+    path = out_dir / "events.jsonl"
+    events = _read_jsonl(path)
+    if not events:
+        raise ValueError("drop-poses-90pct acts on events.jsonl, and this result has none")
+    for position, event in enumerate(events):
+        if position % int(keep_every):
+            event["basis"] = None
+    _write_jsonl(path, events)
+
+
+def _yaw_ramp(case_dir: Path, out_dir: Path, deg: float = 3.0) -> None:
+    """A yaw error growing linearly from 0 to ``deg`` across the scan's poses.
+
+    Applied to the overlay only. One global yaw removes the mean of the ramp
+    and leaves half of it either side, which is what a scan frame that drifts
+    looks like and what the single-yaw removal cannot hide.
+    """
+    path = out_dir / "events.jsonl"
+    events = _read_jsonl(path)
+    posed = [event for event in events if _basis_vectors(event) is not None]
+    if len(posed) < 2:
+        raise ValueError("yaw-ramp needs at least two events with a basis")
+    for position, event in enumerate(posed):
+        turn = float(deg) * position / (len(posed) - 1)
+        for key in ("right", "up", "forward"):
+            event["basis"][key] = rotate_about_up(event["basis"][key], turn)
+    _write_jsonl(path, events)
+
+
+def _inflate_closure(case_dir: Path, out_dir: Path, deg: float = 0.5) -> None:
+    """Turn the late keyframe of the loop match by ``deg`` about the vertical.
+
+    The relative rotation the closure reports is then off by ``deg``, which is
+    the loop residual to the degree. Only one of the keyframes moves, so the
+    north error shifts by ``deg`` over the keyframe count and stays far inside
+    its gate.
+    """
+    def edit(diagnostics):
+        match = (diagnostics.get("loop") or {}).get("match")
+        if not match:
+            raise ValueError("inflate-closure needs a loop.match to inflate")
+        late = next((k for k in diagnostics.get("keyframes") or []
+                     if k.get("id") == match["late_kf"]), None)
+        if late is None:
+            raise ValueError("inflate-closure: the late keyframe is not in the result")
+        late["q"] = _turn_pose(late["q"], float(deg))
+
+    _edit_diagnostics(out_dir, edit, required="inflate-closure")
+
+
+def _scale_focal(case_dir: Path, out_dir: Path, scale: float = 1.01) -> None:
+    """Multiply the reported normalised focal length by ``scale``."""
+    def edit(diagnostics):
+        focal = diagnostics.get("focal")
+        if not isinstance(focal, dict) or focal.get("f_norm") is None:
+            raise ValueError("scale-focal-1.01 needs a focal.f_norm to scale")
+        focal["f_norm"] = float(focal["f_norm"]) * float(scale)
+
+    _edit_diagnostics(out_dir, edit, required="scale-focal-1.01")
+
+
+def _shrink_north_sigma(case_dir: Path, out_dir: Path, sigma_deg: float = 0.1) -> None:
+    """Set the reported north sigma to ``sigma_deg``: a scanner overconfident
+    about a north it did not get exactly right."""
+    def edit(diagnostics):
+        north = diagnostics.get("north")
+        if not isinstance(north, dict):
+            raise ValueError("shrink-north-sigma needs a reported north")
+        north["sigma_deg"] = float(sigma_deg)
+
+    _edit_diagnostics(out_dir, edit, required="shrink-north-sigma")
+
+
+def _delay_first_seen(case_dir: Path, out_dir: Path, deciseconds: int = 20) -> None:
+    """Report every seen cell ``deciseconds`` tenths of a second late: 2 s.
+
+    Cells never seen stay at 0, which is "never".
+    """
+    path = out_dir / "first_seen.bin"
+    if not path.is_file():
+        raise ValueError("delay-first-seen-2s acts on first_seen.bin, and this "
+                         "result does not carry one")
+    seen = np.frombuffer(path.read_bytes(), dtype="<u2").copy()
+    late = seen > 0
+    seen[late] = np.minimum(seen[late].astype(np.int64) + int(deciseconds),
+                            65535).astype("<u2")
+    path.write_bytes(seen.astype("<u2").tobytes())
+
+
 #: Every corruption by the name the CLI and the tests use.
 CORRUPTIONS = {
     "yaw": _yaw,
@@ -591,6 +993,17 @@ CORRUPTIONS = {
     "brightness": _brightness,
     "substitute-pose": _substitute_pose,
     "duplicate-frame": _duplicate_frame,
+    "shift-line-down-1": _shift_line_down,
+    "dent-one-bin": _dent_one_bin,
+    "relabel-unknown-measured": _relabel_unknown_measured,
+    "relabel-measured-low": _relabel_measured_low,
+    "mark-bins-unknown": _mark_bins_unknown,
+    "drop-poses-90pct": _drop_poses,
+    "yaw-ramp": _yaw_ramp,
+    "inflate-closure": _inflate_closure,
+    "scale-focal-1.01": _scale_focal,
+    "shrink-north-sigma": _shrink_north_sigma,
+    "delay-first-seen-2s": _delay_first_seen,
 }
 
 
