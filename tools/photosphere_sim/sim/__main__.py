@@ -4,7 +4,9 @@
 
 ``score`` writes ``report.html`` beside ``scores.json``; ``report`` re-renders
 that page from a ``scores.json`` that is already there, without scoring again;
-``corrupt`` writes a deliberately broken copy of a result directory.
+``corrupt`` writes a deliberately broken copy of a result directory;
+``import-recording`` turns a phone's recording into a case and ``selfcheck``
+compares a replay of it with the report the phone made (:mod:`sim.recording`).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import recording as recording_module
 from . import report as report_module
 from .cases import CASES_DIR, build_case, flat_renderer
 from .corrupt import CORRUPTIONS, apply as apply_corruption
@@ -180,6 +183,39 @@ def _report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import_recording(args: argparse.Namespace) -> int:
+    """Write a case directory from a recording file; exit 2 when it cannot."""
+    try:
+        out_dir = recording_module.import_recording(Path(args.file), args.case_id, Path(args.out))
+    except recording_module.RecordingError as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(2)
+    print(f"wrote {out_dir}")
+    # O4: the frames are photos of the surroundings.
+    print("this case holds photos of the surroundings: keep it local, never commit it")
+    return 0
+
+
+def _selfcheck(args: argparse.Namespace) -> int:
+    """Compare a replay of an imported recording with the phone's own report.
+
+    Exit 0 when every row matches, 1 when one does not, and 2 when it could not
+    run (no replay yet, no report in the recording): a mismatch and a broken
+    invocation must not look alike on the way out.
+    """
+    case_dir = _case_dir(args)
+    result_dir = Path(args.result) if args.result else case_dir / "result"
+    try:
+        checks = recording_module.selfcheck(case_dir, result_dir)
+    except recording_module.RecordingError as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(2)
+    print(recording_module.format_table(checks))
+    failed = [check.name for check in checks if not check.ok]
+    print(f"selfcheck {'FAIL: ' + ', '.join(failed) if failed else 'PASS'}")
+    return 1 if failed else 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="sim")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -218,6 +254,18 @@ def main(argv=None) -> int:
     report.add_argument("--result", default=None,
                         help="the scored result directory (default <case>/result)")
 
+    import_recording = subparsers.add_parser("import-recording")
+    import_recording.add_argument("file", help="the recording written by Recorder.finish (JSON Lines)")
+    import_recording.add_argument("case_id")
+    import_recording.add_argument("--out", default=DEFAULT_CASE_ROOT,
+                                  help="the directory to write the case under")
+
+    selfcheck = subparsers.add_parser("selfcheck")
+    selfcheck.add_argument("case_id")
+    selfcheck.add_argument("--cases", default=DEFAULT_CASE_ROOT)
+    selfcheck.add_argument("--result", default=None,
+                           help="the replay's result directory (default <case>/result)")
+
     args = parser.parse_args(argv)
 
     if args.command == "make-case":
@@ -228,6 +276,10 @@ def main(argv=None) -> int:
         return _ideal(args)
     if args.command == "corrupt":
         return _corrupt(args)
+    if args.command == "import-recording":
+        return _import_recording(args)
+    if args.command == "selfcheck":
+        return _selfcheck(args)
     return _report(args)
 
 
