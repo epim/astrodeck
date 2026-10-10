@@ -449,7 +449,8 @@ class Session(BaseModel):
 
     def set_aside_streak(
             self, target_id: str, *, before: str | None = None,
-            kinds: tuple[str, ...] = STARVING_KINDS) -> tuple[int, str | None]:
+            kinds: tuple[str, ...] = STARVING_KINDS,
+            open_night: str | None = None) -> tuple[int, str | None]:
         """On how many CONSECUTIVE observing nights, ending with the newest
         this session ran, ``target_id`` was starved, and the kind of the
         newest record: ``(0, None)`` when it was not (#180 part A, backlog
@@ -457,14 +458,14 @@ class Session(BaseModel):
         running" (``flows.progress._starved``).
 
         ``before`` (#835) is a night key: the walk then ends with the night
-        BEFORE it, as if the session had not run on ``before`` or after. A
-        run that has started has tonight in ``nights`` already and, until it
-        sets something aside, no record for it, so asked with tonight the
-        answer is always zero; "starved on the nights before tonight" is
-        what the group driver wants at its start. ``kinds`` narrows which
-        records count (default ``STARVING_KINDS``, the answer progress
-        serves, unchanged); the walk stops at the first night with none of
-        them.
+        BEFORE it, as if the session had not run on ``before`` or after.
+        "Starved on the nights before tonight" is what the group driver
+        wants at its start, whether or not tonight has a record yet.
+        ``kinds`` narrows which records count (default ``STARVING_KINDS``,
+        the answer progress serves, unchanged); the walk stops at the first
+        night with none of them. ``open_night`` (#942) is a night key too:
+        the night that is still going on, which the caller knows from its
+        clock and this method has none (see TONIGHT below).
 
         A NIGHT COUNTS when the session holds a whole-panel record for the
         target on it (``step_id`` None: a step the reject guard set aside
@@ -487,14 +488,55 @@ class Session(BaseModel):
 
         ONLY THE KIND IS RETURNED, never the record's ``reason``: it is free
         text that can carry a solver's error, and what is built from this
-        answer is served to a viewer. Tonight counts once its run has
-        started (``nights`` has its report id), so "including tonight" holds.
-        NOTHING HERE IS SITE-DERIVED: nights and kinds, no time."""
+        answer is served to a viewer.
+
+        TONIGHT IS COUNTED ONCE, AND ONLY WHEN IT IS STILL OPEN AND HOLDS
+        NOTHING YET (#942). A run that has started has tonight in ``nights``
+        (``engine.start`` appends its report id) and, until the panel is set
+        aside, no record of it, so a walk that broke at that night answered
+        ``(0, None)`` for a panel set aside whole on the three nights
+        before, from the moment the run began until the set-aside landed
+        (and then ``(4, kind)``). With ``open_night`` given, the newest
+        observing night is left out of the walk when it IS that night and
+        the session holds NOTHING of the target from it: no set-aside record
+        of any kind or step, no frame of any grade (the night is still open
+        for the panel). The record landing turns the night into one the walk
+        counts, so the earlier nights are counted once and tonight once; a
+        panel shot tonight, or set aside tonight for a kind that is not
+        starving, is not left out and ends the streak.
+
+        THE CLOCK DECIDES, NOT THE LEDGER. A newest night that holds nothing
+        of the panel is either still open or a night that ran and closed
+        without reaching the panel (clouded out first), and the ledger
+        cannot tell the two apart. The second is a night the panel was not
+        set aside on, so it ends the streak, as it does once a later night
+        has started. Left out, it would keep the Campaign saying "set aside
+        on 3 nights running" for every day after it and drop the sentence
+        the moment the next run started, while the group driver
+        (``earlier_starved_nights``, which asks with ``before``) already
+        read 0 at that start. So the caller hands in the key of the night
+        its clock is in (``events.night_key``), and only a newest night that
+        equals it is left out. No ``open_night`` (None, the default) leaves
+        nothing out, and a newest night whose run id carries no stamp is
+        keyed by the id itself and so never equals a night key: both answer
+        as the walk did before #942. Only the NEWEST night is ever left out,
+        and not when ``before`` is given: that caller has said where the walk
+        ends, and the night before it was a night that ran.
+        NOTHING HERE IS SITE-DERIVED: nights and kinds, no time. The night
+        key is the server's own local noon-to-noon date."""
         banked = {report_night(f.night) or f.night for f in self.frames
                   if f.target_id == target_id and f.effective()}
         nights = self.observing_nights()
         if before is not None and before in nights:
             nights = nights[:nights.index(before)]
+        elif (before is None and open_night is not None and nights
+                and nights[-1] == open_night):
+            held = {r.get("night") for r in self.set_aside
+                    if r.get("target_id") == target_id}
+            held |= {report_night(f.night) or f.night for f in self.frames
+                     if f.target_id == target_id}
+            if open_night not in held:
+                nights = nights[:-1]
         streak, kind = 0, None
         for night in reversed(nights):
             records = [r for r in self.set_aside
