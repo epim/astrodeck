@@ -75,6 +75,16 @@ import sys
 import time
 from pathlib import Path
 
+# The checkout this script sits in, first on the path (#915). The venv's
+# editable install points at the main checkout, so run from a worktree the
+# session store below would be the main tree's code, and the move it writes
+# would be graded against a tree that is not the one under test. A process
+# that already has it on the path (the server suite, via conftest.py) is left
+# as it is.
+_SERVER = str(Path(__file__).resolve().parents[2] / "server")
+if _SERVER not in sys.path:
+    sys.path.insert(0, _SERVER)
+
 
 class SeedRefused(RuntimeError):
     pass

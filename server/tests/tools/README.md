@@ -89,7 +89,42 @@ Not moved:
   pytest's own, so its durations stay real), and a `datetime` object made by C
   code outside the `datetime` module (it is not an instance of the subclass).
 
-The plugin imports only pytest and the standard library; it must never import
-astrodeck, which is the thing it has to get in front of.
+## A shift of months: astropy's IERS table
+
+astropy asks its own `Time.now()`, which is the shifted clock, how old its IERS
+table's predictive values are. Past about 30 days every UT1 conversion (an
+`AltAz` transform makes one) raised `ValueError: interpolating from IERS_Auto
+using predictive values that are more than 30.0 days old`, after ten seconds
+spent trying to download a newer table. A replay of a season-dependent sky test
+(#925 needs a year) then read as a failure that had nothing to do with the test
+(#974).
+
+While a shift is in force, and only then, the plugin sets
+`astropy.utils.iers.conf`:
+
+- `auto_download = False`: no network, so a replay never waits on a download
+  or depends on one, and astropy uses the table it ships.
+- `auto_max_age = None`: that table is never "too old" for the shifted clock.
+- `iers_degraded_accuracy = "warn"`: a time past the end of the table
+  degrades with an `IERSDegradedAccuracyWarning` instead of raising, where
+  astropy falls back to a table without predictions.
+
+The cost is accuracy. Past the table, UT1-UTC (under a second) and polar
+motion are approximated, which moves a computed altitude by well under an
+arcminute. That costs nothing when the question is whether a test depends on
+the date (the hour, the season), and it is wrong for a test that asserts an
+altitude to the arcsecond at a shifted date. An unshifted run, with the
+variable unset or blank, leaves astropy's settings alone.
+
+If a replay still fails with `Input values for datetime class must be datetime
+objects`, something imported astropy before this plugin swapped `datetime`:
+a helper plugin that imports it at module top, or in a hook that runs before
+this one. astropy keeps the real `datetime` class from then on and rejects the
+shifted one. Import astropy later (inside a function or a fixture).
+
+The plugin imports only pytest and the standard library at import time; it
+must never import astrodeck, which is the thing it has to get in front of.
+astropy is imported inside `relax_iers`, once a shift is in force, after the
+clock is swapped.
 
 Tests of the plugin itself: `tests/test_shift_clock_plugin.py`.
