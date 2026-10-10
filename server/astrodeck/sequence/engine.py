@@ -75,7 +75,7 @@ from .instructions import (
 from .angle_check import angle_verdict, fresh_sky_angle
 from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
                           GENERIC_SOLVE_FAILURE, HELD_PASS_ALERT_AT,
-                          REACH_RECHECK_S, SET_ASIDE_EXPIRY_S,
+                          HELD_PASS_KINDS, REACH_RECHECK_S, SET_ASIDE_EXPIRY_S,
                           SOLAR_PER_SIDEREAL, SOLVE_TRANSIENT, TARGET_STOP,
                           ExpiryCause, GroupRun, PanelDeferred, PanelMeridian,
                           PassEnd, VisitBound, angle_decision,
@@ -86,7 +86,7 @@ from .panel_order import OrderSnapshot, order_panels
 from .report import FrameRecord, SessionReporter
 from .policy import (MIN_GUIDE_SCALE_ARCSEC_PX, guide_rms_floor_arcsec,
                      resolve_policy)
-from .session import Session, SessionFrame, session_store
+from .session import STARVED_AFTER_NIGHTS, Session, SessionFrame, session_store
 
 # --- Monitor / ETA shared constants (single source of truth) ---------------
 # The cooler "at target" band. Defined ONCE here (master plan §A.7); the hub
@@ -6044,11 +6044,35 @@ class SequenceEngine:
                                         kind=kind or "panel")
                 elif self._target_complete(ti, t):
                     run.completed.add(t.id)
+            self._note_starved_panels(run, [t for _ti, t in mem])
             self._group_runs[gid] = run
             self._restore_group_pier(g, run)
             self._group_last_index[gid] = max(ti for ti, _t in mem)
             self._resort_group(g, remaining)
             self._place_followers(g, remaining)
+
+    def _note_starved_panels(self, run: GroupRun,
+                             targets: list[Target]) -> None:
+        """Tell ``run`` which panels the session found STARVED on the nights
+        before tonight (#835): set aside whole, for a kind a held pass
+        leaves (`group_rules.HELD_PASS_KINDS`), on ``STARVED_AFTER_NIGHTS``
+        or more nights running with none of the panel shot, the very count
+        at which the Campaign calls it starved. The group driver then gives
+        the mosaic's last live panel up after one held pass instead of six
+        (`GroupRun._apply_held_pass_rule`), and a mosaic stops spending an
+        hour of every night on the one panel that does not centre.
+
+        Read from the session's record at every start, a restart tonight
+        included, so a crash-resume neither forgets it nor needs it saved.
+        A session double without the reader reads as having none."""
+        read = getattr(self._session, "earlier_starved_nights", None)
+        if read is None:
+            return
+        night = night_key(time.time())
+        for t in targets:
+            nights = read(t.id, night=night, kinds=HELD_PASS_KINDS)
+            if nights >= STARVED_AFTER_NIGHTS:
+                run.note_starved(t.id, nights)
 
     def _place_followers(self, group: TargetGroup,
                          remaining: list[Target]) -> None:
