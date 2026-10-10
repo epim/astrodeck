@@ -7536,7 +7536,10 @@ def create_app(*, bind_host: str | None = None,
             hop_cost_s=rig.hop_cost_s,
             rig=rig,
             # Tonight reads the progress answer's blocks and never its
-            # session, so the clock handed in moves nothing it reads.
+            # session, and the clock handed in moves one thing it reads: the
+            # night a panel's `starved` count leaves out while that night's
+            # run has set nothing aside yet (#942), so the Campaign says what
+            # the progress card says.
             progress=lambda: _flow_progress_payload(rec, flow_id, can_cool,
                                                     rig, time.time()))
 
