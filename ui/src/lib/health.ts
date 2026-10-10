@@ -11,10 +11,12 @@ import type {
   RigStatus,
   SafetyState,
   SequenceState,
+  SunWatchState,
   WeatherState,
 } from "../types";
 import type { ProvidersStatus } from "../store";
 import type { IconName } from "../components/icons";
+import { sunWatchNotice } from "./sunWatch";
 
 /** Pure: derive the NINA link health from the latest status frame. */
 export function deriveNinaHealth(status: RigStatus | null): NinaHealth {
@@ -74,6 +76,8 @@ export interface HealthIssue {
   tier: 1 | 2;
   icon: IconName;
   text: string;
+  /** The next step, on its own line under `text`, when the issue has one. */
+  detail?: string;
 }
 
 export function deriveHealthIssues(input: {
@@ -89,6 +93,13 @@ export function deriveHealthIssues(input: {
   endReason?: string | null;
   wsConnected: boolean;
   telemetryStale?: boolean;
+  /** `status.sun_watch` (#894) and whether a mount is connected, which only
+   *  the "not running" notice needs. Absent `sunWatch` says nothing. */
+  sunWatch?: SunWatchState | null;
+  mountConnected?: boolean;
+  /** Epoch seconds, for the "since" age; defaults to the clock, and the one
+   *  argument a test passes. */
+  nowS?: number;
 }): HealthIssue[] {
   const {
     safety,
@@ -103,8 +114,15 @@ export function deriveHealthIssues(input: {
     endReason,
     wsConnected,
     telemetryStale,
+    sunWatch,
+    mountConnected,
+    nowS,
   } = input;
   const issues: HealthIssue[] = [];
+  // THE SUN WATCH (#894): decided once, pushed into the rung its tier names.
+  // Without this the strip said "Night looks OK" while the net under the tube
+  // was blind or standing down, which is the reassurance made of an absence.
+  const sun = sunWatchNotice(sunWatch, !!mountConnected, nowS ?? Date.now() / 1000);
 
   // ---------------------------------------------------------- tier 2 (act)
   if (!wsConnected) {
@@ -119,6 +137,9 @@ export function deriveHealthIssues(input: {
   } else if (safety?.reading && safety.reading.is_safe === false) {
     const why = safety.reading.reason || safety.reading.source || "unknown cause";
     issues.push({ tier: 2, icon: "alert", text: `Unsafe - ${why}` });
+  }
+  if (sun?.tier === 2) {
+    issues.push({ tier: 2, icon: "alert", text: sun.text, detail: sun.action ?? undefined });
   }
   if (disk?.critical) {
     issues.push({
@@ -184,6 +205,9 @@ export function deriveHealthIssues(input: {
   // ConnectionBanner - so "Night looks OK" no longer contradicts it.
   if (telemetryStale && wsConnected) {
     issues.push({ tier: 1, icon: "clock", text: "Telemetry stale - values may be seconds old" });
+  }
+  if (sun?.tier === 1) {
+    issues.push({ tier: 1, icon: "alert", text: sun.text, detail: sun.action ?? undefined });
   }
   if (disk?.low && !disk.critical) {
     issues.push({

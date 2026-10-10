@@ -9777,6 +9777,23 @@ class Hub:
         # device I/O here — the poller did it). None when no monitor / not yet read.
         sr = self._safety_reading
         out["safety"] = self._safety_reading_dict(sr) if sr is not None else None
+        # THE SUN WATCH'S STATE (#894), the net under a tube the Sun is coming
+        # to: whether it can see the mount (`blind`), whether the rig's
+        # position latch has it standing down with no park (`position_unknown`,
+        # owner ruling 4B), since when, and whether its task is alive. It was
+        # published on `/api/safety/state` only, which no screen reads, so a
+        # rig with no alert sink showed a quiet UI while nothing watched the
+        # tube. TIMES AND BOOLEANS ONLY, so it needs no redaction for a viewer:
+        # no pointing, no Sun, nothing derived from the site (#140). ABSENT
+        # (not null) when no net is attached: an old or bare hub says nothing
+        # rather than "armed: false". Read through getattr like the dew
+        # controller below, since `SunWatch` attaches itself to the hub.
+        try:
+            _sun_watch = getattr(self, "sun_watch", None)
+            if _sun_watch is not None:
+                out["sun_watch"] = _sun_watch.state()
+        except Exception:
+            pass
         # THE DEW LOOP'S OWN VIEW OF ITSELF (D-RIG-3), cached by its own tick -
         # no weather fetch and no device read happen here. TOP LEVEL rather than
         # inside `camera`, because the loop drives camera window heaters AND

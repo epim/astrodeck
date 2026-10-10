@@ -34,6 +34,9 @@
 //      one extra `GET /api/profiles` per app load (the one wizard signal that
 //      is not in the store); re-deriving it here to save the request is how
 //      two surfaces end up printing two different numbers for one question.
+//   6. THE SUN WATCH CANNOT PROTECT THE TUBE (#894): blind, or standing down
+//      with the position unknown. From `lib/sunWatch.ts`, the one copy the
+//      classic root's `SunWatchBanner` and the Monitor health strip also read.
 //
 // Dismissals are per-session and keyed by the banner's IDENTITY, not its slot:
 // dismissing "report 2026-09-09 is ready" must not also dismiss the next one.
@@ -42,9 +45,10 @@ import { useState, type JSX, type ReactNode } from "react";
 import {
   useStore, useWsPhase, useTelemetryStale, useEquipConnected,
   useResumeArm, useArmedBannerDismissed, useRunBanner, useSafety, useWeather,
-  useAuthMethods, usePrincipal,
+  useAuthMethods, usePrincipal, useStatus,
 } from "../../store";
 import { bannerState, authRequiredForBanner } from "../../lib/connection";
+import { sunWatchNotice } from "../../lib/sunWatch";
 import { fmtHm } from "../../lib/weather";
 import { BannerCard } from "../ui";
 import { nav, type Route } from "../router";
@@ -122,6 +126,7 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
   const weather = useWeather();
   const weatherIgnored = useStore((s) => s.weather?.ignore_tonight === true);
 
+  const status = useStatus();
   const sessionBanners = useSessionBanners(nowMs);
   const setup = useSetupFacts().view;
   const onSession = route.hub === "session";
@@ -170,6 +175,27 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
       tone: "info",
       text: "Browsing. No rig connected - the sky, the dome and the list all work.",
       cta: { label: "set up", onPress: () => nav.go("/rig/devices") },
+    });
+  }
+
+  // 1b. The sun watch cannot protect the tube (#894): BLIND (it cannot read the
+  //     mount) or STANDING DOWN (the position is unknown, so it will not park).
+  //     The server published both on `/api/safety/state`, which no screen read.
+  //     A standing condition, so the key carries the episode's start: a new one
+  //     re-announces after the last was dismissed. Not shown on Monitor - Live,
+  //     whose health strip says the same thing in its own place, and "not
+  //     running" is that strip's notice alone (a choice, not news).
+  const sun = sunWatchNotice(
+    status?.sun_watch, !!status?.connected?.telescope?.connected, nowMs / 1000);
+  if (sun && sun.tier === 2 && !(route.hub === "monitor" && route.sub === "live")) {
+    entries.push({
+      key: `sunwatch:${sun.kind}:${sun.since ?? ""}`,
+      kind: "sunwatch",
+      tone: "warn",
+      text: <>{sun.text} {sun.action}</>,
+      cta: sun.kind === "position_unknown"
+        ? { label: "mount", onPress: () => nav.go("/rig/devices/mount") }
+        : { label: "devices", onPress: () => nav.go("/rig/devices") },
     });
   }
 

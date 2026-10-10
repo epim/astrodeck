@@ -16,6 +16,7 @@ import { connectWs } from "./ws";
 import { Icon, type IconName } from "./components/icons";
 import { Led } from "./components/ui";
 import ConnectionBanner from "./components/ConnectionBanner";
+import SunWatchBanner from "./components/SunWatchBanner";
 import { getResumeArm } from "./api/sessions";
 import HealthLeds from "./components/HealthLeds";
 import RoleBadge from "./components/RoleBadge";
@@ -730,6 +731,9 @@ export default function App() {
 
         {/* ConnectionBanner renders null when the link is up and telemetry fresh. */}
         <ConnectionBanner />
+        {/* The sun watch is blind or standing down (#894): the tube has no
+            protection from the Sun and nothing else on screen said so. */}
+        <SunWatchBanner />
 
         {/* ARMED-AND-WAITING banner. Same shape and same slot as the run
             banner below - an armed run is the other half of "something is

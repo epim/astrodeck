@@ -637,6 +637,10 @@ export default function MonitorView() {
         endReason: stoppedByUser ? undefined : seq.end_reason,
         wsConnected,
         telemetryStale,
+        // #894: the sun watch's own state, so "Night looks OK" cannot print
+        // while the net under the tube is blind or standing down.
+        sunWatch: status?.sun_watch,
+        mountConnected: !!status?.connected?.telescope?.connected,
       }),
     [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected, telemetryStale, runActive, stoppedByUser],
   );
