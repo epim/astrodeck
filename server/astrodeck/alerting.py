@@ -148,6 +148,13 @@ DEADMAN_URL_MAX = 2048
 # (``AlertDispatcher._failures_said``).
 _STAGE_DEADMAN = "dead-man ping"
 _STAGE_HEARTBEAT = "heartbeat"
+# The same two calls as the engine's frame loop makes them (#936,
+# ``SequenceEngine._frame_alerts_tick``), under stages of their own: a heartbeat
+# that works on the frame path must not forget what the timer's heartbeat has
+# already said (and the reverse), or one failing path would say itself again
+# every time the other one worked.
+STAGE_FRAME_DEADMAN = "dead-man ping on the frame path"
+STAGE_FRAME_HEARTBEAT = "heartbeat on the frame path"
 
 # Source tag on the dispatcher's own diagnostic logs so they are NOT routed back
 # through the alert pipeline (would otherwise self-feed a failure loop).
@@ -729,6 +736,19 @@ class AlertDispatcher:
             self.bus.log("warning", line, _ALERT_LOG_SOURCE)
         except Exception:  # noqa: BLE001 - the bus is what failed; the loop goes on
             logging.getLogger(__name__).warning(line)
+
+    def report_failure(self, stage: str, exc: BaseException) -> None:
+        """:meth:`_say_failure` for a caller outside this module that guards a
+        call into the dispatcher and must go on whatever it raises (#936: the
+        engine's per-frame dead-man ping and heartbeat). ``stage`` is one of the
+        ``STAGE_FRAME_*`` names; the rules are :meth:`_say_failure`'s own."""
+        self._say_failure(stage, exc)
+
+    def report_recovery(self, stage: str) -> None:
+        """``stage`` worked: forget what it has said, so its next failure is
+        news again (:meth:`_say_failure`'s latch is 'nothing said yet', never
+        'never again')."""
+        self._failures_said.pop(stage, None)
 
     async def stop(self) -> None:
         self._stop.set()

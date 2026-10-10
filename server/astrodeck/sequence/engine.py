@@ -37,6 +37,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, NamedTuple, NoReturn
 
 from ..aio import reap
+from ..alerting import STAGE_FRAME_DEADMAN, STAGE_FRAME_HEARTBEAT
 from ..catalog.coords import angular_sep_deg
 from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
 from .. import capture_geometry, naming
@@ -3213,21 +3214,29 @@ class SequenceEngine:
         ABSENCE is what pages the user — C2-9) and emit a progress heartbeat (the
         dispatcher self-gates it per-sink by ``heartbeat_min``). Best-effort: both
         dispatcher calls are already hardened never to raise, but guard anyway so
-        an alerting hiccup can never break the capture loop."""
+        an alerting hiccup can never break the capture loop, and SAY what the
+        guard caught (#936): it used to be a bare ``pass``, the shape #811 found
+        on the dispatcher's timer. Said once per distinct exception type, never
+        its text (which can quote the dead-man url or a sink's token), by the
+        dispatcher's own latch (``report_failure``)."""
         disp = self._get_dispatcher()
         if disp is None:
             return
         try:
             await disp.deadman_ping()
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 - the capture loop outlives any alerting failure
+            disp.report_failure(STAGE_FRAME_DEADMAN, e)
+        else:
+            disp.report_recovery(STAGE_FRAME_DEADMAN)
         try:
             await disp.emit_heartbeat(
                 f"{self.plan.name if self.plan else 'run'}: "
                 f"{self._frames_done}/"
                 f"{self.plan.total_frames() if self.plan else 0} frames")
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 - as above
+            disp.report_failure(STAGE_FRAME_HEARTBEAT, e)
+        else:
+            disp.report_recovery(STAGE_FRAME_HEARTBEAT)
 
     def _warn_if_the_run_has_no_temperature(self, plan) -> None:
         """Say out loud that this run has no target temperature.
