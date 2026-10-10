@@ -126,7 +126,7 @@ from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
                            NO_LIGHT_WORDS, SELF_SHOT, FailedSolveError,
                            NoLightError)
 from . import schedule
-from .group_rules import CENTRING, set_aside_expiry
+from .group_rules import CENTRING, SET_ASIDE_EXPIRY_S, set_aside_expiry
 from .models import (Target, TargetGroup, duplicate_name_warning,
                      plan_identity_errors, quota_unbounded, replan_cooling)
 from .panel_order import OrderSnapshot, order_panels
@@ -483,8 +483,18 @@ def resume_expected_tonight(hub, now: float | None = None) -> Session | None:
     """The session that is going to be resumed TONIGHT, if there is one.
 
     ``session_store.armed()`` says what is armed; ``window_open`` says whether
-    the tick would act on it before the sky closes. Both, and only both, mean
-    "this rig is going to image again in a few minutes".
+    the tick would act on it before the sky closes; ``spent_tonight`` must say
+    no, that something it still owes can be shot in that window. All three,
+    and only all three, mean "this rig is going to image again in a few
+    minutes".
+
+    AN ARMED SESSION THAT OWES NOTHING MORE TONIGHT IS NOT EXPECTED (#887).
+    The run that ends because its only target was set aside for the night
+    arms its own session, whose window is still open: asked only the first
+    two questions, this named that session as the one about to resume and the
+    wind-down held the TEC at its setpoint until dawn for a run the tick
+    itself refuses (``NOTHING_TONIGHT``) a minute later. The third question is
+    the tick's own readiness check, not a looser copy of it.
 
     WHAT ASKS. The end-of-run wind-down, before it warms the camera. On
     2026-09-08 the NGC 7331 run ended and warmed the sensor while the
@@ -512,8 +522,10 @@ def resume_expected_tonight(hub, now: float | None = None) -> Session | None:
         return None
     cfg = config_store.cfg()
     twilight = cfg.safety.twilight_deg if cfg else -12.0
-    if not window_open(armed, site, twilight,
-                       time.time() if now is None else now):
+    t = time.time() if now is None else now
+    if not window_open(armed, site, twilight, t):
+        return None
+    if spent_tonight(armed, site, twilight, t):
         return None
     return armed
 
@@ -900,6 +912,44 @@ def nothing_to_shoot_tonight(session: Session,
     calibration = any(t.calibration and _owes(t, remaining)
                       for t in session.plan.targets)
     return light and not calibration
+
+
+def spent_tonight(session: Session, site, twilight_deg: float,
+                  now: float) -> bool:
+    """True when the ladder would refuse ``session`` as ``NOTHING_TONIGHT`` at
+    ``now`` (#887): the same ``recentre_candidates`` /
+    ``nothing_to_shoot_tonight`` pair ``ResumeArm._recover`` asks, on the same
+    site, twilight and clock, so the end-of-run wind-down and the tick cannot
+    disagree about whether a session can still run.
+
+    NO WALK IS PASSED. The walk (``ResumeArm._walk``) orders the candidates,
+    it never adds or removes one, and only whether there are any is asked here.
+
+    A CENTRING SET-ASIDE THAT IS STILL WAITING OUT ITS 45 MINUTES IS NOT THE
+    END OF THE NIGHT. The tick refuses such a session now and starts it when
+    the record expires (``standing_set_asides``), so a session whose only
+    panel is set aside for now, not for the night, can still run tonight and
+    its cooler stays where it is. The records that would expire are read from
+    ``standing_set_asides`` itself, asked at a clock past every expiry; the
+    session is spent only if, at the first of them, it would still be refused
+    or the sky would be closed."""
+    night = night_key(now)
+
+    def nothing_at(at: float) -> bool:
+        return nothing_to_shoot_tonight(session, recentre_candidates(
+            session, night, site=site, twilight_deg=twilight_deg, now=at))
+
+    if not nothing_at(now):
+        return False
+    kept = {id(r) for r in standing_set_asides(
+        session, night, now + SET_ASIDE_EXPIRY_S)}
+    expiring = [float(r["ts"]) for r in standing_set_asides(session, night, now)
+                if id(r) not in kept]
+    if not expiring:
+        return True
+    freed = min(expiring) + SET_ASIDE_EXPIRY_S
+    return nothing_at(freed) or not window_open(session, site, twilight_deg,
+                                                freed)
 
 
 def commanded_rotation(session: Session, target: Target,
