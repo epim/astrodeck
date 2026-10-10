@@ -153,8 +153,16 @@ def solve_reference(fits_path: Path, *, ra_hint: float | None,
     except Exception as exc:                       # pragma: no cover - defensive
         log(f"ASTAP raised {exc!r}; skipping the light curve")
         return None
-    if not result.success or result.wcs is None:
+    if not result.success:
         log(f"ASTAP did not solve {fits_path.name}: {result.message}")
+        return None
+    if result.wcs is None:
+        # ``AstapSolver`` reports a solve whose headerlet it dropped (#943) as
+        # success with no WCS and the message "solved by ASTAP": not a failure
+        # to solve, so not worded as one (#1000).
+        log(f"ASTAP solved {fits_path.name} but returned no usable WCS (no "
+            "solution cards, or no usable plate scale), so none was stamped; "
+            "skipping the light curve")
         return None
     # ``stamp_wcs`` swallows a missing, locked or corrupt file and refuses a
     # solution with no usable scale; False is the only sign of either (#972).
@@ -172,8 +180,9 @@ def solve_reference(fits_path: Path, *, ra_hint: float | None,
         return None
     scale = result.pixel_scale_arcsec
     shown = "scale unknown" if scale is None else f"{scale:.3f} arcsec/px"
-    log(f"solved {fits_path.name}: {shown}, "
-        f"rotation {result.rotation_deg:.2f} deg")
+    turned = ("rotation unknown" if not result.rotation_known
+              else f"rotation {result.rotation_deg:.2f} deg")
+    log(f"solved {fits_path.name}: {shown}, {turned}")
     return wcs
 
 
