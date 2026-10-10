@@ -179,8 +179,8 @@ export function viewVouchesFor(readingAt:number,view:ViewContinuity|null|undefin
  *  in 0.1 s. So neither error IN THIS CONSTANT vouches for a turn, and that is
  *  deliberate, because the number it would have to be measured against is not
  *  available here. The wrong guess that once did vouch was about the CHANNEL
- *  rather than the threshold - a gyro reporting exact zeros - and it is refused
- *  in `observe` (issue #106). See the note on MOTION_STALE_MS for what is not
+ *  rather than the threshold - a gyro reporting nothing but exact zeros - and
+ *  it is refused in `observe` (issues #106 and #952). See the note on MOTION_STALE_MS for what is not
  *  established. */
 export const QUIET_RATE_DEG_S = 0.5;
 
@@ -243,15 +243,17 @@ export const QUIET_DRIFT_DEG = 0.5;
  *  delivers `devicemotion` (Chromium's 60 Hz is a report, and Firefox Android's
  *  rate is unknown here) and the zero-rate output and noise floor of a real
  *  phone's gyro - plus, since issue #106, whether any target browser spells
- *  "no gyro" as a stream of exact zeros rather than as nulls. Those are exactly
+ *  "no gyro" as a stream of exact zeros rather than as nulls (issue #952: a
+ *  working Chromium gyro spells "holding still" that way). Those are exactly
  *  the measurements issue #48's device pass exists to record. Until they are
  *  taken, this witness is written so that being wrong about any of them REFUSES
  *  rather than vouches: a browser delivering slower than 200 ms breaks its run
  *  on every pair and so produces no continuity at all (it reads 'turning', not
  *  'stale' - a fresh sample always exists, it is the RUN that never opens); a
  *  gyro noisier than the floor breaks its run on its own noise; and a stream of
- *  exact zeros is not a stream of samples at all (see `observe`). In every case
- *  the video remains the only witness and nothing downstream changes. */
+ *  nothing but exact zeros is not a stream of samples at all (see `observe`). In
+ *  every case the video remains the only witness and nothing downstream
+ *  changes. */
 export const MOTION_STALE_MS = 200;
 
 /** THE SECOND WITNESS, for the one view the first cannot see.
@@ -285,52 +287,61 @@ export class MotionStability {
   private stillSince: number | null = null;
   private lastBreak: { from: number; to: number } | null = null;
   private drift: [number, number, number] = [0, 0, 0];
-  clear(){this.at=-Infinity;this.stillSince=null;this.lastBreak=null;this.drift=[0,0,0];}
+  /** Has this session's stream delivered any NON-ZERO, finite triple (issue
+   *  #952)? Until it has, an exact `{0, 0, 0}` is not a sample - see `observe`.
+   *  Cleared only by `clear`, so it is a fact about the session's stream and
+   *  not about the current run. */
+  private measured = false;
+  clear(){this.at=-Infinity;this.stillSince=null;this.lastBreak=null;this.drift=[0,0,0];this.measured=false;}
 
   /** One `devicemotion` sample: `at` on the performance clock, `rate` the
    *  event's own `rotationRate` in degrees per second.
    *
    *  A triple that carries NO MEASUREMENT is not a sample at all: this returns
    *  having changed nothing, so it neither opens a run nor advances the instant
-   *  the stale bound is measured from. There are two spellings of it and both
-   *  are refused here.
+   *  the stale bound is measured from. There are two spellings of it.
    *
    *  The first is the one the spec gives a device with no rate sensor: `rate`
-   *  null, or an axis the browser left null. The second is `{0, 0, 0}` - an
-   *  EXACT zero on all three axes - and it is the more dangerous, because
-   *  reading it as a still phone is the one wrong guess in this witness that
-   *  vouched instead of refusing (issue #106). A stuck driver, an emulator or a
-   *  WebView that synthesises zeros is then indistinguishable from a phone
+   *  null, or an axis the browser left null.
+   *
+   *  The second is `{0, 0, 0}` - an EXACT zero on all three axes - from a stream
+   *  that has not yet delivered anything else, and it is the more dangerous,
+   *  because reading it as a still phone is the one wrong guess in this witness
+   *  that vouched instead of refusing (issue #106). A stuck driver, an emulator
+   *  or a WebView that synthesises zeros is then indistinguishable from a phone
    *  holding still, and downstream there is nothing to catch it: the video is
    *  `featureless` by construction wherever this witness is consulted, so a
    *  turning phone with a silent compass - precisely what SENSOR_SILENCE_MS
    *  exists to catch within 2 s - would be handed a false hold, and a false hold
    *  puts a frame into the mosaic at a pose the phone has left.
-   *  A real MEMS gyro has a noise floor and does not report an exact zero triple
-   *  twice in a row, let alone for a second; a stream that does is synthetic.
    *
-   *  WHY NOT A FLAG. The obvious fix is a boolean - has this witness ever seen a
-   *  non-zero sample - tested in `continuity`, scoped either to the RUN (cleared
-   *  by `broken`) or to the SESSION (cleared only by `clear`). Neither was
-   *  chosen, because treating the zero triple as no sample is strictly stronger
-   *  than both and simpler than either:
-   *    - it satisfies what a flag would (a channel of nothing but zeros never
-   *      opens a run - in fact it needs TWO real samples inside the stale bound,
-   *      not one);
-   *    - per-session would keep vouching for a gyro that WORKED and then died
-   *      stuck at zero, and so would per-run, because a stream of zeros produces
-   *      no break for a per-run flag to be cleared by. Here `at` simply stops
-   *      advancing, so the witness goes stale MOTION_STALE_MS later and the run
-   *      it was in the middle of stops vouching. That case is caught by this and
-   *      by neither flag;
-   *    - it is the rule this method already applies to the null spelling, so
-   *      there is one predicate for "no measurement" rather than two.
-   *  What it costs, and the cost is real: a device whose noise at rest sits
-   *  below one quantisation step reports exact zeros, and there the gyro never
-   *  vouches at all and the video is left as the only witness. That is a
-   *  refusal, which is the direction this whole witness is written to fail in,
-   *  and whether any target browser behaves that way is a question for #48's
-   *  device pass, recorded on #106.
+   *  AN EXACT ZERO IS NOT, BY ITSELF, A SYNTHETIC STREAM (issue #952). Chromium
+   *  rounds every rotation rate it reports to 0.1 deg/s
+   *  (`kGyroscopeRoundingMultiple`, against fingerprinting), so a real gyro with
+   *  0.02 deg/s rms of noise reads exactly `{0, 0, 0}` on about 96 percent of the
+   *  samples of a phone holding still. Refusing every one of them left the
+   *  witness dead for those samples: the occasional non-zero one is the only
+   *  sample that advanced `at`, so the run broke on the stale bound and the
+   *  featureless hold (#63) could rarely be vouched for. So a zero triple is a
+   *  real sample once this stream has delivered ANY non-zero, finite triple
+   *  (`measured`): a stream that has shown it can say something else is a gyro,
+   *  and its zeros are readings. A stream that has not is still refused, which is
+   *  all that #106's case needs - a channel of nothing but zeros never opens a
+   *  run, and zeros ahead of the first non-zero sample are dropped.
+   *
+   *  "No gyro" therefore means no non-zero sample at all, and it can only be
+   *  CONCLUDED once the orientation stream shows at least 10 degrees of motion,
+   *  because a phone that has not moved and has noise under one quantisation
+   *  step also reports nothing but zeros. This witness cannot see the
+   *  orientation stream and does not need to: in both states it vouches for
+   *  nothing, which is the direction it is written to fail in.
+   *
+   *  What it costs, and the cost is real: a gyro that WORKED and then dies stuck
+   *  at zero keeps its flag, so its zeros go on advancing `at` and vouching - the
+   *  case #106 once caught by the stale bound. Nothing in the stream tells that
+   *  apart from a still phone on a device whose non-zero samples are rare; a
+   *  bound on the age of the last non-zero sample would, and its number is one
+   *  only #48's device pass can supply (it depends on the phone's noise floor).
    *
    *  A real stream that interleaves the occasional empty event is unharmed
    *  either way: the real samples on each side of one still bound their own
@@ -341,7 +352,8 @@ export class MotionStability {
     const axes=[rate?.alpha,rate?.beta,rate?.gamma];
     if(!axes.every((v):v is number=>typeof v==='number'&&Number.isFinite(v)))return;
     const [a,b,c]=axes as number[];
-    if(a===0&&b===0&&c===0)return;
+    if(a===0&&b===0&&c===0){if(!this.measured)return;}
+    else this.measured=true;
     const previousAt=this.at,gap=at-previousAt;
     this.at=at;
     // Nothing watched the phone before the first sample, or across a gap wider
