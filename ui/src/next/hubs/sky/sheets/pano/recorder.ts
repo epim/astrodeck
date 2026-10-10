@@ -55,14 +55,24 @@ export class Recorder {
   get events(): number { return this.eventCount; }
   /** Characters written so far, header included and the final report not. */
   get chars(): number { return this.size; }
+  /**
+   * Whether the next frame() call will be kept: the rule frame() applies,
+   * asked before the call. A caller that has to read the pixels back reads
+   * them only when this is true and hands frame() an empty array otherwise,
+   * which a skipped call never reads (3.5 step 4, S24). It looks at the call
+   * count and the last kept call, not at the count alone, so it follows a
+   * change of `every` made by setEvery.
+   */
+  get keepsNext(): boolean { return this.delivered + 1 - this.lastKept >= this.everyN; }
 
   /**
    * One call per delivered frame. The first call is kept and then every n-th,
    * counted from the last frame kept, so a change of `every` takes effect at
    * once and no stretch is longer than `every` frames. A frame that is not
-   * kept is not encoded. `frameId` is written as given: the caller numbers
-   * frames by delivery (f000001, f000002, ...), so a decimated recording shows
-   * its gaps in the ids.
+   * kept is not encoded and its `rgba` is not read (`keepsNext` says in
+   * advance which calls are kept). `frameId` is written as given: the caller
+   * numbers frames by delivery (f000001, f000002, ...), so a decimated
+   * recording shows its gaps in the ids.
    */
   frame(f: { frameId: string; tCaptureMs: number | null; tPresentMs: number; w: number; h: number; rgba: Uint8ClampedArray }): void {
     this.delivered++;

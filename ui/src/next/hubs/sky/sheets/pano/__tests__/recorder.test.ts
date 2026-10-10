@@ -21,6 +21,16 @@ import type { FrameEncoder, ReportInput, ScanReport } from '../types';
 //   * 'a change of setEvery ...' fixes the rule as "counted from the last frame
 //     kept", so lowering `every` acts at once and raising it never leaves a
 //     stretch longer than the new `every`.
+//   * the 'keepsNext' tests drive the recorder the way the scanner does (3.5
+//     step 4, S24): ask `keepsNext`, build the pixels only when it is true, call
+//     `frame()` on every delivered frame, and hand a skipped call an empty array
+//     that throws if anything touches it. They pin that the answer matches what
+//     `frame()` then does at `setEvery` 1, 2 and 3, across a change of `every`
+//     (a hand-written schedule and a seeded sweep of every change at every phase)
+//     and that reading the answer changes nothing. The named mutant is
+//     `keepsNext` computed from the call count alone, `delivered % every === 0`:
+//     it agrees with `frame()` while `every` never changes, so the 'setEvery 1,
+//     2 and 3' case passes it and the change-of-every cases fail it.
 //   * the line tests write the expected text of each observation line by hand,
 //     so a renamed key, a reordered key or an extra key from a wider event
 //     object all fail.
@@ -254,6 +264,181 @@ test('a change of setEvery acts at once and counts from the last frame kept', ()
   const ids = parsed(rec.finish(null)).filter(l => l.kind === 'frame').map(l => l.frame_id);
   assert.deepEqual(ids, [1, 2, 3, 6, 9, 10, 11, 13, 15].map(fid));
   assert.equal(rec.frames, 9);
+});
+
+/** A zero-length array that throws when anything touches it: what a scanner hands frame() for a frame it did not read back. */
+function unreadable(): Uint8ClampedArray {
+  const trap = (what: string) => () => { throw new Error(`the rgba of a skipped frame was ${what}`); };
+  return new Proxy(new Uint8ClampedArray(0), {
+    get: trap('read'), has: trap('probed'), set: trap('written'), ownKeys: trap('listed'), getOwnPropertyDescriptor: trap('described'),
+  });
+}
+
+interface Decision { call: number; predicted: boolean; kept: boolean }
+
+/**
+ * Deliver frames `from`..`to` the way the scanner does (3.5 step 4): ask keepsNext,
+ * build the pixels (tagged with the call number) only when it says yes, and call
+ * frame() on every delivered frame. `during(call)` runs before the question, where
+ * a test changes `every`. Returns what was predicted and what frame() then did.
+ */
+function scan(rec: Recorder, from: number, to: number, during?: (call: number) => void): Decision[] {
+  const out: Decision[] = [];
+  for (let call = from; call <= to; call++) {
+    during?.(call);
+    const predicted = rec.keepsNext;
+    assert.equal(rec.keepsNext, predicted, `call ${call}: reading keepsNext twice gives the same answer`);
+    let rgba: Uint8ClampedArray;
+    if (predicted) { rgba = new Uint8ClampedArray(2 * 2 * 4); rgba[0] = call; } else rgba = unreadable();
+    const before = rec.frames;
+    rec.frame({ frameId: fid(call), tCaptureMs: call * 33, tPresentMs: call * 33 + 5, w: 2, h: 2, rgba });
+    out.push({ call, predicted, kept: rec.frames === before + 1 });
+  }
+  return out;
+}
+
+const predictions = (d: Decision[]) => d.map(x => x.predicted);
+const keptCalls = (d: Decision[]) => d.filter(x => x.kept).map(x => x.call);
+/** Change `every` and check at once, before any call, what keepsNext says about the next one. */
+const setEveryNow = (r: Recorder, n: 1 | 2 | 3, expectNow: boolean) => {
+  r.setEvery(n);
+  assert.equal(r.keepsNext, expectNow, `right after setEvery(${n})`);
+};
+
+test('keepsNext says, before the call, whether frame() will keep it, under setEvery 1, 2 and 3', () => {
+  const T = true, F = false;
+  const pattern: Record<1 | 2 | 3, boolean[]> = {
+    1: [T, T, T, T, T, T, T, T, T, T, T, T],
+    2: [T, F, T, F, T, F, T, F, T, F, T, F],
+    3: [T, F, F, T, F, F, T, F, F, T, F, F],
+  };
+  for (const n of [1, 2, 3] as const) {
+    const { encoder, calls } = stubEncoder();
+    const rec = new Recorder({ encoder, header: HEADER });
+    assert.equal(rec.keepsNext, true, 'a new recording keeps its first frame');
+    rec.setEvery(n);
+    assert.equal(rec.keepsNext, true, `every ${n}: the first frame is kept whatever every is`);
+    const got = scan(rec, 1, 12);
+    assert.deepEqual(predictions(got), pattern[n], `every ${n}: what keepsNext said before each call`);
+    assert.deepEqual(got.map(x => x.kept), pattern[n], `every ${n}: what frame() then did`);
+    // The pixels were built only for the calls that were kept, and those are the ones the encoder saw.
+    assert.deepEqual(calls.map(c => c.first), keptCalls(got), `every ${n}: the encoder saw exactly the frames that were read back`);
+    assert.deepEqual(parsed(rec.finish(null)).filter(l => l.kind === 'frame').map(l => l.frame_id), keptCalls(got).map(fid));
+  }
+});
+
+test('keepsNext follows a change of every: lowering acts at once, raising waits out the stretch from the last kept frame', () => {
+  const { encoder } = stubEncoder();
+  const rec = new Recorder({ encoder, header: HEADER });
+  const got: Decision[] = [];
+  got.push(...scan(rec, 1, 3));                         // every 1: 1, 2, 3 kept
+  setEveryNow(rec, 3, false);                                         // 3 was kept a moment ago: the next two are skipped
+  got.push(...scan(rec, 4, 9));                         // 4 F, 5 F, 6 T, 7 F, 8 F, 9 T
+  setEveryNow(rec, 1, true);                                          // every frame again at once
+  got.push(...scan(rec, 10, 11));
+  setEveryNow(rec, 2, false);                                         // 11 was kept, so 12 is skipped
+  got.push(...scan(rec, 12, 16));                       // 12 F, 13 T, 14 F, 15 T, 16 F
+  const T = true, F = false;
+  assert.deepEqual(predictions(got), [T, T, T, F, F, T, F, F, T, T, T, F, T, F, T, F]);
+  assert.deepEqual(got.map(x => x.kept), predictions(got), 'frame() did what keepsNext said, call by call');
+  assert.deepEqual(keptCalls(got), [1, 2, 3, 6, 9, 10, 11, 13, 15]);
+
+  // A change in the middle of a stretch, both ways, on a fresh recording.
+  const mid = new Recorder({ encoder: stubEncoder().encoder, header: HEADER });
+  mid.setEvery(2);
+  const a = scan(mid, 1, 2);                            // 1 T, 2 F
+  setEveryNow(mid, 3, false);                                   // raised to 3 with call 2 skipped: call 3 is two after the kept one and three are needed
+  const b = scan(mid, 3, 4);                            // 3 F, 4 T
+  setEveryNow(mid, 2, false);                                   // lowered to 2 right after a kept frame: call 5 is one after it and two are needed
+  const c = scan(mid, 5, 6);                            // 5 F, 6 T
+  setEveryNow(mid, 1, true);
+  const d = scan(mid, 7, 8);                            // 7 T, 8 T
+  const all = [...a, ...b, ...c, ...d];
+  assert.deepEqual(predictions(all), [T, F, F, T, F, T, T, T]);
+  assert.deepEqual(all.map(x => x.kept), predictions(all));
+});
+
+test('keepsNext matches frame() over a seeded run of 600 calls with every changed at random, at every phase', () => {
+  let s = 20261010;
+  const next = (m: number) => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return (s >>> 8) % m; };
+  const rec = new Recorder({ encoder: stubEncoder().encoder, header: HEADER });
+  let changes = 0;
+  const seen = new Set<string>();
+  let every = 1;
+  const got = scan(rec, 1, 600, () => {
+    if (next(4) === 0) {
+      const to = (1 + next(3)) as 1 | 2 | 3;
+      seen.add(`${every}>${to}`);
+      rec.setEvery(to); every = to; changes++;
+    }
+  });
+  assert.deepEqual(got.map(x => x.kept), predictions(got), 'frame() did what keepsNext said on every call');
+  // The run is not vacuous: it changed every often, passed through all nine pairs, and both kept and skipped plenty.
+  assert.ok(changes > 100, `every changed ${changes} times`);
+  assert.equal(seen.size, 9, `pairs seen: ${[...seen].sort().join(' ')}`);
+  assert.ok(got.filter(x => x.kept).length > 150 && got.filter(x => !x.kept).length > 150);
+  assert.equal(rec.frames, keptCalls(got).length);
+  // No stretch of skipped calls is longer than the largest every in force.
+  let run = 0, longest = 0;
+  for (const x of got) { run = x.kept ? 0 : run + 1; longest = Math.max(longest, run); }
+  assert.ok(longest <= 2, `longest skipped stretch ${longest}`);
+});
+
+test('a scanner that reads back only when keepsNext is true records exactly what one that reads back every frame does', () => {
+  // The S24 defect: deciding "kept" in the scanner and again in frame() keeps 1 in 4 at every = 2.
+  for (const n of [1, 2, 3] as const) {
+    const guided = stubEncoder();
+    const rg = new Recorder({ encoder: guided.encoder, header: HEADER });
+    rg.setEvery(n);
+    const got = scan(rg, 1, 12);
+    const readbacks = got.filter(x => x.predicted).length;
+
+    const all = stubEncoder();
+    const ra = new Recorder({ encoder: all.encoder, header: HEADER });
+    ra.setEvery(n);
+    deliver(ra, 1, 12);                                  // a full readback for every frame
+
+    assert.equal(rg.finish(null), ra.finish(null), `every ${n}: the same recording`);
+    assert.equal(rg.frames, Math.ceil(12 / n), `every ${n}: one frame in ${n} kept, not one in ${n * n}`);
+    assert.equal(readbacks, rg.frames, `every ${n}: read back once per kept frame`);
+    assert.equal(guided.calls.length, all.calls.length);
+    // The delivery number still advances on a skipped call, so the next kept frame has its own id.
+    assert.deepEqual(parsed(rg.finish(null)).filter(l => l.kind === 'frame').map(l => l.frame_id), keptCalls(got).map(fid));
+  }
+});
+
+test('a skipped call is given an empty array and never reads it: no line, no encoder run, and a plain empty array does the same', () => {
+  const trapped = stubEncoder();
+  const rec = new Recorder({ encoder: trapped.encoder, header: HEADER });
+  rec.setEvery(3);
+  const first = new Uint8ClampedArray(2 * 2 * 4); first[0] = 1;
+  rec.frame({ frameId: fid(1), tCaptureMs: 33, tPresentMs: 38, w: 2, h: 2, rgba: first });
+  const before = rec.finish(null);
+  const skipped = unreadable();
+  assert.equal(rec.keepsNext, false);
+  rec.frame({ frameId: fid(2), tCaptureMs: 66, tPresentMs: 71, w: 2, h: 2, rgba: skipped });
+  assert.equal(rec.keepsNext, false);
+  rec.frame({ frameId: fid(3), tCaptureMs: 99, tPresentMs: 104, w: 2, h: 2, rgba: skipped });
+  assert.equal(rec.finish(null), before, 'two skipped calls wrote nothing');
+  assert.equal(trapped.calls.length, 1, 'the encoder ran for the kept frame only');
+  assert.equal(rec.frames, 1);
+  assert.equal(rec.keepsNext, true);
+  const fourth = new Uint8ClampedArray(2 * 2 * 4); fourth[0] = 4;
+  rec.frame({ frameId: fid(4), tCaptureMs: 132, tPresentMs: 137, w: 2, h: 2, rgba: fourth });
+  assert.deepEqual(parsed(rec.finish(null)).filter(l => l.kind === 'frame').map(l => l.frame_id), [fid(1), fid(4)]);
+
+  // What the skipped call is handed does not matter: a plain zero-length array gives the same text.
+  const plain = new Recorder({ encoder: stubEncoder().encoder, header: HEADER });
+  plain.setEvery(3);
+  plain.frame({ frameId: fid(1), tCaptureMs: 33, tPresentMs: 38, w: 2, h: 2, rgba: first });
+  plain.frame({ frameId: fid(2), tCaptureMs: 66, tPresentMs: 71, w: 2, h: 2, rgba: new Uint8ClampedArray(0) });
+  plain.frame({ frameId: fid(3), tCaptureMs: 99, tPresentMs: 104, w: 2, h: 2, rgba: new Uint8ClampedArray(0) });
+  plain.frame({ frameId: fid(4), tCaptureMs: 132, tPresentMs: 137, w: 2, h: 2, rgba: fourth });
+  assert.equal(plain.finish(null), rec.finish(null));
+
+  // The trap itself works: a recorder that touched a skipped array would fail here, not pass silently.
+  assert.throws(() => skipped.length, /skipped frame was read/);
+  assert.throws(() => skipped[0], /skipped frame was read/);
 });
 
 test('setEvery refuses anything but 1, 2 or 3 instead of silently dropping the recording', () => {

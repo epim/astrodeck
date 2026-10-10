@@ -25,7 +25,9 @@ import type { ReportInput, ScanReport, Stats } from '../types';
 //   * 'shares nothing with its input' fails a buildReport that hands the input
 //     back or keeps a reference into it.
 //   * 'statsOf' fixes the nearest-rank rule on hand-counted cases; interpolating
-//     or rounding the rank moves p95 on the 1..10 and 1..20 cases.
+//     the rank moves p95 on the 1..10 and 1..20 cases, and rounding it instead of
+//     taking the ceiling moves p95 on the 1..11 and 1..19 cases (0.95 n has a
+//     fraction under one half for every n from 11 to 19).
 //   * 'neither source reads the clock' scans the code of report.ts and
 //     recorder.ts (comments removed) for Date, performance and timers.
 //
@@ -308,6 +310,8 @@ test('statsOf is nearest-rank: the k-th smallest for k = ceil(p n / 100)', () =>
   assert.deepEqual(statsOf([1, 2, 3, 4, 5]), { n: 5, p50: 3, p95: 5, max: 5 });
   const upTo = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
   assert.deepEqual(statsOf(upTo(10)), { n: 10, p50: 5, p95: 10, max: 10 });         // ceil(9.5) = 10, not 9
+  assert.deepEqual(statsOf(upTo(11)), { n: 11, p50: 6, p95: 11, max: 11 });         // ceil(10.45) = 11; a rounded rank gives 10
+  assert.deepEqual(statsOf(upTo(19)), { n: 19, p50: 10, p95: 19, max: 19 });        // ceil(18.05) = 19; a rounded rank gives 18
   assert.deepEqual(statsOf(upTo(20)), { n: 20, p50: 10, p95: 19, max: 20 });        // ceil(19) = 19 exactly
   assert.deepEqual(statsOf(upTo(21)), { n: 21, p50: 11, p95: 20, max: 21 });        // ceil(19.95) = 20
   assert.deepEqual(statsOf(upTo(100)), { n: 100, p50: 50, p95: 95, max: 100 });
