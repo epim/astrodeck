@@ -1283,7 +1283,10 @@ async def test_health_never_raises(monkeypatch):
     f.get_activity = boom
     h = await session.health()
     assert h["ok"] is False and h["activity"] is None
-    assert "link died" in h["last_error"]
+    # The failure is named by its class and the call (#927); libasi's own
+    # text is not quoted into last_error.
+    assert "RuntimeError" in h["last_error"] and "read app state" in h["last_error"]
+    assert "link died" not in h["last_error"]
     await session.close()
 
 
