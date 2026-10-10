@@ -10571,6 +10571,13 @@ class SequenceEngine:
         return st.exposure_s, st.converged
 
     async def _run_calibration(self, ti: int, target: Target) -> None:
+        # `ti` is where the scheduler found `target` in the plan. The targets
+        # the engine builds for itself (day darks, DUSK FLATS, cloud-hold
+        # darks) are not in the plan and pass a placeholder (0, or the held
+        # target's index), so their frames publish no place in the plan
+        # rather than the placeholder's: it names a light step that is not
+        # the one exposing (#842).
+        plan_ti = self._plan_index(ti, target)
         # this target is now actually starting — clear any stale waiting sub-state
         # a prior gated wait published (wave-3 §2).
         self._set_state(target=target.name, target_index=ti, detail=f"calibration: {target.name}",
@@ -10741,7 +10748,7 @@ class SequenceEngine:
                                     f"converge ({self._flat_solve_reason}); "
                                     f"using {solved_exp:g}s", "sequence")
                     exp = solved_exp if solved_exp is not None else step.exposure_s
-                    self._begin_frame(ti, si, exp)
+                    self._begin_frame(plan_ti, si, exp)
                     self._set_state(state="running",
                                     detail=f"{target.name}: {step.frame_type} {exp:g}s "
                                            f"[{i + 1}/{step.count}]")
@@ -11553,7 +11560,17 @@ class SequenceEngine:
             bus.log("warning", f"{target.name}: retaking a poor frame "
                                f"({spent + 1}/{cap or 'unlimited'})", "sequence")
             self._frame_had_event = True   # retake wall-time is not per-frame overhead
-            self._begin_frame(*(self._active_step or (ti, 0)), step.exposure_s)
+            # The same frame again, so the place it had: taken from this
+            # call's own arguments, NOT from `_active_step`. That is shared
+            # state, and an instruction that fires on the reject, which the
+            # engine runs BEFORE a retake, can expose frames of its own in
+            # between (`on_frame_rejected` -> `hold_for_clear` shoots hold
+            # darks through `_begin_frame`). `_plan_index` is None for a
+            # calibration frame the plan does not hold, which publishes no
+            # step (#842).
+            si = next((k for k, s in enumerate(target.steps) if s is step), 0)
+            self._begin_frame(self._plan_index(ti, target), si,
+                              step.exposure_s)
             new_info = await self._capture(step, target)
             # This retake's OWN exposure (#134): the guider may have come
             # back, or gone down, since the frame that was rejected. Read
@@ -11598,6 +11615,18 @@ class SequenceEngine:
                 if t is target:
                     return ti
         return 0
+
+    def _plan_index(self, ti: int, target: Target) -> int | None:
+        """``ti`` when the plan holds ``target`` at that index, else None.
+
+        `_index_of_target` answers 0 for a target the plan does not hold,
+        which is an index the plan DOES hold. Anything that reads
+        ``plan.targets[ti]`` on such a target's account reads another
+        target's step (#842)."""
+        targets = self.plan.targets if self.plan else ()
+        if 0 <= ti < len(targets) and targets[ti] is target:
+            return ti
+        return None
 
     @staticmethod
     def _unlink_saved(info: dict) -> None:
@@ -15147,7 +15176,7 @@ class SequenceEngine:
             return True
         return False
 
-    def _begin_frame(self, ti: int, si: int, exposure_s: float) -> None:
+    def _begin_frame(self, ti: int | None, si: int, exposure_s: float) -> None:
         """Mark the in-flight exposure for the sub-frame bar + ETA off-by-one
         guard (set immediately before ``hub.capture``).
 
@@ -15155,8 +15184,15 @@ class SequenceEngine:
         flip blocks set it True *before* this runs, and ``_record_frame`` must
         still see it True so the event wall-time is excluded from the overhead
         EMA (it is accounted analytically). The flag is reset in ``_record_frame``
-        AFTER it is read (P2-1)."""
-        self._active_step = (ti, si)
+        AFTER it is read (P2-1).
+
+        ``ti`` is None for a frame the plan does not hold (a calibration
+        target the engine built for itself), which publishes NO active step:
+        ``_active_step`` indexes ``plan.targets[ti].steps[si]``, so a
+        placeholder index names some other target's step, and the ETA guard
+        (`_remaining_capture_s`) takes a frame off a step that never got
+        one (#842)."""
+        self._active_step = None if ti is None else (ti, si)
         self._cur_exposure_s = float(exposure_s)
         self._frame_started_at = time.time()
         # #856.1: the guider's saturated-correction counts as the shutter
