@@ -10258,21 +10258,27 @@ class Hub:
         # LONG a write takes, and the write goes through the private-ACL path
         # on a directory holding the night's images: py-spy caught this stack
         # on the loop thread on 2026-09-19 and the write was measured at 7 s.
-        # record() takes its own lock, because this now runs on a worker thread
-        # and poll_status is entered both from _status_loop and from
-        # /api/status.
+        #
+        # AND NOT AWAITED (#884). poll_status is entered both from
+        # _status_loop and from every client's /api/status, and a record that
+        # waited for its write left each of those calls parked on the write's
+        # lock in a default-executor worker for as long as the disk was slow.
+        # record_nowait observes here and hands the write to the fingerprint
+        # module's one writer thread, so the hop to the worker costs
+        # microseconds whatever the disk is doing. The slow-write warning below
+        # therefore reports the previous write, one poll late.
         try:
             from .devices import fingerprint as _fp
             _m = out.get("mount") or {}
             _f = out.get("focuser") or {}
             _w = out.get("filterwheel") or {}
             await asyncio.to_thread(
-                _fp.record, focuser_position=_f.get("position"),
+                _fp.record_nowait, focuser_position=_f.get("position"),
                 filter_slot=_w.get("position"),
                 ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
                 parked=_m.get("parked"), tracking=_m.get("tracking"),
                 sample_stamp=_fp_stamp)
-            # The worker records a slow write, the loop says it: bus.publish is
+            # The writer records a slow write, the loop says it: bus.publish is
             # loop-affine (see fingerprint._slow_write_notice).
             _slow = _fp.take_slow_write_notice()
             if _slow:

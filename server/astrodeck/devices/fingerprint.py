@@ -44,9 +44,20 @@ FINGERPRINT_SLOW_WRITE_S = 1.0
 #: asyncio.to_thread, and poll_status runs both from the status loop and from
 #: the /api/status route, so two worker threads can enter at once.
 #:
-#: TWO LOCKS, and they are never held at the same time, so there is no lock
-#: order to get wrong. record takes _state_lock for the observation, releases
-#: it, then takes _write_lock for the latch and the write.
+#: THE STATUS PATH NEVER WAITS ON THE DISK (#884). Moving the call to a worker
+#: thread (#97) freed the event loop, not the request: with the write inside a
+#: lock, every concurrent status call parked a default-executor worker on that
+#: lock for as long as the write took, so status was slowest exactly when the
+#: disk was, and the parked workers starved every other to_thread route. The
+#: status poll now calls ``record_nowait``, which observes and claims the
+#: write under locks held for assignments only, and hands the write to ONE
+#: background writer thread. ``record`` is the same thing that waits for the
+#: write itself; nothing on a request path may call it.
+#:
+#: THREE LOCKS. _state_lock and _write_lock are never held together and
+#: neither is ever held across I/O. record takes _state_lock for the
+#: observation, releases it, then takes _write_lock for the latch and the
+#: hand-off. _io_lock is the third and the only one a write is held under.
 #:
 #: _state_lock guards ONLY the observation trio -- _known/_last_pos/_confirmed
 #: -- wherever it is touched: _observe (with its one-time _ensure_boot read),
@@ -70,18 +81,45 @@ FINGERPRINT_SLOW_WRITE_S = 1.0
 #: because py-spy would show verdict waiting on a lock rather than the write.
 _state_lock = threading.Lock()
 
-#: The coalescing latch AND the write, together and never apart. Splitting
-#: those two would let two callers both read _last_write before either set it
-#: and then interleave two atomic writes over the same staging directory,
-#: which is the thing the original single lock was added for.
+#: The coalescing latch AND the hand-off to the writer (_pending and
+#: _writer_alive), together and never apart: two callers must not both read
+#: _last_write before either sets it. Held for a comparison and a few
+#: assignments, NEVER across I/O, which is what lets the status path take it
+#: while a write is stuck.
 #:
-#: The cost of the split: another thread may advance _last_pos between this
-#: call's _observe and its write, so the file can carry a reading microseconds
+#: The cost of the split from the write: another thread may advance _last_pos
+#: between this call's _observe and the write, so the file can carry a reading
 #: newer than the one this caller saw. Same device, newer number -- and the
 #: written value was always "the latest reading", never "this call's argument"
 #: (see the comment on the payload). Nothing downstream can tell the
 #: difference, and nothing that can block indefinitely is held under it.
 _write_lock = threading.Lock()
+
+#: Serialises the disk write itself, so two atomic writes never interleave
+#: over the same staging directory -- the thing the original single lock was
+#: added for (#97). The writer thread holds it for a write; so does a ``record``
+#: caller that waits for its own. ``record_nowait`` callers never take it, which
+#: is the point of it being a lock of its own. Held across I/O, therefore never
+#: taken together with _state_lock or _write_lock.
+_io_lock = threading.Lock()
+
+#: The write the next writer pass owes the disk: (path, fields) as staged by
+#: ``_claim``, or None. LATEST WINS: a write still queued when the next one is
+#: claimed is replaced, because the file holds one reading and the newer one is
+#: the better number. Nothing is lost by it that the OBSERVATION has not already
+#: kept -- that runs on every call, ahead of this (see ``_observe``). Guarded by
+#: _write_lock.
+_pending: tuple[Path, dict] | None = None
+#: Whether a writer thread is running (or has been told to start), so a second
+#: is never started. Guarded by _write_lock, and cleared by the writer under it
+#: in the same critical section that finds _pending empty, so a write staged
+#: just as the writer retires either is seen by it or finds the flag clear and
+#: starts the next one.
+_writer_alive: bool = False
+#: Set while no writer is running and nothing is queued. ``wait_idle`` waits on
+#: it. Changed only under _write_lock, with _writer_alive.
+_idle = threading.Event()
+_idle.set()
 
 #: A slow write recorded by the worker thread, for the coroutine that
 #: dispatched it to publish. NOT ``bus.log`` from inside ``record``:
@@ -101,15 +139,16 @@ _write_lock = threading.Lock()
 _slow_write_notice: str | None = None
 
 #: Its own lock, so the read-then-clear in ``take_slow_write_notice`` is atomic
-#: against the worker that sets it. A third lock rather than _write_lock, for
+#: against the worker that sets it. A lock of its own rather than _io_lock, for
 #: the same reason _state_lock is not _write_lock: the reader is the event
 #: loop, and the notice is set from inside the write, so sharing that lock
 #: would make the loop queue behind the write. Held for one assignment, never
 #: across I/O.
 #:
-#: The only nesting anywhere in this module: record acquires it while holding
-#: _write_lock, and nothing acquires _write_lock while holding it. _state_lock
-#: is never held together with either. One direction, so no cycle.
+#: The only nesting anywhere in this module: ``_write`` acquires it while
+#: holding _io_lock, and nothing acquires _io_lock while holding it.
+#: _state_lock and _write_lock are never held together with either. One
+#: direction, so no cycle.
 _notice_lock = threading.Lock()
 
 _PATH: Path | None = None
@@ -278,25 +317,23 @@ def _stale(sample_stamp: int | None) -> bool:
             and sample_stamp < _last_vouch_stamp)
 
 
-def record(*, focuser_position: int | None, filter_slot: int | None,
+def _claim(*, focuser_position: int | None, filter_slot: int | None,
            ra_hours: float | None, dec_deg: float | None,
            parked: bool | None, tracking: bool | None,
-           sample_stamp: int | None = None) -> None:
-    """Persist current device state, at most once per interval.
+           sample_stamp: int | None) -> tuple[Path, dict] | None:
+    """Observe the reading, then say whether this call owes the disk a write.
 
-    Written with the atomic writer so a power cut mid-write cannot leave a
-    truncated file — the one failure that would make this module lie exactly
-    when it matters. Swallows its own errors: bookkeeping must never break a run.
-
-    Callable from any thread; the caller on the status path dispatches it off
-    the event loop. See ``_state_lock`` for why the observation and the write
-    take different locks, and why neither is ever held across the other.
+    Returns what to write (the path, resolved NOW so a test that has moved
+    ``CAPTURE_DIR`` by the time the writer runs still lands where it pointed,
+    and every field but the focuser position) or None when the interval has
+    not elapsed. Touches no disk but ``_ensure_boot``'s one-time read, which
+    only ``_state_lock`` is held across.
 
     ``sample_stamp`` (#760) is a ``new_sample_stamp()`` the caller took BEFORE
     it read the device. A reading older than the last ``vouch`` is ignored, in
     full: it is neither a move nor a gap, only a report of how things stood
-    before a measurement. The write below then carries the vouched position
-    (it writes ``_last_pos``, never the argument), which is the better number.
+    before a measurement. The write then carries the vouched position (it
+    writes ``_last_pos``, never the argument), which is the better number.
     """
     global _last_write
     with _state_lock:
@@ -305,10 +342,69 @@ def record(*, focuser_position: int | None, filter_slot: int | None,
     with _write_lock:
         now = _now()
         if _last_write and now - _last_write < FINGERPRINT_WRITE_INTERVAL_S:
-            return
+            return None
         _last_write = now
+    return _path(), {
+        "filter_slot": filter_slot,
+        "ra_hours": ra_hours,
+        "dec_deg": dec_deg,
+        "parked": parked,
+        "tracking": tracking,
+    }
+
+
+def record(*, focuser_position: int | None, filter_slot: int | None,
+           ra_hours: float | None, dec_deg: float | None,
+           parked: bool | None, tracking: bool | None,
+           sample_stamp: int | None = None) -> None:
+    """Persist current device state, at most once per interval, and return
+    once it is on disk.
+
+    Written with the atomic writer so a power cut mid-write cannot leave a
+    truncated file — the one failure that would make this module lie exactly
+    when it matters. Swallows its own errors: bookkeeping must never break a run.
+
+    NOT FOR A REQUEST PATH: the caller waits for the disk, and during a slow
+    write that is every caller (#884). The status poll calls ``record_nowait``.
+    This is for a caller that needs the file written before it goes on.
+
+    Callable from any thread. See ``_state_lock`` for why the observation and
+    the write take different locks, and why neither is ever held across the
+    other. ``sample_stamp`` is explained on ``_claim``.
+    """
+    staged = _claim(focuser_position=focuser_position,
+                    filter_slot=filter_slot, ra_hours=ra_hours,
+                    dec_deg=dec_deg, parked=parked, tracking=tracking,
+                    sample_stamp=sample_stamp)
+    if staged is not None:
+        _write(*staged)
+
+
+def record_nowait(*, focuser_position: int | None, filter_slot: int | None,
+                  ra_hours: float | None, dec_deg: float | None,
+                  parked: bool | None, tracking: bool | None,
+                  sample_stamp: int | None = None) -> None:
+    """``record`` for a request path: observes now, writes later, never waits.
+
+    The observation, the coalescing latch and the stale-sample check all run on
+    THIS call, exactly as in ``record``; only the disk write is handed to the
+    background writer. So a slow or stuck write costs the caller nothing, and
+    a device that dropped off and came back while the writer was busy is still
+    seen as having dropped off. The file lands within a writer pass of the
+    claim, and carries the same six fields it always did.
+    """
+    staged = _claim(focuser_position=focuser_position,
+                    filter_slot=filter_slot, ra_hours=ra_hours,
+                    dec_deg=dec_deg, parked=parked, tracking=tracking,
+                    sample_stamp=sample_stamp)
+    if staged is not None:
+        _submit(staged)
+
+
+def _write(path: Path, fields: dict) -> None:
+    """Put one staged write on disk, timed. Swallows its own errors."""
+    with _io_lock:
         try:
-            path = _path()
             started = time.monotonic()
             outcome = "took"
             try:
@@ -322,11 +418,7 @@ def record(*, focuser_position: int | None, filter_slot: int | None,
                     # the same device, a reading microseconds newer. See the
                     # note on _write_lock.
                     "focuser_position": _last_pos,
-                    "filter_slot": filter_slot,
-                    "ra_hours": ra_hours,
-                    "dec_deg": dec_deg,
-                    "parked": parked,
-                    "tracking": tracking,
+                    **fields,
                 }, backup=False)
             except Exception:
                 outcome = "failed after"
@@ -348,6 +440,56 @@ def record(*, focuser_position: int | None, filter_slot: int | None,
                     )
         except Exception:  # noqa: BLE001 — telemetry must never break a run
             pass
+
+
+def _submit(staged: tuple[Path, dict]) -> None:
+    """Queue a claimed write for the background writer and return at once.
+
+    Starts the writer when none is running. A write already queued is replaced
+    (latest wins, see ``_pending``).
+    """
+    global _pending, _writer_alive
+    with _write_lock:
+        _pending = staged
+        if _writer_alive:
+            return
+        _writer_alive = True
+        _idle.clear()
+    try:
+        threading.Thread(target=_drain, name="fingerprint-writer",
+                         daemon=True).start()
+    except Exception:  # noqa: BLE001 — no thread to spare: say none is running
+        # The queued write stays queued and the next claim tries again; a
+        # flag left set here would mean no writer is ever started again.
+        with _write_lock:
+            _writer_alive = False
+            _idle.set()
+
+
+def _drain() -> None:
+    """The writer thread: write what is queued until nothing is, then retire.
+
+    The thread does not outlive its work, so an idle server holds none and a
+    test never inherits one. It is a daemon: a write queued in the last
+    seconds of a process is at most one coalescing interval behind a file that
+    is replaced atomically, and a stuck disk must not hold the process open.
+    """
+    global _pending, _writer_alive
+    while True:
+        with _write_lock:
+            staged, _pending = _pending, None
+            if staged is None:
+                _writer_alive = False
+                _idle.set()
+                return
+        _write(*staged)
+
+
+def wait_idle(timeout: float | None = None) -> bool:
+    """Block until the background writer has nothing queued and nothing in
+    flight; False if ``timeout`` passed first. For tests and for tear-down. The
+    status path never calls it."""
+    return _idle.wait(timeout)
 
 
 def _set_slow_write_notice(notice: str) -> None:
@@ -468,9 +610,16 @@ def reset_for_tests() -> None:
     inherits the previous one's — trust it never established, showing up only as
     an order-dependent flake. It is also how a test SIMULATES a restart: the
     file survives, the process state does not.
+
+    Lets the background writer finish first (bounded: a writer a test left
+    stuck must not hang the suite), so a write the last test handed it cannot
+    land after this reset and report a slow-write notice into the next test.
     """
     global _last_write, _boot, _boot_loaded, _boot_path, _slow_write_notice
-    global _known, _last_pos, _confirmed, _last_vouch_stamp
+    global _known, _last_pos, _confirmed, _last_vouch_stamp, _pending
+    _idle.wait(10.0)
+    with _write_lock:
+        _pending = None
     _last_write = 0.0
     _slow_write_notice = None
     _last_vouch_stamp = None      # the counter itself keeps counting: stamps stay ordered
