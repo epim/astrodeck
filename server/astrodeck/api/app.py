@@ -597,12 +597,12 @@ async def _lifespan(app: "FastAPI"):
         if relay_client is not None:
             try:
                 relay_client.stop()
-            except Exception:
+            except Exception:       # the process is exiting; nothing reads the relay after this
                 pass
         # Stop the self-update poller (best-effort; never raises out of shutdown).
         try:
             get_update_service().stop_poller()
-        except Exception:
+        except Exception:           # as above: the poller dies with the process
             pass
         # Stop a still-running boot auto-connect before tearing the rig down, so a
         # slow connect can't race disconnect_all on shutdown (best-effort).
@@ -613,8 +613,11 @@ async def _lifespan(app: "FastAPI"):
         # Clean teardown of an auto-connected rig (best-effort; never raises).
         try:
             await hub.disconnect_all()
-        except Exception:
-            pass
+        except Exception as exc:
+            # Said (#993). The night-log flush below is what puts the line in
+            # the file.
+            hub.say_swallowed("the rig did not disconnect cleanly at "
+                              "shutdown", exc)
         # Stop the bundled COM host if this install ever started one (COM-T6):
         # the ascom-local backend owns a process-lifetime ComHostManager, and its
         # child is a no-orphan supervised process torn down here on app shutdown.
@@ -623,13 +626,15 @@ async def _lifespan(app: "FastAPI"):
             from ..comhost.manager import get_manager
             get_manager().stop()
         except Exception:
+            # stop() swallows a failed terminate itself; a child left behind
+            # is reaped through its pidfile at the next spawn.
             pass
         # Last: let the night-log writer thread finish what is queued, so the
         # lines this shutdown just logged are in the file (#878). Off the loop
         # because it waits; bounded, so a stalled disk cannot hold the exit.
         try:
             await asyncio.to_thread(flush_night_logs, NIGHTLOG_EXIT_S)
-        except Exception:
+        except Exception:           # the night-log writer is what failed: nothing could say so
             pass
 
 
@@ -1845,7 +1850,7 @@ def _materialize_bundle(b, root: Path) -> dict:
                 g["linked"] += 1
                 continue
         except OSError:
-            pass
+            pass  # cannot compare: fall through to the copy, which reports its own failure
         try:
             shutil.copy2(it.src, dest)
             copied += 1
@@ -3191,7 +3196,7 @@ def _normalise_allowed_host(raw: str) -> str:
     try:
         return ipaddress.ip_address(value).compressed.casefold()
     except ValueError:
-        pass
+        pass  # not an IP literal: validated as a DNS name below, which raises
     value = value.rstrip(".").casefold()
     if len(value) > 253 or not _DNS_HOST_RE.fullmatch(value):
         raise ValueError(f"invalid host in {ALLOWED_HOSTS_ENV}: {raw!r}")
@@ -3452,13 +3457,17 @@ def _tell_sun_watch_the_mount_parked() -> None:
     the engine and dawn park reach it, so a hub without one (every test double, a
     build without the net) is a no-op. Called only AFTER ``tel.park()`` has
     returned: a park that raised was not confirmed and tells nobody. Never raises:
-    bookkeeping must not turn a park that worked into a failed route."""
+    bookkeeping must not turn a park that worked into a failed route. A raise
+    is SAID (``Hub.say_swallowed``, #993), as the engine says when its two
+    calls fail: the fallback is left stale, which is how #696's false
+    'Parking now' page came about."""
     try:
         watch = getattr(hub, "sun_watch", None)
         if watch is not None:
             watch.note_parked()
-    except Exception:       # noqa: BLE001 - see the docstring
-        pass
+    except Exception as exc:       # noqa: BLE001 - see the docstring
+        hub.say_swallowed("the sun watch could not be told the mount "
+                          "parked", exc)
 
 
 def create_app(*, bind_host: str | None = None,
@@ -8711,8 +8720,12 @@ def create_app(*, bind_host: str | None = None,
         if cam and cam.connected:
             try:
                 await cam.abort_exposure()
-            except Exception:
-                pass
+            except Exception as exc:
+                # The operator pressed STOP and the exposure may still be
+                # running; the route answers as it always did, and says so
+                # in the log (#993).
+                hub.say_swallowed("the camera would not abort its exposure "
+                                  "when capture was stopped", exc)
         return {"looping": False}
 
     # ---- Live View (NOV-1): arm/reset/disarm, mirroring capture_loop -------
@@ -12617,7 +12630,7 @@ def create_app(*, bind_host: str | None = None,
                     if out is not None:  # None = dropped event (weather spec §8)
                         await websocket.send_json(out)
         except (WebSocketDisconnect, RuntimeError):
-            pass
+            pass  # the client went away (or a send raced the close): the normal end
         finally:
             bus.unsubscribe(q)
 

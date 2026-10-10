@@ -11839,7 +11839,11 @@ class SequenceEngine:
     def _unlink_saved(info: dict) -> None:
         """Delete the FITS a rejected frame saved (sim/Alpaca local saves only —
         NINA saved_paths live on the imaging host and are not local). Never
-        raises."""
+        raises, but SAYS when the file is still there afterwards (#994): on
+        Windows a file held open by antivirus or a thumbnail reader cannot be
+        deleted, and the frame stayed in the capture folder, where a stacker's
+        folder glob picks it up, with nothing to say the run had meant to
+        remove it."""
         if not isinstance(info, dict):
             return
         path = info.get("saved_path")
@@ -11858,12 +11862,23 @@ class SequenceEngine:
         # bundle's source selection. Only the delete side was missing it.
         if not Hub._is_local_save(path):
             return
+        p = Path(path)
         try:
-            p = Path(path)
             if p.is_file():
                 p.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            # One line per file, not the run-wide latch `_say_swallowed` keeps:
+            # each leftover is a different frame the owner has to deal with, and
+            # the count is bounded by the rejects, each of which already says
+            # itself. The FILE NAME only, never the directory (it is the
+            # capture root's path) and never the exception's text, which quotes
+            # that path.
+            line = (f"the rejected frame {p.name} could not be deleted and is "
+                    f"still in the capture folder ({type(exc).__name__})")
+            try:
+                bus.log("warning", line, "sequence")
+            except Exception:  # noqa: BLE001 - the bus is what failed; the caller goes on
+                logging.getLogger(__name__).warning(line)
 
     # --------------------------------------------------------- safety gate (§1.9)
 
