@@ -187,6 +187,12 @@ def _shown_error_number(number: int) -> str:
 #: any ErrorNumber as a refusal and singles out only this one.
 _ASCOM_INVALID_WHILE_PARKED = 0x408
 
+#: ASCOM NotConnected. The one answered error that says the device is NOT there:
+#: the comhost answers it for a device that was never connected or that was
+#: fault-evicted and rebuilt empty (#937), and a client reads it as "reconnect"
+#: (#966).
+_ASCOM_NOT_CONNECTED = 0x407
+
 
 # A bare hostname only — no scheme, path, query, userinfo, or an embedded
 # ``:port``. Labels are RFC-952/1123-ish. IP literals never reach this regex:
@@ -433,10 +439,30 @@ class _AlpacaDevice:
         }
 
     async def _get(self, method: str, **params: Any) -> Any:
-        return await self.conn.get(self.dev_type, self.dev_num, method, **params)
+        try:
+            return await self.conn.get(self.dev_type, self.dev_num, method, **params)
+        except AlpacaReplyError as e:
+            self._note_not_connected(e)
+            raise
 
     async def _put(self, method: str, **params: Any) -> Any:
-        return await self.conn.put(self.dev_type, self.dev_num, method, **params)
+        try:
+            return await self.conn.put(self.dev_type, self.dev_num, method, **params)
+        except AlpacaReplyError as e:
+            self._note_not_connected(e)
+            raise
+
+    def _note_not_connected(self, exc: AlpacaReplyError) -> None:
+        """A server that answers NotConnected (0x407) has told us the device is
+        not there, so ``connected`` goes false and the reconnect gate sees it
+        (#966). Every other answered error is still proof of presence (#16): a
+        device that refuses one call is a device that is there.
+
+        Without this, a comhost device that was fault-evicted (#937) kept
+        reading 'connected' while every request answered 0x407, and was polled
+        forever."""
+        if exc.error_number == _ASCOM_NOT_CONNECTED:
+            self.connected = False
 
     async def connect(self) -> None:
         await self._put("connected", Connected=True)
@@ -483,7 +509,9 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         driver DID answer — a non-200 status or an ASCOM ``ErrorNumber`` — and
         answering, even to refuse the call, is proof the device is still
         there; folding that in too would reconnect a camera that is merely
-        busy or was asked for something it declined."""
+        busy or was asked for something it declined. The one exception is
+        NotConnected (0x407), which says the device is NOT there
+        (``_AlpacaDevice._note_not_connected``, #966)."""
         try:
             return await super()._get(method, **params)
         except httpx.TransportError:
@@ -592,7 +620,11 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         # The JSON fallback is an ordinary Alpaca reply, so it is unwrapped like
         # one: a failure names the status, the route and the ASCOM error
         # number, never the driver's ErrorMessage (#926, the #906 rule).
-        value = self.conn._unwrap(r, f"camera/{self.dev_num}/imagearray")
+        try:
+            value = self.conn._unwrap(r, f"camera/{self.dev_num}/imagearray")
+        except AlpacaReplyError as e:
+            self._note_not_connected(e)
+            raise
         arr = np.array(value, dtype=np.int32)  # Alpaca arrays are [x][y]
         return np.clip(arr.T, 0, 65535).astype(np.uint16)
 

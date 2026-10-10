@@ -71,7 +71,7 @@ import { useTouchSettings } from "../../../../lib/touchStore";
 import {
   POSITION_UNKNOWN_NOTE, POSITION_UNKNOWN_STEPS_REASON, TRUST_POSITION_CONFIRM_BODY,
   TRUST_POSITION_CONFIRM_LABEL, TRUST_POSITION_CONFIRM_TITLE, TRUST_POSITION_LABEL,
-  positionKnown, type Axis, type Dir,
+  believedRaDec, positionKnown, type Axis, type Dir,
 } from "../../../../lib/slewController";
 import { altTone, fmtAlt, fmtMag } from "../../../../lib/catalogFormat";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
@@ -242,6 +242,10 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // engine older than the flag sends none). Everything below that is computed from "where the mount
   // points" - a step, the ALT / AZ tile - reads this first.
   const positionIsKnown = positionKnown(m);
+  // The tile's RA/Dec sub-label reads this and nothing else (#958): the ONE gate
+  // for the equatorial reading, so the sub-label does not depend on the ternary
+  // around it also remembering to test `positionIsKnown`.
+  const believedEq = believedRaDec(m);
 
   // plan 0.5: a run holds the mount for as long as it is live - running,
   // paused, holding for cloud, or winding down from an abort (`runIsLive`).
@@ -823,7 +827,10 @@ export function MountSheet(_props: SheetProps): JSX.Element {
           sub={
             !m ? "no pointing reported"
               : !positionIsKnown ? "the mount's home reading, not the tube"
-              : altAzKnown ? `RA ${m.ra_str} · Dec ${m.dec_str}`
+              : altAzKnown
+                ? (believedEq?.ra_str && believedEq.dec_str
+                  ? `RA ${believedEq.ra_str} · Dec ${believedEq.dec_str}`
+                  : "RA / Dec not reported")
               : `needs ${accessPhrase("view.site_derived")}`
           }
           tone={!positionIsKnown && m ? "warn"

@@ -678,8 +678,8 @@ async def test_asiair_a_missing_position_is_not_a_position(monkeypatch):
                                   "sync_unclear"])
 async def test_asiair_busy_dropped_and_unclear_boxes_are_told_apart(
         monkeypatch, case):
-    """MUTANT N19 "busy reads as a link failure" (the ``_is_busy`` test on
-    the idle check's cause made False): RED (observed) on busy.
+    """MUTANT N19 "busy reads as a link failure" (the idle check's
+    ``cause_kind == "busy"`` test made False): RED (observed) on busy.
     MUTANT N19b "a refusal reads no residual" (``_sync_refused`` passes
     ``residual = None`` instead of reading): RED (observed) on busy, the
     first case (the mutant run stops at the first failure; no_sync_cap
@@ -689,9 +689,9 @@ async def test_asiair_busy_dropped_and_unclear_boxes_are_told_apart(
     sync_unclear.
     MUTANT N19d "a failed idle check is a refusal" (the non-busy idle-check
     arm raising the busy refusal): RED (observed) on idle_check_link.
-    MUTANT G22 "busy during the sync call is unclear" (the ``if
-    _is_busy(cause): kind = "busy"`` branch of the sync call's ``except``
-    removed): RED (observed) on sync_busy, SyncUnverified."""
+    MUTANT G22 "busy during the sync call is unclear" (the ``if cause ==
+    "busy": kind = "busy"`` branch of the sync call's ``except`` removed):
+    RED (observed) on sync_busy, SyncUnverified."""
     _stub_precession(monkeypatch)
     busy_on = {"busy": {"check_idle"}, "sync_busy": {"mount.sync"}}.get(case)
     fake = _asiair_fake(monkeypatch, busy_on=busy_on)

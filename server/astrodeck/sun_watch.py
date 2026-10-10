@@ -198,8 +198,8 @@ HANDS_OFF_LANES = frozenset({"goto", "dome", "polar"})
 #: no figure, no position. Cover the tube, then the shared safe order
 #: (``mount_offset.POSITION_UNKNOWN_SAFE_ORDER``: Trust position only for a
 #: tube really at home, else home by eye with a pad key first), never a goto.
-#: 45 + 86 = 131 characters to the end of the action, inside the UI's
-#: 137-character cut.
+#: 45 + 86 = 131 characters to the end of the action, inside the UI's old
+#: 137-character cut (400 since #792).
 POSITION_UNKNOWN_DAYLIGHT = (
     f"sun watch blind, position unknown: cover it; "
     f"{POSITION_UNKNOWN_SAFE_ORDER} It will not park: a park is aimed from "
@@ -217,9 +217,10 @@ POSITION_UNKNOWN_NIGHT_HOLD = (
 #: one, so it covers the tube as the daylight line does, at warning level (the
 #: AlertDispatcher routes warning and error) on the blind cadence. Fixed words,
 #: no figure: with no site there is none to carry. 39 + 86 = 125 characters to
-#: the end of the action, inside the UI's 137-character cut. The cause and
-#: the remedy (set the site) follow it, so they are in the paged message and the
-#: durable log but not in the UI's cut of the line.
+#: the end of the action, inside the UI's old 137-character cut. The cause and
+#: the remedy (set the site) follow it: they were in the paged message and the
+#: durable log but not in the UI's line; at 340 characters the UI shows it
+#: whole now that its budget is 400 (#792).
 POSITION_UNKNOWN_SUN_UNKNOWN = (
     f"sun watch: position unknown, cover it; {POSITION_UNKNOWN_SAFE_ORDER} "
     f"It cannot judge the Sun (no site set, or the Sun cannot be computed), "

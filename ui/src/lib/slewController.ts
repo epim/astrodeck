@@ -221,9 +221,10 @@ export function believedRaDec(
 // goto is aimed from a position nobody vouches for, so the advice is the safe
 // order above: TRUST POSITION when the tube really is at home, and otherwise a
 // pad key held to bring it home by eye first. The word "plate" never sits beside
-// "solve" here:
-// `humanizeLog` rewrites any line holding both to "Plate-solve failed", and a
-// toast path that forgot `enqueueToast` would turn this advice into its opposite.
+// "solve" here, a habit from when `humanizeLog` rewrote any line holding both to
+// "Plate-solve failed". It maps only a line that IS a failed solve now (#792), so
+// the habit is not needed; a test still holds the copy to it, in case a later
+// humanizer rule reads those two words again.
 //
 // A MOUNT POWERED UP PARKED AT HOME READS THE POLE TOO (WP-103's design note),
 // so this state is the ORDINARY start of every night, until the operator trusts

@@ -87,6 +87,7 @@ import { ensurePlanIds } from "./lib/ids";
 import { isExposureValueInvalid } from "./lib/exposure";
 import { DEFAULT_OVERLAP } from "./lib/framing";
 import { believedRaDec } from "./lib/slewController";
+import { forgetLastField, readLastField, rememberLastField } from "./lib/atlasLastField";
 import { api, ApiError } from "./api";
 import { getMe, getAuthMethods } from "./api/backends";
 
@@ -1260,6 +1261,9 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
     }
     const pending = get().confirm;
     if (pending) pending.resolve(false);
+    // The remembered Atlas field goes with the framing it belonged to: the
+    // person at the sign-in form is not necessarily the one who looked at it.
+    forgetLastField();
     set({ ...clearedRigState(), confirm: null, authGate: g });
   },
 
@@ -1300,19 +1304,29 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
 
   // ----------------------------------------------------------- atlas / framing
   // Open the Atlas on `e` (or free-roam when no entry). Switches the view, seeds
-  // the session center from the entry (or the believed mount position/0,0 when
-  // free-roam: a mount that does not know where it points reports its home
-  // position, the pole, and a view opened there would be named after it, #928), and
-  // seeds the survey crop width from the persisted optics FOV (fallback ~1.5°).
+  // the session center from the entry (or, free-roam, from the first of: the
+  // believed mount position; the last field this viewer looked at, kept in this
+  // browser (lib/atlasLastField); RA 0h Dec 0, a fixed default). A mount that
+  // does not know where it points reports its home position, the pole, and a
+  // view opened there would be named after it (#928), so it seeds nothing. NO
+  // RUNG DEPENDS ON THE SAVED SITE (#956): a centre made from the site's zenith
+  // is (sidereal time, latitude), which would carry the site's latitude to the
+  // online survey fetch, the wizard's prefill and GOTO. And seeds the survey
+  // crop width from the persisted optics FOV (fallback ~1.5°).
   // Defaults: 1×1 mosaic, `DEFAULT_OVERLAP` (lib/framing.ts, the one overlap
   // every framing starts from, spec 2.4), DSS2 color, linear stretch, empty
   // panels.
   openFraming: (e) => {
     const config = get().config;
     const here = believedRaDec(get().status?.mount);
+    const lastField = e || here ? null : readLastField();
     const center = e
       ? { ra_hours: e.ra_hours, dec_deg: e.dec_deg }
-      : { ra_hours: here?.ra_hours ?? 0, dec_deg: here?.dec_deg ?? 0 };
+      : here
+        ? { ra_hours: here.ra_hours, dec_deg: here.dec_deg }
+        : lastField ?? { ra_hours: 0, dec_deg: 0 };
+    // The fixed default is a place nobody looked at, so it is not remembered.
+    if (e || here || lastField) rememberLastField(center);
     // A free-roam session has no catalog id to be recognised by; synthesize a
     // stable per-session id from the rounded center, which the Sky hub's quick
     // sheet matches a patch's own framing by (`framingMatches`). It once also
@@ -1344,8 +1358,12 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
     set({ framing, view: "atlas" });
   },
 
-  setFraming: (patch) =>
-    set((s) => (s.framing ? { framing: { ...s.framing, ...patch } } : {})),
+  setFraming: (patch) => {
+    // Every pan, nudge, recentre, search pick and tapped marker lands here, so
+    // this is where "the last field viewed" is kept (lib/atlasLastField).
+    if (patch.center && get().framing) rememberLastField(patch.center);
+    set((s) => (s.framing ? { framing: { ...s.framing, ...patch } } : {}));
+  },
 
   // The Plan hand-off action was here: the Atlas's old Plan button and the Sky
   // quick sheet's side channel wrote a framing into the Plan as targets
@@ -2019,31 +2037,47 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
         const percent = seq.progress?.percent;
 
         // --- monitor runBanner (monitor §3.2): persistent, NOT the focal toast ---
-        // Rising edge (not-running → running) raises the banner; subsequent
-        // progress refreshes percent; any terminal/idle state clears it.
+        // Rising edge (not-live → running/holding) raises the banner; subsequent
+        // progress refreshes percent; any state that is not a live run clears it.
         let runBanner: RunBanner = get().runBanner;
         // A pin belongs to the frames that were on screen when it was made. A
         // NEW run makes it a claim about a different session, so retire it on
         // the rising edge — otherwise a frame pinned while focusing before the
         // run rides the whole night on the stage, which is what happened.
         let pin = get().selectedPreviewId;
-        if (seq.state === "running") {
+        //
+        // THE CLEAR IS KEYED ON runIsLive, not on a list of states to keep. The
+        // old branch listed what survived (running, paused, aborting) and let
+        // every other string fall into the clear, so "holding" cleared the
+        // banner by omission (#959). A cloud hold is a live run — the engine
+        // promotes a routine `running` publish to "holding" for the hours the
+        // sky is bad, the rig still probing and shooting hold darks — and when
+        // it lifted the next `running` came from "holding", which is not in
+        // RUN_RISING_FROM, so nothing raised the banner again for the rest of
+        // the night. A state added to SequenceState now has to be classified in
+        // runIsLive to keep the banner, and cannot lose it by being forgotten.
+        if (!runIsLive(seq)) {
+          // idle / complete / aborted / error / nina_native → clear the banner.
+          runBanner = null;
+        } else if (seq.state === "running" || seq.state === "holding") {
+          // "holding" raises as well as "running": a page opened (or reloaded)
+          // mid-hold gets "holding" as its FIRST frame, from the cold default,
+          // and a running-only rule never raised the banner for that browser
+          // at all.
           if (RUN_RISING_FROM.has(prevState)) {
             runBanner = { active: true, plan_name: seq.plan_name, percent };
             pin = null;
           } else if (runBanner) {
             runBanner = { ...runBanner, percent };
           }
-        } else if (seq.state === "paused" || seq.state === "aborting") {
-          // "aborting" is NOT terminal: the engine publishes it for the whole
-          // wind-down (types.ts). Clearing the banner there took the run off
-          // every other screen — and the banner is the only thing outside the
-          // Monitor that says a run is happening — while the rig was still
-          // stopping. It clears when "aborted" lands, which is when it is true.
-          if (runBanner) runBanner = { ...runBanner, percent };
-        } else {
-          // idle / complete / aborted / error / nina_native → clear the banner.
-          runBanner = null;
+        } else if (runBanner) {
+          // paused / aborting. "aborting" is NOT terminal: the engine publishes
+          // it for the whole wind-down (types.ts). Clearing the banner there
+          // took the run off every other screen — and the banner is the only
+          // thing outside the Monitor that says a run is happening — while the
+          // rig was still stopping. It clears when "aborted" lands, which is
+          // when it is true.
+          runBanner = { ...runBanner, percent };
         }
         // CAPTURE LIVENESS, from the SERVER'S OWN COUNTER (#206).
         //

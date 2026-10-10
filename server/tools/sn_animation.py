@@ -46,7 +46,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from astrodeck.imaging import nightstack as ns          # noqa: E402
-from astrodeck.imaging.fitsio import write_wcs          # noqa: E402
+from astrodeck.imaging.fitsio import stamp_wcs          # noqa: E402
 
 #: Extra pixels kept around the final crop while stacking, so the residual
 #: night-to-night registration has somewhere to shift into and so a sub that
@@ -156,12 +156,25 @@ def solve_reference(fits_path: Path, *, ra_hint: float | None,
     if not result.success or result.wcs is None:
         log(f"ASTAP did not solve {fits_path.name}: {result.message}")
         return None
-    write_wcs(fits_path, result.wcs)
+    # ``stamp_wcs`` swallows a missing, locked or corrupt file and refuses a
+    # solution with no usable scale; False is the only sign of either (#972).
+    if not stamp_wcs(fits_path, result.wcs):
+        log(f"ASTAP solved {fits_path.name} but the WCS could not be written "
+            "to it (no usable plate scale, or the file could not be updated); "
+            "skipping the light curve")
+        return None
     from astropy.io import fits
     from astropy.wcs import WCS
-    log(f"solved {fits_path.name}: {result.pixel_scale_arcsec:.3f} arcsec/px, "
+    wcs = WCS(fits.getheader(fits_path))
+    if not wcs.has_celestial:
+        log(f"{fits_path.name} has no celestial WCS after the stamp; "
+            "skipping the light curve")
+        return None
+    scale = result.pixel_scale_arcsec
+    shown = "scale unknown" if scale is None else f"{scale:.3f} arcsec/px"
+    log(f"solved {fits_path.name}: {shown}, "
         f"rotation {result.rotation_deg:.2f} deg")
-    return WCS(fits.getheader(fits_path))
+    return wcs
 
 
 def _fov_hint(header, shape) -> float | None:

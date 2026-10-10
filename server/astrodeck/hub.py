@@ -87,6 +87,11 @@ if TYPE_CHECKING:  # annotations only -- the harness is imported lazily at runti
 #: ``result.rig``).
 DEVICE_ROLES = ROLES
 
+#: What ``reconnect_role`` needs in a ``_last_connect`` record to REBUILD an Alpaca
+#: device from its address. Only ``connect_alpaca_device`` writes all of them; a
+#: profile-connected Alpaca role is recorded by its backend label alone (#967).
+_ALPACA_REPLAY_FIELDS = ("host", "port", "dev_type", "dev_num", "name")
+
 
 def _harness():
     """Lazily import the pluggable-backend harness (Stage A).
@@ -574,15 +579,20 @@ def precess_jnow_to_j2000(ra_hours: float, dec_deg: float,
     return icrs.ra.hourangle % 24.0, float(icrs.dec.deg)
 
 
-async def _precess_for_mount(hub, tel, ra_hours: float,
-                             dec_deg: float) -> tuple[float, float]:
+async def _precess_for_mount(hub, tel, ra_hours: float, dec_deg: float,
+                             jnow: bool | None = None) -> tuple[float, float]:
     """The J2000 -> mount-frame conversion behind ``Hub.to_mount_frame`` and
     ``Hub.mount_frame_for_question``. A module function, not a method, so a
     test double that binds either method onto a bare namespace still has it.
 
+    ``jnow`` is a frame decision the caller already made
+    (``Hub.decide_mount_frame``, #962); None asks the mount.
+
     Fail-safe: if the astropy transform raises (e.g. an IERS hiccup on an
     offline Pi), fall back to the raw coordinates and log."""
-    if not await hub._mount_expects_jnow(tel):
+    if jnow is None:
+        jnow = await hub._mount_expects_jnow(tel)
+    if not jnow:
         return ra_hours, dec_deg
     try:
         return await asyncio.to_thread(precess_j2000_to_jnow, ra_hours, dec_deg)
@@ -945,10 +955,12 @@ SOLVE_REASON_SOLVER_MISSING = (
 SOLVE_REASON_FILE_LOCKED = (
     "plate solve failed: another program held the solve frame's file open")
 # Not a failed solve: the solve worked and the MOUNT refused to take it (#850).
-# Rig-side and it does not clear by itself, so D-03 may match it. Kept free of
-# the words "plate" and "solve" together: the UI's humanizer turns any text
-# carrying both into "Plate-solve failed - check focus/exposure", which would
-# send the operator to the wrong part of the rig.
+# Rig-side and it does not clear by itself, so D-03 may match it. Worded
+# without "plate" beside "solve": until #792 the UI's humanizer turned any
+# text carrying both into "Plate-solve failed - check focus/exposure", which
+# sent the operator to the wrong part of the rig. It maps only a bare
+# failed-solve line now, so the words are not needed; they stay, as fixed words
+# D-03 matches.
 SOLVE_REASON_SYNC_REFUSED = (
     "the mount refused the sync, so its pointing could not be corrected")
 # The sync was not refused but could not be confirmed (``SyncUnverified``,
@@ -966,8 +978,9 @@ GOTO_NOT_ARRIVED_REASON = ("the goto did not arrive, so the tube is not on "
 
 def _goto_missed_line(attempt: int, e: GotoNotArrived) -> str:
     """The ONE warning for a centring slew that did not arrive (#860). The
-    driver's fixed words and the separation, never a coordinate; no "plate"
-    (the UI humanizer pair). At most 126 characters."""
+    driver's fixed words and the separation, never a coordinate. It avoids
+    "plate" beside "solve", a pair the UI humanizer no longer reads (#961).
+    At most 126 characters."""
     r = e.residual_deg
     fig = (f", {r:.2f} deg off"
            if isinstance(r, (int, float)) and not isinstance(r, bool)
@@ -988,8 +1001,10 @@ def _sync_reply_words(code: str) -> str:
     at the home position that is the pole's RA, a site oracle (#140, #166).
     Empty is "an empty reply", and anything else, the driver's
     ``"unrecognised"`` sentinel included, is "an unrecognised reply", never
-    quoted. Short on purpose: the refusal line in ``solve_and_sync`` has to
-    fit 140 characters around the driver's 90-character e11 advice."""
+    quoted. Short on purpose: the refusal line in ``solve_and_sync`` was sized
+    to fit 140 characters around the driver's 90-character e11 advice (the
+    UI cut a line there until #792, and now keeps one up to 400), and the
+    size is kept."""
     if not code:
         return "an empty reply"
     quoted = quotable_sync_reply(code)
@@ -1019,6 +1034,12 @@ def solve_failure_reason(exc: BaseException) -> str | None:
     if isinstance(exc, SolverUnavailable):
         return SOLVE_REASON_SOLVER_MISSING
     return None
+
+
+def _scale_text(scale: float | None) -> str:
+    """A solve's plate scale for a note: ``1.55"/px``, or ``scale unknown``
+    when the solver did not state one (#973), never ``0.00"/px``."""
+    return "scale unknown" if scale is None else f'{scale:.2f}"/px'
 
 
 def _sharing_violation(e: BaseException) -> bool:
@@ -1297,6 +1318,8 @@ class Hub:
         # connection-replay map: role -> dict the reconnect path needs to rebuild
         # an Alpaca device (host/port/dev_type/dev_num/name). Populated in every
         # connect path; consumed by reconnect_role() (escalation/reconnect_resume).
+        # Only connect_alpaca_device writes the address; the profile path records
+        # the backend label alone, and reconnect_role re-opens those roles in place.
         self._last_connect: dict[str, dict] = {}
         # the last connect-by-profile / connect-by-rig / boot ConnectResult, retained
         # so the boot-LED grid (backend_links) can report the per-role tri-state that
@@ -1410,6 +1433,12 @@ class Hub:
         # when no probe has failed. Keyed on the telescope OBJECT, so a mount
         # swap asks at once. See ``_JNOW_REPROBE_HOLDOFF_S``.
         self._mount_jnow_reprobe: tuple[Any, float] | None = None
+        # The filter wheel that did not answer a position read in the latest
+        # plate-solve borrow (#963); None when it answered. Set by
+        # ``_borrow_wheel_for_solve``, consumed by the
+        # ``_narrowband_filter_loaded`` that follows it, so one stalled wheel
+        # costs a solve one bound and not two.
+        self._wheel_read_stalled: Any = None
         # boot auto-connect background task (boot-serves-immediately fix): the
         # lifespan spawns connect_active here instead of awaiting it inline, so the
         # HTTP/WS surface comes up at once even against an unreachable rig.
@@ -1601,7 +1630,15 @@ class Hub:
         # replaced or the rig torn down (session-leak fix); close the one we are
         # replacing so its keep-alive sockets don't accumulate per reconnect.
         self._alpaca_sessions[role] = session
-        if old:
+        # The SAME Alpaca device again (reconnect_role rebuilds one from its
+        # record, #966) is not disconnected: the server keeps one Connected
+        # state per device, so the old object's Connected=False would undo the
+        # connect that just succeeded and the new object would answer 0x407.
+        replaced_same = old is not None and tuple(
+            str(getattr(old, a, None)).lower()
+            for a in ("host", "port", "dev_type", "dev_num")
+        ) == tuple(str(v).lower() for v in (host, port, dev_type, dev_num))
+        if old and not replaced_same:
             try:
                 await old.disconnect()
             except Exception:
@@ -2201,9 +2238,10 @@ class Hub:
 
         Two replay shapes, because the two backends lose a device differently:
 
-        * ALPACA — the device is a network client, and the far end may be a
-          restarted process, so the connection is rebuilt from scratch out of
-          the recorded host/port/type/number.
+        * ALPACA, connected on its own (``connect_alpaca_device``) — the device
+          is a network client, and the far end may be a restarted process, so
+          the connection is rebuilt from scratch out of the recorded
+          host/port/type/number.
         * NATIVE (and anything else) — the device object owns an open USB
           handle. Rebuilding the whole rig to recover one role would drop the
           guider and reset the cooler for the sake of a filter wheel, so the
@@ -2211,11 +2249,21 @@ class Hub:
           which is the point) then connect, which every driver implements
           idempotently. This branch is what makes the setting mean anything on a
           native rig, and a native rig is what this product is for.
+
+        An Alpaca device that came up through a profile (or the ``ascom-local``
+        backend, whose devices are the same Alpaca classes on the comhost's
+        loopback port) is recorded by its backend label alone, so it has no
+        address to rebuild from and takes the second shape. That is also the
+        right one for it: the profile's session owns the connection and a
+        guider holds the device object, so a replacement object would bypass
+        the profile and strand the guider (#967; it used to raise ``KeyError:
+        'host'`` here, caught below, and return False without trying).
         """
         info = self._last_connect.get(role)
         if not info:
             return False
-        if info.get("backend") == "alpaca":
+        if info.get("backend") == "alpaca" and all(
+                k in info for k in _ALPACA_REPLAY_FIELDS):
             try:
                 await self.connect_alpaca_device(
                     role, info["host"], info["port"], info["dev_type"],
@@ -3435,8 +3483,9 @@ class Hub:
         self._mount_wants_jnow = wants
         return wants
 
-    async def to_mount_frame(self, tel, ra_hours: float,
-                             dec_deg: float) -> tuple[float, float]:
+    async def to_mount_frame(self, tel, ra_hours: float, dec_deg: float,
+                             *, jnow: bool | None = None
+                             ) -> tuple[float, float]:
         """Convert a J2000 target into the frame the mount expects, for slew/sync.
         No-op unless the mount is a JNOW Alpaca mount (see ``_mount_expects_jnow``).
 
@@ -3449,9 +3498,31 @@ class Hub:
         A slew or a sync always asks a mount whose frame probe failed (the
         read path's hold-off is cleared first, #861 N6): one fast GET beside
         a slew, and a J2000 mount is never sent a precessed target because
-        an earlier probe failed."""
+        an earlier probe failed.
+
+        ``jnow``: the answer of ``decide_mount_frame``, for a move whose
+        start position was converted by it (#962). Given, the mount is not
+        asked again and the hold-off is left alone: asking twice is how the
+        two ends of one nudge came to be in different frames."""
+        if jnow is None:
+            self._mount_jnow_reprobe = None
+        return await _precess_for_mount(self, tel, ra_hours, dec_deg, jnow)
+
+    async def decide_mount_frame(self, tel) -> bool:
+        """True when the mount expects JNOW, asked the way a slew asks it
+        (the read path's hold-off cleared, no bound), for a move that reads
+        the mount's position and slews relative to it: the nudge (#962).
+
+        The caller hands the one answer to BOTH ``from_mount_frame`` and
+        ``to_mount_frame`` (``jnow=``). Deciding at each end separately let a
+        J2000 mount whose first probe failed, was slow, or sat inside the
+        hold-off have its start position precessed backwards and its target
+        sent as it stood, so it landed 0.04 to 0.38 deg from the offset asked.
+        A probe with no answer reads as JNOW and is not cached; both ends then
+        share that frame, and the target comes back out of it exactly as the
+        start went in."""
         self._mount_jnow_reprobe = None
-        return await _precess_for_mount(self, tel, ra_hours, dec_deg)
+        return await self._mount_expects_jnow(tel)
 
     async def mount_frame_for_question(self, tel, ra_hours: float,
                                        dec_deg: float) -> tuple[float, float]:
@@ -3464,13 +3535,16 @@ class Hub:
         again. The slew that follows a guard still clears it and asks."""
         return await _precess_for_mount(self, tel, ra_hours, dec_deg)
 
-    async def from_mount_frame(self, tel, ra_hours: float,
-                               dec_deg: float) -> tuple[float, float]:
+    async def from_mount_frame(self, tel, ra_hours: float, dec_deg: float,
+                               *, jnow: bool | None = None
+                               ) -> tuple[float, float]:
         """Convert a mount-reported position back to J2000. No-op unless the mount
         is a JNOW Alpaca mount. Same fail-safe fallback as ``to_mount_frame``.
 
         The frame probe it may have to make is BOUNDED (#934), by
         ``STATUS_DEVICE_READ_TIMEOUT_S``; see ``_mount_expects_jnow``.
+        ``jnow`` is a decision the caller already made
+        (``decide_mount_frame``, #962), and then nothing is asked.
 
         MEMOISED ON THE EXACT INPUT, briefly. Every status poll and every frame
         of a live loop runs this, and on an Alpaca rig each one is a thread hop
@@ -3482,8 +3556,10 @@ class Hub:
         moves by well under a milliarcsecond (precession is 50 arcsec a YEAR),
         so the entry is not a stale answer, it is the same answer.
         """
-        if not await self._mount_expects_jnow(
-                tel, bound=STATUS_DEVICE_READ_TIMEOUT_S):
+        if jnow is None:
+            jnow = await self._mount_expects_jnow(
+                tel, bound=STATUS_DEVICE_READ_TIMEOUT_S)
+        if not jnow:
             return ra_hours, dec_deg
         key = (float(ra_hours), float(dec_deg))
         hit = self._precess_memo
@@ -4621,9 +4697,9 @@ class Hub:
             self.pointing_disagreements += 1
             self.last_pointing_disagreement = {"moved_deg": float(moved),
                                                "at": time.time()}
-            # In words the UI's humanizer leaves alone: the old reason
-            # carried "plate" and "solve", which it rewrites into a solve
-            # failure.
+            # Without "plate" beside "solve": the old reason carried both,
+            # which the UI's humanizer once rewrote into a solve failure (it
+            # reads only a bare failed solve now, #792).
             self.invalidate_field_solve(
                 f"the mount's reported position moved {moved:.2f}° from the "
                 f"last solved field")
@@ -7047,8 +7123,19 @@ class Hub:
         slot the focuser never travelled to. So the cancel is caught once the
         move command may have been sent, the wheel is sent home on a task of
         its own (``_restore_wheel_after_cancel``), and the cancel is raised on.
+
+        A WHEEL THAT DOES NOT ANSWER IS WAITED FOR ONCE (#963). A native wheel
+        whose SDK read stalls in USB costs this borrow's first position read
+        its whole bound, and ``_narrowband_filter_loaded`` reads the same
+        position again before the exposure, for a name that a second timed-out
+        read would answer None to anyway. A borrow whose position read ran out
+        of time records that wheel in ``_wheel_read_stalled``, says so, and the
+        label read that follows it for that wheel is not made: it answers None,
+        as that second read would have.
         """
         from .focus.filter_offsets import solve_filter_slot
+        # Each borrow starts clean: the record is the latest borrow's alone.
+        self._wheel_read_stalled = None
         fw = self.devices.get("filterwheel")
         if fw is None or not getattr(fw, "connected", False):
             return None
@@ -7059,8 +7146,19 @@ class Hub:
             names = list(getattr(fw, "filter_names", []) or [])
             if not names:
                 return None
-            current = await asyncio.wait_for(fw.get_position(),
-                                             SOLVE_WHEEL_MOVE_TIMEOUT_S)
+            try:
+                current = await asyncio.wait_for(fw.get_position(),
+                                                 SOLVE_WHEEL_MOVE_TIMEOUT_S)
+            except asyncio.TimeoutError as e:
+                # A bare timeout has no text of its own, so the line carries
+                # the bound. Nothing was sent to the wheel: nothing is owed.
+                self._wheel_read_stalled = fw
+                bus.log("warning",
+                        f"plate solve: the filter wheel is stalled (its "
+                        f"position read: {_wheel_why(e)}); solving through "
+                        f"whatever is loaded, and the wheel is not read again "
+                        f"to name the filter", "solve")
+                return None
             configured = (frames_payload()["solve"] or {}).get("filter")
             want = solve_filter_slot(
                 names,
@@ -7115,12 +7213,22 @@ class Hub:
                 # between slots is on its way somewhere and owes the way back.
                 # The reads are bounded too, so a wheel that will not answer
                 # them is "cannot tell" and not a second hang.
+                where = None
                 try:
                     where = int(await asyncio.wait_for(
                         fw.get_position(), SOLVE_WHEEL_MOVE_TIMEOUT_S))
                     moving = bool(await asyncio.wait_for(
                         fw.is_moving(), SOLVE_WHEEL_MOVE_TIMEOUT_S))
-                except Exception:  # noqa: BLE001 - cannot tell, so assume it left
+                except Exception as read_error:  # noqa: BLE001 - cannot tell, so assume it left
+                    # A wheel whose POSITION read has now run out of time
+                    # twice is not asked a third time for the filter's name
+                    # (#963). ``where`` is still None only when that read is
+                    # the one that failed: a wheel that gave its position and
+                    # lost the ``is_moving`` read can still be asked for its
+                    # name.
+                    if where is None and isinstance(read_error,
+                                                    asyncio.TimeoutError):
+                        self._wheel_read_stalled = fw
                     where, moving = None, True
                 if where == int(current) and not moving:
                     bus.log("warning",
@@ -7131,7 +7239,11 @@ class Hub:
                 bus.log("warning",
                         f"plate solve: the move to {names[want]!r} failed "
                         f"({_wheel_why(e)}) after the wheel may have left "
-                        f"{names[int(current)]!r}; it will be sent back",
+                        f"{names[int(current)]!r}; it will be sent back"
+                        + ("; the wheel is stalled (its position read did "
+                           "not answer either) and is not read again to "
+                           "name the filter"
+                           if self._wheel_read_stalled is fw else ""),
                         "solve")
             return int(current)
         except asyncio.CancelledError:
@@ -7217,9 +7329,25 @@ class Hub:
         fail the light check it is judged as a capped optic, not excused as a
         narrowband filter. The opposite default, claiming a filter nobody read,
         would excuse a real cap, which is the failure that check exists to
-        catch. The stall is said, since a bare timeout has no text of its own."""
+        catch. The stall is said, since a bare timeout has no text of its own.
+
+        NOT MADE AT ALL for a wheel the borrow before it found not answering
+        (#963): that borrow has just spent its own bound on the wheel and
+        said so. The name decides the light check's narrowband excuse and the
+        sky precheck's blind test, and a read that is not made answers None,
+        as a second timeout would, so neither decides differently."""
         fw = self.devices.get("filterwheel")
+        # The borrow before this found the wheel not answering (#963): a wheel
+        # that has just been silent for one bound is not given a second for
+        # the name, and the skipped read answers None as a second timeout
+        # would. The borrow said so. The record is the borrow's, read once;
+        # ``getattr`` because hub doubles bind this method onto a bare
+        # namespace.
+        stalled = getattr(self, "_wheel_read_stalled", None)
+        self._wheel_read_stalled = None
         if fw is None or not getattr(fw, "connected", False):
+            return None
+        if stalled is fw:
             return None
         try:
             slot = int(await asyncio.wait_for(fw.get_position(),
@@ -7564,8 +7692,8 @@ class Hub:
             main_pa_deg=main.rotation_deg, guide_ra_hours=guide.ra_hours,
             guide_dec_deg=guide.dec_deg, measured_ts=time.time(),
             camera=cam.name, guide_camera=guide_cam.name,
-            note=f"main {main.pixel_scale_arcsec:.2f}\"/px, "
-                 f"guide {guide.pixel_scale_arcsec:.2f}\"/px")
+            note=f"main {_scale_text(main.pixel_scale_arcsec)}, "
+                 f"guide {_scale_text(guide.pixel_scale_arcsec)}")
         out["offset"] = {
             "sep_arcsec": off.sep_arcsec, "pa_deg": off.pa_deg,
             "measured_ts": off.measured_ts, "measured_pa_deg": off.measured_pa_deg,
@@ -7751,18 +7879,21 @@ class Hub:
             e.solved = (result.ra_hours, result.dec_deg)
             # ONE warning, and NO COORDINATES in it: the driver's read-back at
             # the home position is the pole, and the solve there is too (#140,
-            # #166). Worded without "plate" beside "solve": the UI's log
-            # humanizer turns any line carrying both into "Plate-solve failed -
-            # check focus/exposure", which sends the operator to the optics
-            # when the cause is the mount. And never "solved & synced": both
-            # mount UIs read that line as a completed sync.
+            # #166). Worded without "plate" beside "solve": until #792 the
+            # UI's log humanizer turned any line carrying both into
+            # "Plate-solve failed - check focus/exposure", which sent the
+            # operator to the optics when the cause is the mount. It maps only
+            # a bare failed-solve line now; the wording stays. And never
+            # "solved & synced": both mount UIs read that line as a completed
+            # sync.
             #
             # The driver's reason goes EARLY and the line stays short: the
-            # UI cuts a line over 140 characters to 137 plus an ellipsis, and
+            # UI used to cut a line over 140 characters to 137 plus an
+            # ellipsis (it keeps whole sentences up to 400 since #792), and
             # the e11 reason (at most 90 characters) carries the operator's
             # action (the driver's e11 words, in the safe order). The
             # prefix is 48 characters with a three-character reply, so the
-            # e11 line is at most 138 and nothing is cut.
+            # e11 line is at most 138.
             #
             # At ``refusal_level``: a warning unless the caller said it
             # decides on the refusal itself and its own line follows.
@@ -9216,9 +9347,10 @@ class Hub:
                     #
                     # In words, without coordinates (the solve and the mount's
                     # report are site oracles at the pole, #140), and CAUSE
-                    # FIRST: the UI cuts a line over 140 characters to 137
-                    # plus an ellipsis, and "stopped" and the reason are what
-                    # the operator needs. With a three-digit arcmin figure the
+                    # FIRST: "stopped" and the reason are what the operator
+                    # needs, and the UI used to cut a line over 140 characters
+                    # to 137 plus an ellipsis (it keeps whole sentences up to
+                    # 400 since #792). With a three-digit arcmin figure the
                     # refused line is 123 characters and the unverified one
                     # 113 (both pinned in test_850_hub_sync_refused.py).
                     off = (f"the field is {refused_err * 60:.1f}' off target"
