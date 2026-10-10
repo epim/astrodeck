@@ -12,6 +12,7 @@ import { nav } from "../../../router";
 import type { SheetProps } from "../../sheets";
 import { ActionButton, Field, Mono, Sheet, TextInput } from "../../../ui";
 import { useLock } from "../../../lib/gateHook";
+import { POSITION_UNKNOWN_COPY_DETAIL, believedRaDec, positionKnown } from "../../../../lib/slewController";
 import { explainLock } from "../../../shell/explain";
 import { raDecFromAltAz, raHmsStr, decDmsStr } from "../finder/equatorial";
 import { usePlanning } from "../../../lib/planning";
@@ -101,8 +102,22 @@ export function CoordsSheet({ params }: SheetProps): JSX.Element {
   const useMountPosition = () => {
     if (mountLocked) { explainMount(mountLocked); return; }
     if (!mount) { enqueueToast({ level: "warning", title: "No mount position reported yet." }); return; }
-    setRa(raHmsStr(mount.ra_hours));
-    setDec(decDmsStr(mount.dec_deg));
+    // The believed reading only (#928): a mount that does not know where it
+    // points reports its home position, the pole, and typing that into the
+    // fields would offer it as a target the operator picked.
+    const here = believedRaDec(mount);
+    if (!here) {
+      enqueueToast(positionKnown(mount)
+        ? { level: "warning", title: "No mount position reported yet." }
+        : {
+          level: "warning",
+          title: "No mount position to use - the mount does not know where it points.",
+          detail: POSITION_UNKNOWN_COPY_DETAIL,
+        });
+      return;
+    }
+    setRa(raHmsStr(here.ra_hours));
+    setDec(decDmsStr(here.dec_deg));
   };
 
   // ------------------------------------------------------- IMAGE THIS POSITION

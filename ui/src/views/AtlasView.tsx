@@ -79,7 +79,7 @@ import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { useBusyOrPending } from "../lib/useBusy";
-import { believedRaDec } from "../lib/slewController";
+import { POSITION_UNKNOWN_COPY_DETAIL, believedRaDec, positionKnown } from "../lib/slewController";
 import { api } from "../api";
 import { ClassicAtlasSky, type AtlasDisplay } from "../components/sky/ClassicAtlasSky";
 // The wizard's classic mount. It imports the lazy door, never the sheet, so
@@ -672,15 +672,28 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
     });
 
   // Recenter on the origin object, or — in free-roam — on the live mount position
-  // (consistent with openFraming's free-roam seed). No-op only if free-roam AND
-  // the mount status isn't available yet.
+  // (consistent with openFraming's free-roam seed). A mount that does not know
+  // where it points reports its HOME position, the pole, so it is not a place to
+  // recentre on (#928): the button says so rather than land the view there
+  // labelled as the scope. No-op, silently, only while there is no mount status.
   const recenter = () => {
     if (target) {
       setCenter(target.ra_hours, target.dec_deg);
       return;
     }
     const m = useStore.getState().status?.mount;
-    if (m) setCenter(m.ra_hours, m.dec_deg);
+    const here = believedRaDec(m);
+    if (here) {
+      setCenter(here.ra_hours, here.dec_deg);
+      return;
+    }
+    if (m && !positionKnown(m)) {
+      enqueueToast({
+        level: "warning",
+        title: "Nothing to recenter on - this framing has no object and the mount does not know where it points.",
+        detail: POSITION_UNKNOWN_COPY_DETAIL,
+      });
+    }
   };
 
   // Center-nudge by ±1 frame (±0.05° when no optics). dx East, dy North (frames).
