@@ -49,7 +49,7 @@ function frame(over: Partial<GalleryFrame> = {}): GalleryFrame {
 }
 
 const progress = {
-  frames_done: 42, frames_total: 120, percent: 35, elapsed_s: 7800,
+  frames_done: 42, calibration_frames_done: 0, frames_total: 120, percent: 35, elapsed_s: 7800,
   rejected: 0, server_now_ms: NOW_MS,
 };
 

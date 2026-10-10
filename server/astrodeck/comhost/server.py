@@ -27,6 +27,7 @@ DEVICE_API: dict[str, dict[str, dict[str, Callable[[Any, dict], Any]]]] = {}
 # it. 0x500 is the first driver-specific number, the honest answer for a driver
 # exception that names nothing more specific.
 _ALPACA_NOT_IMPLEMENTED = 0x400
+_ALPACA_NOT_CONNECTED = 0x407
 _ALPACA_DRIVER_ERROR = 0x500
 
 # An ASCOM driver raises its error as HRESULT 0x80040000 + the Alpaca number, so
@@ -69,10 +70,17 @@ def _com_hresult(exc: BaseException) -> "int | None":
     return hr
 
 
+class NotConnectedError(Exception):
+    """A request reached a device that has no live COM object: it was never
+    connected, or its slot was fault-evicted and rebuilt (#937)."""
+
+
 def _alpaca_error_number(exc: BaseException) -> int:
     """The Alpaca ErrorNumber for an exception a COM driver call raised."""
     if isinstance(exc, NotImplementedError):
         return _ALPACA_NOT_IMPLEMENTED
+    if isinstance(exc, NotConnectedError):
+        return _ALPACA_NOT_CONNECTED
     hr = _com_hresult(exc)
     if hr is None:
         return _ALPACA_DRIVER_ERROR
@@ -184,6 +192,10 @@ class ComHost:
         if fn is None:
             raise KeyError(f"unsupported {verb} {dev_type}/{method}")
         dev = self._get_or_create(dev_type, dev_num)
+        if not dev.connected:
+            # The COM object does not exist until Connected=true, so the handler
+            # would run against None and answer an AttributeError as 0x500.
+            raise NotConnectedError(f"{dev_type} #{dev_num} is not connected")
         return dev.submit(lambda obj: fn(obj, params))
 
     def _connected(self, verb: str, dev_type: str, dev_num: int,

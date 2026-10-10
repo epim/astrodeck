@@ -86,6 +86,7 @@ import { haptics } from "./lib/haptics";
 import { ensurePlanIds } from "./lib/ids";
 import { isExposureValueInvalid } from "./lib/exposure";
 import { DEFAULT_OVERLAP } from "./lib/framing";
+import { believedRaDec } from "./lib/slewController";
 import { api, ApiError } from "./api";
 import { getMe, getAuthMethods } from "./api/backends";
 
@@ -1299,16 +1300,19 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
 
   // ----------------------------------------------------------- atlas / framing
   // Open the Atlas on `e` (or free-roam when no entry). Switches the view, seeds
-  // the session center from the entry (or current mount/0,0 when free-roam), and
+  // the session center from the entry (or the believed mount position/0,0 when
+  // free-roam: a mount that does not know where it points reports its home
+  // position, the pole, and a view opened there would be named after it, #928), and
   // seeds the survey crop width from the persisted optics FOV (fallback ~1.5°).
   // Defaults: 1×1 mosaic, `DEFAULT_OVERLAP` (lib/framing.ts, the one overlap
   // every framing starts from, spec 2.4), DSS2 color, linear stretch, empty
   // panels.
   openFraming: (e) => {
     const config = get().config;
+    const here = believedRaDec(get().status?.mount);
     const center = e
       ? { ra_hours: e.ra_hours, dec_deg: e.dec_deg }
-      : { ra_hours: get().status?.mount?.ra_hours ?? 0, dec_deg: get().status?.mount?.dec_deg ?? 0 };
+      : { ra_hours: here?.ra_hours ?? 0, dec_deg: here?.dec_deg ?? 0 };
     // A free-roam session has no catalog id to be recognised by; synthesize a
     // stable per-session id from the rounded center, which the Sky hub's quick
     // sheet matches a patch's own framing by (`framingMatches`). It once also
@@ -1409,11 +1413,20 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
         // coalesce forever and timed ones coalesce for as long as they are up
         // (floor of TOAST_DEDUPE_MS so rapid repeats of a short success toast
         // still merge). The ×N chip is exactly the channel for this.
+        //
+        // IDENTICAL MEANS THE DETAIL TOO (#933). The key used to be title and
+        // level alone, and the merge keeps the FIRST toast's detail, so a second
+        // failure under the same title with a different reason ("That flow did
+        // not open" / "no flow named X", then / "disk full") was counted as a
+        // repeat of the first and the operator read a stale reason for a new
+        // failure. A different reason is a different toast; no detail equals no
+        // detail.
         const dupe = toasts.find(
           (t) =>
             t.kind === "generic" &&
             t.title === input.title &&
             t.level === level &&
+            (t.detail ?? "") === (input.detail ?? "") &&
             (t.ttl === 0 || now - t.createdAt < Math.max(TOAST_DEDUPE_MS, t.ttl)),
         );
         if (dupe) {
@@ -2048,7 +2061,15 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
         // actually land", which is the question the alarm is asking. Seeded on
         // the rising edge into `running` so the first frame of a run has an
         // anchor to be late against.
-        const doneNow = seq.progress?.frames_done ?? null;
+        //
+        // THE CALIBRATION FRAMES ARE FRAMES HERE (#939). The plan's counter
+        // no longer moves for the flats of a DUSK FLATS stage, which can run
+        // for many minutes before the first light, so a clock fed by that
+        // counter alone read the stage as a capture that had stopped, and
+        // raised the NO PROGRESS card over a healthy rig.
+        const planDone = seq.progress?.frames_done ?? null;
+        const doneNow = planDone == null
+          ? null : planDone + (seq.progress?.calibration_frames_done ?? 0);
         const prevDone = get().lastFramesDone;
         let lastCaptureAtMs = get().lastCaptureAtMs;
         if (seq.state === "running"

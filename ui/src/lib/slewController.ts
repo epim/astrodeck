@@ -251,6 +251,14 @@ export const POSITION_UNKNOWN_NOTE =
   + "home, TRUST POSITION tells the mount where it is; after that, the first "
   + "solve and sync away from the pole measures it.";
 
+/** The second line of a toast that refuses to COPY the mount's RA/Dec into a
+ *  view (recentre on the mount, "use mount position", #928): the reading it
+ *  would have copied is the home position, not the tube's. Written once for the
+ *  same reason as the two above, and it likewise advises no slew (#850). */
+export const POSITION_UNKNOWN_COPY_DETAIL =
+  "The mount is reporting its home position, not the tube's. TRUST POSITION "
+  + "tells it where it is once the tube really is at home.";
+
 /** What the pad lost with the believed position: the horizon guard reads it. */
 export const ALT_GUARD_OFF_NOTE =
   "Horizon guard is off while the mount does not know where it points: the pad "

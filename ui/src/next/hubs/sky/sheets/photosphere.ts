@@ -1368,6 +1368,29 @@ const NO_BEARING_CUE = 'Waiting for the compass. Keep the camera open and move t
  *  replaces did name it ("or cancel and draw the horizon") and this one must
  *  not lose that. */
 const NO_POSE_STREAM_CUE = 'This browser does not report which way the phone is pointing, so a scan cannot place what it sees. Cancel the scan and draw the horizon by hand instead.';
+/** What the user is told when the browser HAS the constructor but the site may
+ *  not use the sensors behind it (issue #951).
+ *
+ *  Chromium answers a blocked or absent motion sensor with exactly one
+ *  `deviceorientation` event whose alpha, beta and gamma are all null, and then
+ *  nothing; with no prompt anywhere. Brave blocks the Motion sensors site
+ *  setting by default (brave-browser#4789, #30076), so on a fresh install that
+ *  event is the first and only thing a scan ever receives, and the panel's
+ *  "Waiting for the compass. Move the phone gently" asks for something no
+ *  amount of gentleness can produce. The remedy is a setting, so the sentence
+ *  names the setting and where it is, and says to reopen the scan because the
+ *  page is not told when the setting changes. `navigator.permissions` reporting
+ *  the gyroscope as denied is the same fact asked a different way.
+ *
+ *  Like `NO_POSE_STREAM_CUE` it travels as the scan's `error`, above every
+ *  other cue. It is not stored as `issue`: it is a measurement over time (a
+ *  silence, and so a clock) that a reading arriving late must be able to
+ *  retract, so `issueAt` works it out each time it is asked. */
+const MOTION_BLOCKED_CUE = 'Motion sensors are blocked for this site. In Brave or Chrome, open Site settings > Motion sensors and allow this site, then reopen the scan.';
+/** How long an all-null `deviceorientation` event may stand with no reading
+ *  after it before the sensors are called blocked. A sensor that is only slow
+ *  to start delivers inside it, and the first reading withdraws the verdict. */
+const MOTION_BLOCKED_AFTER_MS = 1000;
 
 /** Opens a visible preview; recording begins only after begin() is pressed. */
 export class PhotosphereSweep {
@@ -1497,6 +1520,12 @@ export class PhotosphereSweep {
    *  with, so there is nothing here to be healthy or unhealthy about (issue
    *  #42 item 3). See `sourceHealthy`. */
   private orientationSupported = false;
+  /** When the first all-null `deviceorientation` event of this scan arrived, on
+   *  the performance clock. Whether the silence since is long enough to call
+   *  the sensors blocked is `motionBlockedAt`'s question (issue #951). */
+  private orientationNullAt: number | null = null;
+  /** `navigator.permissions` reported the gyroscope as denied (issue #951). */
+  private motionPermissionDenied = false;
   private trackEnded = false;
   private alignmentWait = false;
   private overlapWait = false;
@@ -1547,7 +1576,23 @@ export class PhotosphereSweep {
   get isRecording(): boolean { return this.recording; }
   get cameraChoices(): SweepCamera[] { return this.cameras; }
   get activeCameraId(): string { return this.deviceId; }
-  get error(): string | null { return this.issue; }
+  get error(): string | null { return this.issueAt(performance.now()); }
+  /** What is stopping the scan, if anything: the reason `issue` was set to, or
+   *  the blocked-sensors verdict, which is a measurement and so is read at the
+   *  instant of asking (issue #951). `issue` wins, so the iOS denial and the
+   *  missing-constructor sentences keep their places. */
+  private issueAt(now: number): string | null {
+    return this.issue ?? (this.motionBlockedAt(now) ? MOTION_BLOCKED_CUE : null);
+  }
+  /** Are the motion sensors blocked for this site? Only while no reading of any
+   *  kind has arrived this scan: either the permission API says so, or the
+   *  browser's one all-null event has stood for `MOTION_BLOCKED_AFTER_MS` with
+   *  nothing after it. A reading ends it, whichever answer came first. */
+  private motionBlockedAt(now: number): boolean {
+    if (this.hasOrientation || this.tiltAt !== null) return false;
+    return this.motionPermissionDenied
+      || (this.orientationNullAt !== null && now - this.orientationNullAt >= MOTION_BLOCKED_AFTER_MS);
+  }
   /** The newest 4096 grabFrame outcomes, oldest first. Survives `stop()` -
    *  a finished scan must still be diagnosable - and is cleared only by a
    *  fresh `start()`. A fresh array each read: `readonly` is erased at
@@ -1873,7 +1918,8 @@ export class PhotosphereSweep {
     // is sub-millisecond and the shape is still wrong, and it is the shape
     // `vouched`'s own `now` parameter was added to prevent.
     const now=performance.now();
-    if(this.issue)return this.issue;
+    const issue=this.issueAt(now);
+    if(issue)return issue;
     if(!this.recording)return 'Tap Start scan to begin capturing.';
     if(!this.video?.videoWidth || !this.video?.videoHeight)return 'Waiting for a camera image…';
     // The same fact as the stale-image line below, reached from the other side:
@@ -2096,6 +2142,7 @@ export class PhotosphereSweep {
     this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
     this.headingStoodAt = null; this.tiltStoodAt = null;
+    this.orientationNullAt = null; this.motionPermissionDenied = false;
     this.orientationSupported = typeof window !== "undefined" && "DeviceOrientationEvent" in window;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
@@ -2166,6 +2213,11 @@ export class PhotosphereSweep {
         // DOM event timestamps and video captureTime share the performance time
         // origin. Fall back for older implementations using epoch timestamps.
         const at=Number.isFinite(e.timeStamp)&&Math.abs(received-e.timeStamp)<2000?e.timeStamp:received;
+        // Chromium's signal for a blocked or absent sensor (issue #951): the
+        // event with nothing in it. Remember when the first one came;
+        // `motionBlockedAt` decides what the silence after it means, and a
+        // reading of any kind overrides it there.
+        if (this.orientationNullAt === null && oe.alpha === null && oe.beta === null && oe.gamma === null) this.orientationNullAt = at;
         const elevation = cameraElevation(oe);
         if (elevation !== null) { this.altitude = elevation; this.tiltAt = at;
           this.tilts.add({at,screenAngle,basis:orientationBasis(0,oe.beta!,oe.gamma!,screenAngle)});
@@ -2190,6 +2242,15 @@ export class PhotosphereSweep {
       window.addEventListener("deviceorientationabsolute", this.headingHandler);
       window.addEventListener("deviceorientation", this.headingHandler);
       this.listening = true;
+      // The other way to learn the same thing (issue #951): Chromium's Motion
+      // sensors setting is a gyroscope permission, and `denied` is an answer
+      // that needs no event and cannot be a slow sensor. Firefox and Safari
+      // reject the name, which says nothing about their sensors.
+      try {
+        void navigator.permissions?.query({ name: "gyroscope" } as unknown as PermissionDescriptor).then(
+          (status) => { if (generation === this.generation && status.state === "denied") this.motionPermissionDenied = true; },
+          () => { /* the name is unknown to this browser */ });
+      } catch { /* no Permissions API */ }
     } else {
       // Below the motion-permission branch above, deliberately. Both are about
       // the pose stream and only one can be true - a browser with no

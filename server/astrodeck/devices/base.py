@@ -1055,7 +1055,11 @@ class SafetyReading:
     source: str = ""             # device name
     detail: dict[str, Any] = field(default_factory=dict)
     stale: bool = False          # set when the read timed out / device disconnected
-    ts: float = field(default_factory=time.time)
+    # Looked up at each call, as ``events.Event.ts`` is, rather than
+    # ``default_factory=time.time``, which binds the function once at class
+    # creation: a test that pins this module's clock could not move the stamp
+    # while ``Hub.safety_reading()`` aged it against another clock (#946).
+    ts: float = field(default_factory=lambda: time.time())
 
 
 class SafetyMonitor(Device):

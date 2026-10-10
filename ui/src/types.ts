@@ -791,7 +791,12 @@ export interface FocusEvent {
 // client derives wall-clock finish from its own clock (monitor spec §5). All ETA
 // fields optional: absent => client renders "—"/low-confidence, elapsed only.
 export interface SequenceProgress {
+  /** The PLAN's frames banked; `frames_total` is the plan's too. Frames of a
+   *  calibration set the plan does not hold are not in either (#939). */
   frames_done: number;
+  /** Frames of those calibration sets, shot but not the plan's. Always sent by
+   *  this engine; read as 0 where an older one omits it. */
+  calibration_frames_done: number;
   frames_total: number;
   percent: number; // 0..100
   elapsed_s: number; // server-computed, EXCLUDES paused time (§5)
@@ -843,7 +848,12 @@ export interface SequenceState {
   /** Why the run is holding, when it is ("clouds"). Set beside state="holding". */
   hold?: string;
   target?: string;
-  target_index?: number;
+  /** The plan target that is exposing. NULL (the key present) while a
+   *  calibration target the plan does not hold is exposing (DUSK FLATS, day
+   *  darks, cloud-hold darks, #941): `target` then names that calibration set,
+   *  and no plan target is active. ABSENT before the run has published a
+   *  target at all, which the screens read as the first one. */
+  target_index?: number | null;
   plan_name?: string;
   progress?: SequenceProgress;
   // --- automation (Batch-4b; additive — old clients ignore) ---

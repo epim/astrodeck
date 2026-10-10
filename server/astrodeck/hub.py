@@ -62,11 +62,11 @@ from .imaging import (
     display_histogram,
     grade_frame,
     save_fits,
+    stamp_wcs,
     stretch_with,
     to_jpeg,
     to_png,
     to_thumb,
-    write_wcs,
 )
 from .imaging.processing import frame_stats, to_png
 from .imaging.sessionstack import effective_bayer, normalise_bayer
@@ -251,11 +251,15 @@ STATUS_CAMERA_TEMPERATURE_TIMEOUT_S = 2.0
 #: angle, motion and direction, and the imaging camera's dew heater, fan and
 #: cooler. The same one status period as the camera's temperature, for the same
 #: reason: a read that has not returned by then is published as unknown
-#: (``Hub._status_read``), and the frame is worth more than the number.
+#: (``Hub._status_read``), and the frame is worth more than the number. The
+#: mount's EquatorialSystem probe, on the read path that has to make it
+#: (``Hub.from_mount_frame``), is held to the same number (#934), and a probe
+#: that runs out of it is a probe that got no definite answer.
 STATUS_DEVICE_READ_TIMEOUT_S = 2.0
 
 #: Bound on each filter-wheel command the plate solve's borrow and return send
-#: (#815): the move itself and the reads that follow a move that failed. The
+#: (#815): the move itself and the reads that follow a move that failed. Also
+#: the read that names the filter a solve frame goes through (#935). The
 #: sequence engine's ``FILTER_MOVE_TIMEOUT_S``, kept in step by a test; the hub
 #: cannot import the engine to borrow it. ``AlpacaFilterWheel.set_position``
 #: polls ``while position == -1``, and every poll SUCCEEDS, so a wheel jammed
@@ -291,7 +295,9 @@ _PRECESS_MEMO_TTL_S = 60.0
 #: comhost's serialised STA thread; with it, one a minute. ``to_mount_frame``
 #: (a slew or a sync) ignores the hold-off and always asks, so a transient
 #: failure never sends a J2000 mount a precessed target; at worst the status
-#: RA and the solve hint read up to 0.38 deg off for one minute.
+#: RA and the solve hint read up to 0.38 deg off for one minute. A probe that
+#: runs out of ``STATUS_DEVICE_READ_TIMEOUT_S`` on the read path (#934) is one
+#: that got no definite answer, and is held off the same way.
 _JNOW_REPROBE_HOLDOFF_S = 60.0
 
 #: rate cap (the server clamp in ``/api/mount/move`` imports this) and the
@@ -3356,7 +3362,8 @@ class Hub:
             finally:
                 self._capture_busy = None
 
-    async def _mount_expects_jnow(self, tel) -> bool:
+    async def _mount_expects_jnow(self, tel, *,
+                                  bound: float | None = None) -> bool:
         """True when the connected mount expects topocentric-apparent (JNOW)
         coordinates, so the hub must precess J2000<->JNOW at the slew/sync
         boundary. The gate keys on the mount DEVICE's backend (``devices/
@@ -3374,7 +3381,24 @@ class Hub:
         0=other, 1=topocentric(local/JNOW), 2=J2000, 3=B1950. Default to JNOW when
         unreadable — real ASCOM mounts are overwhelmingly topocentric, and a mount
         that already reports J2000 (==2) is left un-precessed so we never double-
-        precess it."""
+        precess it.
+
+        ``bound`` (seconds) caps the EquatorialSystem READ, and only the read
+        (#934, the class of #814). The read path passes
+        ``STATUS_DEVICE_READ_TIMEOUT_S`` (``from_mount_frame``): this probe
+        runs on the first status poll after a mount connects and again every
+        ``_JNOW_REPROBE_HOLDOFF_S`` while it gets no definite answer, and a
+        mount whose property never returns (a COM driver behind the comhost's
+        serialised STA thread, an Alpaca server that accepts and never
+        answers) held the whole status frame, and the ``/api/status`` caller,
+        for the transport timeout on each reprobe. A probe that runs out of
+        time is a probe that got no definite answer: JNOW, not cached, and
+        not asked again for the hold-off, exactly as an HTTP 500 is. The
+        precession that follows is NOT under the bound (astropy on a Pi can
+        outlast it, and a bound on the whole conversion would drop the mount
+        block). A slew or a sync passes no bound: it must get the definite
+        answer, since a J2000 mount sent a precessed target is 0.38 deg off,
+        and the slew's own bound already covers its wait."""
         if getattr(tel, "backend", "") != "alpaca":
             return False
         if self._mount_wants_jnow is not None:
@@ -3389,7 +3413,10 @@ class Hub:
                     and time.monotonic() < held[1]):
                 return True
             try:
-                equ = int(await get("equatorialsystem"))
+                read = get("equatorialsystem")
+                if bound is not None:
+                    read = asyncio.wait_for(read, bound)
+                equ = int(await read)
             except Exception:
                 # No definite answer (a timeout, an HTTP 500, an ASCOM error,
                 # a value that is not a number): JNOW, the overwhelmingly
@@ -3442,6 +3469,9 @@ class Hub:
         """Convert a mount-reported position back to J2000. No-op unless the mount
         is a JNOW Alpaca mount. Same fail-safe fallback as ``to_mount_frame``.
 
+        The frame probe it may have to make is BOUNDED (#934), by
+        ``STATUS_DEVICE_READ_TIMEOUT_S``; see ``_mount_expects_jnow``.
+
         MEMOISED ON THE EXACT INPUT, briefly. Every status poll and every frame
         of a live loop runs this, and on an Alpaca rig each one is a thread hop
         plus the whole apparent-place transform. A TRACKING mount reports the
@@ -3452,7 +3482,8 @@ class Hub:
         moves by well under a milliarcsecond (precession is 50 arcsec a YEAR),
         so the entry is not a stale answer, it is the same answer.
         """
-        if not await self._mount_expects_jnow(tel):
+        if not await self._mount_expects_jnow(
+                tel, bound=STATUS_DEVICE_READ_TIMEOUT_S):
             return ra_hours, dec_deg
         key = (float(ra_hours), float(dec_deg))
         hit = self._precess_memo
@@ -4348,11 +4379,27 @@ class Hub:
         res = await solver.solve(job.path, ra_hint=job.ra, dec_hint=job.dec,
                                  fov_deg_hint=job.fov_deg, **kwargs)
         # A failed solve, or a solve whose WCS was REJECTED upstream (ASTAP's
-        # scale-less-result guard returns wcs=None rather than a bogus ~1°/px
+        # unusable-scale guard returns wcs=None rather than a bogus ~1°/px
         # solution), stamps nothing. An absent card beats a wrong one.
         if res.success and res.wcs is not None:
-            await asyncio.to_thread(write_wcs, job.path, res.wcs)
-            bus.log("info", f"stamped WCS on {job.path.name}", "solve")
+            # A solver that does not guard its own output (a stand-in, a future
+            # one) gets the same answer the file writer would give it: refused,
+            # and refused here, so the rotator and the field identification
+            # never see the solution either.
+            if not res.wcs.has_usable_scale():
+                bus.log("warning",
+                        f"WCS refused for {job.path.name}: the solution has "
+                        "no usable plate scale; frame saved without WCS",
+                        "solve")
+                return
+            # ``stamp_wcs`` swallows a missing, locked or corrupt file, so
+            # this line is only as true as its answer (#944).
+            if await asyncio.to_thread(stamp_wcs, job.path, res.wcs):
+                bus.log("info", f"stamped WCS on {job.path.name}", "solve")
+            else:
+                bus.log("warning",
+                        f"WCS not written to {job.path.name} (the file could "
+                        "not be updated); frame saved without WCS", "solve")
             # The sky angle this light measured, recorded and (when the rotator
             # has not turned and the mount has not flipped since the shutter
             # closed) fed to the rotator. Inside this branch on purpose: a
@@ -7159,17 +7206,35 @@ class Hub:
         because by the time a solve fails the borrow has put the wheel back
         on the run's filter: read then, a frame shot through L after an SII
         frame would be blamed on SII. The light check names the filter
-        instead of calling a narrowband frame a capped optic. Never raises."""
+        instead of calling a narrowband frame a capped optic. Never raises.
+
+        BOUNDED (#935), by ``SOLVE_WHEEL_MOVE_TIMEOUT_S``, as every other
+        wheel await of the solve is: a native wheel whose SDK read stalls in
+        USB never trips a transport timeout, and this read sits between the
+        borrow and the exposure of every centring solve, rotate and rotator
+        sync. A read that does not return answers None, the answer a read that
+        raised gives: no name, no claim. The solve goes ahead, and should it
+        fail the light check it is judged as a capped optic, not excused as a
+        narrowband filter. The opposite default, claiming a filter nobody read,
+        would excuse a real cap, which is the failure that check exists to
+        catch. The stall is said, since a bare timeout has no text of its own."""
         fw = self.devices.get("filterwheel")
         if fw is None or not getattr(fw, "connected", False):
             return None
         try:
-            slot = int(await fw.get_position())
+            slot = int(await asyncio.wait_for(fw.get_position(),
+                                              SOLVE_WHEEL_MOVE_TIMEOUT_S))
             names = list(getattr(fw, "filter_names", []) or [])
             if 0 <= slot < len(names) and fw.is_narrowband(slot):
                 return str(names[slot])
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError as e:
+            bus.log("warning",
+                    f"plate solve: the wheel's position read failed "
+                    f"({_wheel_why(e)}); the frame goes ahead without naming "
+                    f"its filter", "solve")
+            return None
         except Exception:                # noqa: BLE001 - no name, no claim
             return None
         return None

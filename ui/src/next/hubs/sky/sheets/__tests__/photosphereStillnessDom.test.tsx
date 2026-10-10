@@ -210,11 +210,12 @@ VisualStability.prototype.observe=function(this:InstanceType<typeof VisualStabil
  *  toward QUIET_DRIFT_DEG, which is what lets the long holds below run for
  *  seconds without the total breaking them for a reason no case is about.
  *  0.0374 deg/s of magnitude, a thirteenth of QUIET_RATE_DEG_S.
- *  It is not exactly zero for a load-bearing reason (issue #106): `observe`
- *  treats an exact `{0,0,0}` triple as no measurement at all, because a stuck
- *  driver or a synthesised stream is indistinguishable from a still phone. A
- *  fixture that delivered exact zeros would be testing a device that does not
- *  exist and would now vouch for nothing. */
+ *  It is not exactly zero so that the cases using it do not depend on the rule
+ *  for zeros (issues #106 and #952): `observe` treats an exact `{0,0,0}` triple
+ *  as a sample only once the stream has delivered a non-zero one, because a
+ *  stuck driver or a synthesised stream is otherwise indistinguishable from a
+ *  still phone. Chromium rounds to 0.1 deg/s and reports mostly zeros for a
+ *  still phone; the two cases about zeros below say what each stream does. */
 let gyroSign=1;
 const quietGyro=()=>{gyroSign=-gyroSign;return {alpha:0.02*gyroSign,beta:-0.03*gyroSign,gamma:0.01*gyroSign};};
 /** One `devicemotion` sample at the current clock, for the SECOND witness
@@ -817,8 +818,10 @@ await test('A no-pose record says WHICH source was missing (issue #76)',async()=
 });
 
 await test('A gyro reporting exact zeros is not a witness, however long it reports them (issue #106)',async()=>{
-  // The #63 fixture with one substitution: the stream is `{0, 0, 0}` on every
-  // sample instead of a real phone's noise floor. A stuck driver, an emulator
+  // The #63 fixture with one substitution: the stream is `{0, 0, 0}` on EVERY
+  // sample, with no non-zero one ever, instead of a real phone's noise floor
+  // (the Chromium case that follows has the occasional non-zero sample, and
+  // that is the whole difference). A stuck driver, an emulator
   // or a WebView that synthesises zeros is indistinguishable from a phone
   // holding still by the rate alone, and over this view the video cannot tell
   // them apart either - it is `featureless` by construction wherever this
@@ -826,9 +829,11 @@ await test('A gyro reporting exact zeros is not a witness, however long it repor
   // end to end and not only in the unit fixture: a false hold here is not a
   // missed capture, it is a frame placed into the mosaic at a pose the phone has
   // left.
-  // Mutation: delete `if(a===0&&b===0&&c===0)return;` from
-  // `MotionStability.observe`. Observed red: 'a stream of exact zeros was read
-  // as a phone holding still'.
+  // Mutation: let a zero triple through before the first non-zero one, by
+  // replacing `{if(!this.measured)return;}` in `MotionStability.observe` with
+  // `{}`. Observed red: 'a stream of exact zeros was read as a phone holding
+  // still'. (Initialising `measured` to true is NOT this mutant: the driver's
+  // `start()` calls `clear()`, which sets it back.)
   const {sweep,tick,aim}=await approachAndHold();
   const zeros={alpha:0,beta:0,gamma:0};
   gyro(zeros);
@@ -840,6 +845,35 @@ await test('A gyro reporting exact zeros is not a witness, however long it repor
   assert.equal(sweep.compassReady,false,'a stream of exact zeros was read as a phone holding still');
   assert.equal(sweep.aimTarget,null,'the aim dot rode a heading only a dead channel vouched for');
   assert.match(sweep.captureCue,/compass has gone quiet/,`cue was: "${sweep.captureCue}"`);
+  flat=false;
+  sweep.stop();
+});
+
+await test('A Chromium gyro, whose still samples are mostly exact zeros, holds a reading on blank sky (issue #952)',async()=>{
+  // The #63 fixture with the gyro Chromium actually has: every rate rounded to
+  // 0.1 deg/s, so a phone at rest reports `{0, 0, 0}` on about 96 percent of its
+  // samples and a single 0.1 step now and then. This one is the same shape with
+  // the share made exact, a step on every 25th sample. `observe` used to drop
+  // every exact zero, so the only samples that moved the witness were 2.5 s
+  // apart - far outside MOTION_STALE_MS - and a phone that came to rest on blank
+  // sky lost its heading although nothing had moved. Read it against the case
+  // above, which is the same fixture on zeros ALONE and must still refuse: the
+  // difference between the two is the one non-zero sample the stream has shown.
+  // Mutation: restore the unconditional `if(a===0&&b===0&&c===0)return;` in
+  // `MotionStability.observe`. Observed red: 'a Chromium gyro at rest did not
+  // hold the reading it had watched since before it arrived'.
+  const {sweep,tick,aim}=await approachAndHold();
+  let n=0;
+  const chromium=()=>({alpha:n++%25===0?0.1:0,beta:0,gamma:0});
+  gyro(chromium());
+  for(let i=0;i<25;i++){tick();gyro(chromium());}
+  flat=true;
+  for(let i=0;i<5;i++){tick();gyro(chromium());}
+  aim(10);gyro(chromium());
+  for(let i=0;i<25;i++){tick();gyro(chromium());}
+  assert.equal(sweep.compassReady,true,'a Chromium gyro at rest did not hold the reading it had watched since before it arrived');
+  assert.notEqual(sweep.aimTarget,null,'the dome blanked while a rounded gyro was vouching for the heading');
+  assert.doesNotMatch(sweep.captureCue,/compass has gone quiet/,`cue was: "${sweep.captureCue}"`);
   flat=false;
   sweep.stop();
 });
