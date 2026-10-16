@@ -127,9 +127,18 @@ class ComHost:
                 self._devices[key] = dev
             return dev
 
-    def _drop(self, dev_type: str, dev_num: int) -> None:
+    def _drop(self, dev_type: str, dev_num: int, dev: ComDevice) -> None:
+        """Remove the slot of a device that was just disconnected.
+
+        Only if the slot still holds ``dev`` (#1017), as ``_evict`` does (#988).
+        A disconnect can take as long as the call deadline plus a join, and a
+        reconnect that timed out meanwhile evicts the device and builds a fresh
+        slot under the same key. Popping by key would then remove the healthy
+        device that replaced it."""
+        key = (dev_type, dev_num)
         with self._lock:
-            self._devices.pop((dev_type, dev_num), None)
+            if self._devices.get(key) is dev:
+                del self._devices[key]
 
     def _evict(self, dev_type: str, dev_num: int, dev: ComDevice) -> None:
         """Fault-evict a wedged device (COM-T6 obligation 1): pop its slot and
@@ -221,7 +230,7 @@ class ComHost:
             dev = self._devices.get((dev_type, dev_num))
             if dev is not None:
                 dev.disconnect()
-                self._drop(dev_type, dev_num)
+                self._drop(dev_type, dev_num, dev)
         return None
 
     @staticmethod

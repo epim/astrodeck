@@ -26,13 +26,15 @@ Each test names the mutant of production code it was shown red under (applied to
 a byte copy of the file, restored from that copy and md5-checked):
 
 MUTANT M1 "never follow": ``ComhostConnection.put`` made to skip the manager
-(``if False and ...``): RED (observed), 3 of 4 tests (the fourth is the
+(``if False and ...``): RED (observed), 4 of 5 tests (the fifth is the
 fixed-port default, green by design; the hub test runs on Windows only).
 MUTANT M2 "ask but do not repoint": the ``self.repoint(port)`` call replaced by
-``pass``: RED (observed), the scenario test and the hub test.
+``pass``: RED (observed), the scenario test, the health test (#1016) and the hub
+test.
 MUTANT M3 "repoint without the port": ``AlpacaConnection.repoint`` no longer sets
 ``self.port`` (requests move, the address the devices report does not): RED
-(observed), the scenario test and the hub test.
+(observed), the scenario test, the health test (#1016) and the hub test.
+MUTANTS M4 and M5 are the health test's own (#1016); see that test.
 """
 from __future__ import annotations
 
@@ -239,6 +241,52 @@ async def test_a_device_reconnecting_after_a_respawn_reaches_the_new_comhost(
         assert comhosts.spawns == 2, "the second device must not respawn again"
         assert other.connected is True
         assert await other.get_position() == (7.0, 41.0)
+    finally:
+        await session.close()
+
+
+async def test_session_health_names_the_port_the_comhost_is_on_now(comhosts):
+    """#1016: ``health()`` listed the pool's KEYS, the ``(host, port)`` each
+    connection was pooled under at connect time, so after a respawn repoint it
+    went on naming the dead comhost's port while the device reported the live
+    one. It reports where the connections point now. The pool key stays what it
+    was: it is the identity a later ``get_device`` finds the shared connection
+    by (the session asks for its connect-time port), so a role opened AFTER the
+    respawn must still share the one repointed connection.
+
+    MUTANT M4 "health from the keys": the pre-fix ``hosts`` expression: RED
+    (observed), ``assert ['127.0.0.1:<dead port>'] == ['127.0.0.1:<new
+    port>']``. MUTANT M5 "re-key instead": ``health`` first rewrites the pool
+    under the live addresses (right ``hosts``, wrong design): RED (observed),
+    the role opened after the respawn does not find the shared connection (the
+    session asks for its connect-time port) and builds a second one,
+    ``assert <connection> is <connection>``.
+    """
+    session = await AscomLocalBackend().open(ConnSpec(backend="ascom-local"))
+    try:
+        dev = await session.get_device("telescope", _conn(0))
+        first_port = comhosts.port
+        assert (await session.health())["hosts"] == [f"127.0.0.1:{first_port}"], (
+            "precondition")
+
+        comhosts.crash()
+        with contextlib.suppress(Exception):
+            await dev.disconnect()
+        await dev.connect()
+        assert comhosts.port != first_port and dev.port == comhosts.port, (
+            "precondition: the connection was repointed")
+
+        health = await session.health()
+        assert health["hosts"] == [f"127.0.0.1:{comhosts.port}"]
+
+        # A role opened after the respawn joins the same connection.
+        other = await session.get_device("rotator", ConnSpec(
+            backend="ascom-local", dev_type="telescope", dev_num=1,
+            role="rotator"))
+        assert other.conn is dev.conn and other.connected is True
+        assert comhosts.spawns == 2
+        assert (await session.health())["hosts"] == [
+            f"127.0.0.1:{comhosts.port}"]
     finally:
         await session.close()
 
