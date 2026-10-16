@@ -92,6 +92,14 @@ const TWILIGHT: { value: number; label: string; blurb: string }[] = [
   { value: -18, label: "Astronomical (−18°)", blurb: "Truly dark sky. The shortest window, and the cleanest data." },
 ];
 
+/** What was typed into a number box, held inside 0..`hi`. The `min`/`max`
+ *  attributes only mark a box invalid; the box still delivers whatever was
+ *  typed. The floor field below clamps for that reason, and an obstruction's
+ *  azimuths and altitude must too: the server refuses a wedge outside 0..360 /
+ *  0..90 (#1007), and the refusal should not be what teaches the range. */
+const clampTo = (typed: string, hi: number): number =>
+  Math.min(hi, Math.max(0, Number(typed) || 0));
+
 export default function SafetyLimitsPanel(): JSX.Element {
   const config = useConfig();
   const safety = config?.safety;
@@ -626,19 +634,19 @@ export default function SafetyLimitsPanel(): JSX.Element {
                     className="field" type="number" min={0} max={360} step={1}
                     aria-label={`Obstruction ${i + 1} azimuth from`}
                     value={box.az_min} disabled={busy || ro}
-                    onChange={(e) => setBox({ az_min: Number(e.target.value) || 0 })}
+                    onChange={(e) => setBox({ az_min: clampTo(e.target.value, 360) })}
                   />
                   <input
                     className="field" type="number" min={0} max={360} step={1}
                     aria-label={`Obstruction ${i + 1} azimuth to`}
                     value={box.az_max} disabled={busy || ro}
-                    onChange={(e) => setBox({ az_max: Number(e.target.value) || 0 })}
+                    onChange={(e) => setBox({ az_max: clampTo(e.target.value, 360) })}
                   />
                   <input
                     className="field" type="number" min={0} max={89} step={1}
                     aria-label={`Obstruction ${i + 1} minimum altitude`}
                     value={box.alt_max} disabled={busy || ro}
-                    onChange={(e) => setBox({ alt_max: Number(e.target.value) || 0 })}
+                    onChange={(e) => setBox({ alt_max: clampTo(e.target.value, 89) })}
                   />
                   {canEdit && (
                     <button
