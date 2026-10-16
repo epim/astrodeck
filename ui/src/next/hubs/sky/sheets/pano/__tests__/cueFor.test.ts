@@ -208,5 +208,12 @@ test('rateMaxFromInterval: 40 up to a 36 ms median, then 1000 / interval clamped
   assert.equal(rateMaxFromInterval(NaN), 40);
 });
 
+test('the lagging cue needs a turn since Begin: a phone that has not moved is not lagging (issue 1031)', () => {
+  assert.equal(cueFor(at({ staleInLastSecond: 9, movedSinceBegin: false })).key, 'turning');
+  assert.equal(cueFor(at({ staleInLastSecond: 9, movedSinceBegin: true })).key, 'stale');
+  assert.equal(cueFor(at({ staleInLastSecond: 9 })).key, 'stale', 'an absent flag reads as moved');
+  assert.equal(cueFor(at({ staleInLastSecond: 9, movedSinceBegin: false, sensorStalled: true })).key, 'stalled-sensor');
+});
+
 console.log(`cueFor.test: ${passed}/${passed} passed`);
 export const result = { passed, failed: 0, total: passed };

@@ -926,5 +926,53 @@ await test('tallSpans match the Tall columns of the raster they describe, in its
   }
 });
 
+// ---- 5. A start hold with a silent relative stream (issue 1031) --------------------------------
+
+await test('a still phone with a silent relative stream holds a relative pose through a 3 s start hold: no stale record, no lagging cue (issue 1031)', async () => {
+  // The relative stream speaks for 100 ms at camera open and is then change-driven silent; the gyro reads Chromium's
+  // exact zeros (a 0.1 now and then); the compass wanders 3 degrees. The mapping has never confirmed.
+  const harness = createHarness({ videoWidth: 45, videoHeight: 80 });
+  const camera = new StubCamera();
+  const scanner = new PanoramaScanner({ camera });
+  try {
+    await scanner.start(harness.video);
+    let frameNo = 0, begunAt = NaN;
+    const headings: number[] = [], cues: string[] = [];
+    for (let t = 0; t <= 4600; t += 16) {
+      harness.setClock(t);
+      if (t >= 20 && t <= 100) harness.dispatchOrientation({ timeStamp: t, alpha: 10, beta: 70, gamma: 0, absolute: false, event: 'deviceorientation' });
+      harness.dispatchOrientation({
+        timeStamp: t, alpha: 200 + 3 * Math.sin(t / 700), beta: 70, gamma: 0, absolute: true, event: 'deviceorientationabsolute',
+      });
+      const tick = t / 16;
+      harness.dispatchMotion({ timeStamp: t, rate: { alpha: tick === 3 || tick % 25 === 0 ? 0.1 : 0, beta: 0, gamma: 0 } });
+      if (t % 64 === 0) assert.ok(camera.deliver(t, { captureTime: t, presentationTime: t, presentedFrames: ++frameNo }));
+      if (Number.isNaN(begunAt) && scanner.canBegin) { scanner.begin(); begunAt = t; }
+      if (!Number.isNaN(begunAt) && t >= begunAt + 200) {
+        if (scanner.status.headingDeg !== null) headings.push(scanner.status.headingDeg);
+        cues.push(scanner.status.cueKey);
+      }
+    }
+    assert.ok(begunAt <= 300, `the scan began at ${begunAt}`);
+    const ins = scanner.inspect();
+    assert.equal(ins.track.axis?.confirmed ?? false, false, 'the mapping never confirmed');
+    assert.equal(ins.track.mode, 'relative');
+    assert.equal(ins.track.facts().staleRefusals, 0);
+    assert.deepEqual(ins.tracker.log.filter(r => r.outcome === 'stale-pose'), [], 'no stale-pose record in the hold');
+    assert.ok(cues.length > 150 && !cues.includes('stale'), `the lagging cue was shown: ${[...new Set(cues)].join(',')}`);
+    assert.ok(headings.length > 150, `${headings.length} headings`);
+    const spread = Math.max(...headings) - Math.min(...headings);
+    assert.ok(spread < 0.01, `the live heading moved ${spread} degrees: it followed the compass, not the relative stream`);
+    const kfs = ins.tracker.keyframes;
+    if (kfs.length > 0) {
+      const h0 = headingDeg(kfs[0].pred);
+      assert.ok(Math.abs(wrap180(h0 - headings[0])) < 0.01, `the first keyframe's yaw ${h0} is the relative stream's ${headings[0]}`);
+    }
+  } finally {
+    scanner.stop();
+    harness.dispose();
+  }
+});
+
 console.log(`scannerV0.test: ${passed}/${passed} passed`);
 export const result = { passed, failed: 0, total: passed };
