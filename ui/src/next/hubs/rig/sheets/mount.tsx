@@ -65,7 +65,7 @@ import {
 import { useConfig, usePolar, useSequence, useStatus, useStore } from "../../../../store";
 import { useBusyOrPending } from "../../../../lib/useBusy";
 import { humanizeLaneConflict } from "../../../../lib/humanize";
-import { accessPhrase, useCanControlMount } from "../../../../lib/caps";
+import { accessPhrase, useCanControlMount, useCapability } from "../../../../lib/caps";
 import { runIsLive } from "../../../../lib/lastSessionFrame";
 import { useTouchSettings } from "../../../../lib/touchStore";
 import {
@@ -249,6 +249,26 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // for the equatorial reading, so the sub-label does not depend on the ternary
   // around it also remembering to test `positionIsKnown`.
   const believedEq = believedRaDec(m);
+  // Whether this principal may be sent the horizontal reading at all. Together
+  // with `positionIsKnown` it tells the tile WHY `believedAltAz` is null, which
+  // that selector deliberately does not (#1023): a viewer is redacted, a mount
+  // that does not know is withheld, and an operator or admin whose frame carries
+  // no usable angle simply has nothing to show.
+  const canSeeDerived = useCapability("view.site_derived");
+  // The ALT / AZ tile's value and sub-label are chosen TOGETHER, here, so the
+  // two cannot name different causes: the tile's wording is decided once.
+  const eqSub = believedEq?.ra_str && believedEq.dec_str
+    ? `RA ${believedEq.ra_str} · Dec ${believedEq.dec_str}`
+    : "RA / Dec not reported";
+  const altAzTile: { value: string; sub: string } =
+    !m ? { value: "-", sub: "no pointing reported" }
+    : !positionIsKnown
+      ? { value: "unknown", sub: "the mount's home reading, not the tube" }
+    : believedAltAz
+      ? { value: `${believedAltAz.alt}° / ${believedAltAz.az}°`, sub: eqSub }
+    : !canSeeDerived
+      ? { value: "hidden", sub: `needs ${accessPhrase("view.site_derived")}` }
+    : { value: "not reported", sub: eqSub };
 
   // plan 0.5: a run holds the mount for as long as it is live - running,
   // paused, holding for cloud, or winding down from an abort (`runIsLive`).
@@ -824,21 +844,8 @@ export function MountSheet(_props: SheetProps): JSX.Element {
             nothing: deleting it cannot print the pole. */}
         <ReadoutTile
           label="ALT / AZ"
-          value={
-            !m ? "-"
-              : believedAltAz ? `${believedAltAz.alt}° / ${believedAltAz.az}°`
-              : !positionIsKnown ? "unknown"
-              : "hidden"
-          }
-          sub={
-            !m ? "no pointing reported"
-              : !positionIsKnown ? "the mount's home reading, not the tube"
-              : believedAltAz
-                ? (believedEq?.ra_str && believedEq.dec_str
-                  ? `RA ${believedEq.ra_str} · Dec ${believedEq.dec_str}`
-                  : "RA / Dec not reported")
-              : `needs ${accessPhrase("view.site_derived")}`
-          }
+          value={altAzTile.value}
+          sub={altAzTile.sub}
           tone={!positionIsKnown && m ? "warn"
             : believedAltAz && believedAltAz.alt < 20 ? "warn" : undefined}
           data-testid="tile-altaz"

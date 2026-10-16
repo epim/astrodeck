@@ -38,10 +38,16 @@
 //     `() => true`. "x with the position UNKNOWN the same press drives the tube:
 //     the pad refused to drive a reset mount home on an altitude it cannot trust
 //     (expected 1, got 0)".
+//     NO LONGER RED since #1021: the pad feeds the guard from `believedPointing`,
+//     which is null for an unknown position, so `getPositionKnown` is a second
+//     line behind the selector. w23SlewPadBelievedAlt grades the selector side.
 //   w16p4_near_horizon_kept -- the near-horizon line's `positionIsKnown &&`
 //     dropped. "x with the position unknown no altitude is printed and the pad
 //     says the guard is off: the pad printed a believed altitude while the
 //     position is unknown: ..." (the pad's text follows).
+//     NO LONGER APPLICABLE since #1021: the line has no `positionIsKnown &&` of
+//     its own, it reads `believedPointing`. The mutants that drop the gate on the
+//     raw altitude are w23m2 and w23m3 in w23SlewPadBelievedAlt.
 //   w16p5_nina_tap_goto_unguarded -- the NINA refusal's `if (!knownRef.current)`
 //     made `if (false)`. "x NINA: a tap is a relative goto from the believed
 //     position, so it is refused: a goto was computed from the believed
