@@ -20,6 +20,7 @@ would agree with whatever the code did.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -227,3 +228,148 @@ def test_the_link_is_a_junction_and_rmdir_is_what_removes_it(tmp_path):
     gate._unlink(link)
     assert not link.exists()
     assert (target / "keep.txt").read_text(encoding="utf-8") == "kept\n"
+
+
+# ------------------------------------- the command imports HEAD's astrodeck (#1027)
+
+#: What the gated HEAD's decoy astrodeck says about itself. A child that
+#: imports anything else (the virtualenv's editable install is the main
+#: checkout's real package) has no such attribute.
+_DECOY = "the astrodeck committed at HEAD of the gated repository"
+
+#: Run by path from inside the gated tree: which astrodeck does an import find,
+#: and what PYTHONPATH did the command start with?
+_REPORT = """\
+import json, os, sys
+import astrodeck
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"decoy": getattr(astrodeck, "DECOY", None),
+               "astrodeck": astrodeck.__file__,
+               "pythonpath": os.environ.get("PYTHONPATH")}, f)
+"""
+
+
+@pytest.fixture
+def decoy_repo(repo: Path) -> Path:
+    """`repo` with a DECOY astrodeck committed at `server/astrodeck`, so which
+    tree a child imported is a value it prints and the real package cannot be
+    the answer by accident (test_915_code_runs_from_its_own_tree.py does the
+    same for scripts/gate_run.py)."""
+    pkg = repo / "server" / "astrodeck"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(f"DECOY = {_DECOY!r}\n", encoding="utf-8")
+    _git(repo, "add", "--", "server/astrodeck/__init__.py")
+    _git(repo, "commit", "-q", "-m", "decoy astrodeck")
+    return repo
+
+
+def _tree_with_server(root: Path, astrodeck: bool) -> Path:
+    """A stand-in gated tree holding `server/`, with or without an astrodeck."""
+    tree = root / ("with" if astrodeck else "without")
+    (tree / "server" / ("astrodeck" if astrodeck else "other")).mkdir(parents=True)
+    return tree
+
+
+def test_a_python_command_imports_the_astrodeck_in_the_gated_tree(
+        decoy_repo, tmp_path, monkeypatch):
+    """The gate grades HEAD, so a python script it runs by path must import
+    HEAD's astrodeck. The virtualenv's is an editable install of the MAIN
+    checkout and the script's own directory is not the tree's `server/`, so
+    without the tree first on PYTHONPATH the child grades the main tree: the
+    green check on the wrong tree the gate exists to prevent (#1027). The
+    caller's own PYTHONPATH follows the tree's.
+
+    MUTATION: drop `env=child_env(tree)` from the `subprocess.run` in `run`
+    (the gated command then inherits the caller's environment). Observed,
+    verbatim: this case alone fails (the `child_env` cases below test the
+    function, not that `run` hands its result on) -
+
+        AssertionError: the command imported <main checkout>\\server\\astrodeck\\__init__.py,
+        not the astrodeck committed at HEAD of the gated repository
+    """
+    monkeypatch.setattr(gate, "LINKED", ("ui/node_modules",))
+    monkeypatch.setenv("PYTHONPATH", "KEEP-A")
+    monkeypatch.chdir(decoy_repo)
+    script = tmp_path / "report.py"
+    script.write_text(_REPORT, encoding="utf-8")
+    out = tmp_path / "report.json"
+    assert gate.main(["clean_tree_gate.py", "--cwd", "ui", "--",
+                      sys.executable, str(script), str(out)]) == 0
+    got = json.loads(out.read_text(encoding="utf-8"))
+    assert got["decoy"] == _DECOY, (
+        f"the command imported {got['astrodeck']}, not the astrodeck "
+        f"committed at HEAD of the gated repository")
+    entries = got["pythonpath"].split(os.pathsep)
+    assert Path(entries[0]).parts[-2:] == ("tree", "server"), entries
+    assert entries[1:] == ["KEEP-A"], entries
+
+
+def test_child_env_puts_the_trees_server_first_and_keeps_the_callers_entries(
+        tmp_path, monkeypatch):
+    """The tree's `server/` goes first and the caller's entries follow, with no
+    second copy of the server directory when the caller already named it, and
+    this process's own environment is left as it was.
+
+    MUTATION: `rest = []` (the caller's entries dropped). Observed: this case,
+    the end-to-end case above and the one holding the two scripts together
+    all fail, this one with -
+
+        assert ['<tree>/server'] == ['<tree>/server', 'KEEP-A', 'KEEP-B']
+
+    - and, with the `!= here` filter dropped instead, with the server
+    directory listed twice.
+    """
+    tree = _tree_with_server(tmp_path, astrodeck=True)
+    server = str((tree / "server").resolve())
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["KEEP-A", server, "KEEP-B"]))
+    env = gate.child_env(tree)
+    assert env["PYTHONPATH"].split(os.pathsep) == [server, "KEEP-A", "KEEP-B"]
+    assert os.environ["PYTHONPATH"] == os.pathsep.join(["KEEP-A", server, "KEEP-B"])
+    monkeypatch.delenv("PYTHONPATH")
+    assert gate.child_env(tree)["PYTHONPATH"] == server
+
+
+def test_child_env_leaves_a_tree_without_an_astrodeck_alone(tmp_path, monkeypatch):
+    """Nothing to put first: a tree whose `server/` holds no astrodeck, or has
+    no `server/` at all, keeps the environment the gate came in with. The
+    gate is also pointed at trees that are not this repository."""
+    monkeypatch.setenv("PYTHONPATH", "KEEP-A")
+    bare = _tree_with_server(tmp_path, astrodeck=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    for tree in (bare, empty):
+        assert gate.child_env(tree)["PYTHONPATH"] == "KEEP-A", tree.name
+    monkeypatch.delenv("PYTHONPATH")
+    for tree in (bare, empty):
+        assert "PYTHONPATH" not in gate.child_env(tree), tree.name
+
+
+def test_the_two_gate_scripts_build_the_same_child_environment(tmp_path, monkeypatch):
+    """scripts/gate_run.py and scripts/clean_tree_gate.py each carry
+    `child_env`, because each is copied on its own and cannot import the
+    other. This holds them together (test_w15_gate_run.py does the same for
+    `checkout_kind`): the same tree and the same caller PYTHONPATH give the
+    same environment from both, including a caller entry that names the
+    server directory in another spelling.
+
+    MUTATION: drop the `!= here` filter from clean_tree_gate.py's copy only.
+    Observed: this case fails on the caller entry that already names the
+    server directory (it appears twice), and the direct case above fails too.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "astrodeck_gate_run_1027", _GATE.with_name("gate_run.py"))
+    other = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = other
+    spec.loader.exec_module(other)
+    with_astrodeck = _tree_with_server(tmp_path, astrodeck=True)
+    server = str((with_astrodeck / "server").resolve())
+    trees = [with_astrodeck, _tree_with_server(tmp_path, astrodeck=False),
+             tmp_path / "no-such-tree"]
+    for raw in (None, "", "KEEP-A", os.pathsep.join(["KEEP-A", server, "KEEP-B"]),
+                server + os.sep + ".", os.pathsep.join([server, server])):
+        if raw is None:
+            monkeypatch.delenv("PYTHONPATH", raising=False)
+        else:
+            monkeypatch.setenv("PYTHONPATH", raw)
+        for tree in trees:
+            assert gate.child_env(tree) == other.child_env(tree), (tree.name, raw)
