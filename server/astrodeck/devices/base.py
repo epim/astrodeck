@@ -301,9 +301,12 @@ def is_present(dev) -> bool:
     not "is it healthy?". It is the right question for the paths that must
     not mistake a blip for an absence: the mount STOP and park routes, the
     never-crush roof guard (`sequence/roof.close_observatory`), the roof close
-    paths, the safety poller. A device that was never connected, was
-    disconnected on purpose, or was told NotConnected by its server is NOT
-    present, and the plain ``connected`` flag is still what says so."""
+    paths, the safety poller, and the engine's mount actions and the reads
+    they ride on (the slew gate's limits, the flip, the hold re-point, the
+    tracking checks and the recovery, #1018). A device that was never
+    connected, was disconnected on purpose, or was told NotConnected by its
+    server is NOT present, and the plain ``connected`` flag is still what
+    says so."""
     return bool(getattr(dev, "connected", False)) or link_in_doubt(dev)
 
 

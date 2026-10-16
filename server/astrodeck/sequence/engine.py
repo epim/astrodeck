@@ -13022,7 +13022,12 @@ class SequenceEngine:
             await self._quiet_stop_for_unknown_position(
                 ROOF_CLOSE_WITHOUT_PARK, "The roof close")
             return None
-        if not (tel and getattr(tel, "connected", False)):
+        # A MOUNT IN DOUBT IS STILL ASKED (`is_present`, #1018 after #989): one
+        # transport blip reads ``connected`` false until the next reply, and a
+        # park skipped for it left `close_observatory` to refuse a roof over a
+        # tube nobody tried to park. A failed park is swallowed below and the
+        # close re-confirms parked, so the attempt costs nothing.
+        if not (tel and is_present(tel)):
             return False
         # The roof close's park is a stop the engine made (#248): after the
         # reopen, the mount is wherever home is, not on any target.
@@ -14798,7 +14803,9 @@ class SequenceEngine:
         every ``HOLD_WATCH_S``.
         """
         tel = self.hub.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        # A mount in doubt is asked (`is_present`, #1018): its failure is a
+        # failure below, a blip is over by the first reply.
+        if tel is None or not is_present(tel):
             return "the mount is not connected"
         # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886). The re-point is a
         # goto from the believed position, so the RUN ends without moving the
@@ -14954,7 +14961,9 @@ class SequenceEngine:
             tel = self.hub.devices.get("telescope")
             if fence is not None and fence != self._idle_stop_epoch:
                 return
-            if tel and tel.connected:
+            # A mount in doubt gets the stop too (`is_present`, #1018): a
+            # failed stop is swallowed and said below, a skipped one is not.
+            if tel and is_present(tel):
                 await asyncio.wait_for(tel.set_tracking(False), MOUNT_QUERY_TIMEOUT_S)
         except Exception as e:      # a timeout is one (asyncio.TimeoutError)
             # The callers that must know read the stop back; this is the
@@ -15093,7 +15102,13 @@ class SequenceEngine:
         pier = cfg.safety.enforce_pier_limits
 
         tel = self.hub.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        # NO VERDICT FOR A MOUNT THAT IS NOT THERE, but one in doubt is
+        # (`is_present`, #1018). Returning here skips the altitude half below
+        # too, which touches no device, so a blip used to let a slew through
+        # the floor, the horizon, the no-go wedges and the zenith keep-out
+        # unjudged, and the slew healed the link and moved the mount. A pier
+        # read that fails reads UNKNOWN, which the guard lets through.
+        if tel is None or not is_present(tel):
             return None
 
         # pier-collision guard: a mount that reports a definite unsafe destination
@@ -16370,7 +16385,10 @@ class SequenceEngine:
         if not self.plan.meridian_flip or not self._flip_armed:
             return
         tel = self.hub.devices.get("telescope")
-        if not tel or not tel.connected:
+        # A mount in doubt is not unreachable (`is_present`, #1018): a blip is
+        # over by the flip's first request, and a link that is really gone
+        # fails the flip as it fails any other mount call.
+        if not tel or not is_present(tel):
             # AN ARMED FLIP THAT CANNOT BE TAKEN IS NEWS. This returned in
             # silence, so a run whose mount link had dropped sailed past its own
             # meridian with the latch still set and nothing in the log — the
@@ -19169,9 +19187,13 @@ class SequenceEngine:
         "unknown"; both are treated the same by every caller here, and both are
         kept distinct from a real side so nothing can compare two failures to
         read and conclude "unchanged".
+
+        A MOUNT IN DOUBT IS ASKED (`is_present`, #1018), as `Hub.pier_side_now`
+        asks it: a blip is not a dropped link, and a read that fails is None
+        anyway.
         """
         tel = self.hub.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        if tel is None or not is_present(tel):
             return None
         try:
             side = await asyncio.wait_for(tel.pier_side(),
@@ -19192,9 +19214,13 @@ class SequenceEngine:
         exists for, not hang the sweep. Deliberately NOT `_bounded`, whose
         SafetyAbort would contradict "unreadable is not a verdict" and turn a
         slow read into a torn-down night.
+
+        A MOUNT IN DOUBT IS ASKED (`is_present`, #1018): every tracking
+        decision reads through here, so a None for a blip was a resume and a
+        recovery that never ran, and a good reply is what ends the doubt.
         """
         tel = self.hub.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        if tel is None or not is_present(tel):
             return None
         try:
             return bool(await asyncio.wait_for(tel.get_tracking(),
@@ -19274,7 +19300,8 @@ class SequenceEngine:
         if not self._is_light(step):
             return                       # darks and bias are shot parked, on purpose
         tel = self.hub.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        # A mount in doubt is checked (`is_present`, #1018), not waved through.
+        if tel is None or not is_present(tel):
             return
         tracking = await self._tracking_now()
         if tracking is None or tracking:
@@ -19355,7 +19382,9 @@ class SequenceEngine:
                     f"trying a second time", "sequence")
             return False
         tel = self.hub.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        # A mount in doubt is recovered (`is_present`, #1018): False here is
+        # "the recovery cannot help", and the caller sets the target aside.
+        if tel is None or not is_present(tel):
             return False
         # NOTHING IS AIMED FROM AN UNKNOWN POSITION (#886). The recovery is a
         # park (on the AM5 a goto to the MODEL's home), an unpark and a goto

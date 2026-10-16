@@ -9573,10 +9573,12 @@ class Hub:
         Deliberately the same read, with the same tri-state, that
         ``SequenceEngine._pier_side_now`` makes: ``meridian_flip`` and the
         engine's flip step must not be able to disagree about what the mount
-        said, and the hub cannot import the engine to borrow it.
+        said, and the hub cannot import the engine to borrow it. That includes
+        who is asked: a mount in doubt (`is_present`, #1018) is, as the
+        engine's read asks it.
         """
         tel = self.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        if tel is None or not is_present(tel):
             return None
         try:
             side = await asyncio.wait_for(tel.pier_side(),
