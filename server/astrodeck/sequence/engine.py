@@ -15261,6 +15261,12 @@ class SequenceEngine:
         if cfg is None:
             return None
         floor_base = float(cfg.safety.min_alt_deg or 0.0)
+        if not math.isfinite(floor_base):
+            # A floor that cannot be read blocks (#1007). NaN is truthy, so it
+            # got past the `or` above, and `floor_base > 0.0` below is False for
+            # it: with no horizon or wedge the gate would return before
+            # `effective_floor` ever saw it.
+            floor_base = schedule.HORIZON_BLOCKED_DEG
         horizon = cfg.safety.horizon
         nogo = cfg.safety.nogo_box
 
