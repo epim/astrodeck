@@ -105,7 +105,7 @@ await test('the latency estimator is fed from gyro rates only: a chord rate feed
 
 await test('Finish guards a partial scan whose majority is an obstruction: a column the walk found nothing in is not published as open sky (S15 residue)', async () => {
   // 100 degrees scanned. The tracer is handed to Finish as the tracer of a scan whose ring sky is an obstruction: every column of
-  // the observed arc is open to the ground and Measured (alt 0, no boundary, no contrast), as it reads a wall that fills the photo.
+  // the observed arc has no boundary in it (UnknownContrast, no altitude, no contrast: S51), as it reads a wall that fills the photo.
   // The scanner's guard makes those columns Tall: no bin of the arc is Measured and the arc is Tall. (The pure function is
   // scannerV1Tracer.test.ts's; this is the scanner calling it.)
   const w = await ring({ turnDeg: 100, confirmAxis: true });
@@ -115,7 +115,7 @@ await test('Finish guards a partial scan whose majority is an obstruction: a col
       const h = real(p, o);
       for (let x = 0; x < PANO_W; x++) {
         if (h.state[x] === ColState.UnknownUnseen) continue;
-        h.state[x] = ColState.Measured; h.alt[x] = 0; h.contrastSigma[x] = NaN; h.sigmaDeg[x] = 0.1;
+        h.state[x] = ColState.UnknownContrast; h.alt[x] = NaN; h.contrastSigma[x] = NaN; h.sigmaDeg[x] = 0.1;
       }
       return h;
     };

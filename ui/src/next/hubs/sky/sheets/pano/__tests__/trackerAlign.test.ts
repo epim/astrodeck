@@ -785,19 +785,22 @@ function stripesScene(periodDeg: number): SynthScene {
   };
 }
 const PERIOD = 6;
-const stripes = run({ scene: stripesScene(PERIOD), priorScale: 1.1, pan: { turnDeg: 110 }, imageYaw: n => (n === 14 ? PERIOD : 0) });
+/** The jump is put on the 14th read, which is keyframe 13: since S52 holds the relative predictor across the first 100 ms of the pan, the
+ *  first keyframe is taken on a blurred frame and revisited once (rule 5), which spends one read before keyframe 1. */
+const JUMP_KF = 13;
+const stripes = run({ scene: stripesScene(PERIOD), priorScale: 1.1, pan: { turnDeg: 110 }, imageYaw: n => (n === JUMP_KF ? PERIOD : 0) });
 
 test('a one-period jump on stripes is refused by the innovation gate, though PSR, ZNCC and the inlier test accept it', () => {
-  const x = recordOf(stripes, 14);
+  const x = recordOf(stripes, JUMP_KF);
   assert.ok(stripes.lock, 'the ring through a fence locks');
   assert.ok(x);
   assert.equal(x?.detail, 'mismatch', `${x?.detail} with innovation ${x?.innovationDeg}`);
   assert.ok((x?.innovationDeg as number) >= 4, `the jump is a whole period: innovation ${x?.innovationDeg}`);
   assert.ok((x?.psr as number) >= 7 && (x?.zncc as number) >= 0.7, `PSR ${x?.psr} and ZNCC ${x?.zncc} accepted the match`);
-  assert.equal(stripes.tracker.keyframes[14].cls, 'sensor');
-  assert.equal(stripes.tracker.edges.some(e => e.b === 14), false, 'no edge: the gyro placed it');
+  assert.equal(stripes.tracker.keyframes[JUMP_KF].cls, 'sensor');
+  assert.equal(stripes.tracker.edges.some(e => e.b === JUMP_KF), false, 'no edge: the gyro placed it');
   const cYaw = (i: number) => wrap180(headingDeg(stripes.tracker.keyframes[i].pose) - headingDeg(stripes.tracker.keyframes[i].pred));
-  near(cYaw(14), cYaw(13), 0.1, 'the refused keyframe keeps the yaw of C, not a period (6 degrees) away');
+  near(cYaw(JUMP_KF), cYaw(JUMP_KF - 1), 0.1, 'the refused keyframe keeps the yaw of C, not a period (6 degrees) away');
 });
 
 // ---- 9. The keyframe rules with alignment on (S12, S27, S28, S34) ---------------------------------------------------
@@ -962,7 +965,9 @@ async function replayProof(): Promise<void> {
     });
     test('replay with sensor_only: true in scanner.json: 0 aligned keyframes and the focal stays the prior', () => {
       assert.equal(control.sensorOnly, true);
-      assert.equal(control.total, aligned.total, 'the same keyframes');
+      // The same keyframes, plus the revisit of the blurred first keyframe that only the aligned run can take (rule 5 is never run in
+      // sensor-only mode; since S52 holds the relative predictor across the pan's first 100 ms the first keyframe is taken on a blurred frame).
+      assert.equal(aligned.total - control.total, 1, `${control.total} keyframes in the control, ${aligned.total} aligned`);
       assert.equal(control.aligned, 0);
       assert.equal(control.focal, 'prior');
     });

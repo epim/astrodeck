@@ -234,16 +234,16 @@ const PARTIAL_SCAN_DEG = 180;
 
 /** The Finish-time guard for a partial scan whose majority is an obstruction (S15 residue). The tracer's ring sky is the majority of
  *  the compass it was shown, so in a scan of under 180 degrees an obstruction that fills most of what was observed is its own
- *  sky, and a column of it in which the walk found no departure at all (open to altitude 0, no boundary to take a contrast of) is
- *  Measured at the ground: a wall published as open. Such a column is as likely a wall filling the photo as open sky, and it is
- *  Tall, the safe answer. A column with a boundary (a ground line, a skyline) is untouched, and so is every column of a scan
+ *  sky, and a column of it in which the walk found no departure at all (no boundary to take a contrast of) is a wall that cannot
+ *  be told from open sky. Since S51 the tracer reads such a column UnknownContrast with no altitude (it used to read it Measured
+ *  at 0, which is what this guard first caught); here it is Tall, which says what it more likely is. A column with a boundary (a ground line, a skyline) is untouched, and so is every column of a scan
  *  that observed 180 degrees or more. Returns how many columns it changed. It lives here and not in the tracer because it is a
  *  Finish decision about how much of the ring was seen, which the live tracer (always partial) must not make. */
 export function guardPartialScan(c: ColumnHorizon, observedColumns: number): number {
   if (!(observedColumns < PARTIAL_SCAN_DEG * PANO_W / 360)) return 0;
   let changed = 0;
   for (let x = 0; x < c.state.length; x++) {
-    if (c.state[x] !== ColState.Measured || c.alt[x] !== 0 || !Number.isNaN(c.contrastSigma[x])) continue;
+    if (c.state[x] !== ColState.UnknownContrast || !Number.isNaN(c.alt[x]) || !Number.isNaN(c.contrastSigma[x])) continue;
     c.state[x] = ColState.Tall;
     c.alt[x] = NaN;
     changed++;
@@ -913,7 +913,7 @@ export class PanoramaScanner implements ScannerLike {
     const columns = tracer.extract(this.pano, { focalSdPct: this.focal.sdPct, axisAltDeg: this.axisAltDeg() });
     guardPartialScan(columns, this.observedColumns());
     const draft = mergeKept(binProfile(columns), previous);
-    const line = conservativePolyline(draft.alt);
+    const line = conservativePolyline(draft.alt, 180, draft.state);
     // 7. The PNG.
     const png = this.pano.toPNG(document.createElement('canvas'));
     return {
@@ -927,7 +927,7 @@ export class PanoramaScanner implements ScannerLike {
   private fallback(previous: readonly HorizonPoint[] | null, e: unknown): ScanResult {
     this.finishError = messageOf(e);
     const draft = mergeKept(binProfile(unseenColumns()), previous);
-    const line = conservativePolyline(draft.alt);
+    const line = conservativePolyline(draft.alt, 180, draft.state);
     let png = '';
     try { png = this.pano.toPNG(document.createElement('canvas')); } catch { /* no picture, and the error says why */ }
     return {

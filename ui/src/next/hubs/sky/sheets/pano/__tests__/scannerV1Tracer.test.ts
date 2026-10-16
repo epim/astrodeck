@@ -20,7 +20,7 @@ import { guardPartialScan } from '../scanner';
 import { ColState, PANO_W } from '../types';
 import { tracer } from '../horizon/horizonTrace';
 import { rasterFromPixels } from '../horizon/__tests__/rasterAdapter';
-import { SKY, col, extract, gauss, inSector, near, scene, unit } from '../horizon/__tests__/traceScenes';
+import { GROUND, SKY, col, extract, gauss, inSector, near, scene, unit } from '../horizon/__tests__/traceScenes';
 
 let passed = 0;
 function test(name: string, fn: () => void) { fn(); passed++; console.log(`PASS ${name}`); }
@@ -38,11 +38,11 @@ test('a wall of any width that reaches the top of the photo is Tall: the pooled 
   for (const width of [8, 12, 14, 16, 18, 24]) {
     const from = 100, to = from + width;
     const h = extract(scene((az, alt, x, y) => (alt > 54 || alt < -4 ? null
-      : { lum: Math.round((inSector(az, from, to) ? SKY * 0.64 : SKY) + 5 * gauss(x, y, 7)) })));
+      : { lum: Math.round((inSector(az, from, to) ? SKY * 0.64 : alt < 0 ? GROUND : SKY) + 5 * gauss(x, y, 7)) })));
     const inside = tally(h, col(from), col(to));
     assert.deepEqual(inside, { [ColState.Tall]: col(to) - col(from) }, `a wall of ${width} degrees: ${JSON.stringify(inside)}`);
     assert.equal(h.state[col(from - 20)], ColState.Measured, 'the sky beside it is untouched');
-    assert.equal(h.alt[col(from - 20)], 0);
+    near(h.alt[col(from - 20)], 0, 100 / 299 + 1e-4, 'the ground at the horizon:');
   }
   // A wall that stays inside the coverage, with sky above it, is a measurement, whatever the pooled pixels do.
   const low = extract(scene((az, alt, x, y) => (alt > 54 || alt < -4 ? null
@@ -118,10 +118,11 @@ test('the partial-scan guard: a uniform column of a scan under 180 degrees is Ta
   const wall = (span: number) => extract(scene((az, alt, x, y) => (az < span && alt <= 54 && alt >= -4 ? { lum: Math.round(60 + 2 * gauss(x, y, 3)) } : null)));
   const observed = (h: { state: Uint8Array }) => { let n = 0; for (let x = 0; x < PANO_W; x++) if (h.state[x] !== ColState.UnknownUnseen) n++; return n; };
 
-  // 100 degrees of a wall that fills the photo: its own sky, and every column of it open to the ground and Measured.
+  // 100 degrees of a wall that fills the photo: its own sky, so the walk finds no boundary in any column of it, which the
+  // tracer reads UnknownContrast with no altitude (S51; before it read Measured at 0, and the guard caught that).
   const h = wall(100);
   const before = tally(h, 0, col(100));
-  assert.equal(before[ColState.Measured], col(100), `the wall is its own sky: ${JSON.stringify(before)}`);
+  assert.equal(before[ColState.UnknownContrast], col(100), `the wall is its own sky: ${JSON.stringify(before)}`);
   assert.equal(guardPartialScan(h, observed(h)), col(100));
   assert.deepEqual(tally(h, 0, col(100)), { [ColState.Tall]: col(100) });
   assert.ok(Number.isNaN(h.alt[col(50)]), 'and it suggests no altitude');
@@ -134,7 +135,7 @@ test('the partial-scan guard: a uniform column of a scan under 180 degrees is Ta
   // 200 degrees observed is past the half ring: the guard is silent.
   const half = wall(200);
   assert.equal(guardPartialScan(half, observed(half)), 0);
-  assert.equal(half.state[col(100)], ColState.Measured);
+  assert.equal(half.state[col(100)], ColState.UnknownContrast, 'untouched by the guard: no boundary, as the tracer read it');
   // The edge: 179.9 and 180 degrees.
   assert.equal(guardPartialScan(wall(180), 539), col(180), '539 columns is under 180 degrees');
   assert.equal(guardPartialScan(wall(180), 540), 0, '540 columns is 180 degrees');

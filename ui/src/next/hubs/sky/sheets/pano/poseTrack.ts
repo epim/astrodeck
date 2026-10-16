@@ -40,6 +40,11 @@ const STALE_MOTION_DEG_S = 2;
 /** A duplicate is the other listener's copy of the previous absolute sample (Chromium's absolute-only shape). */
 const DUPLICATE_ANGLE_EPS = 1e-9, DUPLICATE_MS = 2;
 const BLOCKED_AFTER_MS = 1000;
+/** S52: a relative predictor whose rule says to leave it keeps its place for this long. At motion onset the relative
+ *  stream can answer within about 66 ms of the quiet gyro stopping vouching for its silence, and a handoff to the
+ *  absolute stream in between latches G's yaw to the compass (1.5 degrees in the chart yard) and the return to relative
+ *  keeps that latch. A gap of this length or more is a dead relative stream and hands off as it always did. */
+const ABS_GAP_HOLD_MS = 100;
 /** absolute-gyro: the share of the tilt error between G and an absolute sample corrected per absolute sample. */
 const TILT_GAIN = 0.02;
 /** absolute-gyro: a longer step between motion samples integrates only this much (a stalled motion stream). */
@@ -192,6 +197,8 @@ export class PoseTrack {
   private lastAbsEvent: { t: number; type: OrientationIn['type']; alpha: number | null; beta: number; gamma: number } | null = null;
 
   private active: PredictorMode = 'none';
+  /** When the mode rule first said to leave `relative` in the current gap (S52); null while it does not. */
+  private relGapSince: number | null = null;
   private latched = false;
   private modeAtBegin: PredictorMode | null = null;
   private modeChanges: SensorFacts['modeChanges'] = [];
@@ -429,8 +436,13 @@ export class PoseTrack {
    *  the compass's wander before the mapping can confirm. */
   private chooseMode(t: number): PredictorMode {
     const rel = this.rel.last, abs = this.abs.last, m = this.motion.last;
-    if (rel && t - rel.t <= RELATIVE_WINDOW_MS) return 'relative';
-    if (rel && this.active === 'relative' && this.quietGyro(t)) return 'relative';
+    if (rel && t - rel.t <= RELATIVE_WINDOW_MS) { this.relGapSince = null; return 'relative'; }
+    if (rel && this.active === 'relative' && this.quietGyro(t)) { this.relGapSince = null; return 'relative'; }
+    if (rel && this.active === 'relative') {
+      // S52: the first sample of a gap starts its clock; a relative sample inside ABS_GAP_HOLD_MS ends the gap above.
+      this.relGapSince ??= t;
+      if (t - this.relGapSince < ABS_GAP_HOLD_MS) return 'relative';
+    }
     if (abs && this.axisMap?.confirmed && m && Math.abs(t - m.t) < MOTION_FRESH_MS) return 'absolute-gyro';
     if (abs && t - abs.t <= RELATIVE_WINDOW_MS) return 'absolute-only';
     return 'none';

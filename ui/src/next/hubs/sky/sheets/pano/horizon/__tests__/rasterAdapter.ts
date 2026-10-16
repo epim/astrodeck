@@ -165,6 +165,9 @@ export function traceBins(
     for (let x = x0; x < x1; x++) {
       if (seam(x)) continue;
       const state = horizon.state[x];
+      // S51: a column whose walk found no boundary is Unknown now (UnknownContrast, no altitude). The old suites ask
+      // which columns the walk blocked, and a column it did not block is open sky: published 0 and no uncertainty.
+      if (state === ColState.UnknownContrast && Number.isNaN(horizon.alt[x])) continue;
       if (state !== ColState.Measured) alt = 90;
       else if (horizon.alt[x] > alt) alt = horizon.alt[x];
       if (state !== ColState.Measured) uncertain = true;

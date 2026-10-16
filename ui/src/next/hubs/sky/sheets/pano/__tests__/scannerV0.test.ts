@@ -150,6 +150,8 @@ async function play(p: SynthPan, o: {
   camera?: StubCamera; encoder?: FrameEncoder; recording?: boolean; declination?: number | null; offset?: number;
   /** Called after each frame the scanner has seen once the scan has begun, with the frame's time in the pan's own clock. */
   onFrame?: (scanner: PanoramaScanner, at: number) => void;
+  /** Observations the page never receives (the pan's own clock). */
+  drop?: (item: Observation) => boolean;
 } = {}): Promise<Run> {
   const harness = createHarness({ videoWidth: p.k0.w, videoHeight: p.k0.h });
   const scanner = new PanoramaScanner({ camera: o.camera, encoder: o.encoder });
@@ -169,6 +171,7 @@ async function play(p: SynthPan, o: {
     const captureAt = new Map<number, number | null>();
     let begun = false, beganAt = NaN, frames = 0;
     for (const item of timelineOf(p)) {
+      if (o.drop?.(item)) continue;
       const at = item.kind === 'frame' ? item.t_present_ms : item.t_receive_ms;
       harness.setClock(at + off);
       let frameNo: number | null = null;
@@ -337,7 +340,9 @@ await test('replay --scanner pano: events.jsonl and captures.jsonl follow 13.7, 
     assert.ok(frameIds.has(c.frame_id as string), `frame_id ${String(c.frame_id)} is the case's`);
     assert.ok(outcomes.includes(c.outcome as string));
     for (const k of keys.filter(k => k !== 'frame_id' && k !== 'outcome' && k !== 'detail')) assert.ok(Number.isFinite(c[k]), `${k} is a number`);
-    if (c.outcome === 'accepted') { assert.equal(c.kf, accepted); accepted++; }
+    // A revisit (rule 5) is a keyframe too: since S52 holds the relative predictor across the first 100 ms of the pan, the first
+    // keyframe is taken on a blurred frame in relative mode and is revisited once, where it used to be re-anchored (S32).
+    if (c.outcome === 'accepted' || c.outcome === 'revisit') { assert.equal(c.kf, accepted); accepted++; }
   }
   assert.ok(accepted >= 15, `${accepted} keyframes over 100 degrees`);
   assert.ok(firstKeptAt >= 0, 'the first accepted capture names a frame of the pan');
@@ -372,7 +377,7 @@ await test('replay --scanner pano: summary.json, first_seen.bin, diagnostics.jso
   assert.equal(d.declination_applied, true, 'scanner.json set a declination and the compass gave a north');
   assert.ok(isStats(d.keyframe_ms) && isStats(d.readback_ms) && typeof d.stale_refusals === 'number');
   const kfs = d.keyframes as Row[];
-  assert.equal(kfs.length, summary.frames_accepted);
+  assert.equal(kfs.length, captures.filter(c => c.outcome === 'accepted' || c.outcome === 'revisit').length);
   kfs.forEach((k, i) => {
     assert.deepEqual(Object.keys(k), ['id', 'frame_id', 't_ms', 'q', 'cls', 'sigma_deg']);
     assert.equal(k.id, i);
@@ -382,7 +387,7 @@ await test('replay --scanner pano: summary.json, first_seen.bin, diagnostics.jso
     assert.ok(Math.abs(Math.hypot(...q) - 1) < 1e-9, 'a unit quaternion');
   });
   // The keyframe's frame is the one its accepted capture names, and its time that frame's capture time.
-  const accepted = captures.filter(c => c.outcome === 'accepted');
+  const accepted = captures.filter(c => c.outcome === 'accepted' || c.outcome === 'revisit');
   const capture = new Map(pan.frames.map(f => [f.frameId, f.tCaptureMs]));
   kfs.forEach((k, i) => {
     assert.equal(k.frame_id, accepted[i].frame_id);
@@ -588,6 +593,12 @@ interface Recorded {
 /** The middle of the pan, where the relative stream speaks; the end hold may have no pose (S41). */
 const MID_PAN_MS = pan.frames[pan.frames.length >> 1].tPresentMs;
 
+/** The relative stream goes quiet for 800 ms in the middle of the pan: the phone is turning, so it is not the quiet gyro that holds
+ *  it, and the predictor leaves it once the 500 ms window and the 100 ms hold of S52 have run out. Without it the pan has no mode change
+ *  at all (the 66 ms glitch at its start is held), and the time conversion of mode changes would have nothing to convert. */
+const relativeGap = (item: Observation): boolean => item.kind === 'orientation' && item.event === 'deviceorientation' && !item.absolute
+  && item.t_receive_ms >= MID_PAN_MS && item.t_receive_ms < MID_PAN_MS + 800;
+
 async function recordedScan(declination: number | null, offset = 0): Promise<Recorded> {
   // The live mesh is read at the first frame at or after the middle of the pan.
   const meshSrcMax: [number, number] = [0, 0];
@@ -602,7 +613,7 @@ async function recordedScan(declination: number | null, offset = 0): Promise<Rec
       meshSrcMax[0] = Math.max(meshSrcMax[0], t.src[i]); meshSrcMax[1] = Math.max(meshSrcMax[1], t.src[i + 1]);
     }
   };
-  const r = await play(pan, { recording: true, encoder: pngEncoder, declination, offset, onFrame: readMesh });
+  const r = await play(pan, { recording: true, encoder: pngEncoder, declination, offset, onFrame: readMesh, drop: relativeGap });
   try {
     assert.ok(meshRead, 'the pan reached its middle');
     r.harness.setClock(FINISH_AT + offset);
@@ -788,7 +799,7 @@ await test('a decimated recording keeps its frame ids, and reads back only what 
     }
     assert.ok(keyframesRecorded >= 5, `${keyframesRecorded} keyframes fall on kept frames`);
     // A frame is read back once at most, and only when the recorder keeps it or the tracker reads it.
-    const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'waiting-sharper').map(x => x.frameId));
+    const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'revisit' || x.outcome === 'waiting-sharper').map(x => x.frameId));
     const wanted = new Set([...ids, ...trackerReads]);
     assert.equal(camera.reads.length, new Set(camera.reads).size, 'no frame read twice');
     assert.deepEqual([...camera.reads].sort((a, b) => a - b), [...wanted].sort((a, b) => a - b));
@@ -827,7 +838,7 @@ await test('an encoder exception stops recording frames, not the scan (S24)', as
     assert.deepEqual(rec.slice(-2).map(l => l.kind), ['action', 'report']);
     // After the failure, only the tracker reads back. A readback the log does not name is the first commit that the S32 re-anchor
     // withdrew with its capture record (this pan starts with a pose from the compass): at most one, before the first keyframe kept.
-    const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'waiting-sharper').map(x => x.frameId));
+    const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'revisit' || x.outcome === 'waiting-sharper').map(x => x.frameId));
     const unlogged = camera.reads.filter(n => n > 3 && !trackerReads.has(n));
     assert.ok(unlogged.length <= 1 && unlogged.every(n => n < ins.tracker.keyframes[0].frameId), `readbacks the tracker did not log: ${unlogged.join(', ')}`);
   } finally {

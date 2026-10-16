@@ -43,8 +43,8 @@
 // that disagree, and the choice is for the supervisor to confirm (the T10 fix-round report states it).
 //
 // WHERE THE SPEC IS SILENT, and what this file does (each is a named constant or a short comment below):
-//   - the boundary pixel whose raster sigma is read is the first blocked row of the deciding run; for an open
-//     column (A = 0) it is the pixel at altitude 0, because "open to the horizon" is a claim about that altitude;
+//   - the boundary pixel whose raster sigma is read is the first blocked row of the deciding run; a column with no
+//     run has no boundary and is UnknownContrast (S51: it measured nothing, so it is never Measured at 0);
 //   - contrast is the larger of the luma, blueness and texture differences between the body of the departure and the
 //     sky just above it, each in the raster's own noise (`noiseSigma` of that plane, never under one 8-bit level);
 //     an open column has no boundary and so no contrast;
@@ -905,9 +905,10 @@ function offRows(runs: readonly ColumnRun[]): Uint8Array {
 
 /**
  * The traced horizon of the raster. Every array is 1080 long. A column outside `o.columns` is left as UnknownUnseen
- * with NaN everywhere; a column asked for carries the traced altitude A in `alt` wherever a walk ran (UnknownUnseen and
- * UnknownDark have none), 0 for an open column (whose `contrastSigma` is NaN: there is no boundary to take a contrast
- * of), and the state of 5.2. The caller publishes `alt` for Measured and 90 for everything else. A column whose
+ * with NaN everywhere; a column asked for carries the traced altitude A in `alt` wherever a walk found a boundary
+ * (UnknownUnseen and UnknownDark have none, and neither has a column whose walk found no boundary at all: S51 reads
+ * that UnknownContrast with `alt` and `contrastSigma` NaN, where it used to read Measured at altitude 0), and the
+ * state of 5.2. The caller publishes `alt` for Measured and 90 for everything else. A column whose
  * window model is not the ring's sky (RING SKY, above) is walked against the ring sky: it is Tall, and its `alt` is
  * where the obstruction reaches the top of the photo, not the ground under it.
  */
@@ -954,6 +955,11 @@ function extract(p: BandPanoramaLike, o: ExtractOptions): ColumnHorizon {
     // (`axisAltDeg` NaN with no keyframes) is never Measured, so the tests read `!(x >= y)` and `!(sigma <= y)`.
     if (!topMatches || boundaryRow - a.col.first < TALL_ROWS) {
       out.state[x] = ColState.Tall;
+    } else if (chosen === null) {
+      // S51: a walk that found no boundary has measured nothing. It is not a boundary at altitude 0 and it is no
+      // suggestion; the bin is Unknown and the previous line (O1) shows there.
+      out.state[x] = ColState.UnknownContrast;
+      out.alt[x] = NaN;
     } else if (chosen !== null && !(contrast >= TRACE.lowContrast)) {
       out.state[x] = ColState.UnknownContrast;
     } else if ((chosen !== null && !(contrast >= TRACE.measuredContrast)) || skyAbove < TRACE.skyAboveMeasuredDeg

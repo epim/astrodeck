@@ -436,7 +436,7 @@ test('per-sample mode before the latch; the latch; handoffs with a heading jump 
   assert.equal(f.modeChanges.length, 1);
   const c = f.modeChanges[0];
   assert.equal(c.from, 'relative'); assert.equal(c.to, 'absolute-only');
-  assert.ok(c.tMs > 2983 && c.tMs < 3020, `change at ${c.tMs}`);
+  assert.ok(c.tMs > 3083 && c.tMs < 3120, `change at ${c.tMs}`);   // the 500 ms window, then the 100 ms hold of S52
   assert.ok(angDiff(headingDeg(track.predictAt(lastTick(2500, 60))!.q), headingDeg(track.predictAt(3490)!.q)) < 0.01);
 
   // Turning: absolute-only (no relative stream) hands off to absolute-gyro once the run-time fit confirms the mapping.
@@ -518,7 +518,7 @@ test('a moving phone with a dead relative stream still hands off: to absolute-gy
   let changes = gyroTurn.facts().modeChanges;
   assert.equal(changes.length, 1);
   assert.equal(changes[0].from, 'relative'); assert.equal(changes[0].to, 'absolute-gyro');
-  assert.ok(changes[0].tMs > lastRel + 499 && changes[0].tMs < lastRel + 520, `change at ${changes[0].tMs}`);
+  assert.ok(changes[0].tMs > lastRel + 599 && changes[0].tMs < lastRel + 620, `change at ${changes[0].tMs}`);   // 500 ms window + 100 ms hold (S52)
   assert.ok(gyroTurn.predictAt(6480), 'predicting after the handoff');
 
   // absolute-only: a steady pan excites one body axis, so the mapping never confirms; the gyro is still a magnitude.
@@ -559,7 +559,7 @@ test('absolute-gyro: a 5-degree heading sinusoid moves the predictor\'s yaw over
   const changes = track.facts().modeChanges;
   assert.equal(changes.length, 1); assert.equal(changes[0].to, 'absolute-gyro');
   const ts = changes[0].tMs;
-  assert.ok(ts > 6000 && ts < 6040, `handoff at ${ts}, when the gyro first shows the turn`);
+  assert.ok(ts > 6100 && ts < 6140, `handoff at ${ts}, 100 ms (S52) after the gyro first shows the turn`);
   // The truth turns 170 - az(ts) degrees from the handoff to the end (60 less the turn's first 17-33 ms).
   const dYaw = sDiff(headingDeg(track.predictAt(9200)!.q), headingDeg(track.predictAt(ts)!.q)), truth = 170 - traj(ts).az;
   assert.ok(Math.abs(dYaw - truth) < 0.3, `predictor yaw moved ${dYaw} over a ${truth}-degree turn`);
@@ -804,7 +804,7 @@ test('a gyro whose unit is not confirmed is no rate: quietGyro, noteRate and rat
   assert.equal(track.mode, 'absolute-only');
   const changes = track.facts().modeChanges;
   assert.equal(changes.length, 1); assert.equal(changes[0].from, 'relative'); assert.equal(changes[0].to, 'absolute-only');
-  assert.ok(changes[0].tMs > tn + 499 && changes[0].tMs < tn + 520, `change at ${changes[0].tMs}`);
+  assert.ok(changes[0].tMs > tn + 599 && changes[0].tMs < tn + 620, `change at ${changes[0].tMs}`);   // 500 ms window + 100 ms hold (S52)
   // noteRate: the motion stream was moving at 20 deg/s the whole time the relative stream spoke, whatever the gyro's
   // unit; read as degrees it would never have reached the 10 deg/s line.
   const hzMoving = track.facts().movingHz.motion;
@@ -1173,6 +1173,55 @@ test('NorthAnchor: corrYawAt is subtracted; shift accumulates as a manual nudge;
   const empty = new NorthAnchor();
   empty.shift(4);
   assert.equal(empty.estimate(), null);
+});
+
+// ---- S52: the relative latch across a short absolute-only gap ----------------------------------------
+
+/** A pan, a stop, and a pan again at `onset`; the relative stream is silent from the stop (change-driven, a still phone) and
+ *  speaks again `gap` ms after the onset, while the compass is off by 1.5 degrees the whole time. Returns the track, a player and
+ *  the heading the relative chain must show at `t` after the onset. */
+function onsetRun(gap: number) {
+  const stop = 5000, onset = 8000;
+  const rest: Pose = { az: 110, alt: 25, roll: 0 };
+  const traj = piecewise([[0, panA(10)], [stop, still(rest)], [onset, steady(110, onset, 20)]]);
+  const err = () => 1.5, track = new PoseTrack();
+  const upTo = player(track, [
+    ...events(traj, 0, stop + 1, { rel: { hz: 60, yaw0: 77 }, abs: { hz: 60, err }, motion: { hz: 60 } }),
+    ...events(traj, stop + 1, onset + gap, { abs: { hz: 60, err }, motion: { hz: 60 } }),
+    ...events(traj, onset + gap, onset + 1500, { rel: { hz: 60, yaw0: 77 }, abs: { hz: 60, err }, motion: { hz: 60 } }),
+  ]);
+  upTo(stop + 1);
+  assert.ok(track.axis?.confirmed, 'the mapping confirmed during the first pan');
+  assert.equal(track.latch(stop + 1), 'relative');
+  const ref = headingDeg(track.predictAt(lastTick(stop + 1, 60))!.q);
+  return { track, upTo, onset, expected: (t: number) => ref + (traj(t).az - rest.az) };
+}
+
+test('S52: a 66 ms absolute-only gap at motion onset, with the compass 1.5 degrees off, neither changes the mode nor re-latches yaw', () => {
+  // Mutations: the hold removed (the gap hands off to the absolute stream and the return to relative keeps the compass's
+  //   1.5 degrees: the heading is off and a mode change is recorded); the bound raised to 1000 ms (the 300 ms case below).
+  const { track, upTo, onset, expected } = onsetRun(66);
+  let worst = 0;
+  for (let t = onset + 150; t <= onset + 1400; t += 25) {
+    upTo(t);
+    assert.equal(track.mode, 'relative', `mode at ${t - onset} ms after the onset`);
+    const p = track.predictAt(t);
+    assert.ok(p, `a prediction at ${t - onset} ms`);
+    worst = Math.max(worst, angDiff(headingDeg(p.q), expected(t)));
+  }
+  assert.ok(worst < 0.05, `yaw left the relative chain by ${worst} degrees`);
+  assert.deepEqual(track.facts().modeChanges, [], 'no handoff in a gap this short');
+});
+
+test('S52: a 300 ms absolute-only gap still falls to the absolute stream after 100 ms, as before', () => {
+  // Mutation: the bound raised to 1000 ms: the mode never leaves relative and no change is recorded.
+  const { track, upTo, onset } = onsetRun(300);
+  upTo(onset + 1400);
+  const changes = track.facts().modeChanges;
+  assert.ok(changes.length >= 1, 'the gap handed off');
+  assert.equal(changes[0].from, 'relative');
+  assert.ok(changes[0].tMs > onset + 100 && changes[0].tMs < onset + 140, `handoff ${changes[0].tMs - onset} ms after the onset`);
+  assert.notEqual(changes[0].to, 'relative');
 });
 
 console.log(`poseTrack.test: ${passed}/${passed} passed`);
