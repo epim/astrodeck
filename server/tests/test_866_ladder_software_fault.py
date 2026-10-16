@@ -37,9 +37,10 @@ from pathlib import Path
 
 import pytest
 
+from _humanizer_mirror import shown_whole
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from test_850_resume_sync_refused import (  # noqa: F401 (fixtures too)
-    _CUT, _Hub, _arm, _held_line, _humanizer_rewrites, _isolated_sessions,
+    _Hub, _arm, _held_line, _humanizer_rewrites, _isolated_sessions,
     _session, fp)
 from test_resume_arm_no_light_backoff import (  # tick-level harness
     T0, _Rig, _held)
@@ -174,9 +175,9 @@ async def test_a_solver_or_device_failure_keeps_the_failed_solve_words(
 
 async def test_the_software_fault_hold_is_fixed_words(monkeypatch, bus_lines):
     """No digit; the UI shows our words, on their own and inside the
-    "auto-resume held: ..." line; the cause and the action sit inside the
-    137-char cut; and two different fault types give the identical hold,
-    so the hold keeps its ``since`` across retries.
+    "auto-resume held: ..." line; the cause and the action sit in a line
+    the UI keeps whole; and two different fault types give the identical
+    hold, so the hold keeps its ``since`` across retries.
 
     NAMED MUTANT M866f "plate words" (the hold reworded "blind plate solve
     hit a software fault ..."): RED on the humanizer assertion.
@@ -188,7 +189,7 @@ async def test_the_software_fault_hold_is_fixed_words(monkeypatch, bus_lines):
     assert not re.search(r"\d", words), words
     for text in (words, _held_line(words), "auto-resume held: " + words):
         assert not _humanizer_rewrites(text), text
-    head = _held_line(words)[:_CUT]
+    head = shown_whole(_held_line(words))
     for part in ("software fault", "not slewing", "report it as a bug"):
         assert part in head, (part, head)
 
@@ -232,7 +233,7 @@ async def test_a_software_fault_is_said_once_a_night_and_retried_quietly(
     held = _held(bus_lines)
     assert len(held) == 1, held
     assert held[0].endswith("without a word, until the night ends"), held
-    assert "report it as a bug" in held[0][:_CUT], held
+    assert "report it as a bug" in shown_whole(held[0]), held
 
 
 async def test_the_software_fault_is_said_again_on_a_new_night_and_after_a_rearm(

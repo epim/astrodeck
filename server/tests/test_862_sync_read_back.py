@@ -52,6 +52,7 @@ from astrodeck.devices.sync_verify import (
     verify_sync,
 )
 
+from _humanizer_mirror import CLIP_AT, shown_whole
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from test_850_hub_sync_refused import (_assert_surfaced_ok,
                                        _coordinate_spellings,
@@ -741,13 +742,13 @@ async def test_asiair_busy_dropped_and_unclear_boxes_are_told_apart(
 async def test_a_refused_alpaca_sync_reaches_the_operator_whole(
         sim_hub, monkeypatch, bus_lines):
     """The real hub's ``solve_and_sync`` with a real Alpaca telescope whose
-    mount ignores the sync: one warning, inside the UI's 137-character cut,
-    with the action, and no coordinates.
+    mount ignores the sync: one warning, in a line the UI keeps whole, with
+    the action, and no coordinates.
 
-    MUTANT N20 "the long draft reason" (``SYNC_NOT_MOVED_REASON`` = "the
+    The long draft reason of mutant N20 (``SYNC_NOT_MOVED_REASON`` = "the
     mount said the sync was done, but its position did not move; check the
-    driver's sync settings", 97 characters): RED (observed), ``assert 144 <=
-    137``."""
+    driver's sync settings", 97 characters) was red under the 137-character
+    cut (``assert 144 <= 137``) and fits ``CLIP_AT`` (#1024)."""
     fake = FakeAlpacaMount(equatorial_system=2, takes_sync=False)
     tel = alpaca_tel(fake)
     monkeypatch.setitem(sim_hub.devices, "telescope", tel)
@@ -759,7 +760,7 @@ async def test_a_refused_alpaca_sync_reaches_the_operator_whole(
              if lvl == "warning" and "refused the sync" in m]
     assert len(lines) == 1, bus_lines
     (msg,) = lines
-    assert len(msg) <= 137, (len(msg), msg)
+    assert len(msg) <= CLIP_AT, (len(msg), msg)
     assert "('OK')" in msg
     assert "check the driver's sync settings" in msg
     _assert_surfaced_ok(msg, (10.0, 42.5), (10.0, 40.0))
@@ -786,18 +787,19 @@ _LONG_NAME = "Telescope Simulator for .NET (ASCOM 7.1)"
 
 @pytest.mark.parametrize("reason,code", _REASONS)
 def test_every_new_sync_reason_fits_and_survives_the_humanizer(reason, code):
-    """The hub's line (with the REAL ``_sync_reply_words``) fits the UI's
-    137-character cut, the reason carries no digit, and the humanizer does
-    not replace it. On the route's ``sync not taken: {e}`` line, built from
-    the REAL message helpers with a 40-character name, the whole reason lies
-    inside the first 137 characters.
+    """The hub's line (with the REAL ``_sync_reply_words``) fits what the UI
+    keeps whole, the reason carries no digit, and the humanizer does not
+    replace it. On the route's ``sync not taken: {e}`` line, built from the
+    REAL message helpers with a 40-character name, the whole reason is in a
+    line the UI keeps whole.
 
     MUTANT N21 "NINA in the words" (``NINA_SYNC_FAILED_REASON`` = "NINA
     reported the sync as failed; its log says why"): RED (observed), the
     humanizer rewrites it beside 'error'.
-    MUTANT N22 "the name first" (``refused_message`` returns
-    ``f"{name}: sync refused: {reason}{where}"``): RED (observed) on
-    SYNC_NOT_MOVED_REASON, the reason ends at character 157."""
+    Mutant N22 "the name first" (``refused_message`` returns
+    ``f"{name}: sync refused: {reason}{where}"``) put the reason's end at
+    character 157 on SYNC_NOT_MOVED_REASON and was red under the 137-character
+    cut; it fits ``CLIP_AT`` (#1024)."""
     assert len(_LONG_NAME) == 40
     assert not any(ch.isdigit() for ch in reason), reason
     if code is None:
@@ -807,11 +809,10 @@ def test_every_new_sync_reason_fits_and_survives_the_humanizer(reason, code):
         hub_line = (f"solved, but the mount refused the sync "
                     f"({hub_module._sync_reply_words(code)}): {reason}")
         exc_text = refused_message(_LONG_NAME, reason, 2.5)
-    assert len(hub_line) <= 137, (len(hub_line), hub_line)
+    assert len(hub_line) <= CLIP_AT, (len(hub_line), hub_line)
     assert not _humanizer_rewrites(hub_line), hub_line
     route_line = f"sync not taken: {exc_text}"
-    assert reason in route_line[:137], (route_line.index(reason) + len(reason),
-                                        route_line)
+    assert reason in shown_whole(route_line), route_line
     assert not _humanizer_rewrites(route_line), route_line
 
 
@@ -1108,12 +1109,13 @@ async def test_an_unverified_alpaca_sync_reaches_the_operator_whole(
         sim_hub, monkeypatch, bus_lines):
     """The real hub's ``solve_and_sync`` line for the LONGEST unverified
     reason (``SYNC_UNVERIFIED_READBACK``), with the hub's real prefix: one
-    warning, inside the UI's 137-character cut, not rewritten by the
-    humanizer, and no coordinates.
+    warning, in a line the UI keeps whole, not rewritten by the humanizer,
+    and no coordinates.
 
-    MUTANT N30 "a longer unverified prefix" (``"solved, but the mount did
+    Mutant N30 "a longer unverified prefix" (``"solved, but the mount did
     not confirm the sync: "`` in ``hub.solve_and_sync`` given ten more
-    characters): RED (observed), the line runs past 137."""
+    characters) ran the line past 137 and was red under that cut; it fits
+    ``CLIP_AT`` (#1024)."""
     fake = _ReadsDieAfterSync(equatorial_system=2)
     tel = alpaca_tel(fake)
     monkeypatch.setitem(sim_hub.devices, "telescope", tel)
@@ -1127,6 +1129,6 @@ async def test_an_unverified_alpaca_sync_reaches_the_operator_whole(
     assert len(lines) == 1, bus_lines
     (msg,) = lines
     assert msg.endswith(SYNC_UNVERIFIED_READBACK), msg
-    assert len(msg) <= 137, (len(msg), msg)
+    assert len(msg) <= CLIP_AT, (len(msg), msg)
     assert not _humanizer_rewrites(msg), msg
     _assert_surfaced_ok(msg, (10.0, 42.5), (10.0, 40.0))

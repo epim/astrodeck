@@ -44,9 +44,10 @@ import re
 
 import pytest
 
+from _humanizer_mirror import shown_whole
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from test_850_resume_sync_refused import (  # noqa: F401 (fixtures too)
-    _CUT, _Connected, _Hub, _arm, _held_line, _humanizer_rewrites,
+    _Connected, _Hub, _arm, _held_line, _humanizer_rewrites,
     _isolated_sessions, _refusal, _session, _surfaced_ok, _warnings, fp)
 from test_zwo_am5 import FakeLink, _connect_script, fixed_env  # noqa: F401
 
@@ -312,12 +313,13 @@ async def test_an_accepted_sync_near_the_pole_leaves_the_position_unknown(
     said = _still_unknown_warnings(bus_lines)
     assert len(said) == 1, bus_lines
     assert not re.search(r"\d", said[0]), said
-    assert "then Trust it." in said[0][:_CUT], said
+    assert "then Trust it." in shown_whole(said[0]), said
     assert not _humanizer_rewrites(said[0]), said
 
 
 #: A mount name the operator might give (``conn.extra["name"]``), long enough
-#: that a name put before the action pushes "then Trust it." past the cut.
+#: that a name put before the action once pushed "then Trust it." past the
+#: UI's 137-character cut (it keeps 400 since #792).
 _LONG_NAME = "Backyard observatory east pier"
 
 
@@ -325,14 +327,15 @@ _LONG_NAME = "Backyard observatory east pier"
                          ids=["default", "twenty", "thirty"])
 async def test_the_still_unknown_warning_keeps_its_action_whatever_the_name(
         fixed_env, bus_lines, name):
-    """The driver's warning holds the whole action, in the safe order,
-    inside the UI's 137-char cut whatever the mount is called: the default
-    name, a twenty-character one, a thirty-character one. The name goes
-    after the action, so its length cannot cut it.
+    """The driver's warning holds the whole action, in the safe order, in a
+    line the UI keeps whole whatever the mount is called: the default name,
+    a twenty-character one, a thirty-character one. The name goes after the
+    action.
 
-    NAMED MUTANT M867p "name first" (the warning starts ``f"{self.name}: "``
-    ahead of the action, as the other mount lines do): RED on ``thirty``,
-    "then Trust it." ends past the cut.
+    Mutant M867p "name first" (the warning starts ``f"{self.name}: "`` ahead
+    of the action, as the other mount lines do) pushed "then Trust it." past
+    the 137-character cut with the thirty-character name and was red on
+    ``thirty``; it fits ``CLIP_AT`` (#1024).
     """
     link = FakeLink(_connect_script())
     tel = (am5.ZwoAm5Telescope(link) if name is None
@@ -344,7 +347,7 @@ async def test_the_still_unknown_warning_keeps_its_action_whatever_the_name(
     said = _still_unknown_warnings(bus_lines)
     assert len(said) == 1, bus_lines
     assert tel.name in said[0], said
-    head = said[0][:_CUT]
+    head = shown_whole(said[0])
     for part in ("position still unknown", "Trust position", "pad key",
                  "then Trust it."):
         assert part in head, (part, head)
@@ -462,16 +465,18 @@ _HOLDS = {
 @pytest.mark.parametrize("which", list(_HOLDS))
 async def test_the_position_unknown_holds_are_fixed_words_in_the_safe_order(
         monkeypatch, bus_lines, which):
-    """Each hold: no digit; the UI shows our words; the action whole inside
-    the 137-char cut of the "auto-resume held: ..." line, in the safe order
-    (Trust position, then the pad key, then Trust again); no goto, slew or
+    """Each hold: no digit; the UI shows our words; the action whole in the
+    "auto-resume held: ..." line, which fits what the UI keeps whole, in the
+    safe order (Trust position, then the pad key, then Trust again); no
+    goto, slew or
     target advised; its cause named and no other; and the identical words
     whatever the measurement, so the hold keeps its ``since``.
 
-    NAMED MUTANT M867e "cause first" (POSITION_UNKNOWN_WORDS reordered to
-    start "The mount refused the sync, and nothing has confirmed its
-    position since it reconnected; " + the action): RED on ``refused``,
-    "pad key" falls past the cut.
+    Mutant M867e "cause first" (POSITION_UNKNOWN_WORDS reordered to start
+    "The mount refused the sync, and nothing has confirmed its position since
+    it reconnected; " + the action) pushed "pad key" past the 137-character
+    cut and was red on ``refused``; it fits ``CLIP_AT`` (#1024), and the safe
+    order is still graded below.
     NAMED MUTANT M867f "a goto advised" (", or goto a star away from the
     pole" inserted after "Trust position" in the action): RED on all four.
     NAMED MUTANT M867g "figure in the hold" (the refused arm returns
@@ -485,8 +490,8 @@ async def test_the_position_unknown_holds_are_fixed_words_in_the_safe_order(
     assert not re.search(r"\d", words), words
     for text in (words, _held_line(words), "auto-resume held: " + words):
         assert not _humanizer_rewrites(text), text
-    for head in (_held_line(words)[:_CUT],
-                 ("auto-resume held: " + words)[:_CUT]):
+    for head in (shown_whole(_held_line(words)),
+                 shown_whole("auto-resume held: " + words)):
         for part in ("not slewing", "position unknown", "Trust position",
                      "by eye", "pad key", "then Trust it."):
             assert part in head, (part, head)

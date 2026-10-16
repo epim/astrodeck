@@ -69,12 +69,15 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
+import contextvars
 import json
 import os
 import queue
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -153,6 +156,83 @@ def is_site_derived(row: Any) -> bool:
         return False
     data = row.get("data")
     return isinstance(data, dict) and bool(data.get(SITE_DERIVED_KEY))
+
+
+class _SiteTimedSpan:
+    """One open :func:`site_timed_span`. ``open`` is all it is: the span's
+    end is a flag, not the removal of a variable, because a task started
+    inside the span copies the context and carries this object out with it
+    (see ``site_timed_span``)."""
+
+    __slots__ = ("open",)
+
+    def __init__(self) -> None:
+        self.open = True
+
+
+#: The span the running task is inside, or None. A ``ContextVar`` and not a
+#: bus attribute: only what the spanned code itself publishes is flagged. The
+#: status loop, the safety poller and the guide loop that were already running
+#: when the span opened keep their own contexts and publish as they always did.
+_SITE_SPAN: contextvars.ContextVar[_SiteTimedSpan | None] = (
+    contextvars.ContextVar("astrodeck_site_timed_span", default=None))
+
+
+def in_site_timed_span() -> bool:
+    """Is the calling task inside an open :func:`site_timed_span`?"""
+    span = _SITE_SPAN.get()
+    return span is not None and span.open
+
+
+#: Event types a span never flags on its own: an alert-bearing publish must
+#: reach the dispatcher, which skips anything carrying ``site_derived``
+#: (``alerting.py``), and a viewer must be told of a real hazard.
+_SPAN_EXEMPT_TYPES = frozenset({"safety", "alert"})
+
+
+def _span_exempt(type: str, data: dict[str, Any]) -> bool:
+    """Is this publish one the span leaves unflagged? A warning or error log
+    line (a failed re-centre, a solve failure, a guider that would not stop)
+    and the safety and alert types: flagging them would drop a failed flip
+    from the alert sinks and from every viewer. A caller that names the flag
+    itself on such a line still gets it, because this only skips the span's
+    own addition."""
+    if type in _SPAN_EXEMPT_TYPES:
+        return True
+    return type == "log" and data.get("level") in ("warning", "error")
+
+
+@contextlib.contextmanager
+def site_timed_span() -> Iterator[None]:
+    """Every event the calling task publishes inside this block is flagged
+    ``site_derived`` (spec 6.9, #166, #1020): ``EventBus.publish`` puts
+    ``data.site_derived = True`` on it, whatever its type bar the exemptions
+    of ``_span_exempt`` (warning and error lines, safety and alert types,
+    which must still alert), and ``bus.log`` goes through ``publish``, so an
+    info line is flagged the same way.
+
+    For a stretch of work whose START is a computed moment, such as a
+    meridian flip. Flagging the events named at the start leaves their
+    neighbours, which the same call publishes in the same millisecond (a
+    guider's stop, a re-centre's first solve), to tell a viewer the instant
+    they were each built not to. The span is the work, not a list of its
+    events, so a publish nobody thought of is covered too.
+
+    The flag belongs to the span's own context only. A task the block starts
+    (``start_guiding`` spawns the guide loop) copies the context, and the
+    copy would hold the span for as long as that task lives: the guide
+    stream would be withheld from a viewer for the rest of the night. So the
+    task keeps the span object and the span says when it ended, and the
+    object's ``open`` is False the moment this block exits, whichever way.
+
+    Nests: an inner span's end hands the outer span back."""
+    span = _SiteTimedSpan()
+    token = _SITE_SPAN.set(span)
+    try:
+        yield
+    finally:
+        span.open = False
+        _SITE_SPAN.reset(token)
 
 
 def night_key(ts: float | None = None) -> str:
@@ -667,6 +747,12 @@ class EventBus:
         self._subscribers.discard(q)
 
     def publish(self, type: str, **data: Any) -> None:
+        # Before anything reads the flag: the storm limiter keys on it, the
+        # notice drain below skips on it, and the ring and the readers sort
+        # on it. ``data`` is this call's own dict, so adding the key touches
+        # nobody else's payload.
+        if in_site_timed_span() and not _span_exempt(type, data):
+            data[SITE_DERIVED_KEY] = True
         if type in ("focus", "filter_offsets"):
             from copy import deepcopy
             self.operation_snapshots[type] = {**deepcopy(data), "_observed_at": time.time()}

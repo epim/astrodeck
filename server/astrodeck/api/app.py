@@ -92,7 +92,8 @@ from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       StandardsConfig, SurveyConfig, SyncPushConfig,
                       UpdateConfig, WcsStampConfig,
                       WeatherConfig,
-                      config_store, frames_payload, publish_frames, redacted,
+                      config_store, frames_payload, nogo_wedge_problem,
+                      publish_frames, redacted,
                       set_frame_settings)
 from ..locations import (UNCHANGED, LocationLibraryFull, LocationNameCollision,
                          location_store, normalize_horizon_points)
@@ -5239,6 +5240,27 @@ def create_app(*, bind_host: str | None = None,
                 "detail": f"horizon not saved: {e}",
                 "code": "invalid_horizon"})
 
+    def _require_nogo_usable(body: ConfigPatchBody) -> None:
+        """422 for a no-go wedge the pier guard could not read (#1007), BEFORE
+        any block of the body is written.
+
+        ``SafetyConfig.nogo_box`` is a free ``list[dict]``, so a wedge whose
+        ``alt_max`` is NaN was stored, and ``nogo_floor`` then skipped it: the
+        configuration said a pier guard was armed and nothing kept it. The rule
+        is ``nogo_wedge_problem``'s. A NEW body is held to all of it; the config
+        load is gentler with a wedge already stored (it keeps one the floor can
+        read, brought into range). The reason names the wedge's place in the
+        list and the rule, never a value.
+        ``None`` and ``[]`` pass: no wedges, and the explicit clear."""
+        if body.safety is None or not body.safety.nogo_box:
+            return
+        for i, wedge in enumerate(body.safety.nogo_box, start=1):
+            problem = nogo_wedge_problem(wedge)
+            if problem is not None:
+                raise HTTPException(422, detail={
+                    "detail": f"no-go wedge {i} not saved: {problem}",
+                    "code": "invalid_nogo_box"})
+
     def _require_config_field_caps(body: ConfigPatchBody,
                                    principal: Principal) -> None:
         """Field-level RBAC for ``POST /api/config`` (plan field-level map).
@@ -5354,6 +5376,7 @@ def create_app(*, bind_host: str | None = None,
         _require_config_field_caps(body, principal)
         _require_deadman_url_usable(body)
         _require_horizon_usable(body)
+        _require_nogo_usable(body)
         await asyncio.to_thread(_persist_config_patch, body)
         if body.site is not None:
             push = getattr(hub, "push_site_to_mount", None)

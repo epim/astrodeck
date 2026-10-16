@@ -35,6 +35,7 @@ import pytest
 
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from test_850_hub_sync_refused import _coordinate_spellings
+from _humanizer_mirror import CLIP_AT
 from test_zwo_am5 import (FakeLink, _connect_script, _humanizer_rewrites,  # noqa: F401
                           fixed_env)
 
@@ -540,17 +541,19 @@ def test_an_unmeasurable_end_of_the_window_is_no_progress():
 # ---------------------------------------------------------------- the words
 
 
-async def test_the_not_arrived_line_has_no_coordinate_and_fits_the_cut(
+async def test_the_not_arrived_line_has_no_coordinate_and_fits_the_budget(
         fixed_env, fast, monkeypatch):
     """The message names the reason and the separation, never the target
-    or the position read back (#140, #166), and fits the UI's 137-character
-    cut behind the ``goto failed: `` prefix ``/api/mount/goto`` adds, with
-    the longest driver name.
+    or the position read back (#140, #166), and fits what the UI keeps whole
+    (``CLIP_AT``) behind the ``goto failed: `` prefix ``/api/mount/goto``
+    adds, with the longest driver name.
 
     NAMED MUTANT M9 "coordinates in the message" (``_not_arrived``'s
     ``where`` f-string becomes ``f"; it reports {residual:.2f} deg from the
-    target at {self._last_pos[0]:.4f}h {self._last_pos[1]:+.4f}"``): RED, the
-    length assertion first (156 characters), ahead of the spelling ones.
+    target at {self._last_pos[0]:.4f}h {self._last_pos[1]:+.4f}"``): RED, on
+    the first coordinate-spelling assertion. The 156-character line fits
+    ``CLIP_AT``, so the length assertion that used to fail first, past 137,
+    no longer does (#1024).
     """
     monkeypatch.setattr(am5, "GOTO_STALL_S", 0.05)
     fl, tel = await _tel(_Path(lambda n: (S_RA, S_DEC)),
@@ -561,7 +564,7 @@ async def test_the_not_arrived_line_has_no_coordinate_and_fits_the_cut(
 
     msg = str(info.value)
     surfaced = "goto failed: " + msg
-    assert len(surfaced) <= 137, (len(surfaced), surfaced)
+    assert len(surfaced) <= CLIP_AT, (len(surfaced), surfaced)
     assert not _humanizer_rewrites(surfaced), surfaced
     fig = f"{info.value.residual_deg:.2f}"
     assert fig in msg

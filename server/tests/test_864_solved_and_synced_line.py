@@ -21,6 +21,7 @@ applied to a byte copy of hub.py and the file was restored from that copy.
 """
 from __future__ import annotations
 
+from _humanizer_mirror import CLIP_AT
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from test_zwo_am5 import fixed_env  # noqa: F401 (fixture import)
 
@@ -96,8 +97,8 @@ async def test_the_success_line_carries_no_coordinate(
 async def test_the_success_line_keeps_the_prefix_both_mount_uis_match(
         sim_hub, monkeypatch, bus_lines):
     """Both mount UIs fire their "synced" toast on a line that starts with
-    "solved & synced"; the line keeps that prefix and fits the UI's
-    137-character cut whole.
+    "solved & synced"; the line keeps that prefix and fits what the UI
+    keeps whole.
 
     NAMED MUTANT M864c "prefix dropped" (the line reworded to "synced: the
     mount accepted the solved position"): RED, no line starts with the
@@ -109,7 +110,7 @@ async def test_the_success_line_keeps_the_prefix_both_mount_uis_match(
              if s == "solve" and "the mount accepted the solved position" in m]
     assert len(lines) == 1, bus_lines
     assert lines[0].startswith("solved & synced"), lines
-    assert len(lines[0]) <= 137, lines
+    assert len(lines[0]) <= CLIP_AT, lines
 
 
 async def test_a_sync_the_driver_cannot_vouch_for_is_not_solved_and_synced(
@@ -144,7 +145,7 @@ async def test_a_sync_the_driver_cannot_vouch_for_is_not_solved_and_synced(
             if m.startswith("solved; the mount accepted the sync, but it "
                             "still cannot vouch for its position")]
     assert len(said) == 1, solve_lines
-    assert "plate" not in said[0] and len(said[0]) <= 137, said
+    assert "plate" not in said[0] and len(said[0]) <= CLIP_AT, said
     assert any(lvl == "warning" and s == "mount"
                and "position still unknown" in m
                for lvl, m, s in bus_lines), bus_lines

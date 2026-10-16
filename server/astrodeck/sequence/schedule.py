@@ -334,6 +334,15 @@ def nogo_floor(nogo_box: list[dict] | None, az: float) -> float:
 
     Wraps the 0↔360 seam: ``az_min=350, az_max=10`` is the 20° wedge through
     due north, not the 340° complement.
+
+    A wedge with a value that is not a finite number is read as BLOCKED, never
+    skipped (#1007): ``max(floor, nan)`` keeps its first argument, so a NaN
+    ``alt_max`` left the wedge inert while the configuration said a pier guard
+    was armed. An ``alt_max`` that cannot be read floors the wedge at the zenith
+    (``HORIZON_BLOCKED_DEG``); an azimuth that cannot be read puts the wedge
+    everywhere, the same reading as the degenerate wedge below. The config load
+    and ``POST /api/config`` refuse such a wedge before it gets here; this is
+    the floor refusing to trust one that arrives some other way.
     """
     if not nogo_box:
         return 0.0
@@ -346,10 +355,14 @@ def nogo_floor(nogo_box: list[dict] | None, az: float) -> float:
             alt = float(box["alt_max"])
         except (KeyError, TypeError, ValueError):
             continue        # a malformed wedge is ignored, never a crash mid-run
-        span = (a1 - a0) % 360.0
+        if not math.isfinite(alt):
+            alt = HORIZON_BLOCKED_DEG
         # A zero span is a degenerate wedge (az_min == az_max). Treat it as the
         # FULL circle rather than an empty one: the alternative silently drops a
-        # guard the user believes is armed.
+        # guard the user believes is armed. A wedge whose azimuths cannot be read
+        # has no span to measure and is read the same way.
+        span = ((a1 - a0) % 360.0 if math.isfinite(a0) and math.isfinite(a1)
+                else 0.0)
         if span == 0.0 or (az - a0) % 360.0 <= span:
             floor = max(floor, alt)
     return floor
@@ -394,9 +407,17 @@ def effective_floor(min_alt_deg: float, horizon: list[tuple[float, float]] | Non
     never wired: the field persisted, the UI never showed it, and nothing read
     it, so a user who configured a pier guard had none. It defaults to None so
     every existing caller keeps its exact previous answer.
+
+    A ``min_alt_deg`` that is not a finite number reads as ``HORIZON_BLOCKED_DEG``
+    (#1007), never as no floor: ``alt < nan`` is False at every altitude, and
+    ``max()`` keeps a NaN first argument, so a NaN here used to refuse nothing.
+    ``SafetyConfig`` refuses and the config load repairs such a value; this is
+    the floor refusing to trust one that arrives some other way.
     """
-    return max(float(min_alt_deg), interp_wrap(horizon, az),
-               nogo_floor(nogo_box, az))
+    base = float(min_alt_deg)
+    if not math.isfinite(base):
+        return HORIZON_BLOCKED_DEG
+    return max(base, interp_wrap(horizon, az), nogo_floor(nogo_box, az))
 
 
 # --------------------------------------------------------------------- windows

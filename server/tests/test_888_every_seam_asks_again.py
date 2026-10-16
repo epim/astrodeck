@@ -49,6 +49,7 @@ from astrodeck.sequence.engine import PositionUnknownStop
 from astrodeck.sun_watch import (BLIND_LOG_EVERY, POSITION_UNKNOWN_DAYLIGHT,
                                  POSITION_UNKNOWN_NIGHT_HOLD)
 
+from _humanizer_mirror import CLIP_AT
 from test_850_engine_sync_refused import _no_hold, flip_hub  # noqa: F401
 from test_888_every_move_asks_the_gate import (_REFUSED, _approach_rig,
                                                _check_words, _recorded_mount,
@@ -333,7 +334,7 @@ async def test_control_a_known_position_tppa_leg_moves(monkeypatch, axis):
 
 def test_the_mid_run_tppa_line_keeps_the_wording_rules():
     _check_words(nat.TPPA_POSITION_UNKNOWN_MID_RUN)
-    assert len("native TPPA: " + nat.TPPA_POSITION_UNKNOWN_MID_RUN) <= 137
+    assert len("native TPPA: " + nat.TPPA_POSITION_UNKNOWN_MID_RUN) <= CLIP_AT
     assert not any(ch.isdigit() for ch in nat.TPPA_POSITION_UNKNOWN_MID_RUN)
 
 

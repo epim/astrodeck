@@ -168,11 +168,17 @@ class NativeSession:
     async def health(self) -> dict | None:
         """A small per-host reachability snapshot. The native path has no
         out-of-band link (each Alpaca call carries its own error), so this
-        reports the endpoints the pool holds open."""
+        reports the endpoints the pool holds open.
+
+        Read off the connections, not the pool keys: a key is the ``(host,
+        port)`` a connection was pooled under, and a connection can move after
+        that (the managed comhost respawns on a new port and its connection
+        repoints, #992). The key stays what ``get_device`` finds the shared
+        connection by, so it is left alone (#1016)."""
         return {
             "backend": "native",
             "ok": True,
-            "hosts": sorted(f"{h}:{p}" for (h, p) in self._conns),
+            "hosts": sorted(f"{c.host}:{c.port}" for c in self._conns.values()),
         }
 
     async def close(self) -> None:

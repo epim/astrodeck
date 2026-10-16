@@ -165,9 +165,22 @@ function test(name: string, fn: () => void): void {
   try { fn(); passed++; }
   catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
 }
+/** Back to the LAN, assigned once the relay module is imported (section 10). */
+let backToLan: () => void = () => {};
 async function testAsync(name: string, fn: () => Promise<void>): Promise<void> {
   try { await fn(); passed++; }
   catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
+  finally {
+    // Whatever the case did, the next one starts on the LAN (#1022). A case
+    // that threw on the relay never reached its own `goRelay(false)`, and the
+    // case after it read the relay as its LAN precondition.
+    // MUTANT "no return to the LAN" (`backToLan();` removed), with the ADD A
+    // DEVICE case made to fail on the relay. Observed, "34/36 passed": that
+    // case, and "x on the relay the driver sheet refuses a VALID form, and
+    // says why: precondition: a filled form is still refused on the LAN
+    // (expected null, got true)". With it, only the case made to fail fails.
+    backToLan();
+  }
 }
 function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
 function eq<T>(got: T, want: T, msg: string): void {
@@ -177,6 +190,38 @@ const settle = async () => {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 };
+
+// ------------------------------------------------ the profile poll is held
+//
+// CONNECT <profile> ends in `waitForProfileActive`, which re-lists
+// GET /api/profiles 1.5 s after the activate and every 1.5 s after that until
+// the profile shows as active. It is a bare timer, not the mounted screen's:
+// it outlives the case that pressed it and the root that case mounted, and
+// left to the clock it came due inside whichever later case the run had
+// reached 1.5 s on. A case that grades "the press sent nothing" counted that
+// GET as the press's own and failed, and the case after it inherited the relay
+// flag the failure skipped past (#1022). It was intermittent because the
+// window it landed in moved with the machine's speed.
+//
+// So the poll's timer is held, and comes due only when a case lands it on
+// purpose. No case here waits 1.5 s for the answer, so nothing is lost by it.
+// The delay is `waitForProfileActive`'s default `everyMs`; the case in
+// section 10 that presses CONNECT fails if it stops matching.
+const PROFILE_POLL_MS = 1500;
+const heldPolls: Array<() => void> = [];
+const realSetTimeout = g.setTimeout;
+g.setTimeout = (fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+  if (ms === PROFILE_POLL_MS) { heldPolls.push(() => fn(...args)); return 0; }
+  return realSetTimeout(fn, ms, ...args);
+};
+/** Let every held poll come due now and finish; how many there were. Only a
+ *  case that means to see the poll's request calls this. */
+async function landHeldPolls(): Promise<number> {
+  const due = heldPolls.splice(0);
+  await act(async () => { for (const run of due) run(); });
+  await settle();
+  return due.length;
+}
 
 // ------------------------------------------------------------------ fixtures
 const ADMIN = {
@@ -907,6 +952,8 @@ function goRelay(on: boolean): void {
   act(() => { noteRemoteStatus(on ? { via: "relay" } : { via: "direct" }); });
 }
 
+backToLan = () => goRelay(false);
+
 /** Run `fn` on the relay and ALWAYS come back to the LAN: the flag is module
  *  state, and a case that threw while it was on would leave every later case
  *  asserting against the wrong origin. */
@@ -915,6 +962,42 @@ async function onTheRelay(fn: () => Promise<void>): Promise<void> {
   await settle();
   try { await fn(); } finally { goRelay(false); }
 }
+
+// THE HELD POLL (#1022). Press CONNECT <profile> on the LAN: the press starts
+// a profile poll, the harness holds it, and it re-lists the profiles only when
+// landed. This is also the premise the relay cases below lean on: without it
+// the poll is on the clock and can come due inside their press windows, where
+// `asked` is expected to stay empty.
+// MUTANT "the poll is left to the clock" (the `ms === PROFILE_POLL_MS` branch
+// of the setTimeout wrapper made `false`). Observed, "rigDevicesDom.test:
+// 35/36 passed": "x a CONNECT <profile> press starts a profile poll that the
+// harness holds, and landing it re-lists the profiles: the press started no
+// profile poll the harness holds, so it is on the clock (expected 1, got 0)".
+await testAsync("a CONNECT <profile> press starts a profile poll that the harness holds, and landing it re-lists the profiles", async () => {
+  clearPicks();
+  seed({ principal: ADMIN, equipConnected: false, status: NOTHING_CONNECTED, safety: null });
+  mount();
+  await settle();
+  await landHeldPolls();            // whatever an earlier case left, so the count below is this press's alone
+  asked.length = 0;
+  click(q('[data-testid="first-night-connect"]'));
+  await settle();
+  assert(useStore.getState().confirm != null,
+    "the press asked no confirm before activating a rig that moves real hardware");
+  act(() => { useStore.getState().resolveConfirm(true); });
+  await settle();
+  assert(asked.some((a) => a.method === "POST" && /\/api\/profiles\/p1\/activate/.test(a.url)),
+    "premise: the press never activated the profile");
+  const listed = () => asked.filter((a) => a.method === "GET" && /\/api\/profiles$/.test(a.url)).length;
+  eq(heldPolls.length, 1,
+    "the press started no profile poll the harness holds, so it is on the clock");
+  const before = listed();
+  await settle();
+  eq(listed(), before, "a held profile poll re-listed the profiles on its own");
+  eq(await landHeldPolls(), 1, "landing found a different number of polls than were held");
+  eq(listed(), before + 1,
+    "landing the held poll did not re-list the profiles: it is not the poll this harness thinks it is");
+});
 
 await testAsync("on the relay the FIRST NIGHT verbs name the LAN, not a capability", async () => {
   clearPicks();
@@ -1256,6 +1339,7 @@ await testAsync("on the relay the driver sheet refuses a VALID form, and says wh
 });
 
 act(() => { rootRef?.unmount(); });
+g.setTimeout = realSetTimeout;
 
 const total = passed + failed;
 console.log(`rigDevicesDom.test: ${passed}/${total} passed`);

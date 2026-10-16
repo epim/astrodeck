@@ -214,6 +214,7 @@ probe in a scratch directory, and a child started with its own environment.
 
 - `gate_run.py` puts `<tree>/server` first on `PYTHONPATH` for the command it
   runs, so anything the command starts follows. Run through it, you set nothing.
+  `clean_tree_gate.py` does the same for the HEAD worktree it makes (#1027).
 - The scripts in the repository that import astrodeck (`tools/gallery_benchmark.py`,
   `tools/ui_probe/seed_session.py`, `server/tools/bench_am5_pulse_walk.py`,
   `server/tools/sn_animation.py`, `scripts/sign_release.py`,

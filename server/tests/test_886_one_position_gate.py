@@ -52,22 +52,21 @@ from astrodeck.mount_offset import (POSITION_UNKNOWN_CODE,
                                     POSITION_UNKNOWN_MOTION_DETAIL)
 from astrodeck.sequence.engine import PositionUnknownStop, SequenceEngine
 
+from _humanizer_mirror import CLIP_AT, shown_whole
 from test_850_engine_sync_refused import _humanizer_rewrites, flip_hub  # noqa: F401
 from test_api_mount import FakeAuthProvider
 from test_recovery_centring_is_measured import (  # noqa: F401 (fixtures)
     _engine, _pinned_mount, sim_hub, temp_store)
 import test_the_flip_stops_paying_for_itself as flp
 
-#: The humanizer's cut (ui/src/lib/humanize.ts): 137 characters plus "...".
-_CUT = 137
 _GOTO_WORDS = ("goto", "go to", "slew")
 _REASON = "a fictional reason"
 
 
 def _check_words(line: str) -> None:
-    """The wording rules for every new line: the safe order inside the cut,
-    no goto word anywhere, nothing the UI's humanizer rewrites."""
-    head = line[:_CUT]
+    """The wording rules for every new line: the safe order in a line the UI
+    keeps whole, no goto word anywhere, nothing the UI's humanizer rewrites."""
+    head = shown_whole(line)
     assert "Trust position" in head and "pad key" in head, head
     for word in _GOTO_WORDS:
         assert word not in line.lower(), (word, line)
@@ -76,7 +75,7 @@ def _check_words(line: str) -> None:
 
 def test_the_detail_keeps_the_rules():
     """The routes' 409 detail and the engine's line are one copy."""
-    assert len(POSITION_UNKNOWN_MOTION_DETAIL) <= _CUT
+    assert len(POSITION_UNKNOWN_MOTION_DETAIL) <= CLIP_AT
     _check_words(POSITION_UNKNOWN_MOTION_DETAIL)
     assert (SequenceEngine._POSITION_UNKNOWN_ACTION
             == POSITION_UNKNOWN_MOTION_DETAIL)
