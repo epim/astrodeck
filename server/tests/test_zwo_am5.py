@@ -11,6 +11,7 @@ import time
 import pytest
 
 from _deadline import wait_until
+from _humanizer_mirror import CLIP_AT, shown_whole
 from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 from astrodeck.devices.serial_link import LinkError, SerialLink
 
@@ -2243,12 +2244,13 @@ async def test_the_e11_words_are_chosen_from_the_read_back(
 
 
 def test_each_e11_text_fits_and_carries_no_digit():
-    """J1.1. At most 90 characters each, so the hub's refused line still fits
-    in 140, and no digit (the reply is quoted beside them, and a figure in a
-    hold reason breaks the #618 contract). Mutant ``mj5_figure_in_words``
-    (the far words say "more than 5 deg")."""
+    """J1.1. Each fits what the UI keeps whole (they were held to 90
+    characters so the hub's refused line stayed inside the 140 the UI cut at
+    until #792, #1024), and carries no digit (the reply is quoted beside them,
+    and a figure in a hold reason breaks the #618 contract). Mutant
+    ``mj5_figure_in_words`` (the far words say "more than 5 deg")."""
     for text in _E11_TEXTS:
-        assert len(text) <= 90, (len(text), text)
+        assert len(text) <= CLIP_AT, (len(text), text)
         assert not any(ch.isdigit() for ch in text), text
         assert not _humanizer_rewrites(text), text
 
@@ -2299,12 +2301,14 @@ def test_both_e11_texts_are_pinned_exactly():
     ((_T_RA, _T_DEC + 1.0), "SYNC_E11_AT_HOME_REASON"),
     ((7.0, 90.0), "SYNC_E11_ELSEWHERE_REASON"),
 ])
-async def test_the_e11_words_lead_the_route_refusal_inside_the_cut(
+async def test_the_e11_words_reach_the_route_refusal_whole(
         fixed_env, pos, reason):
     """J1.1. The Solve & Sync route toasts ``"sync not taken: " + str(e)``,
-    and the UI cuts a long line to 137 characters. With the backend's default
-    name both e11 texts end inside it. Mutant ``mj7_reason_after_where``
-    (the reason moved behind the reply and the residual in the message)."""
+    and the UI keeps a line whole up to ``CLIP_AT`` (it cut at 137 until #792,
+    #1024). With the backend's default name both e11 texts are in it. Mutant
+    ``mj7_reason_after_where`` (the reason moved behind the reply and the
+    residual in the message) pushed them past the old cut and is no longer red
+    here."""
     want = getattr(am5, reason)
     fl = _Am5Model(_connect_script(), pos=pos, cm_reply="e11", moves=False)
     tel = am5.ZwoAm5Telescope(fl)            # the backend's default name
@@ -2314,11 +2318,7 @@ async def test_the_e11_words_lead_the_route_refusal_inside_the_cut(
         await tel.sync(_T_RA, _T_DEC)
     assert exc.value.reason == want, exc.value.reason
     toast = "sync not taken: " + str(exc.value)
-    at = toast.find(want)
-    assert at >= 0, toast
-    assert at + len(want) <= 137, (
-        f"the e11 words end at char {at + len(want)}, past the cut: "
-        f"{toast[:137]!r}")
+    assert want in shown_whole(toast), toast
     assert "reply 'e11'" in toast, toast     # G1.4, review D5d
 
 

@@ -22,6 +22,7 @@ import re
 
 import pytest
 
+from _humanizer_mirror import CLIP_AT
 from test_850_hub_sync_refused import _humanizer_rewrites
 from test_centring_settings_reach_goto import _setup, _target
 
@@ -44,7 +45,8 @@ async def test_a_centring_off_goto_that_does_not_arrive_skips_the_target(
         bus_lines):
     """The goto stalled: ``StopTarget`` in the fixed words, no digit in it,
     and one ``sequence`` warning carrying the driver's words and the
-    separation, inside the UI's cut and safe from its humanizer.
+    separation, inside what the UI keeps whole and safe from its
+    humanizer.
 
     NAMED MUTANT E-M1 "seam removed" (the ``except GotoNotArrived`` arm made
     ``except ZeroDivisionError``): RED, ``GotoNotArrived`` escapes instead of
@@ -68,7 +70,7 @@ async def test_a_centring_off_goto_that_does_not_arrive_skips_the_target(
                          f"arrive ({_STALLED}, 3.21 deg off)", "sequence")], \
         warnings
     line = warnings[0][0]
-    assert len(line) <= 137, (len(line), line)
+    assert len(line) <= CLIP_AT, (len(line), line)
     assert not _humanizer_rewrites(line), line
     assert not _humanizer_rewrites(said), said
 

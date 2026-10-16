@@ -28,8 +28,8 @@ with them:
 
 Every surfaced line is also graded against the UI's ``humanizeLog`` rules
 (ui/src/lib/humanize.ts, mirrored by ``_humanizer_rewrites``, the one shared
-``_humanizer_mirror``), which would replace our words, and against its
-140-character cut.
+``_humanizer_mirror``), which would replace our words, and against the
+length it keeps whole (``CLIP_AT``).
 
 Every coordinate here is fictional and deliberately NON-ROUND (5.4321 h,
 +12.8765 degrees): a round pair such as (5.0, 12.5) prints as "(5.0, 12.5)",
@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import pytest
 
+from _humanizer_mirror import CLIP_AT, shown_whole
 from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
@@ -273,7 +274,7 @@ async def test_solve_and_sync_reraises_the_same_unverified_sync_with_the_solve_a
                    f"{_UNVERIFIED_REASON}"), msg
     assert "refused" not in msg
     # It fits whole as well: 48 + 88.
-    assert len(msg) <= 140, len(msg)
+    assert len(msg) <= CLIP_AT, len(msg)
     _assert_surfaced_ok(msg, (FAR_RA, FAR_DEC))
     assert noted == [], noted
     assert sim_hub._solved_pointing is None
@@ -416,14 +417,14 @@ async def test_a_refusal_level_that_is_not_warning_or_info_is_refused_up_front(
 
 async def test_the_e11_refusal_line_fits_whole_with_the_action_in_it(
         sim_hub, monkeypatch, bus_lines):
-    """The UI cuts a line over 140 characters to 137 plus an ellipsis. With
-    the driver's e11 advice at its 90-character limit, the refusal warning
-    must still fit whole, so "Trust position" and the sync away from the
-    pole that follows it reach the operator.
+    """The UI keeps a line whole up to ``CLIP_AT``; it cut at 137 until #792
+    (#1024). With the driver's e11 advice (90 characters), the refusal warning
+    must fit whole, so "Trust position" and the sync away from the pole that
+    follows it reach the operator.
 
-    NAMED MUTANT "round-1 wording" (the refused warning restored to "the
-    field solved, but the mount refused the sync (reply 'e11'): <reason>"):
-    RED, ``assert 154 <= 140``.
+    The round-1 wording ("the field solved, but the mount refused the sync
+    (reply 'e11'): <reason>", 154 characters) was red under the old cut and
+    fits now: the line is held to the budget, not to that wording.
     """
     assert len(_E11_REASON) == 90
     tel = sim_hub.devices["telescope"]
@@ -434,8 +435,7 @@ async def test_the_e11_refusal_line_fits_whole_with_the_action_in_it(
         await sim_hub.solve_and_sync(exposure_s=0.05)
 
     (msg,) = [m for lvl, m, s in bus_lines if lvl == "warning"]
-    assert len(msg) <= 140, (len(msg), msg)
-    shown = msg if len(msg) <= 140 else msg[:137]
+    shown = shown_whole(msg)
     for phrase in ("refused the sync", "Trust position",
                    "a sync away from the pole", "'e11'"):
         assert phrase in shown, (phrase, msg)
@@ -552,7 +552,7 @@ async def test_a_refused_sync_far_off_target_stops_the_loop_with_the_contract_ke
                            "('e11'); "), line
     assert "the field is 150.0' off target" in line, line
     assert "same place" in line, line
-    assert len(line) <= 140, (len(line), line)
+    assert len(line) <= CLIP_AT, (len(line), line)
     for w in [m for lvl, m, _ in bus_lines if lvl == "warning"]:
         _assert_surfaced_ok(w, (FAR_RA, FAR_DEC))
     # The pointing is not verified, and it says why in the fixed words.
@@ -610,7 +610,7 @@ async def test_an_unverified_sync_far_off_target_stops_the_loop_in_its_own_words
     assert line.startswith("centering stopped: the mount did not confirm the "
                            "sync"), line
     assert "the field is 150.0' off target" in line, line
-    assert len(line) <= 140, (len(line), line)
+    assert len(line) <= CLIP_AT, (len(line), line)
     for w in [m for lvl, m, _ in bus_lines if lvl == "warning"]:
         _assert_surfaced_ok(w, (FAR_RA, FAR_DEC))
     assert sim_hub._pointing_verified is False
@@ -652,7 +652,7 @@ async def test_a_failed_sync_with_no_solve_attached_still_stops(
     (line,) = [m for lvl, m, _ in bus_lines
                if lvl == "warning" and m.startswith("centering stopped")]
     assert "offset was not measured" in line, line
-    assert len(line) <= 140, (len(line), line)
+    assert len(line) <= CLIP_AT, (len(line), line)
     _assert_surfaced_ok(line)
 
 
@@ -889,7 +889,7 @@ def test_the_fixed_reasons_survive_the_humanizer_and_carry_no_figures():
     for const in (SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED):
         assert not _humanizer_rewrites(const), const
         assert not any(ch.isdigit() for ch in const), const
-        assert len(const) <= 137, const
+        assert len(const) <= CLIP_AT, const
 
 
 # ---------------------------------------------------------------- meridian_flip

@@ -54,6 +54,7 @@ import astrodeck.api.app as app_module
 from astrodeck.auth import (principal_for_role, reset_active_provider,
                             set_active_provider)
 
+from _humanizer_mirror import shown_whole
 from test_api_mount import FakeAuthProvider  # rootdir-relative
 
 
@@ -176,7 +177,7 @@ def test_a_position_lost_while_the_home_waits_sends_nothing(
     assert _homed(bus_lines) == [], _homed(bus_lines)
     said = [m for _l, m, _s in bus_lines if m.endswith("Nothing was moved (home)")]
     assert len(said) == 1, bus_lines
-    head = said[0][:137]
+    head = shown_whole(said[0])
     assert "Trust position" in head and "pad key" in head, head
     for word in ("goto", "go to", "slew"):
         assert word not in said[0].lower(), (word, said[0])

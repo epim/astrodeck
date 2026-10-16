@@ -16,8 +16,8 @@ still does, unchanged.
 Route tests in the style of test_api_mount.py: a real ``create_app()`` and
 TestClient, with the hub singleton's ``require`` and ``solve_and_sync``
 monkeypatched to fakes. Each surfaced line is graded against the UI's
-``humanizeLog`` rules (mirrored by ``_humanizer_rewrites``), its
-140-character cut and the fictional, non-round solve's spellings.
+``humanizeLog`` rules (mirrored by ``_humanizer_rewrites``), the
+length it keeps whole and the fictional, non-round solve's spellings.
 
 Each test names the mutant of api/app.py it was shown red under; the mutants
 were applied to a byte copy of app.py and the file was restored from that
@@ -32,6 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
+from _humanizer_mirror import shown_whole
 import astrodeck.api.app as app_module
 from astrodeck.devices.base import DeviceError, SyncRefused, SyncUnverified
 
@@ -59,11 +60,6 @@ def _coordinate_spellings(ra: float, dec: float) -> list[str]:
         for p in range(1, 5):
             out += [f"{v:.{p}f}", f"{v:+.{p}f}"]
     return sorted(set(out))
-
-
-def _shown(line: str) -> str:
-    """What the UI shows of a line: cut to 137 plus an ellipsis past 140."""
-    return line if len(line) <= 140 else line[:137]
 
 
 @pytest.fixture
@@ -165,9 +161,9 @@ def test_a_sync_not_taken_is_one_error_line_that_never_says_solve_failed(
     if kind is SyncRefused:
         for phrase in ("sync not taken", "Trust position",
                        "a sync away from the pole"):
-            assert phrase in _shown(line), (phrase, line)
+            assert phrase in shown_whole(line), (phrase, line)
     else:
-        assert "whether the mount took it" in _shown(line), line
+        assert "whether the mount took it" in shown_whole(line), line
 
 
 def test_any_other_failure_still_reaches_the_lanes_own_handler(

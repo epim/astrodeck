@@ -93,8 +93,8 @@ def test_wcs_from_astap_parse(tmp_path):
     hdr["CD2_2"] = 0.0004305
     wcs_path = tmp_path / "solve.wcs"
     hdr.totextfile(str(wcs_path))
-    sol = _wcs_from_astap(tmp_path / "solve.ini", wcs_path)   # .ini absent -> uses .wcs
-    assert sol is not None
+    sol, why = _wcs_from_astap(tmp_path / "solve.ini", wcs_path)   # .ini absent -> uses .wcs
+    assert sol is not None and why is None
     assert sol.crval1 == pytest.approx(83.8221)
     assert sol.crpix1 == pytest.approx(512.0)
     assert sol.cd11 == pytest.approx(-0.0004305)
@@ -116,7 +116,9 @@ def test_wcs_from_astap_none_when_scaleless(tmp_path):
     hdr["CRPIX2"] = 512.0
     wcs_path = tmp_path / "scaleless.wcs"
     hdr.totextfile(str(wcs_path))
-    assert _wcs_from_astap(tmp_path / "scaleless.ini", wcs_path) is None
+    sol, why = _wcs_from_astap(tmp_path / "scaleless.ini", wcs_path)
+    assert sol is None
+    assert why is not None and "plate scale" in why, why
 
 
 # ----------------------------------- a degenerate scale is no scale either (#943)
@@ -151,13 +153,15 @@ _USABLE = {
 }
 
 
-def _write_headerlet(path: Path, cards: dict) -> Path:
+def _write_headerlet(path: Path, cards: dict, drop: tuple = ()) -> Path:
+    """A headerlet of the reference point and ``cards``, less the ``drop``."""
     from astropy.io import fits as _fits
     hdr = _fits.Header()
     hdr["CTYPE1"] = "RA---TAN"
     hdr["CTYPE2"] = "DEC--TAN"
     for key, value in {**_REF_CARDS, **cards}.items():
-        hdr[key] = value
+        if key not in drop:
+            hdr[key] = value
     hdr.totextfile(str(path))
     return path
 
@@ -181,7 +185,9 @@ def test_wcs_from_astap_none_when_the_headerlet_scale_is_unusable(tmp_path, card
     """
     from astrodeck.solve.astap import _wcs_from_astap
     wcs_path = _write_headerlet(tmp_path / "x.wcs", cards)
-    assert _wcs_from_astap(tmp_path / "x.ini", wcs_path) is None
+    sol, why = _wcs_from_astap(tmp_path / "x.ini", wcs_path)
+    assert sol is None
+    assert why is not None and "plate scale" in why, why
 
 
 @pytest.mark.parametrize("cards", list({**_UNUSABLE, **_UNREPRESENTABLE}.values()),
@@ -189,7 +195,9 @@ def test_wcs_from_astap_none_when_the_headerlet_scale_is_unusable(tmp_path, card
 def test_wcs_from_astap_none_when_the_ini_scale_is_unusable(tmp_path, cards):
     from astrodeck.solve.astap import _wcs_from_astap
     ini = _write_ini(tmp_path / "x.ini", cards)
-    assert _wcs_from_astap(ini, tmp_path / "x.wcs") is None   # no headerlet
+    sol, why = _wcs_from_astap(ini, tmp_path / "x.wcs")   # no headerlet
+    assert sol is None
+    assert why is not None and "plate scale" in why, why
 
 
 @pytest.mark.parametrize("source", ["headerlet", "ini"])
@@ -199,14 +207,91 @@ def test_wcs_from_astap_keeps_a_usable_scale(tmp_path, source, cards):
     this is what shows the cases above get as far as the guard."""
     from astrodeck.solve.astap import _wcs_from_astap
     if source == "headerlet":
-        sol = _wcs_from_astap(tmp_path / "x.ini",
-                              _write_headerlet(tmp_path / "x.wcs", cards))
+        sol, why = _wcs_from_astap(tmp_path / "x.ini",
+                                   _write_headerlet(tmp_path / "x.wcs", cards))
     else:
-        sol = _wcs_from_astap(_write_ini(tmp_path / "x.ini", cards),
-                              tmp_path / "x.wcs")
-    assert sol is not None
+        sol, why = _wcs_from_astap(_write_ini(tmp_path / "x.ini", cards),
+                                   tmp_path / "x.wcs")
+    assert sol is not None and why is None
     assert sol.has_usable_scale()
     assert sol.crval1 == pytest.approx(_REF_CARDS["CRVAL1"])
+
+
+# ------------------------------- why a solved frame has no WCS, per cause (#1025)
+# `_wcs_from_astap` returned None for every one of these and `AstapSolver.solve`
+# reported them all as ``success`` with no WCS and "solved by ASTAP", so each
+# consumer (the hub's stamp, the sn_animation tool) guessed which it was.
+
+def _write_raw_ini(path: Path, text: str) -> Path:
+    path.write_text(text)
+    return path
+
+
+_NO_WCS = {
+    "headerlet without CRVAL1": (
+        lambda tp: (tp / "x.ini", _write_headerlet(
+            tp / "x.wcs", _USABLE["north-up CD"], drop=("CRVAL1",))),
+        ("headerlet", "CRVAL1")),
+    "headerlet without CRPIX2": (
+        lambda tp: (tp / "x.ini", _write_headerlet(
+            tp / "x.wcs", _USABLE["north-up CD"], drop=("CRPIX2",))),
+        ("headerlet", "CRPIX2")),
+    "headerlet with a non-numeric reference card": (
+        lambda tp: (tp / "x.ini", _write_headerlet(
+            tp / "x.wcs", {**_USABLE["north-up CD"], "CRVAL1": "abc"})),
+        ("could not be read", "ValueError")),
+    "headerlet with no scale": (
+        lambda tp: (tp / "x.ini", _write_headerlet(tp / "x.wcs", {})),
+        ("plate scale",)),
+    ".ini without a reference point and no headerlet": (
+        lambda tp: (_write_raw_ini(tp / "x.ini", "CDELT2=0.0004\n"),
+                    tp / "x.wcs"),
+        ("no WCS headerlet", "CRVAL1", "CRPIX2")),
+    ".ini with a non-numeric reference card and no headerlet": (
+        lambda tp: (_write_ini(tp / "x.ini", {"CRVAL2": "abc"}), tp / "x.wcs"),
+        ("could not be read", "ValueError")),
+    "no result files at all": (
+        lambda tp: (tp / "x.ini", tp / "x.wcs"),
+        ("could not be read", "FileNotFoundError")),
+}
+
+
+@pytest.mark.parametrize("build,words", list(_NO_WCS.values()),
+                         ids=list(_NO_WCS))
+def test_wcs_from_astap_says_why_it_returns_no_wcs(tmp_path, build, words):
+    """RED under mutation "two reasons dropped" (the headerlet-card and the
+    unreadable-card returns of ``_wcs_from_astap`` made ``return None,
+    None``), observed on every case that reaches either (five of the seven)
+    and on test_the_causes_of_no_wcs_are_not_all_one_answer:
+
+        E   AssertionError: None
+    """
+    from astrodeck.solve.astap import _wcs_from_astap
+    ini, wcs_path = build(tmp_path)
+    sol, why = _wcs_from_astap(ini, wcs_path)
+    assert sol is None
+    assert why is not None and all(w in why for w in words), why
+
+
+def test_the_causes_of_no_wcs_are_not_all_one_answer(tmp_path):
+    """The defect: one answer for every cause. Five causes an operator would
+    treat differently (a headerlet missing its reference point, an .ini with
+    none, a solution with no scale, a card that is not a number, files that
+    are not there) give five sentences."""
+    from astrodeck.solve.astap import _wcs_from_astap
+    kinds = ("headerlet without CRVAL1",
+             ".ini without a reference point and no headerlet",
+             "headerlet with no scale",
+             "headerlet with a non-numeric reference card",
+             "no result files at all")
+    reasons = set()
+    for i, kind in enumerate(kinds):
+        build, _words = _NO_WCS[kind]
+        folder = tmp_path / str(i)
+        folder.mkdir()
+        _sol, why = _wcs_from_astap(*build(folder))
+        reasons.add(why)
+    assert len(reasons) == len(kinds), reasons
 
 
 class _FakeAstapProcess:
@@ -219,7 +304,7 @@ class _FakeAstapProcess:
         pass
 
 
-async def _solve_with_headerlet(tmp_path, monkeypatch, cards):
+async def _solve_with_headerlet(tmp_path, monkeypatch, cards, drop=()):
     """``AstapSolver.solve`` against a fake ``astap_cli`` that leaves the .ini
     and the .wcs headerlet ASTAP would, for the image ``light.fits``."""
     import asyncio
@@ -230,7 +315,7 @@ async def _solve_with_headerlet(tmp_path, monkeypatch, cards):
         _write_ini(image.with_suffix(".ini"),
                    {"CDELT1": -_PIXEL_DEG, "CDELT2": _PIXEL_DEG,
                     "CROTA2": 12.5}, PLTSOLVD="T")
-        _write_headerlet(image.with_suffix(".wcs"), cards)
+        _write_headerlet(image.with_suffix(".wcs"), cards, drop)
         return _FakeAstapProcess()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
@@ -243,6 +328,7 @@ async def test_astap_solve_carries_a_usable_headerlet_wcs(tmp_path, monkeypatch)
                                       _USABLE["north-up CD"])
     assert res.success
     assert res.wcs is not None and res.wcs.cd11 == pytest.approx(-_PIXEL_DEG)
+    assert res.wcs_dropped_reason is None
 
 
 @pytest.mark.parametrize("cards", list(_UNUSABLE.values()),
@@ -257,6 +343,56 @@ async def test_astap_solve_drops_a_headerlet_wcs_it_cannot_use(
     assert res.success
     assert res.ra_hours == pytest.approx(_REF_CARDS["CRVAL1"] / 15.0)
     assert res.wcs is None
+    assert res.wcs_dropped_reason is not None, "dropped, and it does not say why"
+    assert "plate scale" in res.wcs_dropped_reason, res.wcs_dropped_reason
+
+
+async def test_astap_solve_says_a_headerlet_without_its_reference_point_was_dropped(
+        tmp_path, monkeypatch):
+    """#1025. The solve is good (the .ini has the position) and the headerlet
+    is not, and the result says which card it lacked rather than "solved by
+    ASTAP" beside no WCS.
+
+    RED under mutation "the reason not carried" (``AstapSolver.solve`` calls
+    ``_result_from_ini(kv, wcs)`` and drops the second return), observed:
+
+        E   AssertionError: dropped, and it does not say why
+    """
+    res = await _solve_with_headerlet(tmp_path, monkeypatch,
+                                      _USABLE["north-up CD"], drop=("CRVAL1",))
+    assert res.success
+    assert res.wcs is None
+    assert res.wcs_dropped_reason == "the WCS headerlet has no CRVAL1 card"
+
+
+async def test_astap_solve_says_a_solve_with_no_headerlet_and_no_scale_was_dropped(
+        tmp_path, monkeypatch):
+    """The .ini-only path: the reference point is there, the scale is not."""
+    res = await _solve_with_files(tmp_path, monkeypatch, {})
+    assert res.success
+    assert res.wcs is None
+    assert res.wcs_dropped_reason is not None, "dropped, and it does not say why"
+    assert "plate scale" in res.wcs_dropped_reason, res.wcs_dropped_reason
+
+
+async def test_a_solve_that_failed_has_no_wcs_reason_to_give(tmp_path,
+                                                             monkeypatch):
+    """A solve that found nothing has no WCS to have dropped: its own message
+    says why it failed, and the field stays None rather than repeat it."""
+    import asyncio
+    image = tmp_path / "light.fits"
+    image.write_bytes(b"")
+
+    async def fake_exec(*args, **kwargs):
+        _write_raw_ini(image.with_suffix(".ini"),
+                       "PLTSOLVD=F\nERROR=No solution found\n")
+        return _FakeAstapProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    res = await AstapSolver("astap_cli").solve(image)
+    assert not res.success
+    assert res.message == "No solution found"
+    assert res.wcs is None and res.wcs_dropped_reason is None
 
 
 async def test_simsolver_returns_wcs(tmp_path):

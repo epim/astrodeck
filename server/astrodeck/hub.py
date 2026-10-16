@@ -4662,6 +4662,14 @@ class Hub:
             if job.data_w and job.data_h:
                 await self.note_field_solve(res.wcs, preview_id=job.preview_id,
                                             data_w=job.data_w, data_h=job.data_h)
+        elif res.success and res.wcs_dropped_reason:
+            # The solver solved the frame and refused its own WCS (#1025); it
+            # says why, so the log quotes it rather than leave a frame with no
+            # card and no word.
+            bus.log("warning",
+                    f"WCS not stamped on {job.path.name}: "
+                    f"{res.wcs_dropped_reason}; frame saved without WCS",
+                    "solve")
 
     def stop_wcs_worker(self) -> None:
         """Cancel the background WCS worker and drop any pending backlog. Called
