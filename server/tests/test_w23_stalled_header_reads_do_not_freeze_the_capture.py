@@ -63,6 +63,7 @@ from astropy.io import fits
 
 import astrodeck.events as events_mod
 import astrodeck.hub as hub_module
+from _deadline import wait_until
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 BOUND_S = 0.3
@@ -366,10 +367,7 @@ async def test_a_stop_still_cancels_the_header_read(
     task = asyncio.ensure_future(
         sim_hub.capture(0.05, 100, 30, 1, save=True, target=""))
     try:
-        for _ in range(100):
-            await asyncio.sleep(0.05)
-            if stalled.calls:
-                break
+        await wait_until(lambda: bool(stalled.calls), timeout_s=5.0)
         assert stalled.calls, "premise: the capture reached the device"
         assert not task.done()
         task.cancel()
