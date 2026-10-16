@@ -314,18 +314,21 @@ test('a ring with 2 deg/min drift, 2 % gyro scale and a 10 % focal prior error: 
   assert.ok(aligned / ringKfs.length >= 0.8, `${aligned} of ${ringKfs.length} aligned`);
   assert.ok(ring.lock, 'the focal locked');
   assert.ok(ringLock.ratios >= 5 && ringLock.ratios <= 12, `${ringLock.ratios} ratios at the lock`);
-  assert.equal(ring.focal.state, 'locked');
+  // The ring runs 385 degrees, so the loop closes at its end (T28) and the focal is 'closed': its measure focal stays the lock's
+  // (focal.ts: the closure does not change it), which is what the lock is graded on, and its sd is the closure's 0.139. The lock's
+  // own floor of 0.55 is graded in focal.test.ts.
+  assert.equal(ring.focal.state, 'closed');
   // The 7.2 row's 2 %, on this ring (+1.45 %). It is not general for a 10 %-long prior: see the backwards ring.
-  near(ring.focal.fBest / (ring.fTrue / (1 + SG)) - 1, 0, 0.02, 'f within 2 % of f_true / (1 + s_g)');
-  assert.ok(ring.focal.sdPct >= 0.55, `sdPct ${ring.focal.sdPct} is floored at 0.55`);
+  near(ring.focal.fMeasure / (ring.fTrue / (1 + SG)) - 1, 0, 0.02, 'f within 2 % of f_true / (1 + s_g)');
+  assert.equal(ring.focal.sdPct, 0.139);
 });
 
 test('the lock re-solves, re-fuses and repaints through pump: one clear, every keyframe so far queued, drained by the end', () => {
   // The lock commit schedules a repaint of the keyframes so far (at most about 13, 4.8); the scanner's pump drains it at 30
-  // slices a frame, and the raster is cleared once.
+  // slices a frame, and the raster is cleared once for it (and once more for the closure at the end of the ring, T28).
   assert.equal(ring.pendingAtLock, ringLock.kf + 1, 'every keyframe so far is pending at the lock');
   assert.ok(ring.pendingAtLock <= 13, `${ring.pendingAtLock} slices to repaint`);
-  assert.equal(ring.clears, 1, 'the raster is cleared once, for the repaint');
+  assert.equal(ring.clears, 2, 'the raster is cleared once for the lock and once for the closure');
   assert.equal(ring.tracker.pendingSlices, 0, 'drained');
   assert.ok(ring.tracker.coveredDeg >= 300, `${ring.tracker.coveredDeg} degrees painted after the repaint`);
   assert.equal(ring.tracker.log.filter(x => x.detail === 'focal-lock').length, 1);
@@ -351,16 +354,19 @@ test('W_yaw is 0.11 before the lock and 0.99 after (S38: 0.113 at the default pr
 });
 
 test('every ring step is a chain edge to the previous keyframe with its correspondences, and sigmas follow 4.7', () => {
-  const edges = ring.tracker.edges;
+  const edges = ring.tracker.edges.filter(e => e.kind !== 'closure');   // the closure's edge is T28's (trackerClosure.test.ts)
   assert.equal(edges.length, ringKfs.length - 1, 'one edge a step, none for the gauge');
   edges.forEach((e, i) => {
     assert.deepEqual([e.kind, e.a, e.b], ['chain', i, i + 1]);
     assert.ok(e.corr.length >= 8 && e.corr.length <= 16, `edge ${i}: ${e.corr.length} correspondences`);
     assert.ok(e.zncc >= 0.7 && e.n > 1000 && e.covRad2[4] > 0 && Number.isFinite(e.covRad2[4]), `edge ${i}`);
   });
-  // An aligned keyframe is 0.05 sqrt(s) for s chain steps to the gauge; the gauge is the 0.5 floor.
+  // An aligned keyframe is 0.05 sqrt(s) for s chain steps to the gauge; the gauge is the 0.5 floor. After the closure at the end
+  // of the ring (T28) the steps are counted to the nearer end of the ring, s = min(s, K - s) for K the closing keyframe's id.
+  const closing = (ring.tracker.loop.match as { late: number }).late;
   for (const k of ringKfs) {
-    if (k.cls === 'aligned') near(k.sigmaDeg, 0.05 * Math.sqrt(Math.max(1, k.id)), 1e-12, `keyframe ${k.id}`);
+    const s = k.id <= closing ? Math.min(k.id, closing - k.id) : k.id;
+    if (k.cls === 'aligned') near(k.sigmaDeg, 0.05 * Math.sqrt(Math.max(1, s)), 1e-12, `keyframe ${k.id}`);
   }
   assert.equal(ringKfs[0].sigmaDeg, 0.5);
 });
@@ -460,8 +466,8 @@ test('with the axis mapping unconfirmed the ring runs on chord rates: it aligns 
   assert.ok(aligned / kfs.length >= 0.9, `${aligned} of ${kfs.length} aligned`);
   const lock = chordRing.lock;
   assert.ok(lock && lock.kf <= 30 && lock.ratios >= 5 && lock.ratios <= 12, `lock ${JSON.stringify(lock)}`);
-  assert.equal(chordRing.focal.state, 'locked');
-  near(chordRing.focal.fBest / (chordRing.fTrue / (1 + SG)) - 1, 0, 0.06, 'f within 6 % of f_true / (1 + s_g)');
+  assert.notEqual(chordRing.focal.state, 'prior', 'locked, and closed at the end of the ring if its match was found (T28)');
+  near(chordRing.focal.fMeasure / (chordRing.fTrue / (1 + SG)) - 1, 0, 0.06, 'f within 6 % of f_true / (1 + s_g)');
   const chainWorst = Math.max(...kfs.map(k => Math.abs(yawError(chordRing, k.pose, k, 1))));
   const gyroWorst = Math.max(...kfs.map(k => Math.abs(yawError(chordRing, k.pred, k, 1))));
   assert.ok(chainWorst < gyroWorst, `the chain is ${chainWorst} degrees off, the gyro ${gyroWorst}`);
