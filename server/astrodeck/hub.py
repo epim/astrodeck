@@ -448,8 +448,10 @@ SOLVE_EXPOSURES_KEPT = 16
 
 #: Bound on each command a rig teardown's cleanup sends (#267): every device's
 #: disconnect, the guider's, the NINA client's and each session's close, and
-#: the polar session's stop. The cooler-off it owes a stopped warm ramp keeps
-#: the ramp's own ``cooling.WARM_CMD_TIMEOUT_S``. 30 s matches that and the
+#: the polar session's stop. The disconnect a failed Alpaca connect sends the
+#: replacement device it will not hold (#1015) has the same bound. The
+#: cooler-off a teardown owes a stopped warm ramp keeps the ramp's own
+#: ``cooling.WARM_CMD_TIMEOUT_S``. 30 s matches that and the
 #: Alpaca client's HTTP timeout, so a disconnect that is getting answers is not
 #: what it cuts: it cuts a driver that never answers, which used to hold the
 #: teardown, and the connect lock with it, for ever.
@@ -1627,54 +1629,93 @@ class Hub:
         conn = ConnSpec(backend="native", host=host, port=port,
                         dev_type=dev_type, dev_num=dev_num, role=role,
                         extra={"name": name})
+        # The cancels this task already carries, so a new one is told apart.
+        me = asyncio.current_task()
+        asked = me.cancelling() if me is not None else 0
         session = await get_backend("native").open(conn)
-        dev = await session.get_device(role, conn)
-        old = self.devices.get(role)
-        old_session = self._alpaca_sessions.get(role)
-        # The SAME Alpaca device again (reconnect_role rebuilds one from its
-        # record, #966) is not disconnected: the server keeps one Connected
-        # state per device, so the old object's Connected=False would undo the
-        # connect that just succeeded and the new object would answer 0x407.
-        replaced_same = old is not None and tuple(
-            str(getattr(old, a, None)).lower()
-            for a in ("host", "port", "dev_type", "dev_num")
-        ) == tuple(str(v).lower() for v in (host, port, dev_type, dev_num))
-        if old and not replaced_same:
-            try:
-                await old.disconnect()
-            except Exception:       # the device being replaced is dropped either way
-                pass
-        # The new device's connect comes AFTER the old one's disconnect, never
-        # before (#987, #991). The comparison above reads two spellings of one
-        # endpoint ('localhost' and '127.0.0.1', a LAN name and its address) as
-        # two devices, and the server keeps one Connected state per device, so
-        # the last word on the slot must be the new device's.
+        # The session owns an httpx client from the moment get_device builds the
+        # device's connection, and nothing owns the session until it is stored
+        # in ``_alpaca_sessions`` below. Whatever ends the call before that
+        # (get_device refusing, a cancel, the replacement's connect failing)
+        # closes it, so a failed attempt leaks no client (#1014).
+        adopted = False
+        dev = None
+        replaced_same = False
+        released = False        # the replacement has been sent its disconnect
         try:
-            await dev.connect()
-        except (Exception, asyncio.CancelledError):
-            # The replacement never took and the hub keeps the old device, so
-            # put it back as it was: connect the old device again (it was
-            # disconnected above; a server that is gone fails this too, and the
-            # device then reads disconnected for the reconnect gate) and close
-            # the session opened for the replacement instead of leaking it.
+            dev = await session.get_device(role, conn)
+            old = self.devices.get(role)
+            old_session = self._alpaca_sessions.get(role)
+            # The SAME Alpaca device again (reconnect_role rebuilds one from its
+            # record, #966) is not disconnected: the server keeps one Connected
+            # state per device, so the old object's Connected=False would undo the
+            # connect that just succeeded and the new object would answer 0x407.
+            replaced_same = old is not None and tuple(
+                str(getattr(old, a, None)).lower()
+                for a in ("host", "port", "dev_type", "dev_num")
+            ) == tuple(str(v).lower() for v in (host, port, dev_type, dev_num))
             if old and not replaced_same:
                 try:
-                    await old.connect()
+                    await old.disconnect()
+                except Exception:       # the device being replaced is dropped either way
+                    pass
+            # The new device's connect comes AFTER the old one's disconnect, never
+            # before (#987, #991). The comparison above reads two spellings of one
+            # endpoint ('localhost' and '127.0.0.1', a LAN name and its address) as
+            # two devices, and the server keeps one Connected state per device, so
+            # the last word on the slot must be the new device's.
+            try:
+                await dev.connect()
+            except (Exception, asyncio.CancelledError):
+                # The replacement never took and the hub keeps the old device, so
+                # put it back as it was. First let go of the replacement: its
+                # get_device already sent Connected=True, and a hub that never
+                # holds it would leave it connected on the server with no owner
+                # (#1015). That comes BEFORE the old device's connect, because
+                # two spellings of one endpoint share one server slot and the
+                # old device's Connected=True must be the last word on it. Not
+                # when the same device is replaced: that slot is the held
+                # device's. Then connect the old device again (it was
+                # disconnected above; a server that is gone fails this too, and
+                # the device then reads disconnected for the reconnect gate).
+                # The session opened for the replacement is closed below.
+                if not replaced_same:
+                    released = True
+                    await self._release_unowned_alpaca_device(role, dev)
+                if old and not replaced_same:
+                    try:
+                        await old.connect()
+                    except Exception:
+                        pass
+                # A cancel of the caller that landed while the release ran is
+                # counted on the task and not raised by it (the release
+                # finishes whatever cancels the caller), so it is raised here,
+                # not eaten by the connect's own error: both callers of this
+                # connect catch Exception and go on to the next device (#235).
+                if me is not None and me.cancelling() > asked:
+                    raise asyncio.CancelledError()
+                raise
+            dev.role = role                        # device identity for Profiles (A.6)
+            self.devices[role] = dev
+            self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
+            self._mount_jnow_reprobe = None
+            # retain the session so its httpx client is aclosed when this role is later
+            # replaced or the rig torn down (session-leak fix); close the one we are
+            # replacing so its keep-alive sockets don't accumulate per reconnect.
+            self._alpaca_sessions[role] = session
+            adopted = True
+        finally:
+            if not adopted:
+                if dev is not None and not replaced_same and not released:
+                    # The call ended after get_device sent the replacement
+                    # Connected=True and before the final connect, by a cancel
+                    # in the old device's disconnect. Nothing holds the
+                    # replacement either, so it is let go here (#1015).
+                    await self._release_unowned_alpaca_device(role, dev)
+                try:
+                    await session.close()
                 except Exception:
                     pass
-            try:
-                await session.close()
-            except Exception:
-                pass
-            raise
-        dev.role = role                        # device identity for Profiles (A.6)
-        self.devices[role] = dev
-        self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
-        self._mount_jnow_reprobe = None
-        # retain the session so its httpx client is aclosed when this role is later
-        # replaced or the rig torn down (session-leak fix); close the one we are
-        # replacing so its keep-alive sockets don't accumulate per reconnect.
-        self._alpaca_sessions[role] = session
         if old_session is not None:
             try:
                 await old_session.close()
@@ -1688,6 +1729,26 @@ class Hub:
         bus.log("info", f"{role} connected: {name} (Alpaca {host}:{port})", "hub")
         self.ensure_status_poller()
         return dev.describe()
+
+    async def _release_unowned_alpaca_device(self, role: str, dev) -> None:
+        """Send Connected=False for a replacement device the hub is not going to
+        hold (#1015): its connect sent Connected=True and then failed, and the
+        server keeps that state until someone clears it, which for a camera can
+        mean a cooler left engaged and the device busy to every other client.
+
+        Bounded and shielded like a teardown's cleanup (``_run_to_its_bound``),
+        so a server that never answers cannot hold the connect lock, and a
+        cancel of the caller does not drop the release. Best effort: a failure
+        is said (``say_swallowed``) and never replaces the error the caller is
+        already raising. A cancel of the caller that lands meanwhile stays
+        counted on its task, not raised (``_run_to_its_bound``): the caller
+        raises it when the release is done."""
+        err = await _run_to_its_bound(lambda: dev.disconnect(),
+                                      TEARDOWN_STEP_TIMEOUT_S)
+        if err is not None:
+            self.say_swallowed(
+                f"the {role}'s replacement could not be disconnected after its "
+                f"connect failed, so the server may still hold it connected", err)
 
     async def connect_phd2(self, host: str = "127.0.0.1", port: int = 4400) -> None:
         if self.guider:
