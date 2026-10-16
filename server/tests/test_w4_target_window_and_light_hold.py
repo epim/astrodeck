@@ -33,11 +33,18 @@ import pytest
 
 import astrodeck.hub as hub_module
 import astrodeck.sequence.engine as engine_mod
+from astrodeck.catalog import coords
+from astrodeck.devices.base import DeviceError
 from astrodeck.events import bus
 from astrodeck.flows.tonight import target_own_window
 from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
+
+#: The Sun's position function as it was when this module was imported. The
+#: tests below replace ``coords.sun_radec`` to put the Sun on a chosen date;
+#: this stays the real one, so replacing it twice never wraps a wrapper.
+_REAL_SUN_RADEC = coords.sun_radec
 
 
 @pytest.fixture
@@ -70,6 +77,50 @@ def _warnings(*fragments: str) -> list[dict]:
         if all(f in msg for f in fragments):
             out.append(e)
     return out
+
+
+#: The target of the end-to-end run below: the north ecliptic pole (RA 18 h,
+#: Dec +66.56). The Sun stays on the ecliptic, so this point is 90 deg from it
+#: on every day of the year and the Sun-exclusion cone (`Hub._check_solar`,
+#: 30 deg) can never reach it. The target this run first used, RA 5 h Dec +10,
+#: sits 13 deg off the ecliptic: from early May to early July the Sun came
+#: within 30 deg of it, `_setup_target` refused the slew ("slew blocked by
+#: sun-exclusion cone"), the run ended unsafe before its first frame and the
+#: test failed by the date it ran, not by the code (#1026, the class of #682
+#: and #925).
+SUN_PROOF_TARGET = (18.0, 66.56)
+
+
+def _pin_the_sun(monkeypatch, when: dt.datetime) -> None:
+    """Make ``coords.sun_radec()``, asked for "now", answer for ``when``.
+
+    `Hub._check_solar` is the one reader on the slew path and asks without a
+    time. It imports the function each time it runs, so replacing the module
+    attribute reaches it. A caller that passes a time still gets that time's
+    Sun. The cone reads the date and no site, so this is all the cone owes
+    the calendar."""
+    pinned = when.timestamp()
+
+    def sun_radec(unix_time=None):
+        return _REAL_SUN_RADEC(pinned if unix_time is None else unix_time)
+
+    monkeypatch.setattr(coords, "sun_radec", sun_radec)
+
+
+def _days_the_sun_cone_refuses(hub, monkeypatch, target) -> list[str]:
+    """Every day of 2025 (a past year, so nothing here needs a predicted Earth
+    rotation) on which the REAL slew gate, `Hub._check_solar`, refuses
+    ``target`` with the Sun at that day's noon UTC."""
+    first = dt.datetime(2025, 1, 1, 12, tzinfo=dt.timezone.utc)
+    refused = []
+    for day in range(365):
+        when = first + dt.timedelta(days=day)
+        _pin_the_sun(monkeypatch, when)
+        try:
+            hub._check_solar(*target)
+        except DeviceError:
+            refused.append(when.date().isoformat())
+    return refused
 
 
 # ------------------------------------------------------- target_own_window
@@ -316,8 +367,46 @@ async def test_hold_for_light_does_not_retry_a_measured_miss(sim_hub, monkeypatc
 
 # ------------------------------------------- end-to-end: _setup_target wiring
 
-async def test_setup_target_holds_for_light_before_autofocus_runs(
+async def test_the_end_to_end_target_is_clear_of_the_sun_cone_all_year(
         sim_hub, monkeypatch):
+    """The target of the end-to-end run is outside the Sun-exclusion cone on
+    every day of the year, judged by the real slew gate, so the run below
+    owes nothing to the date it is started on (#1026).
+
+    The target this run first used (RA 5 h, Dec +10) is the positive control:
+    the same scan refuses it for weeks, so a scan that cannot see the cone
+    (a pin that never reaches the gate, a cone turned off) fails here and not
+    silently.
+
+    NAMED MUTANT (run from a byte backup, restored and md5sum-verified): set
+    ``SUN_PROOF_TARGET`` back to ``(5.0, 10.0)``. This test then fails with:
+
+        AssertionError: the Sun-exclusion cone refuses the end-to-end target
+        on 57 days of 2025, 2025-05-08 to 2025-07-03
+
+    -- the date range is the weeks the run failed by the calendar. The
+    ``june-solstice`` case of the end-to-end test fails under the same
+    mutant, with the cone's own words in its message."""
+    refused = _days_the_sun_cone_refuses(sim_hub, monkeypatch, SUN_PROOF_TARGET)
+    assert not refused, (
+        f"the Sun-exclusion cone refuses the end-to-end target on "
+        f"{len(refused)} days of 2025, {refused[0]} to {refused[-1]}")
+
+    old = _days_the_sun_cone_refuses(sim_hub, monkeypatch, (5.0, 10.0))
+    assert len(old) >= 40, (
+        f"the scan found the Sun within the cone of the old target on only "
+        f"{len(old)} days: it cannot see the cone")
+
+
+@pytest.mark.parametrize("sun_on", [
+    pytest.param(None, id="real-sky"),
+    *(pytest.param(dt.datetime(2025, month, day, 12, tzinfo=dt.timezone.utc),
+                   id=name)
+      for month, day, name in ((3, 20, "march-equinox"), (6, 21, "june-solstice"),
+                               (9, 22, "september-equinox"),
+                               (12, 21, "december-solstice")))])
+async def test_setup_target_holds_for_light_before_autofocus_runs(
+        sim_hub, monkeypatch, sun_on):
     """END TO END through the real ``engine.start()`` -> ``_setup_target``
     path (not calling ``_hold_for_light`` directly): proves the DISPATCH
     itself -- the ``elif member is None and err is None and not
@@ -335,7 +424,25 @@ async def test_setup_target_holds_for_light_before_autofocus_runs(
         assert 1 >= 3
 
     -- the dispatch never reaches `_hold_for_light` at all, so autofocus
-    runs straight off the first (dark) centring miss, the original bug."""
+    runs straight off the first (dark) centring miss, the original bug.
+
+    THE DATE (#1026). The one other thing this run reads from the sky is the
+    Sun-exclusion cone at the slew (`Hub._check_solar`), which asks for the
+    Sun by the calendar. ``sun_on`` puts the Sun where it stands at each
+    season's turn (None leaves the real clock), and the target is
+    ``SUN_PROOF_TARGET``, which no season can put inside the cone. Run
+    against the target this test first used (RA 5 h, Dec +10) the
+    ``june-solstice`` case fails whatever day the suite runs on:
+
+        AssertionError: the run never reached its first frame (aborted,
+        unsafe: slew blocked by sun-exclusion cone: target is within 20 deg
+        of the Sun (exclusion 30 deg) - enable a solar session
+        (config.solar_override) to override)
+
+    and the ``real-sky`` case fails only from early May to early July, which
+    is how it first showed (ASTRODECK_SHIFT_CLOCK_S, tests/tools/README.md)."""
+    if sun_on is not None:
+        _pin_the_sun(monkeypatch, sun_on)
     monkeypatch.setattr(engine_mod, "CENTRING_HOLD_RETRY_S", 0.01)
     monkeypatch.setattr(
         "astrodeck.flows.tonight.target_own_window",
@@ -366,7 +473,8 @@ async def test_setup_target_holds_for_light_before_autofocus_runs(
 
     plan = SequencePlan(name="w4-setup-wiring", guide=False, dither_every=0,
                         autofocus_every=0, meridian_flip=False, targets=[
-                            Target(name="roofline", ra_hours=5.0, dec_deg=10.0,
+                            Target(name="roofline", ra_hours=SUN_PROOF_TARGET[0],
+                                  dec_deg=SUN_PROOF_TARGET[1],
                                   center=True, autofocus_first=True,
                                   steps=[ExposureStep(filter="L",
                                                       exposure_s=0.05,
@@ -378,9 +486,12 @@ async def test_setup_target_holds_for_light_before_autofocus_runs(
         if engine._frames_done >= 1:
             break
         await asyncio.sleep(0.02)
+    ended = dict(engine.state)      # before abort() overwrites how it ended
     await engine.abort()
 
-    assert engine._frames_done >= 1, "the run never reached its first frame"
+    assert engine._frames_done >= 1, (
+        f"the run never reached its first frame ({ended.get('state')}, "
+        f"{ended.get('end_reason')}: {ended.get('detail')})")
     assert calls["n"] >= 3, "centring did not retry through the no-light hold"
     # Exactly once, and only the real centring call that found light ran it
     # -- not once per miss, which would have spent the sweep on a field with
