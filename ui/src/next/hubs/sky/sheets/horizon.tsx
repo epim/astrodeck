@@ -51,9 +51,23 @@ import { PanoCapture } from './pano/PanoCapture';
 import { ERROR_TEXT } from './pano/copy';
 import { checkPanoSupport, requestIosMotionPermission } from './pano/support';
 import { declinationDeg, decimalYear } from './pano/wmm';
-import type { ScanResult } from './pano/types';
+import type { HorizonDraft, ScanResult } from './pano/types';
+import { acceptSuggested, draftFromPoints, draftToPoints, editDraft, shiftDraft } from './horizonDraft';
+import { BandPanorama, shiftRaster } from './pano/bandPanorama';
+import { PANO_H, PANO_W } from './pano/types';
+import { REVIEW_TEXT } from './pano/copy';
+import {
+  NorthCard, ReviewNotes, SelectedPoint, isUncertainVertex, lineRuns, northLocksSave, runPathD, suggestionPaths,
+} from './pano/ReviewNotes';
 
 type Source = "location" | "active";
+
+/** The flagged review's own state for one scan result (T29): the draft the notes and line styles read, the raster the
+ *  north nudge turns (kept while it is in memory), and whether the user has said north is right. */
+interface PanoReview { for: ScanResult; draft: HorizonDraft; rgba: Uint8ClampedArray; northOk: boolean }
+
+/** The grid the flagged editor snaps to, in degrees, for both coordinates (SPEC-v2 2.9). */
+const PANO_GRID_DEG = 0.5;
 
 /** Why the lens picker is locked. Opening a camera stream takes a moment and a
  *  second open while the first is in flight strands both. */
@@ -259,6 +273,12 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
       return;
     }
     setByHand(true);
+    if (panoOn) {
+      // Flag on (SPEC-v2 2.9): the point lands on the 0.5 degree grid and the draft follows the edit.
+      setSelected(null);
+      editLine(points, insertPoint(points, azFromX(x), altFromY(y), PANO_GRID_DEG));
+      return;
+    }
     void persist(insertPoint(points, azFromX(x), altFromY(y)));
   };
 
@@ -268,7 +288,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     const rect = e.currentTarget.getBoundingClientRect();
     const { x, y } = toViewBox(e.clientX, e.clientY, rect);
     d.moved = true;
-    setPoints((cur) => movePoint(cur, d.index, azFromX(x), altFromY(y)));
+    setPoints((cur) => movePoint(cur, d.index, azFromX(x), altFromY(y), panoOn ? PANO_GRID_DEG : undefined));
   };
 
   const onStripPointerUp = (e: RPointerEvent<SVGSVGElement>) => {
@@ -277,8 +297,13 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     const el = e.currentTarget as unknown as { releasePointerCapture?: (id: number) => void };
     try { el.releasePointerCapture?.(e.pointerId); } catch { /* jsdom has none */ }
     if (!d) return;
+    // Flag on (O2): a still tap selects the point and Delete is a button; a drag edits through the draft.
+    if (panoOn && !d.moved) { setSelected(d.index); return; }
     setByHand(true);
-    if (d.moved) void persist(points);
+    if (d.moved) {
+      if (panoOn) { setSelected(d.index); editLine(d.original, points); }
+      else void persist(points);
+    }
     else void persist(removePoint(points, d.index));
   };
 
@@ -295,6 +320,9 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
       confirmLabel: "CLEAR", cancelLabel: "KEEP", tone: "danger",
     });
     if (!ok) return;
+    // Clear bypasses the draft's edits (RI m12): it persists the empty line itself. The draft is made to agree, so no
+    // note describes a line that is no longer there.
+    if (live) { setReview({ ...live, draft: draftFromPoints([]) }); setSelected(null); }
     await persist([]);
   };
 
@@ -327,7 +355,59 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const toTrueRef = useRef<((azMagDeg: number) => number) | null>(null);
   const panoAsking = useRef(false);
   const canSeePrecise = useCanViewSitePrecise();
-  void panoResult;   // T29's review reads it
+  // The flagged review (T29, SPEC-v2 2.9). Its state belongs to one scan result: a new result starts it afresh, so
+  // nothing here needs resetting when a scan is adopted. `live` is null off the flag and before a result exists.
+  const [review, setReview] = useState<PanoReview | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const scratchPano = useRef<BandPanorama | null>(null);
+  const live: PanoReview | null = panoOn && reviewDraft && panoResult
+    ? (review && review.for === panoResult ? review : { for: panoResult, draft: panoResult.draft, rgba: panoResult.rgba, northOk: false })
+    : null;
+  const rasterInMemory = !!live && live.rgba.length === PANO_W * PANO_H * 4;
+  const northLock = !!live && northLocksSave(live.for.north, live.northOk);
+  const explainNorth = (reason: string) => { if (writeLocked) explainWrite(reason); else enqueueToast({ level: "warning", title: reason }); };
+
+  // One edit of the line with the flag on: the draft takes it (the bins it moved become Edited), then the sheet's own
+  // persist runs as it always has. A locked sheet changes neither.
+  const editLine = (before: HorizonPoint[], next: HorizonPoint[]) => {
+    if (writeLocked) { explainWrite(writeLocked); return; }
+    if (live) setReview({ ...live, draft: editDraft(live.draft, before, next) });
+    void persist(next);
+  };
+  const deleteSelected = () => {
+    if (selected === null || selected >= points.length) return;
+    setByHand(true); setSelected(null);
+    editLine(points, removePoint(points, selected));
+  };
+  const markReviewed = () => { setDirty(true); setSaved(false); onDirty?.(); };
+  // "Use the traced line for the uncertain parts": the Low bins take their suggestion, and the line is the draft's.
+  const acceptTraced = () => {
+    if (!live) return;
+    if (writeLocked) { explainWrite(writeLocked); return; }
+    const draft = acceptSuggested(live.draft);
+    if (draft === live.draft) return;
+    setReview({ ...live, draft }); setPoints(draftToPoints(draft).points); setSelected(null); markReviewed();
+  };
+  // The north nudge (4.12): the picture, the draft and the line turn together, from the raster still in memory. The
+  // picture is made first, so a failure leaves all three as they were.
+  const nudgeNorth = (deg: number) => {
+    if (!live || !rasterInMemory) return;
+    if (writeLocked) { explainWrite(writeLocked); return; }
+    let png: string;
+    const rgba = shiftRaster(live.rgba, deg);
+    try {
+      scratchPano.current ??= new BandPanorama();
+      scratchPano.current.rgba.set(rgba);
+      png = scratchPano.current.toPNG(document.createElement("canvas"));
+    } catch (e) {
+      enqueueToast({ level: "error", title: e instanceof Error ? e.message : "Could not turn the panorama." });
+      return;
+    }
+    const draft = shiftDraft(live.draft, deg);
+    setReview({ ...live, rgba, draft });
+    setPanorama(png); setPoints(draftToPoints(draft).points); setSelected(null); markReviewed();
+    if (photoKey) void writePanorama(photoKey, png).then(setPhotoStored);
+  };
   const sweepRef = useRef<PhotosphereSweep | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -573,16 +653,30 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
           <line x1={0} x2={STRIP_W} y1={HY(FLOOR_ALT_DEG)} y2={HY(FLOOR_ALT_DEG)}
             stroke="rgba(255,180,84,.45)" strokeDasharray="2 3" strokeWidth={1} />
           {fillD && <path d={fillD} fill={panorama ? 'rgba(10,12,24,.25)' : "rgba(255,84,112,.22)"} stroke="none" />}
-          {strokeD && <path d={strokeD} data-testid="editable-horizon-line" fill="none" stroke={panorama ? '#ffdb8b' : "#ff5470"} strokeWidth={panorama ? 1 : 1.6} />}
+          {!live && strokeD && <path d={strokeD} data-testid="editable-horizon-line" fill="none" stroke={panorama ? '#ffdb8b' : "#ff5470"} strokeWidth={panorama ? 1 : 1.6} />}
+          {live && suggestionPaths(live.draft).map((pd, i) => (
+            <path key={`s${i}`} d={pd} data-testid="horizon-suggested" fill="none" stroke="#ffdb8b" strokeWidth={0.6} strokeDasharray="3 2" opacity={0.8} />
+          ))}
+          {live && points.length > 0 && lineRuns(live.draft).map((run, i) => (
+            <path key={`r${i}`} d={runPathD(points, run.fromDeg, run.toDeg)} data-testid="horizon-line-run" data-kind={run.kind} fill="none"
+              stroke={run.kind === 'certain' ? '#ffdb8b' : '#ff5470'} strokeWidth={run.kind === 'certain' ? 1 : 1.4}
+              strokeDasharray={run.kind === 'certain' ? undefined : '1.5 2.5'} strokeLinecap="round" />
+          ))}
           <line x1={0} x2={STRIP_W} y1={GROUND_Y} y2={GROUND_Y} stroke="rgba(140,160,220,.35)" strokeWidth={1} />
           {finderAz != null && (
             <line x1={HX(finderAz)} x2={HX(finderAz)} y1={SKY_Y} y2={GROUND_Y}
               stroke="white" strokeDasharray="2 3" opacity={0.6} />
           )}
-          {points.map((p, i) => (
-            <circle key={i} data-testid="horizon-edit-point" cx={HX(p.az)} cy={HY(p.alt)} r={panorama ? 3 : 7}
-              fill="rgba(6,7,11,.85)" stroke={panorama ? '#ffdb8b' : p.alt < 0 ? "#7683a5" : "#ff5470"} strokeWidth={panorama ? 1 : 1.6} />
-          ))}
+          {points.map((p, i) => {
+            const uncertain = !!live && isUncertainVertex(live.draft, p.az);
+            const chosen = panoOn && i === selected;
+            return (
+              <circle key={i} data-testid="horizon-edit-point" data-uncertain={uncertain ? "true" : undefined} data-selected={chosen ? "true" : undefined}
+                cx={HX(p.az)} cy={HY(p.alt)} r={panorama ? (chosen ? 4.5 : 3) : 7}
+                fill={uncertain ? "none" : "rgba(6,7,11,.85)"}
+                stroke={chosen ? '#ffffff' : uncertain ? '#ffb454' : panorama ? '#ffdb8b' : p.alt < 0 ? "#7683a5" : "#ff5470"} strokeWidth={panorama ? 1 : 1.6} />
+            );
+          })}
           {cardinals.map(([az, label, anchor], i) => (
             <text key={i} x={HX(az)} y={9} fontSize={9} textAnchor={anchor} fill="var(--text-faint, #7683a5)">
               {label}
@@ -593,9 +687,17 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
       </div>
       {panorama && <label className="photosphere-pan">Look around <input type="range" aria-label="Panorama position" min={0} max={100} step={.1} value={panPosition}
         onChange={e=>{const value=Number(e.target.value);setPanPosition(value);const el=panoramaScroll.current;if(el)el.scrollLeft=(el.scrollWidth-el.clientWidth)*value/100;}}/></label>}
-      <p className="photosphere-detail">Tap to add · drag to move · tap a point to delete{panorama ? ' · Slide Look around to see the rest of the scan. The checkerboard marks areas that weren’t photographed.' : ''}</p>
+      <p className="photosphere-detail">{panoOn ? 'Tap to add · drag to move · tap a point to select it' : 'Tap to add · drag to move · tap a point to delete'}{panorama ? ' · Slide Look around to see the rest of the scan. The checkerboard marks areas that weren’t photographed.' : ''}</p>
+      {panoOn && selected !== null && selected < points.length && (
+        <SelectedPoint point={points[selected]} lockedReason={writeLocked} onExplain={explainWrite} onDelete={deleteSelected} />
+      )}
+      {live && <>
+        <ReviewNotes draft={live.draft} result={live.for} lockedReason={writeLocked} onExplain={explainWrite} onAcceptTraced={acceptTraced} />
+        <NorthCard north={live.for.north} declinationApplied={live.for.declinationApplied} canNudge={rasterInMemory} confirmed={live.northOk}
+          lockedReason={writeLocked} onExplain={explainWrite} onNudge={nudgeNorth} onConfirm={() => setReview({ ...live, northOk: true })} />
+      </>}
       <div className="guided-horizon-actions">
-        {(guided || reviewDraft) && <ActionButton kind="primary" size="lg" lockedReason={writeLocked} onExplain={explainWrite} onPress={() => void persist(points, true)}><NxIcon name="check" size={20}/>{saving ? "Saving…" : "Save horizon"}</ActionButton>}
+        {(guided || reviewDraft) && <ActionButton kind="primary" size="lg" lockedReason={writeLocked ?? (northLock ? REVIEW_TEXT.noCompass : null)} onExplain={writeLocked ? explainWrite : explainNorth} onPress={() => void persist(points, true)}><NxIcon name="check" size={20}/>{saving ? "Saving…" : "Save horizon"}</ActionButton>}
         <ActionButton kind="danger" size="md" lockedReason={writeLocked} onExplain={explainWrite} onPress={() => void clearAll()} data-testid="clear-horizon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg>Clear horizon
         </ActionButton>
@@ -723,7 +825,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
       )}
 
       {!capturing && <><Mono size={10.5}>
-        Tap the strip to add a point, drag a point to move it, tap a point to delete it. Everything
+        {panoOn ? 'Tap the strip to add a point, drag a point to move it, tap a point to select it and delete it with the button.' : 'Tap the strip to add a point, drag a point to move it, tap a point to delete it.'} Everything
         under the line is unreachable and is hidden on the finder, the dome and the ranked list.
         Where there is no data, AstroDeck assumes no obstruction.
       </Mono>

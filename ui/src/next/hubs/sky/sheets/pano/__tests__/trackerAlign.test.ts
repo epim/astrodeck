@@ -314,18 +314,21 @@ test('a ring with 2 deg/min drift, 2 % gyro scale and a 10 % focal prior error: 
   assert.ok(aligned / ringKfs.length >= 0.8, `${aligned} of ${ringKfs.length} aligned`);
   assert.ok(ring.lock, 'the focal locked');
   assert.ok(ringLock.ratios >= 5 && ringLock.ratios <= 12, `${ringLock.ratios} ratios at the lock`);
-  assert.equal(ring.focal.state, 'locked');
+  // The ring runs 385 degrees, so the loop closes at its end (T28) and the focal is 'closed': its measure focal stays the lock's
+  // (focal.ts: the closure does not change it), which is what the lock is graded on, and its sd is the closure's 0.139. The lock's
+  // own floor of 0.55 is graded in focal.test.ts.
+  assert.equal(ring.focal.state, 'closed');
   // The 7.2 row's 2 %, on this ring (+1.45 %). It is not general for a 10 %-long prior: see the backwards ring.
-  near(ring.focal.fBest / (ring.fTrue / (1 + SG)) - 1, 0, 0.02, 'f within 2 % of f_true / (1 + s_g)');
-  assert.ok(ring.focal.sdPct >= 0.55, `sdPct ${ring.focal.sdPct} is floored at 0.55`);
+  near(ring.focal.fMeasure / (ring.fTrue / (1 + SG)) - 1, 0, 0.02, 'f within 2 % of f_true / (1 + s_g)');
+  assert.equal(ring.focal.sdPct, 0.139);
 });
 
 test('the lock re-solves, re-fuses and repaints through pump: one clear, every keyframe so far queued, drained by the end', () => {
   // The lock commit schedules a repaint of the keyframes so far (at most about 13, 4.8); the scanner's pump drains it at 30
-  // slices a frame, and the raster is cleared once.
+  // slices a frame, and the raster is cleared once for it (and once more for the closure at the end of the ring, T28).
   assert.equal(ring.pendingAtLock, ringLock.kf + 1, 'every keyframe so far is pending at the lock');
   assert.ok(ring.pendingAtLock <= 13, `${ring.pendingAtLock} slices to repaint`);
-  assert.equal(ring.clears, 1, 'the raster is cleared once, for the repaint');
+  assert.equal(ring.clears, 2, 'the raster is cleared once for the lock and once for the closure');
   assert.equal(ring.tracker.pendingSlices, 0, 'drained');
   assert.ok(ring.tracker.coveredDeg >= 300, `${ring.tracker.coveredDeg} degrees painted after the repaint`);
   assert.equal(ring.tracker.log.filter(x => x.detail === 'focal-lock').length, 1);
@@ -351,16 +354,19 @@ test('W_yaw is 0.11 before the lock and 0.99 after (S38: 0.113 at the default pr
 });
 
 test('every ring step is a chain edge to the previous keyframe with its correspondences, and sigmas follow 4.7', () => {
-  const edges = ring.tracker.edges;
+  const edges = ring.tracker.edges.filter(e => e.kind !== 'closure');   // the closure's edge is T28's (trackerClosure.test.ts)
   assert.equal(edges.length, ringKfs.length - 1, 'one edge a step, none for the gauge');
   edges.forEach((e, i) => {
     assert.deepEqual([e.kind, e.a, e.b], ['chain', i, i + 1]);
     assert.ok(e.corr.length >= 8 && e.corr.length <= 16, `edge ${i}: ${e.corr.length} correspondences`);
     assert.ok(e.zncc >= 0.7 && e.n > 1000 && e.covRad2[4] > 0 && Number.isFinite(e.covRad2[4]), `edge ${i}`);
   });
-  // An aligned keyframe is 0.05 sqrt(s) for s chain steps to the gauge; the gauge is the 0.5 floor.
+  // An aligned keyframe is 0.05 sqrt(s) for s chain steps to the gauge; the gauge is the 0.5 floor. After the closure at the end
+  // of the ring (T28) the steps are counted to the nearer end of the ring, s = min(s, K - s) for K the closing keyframe's id.
+  const closing = (ring.tracker.loop.match as { late: number }).late;
   for (const k of ringKfs) {
-    if (k.cls === 'aligned') near(k.sigmaDeg, 0.05 * Math.sqrt(Math.max(1, k.id)), 1e-12, `keyframe ${k.id}`);
+    const s = k.id <= closing ? Math.min(k.id, closing - k.id) : k.id;
+    if (k.cls === 'aligned') near(k.sigmaDeg, 0.05 * Math.sqrt(Math.max(1, s)), 1e-12, `keyframe ${k.id}`);
   }
   assert.equal(ringKfs[0].sigmaDeg, 0.5);
 });
@@ -460,8 +466,8 @@ test('with the axis mapping unconfirmed the ring runs on chord rates: it aligns 
   assert.ok(aligned / kfs.length >= 0.9, `${aligned} of ${kfs.length} aligned`);
   const lock = chordRing.lock;
   assert.ok(lock && lock.kf <= 30 && lock.ratios >= 5 && lock.ratios <= 12, `lock ${JSON.stringify(lock)}`);
-  assert.equal(chordRing.focal.state, 'locked');
-  near(chordRing.focal.fBest / (chordRing.fTrue / (1 + SG)) - 1, 0, 0.06, 'f within 6 % of f_true / (1 + s_g)');
+  assert.notEqual(chordRing.focal.state, 'prior', 'locked, and closed at the end of the ring if its match was found (T28)');
+  near(chordRing.focal.fMeasure / (chordRing.fTrue / (1 + SG)) - 1, 0, 0.06, 'f within 6 % of f_true / (1 + s_g)');
   const chainWorst = Math.max(...kfs.map(k => Math.abs(yawError(chordRing, k.pose, k, 1))));
   const gyroWorst = Math.max(...kfs.map(k => Math.abs(yawError(chordRing, k.pred, k, 1))));
   assert.ok(chainWorst < gyroWorst, `the chain is ${chainWorst} degrees off, the gyro ${gyroWorst}`);
@@ -693,9 +699,13 @@ test('an injected 80 ms of latency is recovered within 10 ms from the aligned pa
   assert.ok(gyroRun.tracker.keyframes.length >= 25);
 });
 
-test('the same from the predictor\'s heading chord alone, turning the other way', () => {
-  assert.ok(chordRun.latency.pairs >= 10, `${chordRun.latency.pairs} pairs`);
-  near(chordRun.latency.tauMs, LAG, 10, 'tau from chord rates');
+test("the same from the predictor's heading chord alone, turning the other way, feeds the estimator nothing (S46, issue 1030)", () => {
+  // T27 fed the estimator from chord rates and graded the estimate here. The pump-age jitter of the orientation samples is shared
+  // by a chord rate and by the residual r, the fit reads it as latency, and on five seeded rings it applied 14.8, 41.1, 64.4, -20.4
+  // and 100.8 ms against a truth of 50 (issue 1030): a rate that did not come from a gyro is never fed to the estimator.
+  assert.equal(chordRun.latency.pairs, 0, 'no pair from a chord rate');
+  assert.equal(chordRun.latency.applied, false);
+  near(chordRun.latency.tauMs, 50, 1e-9, 'the prior stands');
 });
 
 test('addPair is fed a signed change of heading rate, with the tau the pair was predicted at', () => {
@@ -736,10 +746,11 @@ test('a gyro read in the wrong unit (rad/s as deg/s: quiet while turning) is not
   for (const v of w) near(v as number, 20.4, 1.0, 'heading rate from the chord');
 });
 
-test('the steady-pair test is strict: heading rates 2.00 deg/s apart over the span are not steady, 1.99 apart are (4.8)', () => {
-  // The rule is |dOmega| < 2 over every keyframe of the span, and the cases above hold their rates to within 1 of each other, so
-  // none of them touches the boundary. The span is set directly: a short ring makes the aligned chain, then the rates of the
-  // last four keyframes are put exactly 2 and 1.99 apart (the private table, as omegasOf reads it) and restored.
+test('the steady-pair test is strict: heading rates 5.00 deg/s apart over the span are not steady, 4.99 apart are (4.8, T30)', () => {
+  // The rule is |dOmega| < 5 over every keyframe of the span (the spec's 2, widened by T30: STEADY_SPAN_DEG_S), and the cases above
+  // hold their rates to within 1 of each other, so none of them touches the boundary. The span is set directly: a short ring makes
+  // the aligned chain, then the rates of the last four keyframes are put exactly 5 and 4.99 apart (the private table, as omegasOf
+  // reads it) and restored.
   const r = run({ priorScale: 1.1, pan: { turnDeg: 60 } });
   const t = r.tracker as unknown as { links: { omega: number | null }[]; steadySpan(a: number, k: number): boolean };
   const k = r.tracker.keyframes.length - 1, a = k - 3, saved = t.links.map(l => l.omega);
@@ -747,9 +758,10 @@ test('the steady-pair test is strict: heading rates 2.00 deg/s apart over the sp
   try {
     const spread = (hi: number) => { for (let i = a; i <= k; i++) t.links[i].omega = 20; t.links[k].omega = hi; return t.steadySpan(a, k); };
     assert.equal(spread(20), true, 'level rates are a steady span');
-    assert.equal(spread(21.99), true, '1.99 apart is steady');
-    assert.equal(spread(22), false, '2.00 apart is not below 2');
-    assert.equal(spread(25), false, 'nor is 5 apart');
+    assert.equal(spread(22.99), true, "2.99 apart is steady (the spec's 2 refused it)");
+    assert.equal(spread(24.99), true, '4.99 apart is steady (a hand-held pan wobbles by this much)');
+    assert.equal(spread(25), false, '5.00 apart is not below 5');
+    assert.equal(spread(30), false, 'nor is 10 apart');
   } finally {
     saved.forEach((w, i) => { t.links[i].omega = w; });
   }
@@ -773,19 +785,22 @@ function stripesScene(periodDeg: number): SynthScene {
   };
 }
 const PERIOD = 6;
-const stripes = run({ scene: stripesScene(PERIOD), priorScale: 1.1, pan: { turnDeg: 110 }, imageYaw: n => (n === 14 ? PERIOD : 0) });
+/** The jump is put on the 14th read, which is keyframe 13: since S52 holds the relative predictor across the first 100 ms of the pan, the
+ *  first keyframe is taken on a blurred frame and revisited once (rule 5), which spends one read before keyframe 1. */
+const JUMP_KF = 13;
+const stripes = run({ scene: stripesScene(PERIOD), priorScale: 1.1, pan: { turnDeg: 110 }, imageYaw: n => (n === JUMP_KF ? PERIOD : 0) });
 
 test('a one-period jump on stripes is refused by the innovation gate, though PSR, ZNCC and the inlier test accept it', () => {
-  const x = recordOf(stripes, 14);
+  const x = recordOf(stripes, JUMP_KF);
   assert.ok(stripes.lock, 'the ring through a fence locks');
   assert.ok(x);
   assert.equal(x?.detail, 'mismatch', `${x?.detail} with innovation ${x?.innovationDeg}`);
   assert.ok((x?.innovationDeg as number) >= 4, `the jump is a whole period: innovation ${x?.innovationDeg}`);
   assert.ok((x?.psr as number) >= 7 && (x?.zncc as number) >= 0.7, `PSR ${x?.psr} and ZNCC ${x?.zncc} accepted the match`);
-  assert.equal(stripes.tracker.keyframes[14].cls, 'sensor');
-  assert.equal(stripes.tracker.edges.some(e => e.b === 14), false, 'no edge: the gyro placed it');
+  assert.equal(stripes.tracker.keyframes[JUMP_KF].cls, 'sensor');
+  assert.equal(stripes.tracker.edges.some(e => e.b === JUMP_KF), false, 'no edge: the gyro placed it');
   const cYaw = (i: number) => wrap180(headingDeg(stripes.tracker.keyframes[i].pose) - headingDeg(stripes.tracker.keyframes[i].pred));
-  near(cYaw(14), cYaw(13), 0.1, 'the refused keyframe keeps the yaw of C, not a period (6 degrees) away');
+  near(cYaw(JUMP_KF), cYaw(JUMP_KF - 1), 0.1, 'the refused keyframe keeps the yaw of C, not a period (6 degrees) away');
 });
 
 // ---- 9. The keyframe rules with alignment on (S12, S27, S28, S34) ---------------------------------------------------
@@ -950,7 +965,9 @@ async function replayProof(): Promise<void> {
     });
     test('replay with sensor_only: true in scanner.json: 0 aligned keyframes and the focal stays the prior', () => {
       assert.equal(control.sensorOnly, true);
-      assert.equal(control.total, aligned.total, 'the same keyframes');
+      // The same keyframes, plus the revisit of the blurred first keyframe that only the aligned run can take (rule 5 is never run in
+      // sensor-only mode; since S52 holds the relative predictor across the pan's first 100 ms the first keyframe is taken on a blurred frame).
+      assert.equal(aligned.total - control.total, 1, `${control.total} keyframes in the control, ${aligned.total} aligned`);
       assert.equal(control.aligned, 0);
       assert.equal(control.focal, 'prior');
     });

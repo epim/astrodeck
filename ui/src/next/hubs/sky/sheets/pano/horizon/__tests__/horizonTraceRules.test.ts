@@ -26,7 +26,7 @@ import assert from 'node:assert/strict';
 import { TRACE, boundarySigmaDeg } from '../horizonTrace';
 import { ColState, PANO_W } from '../../types';
 import { rowAltitude } from './rasterAdapter';
-import { SKY, WALL, col, extract, gauss, inSector, near, scene, unit, wallScene, type SceneFn } from './traceScenes';
+import { GROUND, SKY, WALL, col, extract, gauss, inSector, near, scene, unit, wallScene, type SceneFn } from './traceScenes';
 
 let passed = 0;
 function test(name: string, fn: () => void) { fn(); passed++; console.log(`PASS ${name}`); }
@@ -150,7 +150,9 @@ test('the texture channel finds foliage that matches the sky in brightness and c
   assert.equal(h.state[x], ColState.Measured);
   near(h.alt[x], 30, 1.2, 'the canopy top (the smoothing reads up to 2 rows early):');
   assert.ok(h.alt[x] >= 29.5, 'the texture trace errs toward blocked');
-  assert.equal(h.alt[col(250)], 0, 'the same rows beside it are open');
+  // Sky to the bottom of the coverage has no boundary in it: Unknown with no altitude (S51), not a published horizon.
+  assert.equal(h.state[col(250)], ColState.UnknownContrast, 'the same rows beside it are open');
+  assert.ok(Number.isNaN(h.alt[col(250)]));
 });
 
 // ---- Azimuth support ---------------------------------------------------------------------------------
@@ -190,11 +192,11 @@ test('a floating obstruction 12 degrees tall stands on its own; 10 degrees needs
   // 60 degrees of the compass painted: azimuth support is silent (it needs 72), so only what a column can vouch for
   // alone is published.
   const floating = (tall: number): SceneFn => (az, alt) =>
-    (az >= 60 ? null : { lum: alt <= 60 && alt > 60 - tall ? WALL : SKY });
+    (az >= 60 ? null : { lum: alt <= 60 && alt > 60 - tall ? WALL : alt < 0 ? GROUND : SKY });
   const high = extract(scene(floating(14)));
   near(high.alt[col(30)], 60.3, 0.7, 'a 14 degree branch:');
   const low = extract(scene(floating(10)));
-  assert.equal(low.alt[col(30)], 0, 'a 10 degree branch with sky under it is a marking or a disc');
+  near(low.alt[col(30)], 0, 100 / 299 + 1e-4, 'a 10 degree branch with sky under it is a marking or a disc: the ground at 0');
 });
 
 test('azimuth support is silent below 72 degrees observed and awake from it', () => {
@@ -203,10 +205,10 @@ test('azimuth support is silent below 72 degrees observed and awake from it', ()
   const roofScene = (span: number): SceneFn => (az, alt) => {
     if (az >= span) return null;
     if (inSector(az, 30, 42)) return { lum: alt < 60 ? WALL : SKY };
-    if (inSector(az, 42, 54)) return { lum: alt <= 59 && alt > 50 ? WALL : SKY };
-    return { lum: SKY };
+    if (inSector(az, 42, 54)) return { lum: alt <= 59 && alt > 50 ? WALL : alt < 0 ? GROUND : SKY };
+    return { lum: alt < 0 ? GROUND : SKY };
   };
-  assert.equal(extract(scene(roofScene(57))).alt[col(43)], 0);
+  near(extract(scene(roofScene(57))).alt[col(43)], 0, 100 / 299 + 1e-4, 'the roof is not raised: the ground at 0');
   near(extract(scene(roofScene(72))).alt[col(43)], 59.3, 0.7);
 });
 
@@ -215,11 +217,13 @@ test('azimuth support is silent below 72 degrees observed and awake from it', ()
 /** The v1 ring: coverage from -8 degrees up to the S25 top of 53.96 (SPEC-v2 4.4), with two levels of pixel noise. */
 const RING_TOP = 53.96;
 const BLUE_SKY = { lum: SKY, blue: 0 };
+/** The ground under an open horizon: an open column is only Measured where the walk finds a boundary to measure (S51). */
+const GROUND_PIXEL = { lum: GROUND, blue: 0 };
 /** An obstruction in [from, to) that rises from the ground past the top of the coverage, in the sky's own noise. */
 const ringScene = (from: number, to: number, wall: { lum: number; blue: number }, top = RING_TOP): SceneFn =>
   (az, alt, x, y) => {
     if (alt > top || alt < -8) return null;
-    const p = inSector(az, from, to) ? wall : BLUE_SKY;
+    const p = inSector(az, from, to) ? wall : alt < 0 ? GROUND_PIXEL : BLUE_SKY;
     return { lum: p.lum + 2 * gauss(x, y, 5), blue: p.blue };
   };
 
@@ -245,7 +249,7 @@ test('an obstruction wider than the window is Tall: walls of 10 to 120 degrees p
       for (let x = 0; x < PANO_W; x++) {
         if (x >= col(100) - 6 && x < col(100 + width) + 6) continue;
         assert.equal(h.state[x], ColState.Measured, `a ${width} degree ${what} wall: open column ${x} is state ${h.state[x]}`);
-        assert.equal(h.alt[x], 0);
+        near(h.alt[x], 0, 0.5, `a ${width} degree ${what} wall: open column ${x}:`);
       }
     }
   }
@@ -260,7 +264,7 @@ test('a wide wall that stays inside the coverage is still a measurement, and one
   const wall = { lum: 70, blue: 0 };
   const wallTo = (top: number) => extract(scene((az, alt, x, y) => {
     if (alt > RING_TOP || alt < -8) return null;
-    const p = inSector(az, 100, 140) && alt < top ? wall : BLUE_SKY;
+    const p = inSector(az, 100, 140) && alt < top ? wall : alt < 0 ? GROUND_PIXEL : BLUE_SKY;
     return { lum: p.lum + 2 * gauss(x, y, 5), blue: p.blue };
   }));
   const x = col(120);
@@ -279,25 +283,26 @@ test('the ring sky needs a majority, and 72 degrees observed', () => {
   // No consensus: three exposures in thirds of the compass, each open sky, none within 32 per cent of the median.
   // No column is held to a sky the ring does not have, and every one is the open measurement it was before.
   const thirds = extract(scene((az, alt, x, y) => (alt > RING_TOP || alt < -8 ? null
-    : { lum: (az < 120 ? 60 : az < 240 ? 100 : 160) + 2 * gauss(x, y, 5) })));
+    : { lum: (az < 120 ? 60 : az < 240 ? 100 : 160) * (alt < 0 ? 0.5 : 1) + 2 * gauss(x, y, 5) })));
   const seamDistance = (x: number) => Math.min(...[0, col(120), col(240), PANO_W].map(s => Math.abs(x - s)));
   for (let x = 0; x < PANO_W; x++) {
     if (seamDistance(x) < 6) continue;   // a column at the step itself answers to the step, as it always did
     assert.equal(thirds.state[x], ColState.Measured, `column ${x} of the no-consensus ring is state ${thirds.state[x]}`);
-    assert.equal(thirds.alt[x], 0);
+    near(thirds.alt[x], 0, 0.5, `column ${x} of the no-consensus ring:`);
   }
   // A majority and a stretch of another exposure 46 per cent below it: the stretch is not the ring's sky, and Tall.
   const minority = extract(scene((az, alt, x, y) => (alt > RING_TOP || alt < -8 ? null
-    : { lum: (az < 252 ? SKY : 70) + 2 * gauss(x, y, 5) })));
+    : { lum: (az < 252 ? SKY : 70) * (alt < 0 ? 0.5 : 1) + 2 * gauss(x, y, 5) })));
   assert.equal(minority.state[col(300)], ColState.Tall);
   assert.equal(minority.state[col(100)], ColState.Measured);
   // Below 72 degrees observed a majority is a guess, so the rule is silent (as azimuth support is): a 20 degree wall
-  // in 60 degrees of coverage is its own window and is Measured at the ground; in 72 it is Tall.
+  // in 60 degrees of coverage is its own window: no boundary is found in it, and since S51 that is Unknown, where it
+  // used to be a Measured open horizon at the ground under the wall; in 72 it is Tall.
   const partial = (span: number) => extract(scene((az, alt, x, y) => {
     if (az >= span || alt > RING_TOP || alt < -8) return null;
     return { lum: (inSector(az, 20, 40) ? 70 : SKY) + 2 * gauss(x, y, 5) };
   }));
-  assert.equal(partial(60).state[col(30)], ColState.Measured);
+  assert.equal(partial(60).state[col(30)], ColState.UnknownContrast);
   assert.equal(partial(72).state[col(30)], ColState.Tall);
 });
 
@@ -320,7 +325,7 @@ test('UnknownDark reads the column\'s own window sky as well as the ring sky: a 
   // The sector is 80 degrees wide and the columns asserted lie 16 degrees or more inside it, where the window of a
   // column holds nothing but the sector.
   const sector = (lum: number, ring: number) => extract(scene((az, alt, x, y) => (alt > RING_TOP || alt < -8 ? null
-    : { lum: (inSector(az, 100, 180) ? lum : ring) + 2 * gauss(x, y, 5), blue: 0 })));
+    : { lum: (inSector(az, 100, 180) ? lum : ring) * (alt < 0 ? 0.5 : 1) + 2 * gauss(x, y, 5), blue: 0 })));
   for (const lum of [20, 30, 38]) {
     const h = sector(lum, SKY);
     for (let x = col(116); x < col(164); x++) {

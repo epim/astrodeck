@@ -150,6 +150,8 @@ async function play(p: SynthPan, o: {
   camera?: StubCamera; encoder?: FrameEncoder; recording?: boolean; declination?: number | null; offset?: number;
   /** Called after each frame the scanner has seen once the scan has begun, with the frame's time in the pan's own clock. */
   onFrame?: (scanner: PanoramaScanner, at: number) => void;
+  /** Observations the page never receives (the pan's own clock). */
+  drop?: (item: Observation) => boolean;
 } = {}): Promise<Run> {
   const harness = createHarness({ videoWidth: p.k0.w, videoHeight: p.k0.h });
   const scanner = new PanoramaScanner({ camera: o.camera, encoder: o.encoder });
@@ -169,6 +171,7 @@ async function play(p: SynthPan, o: {
     const captureAt = new Map<number, number | null>();
     let begun = false, beganAt = NaN, frames = 0;
     for (const item of timelineOf(p)) {
+      if (o.drop?.(item)) continue;
       const at = item.kind === 'frame' ? item.t_present_ms : item.t_receive_ms;
       harness.setClock(at + off);
       let frameNo: number | null = null;
@@ -337,7 +340,9 @@ await test('replay --scanner pano: events.jsonl and captures.jsonl follow 13.7, 
     assert.ok(frameIds.has(c.frame_id as string), `frame_id ${String(c.frame_id)} is the case's`);
     assert.ok(outcomes.includes(c.outcome as string));
     for (const k of keys.filter(k => k !== 'frame_id' && k !== 'outcome' && k !== 'detail')) assert.ok(Number.isFinite(c[k]), `${k} is a number`);
-    if (c.outcome === 'accepted') { assert.equal(c.kf, accepted); accepted++; }
+    // A revisit (rule 5) is a keyframe too: since S52 holds the relative predictor across the first 100 ms of the pan, the first
+    // keyframe is taken on a blurred frame in relative mode and is revisited once, where it used to be re-anchored (S32).
+    if (c.outcome === 'accepted' || c.outcome === 'revisit') { assert.equal(c.kf, accepted); accepted++; }
   }
   assert.ok(accepted >= 15, `${accepted} keyframes over 100 degrees`);
   assert.ok(firstKeptAt >= 0, 'the first accepted capture names a frame of the pan');
@@ -372,7 +377,7 @@ await test('replay --scanner pano: summary.json, first_seen.bin, diagnostics.jso
   assert.equal(d.declination_applied, true, 'scanner.json set a declination and the compass gave a north');
   assert.ok(isStats(d.keyframe_ms) && isStats(d.readback_ms) && typeof d.stale_refusals === 'number');
   const kfs = d.keyframes as Row[];
-  assert.equal(kfs.length, summary.frames_accepted);
+  assert.equal(kfs.length, captures.filter(c => c.outcome === 'accepted' || c.outcome === 'revisit').length);
   kfs.forEach((k, i) => {
     assert.deepEqual(Object.keys(k), ['id', 'frame_id', 't_ms', 'q', 'cls', 'sigma_deg']);
     assert.equal(k.id, i);
@@ -382,7 +387,7 @@ await test('replay --scanner pano: summary.json, first_seen.bin, diagnostics.jso
     assert.ok(Math.abs(Math.hypot(...q) - 1) < 1e-9, 'a unit quaternion');
   });
   // The keyframe's frame is the one its accepted capture names, and its time that frame's capture time.
-  const accepted = captures.filter(c => c.outcome === 'accepted');
+  const accepted = captures.filter(c => c.outcome === 'accepted' || c.outcome === 'revisit');
   const capture = new Map(pan.frames.map(f => [f.frameId, f.tCaptureMs]));
   kfs.forEach((k, i) => {
     assert.equal(k.frame_id, accepted[i].frame_id);
@@ -588,6 +593,12 @@ interface Recorded {
 /** The middle of the pan, where the relative stream speaks; the end hold may have no pose (S41). */
 const MID_PAN_MS = pan.frames[pan.frames.length >> 1].tPresentMs;
 
+/** The relative stream goes quiet for 800 ms in the middle of the pan: the phone is turning, so it is not the quiet gyro that holds
+ *  it, and the predictor leaves it once the 500 ms window and the 100 ms hold of S52 have run out. Without it the pan has no mode change
+ *  at all (the 66 ms glitch at its start is held), and the time conversion of mode changes would have nothing to convert. */
+const relativeGap = (item: Observation): boolean => item.kind === 'orientation' && item.event === 'deviceorientation' && !item.absolute
+  && item.t_receive_ms >= MID_PAN_MS && item.t_receive_ms < MID_PAN_MS + 800;
+
 async function recordedScan(declination: number | null, offset = 0): Promise<Recorded> {
   // The live mesh is read at the first frame at or after the middle of the pan.
   const meshSrcMax: [number, number] = [0, 0];
@@ -602,7 +613,7 @@ async function recordedScan(declination: number | null, offset = 0): Promise<Rec
       meshSrcMax[0] = Math.max(meshSrcMax[0], t.src[i]); meshSrcMax[1] = Math.max(meshSrcMax[1], t.src[i + 1]);
     }
   };
-  const r = await play(pan, { recording: true, encoder: pngEncoder, declination, offset, onFrame: readMesh });
+  const r = await play(pan, { recording: true, encoder: pngEncoder, declination, offset, onFrame: readMesh, drop: relativeGap });
   try {
     assert.ok(meshRead, 'the pan reached its middle');
     r.harness.setClock(FINISH_AT + offset);
@@ -631,7 +642,7 @@ await test('the recording holds every frame and event in order, and pngEncoder f
   assert.deepEqual(rec[0], {
     kind: 'header', format: 'astrodeck-pano-recording', version: 1, encoder: 'image/png',
     video: { width: 45, height: 80 }, analysis: { width: 180, height: 320 },
-    settings: rec[0].settings, commit: null,
+    settings: rec[0].settings, commit: 'dev',
   });
   assert.deepEqual(rec[1], { kind: 'action', t_ms: withDecl.beganAt, action: 'begin' }, 'times are ms since the camera opened');
   // What the scanner was handed after begin(), line for line. The camera opened at the harness clock's zero.
@@ -788,7 +799,7 @@ await test('a decimated recording keeps its frame ids, and reads back only what 
     }
     assert.ok(keyframesRecorded >= 5, `${keyframesRecorded} keyframes fall on kept frames`);
     // A frame is read back once at most, and only when the recorder keeps it or the tracker reads it.
-    const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'waiting-sharper').map(x => x.frameId));
+    const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'revisit' || x.outcome === 'waiting-sharper').map(x => x.frameId));
     const wanted = new Set([...ids, ...trackerReads]);
     assert.equal(camera.reads.length, new Set(camera.reads).size, 'no frame read twice');
     assert.deepEqual([...camera.reads].sort((a, b) => a - b), [...wanted].sort((a, b) => a - b));
@@ -827,7 +838,7 @@ await test('an encoder exception stops recording frames, not the scan (S24)', as
     assert.deepEqual(rec.slice(-2).map(l => l.kind), ['action', 'report']);
     // After the failure, only the tracker reads back. A readback the log does not name is the first commit that the S32 re-anchor
     // withdrew with its capture record (this pan starts with a pose from the compass): at most one, before the first keyframe kept.
-    const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'waiting-sharper').map(x => x.frameId));
+    const trackerReads = new Set(ins.tracker.log.filter(x => x.outcome === 'accepted' || x.outcome === 'revisit' || x.outcome === 'waiting-sharper').map(x => x.frameId));
     const unlogged = camera.reads.filter(n => n > 3 && !trackerReads.has(n));
     assert.ok(unlogged.length <= 1 && unlogged.every(n => n < ins.tracker.keyframes[0].frameId), `readbacks the tracker did not log: ${unlogged.join(', ')}`);
   } finally {
@@ -923,6 +934,54 @@ await test('tallSpans match the Tall columns of the raster they describe, in its
     assert.ok(Math.abs(wrap180((across.from + width / 2))) < 3, 'centred on scan azimuth 0, where the tower stands in the scan frame');
   } finally {
     end(r);
+  }
+});
+
+// ---- 5. A start hold with a silent relative stream (issue 1031) --------------------------------
+
+await test('a still phone with a silent relative stream holds a relative pose through a 3 s start hold: no stale record, no lagging cue (issue 1031)', async () => {
+  // The relative stream speaks for 100 ms at camera open and is then change-driven silent; the gyro reads Chromium's
+  // exact zeros (a 0.1 now and then); the compass wanders 3 degrees. The mapping has never confirmed.
+  const harness = createHarness({ videoWidth: 45, videoHeight: 80 });
+  const camera = new StubCamera();
+  const scanner = new PanoramaScanner({ camera });
+  try {
+    await scanner.start(harness.video);
+    let frameNo = 0, begunAt = NaN;
+    const headings: number[] = [], cues: string[] = [];
+    for (let t = 0; t <= 4600; t += 16) {
+      harness.setClock(t);
+      if (t >= 20 && t <= 100) harness.dispatchOrientation({ timeStamp: t, alpha: 10, beta: 70, gamma: 0, absolute: false, event: 'deviceorientation' });
+      harness.dispatchOrientation({
+        timeStamp: t, alpha: 200 + 3 * Math.sin(t / 700), beta: 70, gamma: 0, absolute: true, event: 'deviceorientationabsolute',
+      });
+      const tick = t / 16;
+      harness.dispatchMotion({ timeStamp: t, rate: { alpha: tick === 3 || tick % 25 === 0 ? 0.1 : 0, beta: 0, gamma: 0 } });
+      if (t % 64 === 0) assert.ok(camera.deliver(t, { captureTime: t, presentationTime: t, presentedFrames: ++frameNo }));
+      if (Number.isNaN(begunAt) && scanner.canBegin) { scanner.begin(); begunAt = t; }
+      if (!Number.isNaN(begunAt) && t >= begunAt + 200) {
+        if (scanner.status.headingDeg !== null) headings.push(scanner.status.headingDeg);
+        cues.push(scanner.status.cueKey);
+      }
+    }
+    assert.ok(begunAt <= 300, `the scan began at ${begunAt}`);
+    const ins = scanner.inspect();
+    assert.equal(ins.track.axis?.confirmed ?? false, false, 'the mapping never confirmed');
+    assert.equal(ins.track.mode, 'relative');
+    assert.equal(ins.track.facts().staleRefusals, 0);
+    assert.deepEqual(ins.tracker.log.filter(r => r.outcome === 'stale-pose'), [], 'no stale-pose record in the hold');
+    assert.ok(cues.length > 150 && !cues.includes('stale'), `the lagging cue was shown: ${[...new Set(cues)].join(',')}`);
+    assert.ok(headings.length > 150, `${headings.length} headings`);
+    const spread = Math.max(...headings) - Math.min(...headings);
+    assert.ok(spread < 0.01, `the live heading moved ${spread} degrees: it followed the compass, not the relative stream`);
+    const kfs = ins.tracker.keyframes;
+    if (kfs.length > 0) {
+      const h0 = headingDeg(kfs[0].pred);
+      assert.ok(Math.abs(wrap180(h0 - headings[0])) < 0.01, `the first keyframe's yaw ${h0} is the relative stream's ${headings[0]}`);
+    }
+  } finally {
+    scanner.stop();
+    harness.dispose();
   }
 });
 

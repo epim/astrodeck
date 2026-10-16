@@ -40,6 +40,11 @@ const STALE_MOTION_DEG_S = 2;
 /** A duplicate is the other listener's copy of the previous absolute sample (Chromium's absolute-only shape). */
 const DUPLICATE_ANGLE_EPS = 1e-9, DUPLICATE_MS = 2;
 const BLOCKED_AFTER_MS = 1000;
+/** S52: a relative predictor whose rule says to leave it keeps its place for this long. At motion onset the relative
+ *  stream can answer within about 66 ms of the quiet gyro stopping vouching for its silence, and a handoff to the
+ *  absolute stream in between latches G's yaw to the compass (1.5 degrees in the chart yard) and the return to relative
+ *  keeps that latch. A gap of this length or more is a dead relative stream and hands off as it always did. */
+const ABS_GAP_HOLD_MS = 100;
 /** absolute-gyro: the share of the tilt error between G and an absolute sample corrected per absolute sample. */
 const TILT_GAIN = 0.02;
 /** absolute-gyro: a longer step between motion samples integrates only this much (a stalled motion stream). */
@@ -71,6 +76,11 @@ const STREAM_KEEP_MS = 2000;
 /** An absolute sample waits this long for G to reach its time before it is anchored against a hold. */
 const NORTH_WAIT_MS = 250;
 const MAX_STALE_RECORDS = 20000;
+/** A silent relative stream is vouched for before the mapping confirms (issue 1031) when, over the last second of the
+ *  motion stream, at least this many samples arrived, at least this share of them are exact zero triples (Chromium
+ *  rounds to 0.1 deg/s, so a still phone reads zeros about 96 % of the time, S21) and none read a raw magnitude over
+ *  the bound: a bound that is quiet in deg/s (0.3 deg/s) and below the 0.35 a rad/s gyro reads at a 20 deg/s pan. */
+const STILL_STREAM_MS = 1000, STILL_STREAM_MIN = 10, STILL_STREAM_ZERO_SHARE = 0.8, STILL_STREAM_RAW_MAX = 0.3;
 
 const LATENCY_MIN_DOMEGA_DEG_S = 2, LATENCY_APPLY_PAIRS = 10, LATENCY_APPLY_SIGMA_MS = 15;
 const LATENCY_MIN_MS = -50, LATENCY_MAX_MS = 250;
@@ -178,12 +188,17 @@ export class PoseTrack {
   private rel = new Series<Sample>();
   private abs = new Series<Sample>();
   private motion = new Series<MotionSample>();
+  /** Every finite motion event of the last STILL_STREAM_MS, the exact zero triples the gyro has not yet been allowed to
+   *  call a reading included, as the raw magnitude and whether it was an exact zero triple (issue 1031). */
+  private motionWindow: { t: number; zero: boolean; mag: number }[] = [];
   /** The newest orientation sample with finite beta and gamma, for elevation and roll before G exists. */
   private tilt: Sample | null = null;
   private headings: number[] = [];   // the last three absolute headings, for absolute-only's median
   private lastAbsEvent: { t: number; type: OrientationIn['type']; alpha: number | null; beta: number; gamma: number } | null = null;
 
   private active: PredictorMode = 'none';
+  /** When the mode rule first said to leave `relative` in the current gap (S52); null while it does not. */
+  private relGapSince: number | null = null;
   private latched = false;
   private modeAtBegin: PredictorMode | null = null;
   private modeChanges: SensorFacts['modeChanges'] = [];
@@ -298,6 +313,7 @@ export class PoseTrack {
     const prev = this.motion.last;
     if (prev && e.t < prev.t) return;   // a backwards timestamp (#106)
     const raw: V3 = [r.alpha, r.beta, r.gamma];
+    this.noteMotionWindow(e.t, raw);
     // Chromium rounds to 0.1 deg/s, so a still phone reads exact zeros most of the time. A zero triple is a reading
     // only once the gyro has shown it can read anything else (4.5, RD finding 11).
     if (raw[0] === 0 && raw[1] === 0 && raw[2] === 0) {
@@ -345,10 +361,21 @@ export class PoseTrack {
   }
 
   rateAt(t: number): number | null {
+    return this.rateReadAt(t).rate;
+  }
+
+  /** `rateAt` and where the rate came from (S46, issue 1030): 'gyro' for a motion sample whose unit the axis mapping has
+   *  confirmed, 'chord' for the orientation chord that stands in for it (S41), null when there is no rate. The latency
+   *  estimator is fed only from gyro rates: the pump-age jitter of the orientation samples is shared by a chord rate and by
+   *  the residual it is compared with, and the fit would read it as latency. */
+  rateReadAt(t: number): { rate: number | null; source: 'gyro' | 'chord' | null } {
     this.advance(t);
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
     // A motion sample speaks only once the mapping has confirmed its unit; otherwise, and without a sample, the chord (S41).
-    return (m ? this.magnitudeDeg(m.raw) : null) ?? this.chordRateAt(t);
+    const gyro = m ? this.magnitudeDeg(m.raw) : null;
+    if (gyro !== null) return { rate: gyro, source: 'gyro' };
+    const chord = this.chordRateAt(t);
+    return { rate: chord, source: chord !== null ? 'chord' : null };
   }
 
   omegaBodyAt(t: number): V3 | null {
@@ -409,8 +436,13 @@ export class PoseTrack {
    *  the compass's wander before the mapping can confirm. */
   private chooseMode(t: number): PredictorMode {
     const rel = this.rel.last, abs = this.abs.last, m = this.motion.last;
-    if (rel && t - rel.t <= RELATIVE_WINDOW_MS) return 'relative';
-    if (rel && this.active === 'relative' && this.quietGyro(t)) return 'relative';
+    if (rel && t - rel.t <= RELATIVE_WINDOW_MS) { this.relGapSince = null; return 'relative'; }
+    if (rel && this.active === 'relative' && this.quietGyro(t)) { this.relGapSince = null; return 'relative'; }
+    if (rel && this.active === 'relative') {
+      // S52: the first sample of a gap starts its clock; a relative sample inside ABS_GAP_HOLD_MS ends the gap above.
+      this.relGapSince ??= t;
+      if (t - this.relGapSince < ABS_GAP_HOLD_MS) return 'relative';
+    }
     if (abs && this.axisMap?.confirmed && m && Math.abs(t - m.t) < MOTION_FRESH_MS) return 'absolute-gyro';
     if (abs && t - abs.t <= RELATIVE_WINDOW_MS) return 'absolute-only';
     return 'none';
@@ -601,10 +633,33 @@ export class PoseTrack {
    *  delivering, and a chord that is unknown does not vouch. This narrows S6 until the mapping confirms: a silent
    *  relative stream is held only while a chord of G reads quiet. */
   private quietGyro(t: number): boolean {
+    if (this.axisMap?.confirmed !== true && this.stillStream(t)) return true;
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
     if (m === null) return false;
     const w = this.magnitudeDeg(m.raw) ?? this.chordRateAt(t);
     return w !== null && w < HOLD_RATE_DEG_S;
+  }
+
+  private noteMotionWindow(t: number, raw: V3): void {
+    const w = this.motionWindow, last = w.length ? w[w.length - 1] : null;
+    if (last && t < last.t) return;
+    w.push({ t, zero: raw[0] === 0 && raw[1] === 0 && raw[2] === 0, mag: norm3(raw) });
+    while (w.length && w[0].t < t - STILL_STREAM_MS) w.shift();
+  }
+
+  /** Before the mapping confirms, the motion stream vouches for a silent relative stream on evidence that is quiet in
+   *  any unit: it is delivering, most of its recent samples are exact zero triples and none is large (issue 1031; S33
+   *  and S41 stand, no reading is scaled by a unit). A turning phone's gyro reads no such zeros and its relative stream
+   *  is not silent. */
+  private stillStream(t: number): boolean {
+    const w = this.motionWindow;
+    if (w.length < STILL_STREAM_MIN || t - w[w.length - 1].t > MOTION_FRESH_MS) return false;
+    let zeros = 0;
+    for (const x of w) {
+      if (x.mag > STILL_STREAM_RAW_MAX) return false;
+      if (x.zero) zeros++;
+    }
+    return zeros >= STILL_STREAM_ZERO_SHARE * w.length;
   }
 
   /** The rate of a stream at its newest sample: the gyro's magnitude when fresh and its unit confirmed (S41), else the

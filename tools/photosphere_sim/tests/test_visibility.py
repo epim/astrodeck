@@ -114,7 +114,8 @@ class HighContrastIsVisible(unittest.TestCase):
 
     def test_the_file_has_the_schema_of_13_8(self):
         data = self.data
-        self.assertEqual(sorted(data), ["bins", "contrast_sigma", "footprint_top_deg",
+        self.assertEqual(sorted(data), ["bins", "contrast_blue_sigma", "contrast_sigma",
+                                        "contrast_texture_sigma", "footprint_top_deg",
                                         "noise_sigma", "visible"])
         self.assertEqual(data["bins"], 720)
         self.assertEqual(data["noise_sigma"], 2.0)

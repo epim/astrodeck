@@ -63,7 +63,7 @@ export function draftFromPoints(points: readonly HorizonPoint[]): HorizonDraft {
 
 /** The line Save publishes for a draft, and the tolerance it needed (5.4). Never empty, at most 180 points. */
 export function draftToPoints(d: HorizonDraft): { points: HorizonPoint[]; tau: number } {
-  const { points, tau } = conservativePolyline(d.alt, MAX_POINTS);
+  const { points, tau } = conservativePolyline(d.alt, MAX_POINTS, d.state);
   return { points, tau };
 }
 

@@ -12,7 +12,22 @@
 // the result against the innovation gate, keeps the chain of image edges, runs the steady-pair focal ratios of 4.8 and,
 // at the lock, re-solves every edge at the locked focal, re-fuses the chain, recomputes the sigmas and repaints through
 // `pump`. It also chains the exposure gains (4.10), revisits amber stretches (rule 5) and feeds the latency estimator
-// with dOmega, the change of heading rate between the two keyframes of a pair (4.5). T28 adds the loop closure.
+// with dOmega, the change of heading rate between the two keyframes of a pair (4.5).
+//
+// Stage 3 (T28) closes the loop (4.9). From |unwrappedDeg| = 350, with one of the first 4 keyframes within 15 degrees of the
+// newest one's axis (loop.ts), the newest keyframe is matched against it with the closure window of `alignPair`. A match is
+// tried only where the view does not repeat along the yaw direction inside the window (S36: a lock one texture period off is
+// as good a match as the truth, and no gyro gate can tell them apart, see `matchClosure`) and is accepted only when its
+// residual against the gyro is within 3 sigma of the gyro's own uncertainty. An accepted match is applied in order: the focal
+// from the closure (`closeLoop`, only on a locked focal, S19), every edge re-solved at that focal and the chain re-fused, the
+// residual that is left spread linearly in cumulative angle along the chain (rotation and log gain), sigmas recomputed with
+// sg = 0.00139, and the whole ring repainted through `pump`. A ring that never locked, a RangeError from `closeLoop`, or no
+// match by |unwrappedDeg| = 381.5 closes by gyro: no correction, the focal kept as it is.
+//
+// T30 (integration, SPEC-v2 12.4): a closure partner must have been taken at the ring's own rate (`atRingRate`), the closed focal is
+// refined by two secant steps over the re-solved edges (S44), the residual is spread from the early partner on, a ring that turned a
+// full circle and has no closure is closed by gyro at Finish (S42), a gyro-placed keyframe past a full turn continues the chain
+// (S43), and the latency estimator is fed only from gyro rates (S46). The steady-pair limit is widened to 5 deg/s (STEADY_SPAN_DEG_S).
 //
 // Conventions kept from the spec, because a sign here shows only as a lock that never comes (S19):
 //   * qBA is the b-from-a camera rotation, qBA = qinv(P_b) . P_a (S1); the prediction is qinv(C_a . G_b) . P_a =
@@ -27,10 +42,11 @@
 import { DEG, pixelLuminance } from '../photosphereGeometry';
 import { alignPair } from './align';
 import type { RgbStrip } from './align';
+import { CLOSURE_MIN_DEG, CLOSURE_RETRY_MAX_DEG, closureCandidates, distributeClosure, repeatsAlongYaw } from './loop';
 import { CHORD_MAX_MS, CHORD_MIN_MS } from './poseTrack';
 import { buildPyramid, prepareTemplate } from './pyramid';
 import {
-  axisSeparationDeg, elevationDeg, expSO3, headingDeg, intrinsicsAt, logSO3, qinv, qmul, qrotate, rotationFromRays,
+  angleBetweenDeg, axisSeparationDeg, elevationDeg, expSO3, headingDeg, intrinsicsAt, logSO3, qinv, qmul, qrotate, rotationFromRays,
   unprojectPixel, worldYaw,
 } from './rotation';
 import { PixClass } from './types';
@@ -111,8 +127,17 @@ const SLIT_HALF_DEG = 3, REVISIT_RATE_FRAC = 0.5;
 /** Class (4.7): aligned needs W_yaw at least this, computed without the focal term. */
 const ALIGNED_W_YAW = 0.5;
 /** Steady pairs (4.8): the heading rates of every keyframe in the span differ by less than this (strict), and the span
- *  starts this long after the onset, which is the first keyframe or the last time the rate rose through ONSET_RATE. */
-const STEADY_SPAN_DEG_S = 2, ONSET_SKIP_MS = 500, ONSET_RATE_DEG_S = 5;
+ *  starts this long after the onset, which is the first keyframe or the last time the rate rose through ONSET_RATE.
+ *  The spec says 2 deg/s. T30 widened it to 5 (R17 names the widening): a rate read from the gyro at one frame wobbles by 3 to 5
+ *  deg/s under the hand tremor of the realism pan routes (13.3: 0.3 degrees at 0.5 to 3 Hz), so four keyframes within 2 of each
+ *  other are rare, and on the chart yard and treeline cases the focal locked at keyframe 32 to 68 of about 78 where 4.8 expects
+ *  about 8 to 13, which left the whole first ring on the prior's 10 % error, the live overlay drifting by 3 degrees and the
+ *  closure's candidates gone. Measured on the treeline, the chart yard and its 33-degree lens: a limit of 2 locks at keyframes 49,
+ *  49 and 68, of 4 at 15, 15 and 31, of 5 at 10, 10 and 23, of 6 at 10, 10 and 12, of 8 at 8, 8 and 9 (the T30 report has the gate
+ *  tables). 6 is the first limit at which trackerAlign.test.ts's 80 ms latency ring reads tau 13 ms high (92.9 against 80): a span
+ *  of unequal rates read before tau is applied carries the latency times dOmega into its ratio, 0.15 degrees at 5 deg/s with a
+ *  30 ms prior error, and a stabiliser's offset, which saturates at its margin and does not follow dOmega, is not in it. */
+const STEADY_SPAN_DEG_S = 5, ONSET_SKIP_MS = 500, ONSET_RATE_DEG_S = 5;
 /** A heading rate below this is no motion: its sign is whatever, and the heading chord is not needed. */
 const STILL_RATE_DEG_S = 0.5;
 /** The gyro's magnitude takes the heading chord's sign only when the chord shows at least this fraction of it, so a
@@ -143,6 +168,14 @@ const HEADING_KEEP_MS = 600;
 /** An unknown heading-rate change is treated as an accelerating one (|dOmega| = 2 is not below 2). */
 const UNKNOWN_DOMEGA_DEG_S = 2;
 
+// ---- Stage 3 (T28) -------------------------------------------------------------
+
+/** The closure's residual against the gyro-predicted closure must be within this many sigma of the gyro's uncertainty (S36). */
+const CLOSURE_GATE_SIGMAS = 3;
+/** A closure partner turned at least this fraction of the ring's typical rate (see `atRingRate`). */
+const CLOSURE_RATE_FRAC = 0.75;
+/** S44: secant steps of Theta(f) = T_true - Theta_gyro over the re-solved edges, after the 1 / f scaling of `closeLoop`. */
+const CLOSURE_SECANT_STEPS = 2;
 const finite = (x: number | null | undefined): x is number => typeof x === 'number' && Number.isFinite(x);
 const RAD_TO_DEG2 = (180 / Math.PI) ** 2;
 const IDENTITY: Quat = [1, 0, 0, 0];
@@ -154,6 +187,7 @@ interface Ask {
   revisit: boolean;      // rule 5: held apart from the window's candidate, and aligned against `nearest`
   gUnwrapped: number;    // the predictor's unwrapped heading at this frame
   omega: number | null;  // the signed heading rate at this frame, deg/s (null when unknown)
+  omegaGyro: boolean;    // omega's magnitude is a gyro rate, not the orientation chord (S46)
 }
 
 /** A trailing fill (4.3 rule 6): the extra degrees painted on one side, -1 the image's left, +1 its right, 0 none. */
@@ -175,6 +209,7 @@ interface Candidate {
   revisit: boolean;
   gUnwrapped: number;
   omega: number | null;
+  omegaGyro: boolean;
 }
 
 /** What the fusion needs to run again for a keyframe, kept per id: the lock re-fuses the whole chain from these. */
@@ -189,11 +224,17 @@ interface Link {
   dtS: number;               // |t - t_ref|, seconds
   dOmega: number | null;     // signed heading rate here minus there, deg/s
   omega: number | null;      // signed heading rate here
+  omegaGyro: boolean;        // omega's magnitude is a gyro rate (S46): only such pairs feed the latency estimator
   gUnwrapped: number;        // the predictor's unwrapped heading
   tauMs: number;
+  /** A keyframe taken past a full turn (|unwrappedDeg| >= 360): when no image edge places it, the gyro continues from the keyframe
+   *  committed just before it, which is the closed chain, and never from `ref`, the early keyframe the live axis has come back to,
+   *  whose correction knows nothing of the whole turn's gyro error (S43). */
+  wrapped: boolean;
   fast: boolean;             // committed above rateMax: class blurred whatever the image says
   steps: number;             // chain steps to the gauge (keyframe 0)
   mismatch: boolean;         // textured and refused, or accepted by alignPair and refused by the gate
+  wYaw: number | null;       // W_yaw of the last fuse (with the focal term); null when the gyro placed the keyframe
 }
 
 /** The outcome of fusing one keyframe: what the capture log, the class and the latency estimator need. */
@@ -222,6 +263,9 @@ export class Tracker {
   private readonly edgeList: Edge[] = [];
   private readonly records: CaptureRecord[] = [];
   private readonly loopState: LoopState = { closed: false, method: null, preDeg: null, postDeg: null, match: null, unwrappedDeg: 0 };
+  /** What the image closure did to the focal: the locked value, the closed one and the gyro scale `closeLoop` reported. Null
+   *  until an image closure (a gyro closure measures none of it). */
+  private closure: { fLock: number; fClosed: number; gyroScale: number } | null = null;
 
   private frames = 0;                 // onFrame calls: the frame number of a record whose frame was never read back
   private lastT = 0;                  // t of the newest onFrame call
@@ -264,6 +308,7 @@ export class Tracker {
   private gUnwrapped = 0;
   private readonly gHist: { t: number; u: number }[] = [];
   private frameOmega: number | null = null;
+  private frameOmegaGyro = false;
   private lastRate: number | null = null;
   private riseT = -Infinity;          // the last time the rate rose through ONSET_RATE_DEG_S
 
@@ -283,6 +328,8 @@ export class Tracker {
   get keyframes(): readonly Keyframe[] { return this.kfs; }
   get edges(): readonly Edge[] { return this.edgeList; }
   get loop(): LoopState { return this.loopState; }
+  /** The focal before and after the image closure, and the gyro scale it reported (the report's `closurePct`, `gyroScale`). */
+  get closureFocal(): { fLock: number; fClosed: number; gyroScale: number } | null { return this.closure; }
   get log(): readonly CaptureRecord[] { return this.records; }
   /** Consecutive textured mismatches: a frame with texture whose match was refused by the acceptance tests or the gate
    *  (2.6). Any other commit resets it. Always 0 in sensor-only mode. */
@@ -336,14 +383,14 @@ export class Tracker {
   /** The keyframe rule of 4.3, from sensors only. Order: inactive (rule 1), stale pose (rule 1), the cap (rule 7),
    *  the first keyframe (rule 0), the bracketed gap (rule 8), then the step and its window (rules 2-4, with rule 6 for
    *  a frame past the window). */
-  onFrame(t: number, pred: Prediction | null, rateDegS: number | null): FrameStep {
+  onFrame(t: number, pred: Prediction | null, rateDegS: number | null, rateSource: 'gyro' | 'chord' | null = 'gyro'): FrameStep {
     this.frames++;
     this.lastT = t;
     this.ask = null;   // a read the scanner did not follow with hold() was a failed readback
     while (this.staleAt.length > 0 && this.staleAt[0] <= t - 1000) this.staleAt.shift();
     const live = this.livePose(pred);
     if (live) this.trackHeading(live);
-    if (pred && !this.sensorOnly) this.trackPredictor(t, pred, rateDegS);
+    if (pred && !this.sensorOnly) this.trackPredictor(t, pred, rateDegS, rateSource);
     // The nearest keyframe and the axis distance d to it, on every frame with a prediction, active or not, because rule 8
     // compares it with the previous such frame's.
     let d = Infinity, nearest = -1;
@@ -459,6 +506,7 @@ export class Tracker {
       // Stage 2: the pyramid of the frame (L0 luma is dropped here), and what the fusion needs to know about the prediction.
       pyr: this.sensorOnly ? null : buildPyramid(f.rgba, f.w, f.h).pyr,
       mode: pred.mode, tauMs: this.latency.tauMs, revisit: ask.revisit, gUnwrapped: ask.gUnwrapped, omega: ask.omega,
+      omegaGyro: ask.omegaGyro,
     };
     if (ask.revisit) this.rev = c; else this.cand = c;
     if (!ask.commit) {
@@ -569,6 +617,7 @@ export class Tracker {
   private read(commit: boolean, why: 'first' | 'step' | 'revisit', d: number | null, nearest: number): FrameStep {
     this.ask = {
       commit, d, nearest, unwrapped: this.unwrapped, revisit: why === 'revisit', gUnwrapped: this.gUnwrapped, omega: this.frameOmega,
+      omegaGyro: this.frameOmegaGyro,
     };
     return { read: true, commit, why };
   }
@@ -630,8 +679,10 @@ export class Tracker {
    *  of the motion. The rate's magnitude is the mapped gyro's (`rateDegS`: PoseTrack reads it only once the axis mapping
    *  is confirmed, else from its own orientation chord; S33, S41), and its sign is the heading chord's, taken over more
    *  than CHORD_MIN_MS and at most CHORD_MAX_MS of the predictor, never over two consecutive frames (S10, S31). With no
-   *  gyro rate the chord's own rate stands in, and with no chord the rate is unknown unless the phone is still. */
-  private trackPredictor(t: number, pred: Prediction, rateDegS: number | null): void {
+   *  gyro rate the chord's own rate stands in, and with no chord the rate is unknown unless the phone is still. `omegaGyro`
+   *  records whether the magnitude of omega is the gyro's, which only a rate that PoseTrack read from a motion sample can be
+   *  (S46): the latency estimator takes pairs from those alone. */
+  private trackPredictor(t: number, pred: Prediction, rateDegS: number | null, rateSource: 'gyro' | 'chord' | null): void {
     const h = headingDeg(pred.q);
     if (this.gHeading !== null) this.gUnwrapped += wrap180(h - this.gHeading);
     this.gHeading = h;
@@ -642,15 +693,17 @@ export class Tracker {
     while (j >= 0 && pred.t - hist[j].t <= CHORD_MIN_MS) j--;
     const chord = j >= 0 && pred.t - hist[j].t <= CHORD_MAX_MS ? (this.gUnwrapped - hist[j].u) / ((pred.t - hist[j].t) / 1000) : null;
     const rate = finite(rateDegS) ? rateDegS : null;
-    let omega: number | null;
+    const fromGyro = rateSource === 'gyro';
+    let omega: number | null, gyro = false;
     if (rate === null) omega = chord;
     // A gyro quieter than the predictor's own turn is a unit not yet confirmed (rad/s read as deg/s) or a dead sensor: the
     // chord is the rate (S33).
     else if (chord !== null && Math.abs(chord) > QUIET_GYRO_FACTOR * rate + QUIET_GYRO_DEG_S) omega = chord;
-    else if (rate < STILL_RATE_DEG_S) omega = 0;
-    else if (chord !== null && Math.abs(chord) >= HEADING_SHARE * rate) omega = Math.sign(chord) * rate;
+    else if (rate < STILL_RATE_DEG_S) { omega = 0; gyro = fromGyro; }
+    else if (chord !== null && Math.abs(chord) >= HEADING_SHARE * rate) { omega = Math.sign(chord) * rate; gyro = fromGyro; }
     else omega = chord;
     this.frameOmega = omega;
+    this.frameOmegaGyro = gyro;
     if (rate !== null) {
       if (this.lastRate !== null && this.lastRate < ONSET_RATE_DEG_S && rate >= ONSET_RATE_DEG_S) this.riseT = t;
       this.lastRate = rate;
@@ -740,11 +793,13 @@ export class Tracker {
     const kf = this.kfs[id], L = this.links[id];
     const none: Fused = { accepted: false, innovationDeg: null, wYaw: null, imgMinusGyroDeg: null };
     const gyroCls: KeyClass = L.fast ? 'blurred' : 'sensor';
+    L.wYaw = null;
     if (L.ref < 0) { kf.pose = kf.pred; kf.cls = gyroCls; return none; }
     const ref = this.kfs[L.ref];
-    const pGyro = qmul(qmul(ref.pose, qinv(ref.pred)), kf.pred);
-    kf.cls = gyroCls;
     const e = L.edge;
+    const from = !e && L.wrapped ? this.kfs[id - 1] : ref;   // S43
+    const pGyro = qmul(qmul(from.pose, qinv(from.pred)), kf.pred);
+    kf.cls = gyroCls;
     if (!e) { kf.pose = pullTilt(pGyro, kf.pred, 1 - TILT_PULL); return none; }
 
     const f = this.focal;
@@ -765,6 +820,7 @@ export class Tracker {
     const accepted = Number.isFinite(innovationDeg) && innovationDeg <= gate;
     let pose = pGyro;
     if (accepted) {
+      L.wYaw = wYaw;
       pose = qmul(pGyro, expSO3([weight(ix) * v[0], wYaw * v[1], weight(iz) * v[2]]));
       if (!L.fast && wYawNoFocal >= ALIGNED_W_YAW) kf.cls = 'aligned';
     }
@@ -790,7 +846,8 @@ export class Tracker {
       dPitchDeg: a ? elevationDeg(c.pred) - elevationDeg(a.pred) : 0,
       dtS: a ? Math.abs(c.t - a.t) / 1000 : 0,
       dOmega: la && la.omega !== null && c.omega !== null ? c.omega - la.omega : null,
-      omega: c.omega, gUnwrapped: c.gUnwrapped, tauMs: c.tauMs, fast, steps: la ? la.steps + 1 : 0, mismatch: false,
+      omega: c.omega, omegaGyro: c.omegaGyro, gUnwrapped: c.gUnwrapped, tauMs: c.tauMs, wrapped: id > 1 && Math.abs(this.loopState.unwrappedDeg) >= 360,
+      fast, steps: la ? la.steps + 1 : 0, mismatch: false, wYaw: null,
     };
     this.links.push(link);
 
@@ -821,9 +878,11 @@ export class Tracker {
 
     const locked = link.edge !== null && !c.revisit && this.tryRatio(id);
     if (locked) this.onLock(); else this.paintKeyframe(kf);
+    const closure = id > 0 && !locked ? this.tryClose(kf, c.revisit) : null;
 
     let detail: FrameDetail;
     if (id === 0) detail = 'first';
+    else if (closure) detail = closure;
     else if (c.d !== null && c.d - STEP_DEG > TRAILING_MAX_DEG) detail = 'gap';   // beyond the fill: the gap stays grey
     else if (locked) detail = 'focal-lock';
     else if (kf.cls === 'aligned') detail = 'aligned';
@@ -848,6 +907,9 @@ export class Tracker {
   private feedLatency(id: number, rDeg: number): void {
     const b = this.links[id], a = this.links[b.ref];
     if (a.omega === null || b.omega === null) return;
+    // S46 (issue 1030): a rate that came from the orientation chord shares its pump-age jitter with the residual r, and the
+    // fit would read that as latency. Gyro rates only.
+    if (!a.omegaGyro || !b.omegaGyro) return;
     const dOmega = b.omega - a.omega;
     if (!(Math.abs(dOmega) > 0)) return;
     const tauUsed = (b.tauMs * b.omega - a.tauMs * a.omega) / dOmega;
@@ -897,6 +959,14 @@ export class Tracker {
   /** The focal has locked (4.8): re-solve every edge from its correspondences at f_lock, re-fuse the chain in order with the
    *  locked sd (classes follow), recompute the sigmas and the corrections, and repaint every keyframe through pump(). */
   private onLock(): void {
+    this.reintegrate();
+    for (const kf of this.kfs) { kf.sigmaDeg = this.sigmaFor(kf, true); this.refreshCYaw(kf.id); }
+    this.scheduleRerender();
+  }
+
+  /** Re-solve every edge from its correspondences at the focal the estimator now holds (`fBest`) and re-fuse the chain in order,
+   *  so that poses, classes and weights follow it. A match the gate now refuses is dropped and the gyro places that keyframe. */
+  private reintegrate(): void {
     const target = this.focal.fBest;
     for (const L of this.links) {
       if (L.edge && L.fMeas !== target && L.edge.corr.length >= HORN_MIN_CORR) { L.edge.qBA = this.resolveAt(L.edge, target); L.fMeas = target; }
@@ -910,8 +980,219 @@ export class Tracker {
         L.edge = null;
       }
     }
-    for (const kf of this.kfs) { kf.sigmaDeg = this.sigmaFor(kf, true); this.refreshCYaw(kf.id); }
+  }
+
+  // ---- Stage 3: loop closure (T28) --------------------------------------------------
+
+  /** Try the closure for the keyframe just committed (4.9). Null while it is not due or has no match yet (it is tried again on
+   *  the next keyframe); 'closure' or 'closure-gyro' when this keyframe closed the loop. Due from |unwrappedDeg| = 350 with a
+   *  candidate among the first 4 keyframes; past CLOSURE_RETRY_MAX_DEG (360 + hFoV / 2) the ring closes by gyro whatever the
+   *  candidates, on a revisit commit too (a ring whose seam is all amber revisits commits no other keyframe past the seam). A
+   *  focal that is not locked cannot be closed (S19: before the lock Theta_img is 0 and every step is gyro-led), so such a ring
+   *  closes by gyro as soon as it is due. A revisit commit never searches for a match: its place in the chain is its
+   *  reference's, not the end of the ring. */
+  private tryClose(kf: Keyframe, revisit: boolean): FrameDetail | null {
+    const loop = this.loopState;
+    if (loop.closed) return null;
+    const turned = Math.abs(loop.unwrappedDeg);
+    if (!(turned >= CLOSURE_MIN_DEG)) return null;
+    if (turned > CLOSURE_RETRY_MAX_DEG) return this.closeByGyro();
+    if (revisit) return null;
+    // The first keyframes the ring started on at its own rate: a keyframe taken at a standstill or while the turn was still building
+    // is not a partner (see `atRingRate`), and the first four of the rest are the candidates loop.ts picks from.
+    const candidates = closureCandidates(this.kfs.filter(k => k.id === kf.id || this.atRingRate(k.id)), kf, loop.unwrappedDeg);
+    if (candidates.length === 0) return null;
+    if (this.focal.state !== 'locked') return this.closeByGyro();
+    for (const id of candidates) {
+      const match = this.matchClosure(this.kfs[id], kf);
+      if (match) return this.closeByImage(this.kfs[id], kf, match);
+    }
+    return null;
+  }
+
+  /** A closure partner must have been taken at the ring's typical rate: what a frame shows lags the device by an amount that
+   *  depends on the rate (the camera's latency, a stabiliser that holds the view behind the turn), so a keyframe taken at a
+   *  standstill or while the turn was still building is offset from the steady ones, and a match between it and a steady one
+   *  carries that offset as a rotation the ring does not have. The same reason as the steady-pair rule of 4.8, applied to the
+   *  closure. The typical rate is the median |omega| of the chain keyframes. */
+  private atRingRate(id: number): boolean {
+    const rates: number[] = [];
+    for (const L of this.links) if (!L.revisit && L.omega !== null) rates.push(Math.abs(L.omega));
+    if (rates.length === 0) return true;
+    rates.sort((x, y) => x - y);
+    const typical = rates[rates.length >> 1], own = this.links[id].omega;
+    return own !== null && Math.abs(own) >= CLOSURE_RATE_FRAC * typical;
+  }
+
+  /** S42: a ring that turned CLOSURE_MIN_DEG or more and has no closure when Finish comes (keyframes can stop short of the
+   *  retry limit, and the over-limit rule fires only on a commit) takes the gyro closure, so every finished ring is closed one
+   *  way or the other. */
+  closeAtFinish(): void {
+    const loop = this.loopState;
+    if (loop.closed || this.kfs.length === 0) return;
+    // The turn is the live axis's, not the newest keyframe's: past the seam the axis is within S of keyframes that exist, and no
+    // keyframe is taken, so `loop.unwrappedDeg` (set at a commit) stops where the last one was.
+    const turned = Math.max(Math.abs(loop.unwrappedDeg), Math.abs(this.unwrapped - this.unwrappedAt[0]));
+    if (!(turned >= CLOSURE_MIN_DEG)) return;
+    this.closeByGyro();
+  }
+
+  /** No correction: the loop is closed, by gyro, and the focal stays as it is (4.9 Fallback). */
+  private closeByGyro(): FrameDetail {
+    const loop = this.loopState;
+    loop.closed = true; loop.method = 'gyro';
+    return 'closure-gyro';
+  }
+
+  /** The closure window of alignPair between the early keyframe `a` (the template) and the newest `b`, at the focal LK runs at,
+   *  predicted by the poses as they stand. Null when either view repeats along the yaw direction inside the window, when
+   *  alignPair refuses the match, or when its rotation against the gyro-predicted closure is beyond 3 sigma of the gyro's
+   *  uncertainty over the whole turn, scale error included (S36).
+   *
+   *  The 3-sigma gate alone cannot refuse a lock one texture period off: the gyro's scale error is 2 % of a 360-degree turn,
+   *  which is 7.2 degrees at one sigma and 21.6 at three, wider than the closure window (reliable to 15 degrees, accepted to
+   *  12), and the prior on the gyro scale favours the wrong tooth as often as the right one. What tells an ambiguous view is
+   *  the view itself, so a pair whose frames repeat along yaw with a period inside the window is not tried (`repeatsAlongYaw`):
+   *  the ring then closes by gyro at 381.5, which is safe, where a false closure would close the focal on a wrong turn. */
+  private matchClosure(a: Keyframe, b: Keyframe): AlignResult | null {
+    if (repeatsAlongYaw((a.pyr as Pyramid).l2) || repeatsAlongYaw((b.pyr as Pyramid).l2)) return null;
+    const f = this.focal.fMeasure;
+    const k = {
+      l0: intrinsicsAt(0, this.frameW, this.frameH, f), l1: intrinsicsAt(1, this.frameW, this.frameH, f),
+      l2: intrinsicsAt(2, this.frameW, this.frameH, f),
+    };
+    const tpl = prepareTemplate(a.pyr as Pyramid, k.l1, k.l2);
+    const rgbA: RgbStrip = { strip: a.strip, x0: a.stripX0, w: a.stripW, h: a.stripH };
+    const rgbB: RgbStrip = { strip: b.strip, x0: b.stripX0, w: b.stripW, h: b.stripH };
+    const res = alignPair(tpl, b.pyr as Pyramid, qmul(qinv(b.pose), a.pose), k, { window: 'closure', rgbA, rgbB });
+    if (!res.ok) return null;
+    const la = this.links[a.id], lb = this.links[b.id];
+    const sigma = Math.sqrt(predictorVarianceDeg2(lb.mode, Math.abs(lb.gUnwrapped - la.gUnwrapped), Math.abs(b.t - a.t) / 1000, 0, this.latency.sigmaMs));
+    return angleBetweenDeg(res.qBA, qmul(qinv(b.pred), a.pred)) <= CLOSURE_GATE_SIGMAS * sigma ? res : null;
+  }
+
+  /** S44: `closeLoop` scales the focal by 1 / f, which leaves about a third of the lock's error because the re-solved steps are
+   *  not exactly proportional to 1 / f. The closed focal is the root of Theta(f) = `target` (T_true - Theta_gyro) over the image-led
+   *  edges re-solved at f, found by CLOSURE_SECANT_STEPS secant steps from the 1 / f value; the focal estimator is then told
+   *  the ring that gives that value (`closeLoop` takes its focal from fMeasure and the ratio of its inputs, so the second call
+   *  states the refined one). A step that does not improve the residual, or lands outside half to twice the first value, is not
+   *  taken. */
+  private refinedClosedFocal(dir: number, target: number, f0: number): number | null {
+    const n = this.kfs.length;
+    const led: number[] = [];
+    let prev = 0;
+    for (let id = 1; id < n; id++) {
+      const L = this.links[id];
+      if (L.revisit) continue;
+      if (L.edge && L.ref === prev && L.wYaw !== null && L.wYaw >= ALIGNED_W_YAW) led.push(id);
+      prev = id;
+    }
+    if (led.length === 0) return null;
+    const theta = (f: number): number => {
+      let sum = 0;
+      for (const id of led) {
+        const L = this.links[id], base = this.kfs[L.ref].pred, e = L.edge as Edge;
+        const q = e.corr.length >= HORN_MIN_CORR ? this.resolveAt(e, f) : e.qBA;
+        sum += dir * wrap180(headingDeg(qmul(base, qinv(q))) - headingDeg(base));
+      }
+      return sum;
+    };
+    const g = (f: number): number => theta(f) - target;
+    let fa = f0, ga = g(fa), fb = f0 * 1.005, gb = g(fb);
+    for (let i = 0; i < CLOSURE_SECANT_STEPS; i++) {
+      if (!(Math.abs(gb - ga) > 1e-12)) break;
+      const fc = fb - gb * (fb - fa) / (gb - ga);
+      if (!(fc > 0.5 * f0 && fc < 2 * f0)) break;
+      fa = fb; ga = gb; fb = fc; gb = g(fc);
+    }
+    return Math.abs(gb) < Math.abs(g(f0)) ? fb : null;
+  }
+
+  /** The yaw of the image edge into keyframe `id`, degrees: its rotation applied to the predictor's pose at the reference, and
+   *  the change of heading that results (as chainYawDeg, for one step). */
+  private stepYawDeg(id: number): number {
+    const L = this.links[id], base = this.kfs[L.ref].pred;
+    return wrap180(headingDeg(qmul(base, qinv((L.edge as Edge).qBA))) - headingDeg(base));
+  }
+
+  /** Apply an accepted closure match (4.9, 4.8, 4.10):
+   *    1. the focal from the closure: Theta_img over the image-led steps (W_yaw >= 0.5), Theta_gyro over the others, both as the
+   *       chain holds them, in the direction of the turn, and T_true = 360 + the yaw of the match against keyframe 0. A
+   *       RangeError closes by gyro with the locked focal kept (S19);
+   *    2. every edge, the closure's included, is re-solved at that focal and the chain re-fused in order;
+   *    3. the rotation that is still left between the newest keyframe and the match, and the log-gain residual of the match's
+   *       overlap means against the chained gains, are spread linearly in cumulative angle (`distributeClosure`);
+   *    4. sigmas are recomputed with sg = 0.00139, the aligned ones from the nearer anchor on either side of the ring;
+   *    5. the ring is repainted through pump().
+   *  `loop.preDeg` is the residual at step 2's start: the scan-frame rotation vector that takes the newest keyframe's pose to
+   *  the pose the match gives it, in degrees. `postDeg` is what is left between the corrected chain's early-to-late rotation
+   *  and the match. */
+  private closeByImage(a: Keyframe, b: Keyframe, res: AlignResult): FrameDetail {
+    const loop = this.loopState, n = this.kfs.length, dir = loop.unwrappedDeg < 0 ? -1 : 1;
+    const pose0 = qmul(a.pose, qinv(res.qBA));
+    const pre = logSO3(qmul(pose0, qinv(b.pose)));
+    let thetaImg = 0, thetaGyro = 0, prev = 0;
+    for (let id = 1; id < n; id++) {
+      const L = this.links[id];
+      if (L.revisit) continue;
+      if (L.edge && L.ref === prev && L.wYaw !== null && L.wYaw >= ALIGNED_W_YAW) thetaImg += dir * this.stepYawDeg(id);
+      else thetaGyro += dir * (L.gUnwrapped - this.links[prev].gUnwrapped);
+      prev = id;
+    }
+    const trueDeg = 360 + dir * wrap180(headingDeg(pose0) - headingDeg(this.kfs[0].pose));
+    // S44: closeLoop's own focal is f_measure x Theta_img / (T_true - Theta_gyro); the secant steps start from it, and the focal
+    // estimator is handed the Theta_img that gives the refined value, so that closeLoop is called once.
+    const fLock = this.focal.fMeasure, target = trueDeg - thetaGyro;
+    const refined = target > 0 && thetaImg > 0 ? this.refinedClosedFocal(dir, target, fLock * thetaImg / target) : null;
+    let closed: { fNorm: number; gyroScale: number };
+    try { closed = this.focal.closeLoop(refined === null ? thetaImg : refined / fLock * target, thetaGyro, trueDeg); }
+    catch (e) {
+      if (e instanceof RangeError) return this.closeByGyro();
+      throw e;
+    }
+    this.closure = { fLock, fClosed: closed.fNorm, gyroScale: closed.gyroScale };
+    const edge: Edge = {
+      a: a.id, b: b.id, kind: 'closure', qBA: res.qBA, covRad2: res.covRad2, corr: res.corr, zncc: res.zncc,
+      meanA: res.meanA, meanB: res.meanB, n: res.n,
+    };
+    this.reintegrate();
+    if (edge.corr.length >= HORN_MIN_CORR) edge.qBA = this.resolveAt(edge, this.focal.fBest);
+    this.edgeList.push(edge);
+
+    // Step 3: what is left after the focal, spread by cumulative angle along the chain (a revisit inherits its reference's).
+    const rest = logSO3(qmul(qmul(a.pose, qinv(edge.qBA)), qinv(b.pose)));
+    const cum: number[] = [0];
+    for (let id = 1; id < n; id++) {
+      const L = this.links[id];
+      cum[id] = cum[L.ref] + axisSeparationDeg(this.kfs[L.ref].pred, this.kfs[id].pred);
+    }
+    // The residual is the ring's between the match's early keyframe and the newest one, so it is spread from the early keyframe on:
+    // the keyframes before it take nothing, and the corrected chain satisfies the match exactly (loop.postDeg is zero).
+    const from = cum[a.id];
+    for (let id = 0; id < n; id++) cum[id] = Math.max(0, Math.min(cum[id], cum[n - 1]) - from);
+    const logGain: [number, number, number] = [0, 0, 0];
+    if (res.n > 0) {
+      for (let ch = 0; ch < 3; ch++) {
+        if (!(res.meanA[ch] > 0 && res.meanB[ch] > 0)) continue;
+        const ratio = Math.min(GAIN_STEP_MAX, Math.max(GAIN_STEP_MIN, res.meanA[ch] / res.meanB[ch]));
+        logGain[ch] = Math.log(a.gainRGB[ch] * ratio / b.gainRGB[ch]);
+      }
+    }
+    const spread = distributeClosure(cum, [rest[0] / DEG, rest[1] / DEG, rest[2] / DEG], logGain);
+    for (let id = 0; id < n; id++) {
+      const kf = this.kfs[id], r = spread.rot[id], g = spread.logGain[id];
+      kf.pose = qmul(expSO3([r[0] * DEG, r[1] * DEG, r[2] * DEG]), kf.pose);
+      for (let ch = 0; ch < 3; ch++) kf.gainRGB[ch] *= Math.exp(g[ch]);
+    }
+
+    loop.closed = true; loop.method = 'image';
+    loop.preDeg = [pre[0] / DEG, pre[1] / DEG, pre[2] / DEG];
+    loop.postDeg = angleBetweenDeg(qmul(qinv(a.pose), b.pose), qinv(edge.qBA));
+    loop.match = { early: a.id, late: b.id };
+    const ringSteps = this.links[n - 1].steps;
+    for (const kf of this.kfs) { kf.sigmaDeg = this.sigmaFor(kf, true, ringSteps); this.refreshCYaw(kf.id); }
     this.scheduleRerender();
+    return 'closure';
   }
 
   /** The yaw of C at keyframe `id`: the heading of its pose minus that of its prediction, unwrapped along the ids. */
@@ -936,7 +1217,7 @@ export class Tracker {
    *  frame (4.7's sensor-only example, 3.6, has no anchor term); its own sigma is the formula at dPsi = dt = 0, which
    *  is the 0.5 floor unless sigma_tau omega is large. dPsi is the net unwrapped turn, which is what a scale error
    *  multiplies. */
-  private sigmaFor(kf: Keyframe, bothSides = false): number {
+  private sigmaFor(kf: Keyframe, bothSides = false, ringSteps?: number): number {
     const gauge = this.kfs[0];
     if (this.sensorOnly) {
       return placementSigmaDeg({
@@ -958,10 +1239,12 @@ export class Tracker {
     const anchorSigma = anchor === 0 || anchor === id ? 0
       : placementSigmaDeg({ aligned: true, stepsToGauge: this.links[anchor].steps, dPsiToAnchorDeg: 0, dtToAnchorS: 0,
         omegaDegS: 0, sigmaTauMs: 0, anchorSigmaDeg: 0, closed: false });
+    // After an image closure (4.9) sg is 0.00139 and an aligned keyframe is as far from the gauge as the nearer end of the ring.
+    const steps = this.links[id].steps;
     return placementSigmaDeg({
-      aligned: kf.cls === 'aligned', stepsToGauge: this.links[id].steps,
+      aligned: kf.cls === 'aligned', stepsToGauge: ringSteps === undefined ? steps : Math.min(steps, ringSteps - steps),
       dPsiToAnchorDeg: Math.abs(this.unwrappedAt[anchor] - this.unwrappedAt[id]), dtToAnchorS: Math.abs(kf.t - this.kfs[anchor].t) / 1000,
-      omegaDegS: kf.rate, sigmaTauMs: this.latency.sigmaMs, anchorSigmaDeg: anchorSigma, closed: false,
+      omegaDegS: kf.rate, sigmaTauMs: this.latency.sigmaMs, anchorSigmaDeg: anchorSigma, closed: this.loopState.method === 'image',
     });
   }
 

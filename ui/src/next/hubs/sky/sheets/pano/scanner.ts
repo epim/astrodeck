@@ -48,6 +48,9 @@ export interface CueInput {
   staleInLastSecond: number; gapDeg: number | null; rateDegS: number | null; rateMaxDegS: number;
   elevationDeg: number | null; green: readonly [number, number]; rollDeg: number | null; mismatchRun: number;
   skyLuma: number | null; capReached: boolean; coveredDeg: number; closed: boolean; tallSpans: number;
+  /** False while the phone has not turned since Begin: the sensor cannot be lagging behind a turn that has not
+   *  happened (issue 1031). Absent reads as true. */
+  movedSinceBegin?: boolean;
 }
 
 /** Rows 5-16 of 2.12 as numbers: stale refusals in a second, the gap cue's width, roll, textured mismatches in a row,
@@ -73,7 +76,7 @@ export function cueFor(c: CueInput): { key: CueKey; text: string; kind: 'info' |
   if (c.paused) return cue('paused');
   if (c.cameraStalled) return cue('stalled-camera');
   if (c.sensorStalled) return cue('stalled-sensor');
-  if (c.staleInLastSecond >= STALE_CUE_COUNT) return cue('stale');
+  if (c.staleInLastSecond >= STALE_CUE_COUNT && c.movedSinceBegin !== false) return cue('stale');
   if (c.gapDeg !== null && c.gapDeg >= GAP_CUE_DEG) return cue('gap', { d: Math.round(c.gapDeg) });
   if (c.rateDegS !== null && c.rateDegS > c.rateMaxDegS) return cue('too-fast');
   if (c.elevationDeg !== null && c.elevationDeg < c.green[0]) return cue('tilt-up');
@@ -147,9 +150,10 @@ const AZ_MIN_COLS = Math.round(TRACE.azMinObservedDeg * PANO_W / 360);
 /** A column's state reads its window model (+-15 degrees) and its neighbours' candidates (+-4 degrees), so a paint can
  *  change the state of a column this many columns away. The live tracer retraces that far beyond what was painted. */
 const TRACE_MARGIN_COLS = Math.ceil((TRACE.skyPoolDeg + TRACE.azSupportDeg) * PANO_W / 360);
-/** No build-time commit is injected into the UI bundle (env.d.ts declares only __APP_VERSION__), so the report and the
- *  recording say so with null rather than name a version as a commit. */
-const SCANNER_COMMIT: string | null = null;
+/** The build's commit, injected by vite.config.ts's `define` as __PANO_COMMIT__ (S40) and absent outside a bundler pass, which is why
+ *  it is read behind `typeof`: a replay, a test and a build with no git say "dev", never a version posing as a commit. */
+declare const __PANO_COMMIT__: string | undefined;
+const SCANNER_COMMIT: string = typeof __PANO_COMMIT__ === 'string' && __PANO_COMMIT__ ? __PANO_COMMIT__ : 'dev';
 
 const UP: V3 = [0, 0, 1];
 const EMPTY_RGBA = new Uint8ClampedArray(0);
@@ -223,6 +227,28 @@ function spansOf(tall: Uint8Array): { from: number; to: number }[] {
     if (!tall[(x + 1) % n]) spans.push({ from: start * deg, to: ((x + 1) % n) * deg });
   }
   return spans;
+}
+
+/** A scan that observed fewer degrees than this at altitude 0 is partial for the Finish-time guard. */
+const PARTIAL_SCAN_DEG = 180;
+
+/** The Finish-time guard for a partial scan whose majority is an obstruction (S15 residue). The tracer's ring sky is the majority of
+ *  the compass it was shown, so in a scan of under 180 degrees an obstruction that fills most of what was observed is its own
+ *  sky, and a column of it in which the walk found no departure at all (no boundary to take a contrast of) is a wall that cannot
+ *  be told from open sky. Since S51 the tracer reads such a column UnknownContrast with no altitude (it used to read it Measured
+ *  at 0, which is what this guard first caught); here it is Tall, which says what it more likely is. A column with a boundary (a ground line, a skyline) is untouched, and so is every column of a scan
+ *  that observed 180 degrees or more. Returns how many columns it changed. It lives here and not in the tracer because it is a
+ *  Finish decision about how much of the ring was seen, which the live tracer (always partial) must not make. */
+export function guardPartialScan(c: ColumnHorizon, observedColumns: number): number {
+  if (!(observedColumns < PARTIAL_SCAN_DEG * PANO_W / 360)) return 0;
+  let changed = 0;
+  for (let x = 0; x < c.state.length; x++) {
+    if (c.state[x] !== ColState.UnknownContrast || !Number.isNaN(c.alt[x]) || !Number.isNaN(c.contrastSigma[x])) continue;
+    c.state[x] = ColState.Tall;
+    c.alt[x] = NaN;
+    changed++;
+  }
+  return changed;
 }
 
 /** No column seen: what Finish falls back on when its own work throws (section 6). */
@@ -306,6 +332,8 @@ export class PanoramaScanner implements ScannerLike {
   private stopped = false;
   private openMs = 0;
   private begun = false;
+  /** The phone has turned faster than the pace line since begin(): the lagging cue needs a turn to lag behind. */
+  private movedSinceBegin = false;
   private paused = false;
   private hidden = false;
   private finishing = false;
@@ -490,6 +518,7 @@ export class PanoramaScanner implements ScannerLike {
     if (this.begun || !this.canBegin) return;
     const now = performance.now();
     this.begun = true;
+    this.movedSinceBegin = false;
     this.beginT = now;
     this.track.latch(now);
     this.pano.begin(now);
@@ -582,6 +611,7 @@ export class PanoramaScanner implements ScannerLike {
     const count = (cls: KeyClass) => kfs.reduce((n, kf) => n + (kf.cls === cls ? 1 : 0), 0);
     const fBest = this.focal.fBest, shortFov = shortFovDeg(fBest);
     const innovation = this.innovations();
+    const closure = this.tracker.closureFocal;
     const input: ReportInput = {
       scanner: { commit: SCANNER_COMMIT, sensorOnly: this.sensorOnly },
       browser: browserFacts(),
@@ -606,8 +636,9 @@ export class PanoramaScanner implements ScannerLike {
       focal: {
         source: 'default', state: this.focal.state, fNorm: fBest, sdPct: this.focal.sdPct, ratios: this.focal.ratios,
         shortFovDeg: shortFov,
-        // The closure's measurements are T28's; v0 never closes.
-        closurePct: null, gyroScale: null,
+        // What an image closure did to the focal (T28, 4.8): how far it moved it from the lock, in percent, and the gyro scale it
+        // reported (s_g = T_gyro / T_true - 1, as coarse as the lock). Null on a ring that closed by gyro or not at all.
+        closurePct: closure ? (closure.fClosed / closure.fLock - 1) * 100 : null, gyroScale: closure ? closure.gyroScale : null,
         ultraWideSuspected: this.focal.state !== 'prior' && shortFov > 60,
       },
       loop: copyLoop(this.tracker.loop),
@@ -655,15 +686,16 @@ export class PanoramaScanner implements ScannerLike {
     this.tracker.setRateMax(this.rateMax);
     // 2. The pose at t_f - tau, the rate at t_f, and world up in the camera frame.
     const pred = this.track.predictAt(t - this.track.latency.tauMs);
-    const rate = this.track.rateAt(t);
+    const read = this.track.rateReadAt(t), rate = read.rate;
     this.rate = rate;
+    if (this.begun && rate !== null && rate >= PACE_IDLE_DEG_S) this.movedSinceBegin = true;
     const up: V3 | null = pred ? qrotate(qinv(pred.q), UP) : null;
     // 3. Portrait or not, then the keyframe rule, exactly once per delivered frame: its call count is meta.frameNo, the
     //    frameId of every CaptureRecord and the recording's f%06d (S24).
     this.portraitShape = meta.height > meta.width;
     this.portrait = screenAngle() === 0 && this.portraitShape;
     this.tracker.setActive(this.begun && !this.paused && this.portrait && !this.hidden);
-    const step = this.tracker.onFrame(t, pred, rate);
+    const step = this.tracker.onFrame(t, pred, rate, read.source);
     // 4. The recording, which may read this frame back.
     const recorded = this.recordFrame(meta);
     // 5. The step's readback: the recording's when there is one. A failed readback ends the step (S28).
@@ -859,6 +891,8 @@ export class PanoramaScanner implements ScannerLike {
   // ---- Finish ----
 
   private work(previous: readonly HorizonPoint[] | null, endedBy: 'user' | 'hidden' | 'error'): ScanResult {
+    // 0. A ring that turned a full circle and has no closure takes the gyro closure (S42).
+    this.tracker.closeAtFinish();
     // 1. North: magnetic, with the tracker's yaw correction (4.12). The declination is the closure's.
     const north = this.track.north.estimate(this.corrYawAt);
     let yaw = 0, declinationApplied = false;
@@ -877,8 +911,9 @@ export class PanoramaScanner implements ScannerLike {
     this.tracker.renderAll(yaw);
     // 3-6. The tracer, the bins, the O1 merge, the polyline.
     const columns = tracer.extract(this.pano, { focalSdPct: this.focal.sdPct, axisAltDeg: this.axisAltDeg() });
+    guardPartialScan(columns, this.observedColumns());
     const draft = mergeKept(binProfile(columns), previous);
-    const line = conservativePolyline(draft.alt);
+    const line = conservativePolyline(draft.alt, 180, draft.state);
     // 7. The PNG.
     const png = this.pano.toPNG(document.createElement('canvas'));
     return {
@@ -892,7 +927,7 @@ export class PanoramaScanner implements ScannerLike {
   private fallback(previous: readonly HorizonPoint[] | null, e: unknown): ScanResult {
     this.finishError = messageOf(e);
     const draft = mergeKept(binProfile(unseenColumns()), previous);
-    const line = conservativePolyline(draft.alt);
+    const line = conservativePolyline(draft.alt, 180, draft.state);
     let png = '';
     try { png = this.pano.toPNG(document.createElement('canvas')); } catch { /* no picture, and the error says why */ }
     return {
@@ -955,6 +990,7 @@ export class PanoramaScanner implements ScannerLike {
       elevationDeg: elevation, green: band.green, rollDeg: roll, mismatchRun: this.tracker.mismatchRun,
       skyLuma: kfs.length ? kfs[kfs.length - 1].skyLuma : null, capReached: kfs.length >= MAX_KEYFRAMES,
       coveredDeg, closed: loop.closed, tallSpans: this.tallSpans.length,
+      movedSinceBegin: this.movedSinceBegin,
     });
     return {
       phase: this.phase(), cue: cue.text, cueKey: cue.key, cueKind: cue.kind, error,

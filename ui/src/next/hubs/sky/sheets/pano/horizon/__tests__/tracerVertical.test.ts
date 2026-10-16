@@ -212,8 +212,9 @@ test('A floating departure is a roof, a marking or a disc by its height and its 
   // is. (What the old suite could not say: its bin was one sample.)
   const roofFirst = 13 * 36, roofLast = 14 * 36 - 1;
   near(trace.horizon.alt[roofFirst], 61, HARD, 'the roof column beside the wall:');
-  assert.equal(trace.horizon.state[roofLast], ColState.Measured);
-  assert.equal(trace.horizon.alt[roofLast], 0, 'the far end of the roof bin was promoted by a wall 12 degrees away');
+  // S51: an open column has no boundary to measure. It was Measured at 0; it is Unknown with no altitude now.
+  assert.equal(trace.horizon.state[roofLast], ColState.UnknownContrast);
+  assert.ok(Number.isNaN(trace.horizon.alt[roofLast]), 'the far end of the roof bin was promoted by a wall 12 degrees away');
   // And a mosaic too narrow to have neighbours gets the single-column answer, unchanged. The gate is 72 degrees
   // of azimuth OBSERVED: five 12 degree bins are 60 and stay silent (the roof beside the wall stays open); six are
   // 72 and the rule is awake (the roof is published).
@@ -351,7 +352,7 @@ test('The anchor reaches 4 degrees of azimuth and 18 rows, and both limits are t
   assert.ok(adjacent.points[6].alt > 0, `the same band in the adjacent bin was not published: ${adjacent.points[6].alt}`);
   // The reach in columns: the near edge of the band is promoted, its far end (more than 4 degrees along) is not.
   const x0 = 6 * 36;
-  assert.ok(adjacent.horizon.alt[x0] > 0 && adjacent.horizon.alt[x0 + 35] === 0,
+  assert.ok(adjacent.horizon.alt[x0] > 0 && Number.isNaN(adjacent.horizon.alt[x0 + 35]),
     'the reach is not 4 degrees: the far end of the adjacent band and its near end read alike');
 });
 
