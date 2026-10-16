@@ -769,6 +769,18 @@ async def _apply_solve_filter(hub: Any, name: str | None) -> None:
     slot rather than solving through 3 nm. Unlike the centring path this does
     NOT put the wheel back: a polar run owns the camera for its whole arc and
     has no interleaved science frame to hand it back to.
+
+    BOTH AWAITS ON THE WHEEL ARE BOUNDED (#1010), as the centring path's are
+    (#815, #935): the position read by ``STATUS_DEVICE_READ_TIMEOUT_S``, the
+    move by ``SOLVE_WHEEL_MOVE_TIMEOUT_S``. A native wheel whose SDK read
+    stalls in USB never trips a transport timeout, and
+    ``AlpacaFilterWheel.set_position`` polls while the wheel reports -1 and
+    every poll succeeds, so a wheel jammed between slots held the alignment's
+    start for ever, before the first exposure. The read is the short bound
+    because this runs before every solve frame (#999). A wheel that runs out of
+    its bound is said to be stalled, with the bound in the line (a bare
+    ``TimeoutError`` has no text), and the solve goes ahead on whatever is
+    loaded, as it does when the wheel raises.
     """
     # A hub with no device map has no wheel, which is the same answer as a hub
     # whose wheel is absent — and is what the bare hubs in the polar tests are.
@@ -777,10 +789,21 @@ async def _apply_solve_filter(hub: Any, name: str | None) -> None:
         return
     try:
         from ..focus.filter_offsets import solve_filter_slot
+        # Lazy, like the solve-frame helpers below: hub imports this package.
+        from ..hub import (SOLVE_WHEEL_MOVE_TIMEOUT_S,
+                           STATUS_DEVICE_READ_TIMEOUT_S, _wheel_why)
         names = list(getattr(fw, "filter_names", []) or [])
         if not names:
             return
-        current = await fw.get_position()
+        try:
+            current = await asyncio.wait_for(fw.get_position(),
+                                             STATUS_DEVICE_READ_TIMEOUT_S)
+        except asyncio.TimeoutError as e:
+            bus.log("warning",
+                    f"native TPPA: the filter wheel is stalled (its position "
+                    f"read: {_wheel_why(e, STATUS_DEVICE_READ_TIMEOUT_S)}); "
+                    f"solving through whatever is loaded", "polar")
+            return
         slot = solve_filter_slot(
             names,
             narrowband=getattr(fw, "filter_narrowband", []),
@@ -791,7 +814,14 @@ async def _apply_solve_filter(hub: Any, name: str | None) -> None:
             return
         bus.log("info", f"native TPPA: filter {names[int(current)]!r} → "
                         f"{names[slot]!r} for the solve", "polar")
-        await fw.set_position(slot)
+        try:
+            await asyncio.wait_for(fw.set_position(slot),
+                                   SOLVE_WHEEL_MOVE_TIMEOUT_S)
+        except asyncio.TimeoutError as e:
+            bus.log("warning",
+                    f"native TPPA: the filter wheel is stalled (its move to "
+                    f"{names[slot]!r}: {_wheel_why(e)}); solving through "
+                    f"whatever is loaded", "polar")
     except Exception as e:  # noqa: BLE001 - the solve can proceed either way
         bus.log("warning", f"native TPPA: could not move the filter wheel "
                            f"for the solve: {e}", "polar")

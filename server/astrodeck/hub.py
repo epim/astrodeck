@@ -868,7 +868,9 @@ class StatusReadStalled(Exception):
     An ``Exception`` on purpose: every device block in ``Hub.poll_status`` is
     already guarded to treat a read that raises as "no reading" (the block is
     left off the frame, or its key is null or absent), and a read that does
-    not return is the same absence. Nothing outside the poll sees it."""
+    not return is the same absence. Nothing outside the poll and the reads
+    that follow an exposure (the wheel's slot, #999; a frame's header, #1009)
+    sees it, and each of those has the same guards."""
 
 
 async def _run_to_its_bound(make, timeout_s: float) -> BaseException | None:
@@ -3818,6 +3820,16 @@ class Hub:
         leaves its value None (its card omitted) and never blocks or fails the
         save. Only Hub.capture builds this; save_fits stays device-free.
 
+        THE DEVICE READS ARE BOUNDED (#1009), through ``_status_read`` and the
+        same keys and ``STATUS_DEVICE_READ_TIMEOUT_S`` as the status poll's
+        own reads of these devices: a guard of ``except Exception`` catches a
+        read that raised and not one that never returns, and a native device
+        whose SDK read stalls in USB never trips a transport timeout. A read
+        that does not return leaves its value None, as a read that raised
+        does, and is said once by ``_status_read``, which also keeps ONE read
+        in flight per device, so a device that stays dead for a night's
+        frames costs one worker thread and not one a frame.
+
         ``ra_hours``/``dec_deg`` are the MOUNT's own report (unchanged from
         before GN-07); ``best_ra``/``best_dec``/``pointing_source`` are the
         resolved best-known pointing the caller already computed via
@@ -3891,7 +3903,8 @@ class Hub:
             cam = self.devices.get("camera")
             getc = getattr(cam, "get_cooler", None)
             if callable(getc):
-                cooler = await getc()
+                cooler = await self._status_read(
+                    set(), "camera", "cooler", cam, getc)
                 if cooler and cooler.get("on") and cooler.get("target_c") is not None:
                     meta.set_temp_c = float(cooler["target_c"])
         except Exception as exc:
@@ -3901,11 +3914,16 @@ class Hub:
         try:
             foc = self.devices.get("focuser")
             if foc and getattr(foc, "connected", False):
-                meta.focuser_pos = int(await foc.get_position())
+                meta.focuser_pos = int(await self._status_read(
+                    set(), "focuser", "position", foc, foc.get_position))
                 # The thermometer is its own read (poll_status says the same):
-                # the position is already in the header when it raises.
+                # the position is already in the header when it raises. It is
+                # asked only after the position answered, so a focuser that
+                # does not answer costs one bound and not two.
                 try:
-                    t = await foc.get_temperature()
+                    t = await self._status_read(
+                        set(), "focuser", "temperature", foc,
+                        foc.get_temperature)
                     if t is not None:
                         meta.focuser_temp_c = float(t)
                 except Exception as exc:
@@ -3930,8 +3948,9 @@ class Hub:
                 # calibration instead (`_rotator_sync_anchor`), with the
                 # learned sign (`_effective_rotator_sign`, +1 when
                 # unmeasured -- what every rotator before R-4 assumed).
-                mech_now = _rotation.mod360(
-                    float(await rot.get_mechanical_position()))
+                mech_now = _rotation.mod360(float(await self._status_read(
+                    set(), "rotator", "angle", rot,
+                    rot.get_mechanical_position)))
                 # #176: the metal's own angle, recorded as ROTMECH. Set
                 # BEFORE the sky conversion below, because that one needs a
                 # sync anchor and a learned sign and may raise, while the
@@ -4227,13 +4246,22 @@ class Hub:
         Every device read the FITS header needs lives here and nowhere else,
         which is exactly what lets ``_save_captured_frame`` be device-free.
         Total by construction: every read is individually guarded, as it was
-        inline, because spec §9 says a header write never fails a capture."""
+        inline, because spec §9 says a header write never fails a capture.
+
+        AND BOUNDED (#1009): the mount's position here and the rest in
+        ``_frame_meta`` go through ``_status_read``. A guard catches a read
+        that raised, not one that never returns, and the snapshot runs after
+        the exposure with the camera lane already released, so a stalled
+        device held the centring loop, the run and the live view on a header
+        read. A read that does not return leaves the pointing out of the
+        header, as a failed one does."""
         cam = self.devices.get("camera")
         ra = dec = None
         tel = self.devices.get("telescope")
         if tel and tel.connected:
             try:
-                ra, dec = await tel.get_position()
+                ra, dec = await self._status_read(
+                    set(), "mount", "position", tel, tel.get_position)
                 # Bring a JNOW Alpaca mount's report to J2000 (the frame ASTAP
                 # and the catalog use); no-op for sim/NINA. Best-effort guarded
                 # (supervisor ruling 3).
@@ -6357,7 +6385,18 @@ class Hub:
         the wheel does not change often, and a marking that evaporated when the
         run was cancelled would have to be re-entered every time. ``nb_exposure_s``
         / ``nb_gain`` override the derived pair (see
-        ``focus.filter_offsets.narrowband_sweep_settings``)."""
+        ``focus.filter_offsets.narrowband_sweep_settings``).
+
+        EVERY AWAIT ON THE WHEEL IS BOUNDED (#1010), as the plate solve's
+        borrow is (#815): the reference-slot read by
+        ``STATUS_DEVICE_READ_TIMEOUT_S``, each slot's move by
+        ``SOLVE_WHEEL_MOVE_TIMEOUT_S``. A native wheel whose SDK read stalls in
+        USB never trips a transport timeout, and ``AlpacaFilterWheel.
+        set_position`` polls while the wheel reports -1, so a wheel jammed
+        between slots held the run for ever with its sweep lane taken. A wheel
+        that runs out of its bound ends the run with a ``DeviceError`` that
+        says the wheel is stalled and the bound it missed; the offsets are
+        written only when the run finishes, so every slot keeps its own."""
         from .focus.autofocus import run_autofocus
         from .focus.filter_offsets import (default_ref_slot,
                                            narrowband_sweep_settings,
@@ -6376,7 +6415,17 @@ class Hub:
             raise DeviceError("every slot on this wheel is marked blackout — "
                               "there is nothing to focus through")
         if ref_slot is None:
-            ref_slot = default_ref_slot(names, await fw.get_position())
+            try:
+                current = await asyncio.wait_for(
+                    fw.get_position(), STATUS_DEVICE_READ_TIMEOUT_S)
+            except asyncio.TimeoutError as e:
+                # A bare timeout has no text of its own: the message carries
+                # the bound.
+                raise DeviceError(
+                    f"the filter wheel is stalled (its position read: "
+                    f"{_wheel_why(e, STATUS_DEVICE_READ_TIMEOUT_S)}); the "
+                    f"filter offsets were not measured") from e
+            ref_slot = default_ref_slot(names, current)
             if ref_slot in blackout:      # current position IS the dark slot
                 ref_slot = next(s for s in range(n_slots) if s not in blackout)
         ref_slot = int(ref_slot)
@@ -6464,7 +6513,14 @@ class Hub:
                             of=n_slots, name=names[i],
                             done_slots=sorted(best_by_slot),
                             narrowband=nb, exposure_s=slot_exp, gain=slot_gain)
-                await fw.set_position(i)
+                try:
+                    await asyncio.wait_for(fw.set_position(i),
+                                           SOLVE_WHEEL_MOVE_TIMEOUT_S)
+                except asyncio.TimeoutError as e:
+                    raise DeviceError(
+                        f"the filter wheel is stalled (its move to "
+                        f"{names[i] or i}: {_wheel_why(e)}); the filter "
+                        f"offsets were not measured") from e
                 try:
                     res = await run_autofocus(
                         cam, foc, exposure_s=slot_exp, gain=slot_gain, step=step,
@@ -10227,7 +10283,15 @@ class Hub:
         The line says what failed and nothing about what happens next: a
         warning reaches the alert sinks, and a promise that is true of one
         caller is false of another. The engine's twin is
-        ``SequenceEngine._say_swallowed``, which is once per run."""
+        ``SequenceEngine._say_swallowed``, which is once per run.
+
+        A READ THAT DID NOT RETURN IS NOT SAID HERE (#1009). ``_status_read``
+        said it, once, with the bound it missed, and raised
+        ``StatusReadStalled`` into the guard that called this: that is the
+        same absence as a failed read and not a second event, so it gets no
+        second line about the same stall."""
+        if isinstance(exc, StatusReadStalled):
+            return
         from .events import night_key
         night = night_key()
         if getattr(self, "_swallowed_night", None) != night:
