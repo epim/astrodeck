@@ -136,15 +136,25 @@ def _read_ini(ini_path: Path) -> dict[str, str]:
     return kv
 
 
-def _wcs_from_astap(ini_path: Path, wcs_path: Path) -> "WcsSolution | None":
+#: The cards a WCS cannot be built without: the reference point.
+_REFERENCE_CARDS = ("CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2")
+
+
+def _wcs_from_astap(ini_path: Path, wcs_path: Path
+                    ) -> "tuple[WcsSolution | None, str | None]":
     """Build a WcsSolution from ASTAP's result files. Prefers the `.wcs`
     headerlet (a text FITS header) parsed with astropy; falls back to the `.ini`
-    numerics. Returns None on ANY failure — a WCS-parse error must never fail the
-    solve. Mirrors the `_solve_args` pattern: pure + subprocess-free, so it is
-    unit-testable from fixture files."""
+    numerics. Returns ``(solution, None)``, or ``(None, reason)`` on ANY failure
+    — a WCS-parse error must never fail the solve — with the reason in a
+    sentence a log line can quote; ``AstapSolver.solve`` carries it on the
+    ``SolveResult`` (#1025). Mirrors the `_solve_args` pattern: pure +
+    subprocess-free, so it is unit-testable from fixture files."""
     try:
         if wcs_path.exists():
             h = fits.Header.fromtextfile(str(wcs_path))
+            missing = [k for k in _REFERENCE_CARDS if k not in h]
+            if missing:
+                return None, f"the WCS headerlet has no {', '.join(missing)} card"
             def _f(key):
                 return float(h[key]) if key in h else None
             sol = WcsSolution(
@@ -157,8 +167,10 @@ def _wcs_from_astap(ini_path: Path, wcs_path: Path) -> "WcsSolution | None":
                 ctype2=str(h.get("CTYPE2", "DEC--TAN")))
         else:
             kv = _read_ini(ini_path)
-            if "CRVAL1" not in kv or "CRPIX1" not in kv:
-                return None
+            missing = [k for k in _REFERENCE_CARDS if k not in kv]
+            if missing:
+                return None, ("ASTAP wrote no WCS headerlet and its .ini has no "
+                              f"{', '.join(missing)}")
             def _g(key):
                 return float(kv[key]) if key in kv else None
             sol = WcsSolution(
@@ -175,10 +187,12 @@ def _wcs_from_astap(ini_path: Path, wcs_path: Path) -> "WcsSolution | None":
         # absent card). The same test the file writer applies, so the two
         # layers cannot disagree about what is believable.
         if not sol.has_usable_scale():
-            return None
-        return sol
-    except Exception:
-        return None
+            return None, ("the solution states no usable plate scale (no CD "
+                          "or CDELT cards, or a zero, singular or non-finite "
+                          "matrix)")
+        return sol, None
+    except Exception as exc:
+        return None, f"the solution could not be read ({type(exc).__name__})"
 
 
 def find_astap() -> str | None:
@@ -191,7 +205,8 @@ def find_astap() -> str | None:
     return None
 
 
-def _result_from_ini(kv: dict, wcs: "WcsSolution | None") -> SolveResult:
+def _result_from_ini(kv: dict, wcs: "WcsSolution | None",
+                     wcs_dropped_reason: str | None = None) -> SolveResult:
     """ASTAP's .ini key/values -> SolveResult. Pure, so it is testable.
 
     No CROTA2 is "no rotation reported", not "rotation 0" (#146): every imaging
@@ -200,7 +215,10 @@ def _result_from_ini(kv: dict, wcs: "WcsSolution | None") -> SolveResult:
 
     The scale is the same shape (#973): CDELT2 when the .ini has it, else the
     scale of the CD matrix in ``wcs``, else None. A 0.0 for "not stated" would
-    read as a scale of zero on a solve that succeeded."""
+    read as a scale of zero on a solve that succeeded.
+
+    ``wcs_dropped_reason`` is why ``wcs`` is None on this solve (#1025), from
+    ``_wcs_from_astap``; a failed solve has none to give."""
     if kv.get("PLTSOLVD") != "T":
         return SolveResult(False, message=kv.get("ERROR", "no solution"))
     ra_deg = float(kv["CRVAL1"])
@@ -216,7 +234,8 @@ def _result_from_ini(kv: dict, wcs: "WcsSolution | None") -> SolveResult:
     return SolveResult(True, ra_hours=ra_deg / 15.0, dec_deg=dec_deg,
                        rotation_deg=rot, pixel_scale_arcsec=scale,
                        wcs=wcs, message="solved by ASTAP",
-                       rotation_known=rot_raw is not None)
+                       rotation_known=rot_raw is not None,
+                       wcs_dropped_reason=wcs_dropped_reason)
 
 
 class AstapSolver(PlateSolver):
@@ -247,14 +266,14 @@ class AstapSolver(PlateSolver):
             return SolveResult(False, message="ASTAP produced no result file")
         kv = _read_ini(ini)
         # Capture the full WCS from the .wcs headerlet BEFORE deleting the files.
-        wcs = _wcs_from_astap(ini, wcs_path)
+        wcs, wcs_dropped_reason = _wcs_from_astap(ini, wcs_path)
         try:
             ini.unlink()
             wcs_path.unlink(missing_ok=True)
         except OSError:
             pass
 
-        return _result_from_ini(kv, wcs)
+        return _result_from_ini(kv, wcs, wcs_dropped_reason)
 
     @staticmethod
     def _fov_from_scale(scale_arcsec: float, height_px: int) -> float:

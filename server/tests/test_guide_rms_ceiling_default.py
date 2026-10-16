@@ -21,8 +21,8 @@ What this file pins:
   (0.1"/px, the smallest real guide scale), so a runaway is rejected whether or
   not the guide focal length is set, and the once-per-run warning says what to
   do first;
-* the eccentricity sentence quotes the guide RMS, and both its forms fit the
-  UI humanizer's 137 characters;
+* the eccentricity sentence quotes the guide RMS, and both its forms fit what
+  the UI keeps whole;
 * on an UNGUIDED plan an idle guider's stale RMS rejects nothing;
 * the stopped-guider rejection says what to do.
 
@@ -38,6 +38,7 @@ from pathlib import Path
 
 import pytest
 
+from _humanizer_mirror import CLIP_AT
 from _simhub import a_real_site
 
 import astrodeck.config as config_mod
@@ -266,7 +267,7 @@ def test_a_stored_zero_is_raised_once_on_the_way_past_3(tmp_path, monkeypatch):
     lines = [m for _lv, m in seen if "guide RMS rejection is now on" in m]
     assert len(lines) == 1, seen
     assert [lv for lv, m in seen if m in lines] == ["info"], seen
-    assert len(lines[0]) <= 137, (len(lines[0]), lines[0])
+    assert len(lines[0]) <= CLIP_AT, (len(lines[0]), lines[0])
 
     seen.clear()
     assert ConfigStore(path=path).cfg().standards.max_guide_rms == 5.0
@@ -336,7 +337,7 @@ async def test_a_runaway_in_raw_pixels_is_rejected_without_a_guide_scale():
 
 async def test_healthy_raw_pixels_pass_and_the_unit_warning_says_what_to_do():
     """1.2 px is healthy at any scale. The once-per-run warning leads with the
-    action and fits the humanizer's 137 characters.
+    action and fits what the UI keeps whole.
 
     Mutant M8 "floor too high" (``MIN_GUIDE_SCALE_ARCSEC_PX = 10.0``),
     observed: ``AssertionError: healthy 1.2 px guiding was rejected:
@@ -354,7 +355,7 @@ async def test_healthy_raw_pixels_pass_and_the_unit_warning_says_what_to_do():
             and m.startswith("Set the guide scope focal length in Settings > "
                              "Optics")]
     assert len(unit) == 1, f"want exactly one unit warning: {said1 + said2}"
-    assert len(unit[0]) <= 137, (len(unit[0]), unit[0])
+    assert len(unit[0]) <= CLIP_AT, (len(unit[0]), unit[0])
     assert "over 50 px" in unit[0], unit[0]
     assert not _trips_humanizer(unit[0]), unit[0]
 
@@ -430,10 +431,9 @@ def test_both_eccentricity_sentences_fit_the_humanizer():
     """Worst case: 400 marks (the `star_marks` cap) and a five-digit RMS.
 
     Mutant M10 "old fraction wording" (restore ``, over the 25% limit
-    (median 0.64 is under the 0.65 ceiling)``), observed: ``AssertionError:
-    fraction rule sentence is 149 characters: 'frame eccentricity 100% of 400
-    stars above 0.80, over the 25% limit (median 0.64 is under the 0.65
-    ceiling) - defocus or trailing; guide RMS 12345.6"'``."""
+    (median 0.64 is under the 0.65 ceiling)``) made the sentence 149
+    characters and was red under the 137-character cut; it fits ``CLIP_AT``
+    (#1024)."""
     pol = resolve_policy(SequencePlan(), AppConfig())
     median = pol.eccentricity_reject_reason(
         {"ecc": 0.99, "star_list": _marks(400, 0.99)}, guide_rms=12345.6)
@@ -442,7 +442,7 @@ def test_both_eccentricity_sentences_fit_the_humanizer():
     assert median and "median 0.99 above ceiling" in median, median
     assert frac and "under the 0.65 ceiling" in frac, frac
     for name, s in (("median rule", median), ("fraction rule", frac)):
-        assert len(s) <= 137, f"{name} sentence is {len(s)} characters: {s!r}"
+        assert len(s) <= CLIP_AT, f"{name} sentence is {len(s)} characters: {s!r}"
         assert 'guide RMS 12345.6"' in s, s
         assert not _trips_humanizer(s), (name, s)
 
@@ -549,5 +549,5 @@ async def test_the_stopped_guider_sentence_says_what_to_do(tmp_path,
              and m.startswith("Rejected: shot with the guider stopped. Start "
                               "guiding")]
     assert lines, f"no stopped-guider sentence: {said}"
-    assert len(lines[0]) <= 137, (len(lines[0]), lines[0])
+    assert len(lines[0]) <= CLIP_AT, (len(lines[0]), lines[0])
     assert not _trips_humanizer(lines[0]), lines[0]

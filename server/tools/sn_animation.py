@@ -159,10 +159,11 @@ def solve_reference(fits_path: Path, *, ra_hint: float | None,
     if result.wcs is None:
         # ``AstapSolver`` reports a solve whose headerlet it dropped (#943) as
         # success with no WCS and the message "solved by ASTAP": not a failure
-        # to solve, so not worded as one (#1000).
-        log(f"ASTAP solved {fits_path.name} but returned no usable WCS (no "
-            "solution cards, or no usable plate scale), so none was stamped; "
-            "skipping the light curve")
+        # to solve, so not worded as one (#1000). It says why in
+        # ``wcs_dropped_reason`` (#1025), quoted rather than guessed at.
+        why = result.wcs_dropped_reason or "the solver did not say why"
+        log(f"ASTAP solved {fits_path.name} but returned no usable WCS "
+            f"({why}), so none was stamped; skipping the light curve")
         return None
     # ``stamp_wcs`` swallows a missing, locked or corrupt file and refuses a
     # solution with no usable scale; False is the only sign of either (#972).

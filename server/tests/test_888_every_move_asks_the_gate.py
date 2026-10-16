@@ -60,6 +60,7 @@ from astrodeck.sun_watch import (BLIND_LOG_EVERY, LEAD_TIME_S,
                                  POSITION_UNKNOWN_DAYLIGHT,
                                  POSITION_UNKNOWN_NIGHT_HOLD, closest_approach)
 
+from _humanizer_mirror import CLIP_AT, shown_whole
 from test_850_engine_sync_refused import _humanizer_rewrites
 from test_886_one_position_gate import _Mount, _NoParkRoof, _operator  # noqa: F401
 from test_recovery_centring_is_measured import (  # noqa: F401 (fixtures)
@@ -71,16 +72,14 @@ from test_w14_sun_watch_blind_fallback import (WEST_H, _driven,
                                                _tick_n)
 from test_w15_sun_watch_follow_ups import SiteHub, sky  # noqa: F401
 
-#: The humanizer's cut (ui/src/lib/humanize.ts): 137 characters plus "...".
-_CUT = 137
 _GOTO_WORDS = ("goto", "go to", "slew")
 _REASON = "a fictional reason"
 
 
 def _check_words(line: str, *, pad: str = "pad key") -> None:
-    """The wording rules for every new line: the safe order inside the cut,
-    no goto word anywhere, nothing the UI's humanizer rewrites."""
-    head = line[:_CUT]
+    """The wording rules for every new line: the safe order in a line the UI
+    keeps whole, no goto word anywhere, nothing the UI's humanizer rewrites."""
+    head = shown_whole(line)
     assert "Trust position" in head or "Trust it" in head, head
     assert pad in head, head
     for word in _GOTO_WORDS:
@@ -89,20 +88,20 @@ def _check_words(line: str, *, pad: str = "pad key") -> None:
 
 
 def test_the_new_lines_keep_the_wording_rules():
-    """Every new operator line: the action inside the 137-character cut, no
+    """Every new operator line: the action in a line the UI keeps whole, no
     goto advice while the position is unknown, no humanizer pair."""
     _check_words(ROOF_LEFT_OPEN_POSITION_UNKNOWN)
     _check_words(nat.TPPA_POSITION_UNKNOWN)
-    assert len("native TPPA: " + nat.TPPA_POSITION_UNKNOWN) <= _CUT
+    assert len("native TPPA: " + nat.TPPA_POSITION_UNKNOWN) <= CLIP_AT
     _check_words(POSITION_UNKNOWN_DAYLIGHT)
-    # Cover the tube, then the WHOLE shared safe order inside the cut
+    # Cover the tube, then the WHOLE shared safe order in the line
     # (round 3): "cover it, or bring it home by eye ..., then Trust
     # position" read as "cover it, then Trust position", and Trust on a
     # covered tube nobody brought home declares a wrong position known.
     # MUTANT W8 "the old daylight line" (the round-2 text put back in
     # ``POSITION_UNKNOWN_DAYLIGHT``): RED -
     #     AssertionError: sun watch cannot protect the tube, ...
-    head = POSITION_UNKNOWN_DAYLIGHT[:_CUT]
+    head = shown_whole(POSITION_UNKNOWN_DAYLIGHT)
     assert POSITION_UNKNOWN_SAFE_ORDER in head, POSITION_UNKNOWN_DAYLIGHT
     assert head.index("cover") < head.index(POSITION_UNKNOWN_SAFE_ORDER)
     # The night hold, said with the "sun watch held off: " prefix (round 3).
@@ -111,12 +110,12 @@ def test_the_new_lines_keep_the_wording_rules():
     # RED - AssertionError: 'pad key' not in head
     held = "sun watch held off: " + POSITION_UNKNOWN_NIGHT_HOLD
     _check_words(held)
-    assert POSITION_UNKNOWN_SAFE_ORDER in held[:_CUT], held
+    assert POSITION_UNKNOWN_SAFE_ORDER in shown_whole(held), held
     # The whole safe order, not a bare "until Trust position" (round 2).
     # MUTANT W6 "the bare promise" (the old 137-character line put back):
     # RED - AssertionError: this run was set not to park when done, ...
     _check_words(NOT_PARKED_POSITION_UNKNOWN)
-    assert len(NOT_PARKED_POSITION_UNKNOWN) <= _CUT
+    assert len(NOT_PARKED_POSITION_UNKNOWN) <= CLIP_AT
     for line in (ROOF_LEFT_OPEN_POSITION_UNKNOWN, nat.TPPA_POSITION_UNKNOWN,
                  POSITION_UNKNOWN_DAYLIGHT, NOT_PARKED_POSITION_UNKNOWN,
                  held):

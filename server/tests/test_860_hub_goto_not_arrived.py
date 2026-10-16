@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pytest
 
+from _humanizer_mirror import CLIP_AT
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from test_850_hub_sync_refused import (FAR_DEC, FAR_RA, NEAR_DEC, NEAR_RA, DEC,
                                        RA, _assert_surfaced_ok)
@@ -156,7 +157,7 @@ async def test_a_stalled_goto_is_solved_where_it_stopped_never_raised(
     assert len(missed) == 2, missed
     for lvl, m, s in missed:
         assert (lvl, s) == ("warning", "mount"), (lvl, s)
-        assert len(m) <= 137, (len(m), m)
+        assert len(m) <= CLIP_AT, (len(m), m)
         assert "3.21 deg off" in m, m
         _assert_surfaced_ok(m, (RA, DEC), (FAR_RA, FAR_DEC))
 
@@ -252,7 +253,7 @@ async def test_a_missed_rotate_pre_slew_skips_the_rotation_and_centres(
     assert len(rot_lines) == 1, rot_lines
     assert rot_lines[0][0] == "warning"
     assert "skipped" in rot_lines[0][1] and _STALLED in rot_lines[0][1]
-    assert len(rot_lines[0][1]) <= 137
+    assert len(rot_lines[0][1]) <= CLIP_AT
 
 
 async def test_a_missed_pre_slew_after_a_stop_returns_aborted(
@@ -369,7 +370,7 @@ async def test_a_refused_re_track_is_one_warning_and_centring_goes_on(
     lvl, m, s = lines[0]
     assert (lvl, s) == ("warning", "mount")
     assert m.startswith("centering attempt 1: "), m
-    assert len(m) <= 137, (len(m), m)
+    assert len(m) <= CLIP_AT, (len(m), m)
     _assert_surfaced_ok(m, (RA, DEC), (NEAR_RA, NEAR_DEC))
 
 

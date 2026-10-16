@@ -40,6 +40,7 @@ from astrodeck.sequence.engine import (
 from astrodeck.sequence.group_rules import CENTRING, PanelDeferred
 from astrodeck.sequence.models import TargetGroup
 
+from _humanizer_mirror import shown_whole
 from test_centring_settings_reach_goto import (_after_a_lost_star,
                                                _after_a_walking_field,
                                                _after_the_sweep, _guided,
@@ -533,12 +534,11 @@ async def test_the_strings_keep_the_rules(name, bus_lines):
     ``where`` and names of 7 and 24 characters:
 
     - nothing trips the UI's humanizer (its four rules);
-    - every stop line has its outcome ("stopping this target") inside the
-      137 characters the UI keeps, and every "goes on" line its "imaging
-      goes on";
+    - every stop line has its outcome ("stopping this target") in a line
+      the UI keeps whole, and every "goes on" line its "imaging goes on";
     - the position-unknown line's whole action, through "then Trust
-      position.", fits inside 137 for both names, and it carries no goto,
-      slew or "go to" (the SAFETY RULE);
+      position.", is in a line the UI keeps whole for both names, and it
+      carries no goto, slew or "go to" (the SAFETY RULE);
     - no StopTarget or abort text carries a digit (fixed words, #618).
 
     MUTANT "a figure in a fixed sentence" (``CENTRING_UNSOLVED_TWICE`` made
@@ -548,8 +548,10 @@ async def test_the_strings_keep_the_rules(name, bus_lines):
         twice in 5 s, so the pointing is unknown'
     MUTANT "the name first" (``_stop_run_position_unknown``'s line built as
     ``f"{name}: {self._POSITION_UNKNOWN_ACTION} the run stops ..."``): RED,
-    the 24-character name -
-        AssertionError: the action ends at 157
+    the 24-character name, on the check that "Trust position" opens the line
+    (it used to be the action's end past char 137, which a 400-character
+    budget no longer reaches, #1024) -
+        assert 74 < 60
     """
     for text in _FIXED + [f"{w}: {c}" for w in _ALL_WHERES for c in _FIXED]:
         assert not any(ch.isdigit() for ch in text), (
@@ -567,14 +569,13 @@ async def test_the_strings_keep_the_rules(name, bus_lines):
                     {"centered": False, "error_arcmin": None,
                      "goto_not_arrived": True}):
             stop = e._centring_miss_line(res, t, where, goes_on=False)
-            assert stop.index("stopping this target") < 137, stop
+            assert "stopping this target" in shown_whole(stop), stop
             lines.append(stop)
             on = e._centring_miss_line(res, t, where, goes_on=True)
-            assert on.index("imaging goes on") + len("imaging goes on") <= 137, on
+            assert "imaging goes on" in shown_whole(on), on
             lines.append(on)
         inside = e._unmoved_inside_line(_did_not_move(11.2), t, where)
-        assert inside.index("imaging goes on") + len("imaging goes on") <= 137, (
-            inside)
+        assert "imaging goes on" in shown_whole(inside), inside
         lines.append(inside)
         lines.append(f"{name}: skipped — {where}: {CENTRING_UNSOLVED_TWICE}")
     e._say_centring_ended(t, {"centered": False, "error_arcmin": 4.0,
@@ -586,8 +587,7 @@ async def test_the_strings_keep_the_rules(name, bus_lines):
     assert str(ei.value) == POSITION_UNKNOWN_STOP
     unknown = [m for _l, m, _s in bus_lines[before:]]
     assert len(unknown) == 1, unknown
-    end = unknown[0].index("then Trust position.") + len("then Trust position.")
-    assert end <= 137, f"the action ends at {end}"
+    assert "then Trust position." in shown_whole(unknown[0]), unknown[0]
     assert unknown[0].index("Trust position") < 60, unknown[0]
     for word in ("goto", "slew", "go to"):
         assert word not in unknown[0].lower(), unknown[0]

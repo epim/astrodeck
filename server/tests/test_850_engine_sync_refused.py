@@ -34,7 +34,7 @@ that result at every place it centres, for both kinds:
   target says, a target that OPTED OUT of centring (``center`` off, or a
   calibration target: the gate the three mid-run re-centres take) is NOT
   stopped: it gets the warning, saying imaging goes on (FIXES3 G3.1)
-  BEFORE the figure and the reply, so the cut at 137 never takes it
+  BEFORE the figure and the reply, so the outcome is read first
   (FIXES4 H3): "<name>: <where>: the mount refused the sync; centring is
   off, so imaging goes on (152.3' off, reply 'e11')".
 
@@ -44,7 +44,8 @@ name, no figure, no reply, so a panel's TARGET_STOP deferral, whose
 The figure and the reply go in ONE warning logged just before, figure
 first: "<name>: <where>: the mount refused the sync, 152.3' off target
 (reply 'e11')" (FIXES3 G3.2). Both texts are graded here against the UI's
-humanizer (``_humanizer_rewrites``) and the 137-character cut.
+humanizer (``_humanizer_rewrites``) and the length the UI keeps whole
+(``CLIP_AT``; the 137-character cut they were once held to is gone, #1024).
 
 Every "plain non-centred" control keeps today's behaviour.
 
@@ -65,6 +66,7 @@ import astrodeck.config as config_mod
 import astrodeck.hub as hub_module
 import astrodeck.sequence.engine as engine_mod
 from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
+from _humanizer_mirror import shown_whole
 from _simhub import a_real_site
 from astrodeck.config import ConfigStore, SafetyConfig, Site
 from astrodeck.devices.sim import SimTelescope
@@ -539,7 +541,7 @@ async def test_control_a_plain_recentre_miss_still_resumes(recentre, where,
         assert "start" in hub.guider.calls, hub.guider.calls
 
 
-# ============================== the surfaced texts: humanizer and the cut
+# ======================= the surfaced texts: humanizer and the length budget
 
 def _wheres() -> list[str]:
     """Every ``where`` the engine passes to `_stop_if_sync_not_taken`, read
@@ -583,7 +585,7 @@ def test_premise_only_the_flip_and_the_recovery_can_go_on():
     re-centres gate the whole re-centre on the same test, and setup has
     its own centring-off branch), so the longest ``where`` an opted-out
     warning can carry is the recovery's. A new site passing it is graded
-    by the 137 checks below through this list.
+    by the length checks below through this list.
 
     MUTANT "the lost-star site passes the gate" (``centring_wanted=False``
     added to the "re-centring after the guide star went missing" call):
@@ -684,121 +686,92 @@ def test_no_surfaced_text_is_rewritten_by_the_humanizer(kind, err, reply,
 
 
 @_BY_KIND
-def test_the_cause_fits_before_the_cut(kind, bus_lines):
-    """humanizeLog cuts a line longer than 140 characters to 137 and an
-    ellipsis (FIXES rule 3). For every ``where``, "the mount refused the
-    sync" / "the mount did not confirm the sync" ends within the first 137
-    characters of the scheduler's skip line for a 12-character name, and of
-    the warning with a 3-digit figure.
+def test_the_cause_fits_the_ui_budget(kind, bus_lines):
+    """The scheduler's skip line for a 12-character name, and the warning with
+    a 3-digit figure, for every ``where``: each fits what the UI keeps whole
+    (``CLIP_AT``, humanize.ts) and holds the cause, "the mount refused the
+    sync" / "the mount did not confirm the sync". They used to be held to the
+    first 137 characters, the cut #792 retired (#1024).
 
-    MUTANT "a preamble before the cause" (the stop made ``f"{where}: not
-    imaging a field nobody could centre, because {const}"``): RED, both -
-        AssertionError: the cause ends at 140 in 'Fictional 12: skipped —
-        re-centring after the tracking recovery: not imaging a field nobody
-        could centre, because the mount refused the sync, so its pointing
-        could not be corrected'
-        AssertionError: the cause ends at 144 in 'Fictional 12: skipped —
-        re-centring after the meridian flip: not imaging a field nobody
-        could centre, because the mount did not confirm the sync, so its
-        pointing could not be corrected'
+    MUTANT "a paragraph after the stop" (both ``raise StopTarget`` sites made
+    ``f"{where}: {const}. " * 6``): RED, both kinds -
+        AssertionError: 654 characters, past the 400 the UI keeps whole:
+        'Fictional 12: skipped — re-centring after the meridian flip: the
+        mount refused the sync, so its pointing could not be corrected.
+        re-centring after the meridian flip: the mount refused th...
+        (702 characters for "did not confirm")
+    MUTANT "a tail on the warning" (both returns of ``_sync_not_taken_line``
+    given ``+ " (" + "see the log " * 40 + ")"``): RED, both kinds -
+        AssertionError: 593 characters, past the 400 the UI keeps whole:
+        "Fictional 12: re-centring after the meridian flip: the mount refused
+        the sync, 152.3' off target (reply 'e11') (see the log see the log
+        see the log ... (601 for "did not confirm")
     """
     _build, _const, cause = _KINDS[kind]
     for where in _wheres():
         _stop, skip, warning = _texts_for(where, kind, 152.3, "e11",
                                           bus_lines)
         for line in (skip, warning):
-            end = line.find(cause) + len(cause)
-            assert line.find(cause) >= 0 and end <= 137, (
-                f"the cause ends at {end} in {line!r}")
+            assert cause in shown_whole(line), line
 
 
 @_BY_KIND
-def test_the_whole_figure_fits_before_the_cut(kind, bus_lines):
-    """The review's minor finding: with a 12-char name and the longer
-    ``where``s, humanizeLog's cut at 137 took the figure mid-number
-    ("it is still 1..."), a truncated and misleading value. The warning now
-    puts the figure before the reply and drops "the field solved but"
-    (FIXES3 G3.2), so the WHOLE "152.3' off target" ends within the first
-    137 characters for the longest ``where``, in the stop's warning.
-    The opted-out warning puts its outcome first (FIXES4 H3), so its
-    figure comes later and is checked for the longest ``where`` that
-    warning can carry (test_premise_only_the_flip_and_the_recovery_can_go_on):
-    the whole number with its unit, "152.3'", ends within 137. For "did not
-    confirm" after the tracking recovery it ends at 134 and the word "off"
-    after it at 138, so that worst case reads "(152.3' of..." on screen:
-    the number is never cut, the word after it can be.
+def test_the_whole_figure_fits_the_ui_budget(kind, bus_lines):
+    """The warning for the longest ``where`` and a 12-char name carries the
+    WHOLE "152.3' off target", and so does the opted-out warning for the
+    longest ``where`` that one can carry
+    (test_premise_only_the_flip_and_the_recovery_can_go_on) with its "152.3'":
+    both lines fit what the UI keeps whole, so neither number is shortened.
+    The review's minor finding was a figure cut mid-number ("it is still
+    1...") by the 137-character cut; the cut is gone (#792, #1024), the order
+    that kept the figure ahead of the reply stays.
 
-    MUTANT "the round-2 layout" (the return put back as ``f"{target.name}:
-    {where}: the field solved but {what}{said_reply}"`` +
-    ``f"; it is still {float(err):.1f}' off target"``): RED, both -
-        AssertionError: the figure ends at 153 in "Fictional 12:
-        re-centring after the guide star went missing: the field solved
-        but the mount refused the sync (reply 'e11'); it is still 152.3'
-        off target" (161 for "did not confirm")
-    MUTANT "the opted-out reply before the figure" (the bracket's parts
-    made ``(reply_words, f"{fig} off")``): RED, both -
-        AssertionError: the figure ends at 139 in "Fictional 12:
-        re-centring after the tracking recovery: the mount refused the
-        sync; centring is off, so imaging goes on (reply 'e11', 152.3'
-        off)" (147 for "did not confirm")
+    MUTANT "a tail on the warning" (as in test_the_cause_fits_the_ui_budget):
+    RED, both kinds -
+        AssertionError: 603 characters, past the 400 the UI keeps whole:
+        "Fictional 12: re-centring after the guide star went missing: the
+        mount refused the sync, 152.3' off target (reply 'e11') (see the log
+        see the log ... (611 for "did not confirm")
     """
     _build, _const, _cause = _KINDS[kind]
     longest = max(_wheres(), key=len)
     assert longest == "re-centring after the guide star went missing", (
         f"premise: the longest where is {longest!r}")
-    figure = "152.3' off target"
     _stop, _skip, warning = _texts_for(longest, kind, 152.3, "e11", bus_lines)
-    at = warning.find(figure)
-    assert at >= 0 and at + len(figure) <= 137, (
-        f"the figure ends at {at + len(figure)} in {warning!r}")
+    assert "152.3' off target" in shown_whole(warning), warning
     longest_opted = max(_opted_out_wheres(), key=len)
     assert longest_opted == "re-centring after the tracking recovery", (
         f"premise: the longest opted-out where is {longest_opted!r}")
     opted = _opted_out_line(longest_opted, kind, 152.3, "e11", bus_lines)
-    figure = "152.3'"
-    at = opted.find(figure)
-    assert at >= 0 and at + len(figure) <= 137, (
-        f"the figure ends at {at + len(figure)} in {opted!r}")
+    assert "152.3'" in shown_whole(opted), opted
 
 
 @_BY_KIND
-def test_imaging_goes_on_fits_before_the_cut(kind, bus_lines):
+def test_imaging_goes_on_fits_the_ui_budget(kind, bus_lines):
     """The round-3 finding (FIXES4 H3): the opted-out clause came after the
-    figure and the reply, so humanizeLog's cut at 137 always took it, and
-    the operator read "the mount refused the sync" and then watched the run
-    carry on with nothing saying why. The outcome now comes straight after
-    the cause, so with a 12-char name, the longest ``where`` of ALL six
-    sites (stricter than the two that can reach it), a figure of 152.3 and
-    the reply 'e11', "imaging goes on" ends within the first 137
-    characters.
+    figure and the reply, and the 137-character cut took it, so the operator
+    read "the mount refused the sync" and then watched the run carry on with
+    nothing saying why. With a 12-char name, the longest ``where`` of ALL six
+    sites (stricter than the two that can reach it), a figure of 152.3 and the
+    reply 'e11', the line fits what the UI keeps whole (``CLIP_AT``), so
+    "imaging goes on" is read after the cause that explains it. The order is
+    pinned word for word by the parametrized case below.
 
-    MUTANT "the round-3 order" (the opted-out return put back as
-    ``f"{target.name}: {where}: {what}, {fig} off target (reply ...)"`` +
-    ``"; centring is off for this target, so imaging goes on"``): RED,
-    both -
-        AssertionError: 'imaging goes on' ends at 173 in "Fictional 12:
-        re-centring after the guide star went missing: the mount refused
-        the sync, 152.3' off target (reply 'e11'); centring is off for this
-        target, so imaging goes on" (181 for "did not confirm")
-    MUTANT "the short clause after the figure" (the opted-out return made
-    ``f"{target.name}: {where}: {what}{detail}"`` + the new
-    ``_SYNC_NOT_TAKEN_GOES_ON``): RED, both -
-        AssertionError: 'imaging goes on' ends at 150 in "Fictional 12:
-        re-centring after the guide star went missing: the mount refused
-        the sync (152.3' off, reply 'e11'); centring is off, so imaging
-        goes on" (158 for "did not confirm")
+    MUTANT "a tail on the warning" (as in test_the_cause_fits_the_ui_budget):
+    RED, both kinds -
+        AssertionError: 633 characters, past the 400 the UI keeps whole:
+        "Fictional 12: re-centring after the guide star went missing: the
+        mount refused the sync; centring is off, so imaging goes on (152.3'
+        off, reply 'e11') (see the log ... (641 for "did not confirm")
     """
     _build, _const, cause = _KINDS[kind]
     longest = max(_wheres(), key=len)
     assert longest == "re-centring after the guide star went missing", (
         f"premise: the longest where is {longest!r}")
-    line = _opted_out_line(longest, kind, 152.3, "e11", bus_lines)
-    assert len(line) > 140, f"premise: the line must be cut: {line!r}"
+    line = shown_whole(_opted_out_line(longest, kind, 152.3, "e11", bus_lines))
     goes_on = "imaging goes on"
-    at = line.find(goes_on)
-    assert at >= 0 and at + len(goes_on) <= 137, (
-        f"{goes_on!r} ends at {at + len(goes_on)} in {line!r}")
-    assert line.find(cause) >= 0 and line.find(cause) < at, line
+    assert goes_on in line, line
+    assert line.find(cause) >= 0 and line.find(cause) < line.find(goes_on), line
 
 
 @pytest.mark.parametrize("kind, err, reply, expected", [

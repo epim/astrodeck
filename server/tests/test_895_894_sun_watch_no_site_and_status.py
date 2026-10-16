@@ -54,7 +54,8 @@ from astrodeck.sun_watch import (BLIND_LOG_EVERY, POSITION_UNKNOWN_DAYLIGHT,
                                  POSITION_UNKNOWN_NIGHT_HOLD,
                                  POSITION_UNKNOWN_SUN_UNKNOWN)
 
-from test_888_every_move_asks_the_gate import _CUT, _approach_rig, _check_words
+from _humanizer_mirror import shown_whole
+from test_888_every_move_asks_the_gate import _approach_rig, _check_words
 from test_sun_watch import JUNE_TS, cfg, pinned_sun  # noqa: F401
 from test_w14_sun_watch_blind_fallback import (_driven, _tick_n,
                                                _viewer_client)
@@ -91,9 +92,9 @@ def _lines(published, message: str) -> list[dict]:
 
 
 def test_the_no_site_line_keeps_the_wording_rules():
-    """The action inside the humanizer's 137-character cut, cover before the
-    safe order, no goto word, no humanizer pair, no digit (a figure), and the
-    cause said in full after the cut.
+    """The action in a line the UI keeps whole, cover before the safe order,
+    no goto word, no humanizer pair, no digit (a figure), and the cause said
+    in full.
 
     MUTANT A4 "the cause dropped" (``It cannot judge the Sun (no site set,
     or the Sun cannot be computed), `` cut to ``It cannot judge the Sun, `` in
@@ -105,7 +106,7 @@ def test_the_no_site_line_keeps_the_wording_rules():
     """
     line = POSITION_UNKNOWN_SUN_UNKNOWN
     _check_words(line)
-    head = line[:_CUT]
+    head = shown_whole(line)
     assert POSITION_UNKNOWN_SAFE_ORDER in head, line
     assert head.index("cover") < head.index(POSITION_UNKNOWN_SAFE_ORDER)
     assert not any(ch.isdigit() for ch in line), line
