@@ -100,7 +100,10 @@ def normalize_horizon_points(points) -> list[list[float]] | None:
         try:
             az = float(pair[0])
             alt = float(pair[1])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: ``float(10**400)``, an integer a hand-edited or
+            # damaged file can hold. The docstring promises ValueError and
+            # nothing else, and the load door's repair relies on it (#1008).
             raise ValueError("horizon point values must be numbers")
         if not (math.isfinite(az) and math.isfinite(alt)):
             raise ValueError("horizon point values must be finite")
@@ -223,6 +226,32 @@ class SavedLocation(BaseModel):
         return v
 
 
+def _location_from_disk(row) -> tuple[SavedLocation | None, dict[str, int]]:
+    """One stored row as a ``SavedLocation`` plus the horizon rules it broke,
+    or ``(None, {})`` when nothing of the row can be kept (#1008).
+
+    The row-level counterpart of ``config._repair_stored_horizon``. A row the
+    model takes as it stands comes back with no problems. A row whose
+    ``horizon_points`` break the rule keeps its coordinates and has the points
+    repaired by ``sanitize_horizon_points``, the same repair the config load
+    uses. A row that still does not validate (a latitude of 999, an empty name,
+    something that is not an object) is unusable. Nothing here raises, and
+    nothing here names a value: the caller counts what came back."""
+    if not isinstance(row, dict):
+        return None, {}
+    try:
+        return SavedLocation(**row), {}
+    except Exception:
+        pass
+    try:
+        points, problems = sanitize_horizon_points(row.get("horizon_points"))
+        if not problems:
+            return None, {}
+        return SavedLocation(**{**row, "horizon_points": points}), problems
+    except Exception:
+        return None, {}
+
+
 class LocationNameCollision(Exception):
     """Raised on a case-insensitive name clash. Carries the EXISTING id so the
     route can 409 {code: "name_collision", id}."""
@@ -251,36 +280,133 @@ class LocationStore:
     def __init__(self, path: Path = LOCATIONS_FILE):
         self._path = path
         self._items: list[SavedLocation] | None = None
+        #: Rows the last parse could not keep. They are still in the file on
+        #: disk, and the first write that follows drops them: ``_note_shrunk``.
+        self._skipped = 0
 
     def _bak_path(self) -> Path:
         return self._path.with_suffix(self._path.suffix + ".bak")
 
-    def _parse(self, raw) -> list[SavedLocation] | None:
+    def _bak_sites(self) -> dict[str, SavedLocation]:
+        """The usable rows of the ``.bak`` by id, read quietly (nothing is said
+        about the backup's own rows here). Empty when there is no readable
+        backup."""
+        try:
+            raw = read_json(self._bak_path())
+        except (FileNotFoundError, ValueError, OSError):
+            return {}
+        rows = raw.get("locations") if isinstance(raw, dict) else None
+        if not isinstance(rows, list):
+            return {}
+        found: dict[str, SavedLocation] = {}
+        for row in rows:
+            loc, _problems = _location_from_disk(row)
+            if loc is not None:
+                found.setdefault(loc.id, loc)
+        return found
+
+    def _parse(self, raw, *, rescue: bool = False
+               ) -> tuple[list[SavedLocation], int] | None:
+        """The library in ``raw``, read ROW BY ROW (#1008), as ``(sites,
+        skipped)``; ``None`` only when the file as a whole is the wrong shape.
+
+        One saved site with a ``horizon_points`` outside the rule used to fail
+        the all-or-nothing list build, so the whole library read as empty and
+        the next create or update wrote that empty library over the file. Now a
+        row with a bad horizon is repaired (coordinates kept) and a row that is
+        unusable is skipped; either is counted in one warning that names the
+        rule and the number of rows, never a coordinate, a name or a value.
+
+        ``rescue`` is for the primary file: an unusable row whose id the ``.bak``
+        holds a usable copy of takes that copy, in the row's place. Skipping it
+        would let the next write copy the primary over the ``.bak`` and lose the
+        only usable copy of the site. A row without an id string cannot be
+        matched and is skipped."""
         if not isinstance(raw, dict):
             return None
         rows = raw.get("locations")
         if not isinstance(rows, list):
             return None
-        try:
-            return [SavedLocation(**r) for r in rows]
-        except Exception:
-            return None
+        parsed = [_location_from_disk(row) for row in rows]
+        taken = {loc.id for loc, _problems in parsed if loc is not None}
+        bak: dict[str, SavedLocation] | None = None
+        items: list[SavedLocation] = []
+        broke: dict[str, int] = {}
+        repaired = rescued = skipped = 0
+        for row, (loc, problems) in zip(rows, parsed):
+            if loc is None and rescue:
+                rid = row.get("id") if isinstance(row, dict) else None
+                if isinstance(rid, str) and rid not in taken:
+                    if bak is None:
+                        bak = self._bak_sites()
+                    loc = bak.get(rid)
+                    if loc is not None:
+                        taken.add(rid)
+                        rescued += 1
+                        items.append(loc)
+                        continue
+            if loc is None:
+                skipped += 1
+                continue
+            items.append(loc)
+            if problems:
+                repaired += 1
+                for rule, n in problems.items():
+                    broke[rule] = broke.get(rule, 0) + n
+        until = ("the file on disk is rewritten by the next change to the "
+                 "library; until then this is said again each time the "
+                 "library is loaded")
+        if repaired:
+            said = "; ".join(f"{rule} (x{n})" for rule, n in broke.items())
+            bus.log("warning",
+                    f"{repaired} saved location(s) had horizon_points that "
+                    f"broke the horizon rule and were repaired on load, "
+                    f"coordinates kept: {said}; {until}", "config")
+        if rescued:
+            bus.log("warning",
+                    f"{rescued} saved location(s) in {self._path.name} were "
+                    f"unusable and were taken from {self._bak_path().name} "
+                    f"instead; {until}", "config")
+        if skipped:
+            bus.log("warning",
+                    f"{skipped} saved location(s) in {self._path.name} were "
+                    f"unusable and skipped; the other {len(items)} loaded",
+                    "config")
+        return items, skipped
+
+    def _note_shrunk(self) -> None:
+        """Say, once, that the file on disk has just been written without the
+        rows the load skipped. Called after every write; silent when nothing was
+        skipped. The previous file, with those rows in it, is the ``.bak`` until
+        the next change copies a newer primary over it."""
+        if self._skipped:
+            bus.log("warning",
+                    f"{self._path.name} was rewritten without the "
+                    f"{self._skipped} unusable saved location(s) skipped at "
+                    f"load; they stay in {self._bak_path().name} until the next "
+                    f"change to the library", "config")
+            self._skipped = 0
 
     def _restore_from_bak(self) -> list[SavedLocation] | None:
         try:
             raw = read_json(self._bak_path())
         except (FileNotFoundError, ValueError, OSError):
             return None
-        items = self._parse(raw)
-        if items is None:
+        parsed = self._parse(raw)
+        # A backup that has rows and no usable one is no recovery: writing its
+        # empty reading over the primary would be the loss this guards against.
+        if parsed is None or (not parsed[0] and parsed[1]):
             return None
+        items, self._skipped = parsed
         bus.log("warning", "locations restored from backup (.bak)", "config")
         self._items = items
         ensure_dir(self._path.parent)
         write_json_atomic(self._path, self._dump(items), backup=False)
+        self._note_shrunk()
         return items
 
     def _load(self) -> list[SavedLocation]:
+        self._skipped = 0
         try:
             raw = read_json(self._path)
         except FileNotFoundError:
@@ -296,13 +422,20 @@ class LocationStore:
             bus.log("warning", "locations reset to empty (corrupt file)", "config")
             self._items = []
             return []
-        items = self._parse(raw)
-        if items is None:
+        parsed = self._parse(raw, rescue=True)
+        # Rows that were all unusable (and none had a backup copy to stand in)
+        # read as a failed load, like a wrong-shaped file: the backup as a whole
+        # is tried before the library is held empty. An explicit empty list is
+        # a library, and never gets here.
+        if parsed is None or (not parsed[0] and parsed[1]):
             recovered = self._restore_from_bak()
             if recovered is not None:
                 return recovered
-            bus.log("warning", "locations reset to empty (invalid shape)", "config")
-            items = []
+            if parsed is None:
+                bus.log("warning", "locations reset to empty (invalid shape)",
+                        "config")
+                parsed = ([], 0)
+        items, self._skipped = parsed
         self._items = items
         return items
 
@@ -317,6 +450,7 @@ class LocationStore:
     def _save(self) -> None:
         ensure_dir(self._path.parent)
         write_json_atomic(self._path, self._dump(self._items_now()))
+        self._note_shrunk()
 
     def reload(self) -> list[SavedLocation]:
         self._items = self._load()
