@@ -25,6 +25,9 @@
 //   unit dropped from a confirmed rad mapping (the last part of the S41 case); an unknown chord taken to vouch for a
 //   silent stream, an unconfirmed gyro never vouching, or the chord's quiet line moved from 0.5 to 1.5 deg/s: `an
 //   unconfirmed gyro vouches for a silent relative stream`;
+// Fix round (issue 1031) adds, by `a still phone with a silent relative stream and an unconfirmed mapping`: the motion
+// stream's vouch before the mapping confirms removed (the still holds fail), and its raw-magnitude bound removed (the
+// turning rad/s gyro is held);
 // and the reviewer's surviving mutants, each by the case named: stale intervals counted whatever the rate (O1,
 // `intervals during motion only`), a turning handoff into absolute-only without the median of 3 (O2, `a moving phone
 // with a dead relative stream`), predictAt before the oldest kept sample held instead of null (O8, `before the oldest
@@ -852,6 +855,56 @@ test('an unconfirmed gyro vouches for a silent relative stream only through a ch
   upQuick(tn + 1000);
   assert.equal(quick.predictAt(tn + 1000), null, 'a chord over the quiet line does not vouch');
   assert.equal(quick.facts().staleRefusals, 1);
+});
+
+test('a still phone with a silent relative stream and an unconfirmed mapping holds a relative pose; a turning rad/s gyro is not read as quiet (issue 1031)', () => {
+  // At Begin the axis mapping has never confirmed (no pan yet), so the orientation chord is the only quiet evidence the
+  // S33 / S41 rule allows, and a change-driven relative stream that went silent left no pose. The motion stream now
+  // vouches on evidence that is quiet in any unit: most of its last second is exact zero triples and none is large.
+  const still25 = still({ az: 20, alt: 25, roll: 0 });
+  const ou = ouSeries(61, 10, 60, 5, 3), err = (t: number) => ou[Math.round(t * 60 / 1000)];
+  const gyros: [string, (w: V3) => [number, number, number]][] = [
+    ['Chromium rounding', chromiumGyro(rng(62))],
+    ['exact zeros only', () => [0, 0, 0]],
+  ];
+  for (const [name, gyro] of gyros) {
+    const track = new PoseTrack();
+    const upTo = player(track, [
+      ...events(still25, 0, 300, { rel: { hz: 60, yaw0: 77 } }),
+      ...events(still25, 0, 6000, { abs: { hz: 60, err }, motion: { hz: 60, map: gyro } }),
+    ].sort((a, b) => a.e.t - b.e.t));
+    const t0 = lastTick(300, 60);
+    upTo(t0);
+    assert.equal(track.latch(t0), 'relative', name);
+    const ref = headingDeg(track.predictAt(t0)!.q);
+    let worst = 0;
+    for (let t = t0 + 50; t <= t0 + 3000; t += 50) {
+      upTo(t);
+      assert.equal(track.mode, 'relative', `${name}: mode at ${t}`);
+      const p = track.predictAt(t);
+      assert.ok(p, `${name}: a pose at ${t}`); assert.equal(p.held, true);
+      worst = Math.max(worst, angDiff(headingDeg(p.q), ref));
+    }
+    assert.ok(worst < 0.01, `${name}: predicted yaw moved ${worst} degrees`);
+    assert.equal(track.axis?.confirmed ?? false, false, `${name}: the mapping never confirmed`);
+    const f = track.facts();
+    assert.equal(f.staleRefusals, 0, name); assert.deepEqual(f.modeChanges, [], name);
+  }
+  // A phone that turns for 100 ms at 30 deg/s and whose relative stream then dies, with a gyro in rad/s (it reads 0.52, and
+  // the mapping cannot confirm): the second before was exact zeros, so the
+  // zero share alone would vouch. The raw magnitude says the phone moved, and the orientation chord reads 26 deg/s.
+  const turn = piecewise([[0, still25], [1500, steady(20, 1500, 30, 25)]]), track = new PoseTrack();
+  const upTurn = player(track, [
+    ...events(turn, 0, 1600, { rel: { hz: 60 } }),
+    ...events(turn, 0, 4000, { motion: { hz: 60, map: radGyro } }),
+  ].sort((a, b) => a.e.t - b.e.t));
+  const tEnd = lastTick(1600, 60);
+  upTurn(tEnd);
+  assert.equal(track.latch(tEnd), 'relative');
+  assert.equal(track.axis?.confirmed ?? false, false);
+  upTurn(tEnd + 60);
+  assert.equal(track.predictAt(tEnd + 60), null, 'a turning rad/s gyro does not vouch for the silent stream');
+  assert.equal(track.facts().staleRefusals, 1);
 });
 
 test('stale limit: the intervals during motion are judged by the orientation while the unit of the gyro is unconfirmed (S41)', () => {

@@ -48,6 +48,9 @@ export interface CueInput {
   staleInLastSecond: number; gapDeg: number | null; rateDegS: number | null; rateMaxDegS: number;
   elevationDeg: number | null; green: readonly [number, number]; rollDeg: number | null; mismatchRun: number;
   skyLuma: number | null; capReached: boolean; coveredDeg: number; closed: boolean; tallSpans: number;
+  /** False while the phone has not turned since Begin: the sensor cannot be lagging behind a turn that has not
+   *  happened (issue 1031). Absent reads as true. */
+  movedSinceBegin?: boolean;
 }
 
 /** Rows 5-16 of 2.12 as numbers: stale refusals in a second, the gap cue's width, roll, textured mismatches in a row,
@@ -73,7 +76,7 @@ export function cueFor(c: CueInput): { key: CueKey; text: string; kind: 'info' |
   if (c.paused) return cue('paused');
   if (c.cameraStalled) return cue('stalled-camera');
   if (c.sensorStalled) return cue('stalled-sensor');
-  if (c.staleInLastSecond >= STALE_CUE_COUNT) return cue('stale');
+  if (c.staleInLastSecond >= STALE_CUE_COUNT && c.movedSinceBegin !== false) return cue('stale');
   if (c.gapDeg !== null && c.gapDeg >= GAP_CUE_DEG) return cue('gap', { d: Math.round(c.gapDeg) });
   if (c.rateDegS !== null && c.rateDegS > c.rateMaxDegS) return cue('too-fast');
   if (c.elevationDeg !== null && c.elevationDeg < c.green[0]) return cue('tilt-up');
@@ -306,6 +309,8 @@ export class PanoramaScanner implements ScannerLike {
   private stopped = false;
   private openMs = 0;
   private begun = false;
+  /** The phone has turned faster than the pace line since begin(): the lagging cue needs a turn to lag behind. */
+  private movedSinceBegin = false;
   private paused = false;
   private hidden = false;
   private finishing = false;
@@ -490,6 +495,7 @@ export class PanoramaScanner implements ScannerLike {
     if (this.begun || !this.canBegin) return;
     const now = performance.now();
     this.begun = true;
+    this.movedSinceBegin = false;
     this.beginT = now;
     this.track.latch(now);
     this.pano.begin(now);
@@ -657,6 +663,7 @@ export class PanoramaScanner implements ScannerLike {
     const pred = this.track.predictAt(t - this.track.latency.tauMs);
     const rate = this.track.rateAt(t);
     this.rate = rate;
+    if (this.begun && rate !== null && rate >= PACE_IDLE_DEG_S) this.movedSinceBegin = true;
     const up: V3 | null = pred ? qrotate(qinv(pred.q), UP) : null;
     // 3. Portrait or not, then the keyframe rule, exactly once per delivered frame: its call count is meta.frameNo, the
     //    frameId of every CaptureRecord and the recording's f%06d (S24).
@@ -955,6 +962,7 @@ export class PanoramaScanner implements ScannerLike {
       elevationDeg: elevation, green: band.green, rollDeg: roll, mismatchRun: this.tracker.mismatchRun,
       skyLuma: kfs.length ? kfs[kfs.length - 1].skyLuma : null, capReached: kfs.length >= MAX_KEYFRAMES,
       coveredDeg, closed: loop.closed, tallSpans: this.tallSpans.length,
+      movedSinceBegin: this.movedSinceBegin,
     });
     return {
       phase: this.phase(), cue: cue.text, cueKey: cue.key, cueKind: cue.kind, error,

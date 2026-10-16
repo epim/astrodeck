@@ -71,6 +71,11 @@ const STREAM_KEEP_MS = 2000;
 /** An absolute sample waits this long for G to reach its time before it is anchored against a hold. */
 const NORTH_WAIT_MS = 250;
 const MAX_STALE_RECORDS = 20000;
+/** A silent relative stream is vouched for before the mapping confirms (issue 1031) when, over the last second of the
+ *  motion stream, at least this many samples arrived, at least this share of them are exact zero triples (Chromium
+ *  rounds to 0.1 deg/s, so a still phone reads zeros about 96 % of the time, S21) and none read a raw magnitude over
+ *  the bound: a bound that is quiet in deg/s (0.3 deg/s) and below the 0.35 a rad/s gyro reads at a 20 deg/s pan. */
+const STILL_STREAM_MS = 1000, STILL_STREAM_MIN = 10, STILL_STREAM_ZERO_SHARE = 0.8, STILL_STREAM_RAW_MAX = 0.3;
 
 const LATENCY_MIN_DOMEGA_DEG_S = 2, LATENCY_APPLY_PAIRS = 10, LATENCY_APPLY_SIGMA_MS = 15;
 const LATENCY_MIN_MS = -50, LATENCY_MAX_MS = 250;
@@ -178,6 +183,9 @@ export class PoseTrack {
   private rel = new Series<Sample>();
   private abs = new Series<Sample>();
   private motion = new Series<MotionSample>();
+  /** Every finite motion event of the last STILL_STREAM_MS, the exact zero triples the gyro has not yet been allowed to
+   *  call a reading included, as the raw magnitude and whether it was an exact zero triple (issue 1031). */
+  private motionWindow: { t: number; zero: boolean; mag: number }[] = [];
   /** The newest orientation sample with finite beta and gamma, for elevation and roll before G exists. */
   private tilt: Sample | null = null;
   private headings: number[] = [];   // the last three absolute headings, for absolute-only's median
@@ -298,6 +306,7 @@ export class PoseTrack {
     const prev = this.motion.last;
     if (prev && e.t < prev.t) return;   // a backwards timestamp (#106)
     const raw: V3 = [r.alpha, r.beta, r.gamma];
+    this.noteMotionWindow(e.t, raw);
     // Chromium rounds to 0.1 deg/s, so a still phone reads exact zeros most of the time. A zero triple is a reading
     // only once the gyro has shown it can read anything else (4.5, RD finding 11).
     if (raw[0] === 0 && raw[1] === 0 && raw[2] === 0) {
@@ -601,10 +610,33 @@ export class PoseTrack {
    *  delivering, and a chord that is unknown does not vouch. This narrows S6 until the mapping confirms: a silent
    *  relative stream is held only while a chord of G reads quiet. */
   private quietGyro(t: number): boolean {
+    if (this.axisMap?.confirmed !== true && this.stillStream(t)) return true;
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
     if (m === null) return false;
     const w = this.magnitudeDeg(m.raw) ?? this.chordRateAt(t);
     return w !== null && w < HOLD_RATE_DEG_S;
+  }
+
+  private noteMotionWindow(t: number, raw: V3): void {
+    const w = this.motionWindow, last = w.length ? w[w.length - 1] : null;
+    if (last && t < last.t) return;
+    w.push({ t, zero: raw[0] === 0 && raw[1] === 0 && raw[2] === 0, mag: norm3(raw) });
+    while (w.length && w[0].t < t - STILL_STREAM_MS) w.shift();
+  }
+
+  /** Before the mapping confirms, the motion stream vouches for a silent relative stream on evidence that is quiet in
+   *  any unit: it is delivering, most of its recent samples are exact zero triples and none is large (issue 1031; S33
+   *  and S41 stand, no reading is scaled by a unit). A turning phone's gyro reads no such zeros and its relative stream
+   *  is not silent. */
+  private stillStream(t: number): boolean {
+    const w = this.motionWindow;
+    if (w.length < STILL_STREAM_MIN || t - w[w.length - 1].t > MOTION_FRESH_MS) return false;
+    let zeros = 0;
+    for (const x of w) {
+      if (x.mag > STILL_STREAM_RAW_MAX) return false;
+      if (x.zero) zeros++;
+    }
+    return zeros >= STILL_STREAM_ZERO_SHARE * w.length;
   }
 
   /** The rate of a stream at its newest sample: the gyro's magnitude when fresh and its unit confirmed (S41), else the
