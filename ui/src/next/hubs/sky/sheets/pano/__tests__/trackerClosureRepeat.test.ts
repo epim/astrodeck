@@ -54,13 +54,15 @@ test('a view that repeats along yaw inside the window closes nothing: fences of 
   }
 });
 
-test('a fence whose period is past the window closes on the truth: 14 degrees, the closure edge within 0.1 degrees and the focal within 0.1 %', () => {
+test('a fence whose period is past the window closes on the truth: 14 degrees, the closure edge within 0.1 degrees and the focal within 0.15 %', () => {
   // The other teeth are 14 degrees away, past alignPair's 12-degree acceptance of a residual, so the only match is the true one.
   // The repeat test reads 0.32 at this period (the lag of 14.6 px is at the end of its range), so it does not refuse a good match.
   const r = fenceRing(14);
   assert.equal(r.tracker.loop.method, 'image');
   assert.ok(closureError(r) < 0.1, `the closure edge is ${closureError(r)} degrees from the truth`);
-  assert.ok(Math.abs(r.focal.fBest / r.fTrue - 1) < 0.001, `the closed focal is ${(r.focal.fBest / r.fTrue - 1) * 100} % from the truth`);
+  // 0.1 % until S44: the focal is now the root of the re-solved edges' sum (T30), which carries the 0.12 % that LK reads short at the
+  // true focal (S45) where the 1 / f value of closeLoop happened to cancel it on this ring; 0.121 % measured.
+  assert.ok(Math.abs(r.focal.fBest / r.fTrue - 1) < 0.0015, `the closed focal is ${(r.focal.fBest / r.fTrue - 1) * 100} % from the truth`);
   // Through the fence the gyro places the keyframes the stripes would not align, and the closure corrects them to within a degree
   // all round the ring but at the seam keyframes that follow it (a revisit refused its match is placed by the gyro from the nearest
   // early keyframe: the T28 report's finding).

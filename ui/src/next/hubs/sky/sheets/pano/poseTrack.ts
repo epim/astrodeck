@@ -354,10 +354,21 @@ export class PoseTrack {
   }
 
   rateAt(t: number): number | null {
+    return this.rateReadAt(t).rate;
+  }
+
+  /** `rateAt` and where the rate came from (S46, issue 1030): 'gyro' for a motion sample whose unit the axis mapping has
+   *  confirmed, 'chord' for the orientation chord that stands in for it (S41), null when there is no rate. The latency
+   *  estimator is fed only from gyro rates: the pump-age jitter of the orientation samples is shared by a chord rate and by
+   *  the residual it is compared with, and the fit would read it as latency. */
+  rateReadAt(t: number): { rate: number | null; source: 'gyro' | 'chord' | null } {
     this.advance(t);
     const m = this.motion.nearest(t, MOTION_FRESH_MS);
     // A motion sample speaks only once the mapping has confirmed its unit; otherwise, and without a sample, the chord (S41).
-    return (m ? this.magnitudeDeg(m.raw) : null) ?? this.chordRateAt(t);
+    const gyro = m ? this.magnitudeDeg(m.raw) : null;
+    if (gyro !== null) return { rate: gyro, source: 'gyro' };
+    const chord = this.chordRateAt(t);
+    return { rate: chord, source: chord !== null ? 'chord' : null };
   }
 
   omegaBodyAt(t: number): V3 | null {

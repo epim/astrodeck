@@ -80,6 +80,10 @@ const DEG = Math.PI / 180;
 const KEY_W = 32, KEY_H = 64, CLOSURE_W = 64, CLOSURE_H = 128;
 /** LK iterations per level and the early exit (4.6 step 3). */
 const ITERS_L2 = 4, ITERS_L1 = 2, EARLY_EXIT_DEG = 0.002;
+/** The closure window starts from a prediction that carries the whole ring's gyro error (up to 8 degrees, 4.9) and a seed from
+ *  one correlation of the whole frame, so LK has more to travel than between two neighbours: twice the iterations, and the same
+ *  early exit. On the 60-degree lens 4 + 2 left a step over the 0.05-degree convergence test ('diverged') on every closure. */
+const CLOSURE_ITERS_L2 = 8, CLOSURE_ITERS_L1 = 4;
 /** Huber's 95 % efficiency constant, and a normal distribution's sd over its MAD. */
 const HUBER_K = 1.345, MAD_TO_SD = 1.4826;
 /** Inliers lie within 2.5 sigma (4.6 step 4); a correspondence within 1.5 sigma (step 5). */
@@ -491,7 +495,8 @@ export function alignPair(tpl: Template, img: Pyramid, qPred: Quat,
   let q = q0, iterations = 0, stuck = false, lastStepDeg = 0;
   if (peak) {
     const levels: [TemplateLevel, Level, Level, Intrinsics, number][] = [
-      [tpl.l2, tpl.pyr.l2, img.l2, k.l2, ITERS_L2], [tpl.l1, tpl.pyr.l1, img.l1, k.l1, ITERS_L1]];
+      [tpl.l2, tpl.pyr.l2, img.l2, k.l2, closure ? CLOSURE_ITERS_L2 : ITERS_L2],
+      [tpl.l1, tpl.pyr.l1, img.l1, k.l1, closure ? CLOSURE_ITERS_L1 : ITERS_L1]];
     descend: for (const [tl, tlv, ilv, kl, iters] of levels) {
       for (let it = 0; it < iters; it++) {
         const ev = evaluate(tl, tlv, ilv, kl, q, it > 0, false);

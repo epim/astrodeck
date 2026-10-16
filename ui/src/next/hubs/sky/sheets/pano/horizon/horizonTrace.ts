@@ -134,13 +134,20 @@ const AZ_REACH = Math.round(TRACE.azSupportDeg * COLS_PER_DEG);
 /** Azimuth support is silent until this many columns are observed (72 degrees). */
 const AZ_MIN_COLS = Math.round(TRACE.azMinObservedDeg * COLS_PER_DEG);
 /** The mosaic median is read from every Nth observed column: 3 degrees, 120 columns of the ring (the old file read
- *  150 sub-columns). All 1080 would be 9 times the work for a median that does not move. The ring sky (see the
- *  header) is read from the same columns, for the same reason. */
+ *  150 sub-columns). All 1080 would be 9 times the work for a median that does not move. The ring sky (see the header) is read
+ *  from the same columns, for the same reason. T30 priced a stride of 18: on the chart yard and treeline rasters of the realism
+ *  cases not one column state changed and a full extraction fell from 16.6 to 15.3 reference units, but horizonTraceRules and
+ *  tracerVertical pin this value (a stride of 12 already fails them), so it stays. */
 const MOSAIC_STRIDE = 9;
 /** How far a window model may sit from the ring sky and still be the ring's sky: the walk's own allowance for a row
  *  (one measured fact, #107), named apart so that the realism gate of T30 can tune the ring test without moving the
  *  walk. Luma is a fraction of the ring's level, blueness a fraction of its size (with the floor of TRACE.blueMin). */
 const RING_LUMA_FRAC = TRACE.lumaFrac, RING_BLUE_FRAC = TRACE.blueFrac;
+/** A column whose pooled pixels depart from the ring sky by more than this share is walked against the ring sky (Tall at the
+ *  top if it is an obstruction): a quarter, so that an obstruction filling less than the median's half still counts (S15). */
+const POOL_DEPART_SHARE = 0.25;
+/** The share of sampled columns with a bright mark in their top rows from which bright marks are the sky's own texture. */
+const BRIGHT_SKY_SHARE = 0.10;
 /** ...and at rows quantised to a degree: the windows it measures are 12 and 24 degrees deep, and runs whose edges
  *  differ by a row or two ask the compass the same question. */
 const MOSAIC_ROW_STEP = R;
@@ -354,9 +361,12 @@ const history: SkyHere[] = new Array(PANO_H);
 
 /** Would a row at `model`'s levels depart from `sky`? The test `off` applies to a row in the walk, with the wide
  *  allowance of TRACE, applied to a whole window model: the ring sky is the sky, and a model that is not within
- *  its allowance in luma or in blueness is not. Texture is not compared: whether a rough pool is sky needs a
- *  threshold measured on real rasters (a canopy that matches the sky in brightness and colour and wraps the whole
- *  ring has no sky to be compared with), which is for the realism gate of T30. */
+ *  its allowance in luma or in blueness is not. Texture is not compared. T30 measured what a texture test would have to
+ *  separate (a canopy that matches the sky in brightness and colour and wraps the whole ring): the 95th percentile of the pool's
+ *  Immerkaer response reads 12 on a smooth sky, 40 to 52 on the realism skies that carry stripes and lumps, 91 on blocks of
+ *  foliage, and 108 on a smooth sky under a luma noise of 12 (horizonTraceRules.test.ts), and the raster's own noise estimate
+ *  is a median that a canopy raises as far as it raises the level (1.4 floors). No threshold on what the extractor can read
+ *  separates the canopy from the noisy sky and the striped one, so none was shipped. */
 function departsFromSky(model: SkyModel, sky: SkyModel): boolean {
   const lumTol = Math.max(RING_LUMA_FRAC * Math.abs(sky.lum), TRACE.spreads * sky.lumSpread);
   const blueTol = Math.max(TRACE.blueMin, TRACE.spreads * sky.blueSpread, RING_BLUE_FRAC * Math.abs(sky.blue));
@@ -476,6 +486,7 @@ function columnRuns(col: ColData, seed: SkyModel, lumFrac: number, blueFrac: num
       // pinned by a test: a glint on top of a dark roof is skipped the same way.
       while (top < end && !(betweenSkyAnd(lum[top], here.lum, bodyLum, here.lumTol)
         && betweenSkyAnd(blue[top], here.blue, bodyBlue, here.blueTol))) top++;
+      top = settleOnStep(lum, top, start, end, bodyLum);
       runs.push({ top, end, from: Math.max(top, start), grounded, qualifies });
       if (qualifies) return runs;
       // Stepped over: the run's rows never enter the window, and the model at each is the one standing when the
@@ -501,6 +512,27 @@ function columnRuns(col: ColData, seed: SkyModel, lumFrac: number, blueFrac: num
     if (Number.isFinite(blue[start])) windowBlue.push(blue[start]);
   }
   return runs;
+}
+
+/** A boundary with a step in it is the step. `walkBack` climbs a transition for as long as the rows are neither the sky nor the
+ *  surface, which is right for an edge that is a ramp (an exposure arc, a sky darkening into the ground, #74) and wrong where the
+ *  sky itself darkens a little beside a crisp edge: a lumpy background walked the boundary up to 6 degrees above a tree crown.
+ *  When one step of at most STEP_ROWS rows between `top` and the row the departure was noticed at carries STEP_SHARE of the whole
+ *  drop from the sky above to the surface below, the step is the boundary and the climb above it was the sky's own texture.
+ *  A ramp has no such step and keeps its climb. Luma only: `bodyLum` is the surface's. */
+const STEP_ROWS = 3, STEP_SHARE = 0.6, STEP_REACH_ROWS = 5 * R;
+function settleOnStep(lum: Float32Array, top: number, start: number, end: number, bodyLum: number): number {
+  if (!Number.isFinite(bodyLum)) return top;
+  const sky = medianRange(lum, top - 2 * R, top - 1);
+  const drop = sky - bodyLum;
+  if (!Number.isFinite(sky) || !(Math.abs(drop) > 0)) return top;
+  let best = top, bestShare = 0;
+  const last = Math.min(end, start + STEP_REACH_ROWS);
+  for (let y = top; y + STEP_ROWS <= last; y++) {
+    const share = (lum[y] - lum[y + STEP_ROWS]) / drop;
+    if (Number.isFinite(share) && share > bestShare) { bestShare = share; best = y; }
+  }
+  return bestShare >= STEP_SHARE ? best : top;
 }
 
 // ---- The extraction ------------------------------------------------------------------------------
@@ -571,6 +603,7 @@ class Extraction {
 
   get azimuthSupportActive(): boolean { return this.observedCols >= AZ_MIN_COLS; }
 
+
   /** The painted run holding altitude 0, as the raster reports it, read into absolute rows. */
   col(x: number): ColData | null {
     const held = this.cols[x];
@@ -637,6 +670,47 @@ class Extraction {
     return (this.models[x] = { lum, blue, lumSpread, blueSpread, texLevel, texSpread });
   }
 
+  /** The share of a column's pooled pixels (the top 6 degrees of +-15 degrees of coverage, every pixel with a whole 3 x 3 painted,
+   *  not only the smooth ones the model is made of) that depart from the ring sky by the test a window model is held to. A median
+   *  answers for the majority only: an obstruction that fills 40 to 50 per cent of the pool leaves the median on the sky side, or
+   *  between the two clusters, and a wall of 14 to 18 degrees whose luma is just past the allowance came out Measured (the
+   *  two-cluster leak of S15). The pixels themselves say how much of the pool is not the sky. */
+  private departingShare(x: number, sky: SkyModel): number {
+    const lumTol = Math.max(RING_LUMA_FRAC * Math.abs(sky.lum), TRACE.spreads * sky.lumSpread);
+    const blueTol = Math.max(TRACE.blueMin, TRACE.spreads * sky.blueSpread, RING_BLUE_FRAC * Math.abs(sky.blue));
+    let n = 0, off = 0;
+    for (let dx = -MODEL_COLS; dx <= MODEL_COLS; dx += MODEL_COL_STRIDE) {
+      const c = this.col((((x + dx) % PANO_W) + PANO_W) % PANO_W);
+      if (c === null) continue;
+      const to = Math.min(c.last, c.first + MODEL_ROWS - 1);
+      for (let y = c.first; y <= to; y++) {
+        if (!Number.isFinite(c.lap[y])) continue;
+        n++;
+        if (Math.abs(c.lum[y] - sky.lum) > lumTol || Math.abs(c.blue[y] - sky.blue) > blueTol) off++;
+      }
+    }
+    return n > 0 ? off / n : 0;
+  }
+
+  /** Whether bright marks across the top of the photo are part of this ring's sky: in at least BRIGHT_SKY_SHARE of the sampled
+   *  columns two or more of the top TALL_ROWS rows are brighter than the ring sky by the walk's allowance (a stripe, a cloud
+   *  edge, an arc: the chart yard's sky is full of them). What most of the compass shows is the sky's texture, so a floating bright
+   *  run at the top of a column or across the sky above its boundary is then no evidence of an obstruction (`floatingBright`); in a
+   *  smooth sky a bright band over one sector is still a top that does not match, and Tall (5.2). False with no ring sky. */
+  brightSky(): boolean {
+    const ring = this.ringSky();
+    if (ring === null) return false;
+    const tol = Math.max(RING_LUMA_FRAC * Math.abs(ring.lum), TRACE.spreads * ring.lumSpread);
+    let marked = 0, n = 0;
+    for (const c of this.sampled()) {
+      let bright = 0;
+      for (let y = c.first; y < c.first + TALL_ROWS && y <= c.last; y++) if (c.lum[y] - ring.lum > tol) bright++;
+      n++;
+      if (bright >= 2) marked++;
+    }
+    return n > 0 && marked / n >= BRIGHT_SKY_SHARE;
+  }
+
   /** Every ninth observed column of the ring: what the mosaic median and the ring sky are read from. */
   private sampled(): ColData[] {
     if (this.sampledCols === null) {
@@ -683,7 +757,7 @@ class Extraction {
     const own = this.model(x);
     let model = own;
     const ring = model !== null ? this.ringSky() : null;
-    if (model !== null && ring !== null && departsFromSky(model, ring)) model = ring;
+    if (model !== null && ring !== null && (departsFromSky(model, ring) || this.departingShare(x, ring) > POOL_DEPART_SHARE)) model = ring;
     let a: Analysis = { col, own, model, wide: [], candidates: [], vouched: null };
     if (this.readyToWalk(col, own, model)) {
       const wide = columnRuns(col!, model!, TRACE.lumaFrac, TRACE.blueFrac, this.noise);
@@ -799,6 +873,29 @@ class Extraction {
   }
 }
 
+/** The placement sigma at a boundary pixel, degrees: the raster stores, per pixel, the smallest sigma among the slices that painted
+ *  it with feather weight 0.5 or more, so a pixel between two slices, where both are under 0.5, carries none (255) although the
+ *  slices either side of it are as well placed as they ever are. A neighbouring pixel at the same row speaks for it: the smallest
+ *  stored sigma within SIGMA_REACH_COLS columns (two thirds of a degree). 255 on all of them is still "unknown". */
+const SIGMA_REACH_COLS = 2;
+function placementSigmaAt(p: BandPanoramaLike, row: number, x: number): number {
+  let best = 255;
+  for (let d = -SIGMA_REACH_COLS; d <= SIGMA_REACH_COLS; d++) {
+    const byte = p.sigma[row * PANO_W + ((x + d + PANO_W) % PANO_W)];
+    if (byte < best) best = byte;
+  }
+  return best === 255 ? Infinity : best * 0.02;
+}
+
+/** A floating departure (one with sky resuming under it, not tall enough to be a structure) that is BRIGHTER than the sky: a
+ *  stripe, a cloud edge, a glint. The same call `standsOut` makes for the neighbours' vote (`darkOnly`): a bright surface
+ *  standing in the air is far more often a marking than a structure, so it does not interrupt the sky above a boundary and
+ *  does not make the top of the photo Tall. */
+function floatingBright(col: ColData, sky: SkyModel, run: ColumnRun): boolean {
+  if (run.qualifies) return false;
+  return medianRange(col.lum, run.from, Math.min(run.end, run.from + SKY_WINDOW - 1)) > sky.lum;
+}
+
 /** Rows of the wide pass that are inside a departure, by absolute row: the rows that do NOT match the sky. */
 function offRows(runs: readonly ColumnRun[]): Uint8Array {
   const marked = new Uint8Array(PANO_H);
@@ -823,6 +920,7 @@ function extract(p: BandPanoramaLike, o: ExtractOptions): ColumnHorizon {
     lowLight: false,
   };
   const ex = new Extraction(p);
+  const brightSky = ex.brightSky();
   const wanted = requestedColumns(o.columns);
   const skyLumas: number[] = [];
   for (const x of wanted) {
@@ -836,8 +934,7 @@ function extract(p: BandPanoramaLike, o: ExtractOptions): ColumnHorizon {
     out.alt[x] = alt;
     // The boundary pixel: the first blocked row of the deciding run, or the horizon row when the column is open.
     const boundaryRow = chosen !== null ? chosen.top : Math.max(a.col.first, Math.min(a.col.last, altRow(alt)));
-    const byte = p.sigma[boundaryRow * PANO_W + x];
-    const placement = byte === 255 ? Infinity : byte * 0.02;
+    const placement = placementSigmaAt(p, boundaryRow, x);
     const sigma = boundarySigmaDeg(placement, o.focalSdPct, Math.abs(alt - o.axisAltDeg));
     out.sigmaDeg[x] = sigma;
     const contrast = chosen !== null ? ex.contrast(a.col, chosen) : NaN;
@@ -845,7 +942,7 @@ function extract(p: BandPanoramaLike, o: ExtractOptions): ColumnHorizon {
     // How much sky lies directly above the boundary, and does the very top of the coverage match it? The rows counted
     // begin with the row of A itself (the one above the first blocked row, or the horizon row of an open column), so
     // the altitude the sky reaches above A is measured from the topmost of them: 18 rows are 17 rows of height.
-    const marked = offRows(a.wide);
+    const marked = offRows(brightSky ? a.wide.filter(r => !floatingBright(a.col!, a.model!, r)) : a.wide);
     let skyRows = 0;
     for (let y = boundaryRow - 1; y >= a.col.first && !marked[y]; y--) skyRows++;
     const topMatches = !marked.subarray(a.col.first, a.col.first + TALL_ROWS).some(v => v === 1);

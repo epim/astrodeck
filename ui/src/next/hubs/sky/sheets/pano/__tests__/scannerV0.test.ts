@@ -631,7 +631,7 @@ await test('the recording holds every frame and event in order, and pngEncoder f
   assert.deepEqual(rec[0], {
     kind: 'header', format: 'astrodeck-pano-recording', version: 1, encoder: 'image/png',
     video: { width: 45, height: 80 }, analysis: { width: 180, height: 320 },
-    settings: rec[0].settings, commit: null,
+    settings: rec[0].settings, commit: 'dev',
   });
   assert.deepEqual(rec[1], { kind: 'action', t_ms: withDecl.beganAt, action: 'begin' }, 'times are ms since the camera opened');
   // What the scanner was handed after begin(), line for line. The camera opened at the harness clock's zero.

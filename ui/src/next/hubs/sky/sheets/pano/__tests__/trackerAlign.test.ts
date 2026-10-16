@@ -699,9 +699,13 @@ test('an injected 80 ms of latency is recovered within 10 ms from the aligned pa
   assert.ok(gyroRun.tracker.keyframes.length >= 25);
 });
 
-test('the same from the predictor\'s heading chord alone, turning the other way', () => {
-  assert.ok(chordRun.latency.pairs >= 10, `${chordRun.latency.pairs} pairs`);
-  near(chordRun.latency.tauMs, LAG, 10, 'tau from chord rates');
+test("the same from the predictor's heading chord alone, turning the other way, feeds the estimator nothing (S46, issue 1030)", () => {
+  // T27 fed the estimator from chord rates and graded the estimate here. The pump-age jitter of the orientation samples is shared
+  // by a chord rate and by the residual r, the fit reads it as latency, and on five seeded rings it applied 14.8, 41.1, 64.4, -20.4
+  // and 100.8 ms against a truth of 50 (issue 1030): a rate that did not come from a gyro is never fed to the estimator.
+  assert.equal(chordRun.latency.pairs, 0, 'no pair from a chord rate');
+  assert.equal(chordRun.latency.applied, false);
+  near(chordRun.latency.tauMs, 50, 1e-9, 'the prior stands');
 });
 
 test('addPair is fed a signed change of heading rate, with the tau the pair was predicted at', () => {
@@ -742,10 +746,11 @@ test('a gyro read in the wrong unit (rad/s as deg/s: quiet while turning) is not
   for (const v of w) near(v as number, 20.4, 1.0, 'heading rate from the chord');
 });
 
-test('the steady-pair test is strict: heading rates 2.00 deg/s apart over the span are not steady, 1.99 apart are (4.8)', () => {
-  // The rule is |dOmega| < 2 over every keyframe of the span, and the cases above hold their rates to within 1 of each other, so
-  // none of them touches the boundary. The span is set directly: a short ring makes the aligned chain, then the rates of the
-  // last four keyframes are put exactly 2 and 1.99 apart (the private table, as omegasOf reads it) and restored.
+test('the steady-pair test is strict: heading rates 5.00 deg/s apart over the span are not steady, 4.99 apart are (4.8, T30)', () => {
+  // The rule is |dOmega| < 5 over every keyframe of the span (the spec's 2, widened by T30: STEADY_SPAN_DEG_S), and the cases above
+  // hold their rates to within 1 of each other, so none of them touches the boundary. The span is set directly: a short ring makes
+  // the aligned chain, then the rates of the last four keyframes are put exactly 5 and 4.99 apart (the private table, as omegasOf
+  // reads it) and restored.
   const r = run({ priorScale: 1.1, pan: { turnDeg: 60 } });
   const t = r.tracker as unknown as { links: { omega: number | null }[]; steadySpan(a: number, k: number): boolean };
   const k = r.tracker.keyframes.length - 1, a = k - 3, saved = t.links.map(l => l.omega);
@@ -753,9 +758,10 @@ test('the steady-pair test is strict: heading rates 2.00 deg/s apart over the sp
   try {
     const spread = (hi: number) => { for (let i = a; i <= k; i++) t.links[i].omega = 20; t.links[k].omega = hi; return t.steadySpan(a, k); };
     assert.equal(spread(20), true, 'level rates are a steady span');
-    assert.equal(spread(21.99), true, '1.99 apart is steady');
-    assert.equal(spread(22), false, '2.00 apart is not below 2');
-    assert.equal(spread(25), false, 'nor is 5 apart');
+    assert.equal(spread(22.99), true, "2.99 apart is steady (the spec's 2 refused it)");
+    assert.equal(spread(24.99), true, '4.99 apart is steady (a hand-held pan wobbles by this much)');
+    assert.equal(spread(25), false, '5.00 apart is not below 5');
+    assert.equal(spread(30), false, 'nor is 10 apart');
   } finally {
     saved.forEach((w, i) => { t.links[i].omega = w; });
   }
