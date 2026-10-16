@@ -53,7 +53,7 @@ from .mount_offset import POSITION_UNKNOWN_MOTION_DETAIL
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
 from .align import guide_offset as _guide_offset
-from .events import bus
+from .events import bus, site_timed_span
 from .guide import Guider, PHD2Guider
 from .imaging import (
     FrameMeta,
@@ -9618,7 +9618,33 @@ class Hub:
         programme too. A side that CHANGED — or that could not be read, which
         is not evidence of anything — keeps today's conservative behaviour:
         discard the calibration and recalibrate on the new side (GN-01).
+
+        THE WHOLE CALL IS A SITE-TIMED SPAN (#1020). It is only made when a
+        flip is due, which at lead 0 is the target's computed crossing, so
+        its START is the longitude, and everything the call publishes in the
+        next few hundred milliseconds says when it started: the ``mount``
+        event below, the guider's stop (a ``guide`` event and its own line),
+        the re-centre's first ``centering`` and ``solve_activity``, and then
+        every solve and centring line of the slew. Flagging the two events
+        and two lines someone had named left all of those, so a viewer read
+        the crossing off the guider's stop instead. The span flags what this
+        call publishes, whatever it is (`events.site_timed_span`), and the
+        serving seams drop it for a principal without ``view.site_derived``.
+        Operators and admins are served all of it, the flag in its data, and
+        the night file keeps it.
+
+        What no span can close: the guide stream, which a viewer watches
+        stop to within one guide cadence, and the status stream's
+        ``slewing`` and pier side, which the status poller publishes from
+        its own task on its own clock (both reported on #1020).
         """
+        with site_timed_span():
+            return await self._meridian_flip_spanned(ra_hours, dec_deg,
+                                                     rotation_deg)
+
+    async def _meridian_flip_spanned(self, ra_hours: float, dec_deg: float,
+                                     rotation_deg: float | None) -> dict:
+        """`meridian_flip`'s body, run inside its site-timed span."""
         bus.publish("mount", action="meridian_flip")
         # FLAGGED site_derived (W2 integration, #166, #302), matching the
         # engine's own completion line for the same event: this call only
