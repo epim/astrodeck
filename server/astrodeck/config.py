@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (BaseModel, ConfigDict, Field, field_validator,
+                      model_validator)
 
 from .events import bus
 # The temperature-compensation model lives with the code that USES it
@@ -142,6 +143,24 @@ SAFETY_PRESETS: dict[str, dict] = {
                      resume_when_safe=False, max_pause_min=0,
                      close_dome_on_unsafe=True),
 }
+
+
+#: The rule for ``SafetyConfig.min_alt_deg`` (#1007), said without a value so a
+#: refusal or a log line can carry it. 0 is "no floor" and 90 is the zenith.
+MIN_ALT_RULE = "safety.min_alt_deg must be a finite number from 0 to 90 degrees"
+
+
+def _min_alt_ok(value) -> bool:
+    """Is ``value`` a floor the slew gates can compare against?
+
+    A NaN is not: ``alt < nan`` is False for every altitude, so a NaN floor
+    refuses nothing and reads as a configured guard. The model validator and the
+    stored-config repair both ask this, so there is one rule."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(v) and 0.0 <= v <= 90.0
 
 
 class SafetyConfig(BaseModel):
@@ -290,6 +309,17 @@ class SafetyConfig(BaseModel):
     # after max_pause_min it SafetyAborts with the roof left CLOSED (fail-safe). Left
     # out of SAFETY_PRESETS on purpose (advanced opt-in, no surprise roof cycling).
     reopen_dome_when_safe: bool = False
+
+    @field_validator("min_alt_deg")
+    @classmethod
+    def _floor_is_usable(cls, v: float) -> float:
+        """Finite and 0..90 on EVERY construction (#1007): the API body, a
+        saved location applied, a bare ``SafetyConfig(...)``. The config file
+        is the one door that cannot simply refuse -- ``_repair_stored_limits``
+        clamps or resets a bad stored value before the model is built."""
+        if not _min_alt_ok(v):
+            raise ValueError(MIN_ALT_RULE)
+        return v
 
     @model_validator(mode="after")
     def _derive_preset_label(self) -> "SafetyConfig":
@@ -2040,6 +2070,169 @@ def _repair_stored_horizon(raw: dict) -> tuple[dict, str | None]:
               "again at every start.")
 
 
+#: The three numbers of a no-go wedge, in the order the rule names them.
+_WEDGE_KEYS = ("az_min", "az_max", "alt_max")
+_WEDGE_SHAPE_RULE = "each no-go wedge must be an object with az_min, az_max and alt_max"
+_WEDGE_NUMBERS_RULE = "no-go wedge values must be numbers"
+_WEDGE_FINITE_RULE = "no-go wedge values must be finite"
+_WEDGE_AZ_RULE = "no-go wedge azimuth must be 0..360 degrees"
+_WEDGE_ALT_RULE = "no-go wedge altitude must be 0..90 degrees"
+
+
+def _wedge_numbers(box) -> tuple[tuple[float, float, float] | None, str | None]:
+    """``box``'s ``(az_min, az_max, alt_max)`` as floats, or ``(None, why)`` when
+    it is not an object holding three numbers. It says nothing about their size:
+    NaN and infinity come back as the floats they are."""
+    if not isinstance(box, dict) or not all(k in box for k in _WEDGE_KEYS):
+        return None, _WEDGE_SHAPE_RULE
+    try:
+        az_min, az_max, alt = (float(box[k]) for k in _WEDGE_KEYS)
+    except (TypeError, ValueError, OverflowError):
+        return None, _WEDGE_NUMBERS_RULE
+    return (az_min, az_max, alt), None
+
+
+def nogo_wedge_problem(box) -> str | None:
+    """Why ``box`` is not a no-go wedge the floor can read, or ``None`` when it
+    is one (#1007). The rule ``POST /api/config`` refuses by; the config load
+    uses it to tell a wedge that needs repair from one that does not.
+
+    A wedge is ``{"az_min", "az_max", "alt_max"}`` with both azimuths 0..360
+    (the Settings controls' range; ``schedule.nogo_floor`` wraps them) and
+    ``alt_max`` 0..90, the floor it imposes -- 90 is the zenith. All three must
+    be finite: ``alt < nan`` is never true, so a wedge holding a NaN guarded
+    nothing while the configuration said it did.
+
+    The sentence names the rule and never a value."""
+    nums, why = _wedge_numbers(box)
+    if nums is None:
+        return why
+    az_min, az_max, alt = nums
+    if not all(math.isfinite(v) for v in nums):
+        return _WEDGE_FINITE_RULE
+    if not (0.0 <= az_min <= 360.0 and 0.0 <= az_max <= 360.0):
+        return _WEDGE_AZ_RULE
+    if not 0.0 <= alt <= 90.0:
+        return _WEDGE_ALT_RULE
+    return None
+
+
+def _repair_stored_wedge(box) -> tuple[str, dict | None, str | None]:
+    """What the config load does with one stored wedge (#1007): ``("keep", box,
+    None)`` when it passes ``nogo_wedge_problem``, ``("clamp", wedge, rule)``
+    when the floor can read it but it sits outside the Settings range, and
+    ``("drop", None, rule)`` when it cannot be read at all.
+
+    A wedge the floor READS keeps gating. ``schedule.nogo_floor`` wraps an
+    azimuth with ``% 360`` and uses ``alt_max`` as a floor, so an azimuth of -10
+    is 350 and an ``alt_max`` of 95 blocked everything below the zenith; the
+    classic Settings panel can type both, and before the rule ``POST
+    /api/config`` took them. Dropping such a wedge on upgrade would switch off a
+    pier guard that worked, so it is brought into range instead: azimuths
+    wrapped, ``alt_max`` clamped to 0..90 (``+inf`` blocked and ``-inf`` did
+    nothing, and clamping keeps both). A wedge the floor cannot read is dropped:
+    not an object, a missing key, text for a number, a NaN anywhere, or an
+    infinite azimuth (``inf % 360`` is NaN)."""
+    problem = nogo_wedge_problem(box)
+    if problem is None:
+        return "keep", box, None
+    nums, why = _wedge_numbers(box)
+    if nums is None:
+        return "drop", None, why
+    az_min, az_max, alt = nums
+    if (any(math.isnan(v) for v in nums)
+            or not (math.isfinite(az_min) and math.isfinite(az_max))):
+        return "drop", None, problem
+    rule = (_WEDGE_AZ_RULE
+            if not (0.0 <= az_min <= 360.0 and 0.0 <= az_max <= 360.0)
+            else _WEDGE_ALT_RULE)
+    return "clamp", {**box, "az_min": az_min % 360.0, "az_max": az_max % 360.0,
+                     "alt_max": min(90.0, max(0.0, alt))}, rule
+
+
+def _repair_stored_limits(raw: dict) -> tuple[dict, list[str]]:
+    """``raw`` with ``safety.min_alt_deg`` and ``safety.nogo_box`` brought
+    inside their rules, and the sentences to log once the config has loaded, or
+    ``(raw, [])`` when both already passed them (#1007).
+
+    The same third door #982 closed for the horizon. ``SafetyConfig.min_alt_deg``
+    was a bare float and ``nogo_box`` a free ``list[dict]``, so a file written
+    before the rule, restored from a ``.bak`` or edited by hand loaded with a
+    NaN in either: the floor then refused nothing and the wedge guarded nothing.
+
+    The repair never lowers a limit the floor was reading. A number outside the
+    rule is clamped to the nearest end (``min_alt_deg`` to 0..90; a wedge by
+    ``_repair_stored_wedge``), which is what the gates read before. What cannot
+    be read at all is the only thing removed: a ``min_alt_deg`` that is not a
+    number becomes the default (no floor), and a wedge ``_repair_stored_wedge``
+    drops is dropped, the field becoming ``None`` if none is left. The load goes
+    on -- refusing would stop the server, which is the worse failure. The file
+    on disk is not rewritten here; the next settings save does that.
+
+    Both load paths (``ConfigStore._load`` and ``_restore_from_bak``) call this
+    before the model is built. Each sentence names the rule and how many
+    wedges broke it, never a value."""
+    safety = raw.get("safety")
+    if not isinstance(safety, dict):
+        return raw, []
+    fixed: dict = {}
+    notes: list[str] = []
+    if "min_alt_deg" in safety and not _min_alt_ok(safety["min_alt_deg"]):
+        try:
+            stored = float(safety["min_alt_deg"])
+        except (TypeError, ValueError, OverflowError):
+            stored = math.nan
+        if math.isnan(stored):
+            fixed["min_alt_deg"] = SafetyConfig.model_fields["min_alt_deg"].default
+            notes.append(
+                "safety.min_alt_deg in the stored config was not a number and "
+                "was reset to the default, which is no floor. The file on disk "
+                "is rewritten by the next settings save; until then this is "
+                "said again at every start.")
+        else:
+            fixed["min_alt_deg"] = min(90.0, max(0.0, stored))
+            notes.append(
+                "safety.min_alt_deg in the stored config was outside the 0 to "
+                "90 degrees range and was clamped to the nearest end of it. "
+                "The file on disk is rewritten by the next settings save; "
+                "until then this is said again at every start.")
+    wedges = safety.get("nogo_box")
+    if wedges is not None:
+        dropped: dict[str, int] = {}
+        clamped: dict[str, int] = {}
+        kept = []
+        if isinstance(wedges, list):
+            for wedge in wedges:
+                verdict, new, rule = _repair_stored_wedge(wedge)
+                if verdict == "drop":
+                    dropped[rule] = dropped.get(rule, 0) + 1
+                    continue
+                kept.append(new)
+                if verdict == "clamp":
+                    clamped[rule] = clamped.get(rule, 0) + 1
+        else:
+            dropped["safety.nogo_box must be a list of wedges"] = 1
+        if dropped or clamped:
+            fixed["nogo_box"] = kept or None
+            said = []
+            if dropped:
+                said.append("dropped as unreadable: " + ", ".join(
+                    f"{rule} (x{n})" for rule, n in dropped.items()))
+            if clamped:
+                said.append("brought into range and kept: " + ", ".join(
+                    f"{rule} (x{n})" for rule, n in clamped.items()))
+            left = (f"{len(kept)} usable wedge(s) kept" if kept
+                    else "no usable wedge remained, so no no-go wedge is set")
+            notes.append(
+                "safety.nogo_box in the stored config broke the wedge rule and "
+                f"was repaired on load: {'; '.join(said)}; {left}. The file on "
+                "disk is rewritten by the next settings save; until then this "
+                "is said again at every start.")
+    if not fixed:
+        return raw, []
+    return {**raw, "safety": {**safety, **fixed}}, notes
+
+
 def _apply_migrations(cfg: AppConfig, stored: int) -> None:
     """Run every one-shot migration the file on disk still owes, in order.
 
@@ -2198,12 +2391,15 @@ class ConfigStore:
                 raise ValueError("configuration backup must contain a JSON object")
             stored = _stored_schema(raw)
             raw, horizon_note = _repair_stored_horizon(raw)
+            raw, limit_notes = _repair_stored_limits(raw)
             cfg = AppConfig(**{**raw, "schema_version": stored})
         except Exception as exc:
             raise RuntimeError("configuration backup is invalid") from exc
         bus.log("warning", "config restored from backup (.bak)", "config")
         if horizon_note:
             bus.log("warning", horizon_note, "config")
+        for note in limit_notes:
+            bus.log("warning", note, "config")
         # The backup owes the same migrations a primary does, and stamping it
         # current is what stops the next boot owing them again. A newer
         # file's stamp is never lowered (the `<` below).
@@ -2259,6 +2455,7 @@ class ConfigStore:
             # evidence that the file predates the marker.
             stored = _stored_schema(raw)
             raw, horizon_note = _repair_stored_horizon(raw)
+            raw, limit_notes = _repair_stored_limits(raw)
             cfg = AppConfig(**{**raw, "schema_version": stored})
         except Exception as exc:  # invalid shape
             recovered = self._restore_from_bak()
@@ -2270,6 +2467,8 @@ class ConfigStore:
 
         if horizon_note:
             bus.log("warning", horizon_note, "config")
+        for note in limit_notes:
+            bus.log("warning", note, "config")
 
         # A FILE FROM A NEWER BUILD IS NOT OURS TO REWRITE. `AppConfig` is a
         # plain BaseModel, so pydantic's default `extra="ignore"` drops every

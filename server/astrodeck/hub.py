@@ -53,7 +53,7 @@ from .mount_offset import POSITION_UNKNOWN_MOTION_DETAIL
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
 from .align import guide_offset as _guide_offset
-from .events import bus
+from .events import bus, site_timed_span
 from .guide import Guider, PHD2Guider
 from .imaging import (
     FrameMeta,
@@ -448,8 +448,10 @@ SOLVE_EXPOSURES_KEPT = 16
 
 #: Bound on each command a rig teardown's cleanup sends (#267): every device's
 #: disconnect, the guider's, the NINA client's and each session's close, and
-#: the polar session's stop. The cooler-off it owes a stopped warm ramp keeps
-#: the ramp's own ``cooling.WARM_CMD_TIMEOUT_S``. 30 s matches that and the
+#: the polar session's stop. The disconnect a failed Alpaca connect sends the
+#: replacement device it will not hold (#1015) has the same bound. The
+#: cooler-off a teardown owes a stopped warm ramp keeps the ramp's own
+#: ``cooling.WARM_CMD_TIMEOUT_S``. 30 s matches that and the
 #: Alpaca client's HTTP timeout, so a disconnect that is getting answers is not
 #: what it cuts: it cuts a driver that never answers, which used to hold the
 #: teardown, and the connect lock with it, for ever.
@@ -868,7 +870,9 @@ class StatusReadStalled(Exception):
     An ``Exception`` on purpose: every device block in ``Hub.poll_status`` is
     already guarded to treat a read that raises as "no reading" (the block is
     left off the frame, or its key is null or absent), and a read that does
-    not return is the same absence. Nothing outside the poll sees it."""
+    not return is the same absence. Nothing outside the poll and the reads
+    that follow an exposure (the wheel's slot, #999; a frame's header, #1009)
+    sees it, and each of those has the same guards."""
 
 
 async def _run_to_its_bound(make, timeout_s: float) -> BaseException | None:
@@ -1627,58 +1631,97 @@ class Hub:
         conn = ConnSpec(backend="native", host=host, port=port,
                         dev_type=dev_type, dev_num=dev_num, role=role,
                         extra={"name": name})
+        # The cancels this task already carries, so a new one is told apart.
+        me = asyncio.current_task()
+        asked = me.cancelling() if me is not None else 0
         session = await get_backend("native").open(conn)
-        dev = await session.get_device(role, conn)
-        old = self.devices.get(role)
-        old_session = self._alpaca_sessions.get(role)
-        # The SAME Alpaca device again (reconnect_role rebuilds one from its
-        # record, #966) is not disconnected: the server keeps one Connected
-        # state per device, so the old object's Connected=False would undo the
-        # connect that just succeeded and the new object would answer 0x407.
-        replaced_same = old is not None and tuple(
-            str(getattr(old, a, None)).lower()
-            for a in ("host", "port", "dev_type", "dev_num")
-        ) == tuple(str(v).lower() for v in (host, port, dev_type, dev_num))
-        if old and not replaced_same:
-            try:
-                await old.disconnect()
-            except Exception:       # the device being replaced is dropped either way
-                pass
-        # The new device's connect comes AFTER the old one's disconnect, never
-        # before (#987, #991). The comparison above reads two spellings of one
-        # endpoint ('localhost' and '127.0.0.1', a LAN name and its address) as
-        # two devices, and the server keeps one Connected state per device, so
-        # the last word on the slot must be the new device's.
+        # The session owns an httpx client from the moment get_device builds the
+        # device's connection, and nothing owns the session until it is stored
+        # in ``_alpaca_sessions`` below. Whatever ends the call before that
+        # (get_device refusing, a cancel, the replacement's connect failing)
+        # closes it, so a failed attempt leaks no client (#1014).
+        adopted = False
+        dev = None
+        replaced_same = False
+        released = False        # the replacement has been sent its disconnect
         try:
-            await dev.connect()
-        except (Exception, asyncio.CancelledError):
-            # The replacement never took and the hub keeps the old device, so
-            # put it back as it was: connect the old device again (it was
-            # disconnected above; a server that is gone fails this too, and the
-            # device then reads disconnected for the reconnect gate) and close
-            # the session opened for the replacement instead of leaking it.
+            dev = await session.get_device(role, conn)
+            old = self.devices.get(role)
+            old_session = self._alpaca_sessions.get(role)
+            # The SAME Alpaca device again (reconnect_role rebuilds one from its
+            # record, #966) is not disconnected: the server keeps one Connected
+            # state per device, so the old object's Connected=False would undo the
+            # connect that just succeeded and the new object would answer 0x407.
+            replaced_same = old is not None and tuple(
+                str(getattr(old, a, None)).lower()
+                for a in ("host", "port", "dev_type", "dev_num")
+            ) == tuple(str(v).lower() for v in (host, port, dev_type, dev_num))
             if old and not replaced_same:
                 try:
-                    await old.connect()
+                    await old.disconnect()
+                except Exception:       # the device being replaced is dropped either way
+                    pass
+            # The new device's connect comes AFTER the old one's disconnect, never
+            # before (#987, #991). The comparison above reads two spellings of one
+            # endpoint ('localhost' and '127.0.0.1', a LAN name and its address) as
+            # two devices, and the server keeps one Connected state per device, so
+            # the last word on the slot must be the new device's.
+            try:
+                await dev.connect()
+            except (Exception, asyncio.CancelledError):
+                # The replacement never took and the hub keeps the old device, so
+                # put it back as it was. First let go of the replacement: its
+                # get_device already sent Connected=True, and a hub that never
+                # holds it would leave it connected on the server with no owner
+                # (#1015). That comes BEFORE the old device's connect, because
+                # two spellings of one endpoint share one server slot and the
+                # old device's Connected=True must be the last word on it. Not
+                # when the same device is replaced: that slot is the held
+                # device's. Then connect the old device again (it was
+                # disconnected above; a server that is gone fails this too, and
+                # the device then reads disconnected for the reconnect gate).
+                # The session opened for the replacement is closed below.
+                if not replaced_same:
+                    released = True
+                    await self._release_unowned_alpaca_device(role, dev)
+                if old and not replaced_same:
+                    try:
+                        await old.connect()
+                    except Exception as exc:
+                        self.say_swallowed(
+                            "reconnecting the previous device after a failed "
+                            "rebuild", exc)
+                # A cancel of the caller that landed while the release ran is
+                # counted on the task and not raised by it (the release
+                # finishes whatever cancels the caller), so it is raised here,
+                # not eaten by the connect's own error: both callers of this
+                # connect catch Exception and go on to the next device (#235).
+                if me is not None and me.cancelling() > asked:
+                    raise asyncio.CancelledError()
+                raise
+            dev.role = role                        # device identity for Profiles (A.6)
+            self.devices[role] = dev
+            self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
+            self._mount_jnow_reprobe = None
+            # retain the session so its httpx client is aclosed when this role is later
+            # replaced or the rig torn down (session-leak fix); close the one we are
+            # replacing so its keep-alive sockets don't accumulate per reconnect.
+            self._alpaca_sessions[role] = session
+            adopted = True
+        finally:
+            if not adopted:
+                if dev is not None and not replaced_same and not released:
+                    # The call ended after get_device sent the replacement
+                    # Connected=True and before the final connect, by a cancel
+                    # in the old device's disconnect. Nothing holds the
+                    # replacement either, so it is let go here (#1015).
+                    await self._release_unowned_alpaca_device(role, dev)
+                try:
+                    await session.close()
                 except Exception as exc:
                     self.say_swallowed(
-                        "reconnecting the previous device after a failed "
-                        "rebuild", exc)
-            try:
-                await session.close()
-            except Exception as exc:
-                self.say_swallowed(
-                    "closing the replacement session after a failed connect",
-                    exc)
-            raise
-        dev.role = role                        # device identity for Profiles (A.6)
-        self.devices[role] = dev
-        self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
-        self._mount_jnow_reprobe = None
-        # retain the session so its httpx client is aclosed when this role is later
-        # replaced or the rig torn down (session-leak fix); close the one we are
-        # replacing so its keep-alive sockets don't accumulate per reconnect.
-        self._alpaca_sessions[role] = session
+                        "closing the replacement session after a failed "
+                        "connect", exc)
         if old_session is not None:
             try:
                 await old_session.close()
@@ -1692,6 +1735,26 @@ class Hub:
         bus.log("info", f"{role} connected: {name} (Alpaca {host}:{port})", "hub")
         self.ensure_status_poller()
         return dev.describe()
+
+    async def _release_unowned_alpaca_device(self, role: str, dev) -> None:
+        """Send Connected=False for a replacement device the hub is not going to
+        hold (#1015): its connect sent Connected=True and then failed, and the
+        server keeps that state until someone clears it, which for a camera can
+        mean a cooler left engaged and the device busy to every other client.
+
+        Bounded and shielded like a teardown's cleanup (``_run_to_its_bound``),
+        so a server that never answers cannot hold the connect lock, and a
+        cancel of the caller does not drop the release. Best effort: a failure
+        is said (``say_swallowed``) and never replaces the error the caller is
+        already raising. A cancel of the caller that lands meanwhile stays
+        counted on its task, not raised (``_run_to_its_bound``): the caller
+        raises it when the release is done."""
+        err = await _run_to_its_bound(lambda: dev.disconnect(),
+                                      TEARDOWN_STEP_TIMEOUT_S)
+        if err is not None:
+            self.say_swallowed(
+                f"the {role}'s replacement could not be disconnected after its "
+                f"connect failed, so the server may still hold it connected", err)
 
     async def connect_phd2(self, host: str = "127.0.0.1", port: int = 4400) -> None:
         if self.guider:
@@ -3822,6 +3885,16 @@ class Hub:
         leaves its value None (its card omitted) and never blocks or fails the
         save. Only Hub.capture builds this; save_fits stays device-free.
 
+        THE DEVICE READS ARE BOUNDED (#1009), through ``_status_read`` and the
+        same keys and ``STATUS_DEVICE_READ_TIMEOUT_S`` as the status poll's
+        own reads of these devices: a guard of ``except Exception`` catches a
+        read that raised and not one that never returns, and a native device
+        whose SDK read stalls in USB never trips a transport timeout. A read
+        that does not return leaves its value None, as a read that raised
+        does, and is said once by ``_status_read``, which also keeps ONE read
+        in flight per device, so a device that stays dead for a night's
+        frames costs one worker thread and not one a frame.
+
         ``ra_hours``/``dec_deg`` are the MOUNT's own report (unchanged from
         before GN-07); ``best_ra``/``best_dec``/``pointing_source`` are the
         resolved best-known pointing the caller already computed via
@@ -3895,7 +3968,8 @@ class Hub:
             cam = self.devices.get("camera")
             getc = getattr(cam, "get_cooler", None)
             if callable(getc):
-                cooler = await getc()
+                cooler = await self._status_read(
+                    set(), "camera", "cooler", cam, getc)
                 if cooler and cooler.get("on") and cooler.get("target_c") is not None:
                     meta.set_temp_c = float(cooler["target_c"])
         except Exception as exc:
@@ -3905,11 +3979,16 @@ class Hub:
         try:
             foc = self.devices.get("focuser")
             if foc and getattr(foc, "connected", False):
-                meta.focuser_pos = int(await foc.get_position())
+                meta.focuser_pos = int(await self._status_read(
+                    set(), "focuser", "position", foc, foc.get_position))
                 # The thermometer is its own read (poll_status says the same):
-                # the position is already in the header when it raises.
+                # the position is already in the header when it raises. It is
+                # asked only after the position answered, so a focuser that
+                # does not answer costs one bound and not two.
                 try:
-                    t = await foc.get_temperature()
+                    t = await self._status_read(
+                        set(), "focuser", "temperature", foc,
+                        foc.get_temperature)
                     if t is not None:
                         meta.focuser_temp_c = float(t)
                 except Exception as exc:
@@ -3934,8 +4013,9 @@ class Hub:
                 # calibration instead (`_rotator_sync_anchor`), with the
                 # learned sign (`_effective_rotator_sign`, +1 when
                 # unmeasured -- what every rotator before R-4 assumed).
-                mech_now = _rotation.mod360(
-                    float(await rot.get_mechanical_position()))
+                mech_now = _rotation.mod360(float(await self._status_read(
+                    set(), "rotator", "angle", rot,
+                    rot.get_mechanical_position)))
                 # #176: the metal's own angle, recorded as ROTMECH. Set
                 # BEFORE the sky conversion below, because that one needs a
                 # sync anchor and a learned sign and may raise, while the
@@ -4231,13 +4311,22 @@ class Hub:
         Every device read the FITS header needs lives here and nowhere else,
         which is exactly what lets ``_save_captured_frame`` be device-free.
         Total by construction: every read is individually guarded, as it was
-        inline, because spec §9 says a header write never fails a capture."""
+        inline, because spec §9 says a header write never fails a capture.
+
+        AND BOUNDED (#1009): the mount's position here and the rest in
+        ``_frame_meta`` go through ``_status_read``. A guard catches a read
+        that raised, not one that never returns, and the snapshot runs after
+        the exposure with the camera lane already released, so a stalled
+        device held the centring loop, the run and the live view on a header
+        read. A read that does not return leaves the pointing out of the
+        header, as a failed one does."""
         cam = self.devices.get("camera")
         ra = dec = None
         tel = self.devices.get("telescope")
         if tel and tel.connected:
             try:
-                ra, dec = await tel.get_position()
+                ra, dec = await self._status_read(
+                    set(), "mount", "position", tel, tel.get_position)
                 # Bring a JNOW Alpaca mount's report to J2000 (the frame ASTAP
                 # and the catalog use); no-op for sim/NINA. Best-effort guarded
                 # (supervisor ruling 3).
@@ -4573,6 +4662,14 @@ class Hub:
             if job.data_w and job.data_h:
                 await self.note_field_solve(res.wcs, preview_id=job.preview_id,
                                             data_w=job.data_w, data_h=job.data_h)
+        elif res.success and res.wcs_dropped_reason:
+            # The solver solved the frame and refused its own WCS (#1025); it
+            # says why, so the log quotes it rather than leave a frame with no
+            # card and no word.
+            bus.log("warning",
+                    f"WCS not stamped on {job.path.name}: "
+                    f"{res.wcs_dropped_reason}; frame saved without WCS",
+                    "solve")
 
     def stop_wcs_worker(self) -> None:
         """Cancel the background WCS worker and drop any pending backlog. Called
@@ -6361,7 +6458,18 @@ class Hub:
         the wheel does not change often, and a marking that evaporated when the
         run was cancelled would have to be re-entered every time. ``nb_exposure_s``
         / ``nb_gain`` override the derived pair (see
-        ``focus.filter_offsets.narrowband_sweep_settings``)."""
+        ``focus.filter_offsets.narrowband_sweep_settings``).
+
+        EVERY AWAIT ON THE WHEEL IS BOUNDED (#1010), as the plate solve's
+        borrow is (#815): the reference-slot read by
+        ``STATUS_DEVICE_READ_TIMEOUT_S``, each slot's move by
+        ``SOLVE_WHEEL_MOVE_TIMEOUT_S``. A native wheel whose SDK read stalls in
+        USB never trips a transport timeout, and ``AlpacaFilterWheel.
+        set_position`` polls while the wheel reports -1, so a wheel jammed
+        between slots held the run for ever with its sweep lane taken. A wheel
+        that runs out of its bound ends the run with a ``DeviceError`` that
+        says the wheel is stalled and the bound it missed; the offsets are
+        written only when the run finishes, so every slot keeps its own."""
         from .focus.autofocus import run_autofocus
         from .focus.filter_offsets import (default_ref_slot,
                                            narrowband_sweep_settings,
@@ -6380,7 +6488,17 @@ class Hub:
             raise DeviceError("every slot on this wheel is marked blackout — "
                               "there is nothing to focus through")
         if ref_slot is None:
-            ref_slot = default_ref_slot(names, await fw.get_position())
+            try:
+                current = await asyncio.wait_for(
+                    fw.get_position(), STATUS_DEVICE_READ_TIMEOUT_S)
+            except asyncio.TimeoutError as e:
+                # A bare timeout has no text of its own: the message carries
+                # the bound.
+                raise DeviceError(
+                    f"the filter wheel is stalled (its position read: "
+                    f"{_wheel_why(e, STATUS_DEVICE_READ_TIMEOUT_S)}); the "
+                    f"filter offsets were not measured") from e
+            ref_slot = default_ref_slot(names, current)
             if ref_slot in blackout:      # current position IS the dark slot
                 ref_slot = next(s for s in range(n_slots) if s not in blackout)
         ref_slot = int(ref_slot)
@@ -6468,7 +6586,14 @@ class Hub:
                             of=n_slots, name=names[i],
                             done_slots=sorted(best_by_slot),
                             narrowband=nb, exposure_s=slot_exp, gain=slot_gain)
-                await fw.set_position(i)
+                try:
+                    await asyncio.wait_for(fw.set_position(i),
+                                           SOLVE_WHEEL_MOVE_TIMEOUT_S)
+                except asyncio.TimeoutError as e:
+                    raise DeviceError(
+                        f"the filter wheel is stalled (its move to "
+                        f"{names[i] or i}: {_wheel_why(e)}); the filter "
+                        f"offsets were not measured") from e
                 try:
                     res = await run_autofocus(
                         cam, foc, exposure_s=slot_exp, gain=slot_gain, step=step,
@@ -9577,10 +9702,12 @@ class Hub:
         Deliberately the same read, with the same tri-state, that
         ``SequenceEngine._pier_side_now`` makes: ``meridian_flip`` and the
         engine's flip step must not be able to disagree about what the mount
-        said, and the hub cannot import the engine to borrow it.
+        said, and the hub cannot import the engine to borrow it. That includes
+        who is asked: a mount in doubt (`is_present`, #1018) is, as the
+        engine's read asks it.
         """
         tel = self.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        if tel is None or not is_present(tel):
             return None
         try:
             side = await asyncio.wait_for(tel.pier_side(),
@@ -9622,7 +9749,33 @@ class Hub:
         programme too. A side that CHANGED — or that could not be read, which
         is not evidence of anything — keeps today's conservative behaviour:
         discard the calibration and recalibrate on the new side (GN-01).
+
+        THE WHOLE CALL IS A SITE-TIMED SPAN (#1020). It is only made when a
+        flip is due, which at lead 0 is the target's computed crossing, so
+        its START is the longitude, and everything the call publishes in the
+        next few hundred milliseconds says when it started: the ``mount``
+        event below, the guider's stop (a ``guide`` event and its own line),
+        the re-centre's first ``centering`` and ``solve_activity``, and then
+        every solve and centring line of the slew. Flagging the two events
+        and two lines someone had named left all of those, so a viewer read
+        the crossing off the guider's stop instead. The span flags what this
+        call publishes, whatever it is (`events.site_timed_span`), and the
+        serving seams drop it for a principal without ``view.site_derived``.
+        Operators and admins are served all of it, the flag in its data, and
+        the night file keeps it.
+
+        What no span can close: the guide stream, which a viewer watches
+        stop to within one guide cadence, and the status stream's
+        ``slewing`` and pier side, which the status poller publishes from
+        its own task on its own clock (both reported on #1020).
         """
+        with site_timed_span():
+            return await self._meridian_flip_spanned(ra_hours, dec_deg,
+                                                     rotation_deg)
+
+    async def _meridian_flip_spanned(self, ra_hours: float, dec_deg: float,
+                                     rotation_deg: float | None) -> dict:
+        """`meridian_flip`'s body, run inside its site-timed span."""
         bus.publish("mount", action="meridian_flip")
         # FLAGGED site_derived (W2 integration, #166, #302), matching the
         # engine's own completion line for the same event: this call only
@@ -10231,7 +10384,15 @@ class Hub:
         The line says what failed and nothing about what happens next: a
         warning reaches the alert sinks, and a promise that is true of one
         caller is false of another. The engine's twin is
-        ``SequenceEngine._say_swallowed``, which is once per run."""
+        ``SequenceEngine._say_swallowed``, which is once per run.
+
+        A READ THAT DID NOT RETURN IS NOT SAID HERE (#1009). ``_status_read``
+        said it, once, with the bound it missed, and raised
+        ``StatusReadStalled`` into the guard that called this: that is the
+        same absence as a failed read and not a second event, so it gets no
+        second line about the same stall."""
+        if isinstance(exc, StatusReadStalled):
+            return
         from .events import night_key
         night = night_key()
         if getattr(self, "_swallowed_night", None) != night:

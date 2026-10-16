@@ -266,6 +266,98 @@ async def test_a_solution_with_no_usable_scale_is_refused_and_believed_by_no_one
     assert not [ln for ln in bus_lines if "identify the solved field" in ln[1]]
 
 
+_PLATE_SCALE_REASON = ("the solution states no usable plate scale (no CD or "
+                       "CDELT cards, or a zero, singular or non-finite matrix)")
+
+
+async def test_a_solved_frame_whose_wcs_the_solver_dropped_logs_the_solvers_reason(
+        wcs_hub, monkeypatch, bus_lines):
+    """#1025: a solve that succeeded and kept no WCS says why, in the
+    solver's words. The frame used to be saved without one and the log said
+    nothing, so nobody could tell a solver that never makes a WCS from one
+    that refused its own.
+
+    RED under mutation "silent" (the ``elif res.success and
+    res.wcs_dropped_reason:`` branch at the end of ``Hub._solve_and_stamp``
+    removed), observed, with the seam test below also red:
+
+        E   assert [] == [('warning', ...CS', 'solve')]
+        E     Right contains one more item: ('warning', 'WCS not stamped on Light_M42_L_2026-10-10_103455_0001.fits: the solution states no usable plate scale ...
+    """
+    h, _store = wcs_hub
+    solver = _Scripted(SolveResult(True, wcs=None,
+                                   wcs_dropped_reason=_PLATE_SCALE_REASON))
+    saved = await _stamp_one(h, monkeypatch, solver)
+    said = [ln for ln in bus_lines
+            if ln[1].startswith(f"WCS not stamped on {saved.name}")]
+    assert said == [("warning",
+                     f"WCS not stamped on {saved.name}: {_PLATE_SCALE_REASON}; "
+                     "frame saved without WCS", "solve")], said
+    assert [ln for ln in bus_lines if ln[1].startswith("stamped WCS")] == []
+    assert not _has_wcs(saved)
+    assert h.last_sky_angle is None
+    assert h.field_solve is None
+
+
+@pytest.mark.parametrize("result", [
+    pytest.param(SolveResult(True), id="a solver that gave no reason"),
+    pytest.param(SolveResult(False, message="no solution"), id="a failed solve"),
+])
+async def test_no_wcs_without_a_reason_to_quote_logs_no_wcs_line(
+        wcs_hub, monkeypatch, bus_lines, result):
+    """The control: the hub quotes a reason the solver gave and invents none.
+    A solver that makes no WCS and does not say why, and a solve that failed
+    (its own message says why), add no "WCS not stamped" line."""
+    h, _store = wcs_hub
+    saved = await _stamp_one(h, monkeypatch, _Scripted(result))
+    assert [ln for ln in bus_lines if ln[1].startswith("WCS not stamped")] == []
+    assert [ln for ln in bus_lines if ln[1].startswith("stamped WCS")] == []
+    assert not _has_wcs(saved)
+
+
+async def test_the_reason_astap_gave_reaches_the_hubs_log(
+        wcs_hub, monkeypatch, bus_lines):
+    """The seam: the real ``AstapSolver`` (its ``astap_cli`` a fake that
+    leaves the .ini ASTAP would, with a reference point and no scale) and the
+    real hub. The reason ``_wcs_from_astap`` worked out is the one the log
+    quotes.
+
+    RED under mutation "the reason not carried" (``AstapSolver.solve`` calls
+    ``_result_from_ini(kv, wcs)`` and drops the reason), observed: no "WCS not
+    stamped" line at all, ``assert [] == ['warning']``, beside the six
+    ``AstapSolver.solve`` cases in test_solver.py.
+    """
+    from astrodeck.solve.astap import AstapSolver
+    real_exec = asyncio.create_subprocess_exec
+
+    class _Process:
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    async def fake_exec(*args, **kwargs):
+        if args[0] != "astap_cli":
+            return await real_exec(*args, **kwargs)
+        image = Path(args[args.index("-f") + 1])
+        image.with_suffix(".ini").write_text(
+            "PLTSOLVD=T\nCRVAL1=83.8221\nCRVAL2=-5.3911\n"
+            "CRPIX1=512.0\nCRPIX2=512.0\n")
+        return _Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    h, _store = wcs_hub
+    saved = await _stamp_one(h, monkeypatch, AstapSolver("astap_cli"))
+    assert [ln[0] for ln in bus_lines
+            if ln[1] == f"WCS not stamped on {saved.name}: "
+                        f"{_PLATE_SCALE_REASON}; frame saved without WCS"
+            ] == ["warning"], bus_lines
+    assert not _has_wcs(saved)
+
+
 # ------------------------------------ no work at all when off / not locally saved
 
 @pytest.mark.parametrize("reason", ["feature-off", "remote-saved",

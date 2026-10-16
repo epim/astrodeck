@@ -652,11 +652,13 @@ _NOT_CELESTIAL = {**_GOOD_SOLUTION, "ctype1": "LINEAR", "ctype2": "LINEAR"}
 def _fake_astap(monkeypatch, solution: dict | None, *,
                 pixel_scale: float | None = 0.968,
                 rotation_deg: float = 0.0, rotation_known: bool = True,
-                failure: str | None = None) -> None:
+                failure: str | None = None,
+                wcs_dropped_reason: str | None = None) -> None:
     """``solve_reference`` against an ASTAP that answers with ``solution``
     (None -> a success carrying no WCS at all, as ``AstapSolver`` returns
-    when it drops a headerlet it cannot use), or, with ``failure``, one that
-    did not solve and says why."""
+    when it drops a headerlet it cannot use, with ``wcs_dropped_reason`` as
+    its word on why), or, with ``failure``, one that did not solve and says
+    why."""
     import astrodeck.solve as solve_pkg
     from astrodeck.solve.base import SolveResult, WcsSolution
 
@@ -672,7 +674,8 @@ def _fake_astap(monkeypatch, solution: dict | None, *,
                 rotation_deg=rotation_deg, rotation_known=rotation_known,
                 pixel_scale_arcsec=pixel_scale,
                 wcs=None if solution is None else WcsSolution(**solution),
-                message="solved by ASTAP")
+                message="solved by ASTAP",
+                wcs_dropped_reason=wcs_dropped_reason)
 
     monkeypatch.setattr(solve_pkg, "find_astap", lambda: "astap")
     monkeypatch.setattr(solve_pkg, "AstapSolver", _Solver)
@@ -860,6 +863,47 @@ def test_solve_reference_says_when_the_solver_solved_but_dropped_the_wcs(
     assert any("ASTAP solved reference.fits" in ln and "no usable WCS" in ln
                and "none was stamped" in ln
                and "skipping the light curve" in ln for ln in lines), lines
+
+
+@pytest.mark.parametrize("reason", [
+    "the WCS headerlet has no CRVAL1 card",
+    "the solution states no usable plate scale (no CD or CDELT cards, or a "
+    "zero, singular or non-finite matrix)",
+    "the solution could not be read (ValueError)",
+], ids=["a missing card", "no scale", "unreadable"])
+def test_solve_reference_quotes_the_reason_the_solver_gave_for_no_wcs(
+        tmp_path, monkeypatch, reason):
+    """#1025: the line says what the solver said about why it kept no WCS,
+    not a list of causes the tool could only guess among.
+
+    RED under mutation "the guess back" (the log's parenthesis made the fixed
+    "(no solution cards, or no usable plate scale)" again), observed on the
+    first and third cases:
+
+        E   AssertionError: ['ASTAP solved reference.fits but returned no usable WCS (no solution cards, or no usable plate scale), so none was stamped; skipping the light curve']
+    """
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, None, wcs_dropped_reason=reason)
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert not _has_sky_axes(path)
+    assert any(f"returned no usable WCS ({reason}), so none was stamped" in ln
+               for ln in lines), lines
+    assert not any("no solution cards" in ln for ln in lines), lines
+
+
+def test_solve_reference_does_not_invent_a_reason_the_solver_did_not_give(
+        tmp_path, monkeypatch):
+    """A solver that kept no WCS and said nothing about it (a stand-in, a
+    future one) gets "the solver did not say why", not a cause picked for it."""
+    path = _reference_fits(tmp_path)
+    _fake_astap(monkeypatch, None)
+    wcs, lines = _solve_reference(path)
+    assert wcs is None, lines
+    assert any("returned no usable WCS (the solver did not say why)" in ln
+               for ln in lines), lines
+    assert not any("plate scale" in ln or "solution cards" in ln
+                   for ln in lines), lines
 
 
 def test_solve_reference_still_says_did_not_solve_when_the_solver_failed(

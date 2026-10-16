@@ -94,6 +94,14 @@ class SolveResult:
     #: rotator, a 0 that means "unknown" would re-sync it to PA 0.
     rotation_known: bool = True
     wcs: "WcsSolution | None" = None
+    #: Why ``wcs`` is None on a solve that succeeded (#1025): the solver was
+    #: given a solution it refused (no reference point, no usable plate scale,
+    #: unreadable cards), in a sentence a log line can quote. ``success`` with
+    #: ``wcs`` None used to read the same whatever the cause, and every
+    #: consumer had to guess. None when there is nothing to explain: the solve
+    #: failed (``message`` says why), a WCS is attached, or the solver does not
+    #: produce one and does not say.
+    wcs_dropped_reason: str | None = None
 
 
 class PlateSolver(ABC):

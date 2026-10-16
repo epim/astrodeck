@@ -18,6 +18,14 @@ directory, LINKS the dependency directories into it rather than copying them
 (a `node_modules` copy is minutes and gigabytes), runs the command there, and
 takes the worktree down again whatever the command did.
 
+The command runs with the worktree's own `server/` first on PYTHONPATH when it
+holds an astrodeck (#1027, the trap #915 closed in scripts/gate_run.py). The
+virtualenv's astrodeck is an editable install of ONE checkout, the main one,
+so a python command run by path, or a child it starts, would otherwise import
+the main tree's code while the gate reports on HEAD: a green check on the
+wrong tree, which is the class this tool exists for. `python -m pytest` from
+`server/` was never affected, since it puts `server/` first itself.
+
 Two things it refuses, both because the alternative has already cost this
 repository real data (#88):
 
@@ -91,6 +99,26 @@ def _unlink(link: Path) -> None:
         os.rmdir(link)
 
 
+def child_env(tree: Path) -> dict[str, str]:
+    """The environment the gate command runs in: this process's, with the
+    tree's own `server/` first on PYTHONPATH when it holds an astrodeck (#1027).
+
+    The caller's PYTHONPATH entries follow, minus a copy of the server
+    directory they already hold. scripts/gate_run.py carries the same function
+    (#915); the two scripts are copied on their own, so neither imports the
+    other, and a case in test_clean_tree_gate.py holds them together.
+    """
+    env = dict(os.environ)
+    server = (tree / "server").resolve()
+    if not (server / "astrodeck").is_dir():
+        return env
+    here = os.path.normcase(str(server))
+    rest = [p for p in env.get("PYTHONPATH", "").split(os.pathsep)
+            if p and os.path.normcase(os.path.abspath(p)) != here]
+    env["PYTHONPATH"] = os.pathsep.join([str(server), *rest])
+    return env
+
+
 def _require_temp(path: Path) -> Path:
     root = Path(tempfile.gettempdir()).resolve()
     resolved = path.resolve()
@@ -114,7 +142,8 @@ def run(command: list[str], cwd: str, root: Path) -> int:
             _link(target, link)
             linked.append(link)
         print(f"clean-tree gate: {' '.join(command)} in {tree / cwd}", flush=True)
-        return subprocess.run(command, cwd=str(tree / cwd)).returncode
+        return subprocess.run(command, cwd=str(tree / cwd),
+                              env=child_env(tree)).returncode
     finally:
         for link in reversed(linked):
             _unlink(link)

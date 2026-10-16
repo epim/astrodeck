@@ -49,6 +49,7 @@ from astrodeck.devices.sim import SimTelescope
 from astrodeck.sequence.engine import (L_SKIP, PositionUnknownStop,
                                        SequenceEngine)
 
+from _humanizer_mirror import CLIP_AT, shown_whole
 from test_850_engine_sync_refused import _humanizer_rewrites, _scripted
 from test_850_resume_sync_refused import (  # noqa: F401 (fixtures too)
     _arm, _isolated_sessions, _refusal, _session, fp)
@@ -62,8 +63,6 @@ from test_engine_safety import (light_plan, sim_hub, temp_store,  # noqa: F401
                                 wait_for)
 from test_zwo_am5 import FakeLink, _connect_script, fixed_env  # noqa: F401
 
-#: The humanizer's cut (ui/src/lib/humanize.ts): 137 characters plus "...".
-_CUT = 137
 _RA_H = 7.4321
 _GOTO_WORDS = ("goto", "go to", "slew")
 
@@ -296,7 +295,7 @@ async def test_an_unconfirmed_stop_is_said_and_asked_again_within_a_bound(
     await _run_to_a_position_unknown_stop(e)
     first = _said(bus_lines, "tracking not confirmed off")
     assert len(first) == 1, first
-    head = first[0][:_CUT]
+    head = shown_whole(first[0])
     for part in ("position unknown", "Trust position", "pad key",
                  "then Trust it."):
         assert part in head, (part, head)
@@ -469,7 +468,7 @@ def test_the_skip_line_does_not_promise_a_re_centre():
     """
     assert "re-centring if this target centres" in L_SKIP
     assert "recovery re-centres" not in L_SKIP
-    assert len(L_SKIP) <= _CUT
+    assert len(L_SKIP) <= CLIP_AT
     assert not _humanizer_rewrites(L_SKIP)
 
 
@@ -528,7 +527,7 @@ async def test_dawn_park_stops_tracking_instead_of_parking(cfg, bus_lines):
     said = [m for _l, m, _s in bus_lines
             if m == dawn_park_mod.POSITION_UNKNOWN_LINE]
     assert len(said) == 1, bus_lines
-    head = said[0][:_CUT]
+    head = shown_whole(said[0])
     assert head.index("Trust position") < head.index("pad key") < head.index(
         "then Trust it."), head
     assert not any(ch.isdigit() for ch in said[0])
@@ -863,7 +862,7 @@ async def test_the_disarm_line_keeps_its_action_inside_the_cut(
     said = [m for _l, m, _s in bus_lines
             if "auto-resume" in m and "position unknown" in m]
     assert len(said) == 1, said
-    head = said[0][:_CUT]
+    head = shown_whole(said[0])
     for part in ("auto-resume disarmed", "Trust position",
                  "sync away from the pole", "arm it from the session list"):
         assert part in head, (part, head)

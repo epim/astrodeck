@@ -55,6 +55,12 @@
 //   w22m4_tone_raw -- the tone reads `typeof m.alt === "number" && m.alt < 20`.
 //     8/9: "x a -Infinity altitude is withheld and not warned about: a reading
 //     the tile does not print is toned warn".
+//
+// Since #1023 the tile's value and sub-label are ONE object, `altAzTile`, in
+// mount.tsx, and a null from the selector with the position known reads "not
+// reported" for a principal who holds view.site_derived (cases 4 to 6) and
+// "hidden" for one who does not (case 7; w23MountAltAzTileCause grades the
+// split). The mutants above are edits to the arms of that object.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -236,7 +242,7 @@ mount();
 
 test("a NaN altitude is withheld, not printed", () => {
   assert(!/NaN/.test(tileText()), `the tile prints NaN: ${tileText()}`);
-  assert(tileValue() === "hidden", `the tile value: ${tileText()}`);
+  assert(tileValue() === "not reported", `the tile value (#1023): ${tileText()}`);
 });
 
 seed({ alt: Number.NEGATIVE_INFINITY });
@@ -244,7 +250,7 @@ mount();
 
 test("a -Infinity altitude is withheld and not warned about", () => {
   assert(!/Infinity/.test(tileText()), `the tile prints Infinity: ${tileText()}`);
-  assert(tileValue() === "hidden", `the tile value: ${tileText()}`);
+  assert(tileValue() === "not reported", `the tile value (#1023): ${tileText()}`);
   assert(tileTone() == null, `a reading the tile does not print is toned ${tileTone()}`);
 });
 
@@ -255,7 +261,7 @@ test("one unreadable angle withholds the pair, not just its own half", () => {
   assert(!/Infinity/.test(tileText()), `the tile prints Infinity: ${tileText()}`);
   assert(!tileText().includes(`${BELIEVED_ALT}°`),
     `the altitude is half-printed beside an azimuth the gate withholds: ${tileText()}`);
-  assert(tileValue() === "hidden", `the tile value: ${tileText()}`);
+  assert(tileValue() === "not reported", `the tile value (#1023): ${tileText()}`);
 });
 
 // ================================================================= 7. viewer

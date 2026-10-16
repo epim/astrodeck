@@ -77,20 +77,24 @@ quoting rule):
   repeats, check the mount's link" -> the same test.
 - "far warning figure first": the far arm's warning back to "...is X deg
   from the sky, beyond the 5 deg the ladder slews on; it needs someone at
-  the scope" -> test_each_arm_warning_says_what_happens_next_first[far].
+  the scope" -> test_each_arm_warning_says_what_happens_next[far].
 - "unverified warning reason first": the unverified arm's warning back to
   "...{reply}: {e.reason}; not slewing, and if this repeats, check the
   mount's link" ->
-  test_each_arm_warning_says_what_happens_next_first[unverified].
+  test_each_arm_warning_says_what_happens_next[unverified].
 - "near warning action last": the near arm's warning back to "...agrees
   with the sky to X deg, so the re-centre goes ahead and syncs away from the
-  pole" -> test_each_arm_warning_says_what_happens_next_first[near].
+  pole" -> test_each_arm_warning_says_what_happens_next[near].
 - "hub refusal line at warning": step 2 calls ``solve_and_sync`` without
   ``refusal_level="info"`` ->
   test_the_blind_solve_leaves_the_refusal_line_to_the_ladder.
 - "local quoting rule": ``_reply_words`` quotes on its own
   ``[A-Za-z0-9/]{1,8}`` fullmatch again, not ``quotable_sync_reply`` ->
   test_a_reply_with_a_run_of_digits_is_never_quoted.
+
+Since #1024 the UI no longer cuts at 137 characters (it keeps 400), so the
+five round 3 mutants above that only moved words past the cut are no longer
+red: the tests hold the cause and the action to a line that fits ``CLIP_AT``.
 
 Round 4 (the unverified re-centre's link advice inside the cut):
 
@@ -116,6 +120,7 @@ import re
 import pytest
 
 from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
+from _humanizer_mirror import shown_whole
 from astrodeck.devices.base import SyncRefused, SyncUnverified
 from astrodeck.hub import (SOLVE_REASON_SYNC_REFUSED,
                            SOLVE_REASON_SYNC_UNVERIFIED)
@@ -144,9 +149,6 @@ _UNVERIFIED_REASONS = (
     "the mount did not answer the position read after the sync, so whether "
     "it took is unknown",
 )
-
-# The UI cuts a line longer than 140 chars to 137 and an ellipsis.
-_CUT = 137
 
 
 @pytest.fixture(autouse=True)
@@ -317,9 +319,9 @@ def _refused_sync_constants() -> dict[str, str]:
 
 
 # What each hold tells the operator happens next, or what to do. Every one
-# of these must sit whole inside the first 137 chars of the "auto-resume
-# held: ..." line (#850, round 3): the UI cuts there, and an instruction
-# after the explanation was never seen.
+# of these must be in the "auto-resume held: ..." line the operator reads
+# whole (#850, round 3: the UI then cut at 137 characters and an instruction
+# after the explanation was never seen; it keeps 400 since #792, #1024).
 _HOLD_ACTIONS = {
     "REFUSED_SYNC_FAR_WORDS": ("not slewing", "needs someone at the scope"),
     "REFUSED_SYNC_UNKNOWN_WORDS": ("not slewing",),
@@ -340,8 +342,8 @@ def test_every_refused_sync_constant_is_fixed_words():
     only while its words stay the same), not rewritten by the UI on its own
     or inside the "auto-resume held: ..." warning, and both the cause (the
     mount refused, or did not confirm, the sync) and the ACTION (what
-    happens next, or what to do) before the cut at 137 chars of that
-    warning, so a toast says what went wrong and what to do about it."""
+    happens next, or what to do) in that warning, which fits what the UI
+    keeps whole, so a toast says what went wrong and what to do about it."""
     consts = _refused_sync_constants()
     # Not vacuous: the five holds this file is about are all here, and each
     # has its action named.
@@ -352,13 +354,13 @@ def test_every_refused_sync_constant_is_fixed_words():
         assert not _humanizer_rewrites(words), (name, words)
         line = _held_line(words)
         assert not _humanizer_rewrites(line), (name, line)
-        head = line[:_CUT]
+        head = shown_whole(line)
         assert ("the mount refused the sync" in head
                 or "the mount did not confirm the sync" in head), (name, head)
         for action in _HOLD_ACTIONS[name]:
             assert action in head, (name, action, head)
         # The bare "auto-resume held: " form too, with nothing after it.
-        bare = ("auto-resume held: " + words)[:_CUT]
+        bare = shown_whole("auto-resume held: " + words)
         for action in _HOLD_ACTIONS[name]:
             assert action in bare, (name, action, bare)
 
@@ -618,12 +620,13 @@ _LONG_REPLY = "07:23:41"
                                reason=_UNVERIFIED_REASONS[2]), (
         "not slewing", "if this repeats, check the mount's link")),
 ], ids=lambda c: c[0])
-async def test_each_arm_warning_says_what_happens_next_first(
+async def test_each_arm_warning_says_what_happens_next(
         monkeypatch, bus_lines, arm_case):
-    """Each step 2 arm's ONE warning puts what happens next (or what to do)
-    inside the UI's 137-char cut, with the longest reply words an arm can
+    """Each step 2 arm's ONE warning says what happens next (or what to do)
+    in a line the UI keeps whole, with the longest reply words an arm can
     print (an unrecognised reply), a three-digit figure and the longest
-    driver reason. The figure and the reason may be cut; the action not."""
+    driver reason. It was held to the first 137 characters, the cut #792
+    retired (#1024), so the action no longer has to come before the figure."""
     _, raises, actions = arm_case
     hub = _Hub(solve_raises=raises,
                centring={"centered": True, "error_arcmin": 0.3,
@@ -633,7 +636,7 @@ async def test_each_arm_warning_says_what_happens_next_first(
     said = [m for m in _warnings(bus_lines)
             if "blind solve's sync" in m]
     assert len(said) == 1, _warnings(bus_lines)
-    head = said[0][:_CUT]
+    head = shown_whole(said[0])
     for action in actions:
         assert action in head, (action, said[0])
     _surfaced_ok(said[0])

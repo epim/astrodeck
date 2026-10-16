@@ -54,6 +54,7 @@ import {
   MIN_SLEW_ALT_DEG,
   ALT_GUARD_OFF_NOTE,
   POSITION_UNKNOWN_STEPS_REASON,
+  believedPointing,
   fastestRungIndex,
   positionKnown,
   rateGlyph,
@@ -211,8 +212,14 @@ export default function SlewPad(props: SlewPadProps = {}) {
   onNudgeRef.current = onNudge;
   const touchRef = useRef(touch);
   touchRef.current = touch;
-  const altRef = useRef<number | null>(m?.alt ?? null);
-  altRef.current = m?.alt ?? null;
+  // The altitude the guard and the near-horizon line read comes from the ONE
+  // gate for the horizontal reading (#791, #1021), not from `m.alt` behind a
+  // gate of the pad's own: null for an unknown position, an absent altitude
+  // and a non-finite one alike, so the pole's altitude (the site latitude,
+  // #140) and `near horizon (-Infinity°)` are both unprintable from here.
+  const believed = believedPointing(m);
+  const altRef = useRef<number | null>(believed?.alt ?? null);
+  altRef.current = believed?.alt ?? null;
   const knownRef = useRef(positionIsKnown);
   knownRef.current = positionIsKnown;
   const ninaRef = useRef(isNina);
@@ -719,9 +726,9 @@ export default function SlewPad(props: SlewPadProps = {}) {
             moves wrong way? toggle reverse - direction depends on pier side &amp; image
             orientation
           </p>
-          {m && positionIsKnown && m.alt < MIN_SLEW_ALT_DEG + 5 && (
+          {believed && believed.alt < MIN_SLEW_ALT_DEG + 5 && (
             <p className="text-center text-[12px] text-warn mt-1">
-              near horizon ({m.alt.toFixed(0)}°) - slew auto-stops below {MIN_SLEW_ALT_DEG}°
+              near horizon ({believed.alt.toFixed(0)}°) - slew auto-stops below {MIN_SLEW_ALT_DEG}°
             </p>
           )}
           {/* The guard's absence is said, not left to be assumed: with the

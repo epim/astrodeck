@@ -342,6 +342,30 @@ async def test_health_reports_per_host(fake_alpaca):
 
 
 @pytest.mark.asyncio
+async def test_health_reports_where_a_repointed_connection_is_now(fake_alpaca):
+    """#1016: a pooled connection can move to another port after it was pooled
+    (the managed comhost respawns, #992). health() names where it is now, not the
+    ``(host, port)`` key it was pooled under; the pool still hands that
+    connection to a later get_device for the original endpoint.
+
+    MUTANT "health from the keys" (the pre-fix ``hosts`` expression): RED
+    (observed), ``['10.0.0.5:11111'] == ['10.0.0.5:22222']``. MUTANT "re-key
+    instead" (``health`` first rewrites the pool under the live addresses): RED
+    (observed), the second role builds a second connection."""
+    s = NativeSession("h")
+    first = await s.get_device("camera", ConnSpec(
+        backend="native", host="10.0.0.5", port=11111, dev_num=0, role="camera"))
+    first.conn.port = 22222                     # what AlpacaConnection.repoint does
+    assert (await s.health())["hosts"] == ["10.0.0.5:22222"]
+
+    second = await s.get_device("telescope", ConnSpec(
+        backend="native", host="10.0.0.5", port=11111, dev_num=0,
+        role="telescope"))
+    assert second.conn is first.conn and len(FakeConnection.instances) == 1
+    assert (await s.health())["hosts"] == ["10.0.0.5:22222"]
+
+
+@pytest.mark.asyncio
 async def test_close_acloses_every_owned_connection(fake_alpaca):
     """close() must aclose EVERY owned AlpacaConnection (one per endpoint) so a
     profile switch leaks no httpx client -- impossible against the committed code

@@ -50,6 +50,14 @@ Remove-Item Env:ASTRODECK_SHIFT_CLOCK_S, Env:PYTHONPATH
   `engine.time` and left `coords.time` on the real clock).
 - Green everywhere: the hour is not the cause. Do not call the earlier failure
   a flake on this evidence alone; it may be load, ordering or a timing margin.
+- Red only in a band of dates, green at every hour of a date outside it, with
+  the run ending `unsafe: slew blocked by sun-exclusion cone`: the target is
+  inside the Sun's 30 degree cone on those dates (`Hub._check_solar` reads the
+  Sun by the calendar and no site). That is a fixture, not an hour: use a
+  target clear of the Sun all year (the north ecliptic pole, RA 18 h Dec
+  +66.56, is 90 degrees from it every day) or pin `coords.sun_radec`, as
+  test_w4_target_window_and_light_hold.py does (#1026). Sweep dates in 15 day
+  steps, not hours.
 - Red at EVERY offset, offset 0 included: suspect the replay before the test.
   Run it once on the real clock without the plugin. If that is green, look
   for a clock the plugin does not move (below), and do not read it as a

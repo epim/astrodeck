@@ -22,6 +22,15 @@ literals): RED on test_the_retired_bare_pairs_are_not_rewrites, on nine of
 the corpus rows (the ones that carry the pairs without being the report) and
 on test_850_hub_sync_refused's
 test_the_humanizer_mirror_trips_on_a_line_the_ui_rewrites.
+
+#1024: the same mirror carries the length the UI keeps whole (``CLIP_AT``),
+read out of humanize.ts the same way, for the server tests that used to pin
+the 137-character cut #792 retired. Thirteen modules held "<= 137" or
+``line[:137]`` as a number of their own, and went on constraining server
+wording to a budget the UI no longer had.
+
+Mutant "the retired cut back" (``humanizer_clip_at`` returns ``137`` in place
+of the number it reads): RED on test_the_budget_is_read_from_the_ui_source.
 """
 from __future__ import annotations
 
@@ -81,3 +90,50 @@ def test_the_regular_expressions_are_read_from_the_ui_source():
         assert mirror._literal(name).pattern, name
     with pytest.raises(AssertionError, match="scan is broken"):
         mirror._literal("NO_SUCH_RULE_IN_HUMANIZE_TS")
+
+
+@pytest.fixture
+def clip_source(tmp_path, monkeypatch):
+    """A stand-in humanize.ts the mirror reads its budget from, with the
+    reader's cache cleared on the way in and out so no test sees another's."""
+    ts = tmp_path / "humanize.ts"
+    monkeypatch.setattr(mirror, "HUMANIZE_TS", ts)
+    mirror.humanizer_clip_at.cache_clear()
+    yield ts
+    monkeypatch.undo()
+    mirror.humanizer_clip_at.cache_clear()
+
+
+def test_the_budget_is_read_from_the_ui_source(clip_source):
+    """#1024: the budget is whatever humanize.ts says, not a number the mirror
+    holds, so retuning ``CLIP_AT`` there moves every server test that asks
+    whether a line fits, and a source with no such constant fails loudly
+    instead of falling back to one."""
+    clip_source.write_text(
+        """// the length past which a line is shortened
+export const CLIP_AT = 123;
+const CLIP_MAX = 2 * CLIP_AT;
+""", encoding="utf-8")
+    assert mirror.humanizer_clip_at() == 123
+    mirror.humanizer_clip_at.cache_clear()
+    clip_source.write_text("""export const CLIP_AT_TYPO = 123;
+""", encoding="utf-8")
+    with pytest.raises(AssertionError, match="scan is broken"):
+        mirror.humanizer_clip_at()
+
+
+def test_the_module_budget_is_the_one_in_the_real_ui_source():
+    """The constant the tests import is the real file's, found by the same
+    reader the stand-in above exercises, and it is a length."""
+    assert isinstance(mirror.CLIP_AT, int) and mirror.CLIP_AT > 0
+    assert mirror.CLIP_AT == mirror.humanizer_clip_at()
+
+
+def test_a_line_that_fits_the_budget_is_shown_whole_and_one_past_it_is_not():
+    """``shown_whole`` returns a line that fits the budget untouched, however
+    long the retired 137-character cut would have found it, and refuses one
+    character past it rather than model the shortening."""
+    at_the_budget = "a" * mirror.CLIP_AT
+    assert mirror.shown_whole(at_the_budget) == at_the_budget
+    with pytest.raises(AssertionError, match="past the"):
+        mirror.shown_whole(at_the_budget + "a")

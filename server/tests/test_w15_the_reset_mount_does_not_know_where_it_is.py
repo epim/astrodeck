@@ -155,16 +155,16 @@ sha256-checked:
 * m24_round3_latch_line -- the round-3 latch line put back. Four cases fail,
   among them ``test_neither_line_advises_a_goto`` (it says "slewing away").
 * m25_round3_home_line -- the round-3 ``find_home`` line put back. Three
-  cases fail, among them ``test_both_lines_put_the_safe_action_inside_the_cut``.
+  cases fail, among them ``test_both_lines_give_the_safe_action_whole``.
 * m26_latch_action_after_explanation -- the reset explanation moved in front
-  of the action. ``test_both_lines_put_the_safe_action_inside_the_cut``.
+  of the action. ``test_both_lines_give_the_safe_action_whole``.
 * m27_latch_fact_unqualified -- "the mount refuses every sync at home" put
   back in the latch line.
   ``test_the_no_sync_at_home_fact_is_qualified_as_seen_with_the_tube_at_home``.
 * m28_home_line_advises_a_slew -- "Or slew away first." added to the home
   line. ``test_neither_line_advises_a_goto``.
 * m29_home_condition_weakened -- "really" dropped from the home line's
-  condition. ``test_both_lines_put_the_safe_action_inside_the_cut``.
+  condition. ``test_both_lines_give_the_safe_action_whole``.
 
 #850 round 5 shortened the front of both lines so the WHOLE safe action (Trust
 position if the tube really is at home; if not, hold a pad key to bring it home
@@ -181,11 +181,16 @@ and widened the goto ban to the UI's ``GOTO_ADVICE`` plus "head to" and
   Trust position, or head to a bright star away from the pole and sync from a
   solved frame there." ``test_neither_line_advises_a_goto``,
   ``test_both_lines_are_pinned_exactly`` and
-  ``test_both_lines_put_the_safe_action_inside_the_cut``.
+  ``test_both_lines_give_the_safe_action_whole``.
 * m30_latch_front_lengthened -- "the mount reports home." put back in front
   of the latch line's action, which pushes its end to char 159.
-  ``test_both_lines_put_the_safe_action_inside_the_cut`` and
+  ``test_both_lines_give_the_safe_action_whole`` and
   ``test_both_lines_are_pinned_exactly``.
+
+Since #1024 the UI no longer cuts at 137 characters (it keeps 400), so the two
+mutants above that only pushed the action's end past char 137 (m26 and m30)
+are red on ``test_both_lines_are_pinned_exactly`` alone; the safe-action test
+holds the action in one piece in a line that fits ``CLIP_AT``.
 """
 from __future__ import annotations
 
@@ -200,6 +205,7 @@ import astrodeck.devices.backends.zwo_am5 as am5
 import astrodeck.events as events_mod
 from astrodeck.devices.sim import SimTelescope
 from _simhub import sim_hub  # noqa: F401  (fixture import)
+from _humanizer_mirror import shown_whole
 from test_zwo_am5 import (FakeLink, _connect_script, _humanizer_rewrites,  # noqa: F401
                           fixed_env)
 
@@ -555,9 +561,6 @@ async def _no_op() -> None:
 # #850 round 4: what the two position-unknown lines tell the operator to do
 # ===========================================================================
 
-#: The UI cuts a line longer than 140 chars to 137 plus an ellipsis.
-_CUT = 137
-
 #: Goto advice, as the UI's ``GOTO_ADVICE`` bans it
 #: (w16MountPositionUnknown.test.tsx), plus "head to". A star is checked as a
 #: word on its own, so "restart" is not mistaken for one.
@@ -567,8 +570,7 @@ _GOTO_WORDS = ("slew", "go to a target", "goto", "go-to",
 
 async def _both_position_unknown_lines(monkeypatch, name=None) -> list[str]:
     """The latch line and the find_home warning, from the real driver. With no
-    ``name`` the driver keeps its default ("ZWO AM5"), the name the 137-char
-    cut has to be measured with."""
+    ``name`` the driver keeps its default ("ZWO AM5")."""
     logs = _record_logs(monkeypatch)
     link = FakeLink(_connect_script(GD=_POLE, Gps="0"))
     tel = (am5.ZwoAm5Telescope(link) if name is None
@@ -592,22 +594,20 @@ _SAFE_ACTION = ("tube really at home: trust position. if not, hold a pad key "
                 "to bring it home by eye, then trust position.")
 
 
-async def test_both_lines_put_the_safe_action_inside_the_cut(
+async def test_both_lines_give_the_safe_action_whole(
         fixed_env, monkeypatch):
     """THE SAFETY RULE (#850 rounds 4 and 5). With the position unknown the
     way out is Trust position if the tube really is at home, and otherwise
     holding a pad key to bring it home by eye, then Trust position. All of it
-    has to survive the UI's cut with the default device name: the condition
-    that guards Trust position (or the operator reads "Trust position" without
-    the "if"), the pad key (or "bring it home" reads as the Home button, which
-    moves nothing on a reset mount), and the second Trust position."""
+    has to reach the operator, in one piece, in a line the UI keeps whole
+    with the default device name: the condition that guards Trust position
+    (or the operator reads "Trust position" without the "if"), the pad key (or
+    "bring it home" reads as the Home button, which moves nothing on a reset
+    mount), and the second Trust position."""
     for line in await _both_position_unknown_lines(monkeypatch):
-        low = line.lower()
-        at = low.find(_SAFE_ACTION)
-        assert at >= 0, f"the line does not give the safe action: {line!r}"
-        assert at + len(_SAFE_ACTION) <= _CUT, (
-            f"the safe action ends at char {at + len(_SAFE_ACTION)}, past the "
-            f"{_CUT}-char cut: {line[:_CUT]!r}")
+        low = shown_whole(line).lower()
+        assert _SAFE_ACTION in low, (
+            f"the line does not give the safe action: {line!r}")
 
 
 async def test_neither_line_advises_a_goto(fixed_env, monkeypatch):

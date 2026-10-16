@@ -14,7 +14,9 @@
 //
 // The Polar tool hosts it too (#985), in Guided and in Pro: Start Alignment is a
 // move from the believed position, refused by the same gate (`/api/polar/start`),
-// and PolarView had no control the refusal's advice could name.
+// and PolarView had no control the refusal's advice could name. So does the
+// #/next Polar sheet (#1013), through `useTrustPosition` with its own controls:
+// the gate and the attestation are shared, the drawing is not.
 //
 // Like the other two it advises no slew: the way out for a tube that is not at
 // home is a pad key held by eye, and the pad lives in Pro's Mount tool.
@@ -70,10 +72,15 @@ function trustBlocker(canMove: boolean, slewing: boolean, sending: boolean): str
   return null;
 }
 
-/** `inPro`: the block is hosted by a Pro tool (the Polar tool, #985), where
- *  "switch to Pro" would send the operator to where they already are; Mount is
- *  one tab away. Everything else is the same words as in Guided. */
-export function GuidedTrustPosition({ onTrusted, inPro = false }: { onTrusted?: () => void; inPro?: boolean }) {
+/** The attestation itself, apart from how a surface draws it: the question, the
+ *  post, the check on the driver's verdict, and why the control is out of
+ *  service (`blocker`, null when it is live). `GuidedTrustPosition` draws it for
+ *  the classic pages; the #/next Polar sheet draws it with its own controls
+ *  (#1013). `inPro`: the surface has no "switch to Pro" to send the operator to
+ *  (a Pro tool, or the new UI), so the declined line points at Mount instead. */
+export function useTrustPosition(onTrusted?: () => void, inPro = false): {
+  blocker: string | null; sending: boolean; problem: string | null; trust: () => Promise<void>;
+} {
   const canMove = useCanControlMount();
   const slewing = useStore(s => !!s.status?.mount?.slewing || !!s.status?.busy_lanes?.includes("goto"));
   const [sending, setSending] = useState(false);
@@ -98,7 +105,7 @@ export function GuidedTrustPosition({ onTrusted, inPro = false }: { onTrusted?: 
       // own evidence and declines must not be reported as cleared. The page lets
       // go on the next status frame, never on this press.
       if (res?.position_known === false) {
-        setProblem("The mount did not accept that its position is known. Switch to Pro and use Solve & Sync in Mount, where the telescope points now.");
+        setProblem(`The mount did not accept that its position is known. ${inPro ? "Use" : "Switch to Pro and use"} Solve & Sync in Mount, where the telescope points now.`);
         return;
       }
       useStore.getState().enqueueToast({
@@ -111,6 +118,14 @@ export function GuidedTrustPosition({ onTrusted, inPro = false }: { onTrusted?: 
       setProblem(e instanceof Error ? e.message : "The mount did not answer. Try again.");
     } finally { setSending(false); }
   };
+  return { blocker, sending, problem, trust };
+}
+
+/** `inPro`: the block is hosted by a Pro tool (the Polar tool, #985), where
+ *  "switch to Pro" would send the operator to where they already are; Mount is
+ *  one tab away. Everything else is the same words as in Guided. */
+export function GuidedTrustPosition({ onTrusted, inPro = false }: { onTrusted?: () => void; inPro?: boolean }) {
+  const { blocker, sending, problem, trust } = useTrustPosition(onTrusted, inPro);
   return <div className="guided-position-unknown" data-testid="guided-position-unknown">
     <h3>The mount doesn't know where the telescope points</h3>
     <p>It is reporting its home position, as it does after any power-up. Pointing is paused until it knows where the telescope really is.</p>

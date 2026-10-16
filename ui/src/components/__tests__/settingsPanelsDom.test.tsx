@@ -319,6 +319,37 @@ await test("SafetyLimits: a change made elsewhere in the SAME block lands withou
     "the other panel's change was NOT adopted — this draft would revert it on the next save");
 });
 
+await test("SafetyLimits: an obstruction's boxes hold what was typed inside 0..360 degrees azimuth and 0..89 altitude", async () => {
+  // The boxes carry min/max attributes, which mark a box invalid and clamp
+  // nothing: -10, 400 and 95 went straight into the draft, and the server (#1007)
+  // then refused the save over a value the user could see and had typed. The
+  // floor box above them already clamps; these must too.
+  seedStore({
+    config: makeConfig({
+      safety: { ...SAFETY, nogo_box: [{ az_min: 170, az_max: 190, alt_max: 35 }] },
+    }),
+  });
+  await mount(createElement(SafetyLimitsPanel as never));
+  const from = byLabel("Obstruction 1 azimuth from");
+  const to = byLabel("Obstruction 1 azimuth to");
+  const alt = byLabel("Obstruction 1 minimum altitude");
+  assert(from?.value === "170" && to?.value === "190" && alt?.value === "35",
+    `the seeded obstruction is not on screen, so nothing below edits the real boxes: ${text().slice(0, 200)}`);
+
+  await typeInto(from, "-10");
+  await typeInto(to, "400");
+  await typeInto(alt, "95");
+  assert(from.value === "0", `azimuth from kept the typed -10 (shows ${from.value})`);
+  assert(to.value === "360", `azimuth to kept the typed 400 (shows ${to.value})`);
+  assert(alt.value === "89", `minimum altitude kept the typed 95 (shows ${alt.value})`);
+
+  // The clamp must not eat an ordinary edit.
+  await typeInto(from, "200");
+  await typeInto(alt, "20");
+  assert(from.value === "200", `an in-range azimuth was changed on the way in (shows ${from.value})`);
+  assert(alt.value === "20", `an in-range altitude was changed on the way in (shows ${alt.value})`);
+});
+
 await test("Optics: a typed focal length survives a config reload (adding a driver reloads config)", async () => {
   seedStore();
   await mount(createElement(OpticsPanel as never));

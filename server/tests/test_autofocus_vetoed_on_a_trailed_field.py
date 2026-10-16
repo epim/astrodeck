@@ -37,6 +37,7 @@ import time
 
 import pytest
 
+from _humanizer_mirror import CLIP_AT
 from _simhub import a_real_site
 
 import astrodeck.focus.autofocus as AF
@@ -480,7 +481,7 @@ async def test_a_first_mid_sweep_abandon_is_free_and_keeps_the_bookkeeping(
             '125% of the 5.0" ceiling; focuser back, nothing stored')
     lines = [m for lv, m in said if lv == "warning" and m == want]
     assert lines == [want], said
-    assert len(want) <= 137
+    assert len(want) <= CLIP_AT
 
 
 async def test_repeated_mid_sweep_abandons_count_as_failures_until_a_sweep_completes(
@@ -535,7 +536,7 @@ async def test_repeated_mid_sweep_abandons_count_as_failures_until_a_sweep_compl
     counted = [m for lv, m in said_all if lv == "warning"
                and "abandoned 2 times running" in m]
     assert counted, said_all
-    assert len(counted[0]) <= 137, (len(counted[0]), counted[0])
+    assert len(counted[0]) <= CLIP_AT, (len(counted[0]), counted[0])
 
     monkeypatch.setattr(eng_mod, "run_autofocus", _recorder([]))
     ok, _ = await _af(eng)

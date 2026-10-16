@@ -24,6 +24,19 @@ does not wait out the real one; it is read at call time. They grade the reads
 of the wheel made before the shutter opens, which is the wait, and the elapsed
 time as a second view of the same.
 
+THE HUB'S OWN POLLER IS STOPPED (#1011). ``connect_sim`` starts the two-second
+status poller, which reads this same wheel through the same ``get_position``.
+A case that counts reads counted its reads, and every poll that landed inside
+it: a case whose solves together outlast the poll period (a loaded machine)
+read one more than the solves made, and failed on the clock. ``quiet_status_poller`` stops it for every case, and ``_Wheel``
+refuses to be built beside a live one. Named mutant: the stop's ``if task is
+not None:`` made ``if False:`` -> all ten cases, AssertionError "the hub's
+status poller is running, and its reads of the wheel would be counted as the
+solve's". With no stop and no guard at all (the file as it was), the poll
+landing is forced by starting each solve 1.2 s late, so the two outlast the
+real period: ``test_a_stall_is_not_carried_to_the_next_solve`` fails with "5
+reads before the second solve's shutter" for the 3 it graded.
+
 Named mutants, each run from a byte backup of ``hub.py`` and restored with a
 byte copy (md5 compared). The first failing assertion is quoted.
 
@@ -77,6 +90,22 @@ NARROWBAND = [False, False, False, False, True, True, True, False]
 BOUND_S = 0.5
 
 
+@pytest.fixture(autouse=True)
+async def quiet_status_poller(sim_hub):
+    """Stop the hub's own two-second status poller. It reads the wheel through
+    the same ``get_position`` the cases count, so a poll that lands inside a
+    case adds a read the solve did not make. Cancelled and awaited before the
+    case begins, so none is in flight when ``_Wheel`` installs its script."""
+    task = sim_hub._status_task
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    yield
+
+
 @pytest.fixture
 def short_bound(monkeypatch):
     """The wheel bound shortened. Read at call time. ``raising=False``: on
@@ -106,6 +135,10 @@ class _Wheel:
     notes how many reads had been made and when it began."""
 
     def __init__(self, hub, monkeypatch, *, stalled, jam_move: bool = False):
+        task = hub._status_task
+        assert task is None or task.done(), (
+            "the hub's status poller is running, and its reads of the "
+            "wheel would be counted as the solve's")
         self.fw = hub.devices["filterwheel"]
         self.fw.filter_narrowband = list(NARROWBAND)
         self.rig = hub.sim_rig
@@ -133,10 +166,11 @@ class _Wheel:
 
         async def wheel_slot():
             # The preview's read of the slot AFTER the exposure
-            # (``Hub._wheel_slot``) is an unbounded read of its own, a
-            # separate defect from the two waits before the shutter. It is
-            # answered from the rig here so these cases grade the wait before
-            # the exposure and do not hang on that one.
+            # (``Hub._wheel_slot``) is bounded since #999, by the status
+            # bound, and a wheel that never answers would cost every case
+            # that bound again once the shutter had closed. It is answered
+            # from the rig here so these cases grade the wait before the
+            # exposure and nothing after it.
             return self.rig.filter_slot
 
         monkeypatch.setattr(self.fw, "get_position", get_position)
