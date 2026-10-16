@@ -918,7 +918,9 @@ which scanners exist.
 
 ```json
 {"bins": 720, "noise_sigma": 2.0,
- "contrast_sigma": [720 numbers or null], "visible": [720 booleans], "footprint_top_deg": [720 numbers or null]}
+ "contrast_sigma": [720 numbers or null], "contrast_blue_sigma": [720 numbers or null],
+ "contrast_texture_sigma": [720 numbers or null], "visible": [720 booleans],
+ "footprint_top_deg": [720 numbers or null]}
 ```
 
 For each bin, with A the truth boundary (the maximum of the 0.1-degree truth
@@ -929,7 +931,14 @@ over the bin):
   `|mean luma in [A + 0.5, A + 1.5] - mean luma in [A - 1.5, A - 0.5]| /
   noise_sigma`. Luma is sampled from the post-processed frame along the
   bin-centre azimuth.
-- `visible` is `contrast_sigma >= 3`.
+- `contrast_blue_sigma` and `contrast_texture_sigma` (S50) are the same maximum
+  for the tracer's other two channels, from the same delivered frames and arcs.
+  Blueness is `B - luma` of the pixel: `|mean in the upper arc - mean in the
+  lower arc| / noise_sigma`. Texture is the absolute 3 x 3 Immerkaer response
+  of the luma plane (`[1 -2 1] x [1 -2 1]`): `(mean in the lower arc - mean in
+  the upper arc) / (6 noise_sigma)`, 6 sigma being the response to white noise.
+- `visible` is `max(contrast_sigma, contrast_blue_sigma, contrast_texture_sigma)
+  >= 3`: a boundary is observable when any channel clears the rule.
 - `footprint_top_deg` is the highest altitude of the footprint region at the
   bin.
 
@@ -1219,7 +1228,10 @@ gates is exactly what graded the case. Cost is reported (`cost_ms`, from
   41.14 lens at a pitch of 22.98 degrees scores 0.9397 of the frustum, which is
   why the frustum cannot be the rule, and at least 0.999 of the footprint;
 - on a pan route: `loop` `{closed, method, match, residual_deg, note}`, `focal`
-  `{f_norm, short_px, truth_fx, state, error_fraction}`, `north`
+  `{f_norm, short_px, truth_fx, effective_fx, state, error_fraction,
+  error_fraction_true_fx}` (`error_fraction`, which `focal_err_lt_0_5pct` grades,
+  is against `effective_fx`, the focal the delivered frames' rolling shutter
+  leaves a closed ring, equal to `truth_fx` without one; S49), `north`
   `{error_deg, keyframes, reported, sigma_deg}` and `live_fill`
   `{cells, never, p95_ms, median_ms, max_ms, note}`.
 

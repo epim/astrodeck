@@ -27,7 +27,7 @@ import { noiseSigma } from '../noise';
 import { RollingWindow, TRACE, kth, percentile, robustSpread, tracer } from '../horizonTrace';
 import { ColState, PANO_W } from '../../types';
 import type { StubPanorama } from './rasterAdapter';
-import { SKY, WALL, col, extract, gauss, inSector, near, scene, unit, wallScene } from './traceScenes';
+import { GROUND, SKY, WALL, col, extract, gauss, inSector, near, scene, unit, wallScene } from './traceScenes';
 
 let passed = 0;
 function test(name: string, fn: () => void) { fn(); passed++; console.log(`PASS ${name}`); }
@@ -246,10 +246,40 @@ test('Measured: a wall against open sky, published at its top, with the evidence
   assert.ok(h.contrastSigma[x] >= TRACE.measuredContrast, `contrast ${h.contrastSigma[x]}`);
   near(h.sigmaDeg[x], 0.1, 1e-6, 'placement 5 x 0.02 with no focal error:');
   near(h.top[x], 90, 0.05); near(h.bottom[x], -10, 0.05);
+  // An open column is open to a ground the walk can see: the boundary is the ground at altitude 0, a row (0.334
+  // degrees) from it, and it has a contrast like any other.
   assert.equal(h.state[open], ColState.Measured);
-  assert.equal(h.alt[open], 0);
-  assert.ok(Number.isNaN(h.contrastSigma[open]), 'an open column has no boundary to take a contrast of');
+  near(h.alt[open], 0, 100 / 299 + 1e-4, 'the ground at the horizon:');
+  assert.ok(h.contrastSigma[open] >= TRACE.measuredContrast, `contrast ${h.contrastSigma[open]}`);
   assert.equal(h.lowLight, false);
+});
+
+test('S51: a column whose walk finds no boundary is Unknown, not Measured at altitude 0', () => {
+  // Before S51 this pinned `state Measured, alt 0, contrast NaN` for a column of sky down to -10 degrees. A column
+  // with no boundary in it measured nothing: UnknownContrast, no altitude (no suggestion either) and no contrast.
+  // Mutation: restore the old fallback (an open column Measured at 0).
+  const h = extract(scene(wallScene(100, 108, 30, { ground: null })));
+  const open = col(250);
+  assert.equal(h.state[open], ColState.UnknownContrast);
+  assert.ok(Number.isNaN(h.alt[open]), `alt ${h.alt[open]}: no boundary, no suggestion`);
+  assert.ok(Number.isNaN(h.contrastSigma[open]), 'an open column has no boundary to take a contrast of');
+  assert.equal(h.state[col(104)], ColState.Measured, 'the wall beside it is still measured');
+});
+
+test('S51: an overcast column with a low-contrast ground is Unknown, a clear column with a visible ground is Measured', () => {
+  // Mutation: restore the old fallback (a column with no boundary Measured at 0): the overcast columns read Measured.
+  // An overcast open column: the ground is there, but 3 levels from a sky of 130 in a noise of 1, inside the walk's
+  // allowance (42), so the walk finds no boundary and the column is Unknown. The same column with a ground of 70 has a
+  // visible boundary at the horizon and is Measured, at altitude 0 within a row.
+  const overcast = extract(scene((_az, alt) => ({ lum: alt < 0 ? SKY - 3 : SKY })));
+  const clear = extract(scene((_az, alt) => ({ lum: alt < 0 ? GROUND : SKY })));
+  for (const x of [col(30), col(250), col(340)]) {
+    assert.equal(overcast.state[x], ColState.UnknownContrast, `overcast column ${x}`);
+    assert.ok(Number.isNaN(overcast.alt[x]), 'no boundary, no altitude');
+    assert.equal(clear.state[x], ColState.Measured, `clear column ${x}`);
+    near(clear.alt[x], 0, 100 / 299 + 1e-4, 'the ground at the horizon:');
+    assert.ok(clear.contrastSigma[x] >= TRACE.measuredContrast, `contrast ${clear.contrastSigma[x]}`);
+  }
 });
 
 test('open above coverage: 6 degrees of sky above the boundary is Measured wherever the coverage ends', () => {
@@ -296,6 +326,7 @@ test('Tall: a wall within 2 degrees of the photo top, or a top that does not mat
   const band = extract(scene((az, alt) => {
     const wall = inSector(az, 100, 108);
     if (wall && alt > 86.5) return { lum: 230 };
+    if (!wall && alt < 0) return { lum: GROUND };
     return { lum: wall && alt < 25 ? WALL : SKY };
   }));
   assert.equal(band.state[x], ColState.Tall);
@@ -339,14 +370,14 @@ test('UnknownUnseen: no painted run at altitude 0, or a run that stops short of 
   assert.ok(Number.isNaN(short.alt[500]));
   near(short.bottom[500], -1.1, 0.4);
   // At -2.5 the coverage reaches the floor of the rule and the column is measured.
-  const reaches = extract(scene((_, alt) => (alt >= -2.5 ? { lum: SKY } : null)));
+  const reaches = extract(scene((_, alt) => (alt >= -2.5 ? { lum: alt < 0 ? GROUND : SKY } : null)));
   assert.equal(reaches.state[500], ColState.Measured);
 });
 
 test('UnknownDark: a window sky below 40 is never read, lit wall or not, and lowLight says how dark', () => {
   // Mutation: drop the dark rule (M34): the lit wall at night is measured; or lowLight never true (M40).
   const night = (sky: number, wall = false) => extract(scene((az, alt) =>
-    (wall && inSector(az, 100, 108) && alt < 30 ? { lum: 190 } : { lum: sky })));
+    (wall && inSector(az, 100, 108) && alt < 30 ? { lum: 190 } : { lum: alt < 0 ? GROUND : sky })));
   const dusk = night(25);
   assert.equal(dusk.state[col(250)], ColState.UnknownDark);
   assert.ok(Number.isNaN(dusk.alt[col(250)]));
@@ -386,12 +417,12 @@ test('the window model keeps to smooth pixels: a rough canopy in the top rows is
 test('every comparison fails closed: an unknown axis altitude is a NaN sigma, which is Low and never Measured', () => {
   // Mutation: the sigma test back to `sigma > TRACE.measuredMaxSigmaDeg` (S01): NaN > 1 is false, and with axisAltDeg
   //   NaN and no keyframes all 1080 columns of a clean raster read Measured.
-  const clean = scene(() => ({ lum: SKY }));
+  const clean = scene((_az, alt) => ({ lum: alt < 0 ? GROUND : SKY }));
   const lost = extract(clean, { axisAltDeg: NaN });
   for (let x = 0; x < PANO_W; x++) {
     assert.ok(Number.isNaN(lost.sigmaDeg[x]), `column ${x}: the sigma of a boundary off an unknown axis is ${lost.sigmaDeg[x]}`);
     assert.equal(lost.state[x], ColState.Low, `column ${x} is state ${lost.state[x]} with no axis altitude`);
-    assert.equal(lost.alt[x], 0, 'the trace is still there: it is the suggestion of a Low column');
+    near(lost.alt[x], 0, 100 / 299 + 1e-4, 'the trace is still there: it is the suggestion of a Low column');
   }
   // The same raster with the axis known is the open measurement it should be: the NaN is what made the difference.
   assert.equal(extract(clean, { axisAltDeg: 20 }).state[col(250)], ColState.Measured);
@@ -458,7 +489,7 @@ test('extraction ends on painted runs that are not numbers: none is Measured, an
   // A raster that reports a run with NaN, infinite, inverted or absurd ends must still be traced to the end (every
   // loop of the extraction counts rows, so none can wait on a comparison that NaN fails), and no such column may be
   // handed on as a measurement. Every other column reads as it would if they were not there.
-  const base = scene((_az, alt, x, y) => (alt > 53.96 || alt < -8 ? null : { lum: SKY + 2 * gauss(x, y, 5) }));
+  const base = scene((_az, alt, x, y) => (alt > 53.96 || alt < -8 ? null : { lum: (alt < 0 ? GROUND : SKY) + 2 * gauss(x, y, 5) }));
   const shapes: [string, number, number][] = [
     ['NaN ends', NaN, NaN], ['infinite ends', Infinity, -Infinity], ['infinite ends, reversed', -Infinity, Infinity],
     ['inverted', 10, 50], ['absurd', 1e9, -1e9], ['NaN top', NaN, -8], ['NaN bottom', 50, NaN], ['a single row', 0, 0],
@@ -478,7 +509,7 @@ test('extraction ends on painted runs that are not numbers: none is Measured, an
       assert.notEqual(h.state[x], ColState.Measured, `column ${x} (${o[0]}) was published as a measurement`);
     } else {
       assert.equal(h.state[x], ColState.Measured, `column ${x} beside the odd runs is state ${h.state[x]}`);
-      assert.equal(h.alt[x], 0, `column ${x} beside the odd runs reads ${h.alt[x]}`);
+      near(h.alt[x], 0, 0.5, `column ${x} beside the odd runs:`);   // the ground row, with noise on it
     }
   }
   assert.equal(odd.size, 8 * 6);

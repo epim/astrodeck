@@ -30,11 +30,18 @@ export const extract = (pano: StubPanorama, o: { focalSdPct?: number; axisAltDeg
 export const col = (az: number) => Math.floor(az * 3);
 export const inSector = (az: number, from: number, to: number) => az >= from && az < to;
 
-export const SKY = 130, WALL = 40;
+export const SKY = 130, WALL = 40, GROUND = 70;
 
-/** A ring of open sky with a wall in azimuth [from, to) from `top` degrees down. */
-export const wallScene = (from: number, to: number, top: number, extra?: { coverTop?: number; coverBottom?: number; sky?: number }): SceneFn =>
+/** A ring of open sky with a wall in azimuth [from, to) from `top` degrees down. Outside the wall the ground starts at
+ *  altitude 0 (`extra.ground`, luma GROUND by default): an open column is open to a horizon the walk can see, which
+ *  is the only open column S51 reads as Measured. `ground: null` draws sky to the bottom of the coverage, a column
+ *  with no boundary in it at all. */
+export const wallScene = (from: number, to: number, top: number,
+  extra?: { coverTop?: number; coverBottom?: number; sky?: number; ground?: number | null }): SceneFn =>
   (az, alt) => {
     if (alt > (extra?.coverTop ?? 90) || alt < (extra?.coverBottom ?? -10)) return null;
-    return { lum: inSector(az, from, to) && alt < top ? WALL : (extra?.sky ?? SKY) };
+    const wall = inSector(az, from, to) && alt < top;
+    const ground = extra?.ground === undefined ? GROUND : extra.ground;
+    if (!wall && alt < 0 && ground !== null) return { lum: ground };
+    return { lum: wall ? WALL : (extra?.sky ?? SKY) };
   };

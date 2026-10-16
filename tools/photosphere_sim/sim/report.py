@@ -685,7 +685,9 @@ def _version2_rows(scores: dict) -> list:
         rows.append(("focal length",
                      f'f_norm {_num(focal["f_norm"], 4)} of a short edge of '
                      f'{_num(focal["short_px"], 0)} px, truth fx '
-                     f'{_num(focal["truth_fx"], 3)}; error {_num(focal["error_fraction"], 5)}'))
+                     f'{_num(focal["truth_fx"], 3)}, effective fx {_num(focal.get("effective_fx"), 3)}; '
+                     f'error {_num(focal["error_fraction"], 5)} (against truth fx '
+                     f'{_num(focal.get("error_fraction_true_fx"), 5)})'))
         rows.append(("north",
                      f'error {_num(north["error_deg"], 3)} deg over {north["keyframes"]} '
                      f'keyframes; reported sigma {_num(north["sigma_deg"], 2)} deg'))

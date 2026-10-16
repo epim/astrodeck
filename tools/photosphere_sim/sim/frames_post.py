@@ -314,6 +314,40 @@ def rolling_shutter_scale(rate_deg_s: float, readout_ms: float, h_fov_deg: float
     return 1.0 + rate_deg_s * (readout_ms / 1000.0) / h_fov_deg
 
 
+def effective_focal(fx: float, rates_deg_s, steps_deg, readout_ms: float, h_fov_deg: float) -> float:
+    """The horizontal focal a ring of these keyframes closes at (S49).
+
+    Derivation, from :func:`resample` and :func:`rolling_shutter_scale`. Output
+    column offset ``u`` from the image centre shows what the central-time
+    frame shows at source offset ``s u``, with ``s = 1 + omega t_r / hFoV``. A
+    landmark at angle ``theta`` off the axis sits at source offset
+    ``fx tan(theta)``, so in the delivered frame it sits at ``fx tan(theta) / s``:
+    the delivered frame is a pinhole frame whose focal is ``fx / s``. Between
+    two keyframes that turn ``d`` degrees apart the measured image shift is
+    therefore ``fx d / s`` pixels (to first order in the shift), where ``s`` is
+    the scale of the pair, the mean of its two frames' scales. A scanner that
+    reads rotation from image shift with a focal ``F`` reports ``fx d / (s F)``
+    degrees for that pair; the ring closes when the reports add to 360, the
+    ``d`` do, so ``F = fx * sum(d / s) / sum(d)``, the turn-weighted mean of
+    ``fx / s``. That is the focal a ring needs to close, and the only one
+    that can be graded against: at 20 degrees per second with a 25 ms readout and
+    a 41 degree field it is 1.2 percent below ``fx`` (``s = 1.0122``), and the
+    grading against ``fx`` itself was grading the readout, not the scanner.
+
+    ``rates_deg_s`` is the horizontal pan rate at each keyframe (positive when
+    the view turns right, as :func:`horizontal_rate_deg_s`), ``steps_deg`` the
+    turn between each keyframe and the next (one entry fewer; their magnitude
+    is the weight). With no readout, or no steps, the answer is exactly ``fx``.
+    """
+    steps = [abs(float(d)) for d in steps_deg]
+    total = sum(steps)
+    if not readout_ms or total <= 0.0 or len(rates_deg_s) != len(steps) + 1:
+        return float(fx)
+    scales = [rolling_shutter_scale(rate, readout_ms, h_fov_deg) for rate in rates_deg_s]
+    mean_inverse = sum(d / (0.5 * (a + b)) for d, a, b in zip(steps, scales, scales[1:])) / total
+    return float(fx) * mean_inverse
+
+
 class AutoExposure:
     """A gain that chases ``target_luma / mean luma`` with a time constant.
 

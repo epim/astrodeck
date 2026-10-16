@@ -14,7 +14,18 @@ over the bin):
   difference between the mean luma on the arc from ``A + 0.5`` to ``A + 1.5``
   and on the arc from ``A - 1.5`` to ``A - 0.5``, both along the bin-centre
   azimuth, over ``noise_sigma``. ``None`` where no frame qualifies;
-- ``visible``: ``contrast_sigma >= 3``;
+- ``contrast_blue_sigma`` and ``contrast_texture_sigma`` (S50): the same maximum
+  over the same frames and the same two arcs for the two other channels the
+  tracer reads a boundary by (``horizonTrace.ts``, ``contrast``). Blueness is
+  ``B - luma`` of the delivered pixel, compared as an absolute difference of the
+  arc means over ``noise_sigma``. Texture is the absolute 3 x 3 Immerkaer
+  response of the luma plane ([1 -2 1] x [1 -2 1]), the arc mean on the ground
+  side minus the arc mean on the sky side (a surface rougher than its sky),
+  over ``6 noise_sigma``, the standard deviation of that response to white
+  noise. Both are computed here, in numpy, from the delivered frames;
+- ``visible``: ``max(contrast_sigma, contrast_blue_sigma,
+  contrast_texture_sigma) >= 3``, so a boundary that only colour or only
+  roughness shows is observable, as the tracer can read it;
 - ``footprint_top_deg``: the highest altitude of the footprint region, the
   union of the frames' footprints, along the bin-centre azimuth. ``None`` where
   the region does not reach the bin.
@@ -46,7 +57,7 @@ from .frames_post import luma_of
 from .score import (FOOTPRINT_HALF_WIDTH_DEG, FOOTPRINT_LONG_FRACTION, PROFILE_BIN_DEG,
                     PROFILE_BINS)
 
-__all__ = ["VISIBLE_SIGMA", "build", "meridian_footprint", "truth_boundary"]
+__all__ = ["VISIBLE_SIGMA", "build", "meridian_footprint", "response_plane", "truth_boundary"]
 
 #: A bin is visible when its boundary stands this many noise sigmas clear.
 VISIBLE_SIGMA = 3.0
@@ -123,6 +134,23 @@ def meridian_footprint(basis, camera, az_deg) -> tuple:
             np.where(empty, np.nan, np.degrees(high)))
 
 
+#: The response to unit white noise of the Immerkaer mask: sqrt(4 x 1 + 4 x 4 + 16).
+RESPONSE_GAIN = 6.0
+
+
+def response_plane(luma: np.ndarray) -> np.ndarray:
+    """``|Immerkaer response|`` of a luma plane, the tracer's texture channel before its row mean.
+
+    The mask is [1 -2 1] x [1 -2 1] (``noise.ts``, ``immerkaer``). The border
+    repeats the edge pixel, so every pixel has a response.
+    """
+    p = np.pad(np.asarray(luma, dtype=np.float32), 1, mode="edge")
+    c = p[1:-1, 1:-1]
+    return np.abs(p[:-2, :-2] - 2 * p[:-2, 1:-1] + p[:-2, 2:]
+                  - 2 * p[1:-1, :-2] + 4 * c - 2 * p[1:-1, 2:]
+                  + p[2:, :-2] - 2 * p[2:, 1:-1] + p[2:, 2:])
+
+
 def _bilinear(luma: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """``luma`` at index-space ``(x, y)``, where pixel ``(i, j)`` sits at ``(i, j)``."""
     height, width = luma.shape
@@ -163,6 +191,8 @@ def build(frames, images, camera, reference_horizon: dict, noise_sigma: float) -
     directions = _sample_directions(centres[:, None], boundary[:, None] + offsets[None, :])
 
     contrast = np.full(PROFILE_BINS, np.nan)
+    contrast_blue = np.full(PROFILE_BINS, np.nan)
+    contrast_texture = np.full(PROFILE_BINS, np.nan)
     top = np.full(PROFILE_BINS, np.nan)
     for frame, image in zip(frames, images, strict=True):
         basis = frame.basis
@@ -183,15 +213,25 @@ def build(frames, images, camera, reference_horizon: dict, noise_sigma: float) -
         if not seen.any():
             continue
         bins, x, y = bins[seen], x[seen], y[seen]
-        values = _bilinear(luma_of(image), x, y)
+        luma = luma_of(image)
+        values = _bilinear(luma, x, y)
         gap = np.abs(values[:, count:].mean(axis=1) - values[:, :count].mean(axis=1)) / sigma
         contrast[bins] = np.fmax(contrast[bins], gap)
+        blue = _bilinear(np.asarray(image, dtype=np.float32)[..., 2] - luma, x, y)
+        gap = np.abs(blue[:, count:].mean(axis=1) - blue[:, :count].mean(axis=1)) / sigma
+        contrast_blue[bins] = np.fmax(contrast_blue[bins], gap)
+        rough = _bilinear(response_plane(luma), x, y)
+        gap = (rough[:, :count].mean(axis=1) - rough[:, count:].mean(axis=1)) / (RESPONSE_GAIN * sigma)
+        contrast_texture[bins] = np.fmax(contrast_texture[bins], gap)
 
-    visible = np.nan_to_num(contrast, nan=-1.0) >= VISIBLE_SIGMA
+    strongest = np.fmax(np.fmax(contrast, contrast_blue), contrast_texture)
+    visible = np.nan_to_num(strongest, nan=-1.0) >= VISIBLE_SIGMA
     return {
         "bins": PROFILE_BINS,
         "noise_sigma": sigma,
         "contrast_sigma": [None if math.isnan(v) else round(float(v), 6) for v in contrast],
+        "contrast_blue_sigma": [None if math.isnan(v) else round(float(v), 6) for v in contrast_blue],
+        "contrast_texture_sigma": [None if math.isnan(v) else round(float(v), 6) for v in contrast_texture],
         "visible": [bool(v) for v in visible],
         "footprint_top_deg": [None if math.isnan(v) else round(float(v), 6) for v in top],
     }

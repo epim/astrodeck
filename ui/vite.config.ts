@@ -1,5 +1,6 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
+import { execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -12,9 +13,22 @@ import { defineConfig } from "vite";
 // import so this config stays valid under both CJS and ESM resolution.
 const pkg = createRequire(import.meta.url)("./package.json") as { version: string };
 
+// The commit the panorama scanner's report and recording header name (SPEC-v2 S40): ASTRODECK_COMMIT when the build sets it (a
+// container build has no .git), else git's own short hash, else "dev". Never throws: a build that cannot ask git is still a build.
+function buildCommit(): string {
+  const fromEnv = process.env.ASTRODECK_COMMIT?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return execSync("git rev-parse --short=12 HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim() || "dev";
+  } catch {
+    return "dev";
+  }
+}
+
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    __PANO_COMMIT__: JSON.stringify(buildCommit()),
   },
   // relative asset paths so the SPA loads at the server root (/) AND tunnelled
   // under the relay (/h/<home_id>/). Runtime API/WS/auth URLs are base-prefixed

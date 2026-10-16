@@ -993,7 +993,8 @@ class FramesCase(unittest.TestCase):
 
     def test_visibility_json_is_written_with_the_schema_of_13_8(self):
         data = json.loads((self.out / "truth" / "visibility.json").read_text(encoding="utf-8"))
-        self.assertEqual(sorted(data), ["bins", "contrast_sigma", "footprint_top_deg",
+        self.assertEqual(sorted(data), ["bins", "contrast_blue_sigma", "contrast_sigma",
+                                        "contrast_texture_sigma", "footprint_top_deg",
                                         "noise_sigma", "visible"])
         self.assertEqual(data["bins"], 720)
         self.assertEqual(data["noise_sigma"], 2.0)

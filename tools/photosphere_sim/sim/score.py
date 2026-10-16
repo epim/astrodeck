@@ -56,6 +56,7 @@ import numpy as np
 from PIL import Image
 
 from . import blobs as blobs_module
+from . import frames_post
 from .cases import CASES_DIR
 from .geometry import angle_between, sky_angles, sky_vector
 from .palette import PALETTE
@@ -1283,7 +1284,20 @@ def _score_horizon_v2(reference: dict, parsed: dict, visibility) -> dict:
         expected = (visible & np.isfinite(top)
                     & (boundary + SKY_ABOVE_MEASURED_DEG <= top))
 
-    signed = alt[resolved] - truth[resolved]
+    # S48: a bin whose truth range exceeds GATE_HORIZON_P99 cannot be both
+    # Measured and within the gate at every sample: a Measured bin's profile is
+    # the maximum the tracer saw in it (binProfile takes the maximum of the
+    # bin's columns), so the conservative polyline there is the bin maximum.
+    # Every sample of such a bin is graded against the truth maximum over the
+    # bin, which is the value a conservative profile is required to publish.
+    bin_low = np.full(PROFILE_BINS, np.inf)
+    np.minimum.at(bin_low, owner, truth)
+    steep_bin = (boundary - bin_low) > GATE_HORIZON_P99
+    steep_sample = steep_bin[owner]
+    graded_truth = np.where(steep_sample, boundary[owner], truth)
+    steep_measured = steep_bin & (state == STATE_MEASURED)
+
+    signed = alt[resolved] - graded_truth[resolved]
     absolute = np.abs(signed)
 
     cell = math.radians(HORIZON_CELL_DEG)
@@ -1357,6 +1371,7 @@ def _score_horizon_v2(reference: dict, parsed: dict, visibility) -> dict:
             "max": float(absolute.max()) if absolute.size else None,
         },
         "error_samples": int(absolute.size),
+        "steep_bins_graded": int(steep_measured.sum()),
         "empty_measured": not bool(resolved.any()),
         "visible_bins": None if visible is None else int(visible.sum()),
         "states": counts,
@@ -1461,16 +1476,66 @@ def _score_loop(diagnostics: dict | None, truth: dict) -> dict:
     return block
 
 
-def _score_focal(diagnostics: dict | None, camera: dict) -> dict:
-    """``|f_norm x short px - truth fx| / truth fx``, as a fraction."""
+def _horizontal_rate(frames: list, index: int) -> float:
+    """The rate the view turns toward its ``right`` at ``frames[index]``, degrees per second.
+
+    The truth forward axis's motion between the neighbouring frames along the
+    frame's own right axis: the quantity the simulator's rolling shutter scales
+    by (``frames_post.horizontal_rate_deg_s``), read from the written
+    trajectory because the scorer has no trajectory object.
+    """
+    lo, hi = max(index - 1, 0), min(index + 1, len(frames) - 1)
+    span_s = (float(frames[hi]["t_capture_ms"]) - float(frames[lo]["t_capture_ms"])) / 1000.0
+    if hi == lo or span_s <= 0.0:
+        return 0.0
+    moved = np.asarray(frames[hi]["forward"], dtype=np.float64) - np.asarray(frames[lo]["forward"], dtype=np.float64)
+    return math.degrees(float(moved @ np.asarray(frames[index]["right"], dtype=np.float64))) / span_s
+
+
+def _effective_fx(camera: dict, readout_ms: float, frames: list, keyframe_ids) -> float:
+    """The truth fx as the delivered frames show it over the ring's keyframes (S49).
+
+    ``frames`` is the truth trajectory in time order; ``keyframe_ids`` the
+    frames the scanner kept, in keyframe order (every frame when it kept none).
+    Equal to ``camera["fx"]`` exactly when the case has no rolling shutter.
+    """
+    fx = float(camera["fx"])
+    if not readout_ms or len(frames) < 2:
+        return fx
+    index = {f["frame_id"]: i for i, f in enumerate(frames)}
+    chosen = [index[k] for k in keyframe_ids if k in index]
+    if len(chosen) < 2:
+        chosen = list(range(len(frames)))
+    h_fov = 2.0 * math.degrees(math.atan2(float(camera["width"]) / 2.0, fx))
+    rates = [_horizontal_rate(frames, i) for i in chosen]
+    steps = [rotation_angle_deg(truth_matrix(frames[a]).T @ truth_matrix(frames[b]))
+             for a, b in zip(chosen, chosen[1:])]
+    return frames_post.effective_focal(fx, rates, steps, readout_ms, h_fov)
+
+
+def _score_focal(diagnostics: dict | None, camera: dict, readout_ms: float = 0.0,
+                 frames: list | None = None) -> dict:
+    """The focal error, as a fraction, against the EFFECTIVE focal (S49).
+
+    ``|f_norm x short px - effective fx| / effective fx`` is what
+    ``focal_err_lt_0_5pct`` grades: the effective focal is the one a ring of
+    the delivered frames closes at (``frames_post.effective_focal``), equal to
+    the truth fx when the case has no rolling shutter. The error against the
+    truth fx itself is reported beside it as ``error_fraction_true_fx``.
+    """
     focal = (diagnostics or {}).get("focal") or {}
     short_px = float(min(camera["width"], camera["height"]))
+    keyframe_ids = [k.get("frame_id") for k in ((diagnostics or {}).get("keyframes") or [])
+                    if isinstance(k, dict)]
+    effective = _effective_fx(camera, readout_ms, frames or [], keyframe_ids)
     block = {"f_norm": focal.get("f_norm"), "short_px": short_px,
-             "truth_fx": float(camera["fx"]), "state": focal.get("state"),
-             "error_fraction": None}
+             "truth_fx": float(camera["fx"]), "effective_fx": effective,
+             "state": focal.get("state"),
+             "error_fraction": None, "error_fraction_true_fx": None}
     if isinstance(block["f_norm"], (int, float)) and not isinstance(block["f_norm"], bool):
-        block["error_fraction"] = (abs(float(block["f_norm"]) * short_px - block["truth_fx"])
-                                   / block["truth_fx"])
+        measured = float(block["f_norm"]) * short_px
+        block["error_fraction"] = abs(measured - effective) / effective
+        block["error_fraction_true_fx"] = abs(measured - block["truth_fx"]) / block["truth_fx"]
     return block
 
 
@@ -1799,7 +1864,10 @@ def score_case(case_dir, result_dir=None) -> dict:
         loop = focal = north = live = None
         if pan:
             loop = _score_loop(diagnostics, truth_by_id)
-            focal = _score_focal(diagnostics, camera)
+            frames_block = (manifest.get("realism") or {}).get("frames")
+            readout = (float(frames_post.resolve_frames(frames_block)["rolling_shutter_ms"])
+                       if frames_block else 0.0)
+            focal = _score_focal(diagnostics, camera, readout, frames)
             north = _score_north(diagnostics, truth_by_id)
             live = _score_live_fill(result_dir / "first_seen.bin", diagnostics,
                                     first_index, window)

@@ -699,9 +699,13 @@ test('an injected 80 ms of latency is recovered within 10 ms from the aligned pa
   assert.ok(gyroRun.tracker.keyframes.length >= 25);
 });
 
-test('the same from the predictor\'s heading chord alone, turning the other way', () => {
-  assert.ok(chordRun.latency.pairs >= 10, `${chordRun.latency.pairs} pairs`);
-  near(chordRun.latency.tauMs, LAG, 10, 'tau from chord rates');
+test("the same from the predictor's heading chord alone, turning the other way, feeds the estimator nothing (S46, issue 1030)", () => {
+  // T27 fed the estimator from chord rates and graded the estimate here. The pump-age jitter of the orientation samples is shared
+  // by a chord rate and by the residual r, the fit reads it as latency, and on five seeded rings it applied 14.8, 41.1, 64.4, -20.4
+  // and 100.8 ms against a truth of 50 (issue 1030): a rate that did not come from a gyro is never fed to the estimator.
+  assert.equal(chordRun.latency.pairs, 0, 'no pair from a chord rate');
+  assert.equal(chordRun.latency.applied, false);
+  near(chordRun.latency.tauMs, 50, 1e-9, 'the prior stands');
 });
 
 test('addPair is fed a signed change of heading rate, with the tau the pair was predicted at', () => {
@@ -742,10 +746,11 @@ test('a gyro read in the wrong unit (rad/s as deg/s: quiet while turning) is not
   for (const v of w) near(v as number, 20.4, 1.0, 'heading rate from the chord');
 });
 
-test('the steady-pair test is strict: heading rates 2.00 deg/s apart over the span are not steady, 1.99 apart are (4.8)', () => {
-  // The rule is |dOmega| < 2 over every keyframe of the span, and the cases above hold their rates to within 1 of each other, so
-  // none of them touches the boundary. The span is set directly: a short ring makes the aligned chain, then the rates of the
-  // last four keyframes are put exactly 2 and 1.99 apart (the private table, as omegasOf reads it) and restored.
+test('the steady-pair test is strict: heading rates 5.00 deg/s apart over the span are not steady, 4.99 apart are (4.8, T30)', () => {
+  // The rule is |dOmega| < 5 over every keyframe of the span (the spec's 2, widened by T30: STEADY_SPAN_DEG_S), and the cases above
+  // hold their rates to within 1 of each other, so none of them touches the boundary. The span is set directly: a short ring makes
+  // the aligned chain, then the rates of the last four keyframes are put exactly 5 and 4.99 apart (the private table, as omegasOf
+  // reads it) and restored.
   const r = run({ priorScale: 1.1, pan: { turnDeg: 60 } });
   const t = r.tracker as unknown as { links: { omega: number | null }[]; steadySpan(a: number, k: number): boolean };
   const k = r.tracker.keyframes.length - 1, a = k - 3, saved = t.links.map(l => l.omega);
@@ -753,9 +758,10 @@ test('the steady-pair test is strict: heading rates 2.00 deg/s apart over the sp
   try {
     const spread = (hi: number) => { for (let i = a; i <= k; i++) t.links[i].omega = 20; t.links[k].omega = hi; return t.steadySpan(a, k); };
     assert.equal(spread(20), true, 'level rates are a steady span');
-    assert.equal(spread(21.99), true, '1.99 apart is steady');
-    assert.equal(spread(22), false, '2.00 apart is not below 2');
-    assert.equal(spread(25), false, 'nor is 5 apart');
+    assert.equal(spread(22.99), true, "2.99 apart is steady (the spec's 2 refused it)");
+    assert.equal(spread(24.99), true, '4.99 apart is steady (a hand-held pan wobbles by this much)');
+    assert.equal(spread(25), false, '5.00 apart is not below 5');
+    assert.equal(spread(30), false, 'nor is 10 apart');
   } finally {
     saved.forEach((w, i) => { t.links[i].omega = w; });
   }
@@ -779,19 +785,22 @@ function stripesScene(periodDeg: number): SynthScene {
   };
 }
 const PERIOD = 6;
-const stripes = run({ scene: stripesScene(PERIOD), priorScale: 1.1, pan: { turnDeg: 110 }, imageYaw: n => (n === 14 ? PERIOD : 0) });
+/** The jump is put on the 14th read, which is keyframe 13: since S52 holds the relative predictor across the first 100 ms of the pan, the
+ *  first keyframe is taken on a blurred frame and revisited once (rule 5), which spends one read before keyframe 1. */
+const JUMP_KF = 13;
+const stripes = run({ scene: stripesScene(PERIOD), priorScale: 1.1, pan: { turnDeg: 110 }, imageYaw: n => (n === JUMP_KF ? PERIOD : 0) });
 
 test('a one-period jump on stripes is refused by the innovation gate, though PSR, ZNCC and the inlier test accept it', () => {
-  const x = recordOf(stripes, 14);
+  const x = recordOf(stripes, JUMP_KF);
   assert.ok(stripes.lock, 'the ring through a fence locks');
   assert.ok(x);
   assert.equal(x?.detail, 'mismatch', `${x?.detail} with innovation ${x?.innovationDeg}`);
   assert.ok((x?.innovationDeg as number) >= 4, `the jump is a whole period: innovation ${x?.innovationDeg}`);
   assert.ok((x?.psr as number) >= 7 && (x?.zncc as number) >= 0.7, `PSR ${x?.psr} and ZNCC ${x?.zncc} accepted the match`);
-  assert.equal(stripes.tracker.keyframes[14].cls, 'sensor');
-  assert.equal(stripes.tracker.edges.some(e => e.b === 14), false, 'no edge: the gyro placed it');
+  assert.equal(stripes.tracker.keyframes[JUMP_KF].cls, 'sensor');
+  assert.equal(stripes.tracker.edges.some(e => e.b === JUMP_KF), false, 'no edge: the gyro placed it');
   const cYaw = (i: number) => wrap180(headingDeg(stripes.tracker.keyframes[i].pose) - headingDeg(stripes.tracker.keyframes[i].pred));
-  near(cYaw(14), cYaw(13), 0.1, 'the refused keyframe keeps the yaw of C, not a period (6 degrees) away');
+  near(cYaw(JUMP_KF), cYaw(JUMP_KF - 1), 0.1, 'the refused keyframe keeps the yaw of C, not a period (6 degrees) away');
 });
 
 // ---- 9. The keyframe rules with alignment on (S12, S27, S28, S34) ---------------------------------------------------
@@ -956,7 +965,9 @@ async function replayProof(): Promise<void> {
     });
     test('replay with sensor_only: true in scanner.json: 0 aligned keyframes and the focal stays the prior', () => {
       assert.equal(control.sensorOnly, true);
-      assert.equal(control.total, aligned.total, 'the same keyframes');
+      // The same keyframes, plus the revisit of the blurred first keyframe that only the aligned run can take (rule 5 is never run in
+      // sensor-only mode; since S52 holds the relative predictor across the pan's first 100 ms the first keyframe is taken on a blurred frame).
+      assert.equal(aligned.total - control.total, 1, `${control.total} keyframes in the control, ${aligned.total} aligned`);
       assert.equal(control.aligned, 0);
       assert.equal(control.focal, 'prior');
     });
