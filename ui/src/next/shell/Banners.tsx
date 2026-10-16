@@ -43,7 +43,8 @@
 // dismissing "report 2026-09-09 is ready" must not also dismiss the next one.
 // The one exception is the SEQUENCE banner, whose dismissal the store owns
 // alone (`dismissRunBanner`): its natural key is the plan name, which the next
-// run of the same plan shares.
+// run of the same plan shares. The connection strips' identity is the OUTAGE
+// (`useConnEpisode`): their kind is shared by every outage of a night.
 
 import { useState, type JSX, type ReactNode } from "react";
 import {
@@ -51,7 +52,7 @@ import {
   useResumeArm, useArmedBannerDismissed, useRunBanner, useSafety, useWeather,
   useAuthMethods, usePrincipal, useStatus,
 } from "../../store";
-import { bannerState, authRequiredForBanner } from "../../lib/connection";
+import { bannerState, authRequiredForBanner, type BannerKind } from "../../lib/connection";
 import { sunWatchNotice } from "../../lib/sunWatch";
 import { fmtHm } from "../../lib/weather";
 import { runBannerLabel } from "../../lib/stateMeta";
@@ -117,6 +118,24 @@ const WEATHER_OVERRIDE_TEXT =
   "Weather override on for tonight: forecast rain will not hold auto-resume "
   + "until the next dusk (cloud forecasts never do).";
 
+/** Which OUTAGE the connection strip belongs to (#1012). The count moves each
+ *  time the link's condition changes - down, back up, down again - so a key that
+ *  carries it names one episode and not the kind of news. The strips were keyed
+ *  `conn:down` and the like, which every later outage shares: dismissed once on
+ *  a phone left open across a night, "No link to the rig" never came back until
+ *  a reload, over a view that then reads as live (the same class as #983).
+ *
+ *  Counted off the CONDITION, not the screen: `bannerState` hides the no-rig
+ *  note on the Rig hub, and leaving that page does not end the episode. Moved
+ *  during render, not in an effect, so no frame pairs the new episode with the
+ *  last one's dismissal. The setter takes a value, not an updater, so a render
+ *  React runs twice lands on the same count. */
+function useConnEpisode(kind: BannerKind): number {
+  const [ep, setEp] = useState({ kind, n: 0 });
+  if (ep.kind !== kind) setEp({ kind, n: ep.n + 1 });
+  return ep.n;
+}
+
 export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.Element | null {
   const [dismissed, setDismissed] = useState<Record<string, true>>({});
 
@@ -150,37 +169,42 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
   // 1. The link. `view` is passed as the hub id: its only job in that function
   //    is to suppress the quiet no-rig note on the page where connecting IS the
   //    task, which is Rig here rather than "connect".
-  const conn = bannerState({
+  const connInputs = {
     phase: wsPhase,
     stale: telemetryStale,
     equipConnected,
-    view: route.hub === "rig" ? "connect" : route.hub,
     authRequired: authRequiredForBanner(authMethods, principal),
+  };
+  const conn = bannerState({
+    ...connInputs, view: route.hub === "rig" ? "connect" : route.hub,
   });
+  // The episode is read with no page named, so the Rig hub's quiet no-rig note
+  // is a hidden strip of the SAME episode and not the end of it.
+  const connEpisode = useConnEpisode(bannerState({ ...connInputs, view: "" }));
   if (conn === "signin") {
     entries.push({
-      key: "conn:signin",
+      key: `conn:signin:${connEpisode}`,
       kind: "conn",
       tone: "warn",
       text: "Sign-in required. The rig is reachable but this browser has no session.",
     });
   } else if (conn === "down") {
     entries.push({
-      key: "conn:down",
+      key: `conn:down:${connEpisode}`,
       kind: "conn",
       tone: "warn",
       text: "No link to the rig. The session keeps running there; this view is the last state received.",
     });
   } else if (conn === "stale") {
     entries.push({
-      key: "conn:stale",
+      key: `conn:stale:${connEpisode}`,
       kind: "conn",
       tone: "warn",
       text: "Telemetry has gone quiet. The socket is open and nothing has come down it.",
     });
   } else if (conn === "norig") {
     entries.push({
-      key: "conn:norig",
+      key: `conn:norig:${connEpisode}`,
       kind: "conn",
       tone: "info",
       text: "Browsing. No rig connected - the sky, the dome and the list all work.",
