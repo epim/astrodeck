@@ -53,6 +53,8 @@ import { clearProfileOverrides, listDrivers } from "../../../../api/backends";
 import {
   PolarReticle, knobHint, polarInstruction, polarTier, type KnobDir,
 } from "../../../../components/polar";
+import { usePositionGate, useTrustPosition } from "../../../../guided/GuidedTrustPosition";
+import { TRUST_POSITION_LABEL } from "../../../../lib/slewController";
 import PolarQuickBar from "../../../../components/PolarQuickBar";
 import PolarSolveRing from "../../../../components/PolarSolveRing";
 import GuideFramePreview from "../../../../components/GuideFramePreview";
@@ -108,6 +110,23 @@ export const PAUSING_WARNING =
 
 export const NO_ALIGNMENT_TO_STOP = "No alignment is running - nothing to stop.";
 
+// #1013: every leg of the alignment is aimed from the believed position, so the
+// server refuses a start while the mount does not know where it points (409
+// `position_unknown`, #888) and its refusal advises TRUST POSITION or a pad
+// key. The attestation is hosted HERE, on the sheet that is refused; the pad
+// is one step back on MOUNT, and the way out for a tube that is not at home is
+// a pad key held by eye, never a slew.
+export const POLAR_POSITION_UNKNOWN_NOTE =
+  "The mount is reporting its home position, as it does after any power-up or "
+  + "reset, so it does not know where the tube points, and every leg of the "
+  + "alignment is aimed from there. If the tube is at its home or park position "
+  + `now, press ${TRUST_POSITION_LABEL}. If it is anywhere else, go back to MOUNT, `
+  + `hold a pad key to bring it home by eye, then press ${TRUST_POSITION_LABEL} there.`;
+
+export const POLAR_POSITION_UNKNOWN_REASON =
+  "The mount does not know where the tube points, and the alignment is aimed "
+  + `from there. ${TRUST_POSITION_LABEL} is on this sheet: use it first.`;
+
 const FOOTER_NOTE =
   "The 3-point routine slews the mount three times, then shows the live error "
   + "and knob arrows here, big enough to read at the mount. Solve + sync "
@@ -152,6 +171,12 @@ export function PolarSheet(_props: SheetProps): JSX.Element {
     return () => clearTimeout(t);
   }, [starting, running, polar.state]);
   const live = running || starting;
+
+  // The status says the mount does not know where it points, or a start that
+  // raced the status was just refused for it (#1013). Either way the sheet hosts
+  // the attestation the refusal advises, and START waits for it.
+  const position = usePositionGate();
+  const trust = useTrustPosition(position.clear, true);
 
   const az = polar.az_error, alt = polar.alt_error, total = polar.total_error;
 
@@ -201,7 +226,13 @@ export function PolarSheet(_props: SheetProps): JSX.Element {
     ?? lanePolar.lockedReason
     ?? laneGoto.lockedReason
     ?? (live ? "An alignment is already running - stop it before starting another." : null)
+    ?? (position.needed ? POLAR_POSITION_UNKNOWN_REASON : null)
     ?? (busy ? "A polar command is already on the wire." : null);
+
+  // The attestation is a claim about a tube at rest, made by someone allowed to
+  // move it: the sheet's link and role floor first, then the hook's own (a
+  // motion in flight, a request already on the wire).
+  const trustReason = base.lockedReason ?? trust.blocker;
 
   const pauseReason = base.lockedReason
     ?? (!running ? "No alignment is running - nothing to pause." : null)
@@ -473,6 +504,37 @@ export function PolarSheet(_props: SheetProps): JSX.Element {
         <ModelRow k="home / park" v={homeParkText} />
       </Card>
 
+      {/* ------------------------------------------- position unknown (#1013)
+          The control the server's refusal advises, on the sheet it refuses.
+          Not while an alignment is live: it began from a known position, and
+          the controls of a live run are not this block's to take over. */}
+      {position.needed && !live && (
+        <div data-testid="polar-position">
+          <BannerCard tone="info" text={POLAR_POSITION_UNKNOWN_NOTE} data-testid="polar-position-note" />
+          <div style={{ marginTop: 6 }}>
+            <ActionButton
+              kind="secondary" full
+              lockedReason={trustReason} onExplain={explain}
+              busy={trust.sending}
+              onPress={() => void trust.trust()}
+              data-testid="polar-trust-position"
+            >
+              {TRUST_POSITION_LABEL}
+            </ActionButton>
+          </div>
+          <div style={{ marginTop: 4 }}>
+            <Mono size={10.5} tone="dim">
+              {TRUST_POSITION_LABEL} says the tube is physically at its home or park position.
+            </Mono>
+          </div>
+          {trust.problem && (
+            <div role="alert" style={{ marginTop: 4 }}>
+              <Mono size={10.5} tone="bad">{trust.problem}</Mono>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ---------------------------------------------------------- actions */}
       <div style={{ display: "flex", gap: 8 }}>
         <span style={{ flex: 1, display: "flex" }}>
@@ -484,9 +546,11 @@ export function PolarSheet(_props: SheetProps): JSX.Element {
               setStarting(true);
               void act(async () => {
                 // A refused start never becomes a run, so drop the latch at once
-                // rather than making the user wait out its expiry.
+                // rather than making the user wait out its expiry. The position
+                // refusal is not an error toast: the attestation that answers
+                // it is on the sheet now.
                 try { await api.post("/api/polar/start"); }
-                catch (e) { setStarting(false); throw e; }
+                catch (e) { setStarting(false); if (!position.refusedBy(e)) throw e; }
               });
             }}
             data-testid="polar-start"
