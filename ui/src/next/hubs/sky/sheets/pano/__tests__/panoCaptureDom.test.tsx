@@ -1135,6 +1135,8 @@ await test('Finish adopts the result\'s points; nothing is written until Save ho
     assert.equal(idbPuts[0].image, PNG);
     assert.match(idbPuts[0].key, /^active:/, 'under the active site key');
     assert.match(must('horizon-sheet').textContent!, /This photo is saved in this browser for this site/, 'and the editor says so once the write is done');
+    // The fixture has no compass (north: null): 2.9 locks Save until the owner confirms north.
+    await click(must('north-is-right'));
     const save = [...document.querySelectorAll('button')].find(b => /Save horizon/.test(b.textContent ?? ''))!;
     assert.ok(save, 'Save horizon is offered');
     await click(save as HTMLElement);
