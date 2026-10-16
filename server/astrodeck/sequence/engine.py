@@ -3062,6 +3062,11 @@ class SequenceEngine:
         # re-publishes it and the dispatcher fires "Run started" on every frame).
         # Pop it before merging and add it ONLY to this single publish payload.
         first_running = kw.pop("_first_running", False)
+        # ``site_derived`` is a one-shot flag the same way (#1020): a caller
+        # whose publish is made AT a computed moment that no meridian wait
+        # spans (the flip's own) names it, and it rides this publish only.
+        # Merged into ``self.state`` it would ride every later one.
+        timed_here = bool(kw.pop(SITE_DERIVED_KEY, False))
         # session sub-state (sessions spec §6): {id, name, count_mode, accepted,
         # target}, cleared with the same explicit-None semantics as `schedule`
         # so it never outlives the run (terminal transitions pass session=None).
@@ -3102,7 +3107,7 @@ class SequenceEngine:
         payload.pop("_hop_site_derived", None)
         if first_running:
             payload["_first_running"] = True
-        if self._site_timed():
+        if timed_here or self._site_timed():
             # ON THIS PUBLISH ONLY, never merged into ``self.state``: a key
             # kept there would ride every later publish of the night (the
             # ``_first_running`` discipline above). Its MOMENT is a meridian
@@ -16579,7 +16584,11 @@ class SequenceEngine:
         # flip point before any setup has cancelled that retry. A no-op in the
         # frame loop, where none is ever alive.
         await self._cancel_idle_stop_retry()
-        self._set_state(detail="meridian flip")
+        # FLAGGED site_derived (#1020): taken at the target's computed
+        # crossing, the moment `Hub.meridian_flip`'s own event and info line
+        # carry the flag for. Left unflagged this publish told a viewer the
+        # same instant a millisecond before the flagged ones did.
+        self._set_state(detail="meridian flip", site_derived=True)
         _t0 = time.time()
         # READ THE SIDE BEFORE AND AFTER, BECAUSE NOTHING EVER DID. `hub.
         # meridian_flip` is a bare `goto_and_center` whose docstring only
