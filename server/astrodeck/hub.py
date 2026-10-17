@@ -8200,6 +8200,14 @@ class Hub:
                 result.wcs, preview_id=solve_preview.get("id"),
                 data_w=int(solve_preview.get("data_width") or 0),
                 data_h=int(solve_preview.get("data_height") or 0))
+        elif result.wcs is None and result.wcs_dropped_reason:
+            # The solver solved and refused its own WCS (#1025), so there is
+            # nothing to publish and no field markers on the centring frame.
+            # Say why, once per solve (#1049), as the per-frame stamping path
+            # does; the pointing itself was good and is synced above.
+            bus.log("info",
+                    f"field markers unavailable: {result.wcs_dropped_reason}",
+                    "solve")
         # The same solve measured the camera's sky angle. Every goto centring
         # attempt, the resume re-centre, a meridian flip's re-centre and the
         # bare solve-and-sync route all land here, so this one line is what
