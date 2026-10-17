@@ -294,7 +294,7 @@ class DawnPark:
                 # an operator can see the net is live before trusting a night to
                 # it.
                 bus.log("info", f"dawn park re-armed for tonight (Sun back down "
-                                f"to {alt:+.1f}°)", "safety")
+                                f"to {alt:+.1f}°)", "safety", site_derived=True)
             self._settled = False
             self._held = None
             # Silently, not through _clear_failure: last dawn's failure streak
@@ -350,7 +350,8 @@ class DawnPark:
             self._clear_failure()
             self._tell_sun_watch_it_is_parked()
             bus.log("info", f"dawn: the Sun has reached {alt:+.1f}° and the "
-                            f"mount is already parked", "safety")
+                            f"mount is already parked", "safety",
+                            site_derived=True)
             await self._release_cooler(alt)
             return
 
@@ -395,12 +396,12 @@ class DawnPark:
                                 f"(parking above {threshold:+.0f}°), no run "
                                 f"is in progress and the mount's park state "
                                 f"could not be read ({self._read_warned}) — "
-                                f"parking anyway", "safety")
+                                f"parking anyway", "safety", site_derived=True)
             else:
                 bus.log("info", f"dawn park: the Sun is at {alt:+.1f}° "
                                 f"(parking above {threshold:+.0f}°), no run "
                                 f"is in progress and the mount is unparked "
-                                f"— parking it now", "safety")
+                                f"— parking it now", "safety", site_derived=True)
         latched = False
         try:
             # The same discipline as every other park path: bump the motion
@@ -613,7 +614,8 @@ class DawnPark:
             bus.log("info", f"dawn: the Sun is at {alt:+.1f}° and nothing is "
                             f"armed to use this camera tonight — warming it "
                             f"rather than leaving the cooler holding its "
-                            f"setpoint through the day", "safety")
+                            f"setpoint through the day", "safety",
+                            site_derived=True)
 
     @staticmethod
     def _armed_session():
@@ -717,7 +719,7 @@ class DawnPark:
             return False
         bus.log("warning", f"dawn park reopened the mount's link, which had "
                            f"dropped — continuing with the park at Sun "
-                           f"{alt:+.1f}°", "safety")
+                           f"{alt:+.1f}°", "safety", site_derived=True)
         return True
 
     async def _force_reopen_quietly(self, tel) -> None:
@@ -860,4 +862,4 @@ class DawnPark:
             return
         self._held = reason
         bus.log("info", f"dawn park held off at Sun {alt:+.1f}°: {reason}",
-                "safety")
+                "safety", site_derived=True)

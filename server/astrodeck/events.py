@@ -977,7 +977,10 @@ class EventBus:
         ``site_derived=True`` says the line's MOMENT was set by a site
         computation (a meridian wait ending, a group flip, a flip at the
         crossing; spec 6.9) and puts ``data.site_derived = True`` on it. The
-        key is written only then: an unflagged line's payload is exactly the
+        flag also covers a line whose VALUE is computed from the site (an hour
+        angle, a local sidereal time, a transit time: with the line's own
+        timestamp each one solves for the site longitude, #1065), not only a
+        line whose moment is. The key is written only then: an unflagged line's payload is exactly the
         three keys it always was, because every reader of a log payload is a
         reader of that shape."""
         if site_derived:
