@@ -723,6 +723,20 @@ _LANE_BLOCK_REASON: dict[str, str] = {
 _LANE_UNWIND_TIMEOUT_S = 30.0
 
 
+async def _bounded_wheel_move(fw, position: int, then: str) -> None:
+    """Move the filter wheel, giving up after ``SOLVE_WHEEL_MOVE_TIMEOUT_S``
+    (#1039). A jammed wheel's move never returns, and run on a spawn lane it
+    would hold that lane until restart; the bare timeout has no text of its
+    own, so the DeviceError says what stalled and what did not happen."""
+    try:
+        await asyncio.wait_for(fw.set_position(position),
+                               hub_module.SOLVE_WHEEL_MOVE_TIMEOUT_S)
+    except asyncio.TimeoutError as e:
+        raise DeviceError(
+            f"the filter wheel is stalled (its move: "
+            f"{hub_module._wheel_why(e)}); {then}") from e
+
+
 def _lane_conflict(name: str) -> str | None:
     """The live lane that forbids starting ``name`` right now, or None.
 
@@ -9964,7 +9978,8 @@ def create_app(*, bind_host: str | None = None,
             if body.filter is not None:
                 fw = hub.devices.get("filterwheel")
                 if fw is not None and fw.connected:
-                    await fw.set_position(body.filter)
+                    await _bounded_wheel_move(
+                        fw, body.filter, "the autofocus did not start")
             return await run_autofocus(
                 cam, foc, exposure_s=body.exposure_s, gain=body.gain,
                 step=body.step, steps_each_side=body.steps_each_side,
@@ -10282,7 +10297,8 @@ def create_app(*, bind_host: str | None = None,
             fw = hub.require("filterwheel")
         except DeviceError as e:
             raise _err(e)
-        return _spawn("filterwheel", fw.set_position(body.position))
+        return _spawn("filterwheel", _bounded_wheel_move(
+            fw, body.position, "the filter did not change"))
 
     @app.post("/api/filterwheel/names", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
