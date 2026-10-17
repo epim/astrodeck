@@ -95,7 +95,7 @@ const { useStore } = await import("../../store");
 const { api } = await import("../../api");
 const SlewPad = (await import("../SlewPad")).default;
 const {
-  slewRatesWithCeiling, ALT_GUARD_OFF_NOTE, MIN_SLEW_ALT_DEG,
+  slewRatesWithCeiling, ALT_GUARD_OFF_NOTE, ALT_GUARD_UNREADABLE_NOTE, MIN_SLEW_ALT_DEG,
 } = await import("../../lib/slewController");
 
 // Every write the pad makes, with its body: the guard assertions are about
@@ -260,25 +260,31 @@ for (const u of UNREADABLE) {
   });
 }
 
-// ---------------------------------------------- 4. such a reading trips nothing
-test("a -Infinity altitude does not trip the guard: it is not an altitude", () => {
-  seed({ alt: Number.NEGATIVE_INFINITY });
-  mount();
-  pickContinuous();
-  const r = holdEast();
-  assert(!r.tripped, "the pad flashed BELOW HORIZON on a reading it could not print");
-  eq(r.live, 1, "the hold was refused on a reading that is not an altitude");
-});
+// ------------------------------------- 4. such a reading is not driven unguarded
+// #1044 (WP-229): the position is known and the altitude is not readable, so
+// the guard has nothing to measure. A hold is REFUSED (never driven without a
+// guard), nothing flashes BELOW HORIZON (no altitude was read), and the pad
+// says why before any press.
+for (const u of UNREADABLE) {
+  test(`a ${u.name} altitude with the position known: a hold is refused and the pad says why`, () => {
+    seed(u.over, u.drop);
+    mount();
+    pickContinuous();
+    assert(text().includes(ALT_GUARD_UNREADABLE_NOTE),
+      `the pad refuses holds without saying why: ${text()}`);
+    assert(!text().includes(ALT_GUARD_OFF_NOTE), "the unknown-position note is up for a known position");
+    const r = holdEast();
+    assert(!r.tripped, "the pad flashed BELOW HORIZON on a reading it could not print");
+    eq(r.live, 0, "a hold was driven with no horizon guard");
+  });
+}
 
-test("a NaN altitude and an absent one behave the same as -Infinity (guard not consulted)", () => {
-  seed({ alt: Number.NaN });
+test("control: a readable altitude prints no refusal note and the hold is driven", () => {
+  seed({ alt: HIGH_ALT });
   mount();
   pickContinuous();
-  eq(holdEast().live, 1, "NaN refused the hold");
-  seed({}, ["alt"]);
-  mount();
-  pickContinuous();
-  eq(holdEast().live, 1, "an absent altitude refused the hold");
+  assert(!text().includes(ALT_GUARD_UNREADABLE_NOTE), "the refusal note is up for a readable altitude");
+  eq(holdEast().live, 1, "a hold on a readable altitude was refused");
 });
 
 // ------------------------------------------------------ 5. unknown: no altitude
