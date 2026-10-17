@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from _humanizer_mirror import CLIP_AT
+from _humanizer_mirror import CLIP_AT, humanizer_rewrites
 from _simhub import a_real_site
 
 import astrodeck.config as config_mod
@@ -50,22 +50,6 @@ from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
 from astrodeck.sequence.policy import guide_rms_floor_arcsec, resolve_policy
-
-#: The UI humanizer's word pairs (RULES.md, `ui/src/lib/humanize.ts`). A line
-#: carrying one of these pairs is rewritten, so an operator line must not.
-_HUMANIZER_PAIRS = (
-    ("camera", ("not responding", "timeout", "disconnect")),
-    ("nina", ("5", "http", "error")),
-    ("plate", ("solve",)),
-    ("guid", ("lost",)),
-)
-
-
-def _trips_humanizer(line: str) -> list[str]:
-    low = line.lower()
-    return [f"{a}+{b}" for a, bs in _HUMANIZER_PAIRS if a in low
-            for b in bs if b in low]
-
 
 class _Guider(Guider):
     """A real ``Guider`` subclass, so the hub's teardown and any isinstance
@@ -357,7 +341,7 @@ async def test_healthy_raw_pixels_pass_and_the_unit_warning_says_what_to_do():
     assert len(unit) == 1, f"want exactly one unit warning: {said1 + said2}"
     assert len(unit[0]) <= CLIP_AT, (len(unit[0]), unit[0])
     assert "over 50 px" in unit[0], unit[0]
-    assert not _trips_humanizer(unit[0]), unit[0]
+    assert not humanizer_rewrites(unit[0]), unit[0]
 
 
 # ---------------------------------------------- the eccentricity sentence
@@ -444,7 +428,7 @@ def test_both_eccentricity_sentences_fit_the_humanizer():
     for name, s in (("median rule", median), ("fraction rule", frac)):
         assert len(s) <= CLIP_AT, f"{name} sentence is {len(s)} characters: {s!r}"
         assert 'guide RMS 12345.6"' in s, s
-        assert not _trips_humanizer(s), (name, s)
+        assert not humanizer_rewrites(s), (name, s)
 
 
 # ---------------------------------------- a stale RMS on an unguided plan
@@ -550,4 +534,4 @@ async def test_the_stopped_guider_sentence_says_what_to_do(tmp_path,
                               "guiding")]
     assert lines, f"no stopped-guider sentence: {said}"
     assert len(lines[0]) <= CLIP_AT, (len(lines[0]), lines[0])
-    assert not _trips_humanizer(lines[0]), lines[0]
+    assert not humanizer_rewrites(lines[0]), lines[0]
