@@ -160,6 +160,10 @@ export function useSessionDot(nowMs: number = Date.now()): { color: string; labe
 
 export interface BannerSpec {
   id: string;
+  /** Set on the incident banner only: which KIND of incident it announces, so
+   *  the shell can ask "is this the link incident" without parsing `id`, whose
+   *  shape (#268, #1042) is not a contract (#1041). */
+  incidentKind?: Incident["kind"];
   tone: "good" | "info" | "warn";
   text: string;
   /** The label carries no chevron: `BannerCard` appends one. */
@@ -178,6 +182,21 @@ export interface BannerSpec {
  *  gates this WP (WP-60); the key shape is the issue's own suggested fix. */
 function incidentBannerId(inc: Incident): string {
   return `inc-${inc.kind}-${inc.pill}-${inc.sinceMs ?? "none"}`;
+}
+
+/** Which EPISODE of an undated incident this is (#1042). `incidentBannerId`
+ *  ends in `none` for an incident the rig has not dated, so every later episode
+ *  of the same pill shares one id and a dismissal outlived the hold it was made
+ *  for. The count moves during render each time the top incident's identity
+ *  changes (it clears, or another takes its place), the same shape as
+ *  `Banners.tsx`'s `useConnEpisode`. It cannot collide: it only ever rises for
+ *  the life of the mount, so no episode reuses an earlier episode's number.
+ *  The setter takes a value, not an updater, so a doubled render lands on the
+ *  same count. */
+function useIncidentEpisode(base: string | null): number {
+  const [ep, setEp] = useState({ base, n: 0 });
+  if (ep.base !== base) setEp({ base, n: ep.n + 1 });
+  return ep.n;
 }
 
 /** The first sentence of a paragraph, for a banner that has one line to say
@@ -245,10 +264,18 @@ export function useSessionBanners(nowMs: number = Date.now()): BannerSpec[] {
   // 1. An incident, while the user is somewhere other than the Session hub -
   //    the hub that already shows the card at full size.
   const top = incidents[0];
+  // Counted off the incident, not the page: leaving the Session hub does not
+  // end the episode. Only an undated incident needs the count (a dated one's
+  // id already names its start), so a dated one is left alone and a dismissal
+  // survives the incident being briefly outranked.
+  const episode = useIncidentEpisode(top ? incidentBannerId(top) : null);
   if (top && route.hub !== "session") {
-    const id = incidentBannerId(top);
+    const id = top.sinceMs == null
+      ? `${incidentBannerId(top)}-e${episode}`
+      : incidentBannerId(top);
     out.push({
       id,
+      incidentKind: top.kind,
       tone: "warn",
       text: `${top.title}. ${firstSentence(top.engine)}`,
       cta: { label: "session", onPress: () => nav.go("/session/now") },

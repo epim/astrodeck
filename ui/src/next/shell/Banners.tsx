@@ -241,7 +241,7 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
   //    saying the same thing is one piece of news taking both slots.
   const incident = sessionBanners.find((b) => b.id.startsWith("inc-")) ?? null;
   const linkAlreadySaid = conn === "down" || conn === "stale";
-  if (incident && !(incident.id === "inc-link" && linkAlreadySaid)) {
+  if (incident && !(incident.incidentKind === "link" && linkAlreadySaid)) {
     entries.push({
       key: incident.id,
       kind: "inc",
