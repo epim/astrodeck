@@ -81,6 +81,15 @@ MOVED_TOL_DEG = 0.1
 #: for a flip decision and wrong for a line of bookkeeping in front of a solve.
 PIER_READ_TIMEOUT_S = 5.0
 
+#: A rotator read made for this module (mechanical angle, is_moving) gives up
+#: after this long, the hub's own status-read bound. Without it a rotator whose
+#: SDK or HTTP read never returns holds every solve before the shutter opens
+#: (#1038); a stalled read leaves the angle unknown instead.
+ROTATOR_READ_TIMEOUT_S = 2.0
+
+_STALLED = (f"the rotator is stalled (no answer within "
+            f"{{bound:g}} s)")
+
 
 @dataclass(frozen=True)
 class ExposureAngle:
@@ -157,18 +166,29 @@ async def exposure_context(hub: Any, camera: Any, *,
     mech: float | None = None
     moving: bool | None = None
     if rot is not None and getattr(rot, "connected", False):
+        stalled = False
         try:
-            mech = mod360(float(await rot.get_mechanical_position()))
+            mech = mod360(float(await asyncio.wait_for(
+                rot.get_mechanical_position(), ROTATOR_READ_TIMEOUT_S)))
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            mech, stalled = None, True
         except Exception:                # noqa: BLE001 - read failure = unknown
             mech = None
-        try:
-            moving = bool(await rot.is_moving())
-        except asyncio.CancelledError:
-            raise
-        except Exception:                # noqa: BLE001
-            moving = None
+        if not stalled:
+            try:
+                moving = bool(await asyncio.wait_for(
+                    rot.is_moving(), ROTATOR_READ_TIMEOUT_S))
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                moving, stalled = None, True
+            except Exception:            # noqa: BLE001
+                moving = None
+        if stalled:
+            bus.log("warning", _STALLED.format(bound=ROTATOR_READ_TIMEOUT_S)
+                    + "; the sky angle for this exposure is unknown", "solve")
     else:
         rot = None
     side = await _pier_side(hub, live=live_pier and rot is not None)
@@ -193,10 +213,15 @@ async def _calibration_refusal(hub: Any, context: ExposureAngle,
     if context.moving:
         return "the rotator was moving when the exposure started"
     try:
-        moving_now = bool(await rot.is_moving())
-        mech_now = mod360(float(await rot.get_mechanical_position()))
+        moving_now = bool(await asyncio.wait_for(
+            rot.is_moving(), ROTATOR_READ_TIMEOUT_S))
+        mech_now = mod360(float(await asyncio.wait_for(
+            rot.get_mechanical_position(), ROTATOR_READ_TIMEOUT_S)))
     except asyncio.CancelledError:
         raise
+    except asyncio.TimeoutError:
+        return ("the rotator could not be read ("
+                + _STALLED.format(bound=ROTATOR_READ_TIMEOUT_S) + ")")
     except Exception as e:               # noqa: BLE001
         return f"the rotator could not be read ({e})"
     if moving_now:
