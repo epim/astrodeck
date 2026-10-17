@@ -265,6 +265,13 @@ export const ALT_GUARD_OFF_NOTE =
   "Horizon guard is off while the mount does not know where it points: the pad "
   + "cannot tell how low the tube is, so watch it.";
 
+/** The pad's answer when the position is KNOWN but the altitude is not a
+ *  readable number (#1044): the guard has nothing to measure, so a hold is
+ *  refused rather than driven unguarded. Says why, and what still works. */
+export const ALT_GUARD_UNREADABLE_NOTE =
+  "Hold is refused: the mount reports no readable altitude, so the horizon "
+  + "guard cannot run. Taps still nudge.";
+
 export const TRUST_POSITION_LABEL = "TRUST POSITION";
 
 /** The `code` of the 409 a move from an unknown position is refused with (the
@@ -299,7 +306,7 @@ export type Dir = -1 | 1;
 // The controller's externally-observable state, surfaced for the UI label and the
 // alt-guard flash. `belowHorizon` is the latched alt-guard trip (cleared on the
 // next successful start/tap).
-export type SlewMode = "idle" | "holding" | "belowHorizon";
+export type SlewMode = "idle" | "holding" | "belowHorizon" | "altUnreadable";
 
 export interface SlewState {
   mode: SlewMode;
@@ -454,11 +461,23 @@ export class SlewController {
     return this.o.getAlt();
   }
 
+  // The position is known (the caller said so) yet there is no altitude to
+  // guard on: the guard cannot run, so a continuous move must not start or go
+  // on (#1044). A caller that never passes `getPositionKnown` keeps the old
+  // contract, where a null altitude means "not consulted".
+  private guardBlind(): boolean {
+    return this.o.getPositionKnown?.() === true && this.o.getAlt() == null;
+  }
+
   // --------------------------------------------------------------- hold (slew)
   startHold(axis: Axis, dir: Dir): void {
     if (this.isNina()) return;                 // NINA: no continuous slew (R8)
     if (this.o.getRate().rateDegS <= 0) return; // pulse rate is tap-only
     // Alt-guard at the gate: don't even start below the horizon limit.
+    if (this.guardBlind()) {
+      this.refuseBlind();
+      return;
+    }
     const alt = this.guardAlt();
     if (alt != null && alt < MIN_SLEW_ALT_DEG) {
       this.tripBelowHorizon();
@@ -509,12 +528,22 @@ export class SlewController {
   // re-check the alt-guard — a slew that drifts below the horizon auto-stops.
   private keepaliveTick(): void {
     if (!this.holding || !this.curAxis || !this.curDir) return;
+    if (this.guardBlind()) {
+      this.refuseBlind();
+      return;
+    }
     const alt = this.guardAlt();
     if (alt != null && alt < MIN_SLEW_ALT_DEG) {
       this.tripBelowHorizon();
       return;
     }
     void this.postMove(this.curAxis, this.signedRate(this.curAxis, this.curDir));
+  }
+
+  private refuseBlind(): void {
+    this.forceStop();
+    this.mode = "altUnreadable";
+    this.emit();
   }
 
   private tripBelowHorizon(): void {
@@ -531,7 +560,7 @@ export class SlewController {
   // small relative GOTO. The component's postNudge closure encodes which.
   tapNudge(axis: Axis, dir: Dir): void {
     // clear a latched below-horizon flash on a fresh deliberate action
-    if (this.mode === "belowHorizon") {
+    if (this.mode === "belowHorizon" || this.mode === "altUnreadable") {
       this.mode = "idle";
       this.emit();
     }

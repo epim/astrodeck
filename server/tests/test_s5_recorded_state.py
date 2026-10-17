@@ -884,8 +884,16 @@ class TestTheSequenceStateFixture:
             "live", {}).get("meridian_eta_s"), (
             f"premise: the operator's live countdown is withheld from the "
             f"viewer: operator {op.get('live')}, viewer {vw.get('live')}")
-        assert {k: v for k, v in op.items() if k not in ("group", "live")} == {
-            k: v for k, v in vw.items() if k not in ("group", "live")}, (
+        # #1036: the schedule block's eta_s/start_ts/stop_ts are withheld
+        # from a viewer on every seam; its state and reason are not.
+        def _untimed(s: dict) -> dict:
+            out = {k: v for k, v in s.items() if k not in ("group", "live")}
+            if isinstance(out.get("schedule"), dict):
+                out["schedule"] = {k: v for k, v in out["schedule"].items()
+                                   if k not in ("eta_s", "start_ts", "stop_ts")}
+            return out
+
+        assert _untimed(op) == _untimed(vw), (
             "the viewer's state differs outside the group, the live chip "
             "and #166 item 1's hop-timing fields, which today's redaction "
             "does not do")

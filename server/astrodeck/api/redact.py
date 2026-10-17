@@ -37,7 +37,7 @@ import io
 from ..auth.capabilities import (CAP_CONFIG_BACKEND, CAP_VIEW_SITE_DERIVED,
                                  CAP_VIEW_SITE_PRECISE, CAP_VIEW_WEATHER)
 from ..auth.principal import Principal
-from ..events import is_site_derived
+from ..events import flip_hold_open, flip_hold_value, is_site_derived
 
 # How often the long-lived /ws socket RE-authenticates its principal (seconds).
 # Auth is otherwise only checked at accept, so a revoked jti (POST
@@ -113,6 +113,10 @@ def _strip_mount_derived(mount: dict, container: dict | None = None) -> None:
     ``_strip_camera_dew``). Unused here."""
     for k in _MOUNT_DERIVED_KEYS:
         mount.pop(k, None)
+    # While a meridian flip's hold is open the slew state is the last one seen
+    # before it (#1037): the flip's slew would otherwise date it.
+    if flip_hold_open() and "slewing" in mount:
+        mount["slewing"] = flip_hold_value("slewing", False)
 
 
 def _strip_meridian_derived(meridian: dict, container: dict | None = None) -> None:
@@ -123,11 +127,20 @@ def _strip_meridian_derived(meridian: dict, container: dict | None = None) -> No
     and a site-derived ``status`` collapses to ``unknown``. ``flip_owed`` goes
     null with it -- see the key list for why null and not False. ``flip_enabled``,
     ``pier_side`` and its ``pier_side_source``/``pier_side_age_s`` are
-    properties of the mount and the loaded plan, not of the observer's
-    position, so they stay."""
+    properties of the mount, but the side changes AT the flip, a computed
+    moment, so a reader watching it dates the flip (#1037): they read
+    "unknown"/"none"/null for a principal without the site-derived view."""
     for k in _MERIDIAN_DERIVED_KEYS:
         if k in meridian:
             meridian[k] = None
+    # The pier side changes at the flip, so reading it dates the flip (#1037
+    # ruling): withheld whole, in the shape of a mount that does not report it.
+    if "pier_side" in meridian:
+        meridian["pier_side"] = _MERIDIAN_UNKNOWN
+        if "pier_side_source" in meridian:
+            meridian["pier_side_source"] = "none"
+        if "pier_side_age_s" in meridian:
+            meridian["pier_side_age_s"] = None
     if meridian.get("status") in _MERIDIAN_DERIVED_STATUSES:
         meridian["status"] = _MERIDIAN_UNKNOWN
 
@@ -153,11 +166,32 @@ def _strip_live_derived(live: dict, container: dict | None = None) -> None:
     live.pop("meridian_eta_s", None)
 
 
+def _strip_guider_derived(guider: dict, container: dict | None = None) -> None:
+    """While a meridian flip's hold is open, the guider node is the last one
+    seen before it, IN PLACE (#1037): the flip stops guiding, and a guider
+    that reads "stopped" dates the flip. Untouched outside the hold."""
+    if not flip_hold_open():
+        return
+    held = flip_hold_value("guider")
+    keep = dict(held) if isinstance(held, dict) else {
+        k: guider[k] for k in ("name",) if k in guider}
+    guider.clear()
+    guider.update(keep)
+
+
+def _strip_sky_angle_derived(rec: dict, container: dict | None = None) -> None:
+    """The last solve's record without its ``pier_side`` (#1037)."""
+    if "pier_side" in rec:
+        rec["pier_side"] = None
+
+
 #: node key -> the in-place stripper for it. ONE table, so a third derived node
 #: is added in one place and both the REST seam and the WS seam get it.
 _DERIVED_NODES = (("mount", _strip_mount_derived),
                   ("meridian", _strip_meridian_derived),
-                  ("live", _strip_live_derived))
+                  ("live", _strip_live_derived),
+                  ("guider", _strip_guider_derived),
+                  ("sky_angle", _strip_sky_angle_derived))
 
 # WHY SATELLITES ARE NOT IN THAT TABLE, and are gated whole instead (D-SKY-1).
 # Every entry above works by DEGRADING a node: mount.alt/az come off and RA/Dec
@@ -578,6 +612,35 @@ _HOP_SITE_DERIVED_KEY = "_hop_site_derived"
 #: sub-object) and is handled separately below, since it is nested.
 _HOP_TIMED_KEYS = ("detail", "target", "target_index", "schedule")
 
+#: The engine's state-only marker that a MERIDIAN FLIP's span is open
+#: (`SequenceEngine._take_meridian_flip`, #1035). Its value carries the
+#: ``detail`` the run showed as the span opened. Never served, to anyone.
+_FLIP_SITE_DERIVED_KEY = "_flip_site_derived"
+
+#: The schedule block's timed fields (#1036): ``eta_s`` is a countdown to a
+#: computed moment and ``start_ts``/``stop_ts`` are the moments themselves,
+#: the twilight times of a dusk or dawn window, which are functions of
+#: latitude, longitude and date. ``state`` and ``reason`` stay.
+_SCHEDULE_TIMED_KEYS = ("eta_s", "start_ts", "stop_ts")
+
+
+def _withhold_schedule_timing(state: dict) -> dict:
+    """``state`` with ``schedule``'s timed fields ABSENT (#1036), a new dict
+    when anything goes and ``state`` itself otherwise. A ``schedule`` that is
+    not a dict cannot be key-stripped, so it goes whole (fail closed). Used by
+    the GET route, the monitor snapshot and the WS event alike."""
+    if "schedule" not in state:
+        return state
+    sched = state["schedule"]
+    if sched is None:
+        return state
+    if not isinstance(sched, dict):
+        return {k: v for k, v in state.items() if k != "schedule"}
+    if not any(k in sched for k in _SCHEDULE_TIMED_KEYS):
+        return state
+    return {**state, "schedule": {k: v for k, v in sched.items()
+                                  if k not in _SCHEDULE_TIMED_KEYS}}
+
 
 def _withhold_hop_timing(state: dict) -> dict:
     """``state`` with the hop's timing-bearing fields ABSENT (not null) when
@@ -591,6 +654,16 @@ def _withhold_hop_timing(state: dict) -> dict:
     Returns a NEW dict when it withholds anything, never mutating ``state``:
     the same discipline as ``_withhold_group_timing``, for the same reason
     (``state`` may be the engine's own live dict behind the GET route)."""
+    flip = state.get(_FLIP_SITE_DERIVED_KEY)
+    if flip and not state.get(_HOP_SITE_DERIVED_KEY):
+        # A FLIP'S SPAN (#1035): the detail is HELD at what the run showed as
+        # the span opened, not removed, because its disappearance would date
+        # the start. Everything else the state carries is the run's own and
+        # does not move with the flip.
+        held = flip.get("held_detail", "") if isinstance(flip, dict) else ""
+        if "detail" not in state and not held:
+            return state
+        return {**state, "detail": held}
     if not state.get(_HOP_SITE_DERIVED_KEY):
         return state
     out = {k: v for k, v in state.items() if k not in _HOP_TIMED_KEYS}
@@ -621,14 +694,18 @@ def _redact_sequence_for(payload: dict, principal: Principal | None) -> dict:
     ``group``, ``live`` and the hop's timing-bearing fields rather than a
     500."""
     if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
-        if not isinstance(payload, dict) or _HOP_SITE_DERIVED_KEY not in payload:
+        if not isinstance(payload, dict) or not (
+                _HOP_SITE_DERIVED_KEY in payload
+                or _FLIP_SITE_DERIVED_KEY in payload):
             return payload
-        return {k: v for k, v in payload.items() if k != _HOP_SITE_DERIVED_KEY}
+        return {k: v for k, v in payload.items()
+                if k not in (_HOP_SITE_DERIVED_KEY, _FLIP_SITE_DERIVED_KEY)}
     if not isinstance(payload, dict):
         return payload
     try:
         out = _withhold_group_timing(payload)
         out = _withhold_hop_timing(out)
+        out = _withhold_schedule_timing(out)
         # ``payload`` is always a fresh per-call dict (`_sequence_envelope`'s
         # ``engine.state | {...}``), so stripping ``out``'s top-level "live"
         # key in place -- which `_scrub_derived_node` does, copying the node
@@ -637,12 +714,13 @@ def _redact_sequence_for(payload: dict, principal: Principal | None) -> dict:
         # handed back a new dict.
         _scrub_derived_node(out)
         out.pop(_HOP_SITE_DERIVED_KEY, None)
+        out.pop(_FLIP_SITE_DERIVED_KEY, None)
         return out
     except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
         return {k: v for k, v in payload.items()
                 if k not in ("group", "live", "detail", "target",
                              "target_index", "schedule", "session",
-                             _HOP_SITE_DERIVED_KEY)}
+                             _HOP_SITE_DERIVED_KEY, _FLIP_SITE_DERIVED_KEY)}
 
 
 def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
@@ -698,6 +776,12 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     on the meridian rule (5.10), by the same helper as the GET route."""
     if is_site_derived(ev_json) and not (
             principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)):
+        return None
+    # THE GUIDE STREAM IS SILENT WHILE A FLIP'S HOLD IS OPEN (#1037): a viewer
+    # watches the guider stop to within one cadence, and the stop is the flip.
+    if (ev_json.get("type") == "guide" and flip_hold_open()
+            and not (principal is not None
+                     and principal.has(CAP_VIEW_SITE_DERIVED))):
         return None
     if ev_json.get("type") == "weather":
         if principal is not None and principal.has(CAP_VIEW_WEATHER):
@@ -764,7 +848,7 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         # withheld, and a new dict otherwise, so ``data`` is never written.
         if not has_derived and ev_json.get("type") == "sequence":
             base = new_data if new_data is not None else data
-            withheld = _withhold_group_timing(base)
+            withheld = _withhold_schedule_timing(_withhold_group_timing(base))
             if withheld is not base:
                 new_data = withheld
         cfg = data.get("config")
@@ -796,6 +880,7 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
                 safe.pop(key, None)
             if ev_json.get("type") == "sequence":
                 safe.pop("group", None)
+                safe.pop("schedule", None)
         if not has_weather:
             _panic_scrub_weather(safe)
         cfg = safe.get("config")

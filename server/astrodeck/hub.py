@@ -53,7 +53,7 @@ from .mount_offset import POSITION_UNKNOWN_MOTION_DETAIL
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
 from .align import guide_offset as _guide_offset
-from .events import bus, site_timed_span
+from .events import bus, note_flip_hold_value, site_timed_span
 from .guide import Guider, PHD2Guider
 from .imaging import (
     FrameMeta,
@@ -1628,9 +1628,13 @@ class Hub:
         # so behavior is preserved (the connect()/role set below are idempotent).
         _RigSpec, ConnSpec, _connect_profile = _harness()  # noqa: N806 (lazy import)
         from .devices.backend import get_backend
+        held = self.devices.get(role)
+        # A held device shares the server's slot when the endpoint is the same,
+        # so get_device hands back a replacement whose connect failed, for the
+        # release below, in place of sending its Connected=False itself (#1040).
         conn = ConnSpec(backend="native", host=host, port=port,
                         dev_type=dev_type, dev_num=dev_num, role=role,
-                        extra={"name": name})
+                        extra={"name": name, "keep_unowned": held is not None})
         # The cancels this task already carries, so a new one is told apart.
         me = asyncio.current_task()
         asked = me.cancelling() if me is not None else 0
@@ -1645,8 +1649,7 @@ class Hub:
         replaced_same = False
         released = False        # the replacement has been sent its disconnect
         try:
-            dev = await session.get_device(role, conn)
-            old = self.devices.get(role)
+            old = held
             old_session = self._alpaca_sessions.get(role)
             # The SAME Alpaca device again (reconnect_role rebuilds one from its
             # record, #966) is not disconnected: the server keeps one Connected
@@ -1656,6 +1659,29 @@ class Hub:
                 str(getattr(old, a, None)).lower()
                 for a in ("host", "port", "dev_type", "dev_num")
             ) == tuple(str(v).lower() for v in (host, port, dev_type, dev_num))
+            try:
+                dev = await session.get_device(role, conn)
+            except (Exception, asyncio.CancelledError) as exc:
+                # get_device's own connect took the server's Connected=True and
+                # then failed (a property read), so the replacement is held by
+                # nobody (#1040). Let go of it, as for the final connect below,
+                # and connect the old device again: it was not disconnected,
+                # but two spellings of one endpoint share one server slot and
+                # the release just flipped it.
+                dev = getattr(exc, "unowned_device", None)
+                if dev is not None and not replaced_same:
+                    released = True
+                    await self._release_unowned_alpaca_device(role, dev)
+                    if old:
+                        try:
+                            await old.connect()
+                        except Exception as exc2:
+                            self.say_swallowed(
+                                "reconnecting the previous device after a "
+                                "failed rebuild", exc2)
+                    if me is not None and me.cancelling() > asked:
+                        raise asyncio.CancelledError() from exc
+                raise
             if old and not replaced_same:
                 try:
                     await old.disconnect()
@@ -8174,6 +8200,14 @@ class Hub:
                 result.wcs, preview_id=solve_preview.get("id"),
                 data_w=int(solve_preview.get("data_width") or 0),
                 data_h=int(solve_preview.get("data_height") or 0))
+        elif result.wcs is None and result.wcs_dropped_reason:
+            # The solver solved and refused its own WCS (#1025), so there is
+            # nothing to publish and no field markers on the centring frame.
+            # Say why, once per solve (#1049), as the per-frame stamping path
+            # does; the pointing itself was good and is synced above.
+            bus.log("info",
+                    f"field markers unavailable: {result.wcs_dropped_reason}",
+                    "solve")
         # The same solve measured the camera's sky angle. Every goto centring
         # attempt, the resume re-centre, a meridian flip's re-centre and the
         # bare solve-and-sync route all land here, so this one line is what
@@ -10697,6 +10731,8 @@ class Hub:
                         "error_arcmin": self._pointing_error_arcmin,
                     },
                 }
+                # What a viewer is served while a flip's hold is open (#1037).
+                note_flip_hold_value("slewing", out["mount"].get("slewing"))
             except Exception as exc:
                 lost("mount block", exc)
             # Server-computed meridian (Monitor): NINA returns a real number; for
@@ -11210,6 +11246,7 @@ class Hub:
                 pass
         if self.guider and self.guider.connected:
             out["guider"] = self.guider.stats().__dict__ | {"name": self.guider.name}
+            note_flip_hold_value("guider", dict(out["guider"]))
         # Additive guide-camera descriptor so ConnectView can show the guiding
         # device with a name + connected state in every backend (not just sim's
         # dedicated guide_camera device).

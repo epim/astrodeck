@@ -1075,7 +1075,7 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None,
                     f"meridian with no pier-side report — if this mount is a "
                     f"GEM still on its pre-flip side, the first rotation may "
                     f"flip it. Consider starting an hour of RA clear of the "
-                    f"meridian.", "polar")
+                    f"meridian.", "polar", site_derived=True)
         return ha_step
     # west == the side a GEM uses for EASTERN targets, so stay on it by going east.
     pier_step = _RA_STEP_HOURS if side == "west" else -_RA_STEP_HOURS
@@ -1812,7 +1812,8 @@ def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:
         bus.log("warning",
                 f"native TPPA: the arc runs low ({track} altitude). Refraction "
                 "and extinction near the horizon move the field centres this "
-                "fit is built from, so treat the result as coarse.", "polar")
+                "fit is built from, so treat the result as coarse.", "polar",
+                site_derived=True)
         return
     raise DeviceError(
         f"this alignment would drive the telescope too low: the three "
@@ -1865,7 +1866,7 @@ async def _log_measurement(hub: Any, tel: Any, index: int, result: Any,
                 f"{result.ra_hours:.4f}h Dec {result.dec_deg:+.3f}° "
                 f"HA {ha:+.3f}h PA {(result.rotation_deg or 0.0):.1f}° "
                 f"({90.0 - abs(result.dec_deg):.1f}° from the pole); "
-                f"{claimed}", "polar")
+                f"{claimed}", "polar", site_derived=True)
     except Exception:  # noqa: BLE001 — see above; a log line is never worth a run
         pass
 

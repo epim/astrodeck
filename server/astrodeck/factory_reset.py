@@ -75,6 +75,7 @@ _SETUP_ENTRIES: tuple[tuple[str, bool], ...] = (
     ("plans", True),           # saved sequence plans
     ("guider", True),          # per-profile guider calibrations + GP-PPEC dumps
     ("locations.json", False),  # saved observing locations
+    ("locations.json.rejected", False),  # rows a load set aside (#1034)
     ("filter_names.json", False),  # per-profile filter slot names + offsets
     ("egain.json", False),     # learned per-gain conversion gain
 )

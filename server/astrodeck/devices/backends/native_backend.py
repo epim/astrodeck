@@ -17,7 +17,10 @@ the device factory a single, monkeypatchable seam for tests.
 """
 from __future__ import annotations
 
+import asyncio
+
 from astrodeck import __version__ as _app_version
+from astrodeck.events import bus
 
 from .. import alpaca
 from ..backend import Backend, BackendSession, ConnSpec, register
@@ -117,9 +120,53 @@ class NativeSession:
             )
         dev = cls(connection, conn.dev_num, name)
         dev.role = role                          # device identity for Profiles (A.6)
-        await dev.connect()
+        try:
+            await dev.connect()
+        except (Exception, asyncio.CancelledError) as exc:
+            # connect() sends Connected=True and then reads the device's
+            # properties, so a failed read leaves the server holding a device
+            # nothing owns: dropped here, never stored (#1040). Let go of it,
+            # bounded and best effort, then raise what failed.
+            await self._release_failed_connect(role, dev, exc, conn)
+            raise
         self._devices[role] = dev
         return dev
+
+    async def _release_failed_connect(self, role: str, dev: object,
+                                      exc: BaseException, conn: ConnSpec) -> None:
+        """Send Connected=False for a device whose connect failed AFTER the
+        server took its Connected=True (#1040). Nothing is sent when the PUT
+        itself failed: there is nothing to undo.
+
+        A caller that holds a device of its own for the role (the hub, while it
+        replaces one) passes ``extra['keep_unowned']``: two spellings of one
+        endpoint share one server slot, so only that caller knows whether this
+        release may go out, and in which order against the held device's
+        restore. It gets the device back as ``exc.unowned_device`` and
+        releases it itself (``Hub._connect_alpaca_device_unlocked``)."""
+        if not (getattr(dev, "connected", False) or getattr(dev, "link_lost", False)):
+            return
+        if (conn.extra or {}).get("keep_unowned"):
+            try:
+                exc.unowned_device = dev
+            except AttributeError:      # an exception that takes no attributes
+                pass
+            return
+        # Imported here: the hub imports this backend.
+        from astrodeck import hub as _hub
+        me = asyncio.current_task()
+        asked = me.cancelling() if me is not None else 0
+        err = await _hub._run_to_its_bound(lambda: dev.disconnect(),
+                                           _hub.TEARDOWN_STEP_TIMEOUT_S)
+        if err is not None:
+            bus.log("warning",
+                    f"the {role} could not be disconnected after its connect "
+                    f"failed ({type(err).__name__}), so the server may still "
+                    f"hold it connected", "hub")
+        # A cancel that landed during the release is counted on the task, not
+        # raised by it; raise it rather than let the connect's own error eat it.
+        if me is not None and me.cancelling() > asked:
+            raise asyncio.CancelledError() from exc
 
     def native_guider(self) -> object | None:
         """The native Rust-engine autoguider over this session's guide camera +

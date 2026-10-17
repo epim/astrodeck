@@ -235,6 +235,46 @@ def site_timed_span() -> Iterator[None]:
         _SITE_SPAN.reset(token)
 
 
+# --------------------------------------------- the meridian flip's hold (#1037)
+# `site_timed_span` flags what the spanned task itself publishes. It cannot
+# reach the streams other tasks publish (the status poller's ``mount.slewing``,
+# the guide loop's stats) and a pull route reads state, not events. So the
+# engine also opens a process-wide HOLD for the span of a flip it has decided
+# is due, and the serving seams (`api.redact`) consult it for a principal
+# without ``view.site_derived``: no guide event is delivered, and the status
+# frame's ``mount.slewing`` and ``guider.guiding`` read the last value seen
+# BEFORE the hold, so neither dates the flip to better than the hold itself.
+_FLIP_HOLD_OPEN = False
+_FLIP_HOLD_LAST: dict[str, Any] = {}
+
+
+def flip_hold_open() -> bool:
+    """Is a meridian flip's hold open (see above)?"""
+    return _FLIP_HOLD_OPEN
+
+
+def begin_flip_hold() -> None:
+    global _FLIP_HOLD_OPEN
+    _FLIP_HOLD_OPEN = True
+
+
+def end_flip_hold() -> None:
+    global _FLIP_HOLD_OPEN
+    _FLIP_HOLD_OPEN = False
+
+
+def note_flip_hold_value(key: str, value: Any) -> None:
+    """Remember ``value`` as the last ``key`` seen. A no-op while the hold is
+    open, so what a held reader is served is the last value before it."""
+    if not _FLIP_HOLD_OPEN:
+        _FLIP_HOLD_LAST[key] = value
+
+
+def flip_hold_value(key: str, default: Any = None) -> Any:
+    """The last ``key`` noted before the hold opened."""
+    return _FLIP_HOLD_LAST.get(key, default)
+
+
 def night_key(ts: float | None = None) -> str:
     """Local noon-to-noon night date for ``ts`` (``YYYY-MM-DD``).
 
@@ -937,7 +977,10 @@ class EventBus:
         ``site_derived=True`` says the line's MOMENT was set by a site
         computation (a meridian wait ending, a group flip, a flip at the
         crossing; spec 6.9) and puts ``data.site_derived = True`` on it. The
-        key is written only then: an unflagged line's payload is exactly the
+        flag also covers a line whose VALUE is computed from the site (an hour
+        angle, a local sidereal time, a transit time: with the line's own
+        timestamp each one solves for the site longitude, #1065), not only a
+        line whose moment is. The key is written only then: an unflagged line's payload is exactly the
         three keys it always was, because every reader of a log payload is a
         reader of that shape."""
         if site_derived:

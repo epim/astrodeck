@@ -30,6 +30,7 @@ from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
 from astrodeck.sequence.session import session_store
+from _simhub import SUN_PROOF_TARGET
 
 
 @pytest.fixture
@@ -53,10 +54,13 @@ async def _wait_for(predicate, timeout=10.0):
 def _plan(name: str) -> SequencePlan:
     # No centring/focus/guiding: this test is about the singleton, not the
     # capture loop, and the fewer sim calls a hop makes the faster it banks
-    # its first frame.
+    # its first frame. The target is clear of the Sun all year: M42 sits inside
+    # the 30 deg Sun-exclusion cone from 4 to 22 June and the run ended unsafe
+    # before its first frame (#1045).
     return SequencePlan(name=name, guide=False, dither_every=0,
                         autofocus_every=0, meridian_flip=False, targets=[Target(
-                            name=name, ra_hours=5.5881, dec_deg=-5.3911,
+                            name=name, ra_hours=SUN_PROOF_TARGET[0],
+                            dec_deg=SUN_PROOF_TARGET[1],
                             center=False, autofocus_first=False,
                             steps=[ExposureStep(filter="L", exposure_s=0.05,
                                                 count=3)])])

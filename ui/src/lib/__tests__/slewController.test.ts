@@ -376,6 +376,54 @@ test("alt-guard trip mid-hold: keepalive forceStops + emits belowHorizon", () =>
   eq(c.isHolding(), false, "no longer holding");
 });
 
+// WP-229 / #1044: the position is KNOWN but there is no altitude to guard on.
+// The guard cannot run, so a continuous move is refused, not driven unguarded.
+// Mutant w24c1_blind_guard_dropped: `guardBlind()` returns false -> the hold is
+// driven (1 move posted) and the first assertion below fails.
+test("known position, unreadable altitude: a hold is refused, not driven unguarded", () => {
+  const h = makeHarness({ getAlt: () => null, getPositionKnown: () => true });
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  eq(h.moves.filter((m) => m.rate !== 0).length, 0, "a live move was posted with no guard");
+  eq(c.getState().mode, "altUnreadable", "the refusal is latched so the pad can say why");
+  eq(c.isHolding(), false, "not holding");
+});
+
+test("known position, altitude lost mid-hold: the keepalive stops the move", () => {
+  let alt: number | null = 30;
+  const h = makeHarness({ getAlt: () => alt, getPositionKnown: () => true });
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  eq(h.moves.length, 1, "moving");
+  alt = null;
+  h.tick();
+  eq(h.moves[h.moves.length - 1].rate, 0, "stopped when the guard went blind");
+  eq(c.getState().mode, "altUnreadable", "refusal emitted");
+});
+
+test("known position, unreadable altitude: a tap still nudges and clears the refusal", () => {
+  const h = makeHarness({ getAlt: () => null, getPositionKnown: () => true });
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  c.tapNudge("ra", 1);
+  eq(h.nudges.length, 1, "the nudge was posted");
+  eq(c.getState().mode, "idle", "the latched refusal cleared on a deliberate tap");
+});
+
+test("unknown position keeps its own contract: the guard is off, the hold is driven", () => {
+  const h = makeHarness({ getAlt: () => null, getPositionKnown: () => false });
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  eq(h.moves.filter((m) => m.rate !== 0).length, 1, "the hold was driven");
+});
+
+test("a caller that passes no getPositionKnown keeps a null altitude as not consulted", () => {
+  const h = makeHarness({ getAlt: () => null });
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  eq(h.moves.filter((m) => m.rate !== 0).length, 1, "the hold was driven");
+});
+
 // ---------------------------------------------------------------- NINA path
 test("NINA mode: startHold is a no-op (no continuous move)", () => {
   const h = makeHarness({ isNina: () => true });

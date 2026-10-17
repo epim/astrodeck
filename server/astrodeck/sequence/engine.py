@@ -29,6 +29,7 @@ WITHOUT changing any existing ETA/resume bookkeeping:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 import time
@@ -48,7 +49,8 @@ from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
                             quotable_sync_reply, rig_position_known)
 from ..mount_offset import (POSITION_UNKNOWN_MOTION_DETAIL,
                             POSITION_UNKNOWN_SAFE_ORDER)
-from ..events import SITE_DERIVED_KEY, bus, night_key
+from ..events import (SITE_DERIVED_KEY, begin_flip_hold, bus, end_flip_hold,
+                      night_key)
 from ..focus import run_autofocus
 from ..focus.approach import approach, configured_overshoot
 from ..focus.autofocus import (SWEEP_EXPOSURE_S, SWEEP_GAIN, FieldTrailing,
@@ -713,6 +715,21 @@ async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = "",
         return await asyncio.wait_for(awaitable, timeout_s)
     except asyncio.TimeoutError:
         raise _timeout_abort(what, timeout_s, note, suffix=suffix)
+
+
+def _closes_flip_span(fn):
+    """Close a meridian flip's span however `fn` ends (#1035, #1037): the
+    state-only marker and the process-wide hold are OPENED inside the flip once
+    it is due and closed here, so the flip's own code is the code it was.
+    The wrapper changes nothing the flip returns or raises."""
+    @functools.wraps(fn)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            return await fn(self, *args, **kwargs)
+        finally:
+            self.state.pop("_flip_site_derived", None)
+            end_flip_hold()
+    return wrapper
 
 
 def _reraise_swallowed_cancel() -> None:
@@ -3105,9 +3122,12 @@ class SequenceEngine:
         # too would add nothing a non-holder could read and a holder's WS
         # stream would carry an implementation key no client declares.
         payload.pop("_hop_site_derived", None)
+        # ``_flip_site_derived`` (#1035) is the same discipline for a flip's
+        # span: state-only, honoured by ``api.redact._withhold_hop_timing``.
+        flip_span = bool(payload.pop("_flip_site_derived", None))
         if first_running:
             payload["_first_running"] = True
-        if timed_here or self._site_timed():
+        if timed_here or flip_span or self._site_timed():
             # ON THIS PUBLISH ONLY, never merged into ``self.state``: a key
             # kept there would ride every later publish of the night (the
             # ``_first_running`` discipline above). Its MOMENT is a meridian
@@ -16391,6 +16411,7 @@ class SequenceEngine:
                 f"{target.name}: below the mount's floor/horizon at its "
                 f"meridian flip, ending it for {other.name}") from e
 
+    @_closes_flip_span
     async def _maybe_meridian_flip(self, target: Target,
                                    next_exposure_s: float = 0.0) -> None:
         if not self.plan.meridian_flip or not self._flip_armed:
@@ -16568,6 +16589,16 @@ class SequenceEngine:
                     + max(0.0, float(getattr(self, "_overhead_ema", 0.0) or 0.0)))
         if remaining_s > window_s:
             return
+        # THE FLIP SPAN OPENS HERE (#1035, #1037), before the hold below and
+        # before anything the flip publishes, and not at the crossing: the
+        # span begins a frame ahead of it, so what a viewer is served while
+        # it lasts (the detail the run showed as it opened, the mount's last
+        # slewing value, no guide stream) dates the flip no better than that.
+        # The marker is state-only, like ``_hop_site_derived``; the hold is
+        # the process-wide twin the WS and status seams read.
+        self.state["_flip_site_derived"] = {
+            "held_detail": self.state.get("detail") or ""}
+        begin_flip_hold()
         # the flip point falls within the upcoming frame but has not arrived
         # yet: WAIT it out rather than starting an exposure that would straddle
         # it. With a zero lead this is the original NINA PassMeridian hold — do
