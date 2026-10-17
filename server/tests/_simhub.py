@@ -9,6 +9,18 @@ import astrodeck.hub as hub_module
 from astrodeck.config import RotatorConfig, Site, config_store
 from astrodeck.hub import Hub
 
+#: The target of the engine tests that shoot a real target: the north ecliptic pole (RA 18 h,
+#: Dec +66.56). The Sun stays on the ecliptic, so this point is 90 deg from it
+#: on every day of the year and the Sun-exclusion cone (`Hub._check_solar`,
+#: 30 deg) can never reach it. The target this run first used, RA 5 h Dec +10,
+#: sits 13 deg off the ecliptic: from early May to early July the Sun came
+#: within 30 deg of it, `_setup_target` refused the slew ("slew blocked by
+#: sun-exclusion cone"), the run ended unsafe before its first frame and the
+#: test failed by the date it ran, not by the code (#1026, the class of #682
+#: and #925).
+SUN_PROOF_TARGET = (18.0, 66.56)
+
+
 # See the note in the fixture. Not anybody's rig.
 _TEST_SITE = Site(name="fixture", latitude=40.0, longitude=-74.0,
                   elevation_m=10.0, is_default=False)

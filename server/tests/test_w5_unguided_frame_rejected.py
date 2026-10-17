@@ -42,12 +42,16 @@ import astrodeck.hub as hub_module
 from astrodeck.hub import Hub
 from astrodeck.sequence.engine import SequenceEngine
 from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
+from _simhub import SUN_PROOF_TARGET
 
 
 def _plan(**plan_kw) -> SequencePlan:
+    # Clear of the Sun all year: M42 is inside the Sun-exclusion cone from 4 to
+    # 22 June and the run ended unsafe before its frame (#1045).
     step = ExposureStep(filter="L", exposure_s=0.05, count=1)
     return SequencePlan(name="p", targets=[
-        Target(name="T", ra_hours=5.5881, dec_deg=-5.3911, center=False,
+        Target(name="T", ra_hours=SUN_PROOF_TARGET[0],
+               dec_deg=SUN_PROOF_TARGET[1], center=False,
               autofocus_first=False, steps=[step])],
         **plan_kw)
 

@@ -136,3 +136,63 @@ astropy is imported inside `relax_iers`, once a shift is in force, after the
 clock is swapped.
 
 Tests of the plugin itself: `tests/test_shift_clock_plugin.py`.
+
+## Replaying the whole engine subset at several days (`date_replay.py`)
+
+One test at one date is the case above. The suite as a whole needs the same
+question asked of every file that starts an engine, at a few days of the year,
+because a seasonal reader (the Sun-exclusion cone, the Moon, a dark window, a
+freshness age) is green on most days (#1046, #1045, #1026, #682).
+
+From `server/`:
+
+```powershell
+& .\.venv\Scripts\python.exe tests/tools/date_replay.py                 # 4 seasons
+& .\.venv\Scripts\python.exe tests/tools/date_replay.py --dates 2027-06-13,2026-12-21
+& .\.venv\Scripts\python.exe tests/tools/date_replay.py --every-days 60 --count 6
+& .\.venv\Scripts\python.exe tests/tools/date_replay.py --list           # the files
+```
+
+It runs the files that build a simulator hub and name a `SequenceEngine`
+under `-p shift_clock` at each day (12:00 UTC), re-runs the failures on the
+real clock, and prints the ones that failed only shifted as `DATE-DEPENDENT`.
+Exit 1 if there are any. Do it before a release and after adding an engine
+test; about 7 minutes per date at `--workers 4`. A band of days narrower than
+the spacing of the dates can fall between them: add a date when you suspect
+one (M42 is in the Sun's cone from 4 to 22 June, so 13 June is a default).
+
+Run it with nothing else using the box: a slow machine turns timing margins
+into reds on the real clock too, and those are subtracted, not blamed on the
+date.
+
+### What the plugin does not shift (expected artifacts)
+
+- **File times the OS stamps** (`st_mtime`). The calibration library ages a
+  frame by its mtime against `time.time()` (`calibration/library.py`,
+  `iter_cal_headers`), so under a large shift every file written in the run
+  reads months old. `test_w17_dusk_flats_panel.py::test_a_restart_finds_fresh_
+  flats_and_shoots_none` was red under any shift of more than the freshness
+  window for that reason alone. The cure is in the test: stamp the files with
+  `os.utime(path, (time.time(), time.time()))` after the code under test wrote
+  them. `KNOWN_ARTIFACTS` in `date_replay.py` is for a case that cannot be
+  fixed that way, and is empty.
+- `time.monotonic`, `time.perf_counter` and the event loop's clock: elapsed
+  time is real, which is right.
+- Child processes that do not load the plugin, and any module that bound the
+  real `time.time` before the hook ran.
+
+### The guard that keeps the next one out (`_SunConeGuard`)
+
+`conftest.py` fails, at its own teardown, a test that slews by the REAL Sun
+to a target the exclusion cone can refuse on some day of the year (the target's
+ecliptic latitude is smaller than the cone: `_sun_cone.py`). It reads geometry,
+not the date, so it is the same on every day CI runs. The fixes are the ones in
+`_simhub.py`: `SUN_PROOF_TARGET` (the north ecliptic pole), a pinned
+`coords.sun_radec`, or `@pytest.mark.seasonal_sun_target` when the test means
+it. Files that already slewed to such a target when the guard landed are in
+`sun_cone_baseline.txt`: a ratchet, to be emptied, never added to. To list the
+tests in it afresh run the suite with `ASTRODECK_SUN_CONE_REPORT=<file>` set:
+it appends one line per test instead of failing.
+
+Tests: `tests/test_date_replay_and_sun_cone_guard.py`.
+

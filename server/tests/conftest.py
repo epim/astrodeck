@@ -1974,6 +1974,84 @@ class _TheRealCapturesStayUntouched:
         return result
 
 
+class _SunConeGuard:
+    """Fail a test that slews, by the real Sun, to a target the Sun-exclusion
+    cone can refuse on some day of the year (#1045, #1046).
+
+    The cone reads the calendar, so such a test is green on most days and red
+    on a few (M42 from 4 to 22 June) with no code change: a flake by date
+    (#682). The exposure is geometry, not a date scan: the Sun stays on the
+    ecliptic, so a target is exposed when its ecliptic latitude is smaller
+    than the cone (``_sun_cone.py``). Only a position asked of the REAL
+    ``coords.sun_radec`` counts: a test that pinned the Sun
+    (``monkeypatch.setattr(coords, "sun_radec", ...)``) has taken the calendar
+    out. Give the run ``SUN_PROOF_TARGET`` (``_simhub.py``), pin the Sun, or
+    mark the test ``@pytest.mark.seasonal_sun_target`` when it means it.
+
+    A ratchet, not a clean sheet: the files that already did it when this
+    landed are listed in ``sun_cone_baseline.txt`` and a NEW file is an
+    error. ``ASTRODECK_SUN_CONE_REPORT=<path>`` records instead of failing."""
+
+    def __init__(self):
+        from _sun_cone import load_baseline
+        self.baseline = load_baseline()
+        self.hits: dict[str, list[tuple[float, float, float]]] = {}
+        self.current: str | None = None
+        self.verdicts: dict[str, str] = {}
+
+    def install(self):
+        import astrodeck.config as config_mod
+        import astrodeck.hub as hub_mod
+        from _sun_cone import install
+        from astrodeck.catalog import coords
+        install(hub_mod.Hub, coords, config_mod.config_store, self._record)
+
+    def _record(self, ra, dec, lat):
+        if self.current is not None:
+            self.hits.setdefault(self.current, []).append((ra, dec, lat))
+
+    def pytest_runtest_setup(self, item):
+        self.current = item.nodeid
+        self.hits.pop(item.nodeid, None)
+
+    def pytest_runtest_teardown(self, item):
+        from _sun_cone import REPORT_ENV, append_report, report_line
+        self.current = None
+        hits = self.hits.pop(item.nodeid, [])
+        if not hits:
+            return
+        rel = Path(str(item.fspath)).resolve().relative_to(
+            Path(__file__).resolve().parent).as_posix()
+        if os.environ.get(REPORT_ENV, "").strip():
+            append_report(report_line(rel, item.nodeid, hits[0]))
+            return
+        if rel in self.baseline or item.get_closest_marker(
+                "seasonal_sun_target"):
+            return
+        ra, dec, lat = hits[0]
+        self.verdicts[item.nodeid] = (
+            f"{item.nodeid} slewed to RA {ra:g} h Dec {dec:+g} deg, which "
+            f"is {abs(lat):.0f} deg from the ecliptic: the Sun comes within "
+            f"the exclusion cone of it on some days of every year, and the "
+            f"test fails on those days with no code change (#1045, the class "
+            f"of #682 and #1026). Use SUN_PROOF_TARGET from _simhub.py (the "
+            f"north ecliptic pole), pin coords.sun_radec, or mark the test "
+            f"seasonal_sun_target.")
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_makereport(self, item, call):
+        # Reported on the teardown, AFTER every fixture has been finalised: a
+        # raise from the teardown hook itself leaves the item half torn down
+        # and fails the next test with "previous item was not torn down".
+        report = yield
+        if call.when == "teardown":
+            message = self.verdicts.pop(item.nodeid, None)
+            if message is not None:
+                report.outcome = "failed"
+                report.longrepr = message
+        return report
+
+
 def pytest_configure(config):
     # Registered at configure time, so it is in place for pytest_sessionstart,
     # which is before collection imports anything (see the class).
@@ -1996,3 +2074,15 @@ def pytest_configure(config):
     config.pluginmanager.register(
         _TheRealCapturesStayUntouched(_REAL_CAPTURE_ROOTS),
         "astrodeck-captures-guard")
+    # Only in the real tree: a child session that loads this conftest over a
+    # throwaway ``_SERVER_DIR`` (test_w15_tests_tree_guard.py) has no
+    # ``_sun_cone.py`` on its path and nothing to guard.
+    if (_SERVER_DIR / "tests" / "_sun_cone.py").is_file():
+        # Registered here and not in pyproject.toml: that file is an input of
+        # the generated credits (test_credits.py) and a marker is not a credit.
+        config.addinivalue_line(
+            "markers", "seasonal_sun_target: slews to a target the Sun-"
+            "exclusion cone can refuse on some day, on purpose (_SunConeGuard)")
+        guard = _SunConeGuard()
+        guard.install()
+        config.pluginmanager.register(guard, "astrodeck-sun-cone-guard")

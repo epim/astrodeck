@@ -400,6 +400,11 @@ async def test_a_killed_solve_s_frame_is_swept_by_the_next(sim_hub, tmp_path):
     stale = time.time() - hub_module.SOLVE_LEFTOVER_AGE_S - 60.0
     for p in (old, old_ini):
         os.utime(p, (stale, stale))
+    # The OS stamped ``fresh`` with the real clock; the sweep ages it against
+    # ``time.time()``, which a date replay shifts (#1046), and a file that is
+    # months old to a shifted clock is swept. Stamp it with that clock.
+    now = time.time()
+    os.utime(fresh, (now, now))
 
     await sim_hub.solve_and_sync(0.05)
 
