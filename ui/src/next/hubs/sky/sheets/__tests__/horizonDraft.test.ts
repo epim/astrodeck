@@ -13,7 +13,7 @@
 // running the UNEDITED insertPoint and movePoint (horizonModel.ts as of base 58584217) on seeded inputs, -0, NaN and
 // infinite values included, so `no grid` is compared bit for bit (Object.is), not to a tolerance.
 import assert from 'node:assert/strict';
-import { horizonAltAt, insertPoint, movePoint, removePoint } from '../../../../lib/horizonModel';
+import { autoTraceSkyline, horizonAltAt, insertPoint, movePoint, removePoint } from '../../../../lib/horizonModel';
 import type { HorizonPoint } from '../../../../lib/horizonModel';
 import { BinState, ColState, PANO_W, PROFILE_BINS } from '../pano/types';
 import type { ColumnHorizon, HorizonDraft } from '../pano/types';
@@ -602,17 +602,17 @@ const GOLDEN_INSERT: Golden[] = [
   [[{ az: 135.5, alt: 31.5 }, { az: 180.5, alt: 32.5 }, { az: 227, alt: 16.5 }, { az: 242.5, alt: 27 }, { az: 355, alt: 4 }], 163.5, 15, [{ az: 135.5, alt: 31.5 }, { az: 164, alt: 15 }, { az: 180.5, alt: 32.5 }, { az: 227, alt: 16.5 }, { az: 242.5, alt: 27 }, { az: 355, alt: 4 }]],
   [[{ az: 46, alt: 2 }, { az: 132, alt: 23 }, { az: 204.5, alt: 3 }, { az: 209.5, alt: 15 }, { az: 270.5, alt: -3.5 }, { az: 279, alt: 15 }], 227, 44.5, [{ az: 46, alt: 2 }, { az: 132, alt: 23 }, { az: 204.5, alt: 3 }, { az: 209.5, alt: 15 }, { az: 227, alt: 45 }, { az: 270.5, alt: -3.5 }, { az: 279, alt: 15 }]],
   [[{ az: 232, alt: 31.5 }], 115, -18.75, [{ az: 115, alt: -19 }, { az: 232, alt: 31.5 }]],
-  [[{ az: 3, alt: 31.5 }, { az: 45, alt: 28.5 }, { az: 90, alt: 2.5 }, { az: 104.5, alt: 27 }], 393.75, 0.25, [{ az: 3, alt: 31.5 }, { az: 45, alt: 28.5 }, { az: 90, alt: 2.5 }, { az: 104.5, alt: 27 }, { az: 394, alt: 0 }]],
+  [[{ az: 3, alt: 31.5 }, { az: 45, alt: 28.5 }, { az: 90, alt: 2.5 }, { az: 104.5, alt: 27 }], 393.75, 0.25, [{ az: 3, alt: 31.5 }, { az: 45, alt: 28.5 }, { az: 90, alt: 2.5 }, { az: 104.5, alt: 27 }, { az: 359, alt: 0 }]],
   [[{ az: 296, alt: -0.5 }], 108, 99.5, [{ az: 108, alt: 100 }, { az: 296, alt: -0.5 }]],
   [[{ az: 139.5, alt: 26.5 }, { az: 151, alt: 35 }, { az: 230, alt: 8 }], 176, -14.25, [{ az: 139.5, alt: 26.5 }, { az: 151, alt: 35 }, { az: 176, alt: -14 }, { az: 230, alt: 8 }]],
-  [[{ az: 64.5, alt: 21 }], 364.25, 50.75, [{ az: 64.5, alt: 21 }, { az: 364, alt: 51 }]],
+  [[{ az: 64.5, alt: 21 }], 364.25, 50.75, [{ az: 64.5, alt: 21 }, { az: 359, alt: 51 }]],
   [[{ az: 12.5, alt: 14 }, { az: 236, alt: 7.5 }], 259.75, 50, [{ az: 12.5, alt: 14 }, { az: 236, alt: 7.5 }, { az: 260, alt: 50 }]],
   [[{ az: 89, alt: 27.5 }, { az: 100, alt: -5 }, { az: 230.5, alt: 0.5 }, { az: 335, alt: -3.5 }, { az: 335.5, alt: 1 }], 264.5, 31.25, [{ az: 89, alt: 27.5 }, { az: 100, alt: -5 }, { az: 230.5, alt: 0.5 }, { az: 265, alt: 31 }, { az: 335, alt: -3.5 }, { az: 335.5, alt: 1 }]],
   [[{ az: 257.5, alt: 2 }, { az: 304.5, alt: 30 }], 64, -12.75, [{ az: 64, alt: -13 }, { az: 257.5, alt: 2 }, { az: 304.5, alt: 30 }]],
   [[{ az: 23, alt: -3.5 }, { az: 35, alt: 1 }, { az: 265, alt: -2 }, { az: 299.5, alt: 15 }], 300.75, 0.25, [{ az: 23, alt: -3.5 }, { az: 35, alt: 1 }, { az: 265, alt: -2 }, { az: 299.5, alt: 15 }, { az: 301, alt: 0 }]],
   [[{ az: 111, alt: 26.5 }, { az: 143, alt: 23.5 }, { az: 149.5, alt: 1.5 }, { az: 235.5, alt: 34.5 }, { az: 315, alt: 31 }, { az: 351.5, alt: -4.5 }], 78, 51.25, [{ az: 78, alt: 51 }, { az: 111, alt: 26.5 }, { az: 143, alt: 23.5 }, { az: 149.5, alt: 1.5 }, { az: 235.5, alt: 34.5 }, { az: 315, alt: 31 }, { az: 351.5, alt: -4.5 }]],
   [[{ az: 54.5, alt: 20.5 }, { az: 135.5, alt: 24.5 }, { az: 218.5, alt: 22 }, { az: 303.5, alt: 4.5 }, { az: 314.5, alt: 10 }], 181.25, 101.75, [{ az: 54.5, alt: 20.5 }, { az: 135.5, alt: 24.5 }, { az: 181, alt: 102 }, { az: 218.5, alt: 22 }, { az: 303.5, alt: 4.5 }, { az: 314.5, alt: 10 }]],
-  [[{ az: 67.5, alt: 14 }, { az: 93, alt: 27 }, { az: 189.5, alt: -2.5 }, { az: 236.5, alt: 14 }, { az: 277, alt: 22 }], 363.25, 99.25, [{ az: 67.5, alt: 14 }, { az: 93, alt: 27 }, { az: 189.5, alt: -2.5 }, { az: 236.5, alt: 14 }, { az: 277, alt: 22 }, { az: 363, alt: 99 }]],
+  [[{ az: 67.5, alt: 14 }, { az: 93, alt: 27 }, { az: 189.5, alt: -2.5 }, { az: 236.5, alt: 14 }, { az: 277, alt: 22 }], 363.25, 99.25, [{ az: 67.5, alt: 14 }, { az: 93, alt: 27 }, { az: 189.5, alt: -2.5 }, { az: 236.5, alt: 14 }, { az: 277, alt: 22 }, { az: 359, alt: 99 }]],
   [[{ az: 43, alt: 30.5 }, { az: 143, alt: 0.5 }], 18.5, 0.5, [{ az: 19, alt: 1 }, { az: 43, alt: 30.5 }, { az: 143, alt: 0.5 }]],
   [[{ az: 25, alt: 2.5 }, { az: 38.5, alt: 34.5 }, { az: 70, alt: 22.5 }, { az: 77.5, alt: 30 }, { az: 274, alt: 14 }, { az: 327, alt: 28.5 }], 45.5, 21.75, [{ az: 25, alt: 2.5 }, { az: 38.5, alt: 34.5 }, { az: 46, alt: 22 }, { az: 70, alt: 22.5 }, { az: 77.5, alt: 30 }, { az: 274, alt: 14 }, { az: 327, alt: 28.5 }]],
   [[{ az: 9.5, alt: 13.5 }, { az: 23, alt: 32.5 }, { az: 104, alt: 11.5 }, { az: 150.5, alt: 29 }, { az: 296.5, alt: 6.5 }, { az: 332, alt: 27.5 }], 120.75, 56.75, [{ az: 9.5, alt: 13.5 }, { az: 23, alt: 32.5 }, { az: 104, alt: 11.5 }, { az: 121, alt: 57 }, { az: 150.5, alt: 29 }, { az: 296.5, alt: 6.5 }, { az: 332, alt: 27.5 }]],
@@ -621,10 +621,10 @@ const GOLDEN_INSERT: Golden[] = [
   [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], 44.5, -2.5, [{ az: 0, alt: 10 }, { az: 45, alt: -2 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }]],
   [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], 90, 20, [{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }]],
   [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], -0.4, -0.4, [{ az: 0, alt: 10 }, { az: -0, alt: -0 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }]],
-  [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], 359.5, 90, [{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }, { az: 360, alt: 90 }]],
+  [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], 359.5, 90, [{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }, { az: 359, alt: 90 }]],
   [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], NaN, 3, [{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }, { az: NaN, alt: 3 }]],
   [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], 10, NaN, [{ az: 0, alt: 10 }, { az: 10, alt: NaN }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }]],
-  [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], Infinity, 1, [{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }, { az: Infinity, alt: 1 }]],
+  [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], Infinity, 1, [{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }, { az: 359, alt: 1 }]],
   [[{ az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }], -Infinity, 1, [{ az: -Infinity, alt: 1 }, { az: 0, alt: 10 }, { az: 90, alt: 20 }, { az: 180, alt: 5 }, { az: 270, alt: 15 }]],
   [[], 200.5, 7.5, [{ az: 201, alt: 8 }]],
 ];
@@ -709,9 +709,10 @@ test('movePoint without a grid is bit for bit what it was: the golden cases', ()
   }
 });
 
-/** The bodies of insertPoint and movePoint as they were before T24, to widen the golden cases to random inputs. */
+/** The bodies of insertPoint and movePoint as they were before T24, to widen the golden cases to random inputs. The
+ *  one change since is #1029: insertPoint's az is capped at 359 (a 360 is the point at 0 on the server). */
 function legacyInsert(points: HorizonPoint[], az: number, alt: number): HorizonPoint[] {
-  const next = [...points, { az: Math.round(az), alt: Math.round(alt) }];
+  const next = [...points, { az: Math.min(359, Math.round(az)), alt: Math.round(alt) }];
   next.sort((p, q) => p.az - q.az);
   return next;
 }
@@ -743,7 +744,7 @@ function spacedLine(r: () => number): HorizonPoint[] {
   return pts;
 }
 
-test('insertPoint and movePoint without a grid agree with the pre-T24 bodies on 3000 random inputs', () => {
+test('insertPoint and movePoint without a grid agree with the pre-T24 bodies (insert az capped at 359) on 3000 random inputs', () => {
   const r = rng(24);
   for (let k = 0; k < 3000; k++) {
     const line = lineOf(r, Math.floor(r() * 8));
@@ -870,6 +871,23 @@ test('a grid that is not a positive finite number is refused, by both functions,
     assert.throws(() => movePoint(TRI, 1, 10, 10, g), RangeError, `movePoint grid ${g}`);
     assert.throws(() => movePoint(TRI, 9, 10, 10, g), RangeError, `movePoint grid ${g} with no such point`);
   }
+});
+
+test('insertPoint without a grid never stores azimuth 360: a tap in the last half degree lands on 359 (#1029)', () => {
+  for (const az of [359.5, 359.6, 359.999, 360, 400, Infinity]) {
+    const out = insertPoint(TRI, az, 12);
+    assert.ok(out.every(p => p.az <= 359), `az ${az} stored ${fmt(out)}`);
+    assert.deepEqual(lastOf(out), { az: 359, alt: 12 });
+  }
+  assert.deepEqual(lastOf(insertPoint(TRI, 359.4, 12)), { az: 359, alt: 12 }, 'below the half degree is unchanged');
+  assert.deepEqual(insertPoint(TRI, 200.2, 12)[3], { az: 200, alt: 12 }, 'the rest of the strip is unchanged');
+});
+
+test('autoTraceSkyline never emits azimuth 360 for a column near the seam (#1029)', () => {
+  const columns = Array.from({ length: 1000 }, () => [1, 1, 0, 0]);
+  const pts = autoTraceSkyline(columns, 0.5);
+  assert.equal(pts.length, 1000);
+  assert.ok(pts.every(p => p.az >= 0 && p.az <= 359), 'every az is inside 0..359');
 });
 
 console.log(`horizonDraft.test: ${passed}/${passed} passed`);

@@ -268,10 +268,14 @@ def test_a_skipped_row_is_not_dropped_from_the_file_without_saying_so(
     said = _said(bus_lines[mark:])
     assert len(said) == 1, said
     assert "rewritten without the 1 unusable saved location(s)" in said[0]
-    assert "locations.json.bak" in said[0]
+    # #1034: the row is kept in the sidecar, which no write rewrites, and not
+    # only in the .bak the next write overwrites.
+    assert "locations.json.rejected" in said[0]
     _assert_no_value_said(said)
     bak = json.loads(path.with_suffix(".json.bak").read_text(encoding="utf-8"))
     assert [r["id"] for r in bak["locations"]] == ["g1", "x1"]
+    assert [r["id"] for r in json.loads(path.with_suffix(".json.rejected")
+            .read_text(encoding="utf-8"))["rejected"]] == ["x1"]
     on_disk = json.loads(path.read_text(encoding="utf-8"))["locations"]
     assert [r["id"] for r in on_disk][0] == "g1" and len(on_disk) == 2
     # Said once: the change after that rewrites a file that no longer has it.

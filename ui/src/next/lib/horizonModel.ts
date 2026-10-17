@@ -73,11 +73,12 @@ function onGrid(v: number, grid: number): number {
 }
 
 /** Add a point and keep the array az-sorted. The point's az/alt are rounded to whole degrees, or, with `grid`, to
- *  the grid, with az held inside [0, 360 - grid] (a point at 360 is the point at 0). */
+ *  the grid, with az held inside [0, 360 - grid] (a point at 360 is the point at 0). Without a grid az is capped at
+ *  359, as movePoint caps it: a tap in the last half degree rounds to 360, which the server reads as 0 (#1029). */
 export function insertPoint(points: HorizonPoint[], az: number, alt: number, grid?: number): HorizonPoint[] {
   if (grid !== undefined) checkGrid(grid);
   const at = grid === undefined
-    ? { az: Math.round(az), alt: Math.round(alt) }
+    ? { az: Math.min(359, Math.round(az)), alt: Math.round(alt) }
     : { az: Math.min(360 - grid, Math.max(0, onGrid(az, grid))), alt: onGrid(alt, grid) };
   const next = [...points, at];
   next.sort((p, q) => p.az - q.az);
@@ -159,7 +160,7 @@ export function autoTraceSkyline(
       }
     }
     const alt = rows > 1 ? altTop + (rowIdx / (rows - 1)) * (altBottom - altTop) : altTop;
-    points.push({ az: Math.round((c / n) * 360), alt: Math.round(alt) });
+    points.push({ az: Math.min(359, Math.round((c / n) * 360)), alt: Math.round(alt) });
   }
   return points;
 }
