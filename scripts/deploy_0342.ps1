@@ -99,7 +99,7 @@ Invoke-LoggedDeploy -Log (Join-Path $Root "deploy_$Ver.log") -Body {
         @{ File = 'server/astrodeck/sequence/engine.py'; Pattern = '_ensure_rotator_self_test'; Name = 'W14 #648: nightly rotator self-test' },
         @{ File = 'server/astrodeck/sequence/engine.py'; Pattern = '_sky_closed_before_recovery'; Name = 'W14 #621: sky before guiding recovery' },
         @{ File = 'server/astrodeck/devices/cameras/adapter.py'; Pattern = 'class CameraGone'; Name = 'W14 #16: a removed camera reads disconnected' },
-        @{ File = 'server/astrodeck/config.py'; Pattern = 'CONFIG_SCHEMA = 3'; Name = 'W14 #657: config schema 3' },
+        @{ File = 'server/astrodeck/config.py'; Pattern = 'CONFIG_SCHEMA = 4'; Name = 'W14 #657 and later: config schema 4' },
         @{ File = 'server/astrodeck/__main__.py'; Pattern = '_record_fault_in_the_night_log'; Name = 'W14 #496: the event-loop fault reaches the night log' },
         @{ File = 'server/astrodeck/sequence/report.py'; Pattern = 'running = [t for t in self._pending if not t.done()]'; Name = 'W13 #691: report flush never spins' },
         @{ File = 'server/astrodeck/api/app.py'; Pattern = 'asyncio.wait({task}'; Name = 'W13 #692: the learn-offsets cancel answers' },
