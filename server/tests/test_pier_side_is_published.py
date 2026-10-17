@@ -416,15 +416,16 @@ class TestTheRedactorKnowsAboutIt:
         _strip_meridian_derived(m)
         assert m["flip_owed"] is not False
 
-    def test_the_pier_side_and_its_provenance_stay(self):
-        """They are properties of the mount and the link, not of where the
-        observer is standing -- the existing rule for `pier_side`, extended to
-        the two fields that describe it."""
+    def test_the_pier_side_and_its_provenance_are_withheld(self):
+        """The side changes AT the flip, a computed moment, so a reader of it
+        dates the flip (#1037): the side and the two fields that describe it
+        read as a mount that does not report it, for a principal without the
+        site-derived view. (Held whole since #1037; before, they stayed.)"""
         from astrodeck.api.redact import _strip_meridian_derived
         m = {"status": "due", "hours_to_flip": -0.3, "pier_side": "west",
              "pier_side_source": "cached", "pier_side_age_s": 42.0,
              "flip_owed": False}
         _strip_meridian_derived(m)
-        assert m["pier_side"] == "west"
-        assert m["pier_side_source"] == "cached"
-        assert m["pier_side_age_s"] == 42.0
+        assert m["pier_side"] == "unknown"
+        assert m["pier_side_source"] == "none"
+        assert m["pier_side_age_s"] is None

@@ -29,6 +29,7 @@ WITHOUT changing any existing ETA/resume bookkeeping:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 import time
@@ -714,6 +715,21 @@ async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = "",
         return await asyncio.wait_for(awaitable, timeout_s)
     except asyncio.TimeoutError:
         raise _timeout_abort(what, timeout_s, note, suffix=suffix)
+
+
+def _closes_flip_span(fn):
+    """Close a meridian flip's span however `fn` ends (#1035, #1037): the
+    state-only marker and the process-wide hold are OPENED inside the flip once
+    it is due and closed here, so the flip's own code is the code it was.
+    The wrapper changes nothing the flip returns or raises."""
+    @functools.wraps(fn)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            return await fn(self, *args, **kwargs)
+        finally:
+            self.state.pop("_flip_site_derived", None)
+            end_flip_hold()
+    return wrapper
 
 
 def _reraise_swallowed_cancel() -> None:
@@ -16395,19 +16411,9 @@ class SequenceEngine:
                 f"{target.name}: below the mount's floor/horizon at its "
                 f"meridian flip, ending it for {other.name}") from e
 
+    @_closes_flip_span
     async def _maybe_meridian_flip(self, target: Target,
                                    next_exposure_s: float = 0.0) -> None:
-        """`_take_meridian_flip`, with the flip span closed however it ends.
-        The span's marker and hold are opened inside it, once a flip is due
-        (#1035, #1037)."""
-        try:
-            await self._take_meridian_flip(target, next_exposure_s)
-        finally:
-            self.state.pop("_flip_site_derived", None)
-            end_flip_hold()
-
-    async def _take_meridian_flip(self, target: Target,
-                                  next_exposure_s: float = 0.0) -> None:
         if not self.plan.meridian_flip or not self._flip_armed:
             return
         tel = self.hub.devices.get("telescope")

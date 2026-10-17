@@ -257,7 +257,15 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
             assert aside == [], (f"{at}: 2-2 is set aside before the end of "
                                  f"its third pass: {aside}")
             held.append((reading.t, aside))
-        assert reading.viewer == reading.state, (
+        # A viewer is served the state less the schedule's timed fields
+        # (#1036); nothing else differs outside a meridian wait.
+        sched = reading.state.get("schedule")
+        expected = reading.state
+        if isinstance(sched, dict):
+            expected = {**reading.state, "schedule": {
+                k: v for k, v in sched.items()
+                if k not in ("eta_s", "start_ts", "stop_ts")}}
+        assert reading.viewer == expected, (
             f"{at}: a viewer is served another state outside a meridian wait")
         # The ledger and the three-way agreement are graded by `night_one`
         # itself, right after this, at every held exposure.

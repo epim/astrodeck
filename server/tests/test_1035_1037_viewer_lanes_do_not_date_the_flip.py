@@ -145,7 +145,7 @@ async def test_the_flip_span_holds_the_pull_lanes_for_a_viewer(
     from the state.
 
     MUTANT "the span's marker not set" (the ``self.state["_flip_site_derived"]
-    = ...`` block removed from `SequenceEngine._take_meridian_flip`): RED,
+    = ...`` block removed from `SequenceEngine._maybe_meridian_flip`): RED,
     observed -
         AssertionError: a viewer read the flip off GET /api/sequence/state:
         'meridian flip'

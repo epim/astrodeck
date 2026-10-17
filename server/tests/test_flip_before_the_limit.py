@@ -1410,7 +1410,7 @@ def test_the_frame_window_covers_the_measured_overhead():
     fit inside the flat margin."""
     import inspect
     from astrodeck.sequence.engine import SequenceEngine as _E
-    src = inspect.getsource(_E._take_meridian_flip)
+    src = inspect.getsource(_E._maybe_meridian_flip)
     i = src.index("window_s =")
     assert "_overhead_ema" in src[i:i + 400], (
         "the frame-window gate budgets the exposure and a flat margin but not "
