@@ -12,6 +12,7 @@ nothing coordinate-bearing.
 """
 from __future__ import annotations
 
+import json
 import math
 import time
 from pathlib import Path
@@ -36,6 +37,12 @@ HORIZON_ALT_MAX_DEG = 90.0
 #: The cap in words, so the refusal at the API doors and the count at the load
 #: door (``sanitize_horizon_points``) say it alike.
 _HORIZON_CAP_RULE = f"at most {MAX_HORIZON_POINTS} horizon points"
+#: Azimuth 0 and azimuth 360 are one direction, so two points there that differ
+#: in altitude cannot both be kept. Refused (#1029): which one "wins" used to be
+#: the order the points arrived in, and a 360 sorts last, so a point at 360
+#: silently replaced a drawn point at 0.
+_HORIZON_SEAM_RULE = ("horizon points at azimuth 0 and azimuth 360 are the "
+                      "same direction and must have the same altitude")
 
 
 class _Unchanged:
@@ -66,7 +73,10 @@ def normalize_horizon_points(points) -> list[list[float]] | None:
     ``interp_wrap`` reads the same seam), altitude is
     ``HORIZON_ALT_MIN_DEG..HORIZON_ALT_MAX_DEG``. The result is sorted by
     azimuth with one point per azimuth (a later point at the same azimuth wins),
-    which is the shape ``sequence.schedule.interp_wrap`` expects.
+    which is the shape ``sequence.schedule.interp_wrap`` expects. The one
+    exception is the seam: a point at 0 and a point at 360 with DIFFERENT
+    altitudes is refused (``_HORIZON_SEAM_RULE``), not resolved by order; with
+    the same altitude they are one point.
 
     THREE-WAY, and the third case is the one that matters: ``None`` means "this
     location has no drawn horizon" (leave whatever is configured alone), ``[]``
@@ -91,6 +101,8 @@ def normalize_horizon_points(points) -> list[list[float]] | None:
     if len(points) > MAX_HORIZON_POINTS:
         raise ValueError(_HORIZON_CAP_RULE)
     by_az: dict[float, float] = {}
+    #: Altitude at azimuth 0 and at azimuth 360, as written (the seam).
+    seam: dict[float, float] = {}
     for raw in points:
         if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
             raise ValueError("each horizon point must be an [az_deg, alt_deg] pair")
@@ -113,7 +125,11 @@ def normalize_horizon_points(points) -> list[list[float]] | None:
             raise ValueError(
                 f"horizon point altitude must be {HORIZON_ALT_MIN_DEG:g}.."
                 f"{HORIZON_ALT_MAX_DEG:g} degrees")
+        if az in (0.0, 360.0):
+            seam[az] = alt
         by_az[az % 360.0] = alt
+    if len(seam) == 2 and seam[0.0] != seam[360.0]:
+        raise ValueError(_HORIZON_SEAM_RULE)
     if len(by_az) > MAX_HORIZON_POINTS:
         raise ValueError(_HORIZON_CAP_RULE)
     return [[az, by_az[az]] for az in sorted(by_az)]
@@ -172,13 +188,26 @@ def sanitize_horizon_points(points) -> tuple[object, dict[str, int]]:
         return None, {whole: 1}
     problems: dict[str, int] = {}
     by_az: dict[float, float] = {}
+    seam: dict[float, float] = {}
     for raw in points:
         try:
             az, alt = normalize_horizon_points([raw])[0]
         except ValueError as exc:
             problems[str(exc)] = problems.get(str(exc), 0) + 1
         else:
-            by_az[az] = alt
+            if az == 0.0:
+                # The rule took this point, so raw[0] is a number: keep the
+                # azimuth as written, 0 or 360, to judge the seam below.
+                seam[float(raw[0])] = alt
+            else:
+                by_az[az] = alt
+    if seam:
+        if len(seam) == 2 and seam[0.0] != seam[360.0]:
+            # Keep the point written at 0, the seam's own name; say it once.
+            problems[_HORIZON_SEAM_RULE] = 1
+            by_az[0.0] = seam[0.0]
+        else:
+            by_az[0.0] = seam.get(0.0, seam.get(360.0))
     if len(points) > MAX_HORIZON_POINTS:
         problems[_HORIZON_CAP_RULE] = 1
     if not by_az:
@@ -282,10 +311,41 @@ class LocationStore:
         self._items: list[SavedLocation] | None = None
         #: Rows the last parse could not keep. They are still in the file on
         #: disk, and the first write that follows drops them: ``_note_shrunk``.
+        #: ``_parse`` has already set them aside in the ``.rejected`` sidecar.
         self._skipped = 0
 
     def _bak_path(self) -> Path:
         return self._path.with_suffix(self._path.suffix + ".bak")
+
+    def _rejected_path(self) -> Path:
+        return self._path.with_suffix(self._path.suffix + ".rejected")
+
+    def _quarantine(self, rows: list) -> bool:
+        """Keep ``rows`` (rows the load could not use) verbatim in the
+        ``.rejected`` sidecar, ADDING to what is there (#1034). A save never
+        writes this file, so a skipped row outlives the ``.bak`` rotation that
+        used to be its only copy; a row already in the sidecar is not added
+        again, so loading the same file twice does not grow it. True when the
+        sidecar holds every row afterwards."""
+        try:
+            try:
+                held = read_json(self._rejected_path())
+            except FileNotFoundError:
+                held = None
+            kept = held.get("rejected") if isinstance(held, dict) else None
+            if not isinstance(kept, list):
+                kept = []
+            seen = {json.dumps(r, sort_keys=True) for r in kept}
+            added = [r for r in rows if json.dumps(r, sort_keys=True) not in seen]
+            if added or held is None:
+                ensure_dir(self._path.parent)
+                write_json_atomic(self._rejected_path(),
+                                  {"rejected": kept + added}, backup=False)
+            return True
+        except Exception:
+            # Anything: an ACL refusal is not an OSError, and a sidecar that
+            # cannot be kept must be SAID, never turn into a failed load.
+            return False
 
     def _bak_sites(self) -> dict[str, SavedLocation]:
         """The usable rows of the ``.bak`` by id, read quietly (nothing is said
@@ -333,6 +393,7 @@ class LocationStore:
         items: list[SavedLocation] = []
         broke: dict[str, int] = {}
         repaired = rescued = skipped = 0
+        lost: list = []
         for row, (loc, problems) in zip(rows, parsed):
             if loc is None and rescue:
                 rid = row.get("id") if isinstance(row, dict) else None
@@ -347,6 +408,7 @@ class LocationStore:
                         continue
             if loc is None:
                 skipped += 1
+                lost.append(row)
                 continue
             items.append(loc)
             if problems:
@@ -368,23 +430,29 @@ class LocationStore:
                     f"unusable and were taken from {self._bak_path().name} "
                     f"instead; {until}", "config")
         if skipped:
+            if self._quarantine(lost):
+                kept = (f"kept verbatim in {self._rejected_path().name}, which "
+                        f"a save does not rewrite")
+            else:
+                kept = (f"NOT kept: {self._rejected_path().name} could not be "
+                        f"written")
             bus.log("warning",
                     f"{skipped} saved location(s) in {self._path.name} were "
-                    f"unusable and skipped; the other {len(items)} loaded",
-                    "config")
+                    f"unusable and skipped ({kept}); the other {len(items)} "
+                    f"loaded", "config")
         return items, skipped
 
     def _note_shrunk(self) -> None:
         """Say, once, that the file on disk has just been written without the
         rows the load skipped. Called after every write; silent when nothing was
-        skipped. The previous file, with those rows in it, is the ``.bak`` until
-        the next change copies a newer primary over it."""
+        skipped. The rows themselves were set aside by ``_quarantine`` when the
+        load skipped them, so no later write can lose them."""
         if self._skipped:
             bus.log("warning",
                     f"{self._path.name} was rewritten without the "
                     f"{self._skipped} unusable saved location(s) skipped at "
-                    f"load; they stay in {self._bak_path().name} until the next "
-                    f"change to the library", "config")
+                    f"load; they stay in {self._rejected_path().name}",
+                    "config")
             self._skipped = 0
 
     def _restore_from_bak(self) -> list[SavedLocation] | None:

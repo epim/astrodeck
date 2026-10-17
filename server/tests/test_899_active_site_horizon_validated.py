@@ -123,7 +123,8 @@ _REFUSED = [
 _ACCEPTED = [
     pytest.param([], id="empty-is-the-explicit-clear"),
     pytest.param([[0.0, 12.0]], id="single-point"),
-    pytest.param([[0.0, -10.0], [360.0, 90.0]], id="the-bounds-themselves"),
+    pytest.param([[0.0, -10.0], [180.0, 90.0], [360.0, -10.0]],
+                 id="the-bounds-themselves"),
     pytest.param(_alternating(MAX_HORIZON_POINTS), id="exactly-the-cap"),
     pytest.param([[270.0, 30.0], [90.0, 8.0], [0.0, 22.0]], id="unsorted"),
     pytest.param([[10.0, 30.0], [10.0, 12.0]], id="duplicate-azimuth"),
