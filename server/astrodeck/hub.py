@@ -1628,9 +1628,13 @@ class Hub:
         # so behavior is preserved (the connect()/role set below are idempotent).
         _RigSpec, ConnSpec, _connect_profile = _harness()  # noqa: N806 (lazy import)
         from .devices.backend import get_backend
+        held = self.devices.get(role)
+        # A held device shares the server's slot when the endpoint is the same,
+        # so get_device hands back a replacement whose connect failed, for the
+        # release below, in place of sending its Connected=False itself (#1040).
         conn = ConnSpec(backend="native", host=host, port=port,
                         dev_type=dev_type, dev_num=dev_num, role=role,
-                        extra={"name": name})
+                        extra={"name": name, "keep_unowned": held is not None})
         # The cancels this task already carries, so a new one is told apart.
         me = asyncio.current_task()
         asked = me.cancelling() if me is not None else 0
@@ -1645,8 +1649,7 @@ class Hub:
         replaced_same = False
         released = False        # the replacement has been sent its disconnect
         try:
-            dev = await session.get_device(role, conn)
-            old = self.devices.get(role)
+            old = held
             old_session = self._alpaca_sessions.get(role)
             # The SAME Alpaca device again (reconnect_role rebuilds one from its
             # record, #966) is not disconnected: the server keeps one Connected
@@ -1656,6 +1659,29 @@ class Hub:
                 str(getattr(old, a, None)).lower()
                 for a in ("host", "port", "dev_type", "dev_num")
             ) == tuple(str(v).lower() for v in (host, port, dev_type, dev_num))
+            try:
+                dev = await session.get_device(role, conn)
+            except (Exception, asyncio.CancelledError) as exc:
+                # get_device's own connect took the server's Connected=True and
+                # then failed (a property read), so the replacement is held by
+                # nobody (#1040). Let go of it, as for the final connect below,
+                # and connect the old device again: it was not disconnected,
+                # but two spellings of one endpoint share one server slot and
+                # the release just flipped it.
+                dev = getattr(exc, "unowned_device", None)
+                if dev is not None and not replaced_same:
+                    released = True
+                    await self._release_unowned_alpaca_device(role, dev)
+                    if old:
+                        try:
+                            await old.connect()
+                        except Exception as exc2:
+                            self.say_swallowed(
+                                "reconnecting the previous device after a "
+                                "failed rebuild", exc2)
+                    if me is not None and me.cancelling() > asked:
+                        raise asyncio.CancelledError() from exc
+                raise
             if old and not replaced_same:
                 try:
                     await old.disconnect()
