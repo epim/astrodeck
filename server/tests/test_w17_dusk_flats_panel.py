@@ -102,6 +102,7 @@ assertion of each, verbatim (first failure, ``-x``):
 """
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -321,6 +322,18 @@ async def test_a_cover_that_was_shut_is_left_shut(sim_hub, monkeypatch):
 
 # ---------------------------------------------------------- once per night
 
+def _stamp_with_the_clock(root) -> None:
+    """Date every FITS under ``root`` by ``time.time()``, the clock the library
+    ages them against. The OS stamps a file with the real clock; ``shift_clock``
+    (#917) shifts ``time.time`` and not file times, so under a date replay the
+    flats "shot tonight" read as months old, the library called them stale and
+    the restart shot them again (#1046, the library.py ``st_mtime`` case). On
+    the real clock this changes nothing."""
+    now = time.time()
+    for path in root.rglob("*.fits"):
+        os.utime(path, (now, now))
+
+
 async def test_a_restart_finds_fresh_flats_and_shoots_none(
         sim_hub, tmp_path, monkeypatch):
     """The calibration queue's if-stale rule, asked of the same health matrix
@@ -333,6 +346,7 @@ async def test_a_restart_finds_fresh_flats_and_shoots_none(
                         CalibrationLibrary(lambda: tmp_path), raising=False)
     _, first = await _run(sim_hub, _plan(_flats()), monkeypatch)
     assert first.saved_flats() == ["L", "L", "L", "R", "R", "R"]
+    _stamp_with_the_clock(tmp_path)
     _, second = await _run(sim_hub, _plan(_flats()), monkeypatch,
                            engine=SequenceEngine(sim_hub))
     assert second.saved_flats() == [], (

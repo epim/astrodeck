@@ -1,0 +1,32 @@
+# Test files that, when the Sun-cone guard landed (#1045, #1046), slewed by the
+# real Sun to a target the exclusion cone can refuse on some day of the year.
+# A RATCHET: the list may only shrink. Fix a file (SUN_PROOF_TARGET from
+# _simhub.py, or a pinned coords.sun_radec) and delete its line. Measured with
+# ASTRODECK_SUN_CONE_REPORT over the whole suite. Paths are relative to tests/.
+test_850_hub_sync_refused.py
+test_a_run_without_a_temperature_says_so.py
+test_busy_lanes_routes.py
+test_camera_yield_for_solve.py
+test_capture_video_mirror.py
+test_flip_recentre_rotation.py
+test_flows_continue.py
+test_flows_one_panel_pass_wire.py
+test_goto_center_solved_pointing.py
+test_goto_center_stuck.py
+test_goto_rotation.py
+test_h4_rotator_backlash.py
+test_h4_solve_frame_unique_names.py
+test_mount_rate_ceiling.py
+test_pointing_verification_is_visible.py
+test_rbac_enforcement.py
+test_rotate_shortcut.py
+test_rotation_unavailable.py
+test_session_engine.py
+test_sun_guard.py
+test_w14_rotator_preflight.py
+test_w15_rotator_retest.py
+test_w17_queued_next_session.py
+test_w17_session_flags.py
+test_w3_wp22_horizon_and_solve_keys.py
+test_w4_rotator_sign.py
+test_w5_rotator_trust.py

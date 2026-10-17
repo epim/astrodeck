@@ -21,8 +21,9 @@ label read, and is never kept for another wheel or another solve.
 The cases run on the simulator's hub with its wheel on a narrowband slot
 (OIII), scripted by ``_Wheel``, through real callers. The bound is shortened so a stall
 does not wait out the real one; it is read at call time. They grade the reads
-of the wheel made before the shutter opens, which is the wait, and the elapsed
-time as a second view of the same.
+of the wheel made before the shutter opens, which is the wait, and the count
+of full bounds that ran out before it as a second view of the same (never the
+seconds: #1047).
 
 THE HUB'S OWN POLLER IS STOPPED (#1011). ``connect_sim`` starts the two-second
 status poller, which reads this same wheel through the same ``get_position``.
@@ -77,7 +78,6 @@ no borrow before it, still reads.
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
@@ -148,6 +148,7 @@ class _Wheel:
         self.reads: list[int] = []
         self.moves: list[int] = []
         self.shutter: dict = {}
+        self.waits_spent = 0
         real_get = self.fw.get_position
         jammed = {"left": 1 if jam_move else 0}
 
@@ -173,6 +174,19 @@ class _Wheel:
             # exposure and nothing after it.
             return self.rig.filter_slot
 
+        real_wait_for = asyncio.wait_for
+
+        async def wait_for(aw, timeout=None, **kw):
+            # A full bound spent: a wait of the (shortened) wheel bound that
+            # ran out. Counted, not timed, so a loaded machine cannot move it.
+            try:
+                return await real_wait_for(aw, timeout, **kw)
+            except asyncio.TimeoutError:
+                if timeout == BOUND_S:
+                    self.waits_spent += 1
+                raise
+
+        monkeypatch.setattr(asyncio, "wait_for", wait_for)
         monkeypatch.setattr(self.fw, "get_position", get_position)
         monkeypatch.setattr(self.fw, "set_position", set_position)
         monkeypatch.setattr(hub, "_wheel_slot", wheel_slot)
@@ -182,7 +196,7 @@ class _Wheel:
 
         async def expose(*args, **kwargs):
             self.shutter.setdefault("reads", len(self.reads))
-            self.shutter.setdefault("at", time.monotonic())
+            self.shutter.setdefault("waits", self.waits_spent)
             return await real_expose(*args, **kwargs)
 
         monkeypatch.setattr(cam, "expose", expose)
@@ -204,7 +218,6 @@ async def test_a_stalled_wheel_costs_a_solve_one_wait_before_the_exposure(
     dead wheel."""
     logs = _record_logs(monkeypatch)
     wheel = _Wheel(sim_hub, monkeypatch, stalled=lambda n: True)
-    began = time.monotonic()
     try:
         try:
             await asyncio.wait_for(_solve(sim_hub), 10.0)
@@ -216,9 +229,12 @@ async def test_a_stalled_wheel_costs_a_solve_one_wait_before_the_exposure(
             f"the wheel was read {wheel.shutter['reads']} times before the "
             f"shutter opened, and every read of a stalled wheel is a full "
             f"bound")
-        waited = wheel.shutter["at"] - began
-        assert BOUND_S * 0.5 < waited < BOUND_S * 1.8, (
-            f"the exposure began {waited:.2f} s in; one bound is {BOUND_S} s")
+        # The second view of the same wait is a COUNT of the bounds that ran
+        # out, not the seconds they took: a wall-clock window around 0.5 s
+        # failed at 1.72 s on a loaded box (#1047).
+        assert wheel.shutter["waits"] == 1, (
+            f"{wheel.shutter['waits']} full bounds of {BOUND_S} s ran out "
+            f"before the shutter opened; a stalled wheel costs one")
         said = [ln for ln in logs if "stalled" in ln[1]]
         assert len(said) == 1 and said[0][0] == "warning", logs
         assert "position read" in said[0][1], said[0][1]
