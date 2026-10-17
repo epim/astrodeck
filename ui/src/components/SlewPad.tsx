@@ -53,6 +53,7 @@ import {
   SLEW_RATES,
   MIN_SLEW_ALT_DEG,
   ALT_GUARD_OFF_NOTE,
+  ALT_GUARD_UNREADABLE_NOTE,
   POSITION_UNKNOWN_STEPS_REASON,
   believedPointing,
   fastestRungIndex,
@@ -734,6 +735,13 @@ export default function SlewPad(props: SlewPadProps = {}) {
           {/* The guard's absence is said, not left to be assumed: with the
               altitude line gone nothing else on the pad would tell an operator
               that holding toward the horizon is no longer stopped for them. */}
+          {/* Known position, no readable altitude: holds are refused (#1044),
+              and the pad says so up front, not only after a press. */}
+          {m && positionIsKnown && !believed && (
+            <p className="text-center text-[12px] text-warn mt-1 max-w-[260px] mx-auto">
+              {ALT_GUARD_UNREADABLE_NOTE}
+            </p>
+          )}
           {m && !positionIsKnown && (
             <p className="text-center text-[12px] text-warn mt-1 max-w-[260px] mx-auto">
               {ALT_GUARD_OFF_NOTE}

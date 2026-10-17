@@ -7,7 +7,7 @@ import { Panel, Stat, Toggle, IconButton, LockedNote, SegmentedControl } from ".
 import { confirmDialog } from "../components/ConfirmDialog";
 import SlewPad from "../components/SlewPad";
 import { Icon } from "../components/icons";
-import { useCanControlMount } from "../lib/caps";
+import { useCanControlMount, useCapability } from "../lib/caps";
 import { useBusyOrPending } from "../lib/useBusy";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import GotoStrip from "../components/GotoStrip";
@@ -15,7 +15,7 @@ import type { CatalogEntry, LogLine, PreflightAlt } from "../types";
 import { altTone, fmtAlt, fmtMag } from "../lib/catalogFormat";
 import {
   POSITION_UNKNOWN_NOTE, TRUST_POSITION_CONFIRM_BODY, TRUST_POSITION_CONFIRM_LABEL,
-  TRUST_POSITION_CONFIRM_TITLE, TRUST_POSITION_LABEL, believedRaDec, positionKnown,
+  TRUST_POSITION_CONFIRM_TITLE, TRUST_POSITION_LABEL, believedPointing, believedRaDec, positionKnown,
   slewRatesWithCeiling,
 } from "../lib/slewController";
 
@@ -122,6 +122,12 @@ export default function MountView() {
   // The equatorial reading, gated as the angles are (#928): null while the
   // position is unknown, and the stats below say so.
   const equatorial = believedRaDec(m);
+  // The horizontal reading, through the ONE gate (#791, #1043): null for an
+  // unknown position and for an angle that is absent or not a finite number.
+  // `canSeeDerived` only chooses the word for the null case.
+  const believedAltAz = believedPointing(m);
+  const canSeeDerived = useCapability("view.site_derived");
+  const noAngle = !canSeeDerived ? "hidden" : "not reported";
 
   // ---------------------------------------------------------- in-flight state
   // TWO KINDS OF ROUTE, TWO KINDS OF TRUTH.
@@ -433,11 +439,12 @@ export default function MountView() {
                 "undefined°". */}
             <Stat label="Altitude"
               value={!m ? "—" : !positionIsKnown ? "unknown"
-                : typeof m.alt === "number" ? `${m.alt}°` : "hidden"}
-              tone={m && (!positionIsKnown || m.alt < 20) ? "warn" : undefined} />
+                : believedAltAz ? `${believedAltAz.alt}°` : noAngle}
+              tone={m && (!positionIsKnown || (believedAltAz && believedAltAz.alt < 20))
+                ? "warn" : undefined} />
             <Stat label="Azimuth"
               value={!m ? "—" : !positionIsKnown ? "unknown"
-                : typeof m.az === "number" ? `${m.az}°` : "hidden"}
+                : believedAltAz ? `${believedAltAz.az}°` : noAngle}
               tone={m && !positionIsKnown ? "warn" : undefined} />
             {/* The lane-derived states come FIRST. A native AM5 leaves
                 `slewing` false for the whole park and the whole home walk, so
