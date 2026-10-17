@@ -259,6 +259,16 @@ test("#488 control: an altitude gate keeps its sentence and countdown", () => {
   match(r.text, /^Waiting for your target to rise above 30° at \d{2}:\d{2}, about 47 min\.$/, "altitude copy");
 });
 
+test("#1036: a viewer's schedule (no eta_s, start_ts, stop_ts) still reads in words", () => {
+  // The server withholds the three timed fields from a principal without
+  // view.site_derived; the line must render, with no clock and no countdown.
+  for (const reason of ["waiting for the observing window", "below start altitude (30 deg)", ""]) {
+    const r = formatScheduleStatus({ state: "waiting", reason }, undefined, NOW)!;
+    assert(r !== null && r.text.length > 0, `no line for ${JSON.stringify(reason)}`);
+    assert(!/\d{2}:\d{2}|about/.test(r.text), `a time in the viewer's line: ${r.text}`);
+  }
+});
+
 const total = passed + failed;
 console.log(`scheduleStatus.test: ${passed}/${total} passed`);
 if (failures.length) { console.error(failures.join("\n")); (globalThis as unknown as { process?: { exit(c: number): void } }).process?.exit(1); }

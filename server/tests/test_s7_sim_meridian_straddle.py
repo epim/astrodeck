@@ -214,9 +214,16 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
         f"{wait.state.get('live')} (#665)")
     assert "meridian_eta_s" not in (wait.viewer.get("live") or {}), (
         f"{at}: a viewer read the meridian countdown: {wait.viewer.get('live')}")
-    assert {k: v for k, v in wait.state.items() if k not in ("group", "live")
-            } == {k: v for k, v in wait.viewer.items()
-                  if k not in ("group", "live")}, (
+    def _untimed(s: dict) -> dict:
+        # #1036: the schedule's eta_s/start_ts/stop_ts are withheld from a
+        # viewer; its state and reason are not.
+        out = {k: v for k, v in s.items() if k not in ("group", "live")}
+        if isinstance(out.get("schedule"), dict):
+            out["schedule"] = {k: v for k, v in out["schedule"].items()
+                               if k not in ("eta_s", "start_ts", "stop_ts")}
+        return out
+
+    assert _untimed(wait.state) == _untimed(wait.viewer), (
         f"{at}: the viewer's state differs outside the group and the live "
         f"chip, which today's redaction does not do (spec 6.9, 5.10)")
     assert_the_three_agree(wait, plan)

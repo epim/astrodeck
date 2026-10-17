@@ -53,7 +53,7 @@ from .mount_offset import POSITION_UNKNOWN_MOTION_DETAIL
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
 from .align import guide_offset as _guide_offset
-from .events import bus, site_timed_span
+from .events import bus, note_flip_hold_value, site_timed_span
 from .guide import Guider, PHD2Guider
 from .imaging import (
     FrameMeta,
@@ -10697,6 +10697,8 @@ class Hub:
                         "error_arcmin": self._pointing_error_arcmin,
                     },
                 }
+                # What a viewer is served while a flip's hold is open (#1037).
+                note_flip_hold_value("slewing", out["mount"].get("slewing"))
             except Exception as exc:
                 lost("mount block", exc)
             # Server-computed meridian (Monitor): NINA returns a real number; for
@@ -11210,6 +11212,7 @@ class Hub:
                 pass
         if self.guider and self.guider.connected:
             out["guider"] = self.guider.stats().__dict__ | {"name": self.guider.name}
+            note_flip_hold_value("guider", dict(out["guider"]))
         # Additive guide-camera descriptor so ConnectView can show the guiding
         # device with a name + connected state in every backend (not just sim's
         # dedicated guide_camera device).

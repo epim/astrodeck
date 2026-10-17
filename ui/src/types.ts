@@ -862,7 +862,9 @@ export interface SequenceState {
   schedule?: {
     state: "waiting" | "ready" | "window_closed" | "never_rises";
     reason: string;
-    eta_s: number;
+    // Absent for a viewer (#1036): the countdown, and the two clock times
+    // below, are twilight times for a dusk or dawn window.
+    eta_s?: number;
     // null, not just absent (#552): a PRO-14 constraint wait (moon, hour
     // angle) nulls start_ts on purpose (schedule.gating_status step 4b), and
     // a window with no stop bound (resolve_window, stop_mode "none") nulls

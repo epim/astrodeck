@@ -58,7 +58,9 @@ function waitingText(
   schedule: NonNullable<SequenceState["schedule"]>,
   nowUnix: number,
 ): string {
-  const { reason, eta_s, start_ts } = schedule;
+  const { reason, start_ts } = schedule;
+  // Absent for a viewer (#1036): no countdown and no clock then, in words.
+  const eta_s = schedule.eta_s ?? 0;
   // A MERIDIAN WAIT READS AS ONE (#488). It used to fall through to the window
   // sentence below, so a mosaic held for the crossing said "Waiting for the
   // observing window to open." with the window wide open, pointing the operator

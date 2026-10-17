@@ -1385,10 +1385,11 @@ def test_a_viewer_gets_no_meridian_timing(tmp_path, monkeypatch):
         "one authorized request and a clock is the whole attack: "
         f"{out['meridian']}")
     assert out["meridian"]["status"] == "unknown"
-    # The two facts that are about the MOUNT rather than about where it stands
-    # stay, so the tile can still say "flip disabled" or name the pier.
+    # The plan's flip setting stays, so the tile can still say "flip disabled".
+    # The pier side does NOT (#1037): it changes at the flip, so reading it
+    # dates the flip; it reads as a mount that does not report one.
     assert out["meridian"]["flip_enabled"] is True
-    assert out["meridian"]["pier_side"] == "east"
+    assert out["meridian"]["pier_side"] == "unknown"
 
 
 @pytest.mark.parametrize("status", ["counting", "due", "n_a_over_pole"])
