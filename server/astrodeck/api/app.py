@@ -9646,10 +9646,12 @@ def create_app(*, bind_host: str | None = None,
     async def mount_pulse_probe():
         """Does a guide pulse leave the RA drive tracking? (#1071)
 
-        Six stages, about three minutes, no camera and no star: rest, one
-        west pulse, one east pulse, ten west and ten east at the guide
-        cadence, rest, each followed by a 10 s probe of the mount's own
-        reported RA rate (``astrodeck.pulse_probe``). The mount moves (the
+        Ten stages, about four minutes (``pulse_probe.expected_seconds``),
+        no camera and no star: rest, one west pulse, one east pulse, ten west
+        and ten east at the guide cadence, the same in north and south, rest
+        again, each followed by a 10 s probe of the mount's own reported RA
+        rate and each pulse stage by the step the model made
+        (``astrodeck.pulse_probe``). The mount moves (the
         pulses are real), so it is refused with a plain 409 while a sequence
         is running or armed to start within ten minutes, while the guider is
         guiding, while the mount is parked or slewing, and when the driver
@@ -9670,8 +9672,8 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(409, detail={
                 "detail": why, "code": "pulse_probe_refused"})
         out = _spawn("pulse_probe", pulse_probe.run_protocol(tel))
-        out["note"] = ("about three minutes; the result goes to the night "
-                       "log and to captures/guide/")
+        out["note"] = (f"{pulse_probe.expected_minutes_words()}; the result "
+                       "goes to the night log and to captures/guide/")
         return out
 
     @app.post("/api/mount/trust-position")

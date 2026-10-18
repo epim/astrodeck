@@ -26,6 +26,15 @@ running (the night log has had its own thread since #878 for the same
 reason); the snapshot it writes is copied on the loop first, so the loop's
 own state is never read from the thread.
 
+CYCLE TIMES TO WALL TIME. Each cycle's ``t`` is ``time.monotonic()`` and the
+file has two stamps taken together at the dump: ``written_at`` (wall) and
+``mono_at_write`` (monotonic). For any cycle,
+
+    wall = written_at - (mono_at_write - t)
+
+so a cycle can be laid against the night log, the frame headers or the
+camera-drift record. (``dt`` is the gap since the previous cycle.)
+
 BOUNDED. At most ``MAX_FILES_PER_NIGHT`` files per night; past that one
 warning, then silence. A flickering star at 3 s a cycle would otherwise write
 a file per frame.
@@ -236,6 +245,7 @@ class FlightRecorder:
         if not self.ring and not self.walk:
             return None
         now = time.time()
+        mono = time.monotonic()         # the same instant, for ``t`` (above)
         night = night_key(now)
         folder = captures_dir() / night
         if self._count(night, folder) >= MAX_FILES_PER_NIGHT:
@@ -268,6 +278,7 @@ class FlightRecorder:
         payload = {
             "event": str(event), "night": night,
             "written_at": round(now, 3),
+            "mono_at_write": round(mono, 3),
             "unit": unit, "image_scale_arcsec_px":
                 _round(scale, 4) if scale_known else None,
             "pier_side_as_guider_believes": pier,

@@ -238,7 +238,7 @@ SAFETY_READ_TIMEOUT_S = 8.0
 #: Seconds after a real meridian flip before the tracking probe looks, so the
 #: mount has settled on the far side and the probe reads the drive, not the
 #: slew's tail (#1071).
-FLIP_PROBE_DELAY_S = 60.0
+FLIP_PROBE_DELAY_S = tracking_probe.FLIP_PROBE_DELAY_S
 
 #: Age guard: if the cached reading is older than one poll cycle plus a read
 #: timeout plus this slack, the poller has stopped ticking — treat the cached
@@ -505,7 +505,7 @@ BUSY_LANE_LABELS: tuple[tuple[str, str], ...] = (
     # It has only had a lane since the same 2026-08-05 change (the session owns
     # its task, so nothing published it), which is why it was never in here.
     ("polar", "polar aligning"),
-    # The pulse probe (#1071) sends real guide pulses for about three minutes.
+    # The pulse probe (#1071) sends real guide pulses for about four minutes.
     ("pulse_probe", "running the pulse probe"),
     ("solve", "solving"),
     ("autofocus", "focusing"),

@@ -231,8 +231,10 @@ def test_the_flip_bound_is_composed_from_the_bounds_it_wraps():
     flip bounded at something smaller than what it now contains.
     """
     E = engine_mod
-    assert E.FLIP_SLEW_TIMEOUT_S == E.GOTO_TIMEOUT_S + E.GUIDE_OP_TIMEOUT_S, (
-        "the flip's base is no longer the re-slew plus the stop-guide it wraps")
+    assert E.FLIP_SLEW_TIMEOUT_S == (
+        E.GOTO_TIMEOUT_S + E.GUIDE_OP_TIMEOUT_S + E.FLIP_PROBE_ALLOWANCE_S), (
+        "the flip's base is no longer the re-slew, the stop-guide and the "
+        "tracking probe it wraps")
     assert E.FLIP_TIMEOUT_S == E.FLIP_SLEW_TIMEOUT_S + E.GUIDE_START_TIMEOUT_S
     assert (E.FLIP_CALIBRATE_TIMEOUT_S
             == E.FLIP_SLEW_TIMEOUT_S + E.GUIDE_CALIBRATE_TIMEOUT_S)
@@ -241,6 +243,29 @@ def test_the_flip_bound_is_composed_from_the_bounds_it_wraps():
     # ...and the measured base really does fit inside the base bound with room:
     # 55 s of re-slew and two solves on 2026-09-09.
     assert E.FLIP_SLEW_TIMEOUT_S > 5 * 55.0
+
+
+def test_the_flip_bound_contains_the_tracking_probe():
+    """#1071: after a real flip ``hub.meridian_flip`` waits
+    ``FLIP_PROBE_DELAY_S`` and then probes for ``PROBE_SECONDS`` BEFORE it
+    restarts the guider, so every flip bound must hold both on top of the
+    re-slew and the stop-guide. Drop the allowance and the probe eats the
+    margin the calibration walk was granted.
+
+    MUTANT: ``FLIP_SLEW_TIMEOUT_S = GOTO_TIMEOUT_S + GUIDE_OP_TIMEOUT_S`` (no
+    ``+ FLIP_PROBE_ALLOWANCE_S``): RED here and in the composition test."""
+    import astrodeck.hub as hub_mod
+    from astrodeck import tracking_probe
+    E = engine_mod
+    assert hub_mod.FLIP_PROBE_DELAY_S == tracking_probe.FLIP_PROBE_DELAY_S
+    wait_s = hub_mod.FLIP_PROBE_DELAY_S + tracking_probe.PROBE_SECONDS
+    assert E.FLIP_PROBE_ALLOWANCE_S > wait_s, (
+        "the allowance must exceed the wait and the probe by a margin for "
+        "the probe's own reads")
+    assert (E.FLIP_SLEW_TIMEOUT_S - E.GOTO_TIMEOUT_S - E.GUIDE_OP_TIMEOUT_S
+            >= wait_s), "the flip bound no longer contains the probe"
+    for bound in (E.FLIP_TIMEOUT_S, E.FLIP_CALIBRATE_TIMEOUT_S):
+        assert bound >= E.GOTO_TIMEOUT_S + E.GUIDE_OP_TIMEOUT_S + wait_s
 
 
 def test_the_bound_that_killed_the_run_was_smaller_than_the_walk():

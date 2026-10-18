@@ -49,10 +49,11 @@ surprises you about what it took is worse than no reset at all:
      PUBLIC signing key / repo / channel stay so the new owner's self-update
      still verifies without re-provisioning.
    Everything else here is never cleared under any mode: the offline
-   ``_survey_pack`` (multi-GB), the network caches, and ``logs``.
+   ``_survey_pack`` (multi-GB), the network caches, ``logs`` and ``guide``.
    - under the capture root: ``_survey_pack`` (the offline HiPS sky pack — a
      multi-GB download), ``_survey`` / ``_weather_tiles`` (network caches) and
-     ``logs``. None of these are "setup" and none are the tester's data; see
+     ``logs`` and ``guide`` (the guide flight recorder and pulse-probe files,
+     #1071). None of these are "setup" and none are the tester's data; see
      ``PRESERVED_CAPTURE_ENTRIES``.
 
 Directories are resolved through EXPLICIT parameters, never module-level
@@ -96,6 +97,7 @@ _AUTH_ENTRIES: tuple[tuple[str, bool], ...] = (
 #:   _survey        hips2fits image cache
 #:   _weather_tiles radar tile cache
 #:   logs           diagnostics
+#:   guide          guide flight recorder and pulse-probe results (#1071)
 #:
 #: Everything else under the root (target folders, ``darks``, ``untargeted``,
 #: ``sessions``, ``reports``, ``exports``, ``_masters``, ``_solve``, the frame
@@ -108,6 +110,9 @@ _AUTH_ENTRIES: tuple[tuple[str, bool], ...] = (
 #: tester's deleted frames.
 PRESERVED_CAPTURE_ENTRIES: frozenset[str] = frozenset({
     "_survey_pack", "_survey", "_weather_tiles", "logs",
+    # The guide-loop flight recorder and the pulse probe's results (#1071) are
+    # diagnostic history, kept like the night logs; they are not frames.
+    "guide",
 })
 
 

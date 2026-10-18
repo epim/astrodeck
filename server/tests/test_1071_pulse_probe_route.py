@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """#1071: ``POST /api/mount/pulse-probe``, the operator's pulse probe.
 
-Does a guide pulse leave the RA drive tracking? The route runs six stages
+Does a guide pulse leave the RA drive tracking? The route runs ten stages
 through the AM5 driver's REAL ``pulse_guide`` (rest, one west pulse, one east
-pulse, ten west and ten east at the guide cadence, rest), each followed by a
+pulse, ten west and ten east at the guide cadence, the same in north and
+south, rest), each followed by a
 probe of the mount's own reported RA rate, with no camera and no star. It is
 refused (409, a plain sentence) while a sequence runs or is armed to start
 within ten minutes, while the guider guides, while the mount is parked or
@@ -101,9 +102,11 @@ def _no_motion(rig):
 
 def test_it_runs_the_six_stages_in_order_through_pulse_guide(rig, bus_lines):
     """The wire shows the protocol: probe, one west pulse, probe, one east
-    (tracking suspend), probe, three west, probe, three east, probe, probe.
-    The result and the file carry the same six steps, the pier side, and the
-    sidereal fractions; the night log says each stage and the end.
+    (tracking suspend), probe, three west, probe, three east, probe, one
+    north, probe, one south, probe, three north, probe, three south, probe,
+    probe (round 2 added the Dec stages). The result and the file carry the
+    same ten steps, the pier side, and the sidereal fractions; the night log
+    says each stage and the end.
 
     MUTANT 1 (the stage list ``plan`` reordered: east before west): RED, the
     wire order.
@@ -112,27 +115,28 @@ def test_it_runs_the_six_stages_in_order_through_pulse_guide(rig, bus_lines):
     r = rig.client.post("/api/mount/pulse-probe")
     assert r.status_code == 200, r.text
     assert r.json()["started"] == "pulse_probe"
+    # The quoted time is computed from the constants (the unshrunk protocol:
+    # 241 s), not written down.
+    assert r.json()["note"].startswith(f"{pp.expected_minutes_words()};")
     assert _wait(lambda: _result_file(rig.tmp) and _idle(rig))
 
-    # Collapse the wire into pulses (Mw = west, Td = east) and the probe's
-    # paired RA reads.
-    tokens, reads = [], 0
-    for c in rig.link.sent:
-        if c == "GR":
-            reads += 1
-            if reads % 2 == 0:
-                tokens.append("probe")
-        elif c == "Mw":
-            tokens.append("W")
-        elif c == "Td":
-            tokens.append("E")
+    # Collapse the wire into pulses (Mw = west, Td = east, Mn, Ms) and the
+    # probe, which ends with its pier-side read.
+    names = {"Gm": "probe", "Mw": "W", "Td": "E", "Mn": "N", "Ms": "S"}
+    tokens = [names[c] for c in rig.link.sent if c in names]
     assert tokens == ["probe", "W", "probe", "E", "probe", "W", "W", "W",
-                      "probe", "E", "E", "E", "probe", "probe"], tokens
+                      "probe", "E", "E", "E", "probe", "N", "probe", "S",
+                      "probe", "N", "N", "N", "probe", "S", "S", "S", "probe",
+                      "probe"], tokens
 
     data = json.loads(_result_file(rig.tmp)[0].read_text(encoding="utf-8"))
     assert [s["name"] for s in data["steps"]] == [
-        "rest", "west x1", "east x1", "west x3", "east x3", "rest again"]
-    assert [s["pulses"] for s in data["steps"]] == [0, 1, 1, 3, 3, 0]
+        "rest", "west x1", "east x1", "west x3", "east x3", "north x1",
+        "south x1", "north x3", "south x3", "rest again"]
+    assert [s["pulses"] for s in data["steps"]] == [0, 1, 1, 3, 3, 1, 1, 3, 3,
+                                                   0]
+    assert [s["pulse_total_ms"] for s in data["steps"]] == [
+        0, 60, 60, 180, 180, 60, 60, 180, 180, 0]
     assert data["completed"] is True and data["aborted"] is None
     assert data["pier_side"] == "east" and data["tracking_at_start"] is True
     for s in data["steps"]:
@@ -140,9 +144,9 @@ def test_it_runs_the_six_stages_in_order_through_pulse_guide(rig, bus_lines):
         assert "ra_before" not in s["probe"]
 
     msgs = [m for _lv, m, _s in bus_lines]
-    assert any(m.startswith("pulse probe started: 6 stages") for m in msgs)
+    assert any(m.startswith("pulse probe started: 10 stages") for m in msgs)
     assert len([m for m in msgs if m.startswith(
-        "tracking probe (pulse probe: ")]) == 6
+        "tracking probe (pulse probe: ")]) == 10
     assert any(m.startswith("pulse probe finished (pier side east)")
                and "wrote guide/" in m for m in msgs)
 
@@ -291,7 +295,7 @@ def test_a_stop_request_aborts_it_at_once_and_leaves_the_mount_stopped(
     data = json.loads(_result_file(rig.tmp)[0].read_text(encoding="utf-8"))
     assert data["completed"] is False
     assert data["aborted"] == "stopped by request"
-    assert len(data["steps"]) < 6
+    assert len(data["steps"]) < 10
     assert rig.link.sent.count("Mw") == rig.link.sent.count("Qw")
     assert rig.link.sent.count("Td") == rig.link.sent.count("Te")
     assert "Q" in rig.link.sent

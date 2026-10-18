@@ -18,6 +18,13 @@ since a flip is flagged ``site_derived``: the flip happens at the target's
 computed crossing, so that figure and the line's own timestamp solve for the
 longitude, the same reason the engine's flip-complete line is flagged.
 
+WHAT A READING MEANS. The probe reads the mount's MODEL of where it points, not
+the sky: on 2026-08-21 the AM5's reported declination walked 4.74 deg while two
+frames 36 minutes apart showed the identical field. A rate near 1 sidereal is
+strong evidence that the firmware has stopped driving RA. A rate near 0 does not
+show the axis is turning; compare it with the camera drift in the guide flight
+recorder (disagreement points to the mechanics, agreement to the firmware).
+
 FAILURE IS LOGGED AND IGNORED. A probe that raised into the guide loop or the
 frame loop would turn a diagnostic into an outage. A cancel is not a failure
 and passes through.
@@ -30,28 +37,40 @@ from .events import bus
 
 #: Seconds a probe watches the RA, at every trigger.
 PROBE_SECONDS = 10.0
+#: Seconds after a real meridian flip before the probe looks, so the mount has
+#: settled on the far side and the probe reads the drive, not the slew's tail.
+#: Here, and not in ``hub``, so the engine can compose its flip bound from it
+#: (``FLIP_PROBE_ALLOWANCE_S``) without importing the hub; ``hub`` binds the
+#: same value to its own name.
+FLIP_PROBE_DELAY_S = 60.0
 
 
 def probe_line(trigger: str, r: dict, since_flip_min: float | None) -> str:
-    """The one log line for a probe result. Numbers: two rates, the
-    resolution, the elapsed seconds and the minutes since the last flip."""
+    """The one log line for a probe result. Numbers: the RA and Dec rates, the
+    resolution, the elapsed seconds and the minutes since the last flip; the
+    commands that disturbed the window, by name."""
     flag = ("on" if r.get("tracking_flag_before") else "off")
     after = ("on" if r.get("tracking_flag_after") else "off")
     flags = (f"tracking flag {flag}" if flag == after
              else f"tracking flag {flag} then {after}")
     notes = []
     if r.get("disturbed"):
-        notes.append("the mount was slewing, so the rate is not valid")
+        by = [str(n) for n in (r.get("disturbed_by") or [])]
+        notes.append(f"disturbed by {', '.join(by)}, so the rate is not valid"
+                     if by else
+                     "the mount was slewing, so the rate is not valid")
     if r.get("cut_short"):
         notes.append("cut short for a park")
+    dd = r.get("dec_drift_arcsec_s")
+    dec = f", Dec drift {dd:+.2f} arcsec/s" if dd is not None else ""
     when = (f", {since_flip_min:.0f} min since the last flip"
             if since_flip_min is not None else "")
     return (f"tracking probe ({trigger}): RA drift "
             f"{r['ra_drift_arcsec_s']:+.2f} arcsec/s = "
             f"{r['sidereal_fraction']:+.2f} sidereal over "
             f"{r['seconds']:.1f} s (resolution "
-            f"{r['resolution_arcsec_s']:.2f} arcsec/s), {flags}, pier side "
-            f"{r['pier_side']}{when}"
+            f"{r['resolution_arcsec_s']:.2f} arcsec/s){dec}, {flags}, pier "
+            f"side {r['pier_side']}{when}"
             + (f" ({'; '.join(notes)})" if notes else ""))
 
 

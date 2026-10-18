@@ -54,6 +54,62 @@ SIDEREAL_ARCSEC_S = 15.041
 #: The shortest ``probe_ra_drift`` window. At the coarse 15 arcsec step of
 #: ``:GR#`` anything shorter reads only 0 or the quantum (#1071).
 PROBE_MIN_S = 1.0
+#: Seconds between the ``:GR#``/``:GD#`` pairs a probe reads through its
+#: window (#1071). Two endpoint reads of ``:GR#`` resolve only one count, 15
+#: arcsec, so 15 arcsec over 10 s is a tenth of the sidereal rate; the fitted
+#: slope of many reads resolves far finer than that. Reads only: nothing
+#: moving, so the probe still measures the drive and not the probe.
+PROBE_SAMPLE_S = 0.25
+#: Names of model-changing commands remembered for the probe's
+#: ``disturbed_by`` (a bounded list; the counter itself is unbounded).
+_MODEL_LOG_MAX = 64
+
+#: Arcsec of RA per hour of RA.
+_RA_ARCSEC_PER_HOUR = 15.0 * 3600.0
+
+
+def _reply_decimals(raw: str) -> int:
+    """Decimals after the last colon of a coordinate reply: ``HH:MM:SS`` and
+    ``sDD*MM:SS`` have none, ``HH:MM:SS.s`` one (#1071)."""
+    tail = raw.strip().rstrip("#").strip().rsplit(":", 1)[-1]
+    if "." not in tail:
+        return 0
+    return len("".join(c for c in tail.split(".", 1)[1] if c.isdigit()))
+
+
+def _ra_quantum_arcsec(raw: str) -> float:
+    """The finest RA step this reply's format can show, in arcsec of RA: one
+    second of time is 15 arcsec, a tenth of a second 1.5 (#1071). Read from the
+    reply, never assumed: ``lx200.parse_ra`` accepts fractional seconds."""
+    return 15.0 / (10 ** _reply_decimals(raw))
+
+
+def _dec_quantum_arcsec(raw: str) -> float:
+    """The finest Dec step this reply's format can show, in arcsec: 1 for
+    ``sDD*MM:SS`` (#1071)."""
+    return 1.0 / (10 ** _reply_decimals(raw))
+
+
+def _fit_slope(ts: list[float], ys: list[float]) -> float:
+    """Least-squares slope of ``ys`` against ``ts``. Times are taken relative
+    to the first so a large monotonic clock does not cost digits. Fewer than
+    two samples, no spread in time, or all-equal ys give exactly 0.0."""
+    n = len(ts)
+    if n < 2:
+        return 0.0
+    t0 = ts[0]
+    x = [t - t0 for t in ts]
+    xm = sum(x) / n
+    ym = sum(ys) / n
+    sxx = sum((v - xm) ** 2 for v in x)
+    if sxx <= 0.0:
+        return 0.0
+    return sum((v - xm) * (y - ym) for v, y in zip(x, ys)) / sxx
+
+
+def _clean(v: float, places: int) -> float:
+    """Round, and never print a negative zero."""
+    return round(v, places) + 0.0
 
 #: Poll cadence during a slew.
 SETTLE_POLL_S = 0.5
@@ -539,6 +595,8 @@ class ZwoAm5Telescope(Telescope):
     max_pulse_ms = _PULSE_MAX_MS
     #: ``probe_ra_drift`` below (#1071).
     can_probe_ra_drift = True
+    #: ``measure_model_step`` below (#1071).
+    can_measure_model_step = True
     can_set_tracking_rate = True
     can_find_home = True      # :hP# homes (and parks); find_home unparks after
     #: This mount can lose its frame with nothing on the wire to say so: after
@@ -626,6 +684,16 @@ class ZwoAm5Telescope(Telescope):
         #: for ten seconds with nothing moving, and a park is the safety
         #: path, so the probe watches this and gives the lock up.
         self._park_waiting = 0
+        #: Commands that change the mount's MODEL or its DRIVE since this
+        #: driver started (#1071): a sync, a goto start, a halt, a tracking
+        #: change, a park, an unpark, a home. The AM5's reported coordinates
+        #: are its own model of where it points, not a sky measurement, so any
+        #: of these inside a probe window can jump the reading and the rate
+        #: would be garbage. ``_model_log`` holds the last few as
+        #: ``(counter, name)`` so a probe can say which.
+        self._model_changes = 0
+        self._model_log: collections.deque[tuple[int, str]] = (
+            collections.deque(maxlen=_MODEL_LOG_MAX))
 
     # --------------------------------------------------------------- health
 
@@ -805,6 +873,21 @@ class ZwoAm5Telescope(Telescope):
             f"{self.name}: goto rejected ({words}; reply 'e14')",
             code=lx200.REFUSED, reason=words)
 
+    def _note_model_change(self, name: str) -> None:
+        """Count a command that changes the mount's model or its drive, and
+        remember its name (#1071). See ``_model_changes``."""
+        self._model_changes += 1
+        self._model_log.append((self._model_changes, name))
+
+    def _model_changes_since(self, mark: int) -> list[str]:
+        """Names, in order and without repeats, of the model-changing commands
+        counted after ``mark``. Empty when the counter has not moved."""
+        names: list[str] = []
+        for n, name in self._model_log:
+            if n > mark and name not in names:
+                names.append(name)
+        return names
+
     def _note_halt(self) -> None:
         """Record that this driver just sent a whole-mount halt (``:Q#``).
 
@@ -843,6 +926,7 @@ class ZwoAm5Telescope(Telescope):
         Every call also bumps ``_halt_gen``, which ``slew`` reads to tell a
         goto that was halted part way from one that arrived (#860)."""
         self._halt_gen += 1
+        self._note_model_change("halt")
         self._halting = True
         self._halt_ref = None      # only reads taken AFTER this halt may prove rest
 
@@ -1101,6 +1185,7 @@ class ZwoAm5Telescope(Telescope):
         # cancel. Check state first; only a parked mount gets the command.
         if not await self.is_parked():
             return
+        self._note_model_change("unpark")
         await self._cmd_ack("Spu", "unpark")
 
     async def find_home(self) -> None:
@@ -1131,6 +1216,7 @@ class ZwoAm5Telescope(Telescope):
         unparking sends a command the mount throws away, and because ``:hP#``
         is fire-and-forget there is no ack to notice it by. The first version
         of this fix did exactly that and reported success."""
+        self._note_model_change("find_home")
         await self.unpark()        # a parked mount refuses :hP# outright
         await self._park_now()     # never skipped — "parked" is not "at home"
         await self.unpark()        # and leave it usable, not parked
@@ -1164,6 +1250,10 @@ class ZwoAm5Telescope(Telescope):
         await self._park_now()
 
     async def _park_now(self) -> None:
+        # Counted on entry, before the lock wait: a park asked for inside a
+        # probe window cuts that probe short, and the probe then says why
+        # (#1071).
+        self._note_model_change("park")
         # The actual park, with no idempotence guard.
         # VERIFIED ON HARDWARE 2026-07-20: :hP# is in the AM5's
         # fire-and-forget motion class (NO ack; an ack-read times out) and the
@@ -1415,21 +1505,56 @@ class ZwoAm5Telescope(Telescope):
     async def get_tracking(self) -> bool:
         return (await self._get("GAT")).startswith("1")
 
-    async def _read_ra_hours(self) -> float:
-        """``:GR#`` as hours, for ``probe_ra_drift`` only. The reading is
-        returned to its caller and nowhere else: not logged, not stored in
+    async def _read_ra_quantum(self) -> tuple[float, float]:
+        """``(hours, quantum_arcsec)`` from one ``:GR#``, for the probes only.
+        The quantum is what the reply's own format can resolve
+        (``_ra_quantum_arcsec``), so a firmware that prints tenths of a second
+        is not graded as if it printed whole seconds (#1071). The reading goes
+        to the caller and nowhere else: not logged, not stored in
         ``_last_pos``, not in an error (sizes only, #863, #140)."""
         raw = await self._get("GR")
         try:
-            return lx200.parse_ra(raw)
+            return lx200.parse_ra(raw), _ra_quantum_arcsec(raw)
         except ValueError:
             raise DeviceError(f"{self.name}: unparseable RA reply for the "
                               f"tracking probe (:GR# gave {len(raw)} "
                               f"bytes)") from None
 
+    async def _read_dec_quantum(self) -> tuple[float, float]:
+        """``(degrees, quantum_arcsec)`` from one ``:GD#``, for the probes
+        only; the reading stays with the caller (#1071, #140)."""
+        raw = await self._get("GD")
+        try:
+            return lx200.parse_dec(raw), _dec_quantum_arcsec(raw)
+        except ValueError:
+            raise DeviceError(f"{self.name}: unparseable Dec reply for the "
+                              f"tracking probe (:GD# gave {len(raw)} "
+                              f"bytes)") from None
+
+    async def _read_pair(self) -> tuple[float, float, float, float, float, float]:
+        """One ``:GR#`` then one ``:GD#``: ``(t_ra, ra_hours, ra_quantum,
+        t_dec, dec_deg, dec_quantum)``, each time the midpoint of its own
+        exchange on the monotonic clock. Reads only."""
+        a = time.monotonic()
+        ra, ra_q = await self._read_ra_quantum()
+        t_ra = (a + time.monotonic()) / 2.0
+        b = time.monotonic()
+        dec, dec_q = await self._read_dec_quantum()
+        t_dec = (b + time.monotonic()) / 2.0
+        return t_ra, ra, ra_q, t_dec, dec, dec_q
+
     async def probe_ra_drift(self, seconds: float) -> dict | None:
-        """Is the RA drive really tracking? Read ``:GAT#`` and ``:GR#``, wait
-        ``seconds`` with NO motion command, read both again (#1071).
+        """Is the RA drive really tracking? Read ``:GAT#``, then ``:GR#`` and
+        ``:GD#`` about every quarter second for ``seconds`` with NO motion
+        command, then ``:GAT#`` again (#1071).
+
+        WHAT IT MEASURES: THE MOUNT'S MODEL. The AM5's reported coordinates
+        are its own model of where it points, not a sky measurement: on
+        2026-08-21 the reported declination walked 4.74 deg while two frames
+        36 minutes apart showed the identical field. A rate near 1 sidereal is
+        strong evidence the firmware has stopped driving RA. A rate near 0 does
+        not prove the axis is turning; compare it with the camera drift in the
+        flight recorder.
 
         A tracking mount holds its RA; a stopped one reads it advancing at the
         sidereal rate, 15.041 arcsec of RA per second of time. The flag can
@@ -1439,25 +1564,31 @@ class ZwoAm5Telescope(Telescope):
         HOLDS ``_pulse_park_lock`` the whole time, so no guide pulse starts
         inside the window; it gives the lock up within a quarter second when a
         park is waiting (``cut_short``), because the park is the safety path.
-        A goto is not excluded by that lock, so a slew seen at either end
-        marks the result ``disturbed``: the rate then measures the slew.
+        A goto, a sync or a tracking change is not excluded by that lock, so
+        the driver counts them (``_note_model_change``): the result is
+        ``disturbed`` when the counter moved in the window or a slew was seen
+        at either end, and ``disturbed_by`` names them. The rate then measures
+        the command, not the drive.
 
-        THE RESOLUTION IS THE COARSEST COUNT. ``:GR#`` is HH:MM:SS, one second
-        of time, 15 arcsec, so two reads differ by a whole number of those:
-        ``resolution_arcsec_s`` is 15 over the measured interval (1.5 for a
-        10 s probe, a tenth of the sidereal rate). The RA step is taken the
-        short way round 24 h. The interval is the measured time between the
-        two RA reads, not the requested one.
+        THE RATE IS A FITTED SLOPE, THE QUANTUM IS READ FROM THE REPLY. Two
+        endpoint reads of ``:GR#`` resolve one count, 15 arcsec when the reply
+        is HH:MM:SS, so 0.1 sidereal over ten seconds. ``ra_drift_arcsec_s`` is
+        the least-squares slope of every read against its own midpoint time, the
+        samples unwrapped against the first the short way round 24 h;
+        ``ra_drift_endpoint_arcsec_s`` is the two-read value for comparison.
+        ``resolution_arcsec_s`` is the reply's quantum over the measured
+        interval, worked out from its decimals (none: 1 s of time = 15 arcsec;
+        one decimal: 1.5 arcsec), never assumed. Dec is sampled alongside:
+        ``dec_drift_arcsec_s`` and ``dec_resolution_arcsec_s``. A model that is
+        not being moved holds its Dec exactly.
 
-        Only differences leave this method. The two RA readings are local
-        variables."""
+        Only differences leave this method. Every reading is a local variable."""
         seconds = max(PROBE_MIN_S, min(float(seconds), 60.0))
         async with self._pulse_park_lock:
             slewing = bool(self._slewing)
+            mark = self._model_changes
             flag_before = await self.get_tracking()
-            t0 = time.monotonic()
-            ra0 = await self._read_ra_hours()
-            t0 = (t0 + time.monotonic()) / 2.0
+            samples = [await self._read_pair()]
             deadline = time.monotonic() + seconds
             cut_short = False
             while True:
@@ -1466,30 +1597,83 @@ class ZwoAm5Telescope(Telescope):
                     break
                 if self._park_waiting > 0:
                     cut_short = True
+                    samples.append(await self._read_pair())
                     break
-                await asyncio.sleep(min(0.25, left))
-            t1 = time.monotonic()
-            ra1 = await self._read_ra_hours()
-            t1 = (t1 + time.monotonic()) / 2.0
+                await asyncio.sleep(min(PROBE_SAMPLE_S, left))
+                samples.append(await self._read_pair())
             flag_after = await self.get_tracking()
             slewing = slewing or bool(self._slewing)
+            by = self._model_changes_since(mark)
             try:
                 pier = (await self.pier_side()).value
             except Exception:       # noqa: BLE001 - the rate is the point
                 pier = "unknown"
-        elapsed = max(t1 - t0, 1e-3)
-        d_hours = (ra1 - ra0 + 12.0) % 24.0 - 12.0
-        drift = d_hours * 15.0 * 3600.0 / elapsed
+        if slewing and "goto" not in by:
+            by.append("slewing")
+        t_ra = [s[0] for s in samples]
+        t_dec = [s[3] for s in samples]
+        ra0, dec0 = samples[0][1], samples[0][4]
+        # Unwrapped against the first sample, the short way round 24 h.
+        ra_y = [(((s[1] - ra0 + 12.0) % 24.0) - 12.0) * _RA_ARCSEC_PER_HOUR
+                for s in samples]
+        dec_y = [(s[4] - dec0) * 3600.0 for s in samples]
+        elapsed = max(t_ra[-1] - t_ra[0], 1e-3)
+        dec_elapsed = max(t_dec[-1] - t_dec[0], 1e-3)
+        fitted = _fit_slope(t_ra, ra_y)
+        endpoint = ra_y[-1] / elapsed
+        ra_q = max(s[2] for s in samples)
+        dec_q = max(s[5] for s in samples)
         return {
-            "ra_drift_arcsec_s": round(drift, 3),
-            "sidereal_fraction": round(drift / SIDEREAL_ARCSEC_S, 3),
+            "ra_drift_arcsec_s": _clean(fitted, 3),
+            "ra_drift_endpoint_arcsec_s": _clean(endpoint, 3),
+            "sidereal_fraction": _clean(fitted / SIDEREAL_ARCSEC_S, 3),
+            "samples": len(samples),
             "tracking_flag_before": bool(flag_before),
             "tracking_flag_after": bool(flag_after),
             "seconds": round(elapsed, 2),
             "pier_side": pier if pier in ("east", "west") else "unknown",
-            "resolution_arcsec_s": round(15.0 / elapsed, 3),
-            "disturbed": slewing,
+            "resolution_arcsec_s": _clean(ra_q / elapsed, 3),
+            "dec_drift_arcsec_s": _clean(_fit_slope(t_dec, dec_y), 3),
+            "dec_resolution_arcsec_s": _clean(dec_q / dec_elapsed, 3),
+            "disturbed": bool(by),
+            "disturbed_by": by,
             "cut_short": cut_short,
+        }
+
+    async def measure_model_step(self, action) -> dict | None:
+        """How far did the mount's reported position move across ``action``?
+        Read RA and Dec, await ``action()`` (a zero-argument coroutine
+        function), read them again (#1071).
+
+        The pulse probe wraps each stage's pulses in this. The emulated guide
+        rate is 1x sidereal, so a 1000 ms pulse should move the model about one
+        ``:GR#`` count and a ten-pulse train about ten: this measures whether
+        the model moved by what was commanded, not only the rate afterwards.
+
+        DOES NOT HOLD ``_pulse_park_lock``: every ``pulse_guide`` takes it, and
+        a lock held here would deadlock the pulses. The steps are signed as the
+        mount reports them, the RA step the short way round 24 h, in arcsec
+        (of RA for RA). ``disturbed`` and ``disturbed_by`` are the same
+        counter as the probe's: a sync or a goto inside the action marks the
+        step. An exception from ``action`` propagates and the after-read is
+        skipped. The readings stay local; only the differences leave."""
+        mark = self._model_changes
+        slewing = bool(self._slewing)
+        t0, ra0, ra_q0, _td0, dec0, dec_q0 = await self._read_pair()
+        await action()
+        t1, ra1, ra_q1, _td1, dec1, dec_q1 = await self._read_pair()
+        by = self._model_changes_since(mark)
+        if (slewing or bool(self._slewing)) and "goto" not in by:
+            by.append("slewing")
+        d_ra = (((ra1 - ra0 + 12.0) % 24.0) - 12.0) * _RA_ARCSEC_PER_HOUR
+        return {
+            "ra_step_arcsec": _clean(d_ra, 2),
+            "dec_step_arcsec": _clean((dec1 - dec0) * 3600.0, 2),
+            "seconds": round(max(t1 - t0, 0.0), 2),
+            "ra_quantum_arcsec": max(ra_q0, ra_q1),
+            "dec_quantum_arcsec": max(dec_q0, dec_q1),
+            "disturbed": bool(by),
+            "disturbed_by": by,
         }
 
     async def pier_side(self) -> PierSide:
@@ -1581,6 +1765,7 @@ class ZwoAm5Telescope(Telescope):
     # ------------------------------------------------------------- motion
 
     async def set_tracking(self, on: bool) -> None:
+        self._note_model_change("set_tracking")
         await self._cmd_ack("Te" if on else "Td",
                             "tracking on" if on else "tracking off")
 
@@ -1596,6 +1781,7 @@ class ZwoAm5Telescope(Telescope):
         at-scope validation item (plan Task 7)."""
         if rate not in TRACKING_RATES:
             raise DeviceError(f"{self.name}: unknown tracking rate {rate!r}")
+        self._note_model_change("set_tracking_rate")
         await self._request(_TRACKING_RATE_CMD[rate], reply="none")
         self._tracking_rate = rate
 
@@ -1690,6 +1876,7 @@ class ZwoAm5Telescope(Telescope):
                 f"{self.name}: goto rejected ({words}; {said})",
                 code=code, reason=_goto_refusal_reason(code))
         self._slewing = True
+        self._note_model_change("goto")
         try:
             loop = asyncio.get_running_loop()
             started = loop.time()
@@ -1812,6 +1999,9 @@ class ZwoAm5Telescope(Telescope):
         error's words are interpolated, and every such raise is ``from None``
         and made outside the handler, so neither ``__cause__`` nor
         ``__context__`` carries them either."""
+        # Counted before the first byte: a sync inside a probe window jumps the
+        # reported RA, and the rate it would give is garbage (#1071).
+        self._note_model_change("sync")
         await self._set_sync_target(ra_hours, dec_deg)
         raw = await self._send_sync(ra_hours, dec_deg)
         reply = (raw or "").strip().rstrip("#").strip()

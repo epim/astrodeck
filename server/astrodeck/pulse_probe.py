@@ -11,15 +11,38 @@ needs a star to show it. This runs the pulses through the driver's real
 stage with ``Telescope.probe_ra_drift``, so it works in daylight with no
 camera:
 
-  1. rest                              probe
-  2. one west pulse of 1000 ms         probe
-  3. one east pulse of 1000 ms         probe
-  4. ten west pulses at 3.7 s cadence  probe   (3.7 s is the measured cycle)
-  5. ten east pulses, the same         probe
-  6. rest                              probe
+  1.  rest                              probe
+  2.  one west pulse of 1000 ms         probe
+  3.  one east pulse of 1000 ms         probe
+  4.  ten west pulses at 3.7 s cadence  probe   (3.7 s is the measured cycle)
+  5.  ten east pulses, the same         probe
+  6.  one north pulse                   probe
+  7.  one south pulse                   probe
+  8.  ten north pulses, the same        probe
+  9.  ten south pulses, the same        probe
+  10. rest                              probe
+
+The Dec stages are there because the 2026-10-16 02:34 event hit the pulse
+limit in Dec as well ("north 25, east 25"), and the 2026-08-21 walk was in Dec.
+``expected_seconds`` computes the total from the constants below (about four
+minutes); the route's note and the docs quote it.
 
 A STAGE THAT SHOWS A STOPPED OR SLOW DRIVE NAMES THE PULSE THAT DID IT.
-Stage 1 is the baseline, stage 6 whether the mount recovers by itself.
+Stage 1 is the baseline, the last stage whether the mount recovers by itself.
+
+EACH PULSE STAGE ALSO MEASURES THE STEP IT MADE. The emulated guide rate is 1x
+sidereal, so a 1000 ms pulse should move the mount's model about one ``:GR#``
+count and a ten-pulse train about ten. When the driver has
+``measure_model_step`` the stage's pulses run through it and the stage gains
+``step`` (the RA and Dec change across the pulses) and ``pulse_total_ms``:
+whether the model moved by what was commanded, not only the rate afterwards.
+
+WHAT THE PROBE READS IS THE MOUNT'S MODEL, NOT THE SKY. The AM5's reported
+coordinates are its own bookkeeping of where it points. A probe that reads
+about 1 sidereal is strong evidence that the firmware has stopped driving RA.
+A probe that reads 0 does not show the axis is turning: compare it with the
+camera drift in the guide flight recorder (disagreement points to the
+mechanics, agreement to the firmware).
 
 THE OPERATOR'S TOOL, NOT THE NIGHT'S. It is refused while a run is going or
 armed to start within ten minutes, while the guider is guiding, and while the
@@ -27,10 +50,11 @@ mount is parked or slewing: any of those would put motion inside a measuring
 window. It runs as a background job in the ``pulse_probe`` lane and
 ``POST /api/mount/stop`` cancels it; the pulse in flight then stops the mount
 itself (``pulse_guide``'s cancel path), and the partial result is still
-written.
+written, with the stage that was running when it ended.
 
-NO COORDINATE. Rates, flags, pulse counts and the pier side. The RA readings
-never leave the driver (``probe_ra_drift``).
+NO COORDINATE. Rates, steps, flags, pulse counts and the pier side. The RA and
+Dec readings never leave the driver (``probe_ra_drift``,
+``measure_model_step``).
 """
 from __future__ import annotations
 
@@ -51,6 +75,47 @@ TRAIN_PULSES = 10
 CADENCE_S = 3.7
 #: A run armed to start inside this window is a reason to refuse.
 ARMED_WITHIN_S = 600.0
+
+
+def stage_plan(train: int) -> list[tuple[str, str | None, int]]:
+    """``(name, direction, pulses)`` for each stage, in order. The RA stages
+    first, then Dec, then a rest to see whether the mount recovers (#1071)."""
+    return [("rest", None, 0),
+            ("west x1", "west", 1), ("east x1", "east", 1),
+            (f"west x{train}", "west", train),
+            (f"east x{train}", "east", train),
+            ("north x1", "north", 1), ("south x1", "south", 1),
+            (f"north x{train}", "north", train),
+            (f"south x{train}", "south", train),
+            ("rest again", None, 0)]
+
+
+def expected_seconds(probe_s: float | None = None, pulse_ms: int | None = None,
+                     train: int | None = None,
+                     cadence_s: float | None = None) -> float:
+    """The protocol's duration in seconds, computed from its constants: one
+    probe per stage, and per pulse stage ``n - 1`` cadences plus the last
+    pulse. Excludes the few reads around each probe (milliseconds on the
+    wire). The route's note and the docs quote this."""
+    probe_s = PROBE_SECONDS if probe_s is None else probe_s
+    pulse_ms = PULSE_MS if pulse_ms is None else pulse_ms
+    train = TRAIN_PULSES if train is None else train
+    cadence_s = CADENCE_S if cadence_s is None else cadence_s
+    total = 0.0
+    for _name, _direction, n in stage_plan(train):
+        total += probe_s
+        if n:
+            total += (n - 1) * max(cadence_s, pulse_ms / 1000.0) \
+                + pulse_ms / 1000.0
+    return total
+
+
+def expected_minutes_words() -> str:
+    """``about four minutes``, from ``expected_seconds`` (#1071)."""
+    m = max(1, round(expected_seconds() / 60.0))
+    names = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+             6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+    return f"about {names.get(m, str(m))} minute{'s' if m != 1 else ''}"
 
 
 class PulseProbeAborted(Exception):
@@ -141,19 +206,38 @@ async def _probe(tel, name: str, seconds: float) -> dict:
 
 
 async def _pulses(tel, direction: str, n: int, pulse_ms: int,
-                  cadence_s: float) -> int:
-    """``n`` pulses, one every ``cadence_s`` from start to start."""
+                  cadence_s: float, progress: dict | None = None) -> int:
+    """``n`` pulses, one every ``cadence_s`` from start to start. ``progress``
+    (``{"sent": n}``) is updated after each pulse for the caller."""
     sent = 0
     t_next = time.monotonic()
     for i in range(n):
         await _ensure_ok(tel, parked_too=False)
         await tel.pulse_guide(direction, pulse_ms)
         sent += 1
+        if progress is not None:
+            progress["sent"] = sent
         t_next += cadence_s
         wait = t_next - time.monotonic()
         if i < n - 1 and wait > 0:
             await asyncio.sleep(wait)
     return sent
+
+
+async def _run_stage(tel, direction: str, n: int, pulse_ms: int,
+                     cadence_s: float, progress: dict
+                     ) -> tuple[int, dict | None]:
+    """The stage's pulses, through ``measure_model_step`` when the driver has
+    it. Returns ``(pulses sent, step or None)``. ``progress["sent"]`` is kept
+    current so a stop mid-stage can say how far it got (#1071)."""
+    async def action() -> None:
+        await _pulses(tel, direction, n, pulse_ms, cadence_s, progress)
+
+    if getattr(tel, "can_measure_model_step", False):
+        step = await tel.measure_model_step(action)
+        return progress["sent"], (step if isinstance(step, dict) else None)
+    await action()
+    return progress["sent"], None
 
 
 def write_result(event: str, payload: dict) -> str:
@@ -203,26 +287,38 @@ async def run_protocol(tel, *, probe_s: float | None = None,
                     "pier_side": "unknown", "completed": False,
                     "aborted": None, "tracking_at_start": None,
                     "probe_s": probe_s, "pulse_ms": pulse_ms,
-                    "train_pulses": train, "cadence_s": cadence_s}
-    plan = [("rest", None, 0),
-            ("west x1", "west", 1), ("east x1", "east", 1),
-            (f"west x{train}", "west", train),
-            (f"east x{train}", "east", train),
-            ("rest again", None, 0)]
+                    "train_pulses": train, "cadence_s": cadence_s,
+                    "interrupted": None}
+    plan = stage_plan(train)
+    result["expected_seconds"] = round(expected_seconds(
+        probe_s, pulse_ms, train, cadence_s), 1)
     bus.log("info", f"pulse probe started: {len(plan)} stages, a "
                     f"{probe_s:.0f} s probe after each, pulses of {pulse_ms} "
                     f"ms at a {cadence_s:.1f} s cadence in the trains",
             "mount")
     cancelled = False
+    progress = {"sent": 0}
     try:
         for name, direction, n in plan:
             await _ensure_ok(tel, parked_too=True)
             sent = 0
+            step = None
+            progress["sent"] = 0
+            # Recorded before the stage runs, so a stop in the middle of it
+            # still says which stage and how many pulses went out.
+            result["interrupted"] = {"name": name, "pulses": 0}
             if direction is not None:
-                sent = await _pulses(tel, direction, n, pulse_ms, cadence_s)
+                try:
+                    sent, step = await _run_stage(
+                        tel, direction, n, pulse_ms, cadence_s, progress)
+                finally:
+                    result["interrupted"]["pulses"] = progress["sent"]
             probe = await _probe(tel, name, probe_s)
             result["steps"].append({"name": name, "direction": direction,
-                                    "pulses": sent, "probe": probe})
+                                    "pulses": sent,
+                                    "pulse_total_ms": sent * pulse_ms,
+                                    "step": step, "probe": probe})
+            result["interrupted"] = None
             if result["tracking_at_start"] is None and probe:
                 result["tracking_at_start"] = probe.get("tracking_flag_before")
                 if probe.get("tracking_flag_before") is False:

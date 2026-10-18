@@ -17,6 +17,7 @@ shown RED under, from a byte backup restored afterwards.
 from __future__ import annotations
 
 import asyncio
+import math as _math
 import time
 
 import pytest
@@ -67,6 +68,90 @@ class RaLink(FakeLink):
         return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+class VClock:
+    """A monotonic clock that only the driver's sleeps advance. ``hooks`` maps
+    a sleep's ordinal to a coroutine function run right after that sleep, so a
+    test can put a command inside the probe window."""
+
+    def __init__(self) -> None:
+        self.t = 5000.0
+        self.sleeps = 0
+        self.hooks: dict = {}
+
+    def monotonic(self) -> float:
+        return self.t
+
+
+@pytest.fixture
+def vclock(monkeypatch):
+    clock = VClock()
+    real_time, real_asyncio = am5.time, am5.asyncio
+
+    class _Time:
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+        monotonic = staticmethod(clock.monotonic)
+
+    class _Asyncio:
+        def __getattr__(self, name):
+            return getattr(real_asyncio, name)
+
+        @staticmethod
+        async def sleep(s, *a):
+            clock.t += s
+            clock.sleeps += 1
+            hook = clock.hooks.get(clock.sleeps)
+            if hook is not None:
+                await hook()
+            await real_asyncio.sleep(0)
+
+    monkeypatch.setattr(am5, "time", _Time())
+    monkeypatch.setattr(am5, "asyncio", _Asyncio())
+    return clock
+
+
+def _hms(total: float, decimals: int) -> str:
+    scale = 10 ** decimals
+    u = int(_math.floor((total % 86400.0) * scale + 1e-9))
+    h, rem = divmod(u, 3600 * scale)
+    m, su = divmod(rem, 60 * scale)
+    s = f"{su // scale:02d}" + (f".{su % scale:0{decimals}d}" if decimals else "")
+    return f"{h:02d}:{m:02d}:{s}"
+
+
+class ClockedLink(RaLink):
+    """RA advances ``rate`` seconds of time per second of the virtual clock
+    from ``start_s``; Dec moves ``dec_rate`` arcsec per second from
+    ``dec_start`` degrees. ``ra_decimals`` is the digits after the seconds."""
+
+    def __init__(self, clock: VClock, start_s: float, rate: float, *,
+                 ra_decimals: int = 0, dec_start: float = 12.5,
+                 dec_rate: float = 0.0, **kw):
+        super().__init__(start_s, rate, **kw)
+        self.clock = clock
+        self.ra_decimals = ra_decimals
+        self.dec_start, self.dec_rate = dec_start, dec_rate
+        self.script["GR"] = self._gr_clock
+        self.script["GD"] = self._gd_clock
+
+    def arm(self) -> None:
+        self.t_ref = self.clock.t
+
+    def _gr_clock(self, _cmd: str) -> str:
+        return _hms(self.start_s + self.rate * (self.clock.t - self.t_ref),
+                    self.ra_decimals)
+
+    def _gd_clock(self, _cmd: str) -> str:
+        deg = self.dec_start + self.dec_rate * (self.clock.t - self.t_ref) / 3600.0
+        sign = "-" if deg < 0 else "+"
+        total = int(_math.floor(abs(deg) * 3600.0 + 1e-9))
+        d, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        return f"{sign}{d:02d}*{m:02d}:{s:02d}"
+
+
+
 async def _tel(link: RaLink) -> am5.ZwoAm5Telescope:
     tel = am5.ZwoAm5Telescope(link)
     await tel.connect()
@@ -79,8 +164,8 @@ async def test_a_tracking_mount_reads_zero(fixed_env):
     """RA holds still: a drift of 0, the flags and the pier side as the
     mount said, the resolution one second of time over the interval.
 
-    MUTANT 1 (``drift`` not divided by ``elapsed``, i.e. ``/ 1.0``): not
-    graded here; see the sidereal case, which reads 30 instead of 14.9."""
+    MUTANT 1 (the fit divided by nothing): not graded here; see the sidereal
+    case."""
     fl = RaLink(10 * 3600 + 5, 0.0)
     tel = await _tel(fl)
     r = await tel.probe_ra_drift(PROBE_S)
@@ -97,44 +182,50 @@ async def test_a_tracking_mount_reads_zero(fixed_env):
 
 
 async def test_a_stopped_drive_that_still_says_tracking_reads_one_sidereal(
-        fixed_env):
+        fixed_env, vclock):
     """The case the probe exists for: ``:GAT#`` answers 1 (tracking on) while
     the reported RA advances at the sidereal rate. The flag and the rate
     disagree, and the result carries both.
 
-    MUTANT 1 (``drift = d_hours * 15.0 * 3600.0`` with the ``/ elapsed``
-    removed): RED, a fraction of 2.0 (30 arcsec over 2 s read as 30 arcsec/s).
-    MUTANT 2 (``SIDEREAL_ARCSEC_S`` set to 1.0): RED, a fraction of ~15."""
-    fl = RaLink(10 * 3600 + 5, SIDEREAL, gat="1")
+    MUTANT 1 (the fit replaced by ``ra_y[-1]`` without the division by
+    ``elapsed``): RED, a fraction of ~10. MUTANT 2 (``SIDEREAL_ARCSEC_S`` set
+    to 1.0): RED, a fraction of ~15. (Round 2: virtual clock, a 10 s window.)"""
+    fl = ClockedLink(vclock, 10 * 3600 + 5, SIDEREAL, gat="1")
     tel = await _tel(fl)
-    r = await tel.probe_ra_drift(PROBE_S)
+    r = await tel.probe_ra_drift(10.0)
     assert r["tracking_flag_before"] is True
-    assert 0.9 < r["sidereal_fraction"] < 1.1, r
-    assert 13.5 < r["ra_drift_arcsec_s"] < 16.5, r
+    assert 0.95 < r["sidereal_fraction"] < 1.05, r
+    assert 14.3 < r["ra_drift_arcsec_s"] < 15.8, r
 
 
-async def test_the_24_hour_wrap_is_handled(fixed_env):
+async def test_the_24_hour_wrap_is_handled(fixed_env, vclock):
     """A stopped mount crossing 24:00:00 between the two reads: 23:59:59 then
     00:00:01 is two seconds of time forward, not 24 hours back.
 
-    MUTANT 3 (the ``(... + 12.0) % 24.0 - 12.0`` wrap removed from
-    ``probe_ra_drift``): RED, a fraction of about -43000."""
-    fl = RaLink(86399.0, SIDEREAL)
+    MUTANT 3 (the ``(... + 12.0) % 24.0 - 12.0`` wrap removed from the sample
+    list in ``probe_ra_drift``): RED, a fraction of about -4000."""
+    fl = ClockedLink(vclock, 86399.0, SIDEREAL)
     tel = await _tel(fl)
-    r = await tel.probe_ra_drift(PROBE_S)
-    assert 0.9 < r["sidereal_fraction"] < 1.1, r
+    r = await tel.probe_ra_drift(10.0)
+    assert 0.95 < r["sidereal_fraction"] < 1.05, r
 
 
 async def test_nothing_but_reads_goes_on_the_wire_in_the_window(fixed_env):
     """No motion command and no tracking command inside the probe: it reads
-    ``:GAT#``, ``:GR#``, waits, reads ``:GR#``, ``:GAT#`` and the pier side.
+    ``:GAT#``, then ``:GR#`` and ``:GD#`` in pairs about every quarter second
+    (round 2: sampled, not two endpoint reads), then ``:GAT#`` and the pier
+    side.
 
-    MUTANT 4 (a ``:Q#`` sent before the second read): RED, ``Q`` in the
+    MUTANT 4 (a ``:Q#`` sent before the last sample): RED, ``Q`` in the
     list."""
     fl = RaLink(10 * 3600, 0.0)
     tel = await _tel(fl)
     await tel.probe_ra_drift(PROBE_S)
-    assert fl.sent == ["GAT", "GR", "GR", "GAT", "Gm"], fl.sent
+    assert fl.sent[0] == "GAT" and fl.sent[-2:] == ["GAT", "Gm"], fl.sent
+    middle = fl.sent[1:-2]
+    assert set(middle) == {"GR", "GD"}, fl.sent
+    assert middle[0::2] == ["GR"] * (len(middle) // 2)
+    assert middle[1::2] == ["GD"] * (len(middle) // 2)
 
 
 async def test_a_pulse_waits_for_the_window(fixed_env):

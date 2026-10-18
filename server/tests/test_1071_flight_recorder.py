@@ -197,7 +197,9 @@ async def test_a_streak_during_the_probation_is_not_a_mid_run_event(_isolated):
     MUTANT E (``and self._probation is None`` removed from the streak
     test): RED, a ``limit-streak`` file beside the discard."""
     g = make_guider(profile=profile_id("fr4"), mount=Mount())
-    script = [(pulse("north", 200), (0.5, 0.3))] +         [(pulse("east", 100), (2.0, 0.3))] * 4 +         [(pulse("east", CAP_MS), (2.0, 0.3))] * 5
+    script = ([(pulse("north", 200), (0.5, 0.3))]
+              + [(pulse("east", 100), (2.0, 0.3))] * 4
+              + [(pulse("east", CAP_MS), (2.0, 0.3))] * 5)
     task = arm_loop(g, ScriptedEngine(script), probation=True)
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
@@ -327,6 +329,50 @@ async def test_two_events_in_one_second_do_not_share_a_file(_isolated):
     r.dump("x")
     await r.flush()
     assert len(_files(_isolated)) == 2
+
+
+async def test_a_cycles_monotonic_time_maps_to_wall_time(_isolated,
+                                                          monkeypatch):
+    """Each cycle's ``t`` is ``time.monotonic()`` and the file has two stamps
+    taken together at the dump, ``written_at`` (wall) and ``mono_at_write``
+    (monotonic): ``wall = written_at - (mono_at_write - t)``. Proven against
+    a recorder whose clocks are fakes with a known offset: a cycle recorded
+    at monotonic 1000 and wall W, dumped 40 s later, maps back to wall W.
+
+    MUTANT F7-a (``mono_at_write`` taken from ``time.time()``): RED, the
+    mapped time is off by the clock offset. MUTANT F7-b (the key removed):
+    RED."""
+    mono = {"v": 1000.0}
+    wall = {"v": round(time.time(), 3)}
+    w0 = wall["v"]
+    real_time = fr_mod.time
+
+    class _Clock:
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+        monotonic = staticmethod(lambda: mono["v"])
+        time = staticmethod(lambda: wall["v"])
+
+    monkeypatch.setattr(fr_mod, "time", _Clock())
+    r = FlightRecorder()
+    r.begin_cycle(measured=False)
+    mono["v"] += 40.0
+    wall["v"] += 40.0
+    r.dump("x")
+    await r.flush()
+    data = _load(_files(_isolated)[0])
+    assert data["cycles"][0]["t"] == 1000.0
+    assert data["mono_at_write"] == 1040.0
+    mapped = data["written_at"] - (data["mono_at_write"] - data["cycles"][0]["t"])
+    assert mapped == pytest.approx(w0, abs=1e-3)
+
+
+def test_the_wall_time_formula_is_documented():
+    """The module docstring carries the formula a reader needs.
+
+    MUTANT F7-c (the docstring paragraph removed): RED."""
+    assert "wall = written_at - (mono_at_write - t)" in fr_mod.__doc__
 
 
 def test_the_calibration_walk_is_kept_step_by_step(_isolated):
