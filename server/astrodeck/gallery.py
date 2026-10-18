@@ -126,9 +126,13 @@ FRAME_SUFFIXES = frozenset({".fits", ".fit", ".fts", ".xisf"})
 #:                   listed at their real path, so including it double-counts
 #:                   every byte in the "38.2 GB" summary
 #:   _survey/_survey_pack/_weather_tiles/logs/sessions/reports  caches + ledgers
+#:   guide           the guide-loop flight recorder and the pulse probe's
+#:                   results (#1071): JSON diagnostics, never frames, kept like
+#:                   the night logs
 SKIP_TOP_DIRS = frozenset({
     TRASH_DIRNAME, THUMBS_DIRNAME, INDEX_DIRECTORY, "_masters", "_solve", "exports",
     "_survey", "_survey_pack", "_weather_tiles", "logs", "sessions", "reports",
+    "guide",
 })
 
 #: Bounded walk. A capture root with more frames than this is a real index's

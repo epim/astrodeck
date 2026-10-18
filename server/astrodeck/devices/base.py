@@ -784,6 +784,57 @@ class Telescope(Device):
     async def pulse_guide(self, direction: str, ms: int) -> None:
         raise DeviceError(f"{self.name} cannot pulse guide")
 
+    #: True only on a driver that implements ``probe_ra_drift`` (#1071).
+    can_probe_ra_drift: bool = False
+
+    async def probe_ra_drift(self, seconds: float) -> dict | None:
+        """Measure whether the RA drive is really tracking, from the mount's
+        own reported RA over ``seconds`` with NO motion command in the window
+        (#1071). Default None: this mount cannot say.
+
+        A DIFFERENCE, NEVER A POSITION. The answer is a rate (the RA change
+        over an interval) plus flags; the absolute RA the mount reports stays
+        inside the driver, because at home or park it is the local sidereal
+        time, a longitude oracle (#140). A tracking mount reads about 0. A
+        stopped drive reads about 1 sidereal only on a mount whose model
+        follows its drive (#851: the AM5's may not).
+
+        IT READS THE MOUNT'S MODEL, NOT THE SKY. A mount's reported
+        coordinates are its own bookkeeping of where it points. A rate near 1
+        sidereal is strong evidence the firmware has stopped driving RA; a rate
+        near 0 does not prove the axis is turning, so compare it with the camera
+        drift in the guide flight recorder (disagreement points to the
+        mechanics, agreement to the firmware).
+
+        Keys: ``ra_drift_arcsec_s`` (fitted slope of sampled reads),
+        ``ra_drift_endpoint_arcsec_s`` (two-read value, for comparison),
+        ``sidereal_fraction``, ``samples``, ``tracking_flag_before``,
+        ``tracking_flag_after``, ``seconds`` (measured), ``pier_side``,
+        ``resolution_arcsec_s``, ``dec_drift_arcsec_s``,
+        ``dec_resolution_arcsec_s``, ``disturbed``, ``disturbed_by`` (names of
+        the commands or the slew that moved the model in the window),
+        ``cut_short``."""
+        return None
+
+    #: True only on a driver that implements ``measure_model_step`` (#1071).
+    #: The base method does NOT run ``action``, so a caller checks this first
+    #: and runs the action itself on a driver that cannot measure.
+    can_measure_model_step: bool = False
+
+    async def measure_model_step(self, action) -> dict | None:
+        """Run ``action`` (a zero-argument coroutine function) and report how
+        far the mount's reported position moved across it, or None when the
+        driver cannot say (#1071). The pulse probe wraps each stage in this to
+        learn whether the model moved by what was commanded.
+
+        Differences only: ``ra_step_arcsec`` and ``dec_step_arcsec`` (signed as
+        the mount reports, RA the short way round 24 h), ``seconds``,
+        ``ra_quantum_arcsec``, ``dec_quantum_arcsec``, ``disturbed`` and
+        ``disturbed_by``. The absolute readings never leave the driver (#140).
+        An exception from ``action`` propagates. The default returns None
+        WITHOUT running ``action``; see ``can_measure_model_step``."""
+        return None
+
     async def set_tracking_rate(self, rate: str) -> None:
         """Set the drive rate (sidereal/lunar/solar) -- NOT an ephemeris
         follow; the mount just spins its motors at a different constant rate.

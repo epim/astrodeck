@@ -65,6 +65,10 @@ _NO_UI_CALLER = {
         "as /api/connect/alpaca — reached by connecting a NINA profile",
     "/api/connect/phd2":
         "as /api/connect/alpaca — reached by connecting a PHD2 profile",
+    "/api/mount/pulse-probe":
+        "a diagnostic for #1071, run by an operator from a script or curl: "
+        "it sends real guide pulses for four minutes and its answer is a "
+        "log and a file, so there is no screen for it yet",
     "/api/safety/simulate":
         "a test hook for driving the safety monitor; deliberately has no "
         "button, since a UI that can fake 'unsafe' can also fake 'safe'",

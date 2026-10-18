@@ -42,7 +42,7 @@ from ..aio import reap
 from ..alerting import STAGE_FRAME_DEADMAN, STAGE_FRAME_HEARTBEAT
 from ..catalog.coords import angular_sep_deg
 from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
-from .. import capture_geometry, naming
+from .. import capture_geometry, naming, tracking_probe
 from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
                             PierSide, SyncRefused, SyncUnverified,
                             is_present, position_known_for_motion,
@@ -448,6 +448,19 @@ WIND_DOWN_GUIDER_STOP_S = (_NATIVE_PULSE_CAP_MS / 1000.0
 PARK_READ_BACK_POLL_S = 1.0
 
 # --- the meridian flip's bound ---------------------------------------------
+#: What ``hub.meridian_flip`` spends on the tracking probe (#1071), after a
+#: real flip and before the guider restarts: it waits ``FLIP_PROBE_DELAY_S``
+#: for the mount to settle on the far side, then watches the RA for
+#: ``PROBE_SECONDS``. Both sit inside the flip, ahead of the restart, so the
+#: flip's bounds must contain them, or the probe eats the margin the guider's
+#: calibration walk was granted (the 2026-09-09 guillotine again). A few
+#: seconds of slack cover the probe's own reads (the quarter-second samples,
+#: the tracking-flag and pier-side reads). Composed from the constants the hub
+#: actually waits on, so the allowance cannot drift from the wait;
+#: ``test_the_flip_bound_contains_the_tracking_probe`` fails if it is dropped.
+FLIP_PROBE_SLACK_S = 5.0
+FLIP_PROBE_ALLOWANCE_S = (tracking_probe.FLIP_PROBE_DELAY_S
+                          + tracking_probe.PROBE_SECONDS + FLIP_PROBE_SLACK_S)
 #: The flip's work BEFORE the guider restart: stop guiding, read the pier side,
 #: re-slew, run the plate-solve centring loop, read the side again, and — when
 #: the side changed — discard the calibration.
@@ -460,7 +473,9 @@ PARK_READ_BACK_POLL_S = 1.0
 #: a backstop. The re-slew IS a ``hub.goto_and_center`` (``GOTO_TIMEOUT_S``)
 #: and the stop-guide is a quick guider op (``GUIDE_OP_TIMEOUT_S``), so 540 s
 #: is ten times the measured cost and still cannot cut either of them short.
-FLIP_SLEW_TIMEOUT_S = GOTO_TIMEOUT_S + GUIDE_OP_TIMEOUT_S
+#: The probe allowance above is added on top, and every flip bound inherits it.
+FLIP_SLEW_TIMEOUT_S = (GOTO_TIMEOUT_S + GUIDE_OP_TIMEOUT_S
+                       + FLIP_PROBE_ALLOWANCE_S)
 #: ``hub.meridian_flip`` in full when the re-slew did NOT change the pier side:
 #: the work above, plus a guide restart that RELOADS the calibration it already
 #: has. The AM5's lead-time attempt is this case and costs 67 s.
@@ -11769,6 +11784,10 @@ class SequenceEngine:
                         f"{sum(capped.values())} guide pulse(s) at the pulse "
                         f"limit during this exposure of {target.name} ({dirs})",
                         "sequence")
+                # #1071: the cycles behind that note, written to disk.
+                dump = getattr(self.hub.guider, "dump_flight_recorder", None)
+                if callable(dump):
+                    dump("pulse-limit-frame")
         except Exception:               # noqa: BLE001 - never break the run
             capped = None
         if self.reporter is None:
@@ -19931,7 +19950,7 @@ class SequenceEngine:
         return (FLIP_SLEW_TIMEOUT_S + guide_s,
                 "meridian flip (fresh calibration on the new pier side)",
                 f"{guide_note}; the flip is allowed "
-                f"{FLIP_SLEW_TIMEOUT_S:.0f}s for the re-slew and solves plus "
+                f"{FLIP_SLEW_TIMEOUT_S:.0f}s for the re-slew, solves and tracking probe plus "
                 f"{guide_s:.0f}s for the calibration")
 
     async def _flip_bounded(self, coro, *, extra_s: float = 0.0):
@@ -20237,6 +20256,9 @@ class SequenceEngine:
                     f"after tonight's {spells} retries", "sequence")
             raise StopTarget(GUIDE_RETRIES_SPENT)
         self._guide_retry_spells[key] = spells + 1
+        # #1071: before the spell's wait, ask the mount whether its RA drive
+        # is really tracking (ten seconds, one line; a failure is ignored).
+        await self._probe_tracking("guiding hold")
         wait_min = GUIDE_RETRY_WAIT_S / 60.0
         bus.log("warning",
                 f"To shoot without guiding, set Reject above (guide RMS) to "
@@ -20251,6 +20273,17 @@ class SequenceEngine:
         self._guiding_recoveries = 0
         self._sky_read_at_bound = None
         self._stand_down_said_at = None
+
+    async def _probe_tracking(self, trigger: str) -> None:
+        """Run the mount's tracking probe and log its one line (#1071). A hub
+        that cannot answer, a mount that cannot probe and a probe that fails
+        are all the same here: nothing, and the run goes on."""
+        try:
+            tel = self.hub.devices.get("telescope")
+            since = self.hub.minutes_since_flip()
+        except Exception:                       # noqa: BLE001 - never stops a run
+            return
+        await tracking_probe.run_probe(tel, trigger, since_flip_min=since)
 
     async def _guide_retry_wait(self, target, span_s: float) -> None:
         """Wait ``span_s`` the way the engine's other holds do (#873): the

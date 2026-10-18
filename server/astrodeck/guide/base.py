@@ -200,6 +200,11 @@ class Guider(ABC):
         where possible, rather than a local flag) — used to detect a lost star."""
         return self.stats().guiding
 
+    def dump_flight_recorder(self, event: str) -> None:
+        """Write the guide loop's recent cycles to disk for later forensics
+        (#1071). Default: nothing to write. The native guider keeps the ring."""
+        return None
+
     #: Whether this guider can flip its calibration for a meridian flip. Backends
     #: that support it (PHD2) override to True; the default is a safe no-op.
     can_flip_calibration: bool = False
