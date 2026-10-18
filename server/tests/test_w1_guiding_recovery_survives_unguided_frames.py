@@ -62,7 +62,9 @@ def _target(**kw) -> Target:
 
 def _engine(sim_hub) -> SequenceEngine:
     engine = SequenceEngine(sim_hub)
-    engine.plan = SequencePlan(guide=True, recover_guiding=True)
+    # #873: ceiling 0, the stand-down this file pins (a ceiling above 0 holds).
+    engine.plan = SequencePlan(guide=True, recover_guiding=True,
+                               max_guide_rms=0.0)
     return engine
 
 

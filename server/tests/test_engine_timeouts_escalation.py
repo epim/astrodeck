@@ -161,7 +161,9 @@ async def test_guiding_start_failure_escalation(sim_hub, temp_store, monkeypatch
     monkeypatch.setattr(sim_hub.guider, "start_guiding", failing_start)
 
     engine = SequenceEngine(sim_hub)
-    engine.start(light_plan(guide=True))
+    # max_guide_rms=0: the default warn continues unguided only while unguided
+    # frames are accepted; above 0 the run holds for guiding (#873).
+    engine.start(light_plan(guide=True, max_guide_rms=0.0))
     if expected_terminal_state == "aborted":
         assert await wait_for(lambda: not engine.running, timeout=15), engine.state
         assert engine.state.get("state") == "aborted"

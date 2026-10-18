@@ -882,7 +882,10 @@ async def test_a_guider_that_fails_on_every_panel_is_the_rigs_fault(
     """
     group_store.set_escalation(EscalationConfig(require_guiding=True,
                                                 guiding_action=action))
-    night = await _night(group_hub, monkeypatch, _guide_plan(),
+    # max_guide_rms=0: the warn answer is "shoot the panels unguided", which
+    # only a plan that accepts unguided frames can do (#873).
+    night = await _night(group_hub, monkeypatch,
+                         _guide_plan(max_guide_rms=0.0),
                          guide=lambda who, n: False)
     assert night.done, night.trace[-3:]
     first_pass = _labels(night.visits())[:4]

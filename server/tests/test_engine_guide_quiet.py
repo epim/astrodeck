@@ -257,7 +257,8 @@ async def test_recovery_is_bounded_and_counts_attempts_not_failures(
     """
     monkeypatch.setattr(engine_mod, "GUIDE_QUIET_POLL_S", 0.01)
     engine = SequenceEngine(sim_hub)
-    engine.plan = SequencePlan(guide=True, recover_guiding=True)
+    engine.plan = SequencePlan(guide=True, recover_guiding=True,
+                                max_guide_rms=0.0)    # #873: a ceiling above 0 holds instead
     attempts: list[int] = []
 
     async def fake_center(ra, dec, rotation_deg=None):

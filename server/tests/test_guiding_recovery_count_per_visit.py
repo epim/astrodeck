@@ -64,7 +64,11 @@ def _plan_kw(**over) -> dict:
     grader enforces, and the night reject guard off."""
     kw = dict(guide=True, recover_guiding=True, count_mode="accepted",
               min_stars=5, max_consecutive_rejects=20,
-              max_consecutive_rejects_night=0)
+              max_consecutive_rejects_night=0,
+              # #873: ceiling 0. Above 0 the frame loop does not shoot the
+              # trailed frames this file's visit traces are made of; it
+              # holds for guiding (test_873_no_shot_the_gate_refuses.py).
+              max_guide_rms=0.0)
     kw.update(over)
     return kw
 

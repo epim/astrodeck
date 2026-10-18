@@ -959,6 +959,56 @@ RECOVERY_RECENTRES_SPENT = ("the guide star kept going missing; tonight's "
                             "re-centres for it are spent")
 POSITION_UNKNOWN_STOP = ("the mount's position is unknown, so the run "
                          "stopped without moving it")
+
+#: #873: NO FRAME IS SHOT THAT THE GUIDE-RMS REJECT WILL REFUSE. With
+#: `max_guide_rms` armed (it is by default, #854) a frame shot with the guider
+#: stopped is rejected (#142 / D-06), so "continuing unguided" after the #72
+#: attempts were spent shot 20 frames on 2026-10-17 that the engine's own gate
+#: threw away, and nothing tried to bring guiding back. The frame loop now
+#: holds instead (`_hold_for_guiding`): a short wait between the #72 attempts,
+#: then spells of a long wait and fresh attempts, capped per target per night.
+#: Intermittent on the rig (#1071): guiding came back on the 6th calibration,
+#: about 2 h after the flip, on 2026-10-16.
+GUIDE_RETRY_GAP_S = 60.0
+GUIDE_RETRY_WAIT_S = 600.0
+MAX_GUIDE_RETRIES_PER_TARGET_NIGHT = 6
+#: StopTarget reasons: fixed words, no figures (#618).
+GUIDE_RECOVERY_OFF_STOP = ("guiding has stopped, recovery is off for this "
+                           "plan, and the guide-RMS reject would refuse "
+                           "every frame")
+GUIDE_RETRIES_SPENT = ("guiding did not come back after the retries tonight, "
+                       "and the guide-RMS reject refuses frames shot "
+                       "without it")
+#: Operator lines for the two "continuing unguided" sites that now hold (the
+#: action comes first). The raw exception text goes on its own evidence line,
+#: as L_RESUME_FAIL does.
+L_START_FAIL_RETRY = ("guiding did not start, so no frames are shot until it "
+                      "runs; it is retried. To shoot without it, set Reject "
+                      "above (guide RMS) to 0")
+L_START_FAIL_STOP = ("guiding did not start and recovery is off for this "
+                     "plan, so this target stops. To shoot without guiding, "
+                     "set Reject above (guide RMS) to 0")
+L_RESTART_FAIL_RETRY = ("guiding did not restart after the recovery, so no "
+                        "frames are shot until it runs; it is retried. To "
+                        "shoot without it, set Reject above (guide RMS) to 0")
+L_RESTART_FAIL_STOP = ("guiding did not restart after the recovery and "
+                       "recovery is off for this plan, so this target stops. "
+                       "To shoot without guiding, set Reject above (guide "
+                       "RMS) to 0")
+#: The reject reasons `_check_quality` names, and which of them read as sky.
+REJECT_HFR = "hfr"
+REJECT_STARS = "stars"
+REJECT_GUIDER_STOPPED = "guider_stopped"
+REJECT_GUIDE_RMS = "guide_rms"
+REJECT_ECCENTRICITY = "eccentricity"
+_REJECT_CLOUDLIKE = frozenset({REJECT_HFR, REJECT_STARS})
+_REJECT_WORDS = {
+    REJECT_HFR: "with a poor HFR",
+    REJECT_STARS: "below the star floor",
+    REJECT_GUIDER_STOPPED: "shot with the guider stopped",
+    REJECT_GUIDE_RMS: "over the guide RMS ceiling",
+    REJECT_ECCENTRICITY: "over the eccentricity ceiling",
+}
 #: The StopTarget reason when the in-place re-check found the report jumped
 #: further than ``POINTING_RESET_PLAUSIBLE_DEG`` and the field will not
 #: solve, on a mount that cannot lose its frame (``frame_can_reset`` False,
@@ -1352,7 +1402,14 @@ class JumpTarget(Exception):
 class NightQualityStop(Exception):
     """Per-night consecutive-reject guard tripped (spec §3): end the night
     early -> session dormant, ``end_reason="quality"``. Caught in ``_run`` as
-    its own terminal arm (like SafetyAbort) — never treated as an error."""
+    its own terminal arm (like SafetyAbort) — never treated as an error.
+
+    ``cloudlike`` is whether the streak's dominant reject reason reads as sky
+    (HFR, star count): only then does the log line guess "(clouds?)" (#873)."""
+
+    def __init__(self, message: str = "", *, cloudlike: bool = True):
+        super().__init__(message)
+        self.cloudlike = cloudlike
 
 
 class SequenceEngine:
@@ -1397,6 +1454,10 @@ class SequenceEngine:
         #: recoveries taken, and seconds spent on in-place pointing re-checks.
         self._field_holds: dict[tuple[str, str | None], int] = {}
         self._recovery_recentres: dict[tuple[str, str | None], int] = {}
+        #: Guiding retry spells taken (`_hold_for_guiding`, #873), on the
+        #: terms of `_recovery_recentres` above: per target per night,
+        #: cleared by an operator's start.
+        self._guide_retry_spells: dict[tuple[str, str | None], int] = {}
         self._inplace_spent_s: dict[tuple[str, str | None], float] = {}
         #: The budget key whose "re-check time is spent" line was said, so it
         #: is said once.
@@ -1532,6 +1593,10 @@ class SequenceEngine:
         self._swallowed_said: set[tuple[str, str]] = set()
         self._rejected = 0
         self._night_rejects = 0   # per-night consecutive-reject counter (spec §3)
+        #: The streak's rejects by reason (#873), reset with the counter.
+        self._night_reject_reasons: dict[str, int] = {}
+        #: Why `_check_quality` refused the frame it last judged, or None.
+        self._reject_reason: str | None = None
         #: Consecutive rejects per STEP, keyed "<target.id>:<step.id>" (the
         #: `_done` key), cleared when that step banks an accepted frame and at
         #: run start (#147).
@@ -2146,6 +2211,7 @@ class SequenceEngine:
             # that is refused clears nothing.
             self._field_holds.clear()
             self._recovery_recentres.clear()
+            self._guide_retry_spells.clear()
             self._inplace_spent_s.clear()
             self._recheck_spent_said = None
         self.plan = plan
@@ -2258,6 +2324,7 @@ class SequenceEngine:
         self._swallowed_said = set()
         self._rejected = 0
         self._night_rejects = 0
+        self._night_reject_reasons = {}
         self._step_rejects = {}
         # SET ASIDE TONIGHT STAYS SET ASIDE (#208, #147 part 2; spec 3.4,
         # 6.7). A crash-resume, a restart or an auto-resume the same night is
@@ -3766,8 +3833,9 @@ class SequenceEngine:
             # per-night reject guard (spec §3): end the night early — the same
             # complete+end_reason terminal shape as dawn_cutoff, alerting via
             # the existing log→dispatcher path (error level reaches all sinks).
-            bus.log("error", f"sequence '{plan.name}' stopped early — {e} "
-                             "(clouds?)", "sequence")
+            bus.log("error", f"sequence '{plan.name}' stopped early — {e}"
+                             + (" (clouds?)" if getattr(e, "cloudlike", True)
+                                else ""), "sequence")
             self._set_state(state="complete",
                             detail="stopped early: consecutive quality rejects",
                             end_reason="quality", schedule=None, session=None)
@@ -10527,8 +10595,17 @@ class SequenceEngine:
                                 f"guiding required but failed to start: {e} — "
                                 f"{then}", "sequence")
                         raise StopTarget("guiding required but could not start")
-                    bus.log("warning", f"guiding failed to start: {e} — continuing "
-                                       "unguided", "sequence")
+                    if self._guide_reject_armed(target.calibration):
+                        # #873: the guide-RMS reject refuses an unguided
+                        # frame, so none is shot; the frame loop holds.
+                        bus.log("warning",
+                                L_START_FAIL_RETRY if self._policy.recover_guiding
+                                else L_START_FAIL_STOP, "sequence")
+                        bus.log("warning", f"the guiding start failed with: {e}",
+                                "sequence")
+                    else:
+                        bus.log("warning", f"guiding failed to start: {e} — continuing "
+                                           "unguided", "sequence")
                 else:
                     # A start that worked: for a member, an attempt that
                     # worked, for the guide-start pass rule; for any target,
@@ -11311,6 +11388,20 @@ class SequenceEngine:
             # once here, after every recovery above (the re-check's hold can
             # restart guiding too), compared at the shutter below.
             guided_at_top = await self._frame_was_guided()
+            # #873: THE PRE-SHUTTER GUARD. A frame that `_check_quality`'s
+            # D-06 gate will refuse for being unguided is not shot: it costs
+            # sky and disk and tells the night nothing. The same predicate
+            # decides both, so they cannot drift apart. Held here, before the
+            # dither (which can only fail on a stopped guider) and the
+            # exposure, and `continue` so the gates above run again,
+            # `_maybe_recover_guiding` among them. Covers every route to a
+            # stopped guider at the shutter: a failed start at the target
+            # start, a failed restart after a limit recovery, a failed
+            # recovery attempt, and a hold's release whose restart failed.
+            if self._guide_gate_refuses(guided_at_top,
+                                        calibration=target.calibration):
+                await self._hold_for_guiding(target)
+                continue
             await self._enforce_tracking(step, target)
             await self._enforce_cooling()
 
@@ -11449,6 +11540,7 @@ class SequenceEngine:
             # quality-before-record (§1.9-D, C2-8): decide accept BEFORE _done
             # advances. EVERY frame goes in the report.
             accepted = self._check_quality(info)
+            reject_reason = None if accepted else self._reject_reason
             # A sweep owed since two sparse-field failures falls due at the
             # first light frame that banks once a cadence has passed (#507,
             # #558), accepted or not: the question is whether the sky can be
@@ -11523,6 +11615,7 @@ class SequenceEngine:
                 # THIS step's run of rejects is over; other steps keep theirs.
                 self._step_rejects.pop(key, None)
                 self._night_rejects = 0            # resets on ANY accepted frame
+                self._night_reject_reasons.clear()
                 # GN-08: seed the relative-watchdog baseline from the first
                 # accepted frame after a (re)focus. A flow with no autofocus at
                 # all still seeds it here, from the run's own first good frame
@@ -11557,6 +11650,10 @@ class SequenceEngine:
                 step_rejects = self._step_rejects.get(key, 0) + 1
                 self._step_rejects[key] = step_rejects
                 self._night_rejects += 1
+                if reject_reason is not None:
+                    # Most recent last, so a tie names the latest (#873).
+                    self._night_reject_reasons[reject_reason] = (
+                        self._night_reject_reasons.pop(reject_reason, 0) + 1)
             elif self._reject_action() == "retake":
                 retake = True
             else:
@@ -11575,8 +11672,8 @@ class SequenceEngine:
                 # a rule on the reject that trips a guard still runs first.
                 if self._policy.max_consecutive_rejects_night \
                         and self._night_rejects >= self._policy.max_consecutive_rejects_night:
-                    raise NightQualityStop(
-                        f"{self._night_rejects} consecutive rejects across targets")
+                    _why, _cloudlike = self._night_stop_words()
+                    raise NightQualityStop(_why, cloudlike=_cloudlike)
                 if self._policy.max_consecutive_rejects \
                         and step_rejects >= self._policy.max_consecutive_rejects:
                     self._set_step_aside(target, step, key, step_rejects)
@@ -17762,6 +17859,11 @@ class SequenceEngine:
             # next run each say it once). The detail is NOT guarded: the frame
             # loop writes its own between two boundaries, and this is what
             # puts "recovery stood down" back where the screens read it.
+            if self._guide_reject_armed(getattr(target, "calibration", False)):
+                # #873: the guide-RMS reject refuses an unguided frame, so
+                # "continuing unguided" would be false. The frame loop's
+                # guard holds, and its spell line says what happens.
+                return
             if getattr(self, "_stand_down_said_at", None) != here:
                 bus.log("warning", f"{why}; standing down from recovery and "
                         f"continuing unguided", "sequence")
@@ -17802,7 +17904,12 @@ class SequenceEngine:
         member = self._group_of(target) if target is not None else None
         defers = member is not None and member.id not in self._group_unguided
         charged_key = None
-        if recentres and not resumed:
+        if (recentres and not resumed
+                and not self._guide_retry_spells.get(
+                    self._budget_key(target))):
+            # (Once a retry spell is charged tonight (#873) the spells' own
+            # cap bounds the attempts; four re-centres would otherwise end
+            # the target after one spell.)
             key = self._budget_key(target)
             n = self._recovery_recentres.get(key, 0)
             if n >= MAX_RECOVERY_RECENTRES_PER_TARGET_NIGHT:
@@ -19735,9 +19842,19 @@ class SequenceEngine:
                                f"{bound_what} after limit recovery",
                                note=bound_note)
             except Exception as e:       # noqa: BLE001
-                bus.log("warning",
-                        f"{target.name}: guiding did not restart after the "
-                        f"recovery ({e}) — continuing unguided", "sequence")
+                if self._guide_reject_armed(target.calibration):
+                    # #873, as at the target start: none is shot.
+                    bus.log("warning",
+                            L_RESTART_FAIL_RETRY if self._policy.recover_guiding
+                            else L_RESTART_FAIL_STOP, "sequence")
+                    bus.log("warning",
+                            f"{target.name}: the guiding restart failed "
+                            f"with: {e}", "sequence")
+                else:
+                    bus.log("warning",
+                            f"{target.name}: guiding did not restart after the "
+                            f"recovery ({e}) — continuing unguided",
+                            "sequence")
         # The last word is the mount's, not ours.
         if not bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
                                    "tracking readback after re-centring")):
@@ -20022,6 +20139,136 @@ class SequenceEngine:
                 f"over {ceiling / MIN_GUIDE_SCALE_ARCSEC_PX:.0f} px.",
                 "sequence")
 
+    def _guide_reject_armed(self, calibration: bool = False) -> bool:
+        """Does this plan hold a light frame to the guide-RMS reject (#873)?
+
+        The plan guides, a guider is connected, the frame is a light and the
+        ceiling is set. Half of `_guide_gate_refuses`; the other half is
+        whether the guider was stopped. Also asked, with the guider known to
+        be stopped, where a line would otherwise promise unguided frames."""
+        if not (self.plan and self.plan.guide) or calibration:
+            return False
+        g = self.hub.guider
+        if g is None or not getattr(g, "connected", False):
+            return False
+        return self._policy.max_guide_rms > 0
+
+    def _guide_gate_refuses(self, guided, *, calibration: bool = False) -> bool:
+        """THE ONE PREDICATE for "this frame is refused for being unguided"
+        (#873): `_check_quality`'s D-06 reject and the frame loop's
+        pre-shutter guard both ask it, so the guard refuses exactly the frames
+        the gate would and no others. ``guided`` is `_frame_was_guided`'s
+        answer (None: not observed, as for a synthetic ``info``, refuses
+        nothing).
+
+        The live guider is NOT asked again. `_frame_was_guided` answers True
+        for a plan that does not guide and for an absent or disconnected
+        guider, so a False already says both, as observed at the shutter. A
+        guider that dropped off the link between the shutter and the grade
+        must not let the frame it failed to guide through."""
+        return (guided is False and not calibration
+                and self._policy.max_guide_rms > 0)
+
+    def _night_stop_words(self) -> tuple[str, bool]:
+        """The night stop's reason and whether it reads as sky (#873): the
+        streak's dominant reject reason, so an operator is not sent to look at
+        clouds for a streak whose every frame was shot with the guider
+        stopped. A tie names the latest reason."""
+        n = self._night_rejects
+        base = f"{n} consecutive rejects across targets"
+        if not self._night_reject_reasons:
+            return base, True
+        reason, k = max(reversed(list(self._night_reject_reasons.items())),
+                        key=lambda kv: kv[1])
+        return (f"{base}, {k} of them {_REJECT_WORDS[reason]}",
+                reason in _REJECT_CLOUDLIKE)
+
+    async def _hold_for_guiding(self, target) -> None:
+        """Hold the frame loop while guiding is stopped and the guide-RMS
+        reject would refuse the frame (#873). Returns; the caller `continue`s,
+        so its own gates, `_maybe_recover_guiding` first, run again.
+
+        * Recovery off for the plan: nothing would restart guiding, so the
+          target stops now with the operator's way out in a warning.
+        * #72 attempts not yet spent: a short wait, then the next pass makes
+          the next attempt. The wait also means the loop cannot spin, whatever
+          the recovery returned early for.
+        * Attempts spent: a retry spell, charged to a per-target per-night
+          count (on the terms of `_recovery_recentres`); the long wait, then
+          fresh attempts. Spent spells stop the target. A mosaic panel that
+          defers, and a plan that requires guiding with abort or skip, get
+          their own answer at once instead (`_maybe_recover_guiding`).
+        """
+        name = getattr(target, "name", "this target")
+        if not self._policy.recover_guiding:
+            bus.log("warning",
+                    f"Set Reject above (guide RMS) to 0 in the plan or "
+                    f"Settings > Standards, or turn guiding recovery on; "
+                    f"stopping {name}: guiding has stopped and every frame "
+                    f"would be rejected", "sequence")
+            raise StopTarget(GUIDE_RECOVERY_OFF_STOP)
+        if self._guiding_recoveries < _MAX_GUIDING_RECOVERIES:
+            self._set_state(detail="holding: guiding stopped; retrying "
+                                   "guiding shortly")
+            await self._guide_retry_wait(target, GUIDE_RETRY_GAP_S)
+            return
+        # THE ANSWERS THE OPERATOR ALREADY CHOSE COME FIRST. With the attempts
+        # spent, a mosaic panel that defers (#303), and a plan that requires
+        # guiding with abort or skip, are answered by `_maybe_recover_guiding`
+        # (its spent branch: the deferral, the abort, the skip), not by a
+        # ten-minute spell. It is run here rather than left to the next pass
+        # so the pass that cannot shoot raises at once; when it returns (the
+        # sky was shut, or the guider could not be asked) the short wait is
+        # what keeps this from spinning.
+        cfg = self._cfg
+        member = self._group_of(target) if target is not None else None
+        if ((member is not None and member.id not in self._group_unguided)
+                or (cfg and cfg.escalation.require_guiding
+                    and cfg.escalation.guiding_action in ("abort", "skip"))):
+            await self._maybe_recover_guiding(target)
+            await self._guide_retry_wait(target, GUIDE_RETRY_GAP_S)
+            return
+        key = self._budget_key(target)
+        spells = self._guide_retry_spells.get(key, 0)
+        if spells >= MAX_GUIDE_RETRIES_PER_TARGET_NIGHT:
+            bus.log("warning",
+                    f"Set Reject above (guide RMS) to 0 to shoot without "
+                    f"guiding; stopping {name}: guiding did not come back "
+                    f"after tonight's {spells} retries", "sequence")
+            raise StopTarget(GUIDE_RETRIES_SPENT)
+        self._guide_retry_spells[key] = spells + 1
+        wait_min = GUIDE_RETRY_WAIT_S / 60.0
+        bus.log("warning",
+                f"To shoot without guiding, set Reject above (guide RMS) to "
+                f"0. No frames are shot unguided while it is set; guiding "
+                f"is retried in {wait_min:.0f} min "
+                f"({spells + 1}/{MAX_GUIDE_RETRIES_PER_TARGET_NIGHT})",
+                "sequence")
+        self._set_state(detail=f"holding: guiding stopped; retrying guiding "
+                               f"in {wait_min:.0f} min")
+        await self._guide_retry_wait(target, GUIDE_RETRY_WAIT_S)
+        # Fresh attempts, and the sky read once for them (#704, #737).
+        self._guiding_recoveries = 0
+        self._sky_read_at_bound = None
+        self._stand_down_said_at = None
+
+    async def _guide_retry_wait(self, target, span_s: float) -> None:
+        """Wait ``span_s`` the way the engine's other holds do (#873): the
+        checkpoint (a stop or pause still works), the stop boundary (the
+        frozen window and dawn end it), the safety gate, the dead-man ping,
+        and the mount watch (`_hold_watch_ticks`: altitude floor, keep-out,
+        flip point), at least every ``HOLD_WATCH_S``."""
+        until = time.time() + max(0.0, float(span_s))
+        while True:
+            await self._checkpoint()
+            self._enforce_stop_boundary(target)
+            await self._safety_gate(context="frame", target=target)
+            await self._frame_alerts_tick()
+            left = until - time.time()
+            if left <= 1e-6:
+                return
+            await self._hold_watch_ticks(target, min(HOLD_WATCH_S, left))
+
     def _check_quality(self, info: dict, *, record: bool = True,
                        calibration: bool = False) -> bool:
         """Return whether a frame is ACCEPTED per the auto gate (spec §3): the
@@ -20040,6 +20287,7 @@ class SequenceEngine:
         factor = self._policy.hfr_reject_factor
         hfr = info.get("hfr") if isinstance(info, dict) else None
         accepted = True
+        self._reject_reason = None
         # A CALIBRATION FRAME IS NOT A SAMPLE OF THE LIGHTS' SEEING (#995).
         # The window is the HFR of accepted LIGHT frames, and this gate asks
         # whether a frame is poor against it. A flat can carry an HFR (the
@@ -20058,6 +20306,7 @@ class SequenceEngine:
                     bus.log("warning", f"frame HFR {hfr:.2f} >> median {med:.2f} — "
                                        "possible cloud / poor frame", "sequence")
                     accepted = False
+                    self._reject_reason = REJECT_HFR
         if accepted and not calibration and self._policy.min_stars > 0:
             stars = info.get("stars") if isinstance(info, dict) else None
             if stars is not None and int(stars) < self._policy.min_stars:
@@ -20065,6 +20314,7 @@ class SequenceEngine:
                 bus.log("warning", f"frame stars {int(stars)} below floor "
                                    f"{self._policy.min_stars}", "sequence")
                 accepted = False
+                self._reject_reason = REJECT_STARS
         if accepted and not calibration and self._policy.max_guide_rms > 0:
             # #142 / D-06: a frame shot while guiding had actually stopped
             # carries no REAL rms -- the native guider reports a flat 0.00
@@ -20078,7 +20328,8 @@ class SequenceEngine:
             # frame loop, which is every direct ``_check_quality(info)`` call
             # the test suite makes -- so only a real capture that actually
             # observed the guider stopped is held to the stricter rule.
-            if self._frame_guided is False:
+            if self._guide_gate_refuses(self._frame_guided,
+                                        calibration=calibration):
                 self._rejected += 1
                 # #854: the ceiling is on by default now, so the sentence
                 # names the action rather than a choice the operator made.
@@ -20087,6 +20338,7 @@ class SequenceEngine:
                         "or set Reject above (guide RMS) to 0 in the plan or "
                         "Settings > Standards.", "sequence")
                 accepted = False
+                self._reject_reason = REJECT_GUIDER_STOPPED
             elif not (plan and plan.guide) and not self._guiding_now():
                 # AN IDLE GUIDER'S RMS IS STALE (#854). This plan does not
                 # guide, so `_frame_was_guided` answered True without asking
@@ -20115,6 +20367,7 @@ class SequenceEngine:
                             f'is at least {rms:.1f}" at any guide scale, above '
                             f'ceiling {ceiling:.2f}"', "sequence")
                     accepted = False
+                    self._reject_reason = REJECT_GUIDE_RMS
         if accepted and not calibration and self._policy.max_eccentricity > 0:
             # TWO statistics, ONE dial: the median ceiling plus the
             # elongated-star fraction that catches a staircase whose truncated
@@ -20133,6 +20386,7 @@ class SequenceEngine:
                 self._rejected += 1
                 bus.log("warning", reason, "sequence")
                 accepted = False
+                self._reject_reason = REJECT_ECCENTRICITY
         if accepted and record and not calibration and factor and hfr is not None:
             self._recent_hfr.append(float(hfr))
             self._recent_hfr = self._recent_hfr[-12:]

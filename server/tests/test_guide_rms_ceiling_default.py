@@ -514,14 +514,22 @@ async def test_the_stopped_guider_sentence_says_what_to_do(tmp_path,
     try:
         eng = SequenceEngine(hub)
 
-        async def _never_guided() -> bool:
-            return False
-        monkeypatch.setattr(eng, "_frame_was_guided", _never_guided)
+        # #873: a guider seen stopped at the top is held for, not shot. The
+        # guider stops during the exposure instead (the one route left to the
+        # gate), with recovery off so the #848 skip gate leaves the frame.
+        reads = []
+
+        async def _drops_during_the_exposure() -> bool:
+            reads.append(1)
+            return len(reads) == 1
+        monkeypatch.setattr(eng, "_frame_was_guided",
+                            _drops_during_the_exposure)
 
         q = bus.subscribe()
         try:
             eng.start(_one_frame_plan(guide=True, dither_every=0,
-                                      autofocus_every=0, meridian_flip=False))
+                                      autofocus_every=0, meridian_flip=False,
+                                      recover_guiding=False))
             await eng._task
             said = _said(q)
         finally:

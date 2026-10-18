@@ -310,10 +310,13 @@ async def test_a_panels_guide_skips_in_a_group_sent_on_unguided_say_it_is_retrie
     """
     group_store.set_escalation(EscalationConfig(require_guiding=False,
                                                 guiding_action="warn"))
+    # max_guide_rms=0: this case pins the wording of the bound's answers on
+    # the flow where unguided frames are shot; above 0 the frame loop holds
+    # for guiding instead (#873, test_873_no_shot_the_gate_refuses.py).
     plan = grid_plan(rows=1, cols=2, guide=True, recover_guiding=True,
                      count_mode="accepted", min_stars=5,
                      max_consecutive_rejects=20,
-                     max_consecutive_rejects_night=0,
+                     max_consecutive_rejects_night=0, max_guide_rms=0.0,
                      panel_kw={"filters": ("L",), "count": 12,
                                "per_visit": 4})
     guider = group_hub.guider
@@ -407,10 +410,12 @@ async def test_control_a_single_targets_guide_skips_keep_their_words(
         hub_guider = group_hub.guider
         night = Night(group_hub, monkeypatch, guide=lambda who, n: False,
                       stars=lambda who, f: 50 if hub_guider.active else 0)
+        # max_guide_rms=0, as in the group case above (#873).
         plan = _single_plan("Alpha", "Bravo", guide=True,
                             recover_guiding=True, count_mode="accepted",
                             min_stars=5, max_consecutive_rejects=20,
-                            max_consecutive_rejects_night=0)
+                            max_consecutive_rejects_night=0,
+                            max_guide_rms=0.0)
     _unguided_then_required(night, group_store)
     await _run(night, plan)
     assert night.done, night.trace[-3:]

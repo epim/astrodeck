@@ -85,7 +85,7 @@ async def test_a_stood_down_run_reads_the_sky_once_not_at_every_frame(
         AssertionError: a stood-down run read the sky at every frame
         boundary: 10 probes in 10 frames
     """
-    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     t = eng.plan.targets[0]
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
     for _ in range(FRAMES):
@@ -120,7 +120,7 @@ async def test_a_night_that_spends_its_attempts_then_stands_down_reads_the_sky_t
         AssertionError: the night read the sky 10 times in 10 frames, 2
         attempts and the bound's own read make 3
     """
-    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     t = eng.plan.targets[0]
     for _ in range(FRAMES):
         _a_frame_later(eng)
@@ -149,7 +149,7 @@ async def test_the_bound_reads_the_sky_for_the_next_target_too(
         AssertionError: the next target's arrival at the spent bound did not
         read the sky: 1 probe(s) after two targets
     """
-    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     first = eng.plan.targets[0]
     second = _target(name="NGC 6946")
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
@@ -175,7 +175,7 @@ async def test_a_cloudy_read_at_the_bound_is_not_a_stand_down(
         AssertionError: a cloudy read at the bound stood the engine down: the
         next boundary read the sky 0 more time(s)
     """
-    eng, rig = _rig(sim_hub, monkeypatch, [CLOUDY, CLEAR])
+    eng, rig = _rig(sim_hub, monkeypatch, [CLOUDY, CLEAR], max_guide_rms=0.0)
     t = eng.plan.targets[0]
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
     _a_frame_later(eng)
@@ -200,7 +200,7 @@ async def test_a_new_spell_of_attempts_reads_the_sky_again(sim_hub, monkeypatch)
         AssertionError: the second spell's bound did not read the sky: 2
         probe(s) over two spells
     """
-    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     t = eng.plan.targets[0]
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
     for _ in range(3):
@@ -240,7 +240,7 @@ async def test_a_new_run_reads_the_sky_at_the_spent_bound_again(
         AssertionError: the new run's arrival at the spent bound did not read
         the sky: 1 probe(s) over two runs
     """
-    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     t = eng.plan.targets[0]
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
     for _ in range(3):
@@ -300,7 +300,7 @@ async def test_a_second_runs_first_probe_does_not_copy_the_first_runs_step(
     assert eng._hold_step is not None and eng._hold_step.gain == 77, (
         "premise: the first run left its step behind")
 
-    rig_engine, rig = _rig(sim_hub, monkeypatch, [CLEAR])
+    rig_engine, rig = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     # The rig's recorders are installed on the hub; the engine under test is
     # the one that ran, with its own config and plan.
     del rig_engine
