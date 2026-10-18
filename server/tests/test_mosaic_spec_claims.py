@@ -17855,10 +17855,14 @@ def test_5_6_says_the_last_panel_and_the_hops_count_as_s4_built_them():
                      if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
                      and any(_assigns(s, "self._guiding_recoveries", "0")
                              for s in ast.walk(f))})
-    assert resets == ["__init__", "_hop", "_maybe_recover_guiding",
-                      "_record_frame"], (
+    # `_hold_for_guiding` (#873) also resets it: a retry spell's fresh
+    # attempts, after its long wait. Not a setup, and not for a panel that
+    # defers (those take `_maybe_recover_guiding`'s deferral).
+    assert resets == ["__init__", "_hold_for_guiding", "_hop",
+                      "_maybe_recover_guiding", "_record_frame"], (
         f"_guiding_recoveries is reset in {resets}; 5.6 step 7 says the hop, "
-        f"a banked frame and the guide-lost deferral reset it, and no setup")
+        f"a banked frame and the guide-lost deferral reset it, and no setup "
+        f"(a retry spell's fresh attempts, #873, is the one addition)")
 
 
 def test_5_8_says_a_deferred_panels_lines_say_so_as_s4_built_them():

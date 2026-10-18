@@ -127,7 +127,10 @@ export const INCIDENT_ACTIONS: Record<string, IncidentActionSpec> = {
     path: "/api/guide/start", cap: "control.guide", busyLane: "guide", needsRole: "guider",
   }),
   /** The honest half of the omitted CONTINUE UNGUIDED: the engine tolerates a
-   *  stopped guider and logs "continuing UNGUIDED", and the plan is untouched. */
+   *  stopped guider and logs "continuing UNGUIDED", and the plan is untouched.
+   *  (With Reject above (guide RMS) set, the default, the engine instead holds
+   *  and retries guiding rather than shoot frames its own reject would refuse,
+   *  #873.) */
   stop_guiding: spec({
     id: "stop_guiding", label: "STOP GUIDING", kind: "endpoint",
     path: "/api/guide/stop", cap: "control.guide", needsRole: "guider",

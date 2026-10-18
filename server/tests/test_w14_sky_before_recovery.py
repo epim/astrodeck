@@ -129,7 +129,7 @@ def _target(**kw) -> Target:
 
 def _rig(hub, monkeypatch, frames, *, mode="native", fallback=True,
          start_raises=None, wheel=None, limit=2, step_exposure_s=180.0,
-         real_hold=False) -> tuple[SequenceEngine, _Rig]:
+         real_hold=False, max_guide_rms=None) -> tuple[SequenceEngine, _Rig]:
     """A real engine on a hub that is not a simulator, with guiding LOST.
 
     ``frames`` scripts the probe frames in order (the last one repeats): a
@@ -146,8 +146,11 @@ def _rig(hub, monkeypatch, frames, *, mode="native", fallback=True,
     monkeypatch.setattr(cfg.guide, "relock_limit", 0)
     eng = SequenceEngine(hub)
     eng._cfg = cfg
+    # ``max_guide_rms`` is the plan's guide-RMS ceiling (None: the rig's
+    # default, 5.0). Above 0 the engine does not stand down from recovery to
+    # shoot unguided (#873); the stand-down cases pass 0.0.
     eng.plan = SequencePlan(name="p", guide=True, recover_guiding=True,
-                            targets=[_target()])
+                            max_guide_rms=max_guide_rms, targets=[_target()])
     eng._hold_step = ExposureStep(filter="Ha", exposure_s=step_exposure_s,
                                   gain=111, offset=22, binning=2, count=10)
 

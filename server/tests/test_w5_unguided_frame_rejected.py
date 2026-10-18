@@ -63,12 +63,22 @@ async def test_unguided_frame_rejected_when_ceiling_set(tmp_path, monkeypatch):
     await hub.connect_sim()
     eng = SequenceEngine(hub)
 
-    async def _never_guided() -> bool:
-        return False
-    monkeypatch.setattr(eng, "_frame_was_guided", _never_guided)
+    # #873: the frame loop no longer opens an exposure on a guider it SAW
+    # stopped at the top of the iteration (it holds for guiding), so this
+    # frame is guided at the top and the guider stops during the exposure:
+    # the one route left by which an unguided frame reaches the gate, which
+    # still rejects it. Recovery is off so the #848 skip gate does not take
+    # the frame back before the shutter.
+    reads = []
+
+    async def _drops_during_the_exposure() -> bool:
+        reads.append(1)
+        return len(reads) == 1
+    monkeypatch.setattr(eng, "_frame_was_guided", _drops_during_the_exposure)
 
     eng.start(_plan(guide=True, max_guide_rms=1.0, dither_every=0,
-                    autofocus_every=0, meridian_flip=False))
+                    autofocus_every=0, meridian_flip=False,
+                    recover_guiding=False))
     await eng._task
 
     assert eng._rejected == 1, (

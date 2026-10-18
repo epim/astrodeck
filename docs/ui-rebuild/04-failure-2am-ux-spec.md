@@ -76,7 +76,7 @@ Grouped by domain. "Auto" = backend handles it; "User" = needs a person.
 | PHD2 loses guide star | warns; `is_active` reflects it (auto-surfaced) | `log` warn + `guide` | Notice chip "guide star lost" | watch for recovery |
 | PHD2 socket drop mid-settle | unblocks waiter; start raises clear error; reconnects w/ backoff (auto) | `log` + 409 on start | "PHD2 settle failed" not a 90 s hang | re-start guiding |
 | Calibration failed | settle fails fast (user) | `log`/409 | clear error | recalibrate |
-| Guiding fails to start in run | `guiding_action`: warn(default = unguided)/abort/skip | `log` + `sequence` | Notice or Act per policy | decide tolerance |
+| Guiding fails to start in run | `guiding_action`: warn(default = unguided, but only while Reject above (guide RMS) is 0; set, no frame is shot unguided and guiding is retried, #873)/abort/skip | `log` + `sequence` | Notice or Act per policy | decide tolerance |
 | Lost mid-run + `recover_guiding` | auto-restart; failure = warn only (auto) | `log` | Notice "guiding lost — recovering" | — |
 
 ### Sequence

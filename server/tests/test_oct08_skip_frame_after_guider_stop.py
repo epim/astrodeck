@@ -74,7 +74,8 @@ def _target():
                   steps=[ExposureStep(filter="L", exposure_s=0.01, count=1)])
 
 
-def _rig(sim_hub, monkeypatch, *, recover=True, stops_on_dither=(1,)):
+def _rig(sim_hub, monkeypatch, *, recover=True, stops_on_dither=(1,),
+         max_guide_rms=None):
     """An engine on the sim hub whose guider stops itself during the dithers
     numbered in ``stops_on_dither`` (1-based; "all" for every one)."""
     events: list[str] = []
@@ -109,7 +110,8 @@ def _rig(sim_hub, monkeypatch, *, recover=True, stops_on_dither=(1,)):
         phase="guiding" if state["active"] else "idle"))
 
     e = SequenceEngine(sim_hub)
-    e.plan = SequencePlan(guide=True, recover_guiding=recover, dither_every=1)
+    e.plan = SequencePlan(guide=True, recover_guiding=recover, dither_every=1,
+                          max_guide_rms=max_guide_rms)
     cfg = AppConfig()
     cfg.guide.dither_settle_fail_limit = 0     # the walking-field hold off
     e._cfg = cfg
@@ -182,9 +184,14 @@ async def test_the_skip_gate_is_bounded_when_recovery_is_spent(
     one skip per recovery attempt, then, with the attempts spent, the guider
     is down at the top of the iteration and the frame is shot (as the
     operator's guiding_action says). Exactly one capture, in
-    2 + _MAX_GUIDING_RECOVERIES iterations."""
+    2 + _MAX_GUIDING_RECOVERIES iterations.
+
+    Ceiling 0 (#873): with a guide-RMS ceiling above 0 the frame is not shot
+    at all once the attempts are spent; the frame loop holds for guiding
+    (test_873_no_shot_the_gate_refuses.py)."""
     logs = Logs(monkeypatch)
-    e, events, state = _rig(sim_hub, monkeypatch, stops_on_dither="all")
+    e, events, state = _rig(sim_hub, monkeypatch, stops_on_dither="all",
+                            max_guide_rms=0.0)
     t = _target()
     await e._run_step(0, 0, t, t.steps[0])
     assert events.count("capture") == 1, events

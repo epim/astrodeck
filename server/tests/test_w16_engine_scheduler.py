@@ -361,7 +361,7 @@ async def test_the_stand_down_is_said_once_for_a_target_in_a_run(
         stood down', 'NGC 7331: Ha 180s [1/10]', 'NGC 7331: Ha 180s [1/10]',
         ...]
     """
-    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, rig = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     t = eng.plan.targets[0]
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
     details = await _boundaries(eng, t)
@@ -389,7 +389,7 @@ async def test_the_stand_down_is_said_again_for_the_next_target(
         AssertionError: the next target's stand-down was not said once, as
         the first's was: 1 line(s) for two targets
     """
-    eng, _r = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, _r = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     first = eng.plan.targets[0]
     second = _target(name="NGC 6946")
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
@@ -414,7 +414,7 @@ async def test_a_new_spell_of_attempts_says_the_stand_down_again(
         AssertionError: the second spell's stand-down was not said: 1
         line(s) over two spells
     """
-    eng, _r = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, _r = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     t = eng.plan.targets[0]
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
     await _boundaries(eng, t, 3)
@@ -447,7 +447,7 @@ async def test_a_new_run_says_the_stand_down_again(sim_hub, monkeypatch,
         AssertionError: the new run's stand-down was not said: 1 line(s) over
         two runs
     """
-    eng, _r = _rig(sim_hub, monkeypatch, [CLEAR])
+    eng, _r = _rig(sim_hub, monkeypatch, [CLEAR], max_guide_rms=0.0)
     t = eng.plan.targets[0]
     eng._guiding_recoveries = engine_mod._MAX_GUIDING_RECOVERIES
     await _boundaries(eng, t, 3)

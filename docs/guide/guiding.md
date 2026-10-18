@@ -46,6 +46,10 @@ The **GUIDING ASSISTANT** requires the native guider. Read what it will measure.
 
 Compare guiding measurements under comparable conditions. A different night, star field, exposure or provider is not a controlled before-and-after test. The live RMS value describes the reported guide error, not a guarantee of image sharpness.
 
+## When guiding stops during a run
+
+While the guide-RMS reject is set (the Standards setting is on by default), a run does not shoot a light frame with the guider stopped: the reject would refuse it. The run holds, tries twice to restart guiding, a minute apart, and then retries in spells ten minutes apart, up to six spells per target per night. If guiding never returns, the target is stopped and the log says why. With recovery turned off for the plan, the target stops at once. To shoot without guiding, set the reject to 0 in the plan or in Settings > Standards.
+
 <a id="under-the-hood-routes"></a>
 
 ## Related

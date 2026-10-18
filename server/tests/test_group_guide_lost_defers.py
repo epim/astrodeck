@@ -289,6 +289,9 @@ async def test_control_a_single_targets_guiding_loss_takes_guiding_action(
     group_store.set_escalation(ESCALATION[action])
     kw = _plan_kw()
     kw["max_consecutive_rejects"] = 6
+    # #873: with a guide-RMS ceiling above 0 the frame loop holds instead of
+    # standing down; this case pins the ceiling-0 stand-down, unchanged.
+    kw["max_guide_rms"] = 0.0
     plan = SequencePlan(name="solo", dither_every=0, autofocus_every=0,
                         meridian_flip=False, park_when_done=False,
                         warm_cooler_when_done=False,
@@ -352,6 +355,9 @@ async def test_a_group_the_pass_rule_sent_on_unguided_keeps_the_escalation(
     guider = group_hub.guider
     kw = _plan_kw()
     kw["max_consecutive_rejects"] = 6
+    # #873: with a guide-RMS ceiling above 0 the frame loop holds instead of
+    # standing down; this case pins the ceiling-0 stand-down, unchanged.
+    kw["max_guide_rms"] = 0.0
     night = Night(group_hub, monkeypatch, guide=lambda who, n: False,
                   stars=lambda who, f: 50 if guider.active else 0)
     try:
