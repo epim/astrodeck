@@ -132,6 +132,7 @@ from .. import gallery as gallery_module
 from .. import capture_geometry
 from .. import gallery_listing
 from .. import rig_beacon
+from .. import pulse_probe
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
@@ -9623,7 +9624,9 @@ def create_app(*, bind_host: str | None = None,
         # was already past the cancel point and sitting in ``tel.slew``'s await,
         # its pre-dispatch re-check sees the advanced epoch and abandons.
         hub.bump_motion_epoch()
-        for name in ("goto", "solve"):
+        # "pulse_probe" (#1071) is a lane of timed guide pulses: its cancel
+        # runs pulse_guide's own stop, and the tel.stop() below backs it up.
+        for name in ("goto", "solve", "pulse_probe"):
             t = hub._busy.get(name)
             if t and not t.done():
                 t.cancel()
@@ -9635,6 +9638,41 @@ def create_app(*, bind_host: str | None = None,
         hub.note_move("ra", 0.0)
         hub.note_move("dec", 0.0)
         return {"ok": True}
+
+    @app.post("/api/mount/pulse-probe",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT,
+             reaches={"Telescope.pulse_guide", "Telescope.probe_ra_drift"})
+    async def mount_pulse_probe():
+        """Does a guide pulse leave the RA drive tracking? (#1071)
+
+        Six stages, about three minutes, no camera and no star: rest, one
+        west pulse, one east pulse, ten west and ten east at the guide
+        cadence, rest, each followed by a 10 s probe of the mount's own
+        reported RA rate (``astrodeck.pulse_probe``). The mount moves (the
+        pulses are real), so it is refused with a plain 409 while a sequence
+        is running or armed to start within ten minutes, while the guider is
+        guiding, while the mount is parked or slewing, and when the driver
+        cannot probe.
+
+        A background job in the ``pulse_probe`` lane: this answers at once,
+        the result goes to the night log and to
+        ``captures/guide/<night>/<HHMMSS>-pulse-probe.json``, and
+        ``POST /api/mount/stop`` ends it. The answer carries no coordinate.
+        """
+        try:
+            tel = hub.require("telescope")
+        except DeviceError as e:
+            raise _err(e)
+        why = await pulse_probe.refusal(hub, engine, tel,
+                                        recovering=bool(resume_arm.recovering))
+        if why:
+            raise HTTPException(409, detail={
+                "detail": why, "code": "pulse_probe_refused"})
+        out = _spawn("pulse_probe", pulse_probe.run_protocol(tel))
+        out["note"] = ("about three minutes; the result goes to the night "
+                       "log and to captures/guide/")
+        return out
 
     @app.post("/api/mount/trust-position")
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.trust_position"})

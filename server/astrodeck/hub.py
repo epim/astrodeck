@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from . import cooling
+from . import cooling, tracking_probe
 from .aio import reap
 from .config import (config_store, f_ratio, fov_deg, frames_payload,
                      image_scale_arcsec_px, redacted)
@@ -234,6 +234,12 @@ def _guide_preview_encoded_defect(
 #: the engine fail-closes to UNSAFE (devices/base.SafetyReading.stale, C1-12/C1-15).
 SAFETY_POLL_INTERVAL_S = 5.0
 SAFETY_READ_TIMEOUT_S = 8.0
+
+#: Seconds after a real meridian flip before the tracking probe looks, so the
+#: mount has settled on the far side and the probe reads the drive, not the
+#: slew's tail (#1071).
+FLIP_PROBE_DELAY_S = 60.0
+
 #: Age guard: if the cached reading is older than one poll cycle plus a read
 #: timeout plus this slack, the poller has stopped ticking — treat the cached
 #: reading as STALE (fail-closed to UNSAFE) instead of trusting it forever. This
@@ -499,6 +505,8 @@ BUSY_LANE_LABELS: tuple[tuple[str, str], ...] = (
     # It has only had a lane since the same 2026-08-05 change (the session owns
     # its task, so nothing published it), which is why it was never in here.
     ("polar", "polar aligning"),
+    # The pulse probe (#1071) sends real guide pulses for about three minutes.
+    ("pulse_probe", "running the pulse probe"),
     ("solve", "solving"),
     ("autofocus", "focusing"),
     ("focuser", "focusing"),
@@ -1203,6 +1211,9 @@ class Hub:
         #: `_note_pier_side` -- a serial read that times out must not turn a
         #: fact nobody disputes into "unknown".
         self._pier_side_seen: tuple[str, float] | None = None
+        #: ``time.monotonic()`` when the last REAL meridian flip's re-slew
+        #: returned (#1071); None before the first this process saw.
+        self._last_flip_mono: float | None = None
         #: The latest sky position angle a plate solve of an imaging-camera
         #: frame measured, and whether it calibrated the rotator (and if not,
         #: why). Written only by ``sky_angle.note_solved_rotation``; surfaced on
@@ -9879,6 +9890,9 @@ class Hub:
                     f"{side_after} after the re-slew — nothing flipped, so the "
                     f"calibration for this side is kept rather than discarded "
                     f"and re-walked", "sequence")
+        if flipped:
+            self._last_flip_mono = time.monotonic()
+            await self._probe_tracking_after_flip()
         if was_guiding:
             try:
                 await self.guider.start_guiding()
@@ -9902,6 +9916,27 @@ class Hub:
         # added beside them and never overwrite one.
         return dict(result or {}, flipped=flipped,
                     pier_side_before=side_before, pier_side_after=side_after)
+
+    def minutes_since_flip(self) -> float | None:
+        """Minutes since the last real meridian flip this process saw, or None
+        (#1071). For the tracking probe's line: whether a rig that drifts on
+        pier east does so early, and whether it recovers, is the question."""
+        t = self._last_flip_mono
+        return None if t is None else (time.monotonic() - t) / 60.0
+
+    async def _probe_tracking_after_flip(self) -> None:
+        """Wait ``FLIP_PROBE_DELAY_S`` for the mount to settle on the far
+        side, then probe whether the RA drive is really tracking, before the
+        guider restarts (#1071). Does nothing, and waits for nothing, on a
+        mount that cannot probe. A failure is logged by the probe and ignored;
+        the wait is the only thing here that can be cancelled, by the flip's
+        own cancel."""
+        tel = self.devices.get("telescope")
+        if tel is None or not getattr(tel, "can_probe_ra_drift", False):
+            return
+        await asyncio.sleep(FLIP_PROBE_DELAY_S)
+        await tracking_probe.run_probe(tel, "after the meridian flip",
+                                       since_flip_min=self.minutes_since_flip())
 
     # ------------------------------------------------------------ NINA events
 

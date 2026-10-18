@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import logging
 import math
 import threading
@@ -47,6 +48,13 @@ _log = logging.getLogger(__name__)
 SLEW_TIMEOUT_S = 120.0
 #: Settle criterion: coord delta below this across two consecutive polls.
 SETTLE_DEG = 0.05
+#: Arcsec of RA per second of time at the sidereal rate (#1071).
+SIDEREAL_ARCSEC_S = 15.041
+
+#: The shortest ``probe_ra_drift`` window. At the coarse 15 arcsec step of
+#: ``:GR#`` anything shorter reads only 0 or the quantum (#1071).
+PROBE_MIN_S = 1.0
+
 #: Poll cadence during a slew.
 SETTLE_POLL_S = 0.5
 #: How close the position read back after a ``:CM#`` must be to the synced
@@ -529,6 +537,8 @@ class ZwoAm5Telescope(Telescope):
     #: Published so a guider can size its corrections to what this mount will
     #: actually perform, instead of having them silently truncated.
     max_pulse_ms = _PULSE_MAX_MS
+    #: ``probe_ra_drift`` below (#1071).
+    can_probe_ra_drift = True
     can_set_tracking_rate = True
     can_find_home = True      # :hP# homes (and parks); find_home unparks after
     #: This mount can lose its frame with nothing on the wire to say so: after
@@ -612,6 +622,10 @@ class ZwoAm5Telescope(Telescope):
         #: makes "park" and "pulse" mutually exclusive instead of merely
         #: unlikely to collide.
         self._pulse_park_lock = asyncio.Lock()
+        #: Parks waiting for that lock (#1071). ``probe_ra_drift`` holds it
+        #: for ten seconds with nothing moving, and a park is the safety
+        #: path, so the probe watches this and gives the lock up.
+        self._park_waiting = 0
 
     # --------------------------------------------------------------- health
 
@@ -1188,7 +1202,7 @@ class ZwoAm5Telescope(Telescope):
         # before :hP# -- the one state :hP# is a documented silent no-op
         # against -- and the two could equally just interleave their bytes on
         # one shared serial port.
-        async with self._pulse_park_lock:
+        async with self._park_lock():
             await self._drain_halt()
 
             # STOP TRACKING, AND VERIFY IT. The old code wrapped this in a bare
@@ -1232,6 +1246,20 @@ class ZwoAm5Telescope(Telescope):
                 f"{self.name}: park did not complete within "
                 f"{PARK_WAIT_S * 2:.0f}s across two attempts (mount still "
                 f"reports unparked){why}")
+
+    @contextlib.asynccontextmanager
+    async def _park_lock(self):
+        """``_pulse_park_lock``, counting a park that is waiting for it so a
+        long holder (``probe_ra_drift``) can let it through (#1071)."""
+        self._park_waiting += 1
+        try:
+            await self._pulse_park_lock.acquire()
+        finally:
+            self._park_waiting -= 1
+        try:
+            yield
+        finally:
+            self._pulse_park_lock.release()
 
     async def _stop_tracking_for_park(self) -> None:
         """Send ``:Td#`` unconditionally, right before every ``:hP#`` (WP-18,
@@ -1386,6 +1414,83 @@ class ZwoAm5Telescope(Telescope):
 
     async def get_tracking(self) -> bool:
         return (await self._get("GAT")).startswith("1")
+
+    async def _read_ra_hours(self) -> float:
+        """``:GR#`` as hours, for ``probe_ra_drift`` only. The reading is
+        returned to its caller and nowhere else: not logged, not stored in
+        ``_last_pos``, not in an error (sizes only, #863, #140)."""
+        raw = await self._get("GR")
+        try:
+            return lx200.parse_ra(raw)
+        except ValueError:
+            raise DeviceError(f"{self.name}: unparseable RA reply for the "
+                              f"tracking probe (:GR# gave {len(raw)} "
+                              f"bytes)") from None
+
+    async def probe_ra_drift(self, seconds: float) -> dict | None:
+        """Is the RA drive really tracking? Read ``:GAT#`` and ``:GR#``, wait
+        ``seconds`` with NO motion command, read both again (#1071).
+
+        A tracking mount holds its RA; a stopped one reads it advancing at the
+        sidereal rate, 15.041 arcsec of RA per second of time. The flag can
+        say tracking while the drive is slow or stopped (the open question on
+        pier east after a flip), so the flag is reported beside the rate.
+
+        HOLDS ``_pulse_park_lock`` the whole time, so no guide pulse starts
+        inside the window; it gives the lock up within a quarter second when a
+        park is waiting (``cut_short``), because the park is the safety path.
+        A goto is not excluded by that lock, so a slew seen at either end
+        marks the result ``disturbed``: the rate then measures the slew.
+
+        THE RESOLUTION IS THE COARSEST COUNT. ``:GR#`` is HH:MM:SS, one second
+        of time, 15 arcsec, so two reads differ by a whole number of those:
+        ``resolution_arcsec_s`` is 15 over the measured interval (1.5 for a
+        10 s probe, a tenth of the sidereal rate). The RA step is taken the
+        short way round 24 h. The interval is the measured time between the
+        two RA reads, not the requested one.
+
+        Only differences leave this method. The two RA readings are local
+        variables."""
+        seconds = max(PROBE_MIN_S, min(float(seconds), 60.0))
+        async with self._pulse_park_lock:
+            slewing = bool(self._slewing)
+            flag_before = await self.get_tracking()
+            t0 = time.monotonic()
+            ra0 = await self._read_ra_hours()
+            t0 = (t0 + time.monotonic()) / 2.0
+            deadline = time.monotonic() + seconds
+            cut_short = False
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                if self._park_waiting > 0:
+                    cut_short = True
+                    break
+                await asyncio.sleep(min(0.25, left))
+            t1 = time.monotonic()
+            ra1 = await self._read_ra_hours()
+            t1 = (t1 + time.monotonic()) / 2.0
+            flag_after = await self.get_tracking()
+            slewing = slewing or bool(self._slewing)
+            try:
+                pier = (await self.pier_side()).value
+            except Exception:       # noqa: BLE001 - the rate is the point
+                pier = "unknown"
+        elapsed = max(t1 - t0, 1e-3)
+        d_hours = (ra1 - ra0 + 12.0) % 24.0 - 12.0
+        drift = d_hours * 15.0 * 3600.0 / elapsed
+        return {
+            "ra_drift_arcsec_s": round(drift, 3),
+            "sidereal_fraction": round(drift / SIDEREAL_ARCSEC_S, 3),
+            "tracking_flag_before": bool(flag_before),
+            "tracking_flag_after": bool(flag_after),
+            "seconds": round(elapsed, 2),
+            "pier_side": pier if pier in ("east", "west") else "unknown",
+            "resolution_arcsec_s": round(15.0 / elapsed, 3),
+            "disturbed": slewing,
+            "cut_short": cut_short,
+        }
 
     async def pier_side(self) -> PierSide:
         side = await self._get("Gm")

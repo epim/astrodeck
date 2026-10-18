@@ -784,6 +784,24 @@ class Telescope(Device):
     async def pulse_guide(self, direction: str, ms: int) -> None:
         raise DeviceError(f"{self.name} cannot pulse guide")
 
+    #: True only on a driver that implements ``probe_ra_drift`` (#1071).
+    can_probe_ra_drift: bool = False
+
+    async def probe_ra_drift(self, seconds: float) -> dict | None:
+        """Measure whether the RA drive is really tracking, from the mount's
+        own reported RA over ``seconds`` with NO motion command in the window
+        (#1071). Default None: this mount cannot say.
+
+        A DIFFERENCE, NEVER A POSITION. The answer is a rate (the RA change
+        over an interval) plus flags; the absolute RA the mount reports stays
+        inside the driver, because at home or park it is the local sidereal
+        time, a longitude oracle (#140). A tracking mount reads about 0 and a
+        stopped one about 1 sidereal. Keys: ``ra_drift_arcsec_s``,
+        ``sidereal_fraction``, ``tracking_flag_before``,
+        ``tracking_flag_after``, ``seconds`` (measured), ``pier_side``,
+        ``resolution_arcsec_s``, ``disturbed``, ``cut_short``."""
+        return None
+
     async def set_tracking_rate(self, rate: str) -> None:
         """Set the drive rate (sidereal/lunar/solar) -- NOT an ephemeris
         follow; the mount just spins its motors at a different constant rate.

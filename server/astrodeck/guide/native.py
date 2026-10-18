@@ -53,9 +53,11 @@ from dataclasses import dataclass, field
 
 from ..aio import reap
 from ..devices.base import Camera, DeviceError, Telescope
+from .. import tracking_probe
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
 from .base import Guider, GuideStats
+from .flight_recorder import FlightRecorder
 
 # Guarded handle to the Rust wheel. ``NATIVE_AVAILABLE`` (the single source of
 # truth) already told us whether the import can succeed; we re-import here only
@@ -978,6 +980,13 @@ class NativeGuider(Guider):
         # (answer, monotonic time) of the last ``needs_calibration``: the
         # engine picked its start bound from it.
         self._needs_cal_said: tuple[bool, float] | None = None
+        # #1071: the last 60 cycles and the calibration walk, written out when
+        # a calibration is discarded, the star is lost or re-acquired, or five
+        # pulses in a row hit the limit. The pier side is the one this guider
+        # last read, which is what it believes, not what the mount does.
+        self._fr = FlightRecorder()
+        self._pier_believed = "unknown"
+        self._probe_task: asyncio.Task | None = None
 
     # ------------------------------------------------------- camera settings
 
@@ -1098,6 +1107,9 @@ class NativeGuider(Guider):
 
     async def disconnect(self) -> None:
         await self.stop_guiding()
+        task, self._probe_task = self._probe_task, None
+        if task is not None and not task.done():
+            task.cancel()
         # The guider is done, so its engine is too. NOT in ``stop_guiding``: a
         # stop is not the end of the guider, and the meridian flip stops it,
         # re-slews, and then asks THIS engine to mirror its calibration
@@ -1587,6 +1599,7 @@ class NativeGuider(Guider):
                     "native guider: no guide star found — cannot calibrate")
             x0, y0 = float(stars[0]["x"]), float(stars[0]["y"])
             self._engine.begin_calibration(x0, y0)
+            self._fr.begin_walk()
             # NOV-7: one "calibrating" tick right after the engine enters its
             # calibration state machine.
             self._phase_hint = "calibrating"
@@ -1669,6 +1682,9 @@ class NativeGuider(Guider):
                                          "start": here, "end": None})
                         legs[-1]["steps"] += 1
                         legs[-1]["ms"] += int(action.get("ms") or 0)
+                        self._fr.walk_step(cal_steps, leg_now, action.get("dir"),
+                                           int(action.get("ms") or 0),
+                                           (cal_x, cal_y))
                         bus.publish("guide", **self.stats().__dict__,
                                     cal={"leg": action.get("leg"),
                                          "dir": action.get("dir"),
@@ -1715,6 +1731,7 @@ class NativeGuider(Guider):
                 # (#848): the legs it walked and how far each moved the star.
                 if legs and legs[-1]["end"] is None:
                     legs[-1]["end"] = (cal_x, cal_y)
+                self._fr.walk_end((cal_x, cal_y))
                 bus.log("warning", L_WALK_LEGS_HEAD + _legs_summary(legs),
                         "guide")
                 raise
@@ -1730,6 +1747,7 @@ class NativeGuider(Guider):
                                   key=lambda p: (p[0] - cal_x) ** 2
                                                 + (p[1] - cal_y) ** 2)
                 legs[-1]["end"] = end if end is not None else (cal_x, cal_y)
+                self._fr.walk_end(legs[-1]["end"])
             self._caps = None
             cal_now = {}
             with contextlib.suppress(Exception):
@@ -1830,6 +1848,7 @@ class NativeGuider(Guider):
             dec_rad = math.radians(float(dec_deg))
         with contextlib.suppress(Exception):
             pier = (await self.tel.pier_side()).value
+        self._pier_believed = pier
         self._engine.set_scope_pointing(
             dec_rad, pier, "unknown", "unknown", 0.0, self._binning)
         # #849: the capability the runaway gate judges against follows the
@@ -2070,6 +2089,7 @@ class NativeGuider(Guider):
                 measured = self._measurement_mark() not in (mark, None)
                 if measured:
                     self._gp_fed_at = time.time()
+                self._record_cycle(action, measured)
                 # #849/#848: THE GUIDER JUDGES ITS OWN CORRECTIONS, on its own
                 # cadence, before this frame's pulse goes out: the runaway
                 # gate and the calibration probation. It runs whether or not a
@@ -2103,6 +2123,65 @@ class NativeGuider(Guider):
                 self._settle_error = self._settle_error or f"guide loop error: {e}"
                 self._settle_done.set()
             bus.publish("guide", **self.stats().__dict__)
+
+    # ------------------------------------------------ flight recorder (#1071)
+
+    def _record_cycle(self, action: dict, measured: bool) -> None:
+        """Open this cycle's record in the flight recorder, from the engine's
+        own stats. Total: it runs on every guide frame and must never stop the
+        loop."""
+        try:
+            s = self._engine.stats()
+            err = None
+            if measured and s.get("recent"):
+                r = s["recent"][-1]
+                err = (float(r[1]), float(r[2]))
+            asked = []
+            kind = action.get("action")
+            if kind == "pulse":
+                asked = [{"dir": action.get("dir"), "ms": action.get("ms")}]
+            elif kind == "pulse_pair":
+                asked = [{"dir": p.get("dir"), "ms": p.get("ms")}
+                         for p in (action.get("ra"), action.get("dec")) if p]
+            self._fr.begin_cycle(
+                star=s.get("tracking"), lock=s.get("lock"), snr=s.get("snr"),
+                err_px=err, scale=self._image_scale,
+                scale_known=self._image_scale_known, action=str(kind),
+                asked=asked, pier=self._pier_believed, measured=measured)
+        except Exception:                       # noqa: BLE001 - total
+            pass
+
+    def dump_flight_recorder(self, event: str) -> None:
+        """Write the ring to ``captures/guide/<night>/`` and say so in the
+        night log (``FlightRecorder.dump``). Safe to call from anywhere."""
+        try:
+            cal = None
+            with contextlib.suppress(Exception):
+                cal = self._engine.dump_calibration()
+            self._fr.dump(event, scale=self._image_scale,
+                          scale_known=self._image_scale_known,
+                          pier=self._pier_believed, calibration=cal)
+        except Exception:                       # noqa: BLE001 - total
+            pass
+
+    def _schedule_probe(self, label: str) -> None:
+        """Ask the mount whether it is really tracking, off the guide loop
+        (#1071). One at a time; a probe that is already running covers it."""
+        try:
+            task = self._probe_task
+            if task is not None and not task.done():
+                return
+            self._probe_task = asyncio.get_running_loop().create_task(
+                self._run_probe(label))
+        except RuntimeError:        # no running loop: nothing to probe on
+            pass
+
+    async def _run_probe(self, label: str) -> None:
+        since = None
+        with contextlib.suppress(Exception):
+            from .. import hub as _hubmod
+            since = _hubmod.hub.minutes_since_flip()
+        await tracking_probe.run_probe(self.tel, label, since_flip_min=since)
 
     def _measurement_mark(self) -> tuple[int, float] | None:
         """Where the engine's record of accepted measurements stands: how many
@@ -2265,6 +2344,11 @@ class NativeGuider(Guider):
                     else:
                         s = streaks[axis] = {"dir": sat[axis], "len": 1,
                                              "e0": e}
+                    if s["len"] == RUNAWAY_PULSES and self._probation is None:
+                        # #1071: five at the limit in a row, mid-run, is
+                        # recorded while the run is still going. Exactly
+                        # once per streak: the length passes 5 only once.
+                        self.dump_flight_recorder("limit-streak")
                     if (s["len"] >= RUNAWAY_PULSES + 1
                             and e - s["e0"] >= self._growth_px(axis)):
                         self._stop_for_runaway(axis, s, e)
@@ -2373,6 +2457,13 @@ class NativeGuider(Guider):
         so the sequence engine's recovery re-centres and walks a new one. A
         dither waiting on the settle window fails now, not in 90 s."""
         bus.log("error", line, "guide")
+        # #1071: the cycles behind this sentence, written BEFORE the clear
+        # (which empties the calibration the file summarises), and a look at
+        # whether the mount is really tracking now that no pulse is pending.
+        runaway = reason == RUNAWAY_STOP_REASON
+        self.dump_flight_recorder("cal-discarded-runaway" if runaway
+                                  else "cal-discarded-not-held")
+        self._schedule_probe("runaway" if runaway else "calibration discarded")
         self._stop_reason = reason
         self._first_dither_pending = False
         self.clear_calibration()
@@ -2597,8 +2688,9 @@ class NativeGuider(Guider):
         """Count, cap and send one guide correction; remember the last Dec
         direction SENT (the BLC judgement reads it)."""
         self._note_saturated(direction, ms)
-        await self.tel.pulse_guide(direction,
-                                   self._limit_to_mount_cap(direction, ms))
+        sent = self._limit_to_mount_cap(direction, ms)
+        self._fr.add_pulse(direction, ms, sent, self._at_limit(direction, ms))
+        await self.tel.pulse_guide(direction, sent)
         if direction in ("north", "south"):
             self._last_dec_dir_sent = direction
         p = self._probation
@@ -2724,6 +2816,9 @@ class NativeGuider(Guider):
             bus.log("warning",
                     f"native guider lost the guide star "
                     f"(reacquire {self._reacquire}/{_REACQUIRE_BUDGET})", "guide")
+            if self._reacquire == 1 or self._reacquire >= _REACQUIRE_BUDGET:
+                # #1071: one file per spell of losses, not one per lost frame.
+                self.dump_flight_recorder("star-lost")
             if self._reacquire >= _REACQUIRE_BUDGET:
                 bus.log("error",
                         "native guider: guide star not reacquired — stopping",
@@ -3003,6 +3098,7 @@ class NativeGuider(Guider):
         d_px = math.hypot(near[0] - prev[0], near[1] - prev[1])
         d = d_px * scale
         self._relocks += 1
+        self.dump_flight_recorder("reacquire")
         self._relock_arcsec_total += d
         self._relock_events.append({"t": round(time.time(), 3),
                                     "arcsec": round(d, 3)})
@@ -3037,6 +3133,7 @@ class NativeGuider(Guider):
         ``reason`` is what the guider reports as its own."""
         bus.log("error", f"native guider: {reason}{detail} — stopping",
                 "guide")
+        self.dump_flight_recorder("relock-stop")
         self._relock_stop_reason = reason
         self._lost = True
         self._active = False

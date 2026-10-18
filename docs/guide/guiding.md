@@ -50,6 +50,14 @@ Compare guiding measurements under comparable conditions. A different night, sta
 
 While the guide-RMS reject is set (the Standards setting is on by default), a run does not shoot a light frame with the guider stopped: the reject would refuse it. The run holds, tries twice to restart guiding, a minute apart, and then retries in spells ten minutes apart, up to six spells per target per night. If guiding never returns, the target is stopped and the log says why. With recovery turned off for the plan, the target stops at once. To shoot without guiding, set the reject to 0 in the plan or in Settings > Standards.
 
+## Check that the mount keeps tracking after guide pulses
+
+When guiding runs the star away on one pier side, for example after a meridian flip, the cause may be the mount rather than the calibration: the AM5 emulates guide pulses by replacing its tracking drive for the length of the pulse, and the tracking flag can read on while the RA drive is slow or stopped. Three records help tell the two apart.
+
+- Flight recorder: When a calibration is discarded, the guide star is lost or re-acquired, five corrections in a row reach the pulse limit, or a frame carries the "guide pulses at the pulse limit" note, the native guider writes its last 60 cycles to `captures/guide/<night>/<time>-<event>.json` and logs one line naming the file. Each cycle holds the star position, the error, the pulses sent and the cycle time. No mount position is recorded.
+- Tracking probe: After a discarded calibration or runaway, about a minute after each meridian flip, and once per guiding retry spell, AstroDeck watches the mount's own reported right ascension for 10 seconds with no motion and logs the rate. A tracking mount reads about 0 sidereal; a stopped one reads about 1. The line also shows the tracking flag, so a flag that says on beside a rate near 1 is the fault. Only the rate is logged, never a position.
+- Pulse probe: `POST /api/mount/pulse-probe` (operator or admin) measures the same rate after rest, after one west pulse, after one east pulse and after a train of ten of each at the guide cadence, then at rest again. It needs no stars, so it runs in daylight, but the mount moves, so it is refused while a sequence is running or armed to start within ten minutes, while the guider is guiding, and while the mount is parked or slewing. It takes about three minutes; the result goes to the night log and to `captures/guide/<night>/<time>-pulse-probe.json`, and `POST /api/mount/stop` ends it at once. Run it on each pier side: a rate that stays near 0 through every stage means the pulses leave tracking alone, and a rate near 1 after a stage names the pulse that stopped it.
+
 <a id="under-the-hood-routes"></a>
 
 ## Related
