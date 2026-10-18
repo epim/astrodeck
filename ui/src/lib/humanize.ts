@@ -61,6 +61,10 @@ const LANE_CONFLICT: Record<string, string> = {
   // minutes of travel with nothing visibly happening at the shutter.
   dome: "The roof is already opening or closing. It parks the mount first, so give it a few minutes.",
   rotate_to_pa: "The rotator is already turning to a position angle. Wait for it to get there.",
+  // #1071: real guide pulses with timed probes between them; a second run, or
+  // anything else on the mount, would land inside its measuring windows.
+  pulse_probe:
+    "The pulse probe is already running. It takes about four minutes - wait for it, or stop the mount to end it.",
   "system.update": "An update is already installing. Leave the controller alone and watch its progress in Settings.",
   // Not a `_spawn` lane — app.py's _spawn_connect writes this one by hand for
   // the connect-by-profile task it keeps outside hub._busy.
