@@ -66,6 +66,8 @@ _MODEL_LOG_MAX = 64
 
 #: Arcsec of RA per hour of RA.
 _RA_ARCSEC_PER_HOUR = 15.0 * 3600.0
+#: Marks ``model_mark`` keeps before dropping the oldest (#1071).
+_MODEL_MARKS_MAX = 16
 
 
 def _reply_decimals(raw: str) -> int:
@@ -692,6 +694,10 @@ class ZwoAm5Telescope(Telescope):
         #: would be garbage. ``_model_log`` holds the last few as
         #: ``(counter, name)`` so a probe can say which.
         self._model_changes = 0
+        #: Marks taken by ``model_mark`` (#1071): id -> (reading, changes,
+        #: slewing). The readings are absolute and stay in this dict.
+        self._model_marks: collections.OrderedDict = collections.OrderedDict()
+        self._model_mark_seq = 0
         self._model_log: collections.deque[tuple[int, str]] = (
             collections.deque(maxlen=_MODEL_LOG_MAX))
 
@@ -1661,12 +1667,48 @@ class ZwoAm5Telescope(Telescope):
         counter as the probe's: a sync or a goto inside the action marks the
         step. An exception from ``action`` propagates and the after-read is
         skipped. The readings stay local; only the differences leave."""
-        mark = self._model_changes
+        mark = await self.model_mark()
+        if mark is None:
+            return None
+        try:
+            await action()
+            return await self.model_step_since(mark)
+        finally:
+            self._model_marks.pop(mark, None)
+
+    async def model_mark(self) -> int | None:
+        """Read RA and Dec and keep them, with the monotonic time, the model
+        change counter and whether a slew was running, under a new integer id
+        (#1071). The readings stay in ``_model_marks`` and never leave the
+        driver: the id is all a caller gets, so no log line, error or return
+        value can carry a position (#140). At most ``_MODEL_MARKS_MAX`` marks
+        are kept, the oldest dropped, so a caller that never asks for the
+        step cannot grow it. DOES NOT HOLD ``_pulse_park_lock`` (see
+        ``measure_model_step``)."""
+        if not self.can_measure_model_step:
+            return None
+        changes = self._model_changes
         slewing = bool(self._slewing)
-        t0, ra0, ra_q0, _td0, dec0, dec_q0 = await self._read_pair()
-        await action()
+        reading = await self._read_pair()
+        self._model_mark_seq += 1
+        self._model_marks[self._model_mark_seq] = (reading, changes, slewing)
+        while len(self._model_marks) > _MODEL_MARKS_MAX:
+            self._model_marks.popitem(last=False)
+        return self._model_mark_seq
+
+    async def model_step_since(self, mark: int) -> dict | None:
+        """How far the model moved since ``mark``: the keys of
+        ``measure_model_step``. None for a mark not held. The mark stays, so
+        a caller may ask again. The readings stay local; only differences
+        leave."""
+        if not self.can_measure_model_step:
+            return None
+        held = self._model_marks.get(mark)
+        if held is None:
+            return None
+        (t0, ra0, ra_q0, _td0, dec0, dec_q0), changes, slewing = held
         t1, ra1, ra_q1, _td1, dec1, dec_q1 = await self._read_pair()
-        by = self._model_changes_since(mark)
+        by = self._model_changes_since(changes)
         if (slewing or bool(self._slewing)) and "goto" not in by:
             by.append("slewing")
         d_ra = (((ra1 - ra0 + 12.0) % 24.0) - 12.0) * _RA_ARCSEC_PER_HOUR

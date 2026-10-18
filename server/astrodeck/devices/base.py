@@ -835,6 +835,25 @@ class Telescope(Device):
         WITHOUT running ``action``; see ``can_measure_model_step``."""
         return None
 
+    async def model_mark(self) -> int | None:
+        """Read the mount's reported position and keep it INSIDE the driver
+        under a new integer id, returned (#1071). ``model_step_since`` later
+        reports how far the model moved since. The split form of
+        ``measure_model_step`` for a caller whose window is a loop it cannot
+        wrap in one coroutine (the guider's calibration walk, one leg of many
+        pulses). A driver keeps at most 16 marks, dropping the oldest. The
+        stored readings never leave the driver (#140). The default returns
+        None: this driver cannot say (see ``can_measure_model_step``)."""
+        return None
+
+    async def model_step_since(self, mark: int) -> dict | None:
+        """The same differences ``measure_model_step`` returns, from the
+        reading kept under ``mark`` to a fresh one, or None for a mark the
+        driver does not hold (never given, or dropped) or a driver that
+        cannot say (#1071). Does not consume the mark. The default returns
+        None."""
+        return None
+
     async def set_tracking_rate(self, rate: str) -> None:
         """Set the drive rate (sidereal/lunar/solar) -- NOT an ephemeris
         follow; the mount just spins its motors at a different constant rate.

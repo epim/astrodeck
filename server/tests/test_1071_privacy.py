@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import time
 from types import SimpleNamespace
@@ -65,13 +66,29 @@ def _forms(ra_s: float) -> list[str]:
     out = [f"{h:02d}:{m:02d}:{s:02d}", f"{h}h{m:02d}m", str(int(ra_s))]
     for p in (3, 4):
         out += [f"{ra_s / 3600.0:.{p}f}", f"{ra_s / 240.0:.{p}f}"]
+        # Truncated as well as rounded: a mount or a formatter that floors
+        # its last digit prints a different string, and a rounded-only list
+        # would pass that leak (found building #1071's walk privacy test).
+        q = 10 ** p
+        out += [f"{math.floor(ra_s / 3600.0 * q) / q:.{p}f}",
+                f"{math.floor(ra_s / 240.0 * q) / q:.{p}f}"]
     return out
 
 
 def _dec_forms(dec: float) -> list[str]:
-    import math
+    """Ways a Dec reading could be printed: rounded AND truncated decimals,
+    radians, and the sexagesimal forms a mount replies in (sDD*MM:SS)."""
     out = [f"{dec:.7f}", f"{dec:.4f}", f"{dec:.3f}",
            f"{math.radians(dec):.4f}", f"{math.radians(dec):.3f}"]
+    for p in (3, 4):
+        q = 10 ** p
+        out.append(f"{math.trunc(dec * q) / q:.{p}f}")
+    whole = int(round(abs(dec) * 3600))
+    d, rem = divmod(whole, 3600)
+    m, sec = divmod(rem, 60)
+    sign = "-" if dec < 0 else "+"
+    out += [f"{sign}{d:02d}*{m:02d}:{sec:02d}", f"{d:02d}:{m:02d}:{sec:02d}",
+            f"{d}d{m:02d}m"]
     return out
 
 
@@ -337,6 +354,21 @@ def test_known_positive_the_comparison_finds_a_number_that_tracks():
     assert "3.2122" in found["a"] and "17.8025" in found["b"]
     assert not any_tracking(tracking_tokens(["drift +0.00 at 12:00"],
                                             ["drift +0.00 at 12:00"]))
+
+
+def test_known_positive_the_forms_see_a_truncated_or_sexagesimal_reading():
+    """The rendering lists must see a leak however it was printed. A reading
+    whose last digit was floored, not rounded, and a Dec in the mount's own
+    sDD*MM:SS reply form, are both found (#1071 round 3 found the rounded-only
+    lists blind to the first).
+
+    Mutant: the lists without the truncated and sexagesimal entries. RED."""
+    ra_s = 3 * 3600 + 12 * 60 + 43.9          # 3.2121944 h: rounds .2122
+    floored = f"{math.floor(ra_s / 3600.0 * 1e4) / 1e4:.4f}"
+    assert floored == "3.2121" and _find(_forms(ra_s), f"RA {floored} h")
+    dec = -41.2669                            # -41*16:01
+    assert _find(_dec_forms(dec), "reply -41*16:01#")
+    assert _find(_dec_forms(dec), f"Dec {math.trunc(dec * 1e3) / 1e3:.3f}")
 
 
 # ------------------------------------- round 2: the steps, the Dec, the samples
