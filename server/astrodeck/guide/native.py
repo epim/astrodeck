@@ -1760,6 +1760,27 @@ class NativeGuider(Guider):
                 level, text = graded
                 bus.log(level, f"native guider calibration: {text}", "guide")
             self._log_cal_geometry(cal_now, legs)
+            # #1084 / #1071: the walk stamped the pier side it STARTED on and
+            # runs 220 to 355 s, and the AM5's pier read can change late after
+            # a flip. Read it again now, with the same suppressed read
+            # ``_apply_scope_pointing`` makes, and say so if the two differ.
+            # Measurement only: the calibration keeps the walk-start stamp, so
+            # a later reuse on the other side is refused by
+            # ``_pier_changed_since`` rather than mirrored.
+            start_pier = cal_now.get("pier_side")
+            end_pier = None
+            with contextlib.suppress(Exception):
+                end_pier = (await self.tel.pier_side()).value
+            if (start_pier not in (None, "unknown")
+                    and end_pier not in (None, "unknown")
+                    and end_pier != start_pier):
+                bus.log("warning",
+                        f"native guider: the mount's pier side read changed "
+                        f"during the calibration walk ({start_pier} at the "
+                        f"start, {end_pier} at the end); the calibration "
+                        f"keeps the walk-start side ({start_pier}), so a "
+                        f"later reuse on the other side is refused rather "
+                        f"than mirrored", "guide")
             bus.log("info", "native guider calibration complete", "guide")
         finally:
             # The hint names a step that is over the moment this returns or
@@ -1946,9 +1967,16 @@ class NativeGuider(Guider):
         REUSED calibration under the default: ``start_guiding`` refuses the
         reuse on a pier change first (``_pier_changed_since``), so the only
         calibration this ever sees is a fresh one already stamped with the
-        mount's current side. It fires only with
-        ``recalibrate_after_pier_change`` off — the mirror path, kept for a
-        mount whose flip really is a clean geometric mirror."""
+        mount's side when its walk started. #1084: that stamp can be stale by
+        the end of a 220 to 355 s walk if the mount's pier read changed late,
+        and mirroring a correct fresh calibration runs RA away. So this now
+        returns at once with ``recalibrate_after_pier_change`` on (the
+        default); a stale stamp is then refused at the next reuse by
+        ``_pier_changed_since``. It acts only with the setting off — the
+        mirror path, kept for a mount whose flip really is a clean geometric
+        mirror."""
+        if self._recalibrate_after_pier_change:
+            return
         cal = self._engine.dump_calibration()
         if not cal or not cal.get("is_valid"):
             return
