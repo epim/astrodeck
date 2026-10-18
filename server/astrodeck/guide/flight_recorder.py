@@ -97,6 +97,9 @@ class FlightRecorder:
     def __init__(self) -> None:
         self.ring: deque[dict] = deque(maxlen=CYCLES)
         self.walk: list[dict] = []
+        #: The walk's legs with the camera's and the mount model's movement
+        #: across each (#1071). Set once, when the walk ends.
+        self.legs: list[dict] = []
         #: Files known per night: counted from the directory the first time a
         #: night is written to, then by this process.
         self._files: dict[str, int] = {}
@@ -131,6 +134,14 @@ class FlightRecorder:
                 "pulses": [],
                 "snr": _round(snr, 1),
                 "hfr": None,            # the engine does not publish one
+                # The mount model's change since the previous cycle, arcsec
+                # per second (#1071). NULL ON PURPOSE: the hub's status poller
+                # reads the mount every 2 s but keeps no reading and no time
+                # (the AM5 driver's ``_last_pos`` has no stamp), so there is
+                # no free cache to difference, and the guide loop must not
+                # gain serial reads for it.
+                "model_ra_rate_arcsec_s": None,
+                "model_dec_rate_arcsec_s": None,
                 "pier_side": pier,
             }
             if err_px is not None:
@@ -165,6 +176,39 @@ class FlightRecorder:
 
     def begin_walk(self) -> None:
         self.walk = []
+        self.legs = []
+
+    def walk_legs(self, legs) -> None:
+        """The walk's legs, each with the star's displacement in px and the
+        mount model's step in arcsec across the same leg (#1071). Chosen as a
+        separate ``calibration_legs`` list in the dump rather than a field on
+        each leg's last step: a leg is the unit the camera and the model are
+        compared over. Whitelisted: names, counts, differences. No position."""
+        try:
+            out = []
+            for e in legs:
+                s, t = e.get("start"), e.get("end")
+                px = None
+                if s is not None and t is not None:
+                    px = _round(math.hypot(t[0] - s[0], t[1] - s[1]), 2)
+                m = e.get("model")
+                model = None
+                if isinstance(m, dict):
+                    model = {
+                        "ra_step_arcsec": _round(m.get("ra_step_arcsec"), 2),
+                        "dec_step_arcsec": _round(m.get("dec_step_arcsec"), 2),
+                        "seconds": _round(m.get("seconds"), 2),
+                        "disturbed": bool(m.get("disturbed")),
+                        "disturbed_by": [str(n) for n in
+                                         m.get("disturbed_by") or []],
+                    }
+                out.append({"leg": e.get("leg"),
+                            "steps": int(e.get("steps", 0)),
+                            "ms": int(e.get("ms", 0)),
+                            "star_travel_px": px, "model": model})
+            self.legs = out
+        except Exception:                       # noqa: BLE001 - total
+            pass
 
     def walk_step(self, n: int, leg, direction, ms: int, star_px) -> None:
         """A calibration step. ``star_px`` is where the star stood in the
@@ -242,7 +286,7 @@ class FlightRecorder:
             return None
 
     def _dump(self, event, scale, scale_known, pier, calibration):
-        if not self.ring and not self.walk:
+        if not self.ring and not self.walk and not self.legs:
             return None
         now = time.time()
         mono = time.monotonic()         # the same instant, for ``t`` (above)
@@ -284,6 +328,7 @@ class FlightRecorder:
             "pier_side_as_guider_believes": pier,
             "calibration": cal,
             "calibration_walk": copy.deepcopy(self.walk),
+            "calibration_legs": copy.deepcopy(self.legs),
             "cycles": copy.deepcopy(list(self.ring)),
         }
         line = (f"native guider flight recorder ({event}): wrote "

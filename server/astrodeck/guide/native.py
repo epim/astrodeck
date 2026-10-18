@@ -452,6 +452,10 @@ L_CANCEL = ("native guider: the start was cancelled while the calibration was "
             "being checked, so guiding stopped and nothing was saved")
 L_WALK_LEGS_HEAD = "native guider calibration walk before it stopped: "
 L_GEOMETRY_HEAD = "native guider calibration geometry: "
+#: The longest one mount-model read in the calibration walk may take (#1071).
+#: A walk leg's mark and step are two serial exchanges each; a mount that does
+#: not answer must cost the walk this and no more, and the leg goes unmeasured.
+_MODEL_READ_TIMEOUT_S = 5.0
 
 
 @dataclass
@@ -485,18 +489,45 @@ def _leg_name(leg) -> str:
     return name.replace("_", " ")
 
 
-def _legs_summary(legs: list[dict]) -> str:
-    """Each leg of a calibration walk as "<name> <steps> steps <s> s
-    <travel> px", joined by ", " (#848, #856.2)."""
+def _signed_arcsec(v) -> str:
+    """A signed whole number of arcsec, never "-0"."""
+    n = int(round(float(v)))
+    return f"{n:+d}" if n else "+0"
+
+
+def _legs_summary(legs: list[dict], scale: float | None = None) -> str:
+    """Each leg of a calibration walk as "<name> <steps> steps <s> s: star
+    <travel> px (<arcsec>"), model RA <d>" Dec <d>"", joined by ", " (#848,
+    #856.2, #1071).
+
+    THREE NUMBERS PER LEG: what was commanded (steps and seconds of pulse),
+    how far the camera saw the star move, and how far the mount's own model
+    (its reported RA and Dec) moved across the same leg. ``scale`` is the
+    image scale in arcsec per px, or None when it is not known, and then the
+    star is in px only. The model is left out when the driver could not say
+    (``leg["model"]`` is None); a step a sync or a goto landed in is marked
+    "(disturbed: <names>)" because it then measures the command, not the
+    drive. Differences only, never a position (#140)."""
     out = []
     for e in legs:
         start, end = e.get("start"), e.get("end")
         if start is None or end is None:
-            travel = "?"
+            travel, sky = "?", ""
         else:
-            travel = f"{math.hypot(end[0] - start[0], end[1] - start[1]):.1f}"
-        out.append(f"{_leg_name(e.get('leg'))} {int(e.get('steps', 0))} steps "
-                   f"{int(e.get('ms', 0)) / 1000.0:.1f} s {travel} px")
+            px = math.hypot(end[0] - start[0], end[1] - start[1])
+            travel = f"{px:.1f}"
+            sky = f' ({px * scale:.0f}")' if scale else ""
+        text = (f"{_leg_name(e.get('leg'))} {int(e.get('steps', 0))} steps "
+                f"{int(e.get('ms', 0)) / 1000.0:.1f} s: star {travel} px{sky}")
+        m = e.get("model")
+        if isinstance(m, dict):
+            with contextlib.suppress(Exception):
+                text += (f', model RA {_signed_arcsec(m["ra_step_arcsec"])}"'
+                         f' Dec {_signed_arcsec(m["dec_step_arcsec"])}"')
+                if m.get("disturbed"):
+                    by = ", ".join(str(n) for n in m.get("disturbed_by") or [])
+                    text += f" (disturbed: {by or 'unnamed'})"
+        out.append(text)
     return ", ".join(out) if out else "no legs"
 
 
@@ -1641,6 +1672,9 @@ class NativeGuider(Guider):
             # is post-mortemed from: steps, pulse time, and where the star
             # stood when the leg began and ended.
             legs: list[dict] = []
+            # #1071: the mount's model mark taken as the current leg began,
+            # to be read against when the leg ends.
+            leg_mark: int | None = None
             try:
                 while True:
                     # THE WALK IS INTERRUPTIBLE. This runs before the deadline test
@@ -1678,8 +1712,12 @@ class NativeGuider(Guider):
                         if not legs or legs[-1]["leg"] != leg_now:
                             if legs:
                                 legs[-1]["end"] = here
+                                legs[-1]["model"] = await self._leg_step(
+                                    leg_mark)
+                            leg_mark = await self._leg_mark()
                             legs.append({"leg": leg_now, "steps": 0, "ms": 0,
-                                         "start": here, "end": None})
+                                         "start": here, "end": None,
+                                         "model": None})
                         legs[-1]["steps"] += 1
                         legs[-1]["ms"] += int(action.get("ms") or 0)
                         self._fr.walk_step(cal_steps, leg_now, action.get("dir"),
@@ -1731,9 +1769,13 @@ class NativeGuider(Guider):
                 # (#848): the legs it walked and how far each moved the star.
                 if legs and legs[-1]["end"] is None:
                     legs[-1]["end"] = (cal_x, cal_y)
+                if legs and legs[-1].get("model") is None:
+                    legs[-1]["model"] = await self._leg_step(leg_mark)
                 self._fr.walk_end((cal_x, cal_y))
-                bus.log("warning", L_WALK_LEGS_HEAD + _legs_summary(legs),
-                        "guide")
+                self._fr.walk_legs(legs)
+                bus.log("warning",
+                        L_WALK_LEGS_HEAD
+                        + _legs_summary(legs, self._walk_scale()), "guide")
                 raise
             # The completing frame shows where the last leg's pulses left the
             # star.
@@ -1747,7 +1789,9 @@ class NativeGuider(Guider):
                                   key=lambda p: (p[0] - cal_x) ** 2
                                                 + (p[1] - cal_y) ** 2)
                 legs[-1]["end"] = end if end is not None else (cal_x, cal_y)
+                legs[-1]["model"] = await self._leg_step(leg_mark)
                 self._fr.walk_end(legs[-1]["end"])
+                self._fr.walk_legs(legs)
             self._caps = None
             cal_now = {}
             with contextlib.suppress(Exception):
@@ -1845,7 +1889,46 @@ class NativeGuider(Guider):
                     f"{unit}/s{pdec}, orthogonality error "
                     f"{_folded_ortho_deg(cal):.1f} deg, dec {dec}, pier "
                     f"{cal.get('pier_side') or 'unknown'}; legs: "
-                    f"{_legs_summary(legs)}", "guide")
+                    f"{_legs_summary(legs, self._walk_scale())}", "guide")
+
+    def _walk_scale(self) -> float | None:
+        """Arcsec per px for the walk's lines, or None when it is not known."""
+        if self._image_scale_known and self._image_scale > 0:
+            return float(self._image_scale)
+        return None
+
+    async def _leg_mark(self) -> int | None:
+        """Mark the mount's model as a calibration leg begins (#1071). None
+        when the mount cannot say or the read failed or timed out: the leg
+        then goes unmeasured, and the walk is not slowed past the bound. Holds
+        no pulse lock (each pulse takes it) and never raises."""
+        try:
+            if not getattr(self.tel, "can_measure_model_step", False):
+                return None
+            return await asyncio.wait_for(self.tel.model_mark(),
+                                          _MODEL_READ_TIMEOUT_S)
+        except Exception:                       # noqa: BLE001 - never the walk
+            return None
+
+    async def _leg_step(self, mark: int | None) -> dict | None:
+        """How far the mount's model moved since ``mark``, as differences and
+        flags only (#1071), or None. Same bounds as ``_leg_mark``."""
+        if mark is None:
+            return None
+        try:
+            m = await asyncio.wait_for(self.tel.model_step_since(mark),
+                                       _MODEL_READ_TIMEOUT_S)
+            if not isinstance(m, dict):
+                return None
+            return {
+                "ra_step_arcsec": float(m["ra_step_arcsec"]),
+                "dec_step_arcsec": float(m["dec_step_arcsec"]),
+                "seconds": float(m.get("seconds", 0.0)),
+                "disturbed": bool(m.get("disturbed")),
+                "disturbed_by": [str(n) for n in m.get("disturbed_by") or []],
+            }
+        except Exception:                       # noqa: BLE001 - never the walk
+            return None
 
     async def _apply_scope_pointing(self) -> None:
         """Discharge OBLIGATION (e): stamp the mount's real declination + pier
