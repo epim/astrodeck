@@ -44,6 +44,12 @@ A probe that reads 0 does not show the axis is turning: compare it with the
 camera drift in the guide flight recorder (disagreement points to the
 mechanics, agreement to the firmware).
 
+THE EAST STAGES TEST THE TRACKING PROBE ITSELF. East is a tracking suspend, and
+#851 suggests the AM5's model does not count one. An east train whose step is
+near 0, against about 150 arcsec commanded for ten one-second pulses at 1x
+sidereal, means a tracking-probe reading of 0 says nothing about the drive.
+This is also #851's pending bench walk.
+
 THE OPERATOR'S TOOL, NOT THE NIGHT'S. It is refused while a run is going or
 armed to start within ten minutes, while the guider is guiding, and while the
 mount is parked or slewing: any of those would put motion inside a measuring

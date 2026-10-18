@@ -24,6 +24,10 @@ frames 36 minutes apart showed the identical field. A rate near 1 sidereal is
 strong evidence that the firmware has stopped driving RA. A rate near 0 does not
 show the axis is turning; compare it with the camera drift in the guide flight
 recorder (disagreement points to the mechanics, agreement to the firmware).
+The model may not follow the drive at all: on 2026-10-07 the AM5's reported RA
+did not advance during emulated east pulses, which are tracking suspends
+(#851). Until the pulse probe's east stages show the model counting a suspend,
+a reading near 0 says nothing about the drive.
 
 FAILURE IS LOGGED AND IGNORED. A probe that raised into the guide loop or the
 frame loop would turn a diagnostic into an outage. A cancel is not a failure

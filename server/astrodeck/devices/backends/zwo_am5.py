@@ -1556,8 +1556,12 @@ class ZwoAm5Telescope(Telescope):
         not prove the axis is turning; compare it with the camera drift in the
         flight recorder.
 
-        A tracking mount holds its RA; a stopped one reads it advancing at the
-        sidereal rate, 15.041 arcsec of RA per second of time. The flag can
+        A tracking mount holds its RA. A stopped drive reads RA advancing at
+        the sidereal rate, 15.041 arcsec of RA per second of time, ONLY IF the
+        model follows the drive, and #851 suggests the AM5's does not: on
+        2026-10-07 its reported RA did not advance during emulated east
+        pulses, which are tracking suspends. The pulse probe's east stages
+        measure that. The flag can
         say tracking while the drive is slow or stopped (the open question on
         pier east after a flip), so the flag is reported beside the rate.
 

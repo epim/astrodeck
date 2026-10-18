@@ -795,8 +795,9 @@ class Telescope(Device):
         A DIFFERENCE, NEVER A POSITION. The answer is a rate (the RA change
         over an interval) plus flags; the absolute RA the mount reports stays
         inside the driver, because at home or park it is the local sidereal
-        time, a longitude oracle (#140). A tracking mount reads about 0 and a
-        stopped one about 1 sidereal.
+        time, a longitude oracle (#140). A tracking mount reads about 0. A
+        stopped drive reads about 1 sidereal only on a mount whose model
+        follows its drive (#851: the AM5's may not).
 
         IT READS THE MOUNT'S MODEL, NOT THE SKY. A mount's reported
         coordinates are its own bookkeeping of where it points. A rate near 1
