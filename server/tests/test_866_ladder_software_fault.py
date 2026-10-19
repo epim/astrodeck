@@ -158,7 +158,9 @@ async def test_each_software_fault_type_holds_in_the_same_words(
 async def test_a_solver_or_device_failure_keeps_the_failed_solve_words(
         monkeypatch, bus_lines, exc):
     """Controls: a solver's or a camera's failure is still a failed solve,
-    in today's words, with no software-fault warning.
+    in words, with no software-fault warning. Since #1097 the driver
+    vouching for the position means the words claim neither a restart nor an
+    unknown position.
 
     NAMED MUTANT M866e "every exception is a software fault"
     (``_SOFTWARE_FAULTS = (Exception,)``): RED on both.
@@ -167,7 +169,7 @@ async def test_a_solver_or_device_failure_keeps_the_failed_solve_words(
                centring={"centered": True, "error_arcmin": 0.3, "attempts": 1})
     arm = _arm(hub, monkeypatch)
     reason = await arm._recover(_session())
-    assert reason.startswith("blind plate solve failed after restart"), reason
+    assert reason.startswith("the resume's plate solve failed"), reason
     assert arm._ladder_software_fault is None
     assert hub.calls == ["solve"]
     assert not any("software fault" in m for _, m, _ in bus_lines), bus_lines
@@ -292,10 +294,12 @@ async def test_a_later_hold_for_another_cause_is_said_in_its_own_words(
     await rig.tick_at(T0 + ra.RETRY_INTERVAL_S)
     assert rig.solves == 2
     second = rig.arm.hold["reason"]
-    assert second.startswith("blind plate solve failed after restart"), second
+    # The failed solve now parks the mount and goes on (#1097); this
+    # fixture's goto fails, so the second hold is the re-centre's.
+    assert second.startswith("re-centering for the resume failed"), second
     held = _held(bus_lines)
     assert len(held) == 2, held
-    assert held[1].startswith("auto-resume held: blind plate solve failed"), (
+    assert held[1].startswith("auto-resume held: re-centering for the resume failed"), (
         held)
     assert held[1].endswith(
         f"retrying in {int(ra.RETRY_INTERVAL_S / 60)} min"), held

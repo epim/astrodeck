@@ -121,7 +121,7 @@ def _refused_at_the_solve(bus_lines, arm: ResumeArm) -> list[str]:
     held = [m for lv, m, _s in bus_lines
             if lv == "warning" and m.startswith("auto-resume held")]
     assert arm._retry_at > 0.0 and held and all(
-        "blind plate solve failed after restart" in m for m in held), (
+        "the resume's plate solve" in m for m in held), (
             f"premise: the tick refused at the plate solve: retry at "
             f"{arm._retry_at}, held lines {held}")
     return held
