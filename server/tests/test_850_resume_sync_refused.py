@@ -99,7 +99,7 @@ red: the tests hold the cause and the action to a line that fits ``CLIP_AT``.
 Round 4 (the unverified re-centre's link advice inside the cut):
 
 - "unverified recentre advice last": REFUSED_SYNC_UNVERIFIED_RECENTRE_WORDS
-  back to "re-centering after restart stopped and the run is not starting: "
+  back to "re-centering for the resume stopped and the run is not starting: "
   + SOLVE_REASON_SYNC_UNVERIFIED + "; if this repeats, check the mount's
   link" -> test_every_refused_sync_constant_is_fixed_words.
 
@@ -109,7 +109,7 @@ Round 5 (what the near warning measured, one spelling for step 3):
   position agrees with the sky to X deg" ->
   test_the_near_warning_says_what_was_measured (every residual).
 - "recentre hold spelled two ways": REFUSED_SYNC_RECENTRE_WORDS back to
-  "re-centering after restart stopped ..." ->
+  "re-centering for the resume stopped ..." ->
   test_the_two_recentre_holds_spell_it_one_way.
 """
 from __future__ import annotations
@@ -419,7 +419,7 @@ async def test_the_near_warning_says_what_was_measured(monkeypatch, bus_lines,
 def test_the_two_recentre_holds_spell_it_one_way():
     """Step 3's holds word one event, so they spell it one way, and that
     way is the one the step's other holds already show the operator:
-    "re-centering after restart refused ..." / "... failed" (#850 round 5).
+    "re-centering for the resume refused ..." / "... failed" (#850 round 5).
     Round 5 first respelled the two #850 holds "re-centring" / "re-centre",
     which split the step from its five older siblings instead."""
     holds = (ra.REFUSED_SYNC_RECENTRE_WORDS,
@@ -428,7 +428,7 @@ def test_the_two_recentre_holds_spell_it_one_way():
         assert "re-centering" in words, words
         assert "re-centr" not in words, words
     assert ra.REFUSED_SYNC_RECENTRE_WORDS.startswith(
-        "re-centering after restart stopped"), ra.REFUSED_SYNC_RECENTRE_WORDS
+        "re-centering for the resume stopped"), ra.REFUSED_SYNC_RECENTRE_WORDS
 
 
 @pytest.mark.parametrize("residual", [5.01, 12.0, 179.0])
@@ -593,14 +593,18 @@ async def test_a_coordinate_shaped_reply_is_never_quoted(monkeypatch,
         _surfaced_ok(m)
 
 
-async def test_a_generic_solve_failure_keeps_the_old_words(monkeypatch,
-                                                           bus_lines):
-    """Too few stars is still a failed solve, in today's words."""
+async def test_a_generic_solve_failure_holds_in_words_without_false_premises(
+        monkeypatch, bus_lines):
+    """Too few stars is still a failed solve and still a hold. The driver
+    vouches for the position here, so the hold claims neither a restart nor
+    an unknown position (#1097); the position-unknown spelling is pinned by
+    test_1097_resume_from_park.py."""
     hub = _Hub(solve_raises=RuntimeError("Not enough stars"))
     arm = _arm(hub, monkeypatch)
     reason = await arm._recover(_session())
     assert reason is not None
-    assert reason.startswith("blind plate solve failed after restart")
+    assert reason.startswith("the resume's plate solve failed")
+    assert "restart" not in reason and "unknown" not in reason, reason
     assert hub.calls == ["solve"]
 
 

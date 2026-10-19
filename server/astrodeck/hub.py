@@ -1055,6 +1055,25 @@ def solve_failure_reason(exc: BaseException) -> str | None:
     return None
 
 
+def solve_light_keys(exc: BaseException) -> dict:
+    """What a failed solve's frame showed, as keys for a centring result
+    (#1097): ``solve_light`` "dark" (a ``NoLightError``, with the kind of
+    reference it was judged against in ``solve_dark_kind``) or "lit" (a
+    failed solve whose frame showed light, the ``CLOUD`` verdict). Empty for
+    every failure nothing could judge. Read by the resume ladder, which
+    solves at the target when the park view is not worth measuring and so
+    meets the no-light verdict here and not in its own blind solve. A pure
+    function of the exception's TYPE and verdict, never its words."""
+    from .solve import light as _light
+    if isinstance(exc, _light.NoLightError):
+        return {"solve_light": "dark",
+                "solve_dark_kind": exc.reference_kind}
+    if (isinstance(exc, _light.FailedSolveError)
+            and exc.verdict.kind == _light.CLOUD):
+        return {"solve_light": "lit"}
+    return {}
+
+
 def _scale_text(scale: float | None) -> str:
     """A solve's plate scale for a note: ``1.55"/px``, or ``scale unknown``
     when the solver did not state one (#973), never ``0.00"/px``."""
@@ -9661,6 +9680,7 @@ class Hub:
                            if isinstance(e, SolveFrameTransient) else {})
                         | ({"solve_reason": reason}
                            if reason is not None else {})
+                        | solve_light_keys(e)
                         | arrival_keys)
             from .catalog.coords import angular_sep_deg
             try:

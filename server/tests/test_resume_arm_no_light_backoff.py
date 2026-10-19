@@ -121,6 +121,19 @@ class _Rig:
         async def goto(*a, **kw):
             raise RuntimeError("the test's mount does not slew")
         monkeypatch.setattr(hub, "goto_and_center", goto)
+        # THE PARK LEG OF #1097 IS NOT THIS FILE'S SUBJECT. A solve that
+        # fails under light now parks the mount and goes on to the re-centre,
+        # and a parked mount is not solved in place on the next tick, which
+        # would starve the scripted verdicts below. So the mount reads
+        # not parked and the park is a no-op; test_1097_resume_from_park.py
+        # runs the real park.
+        async def not_parked(arm):
+            return False
+
+        async def park(arm):
+            return True
+        monkeypatch.setattr(ResumeArm, "_mount_is_parked", not_parked)
+        monkeypatch.setattr(ResumeArm, "_park_for_resume", park)
 
         async def solve(*a, **kw):
             self.solves += 1
@@ -267,17 +280,18 @@ async def test_the_no_light_alert_reaches_a_default_sink(sim_hub, monkeypatch,
 
 async def test_a_cloud_verdict_keeps_the_ten_minute_retry_and_no_alert(
         sim_hub, monkeypatch, bus_lines):
-    """Control: light reached the sensor, so this is today's hold: today's
-    words, a ten-minute retry every time, and no alert."""
+    """Control: light reached the sensor, so this is a ten-minute retry
+    every time, and no alert. Since #1097 the mount then goes home and slews
+    to the target (the test's mount does not slew), so the hold is the
+    re-centre's and not the blind solve's: no claim of a restart or of an
+    unknown position."""
     _arm()
     rig = _Rig(sim_hub, monkeypatch, [light.CLOUD, light.CLOUD])
     await rig.tick_at(T0)
     assert rig.arm._retry_at == T0 + RETRY_INTERVAL_S
-    assert rig.arm.hold["reason"].startswith(
-        "blind plate solve failed after restart (plate solve failed: Not "
-        "enough stars. "), rig.arm.hold
-    assert rig.arm.hold["reason"].endswith(
-        "— refusing to slew a mount whose true position is unknown")
+    assert rig.arm.hold["reason"] == (
+        "re-centering for the resume failed: the test's mount does not "
+        "slew"), rig.arm.hold
     t1 = T0 + RETRY_INTERVAL_S
     await rig.tick_at(t1)
     assert rig.solves == 2

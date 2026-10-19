@@ -127,19 +127,28 @@ async def test_refusal_retries_after_10_minutes(sim_hub, monkeypatch):
         # position to decide whether focus survived). Counting every require
         # would make this assert on the ladder's internals rather than on the
         # backoff it exists to test.
-        if role == "camera":
+        #
+        # THE TELESCOPE COUNTS TOO since #1097: the in-place solve fails on
+        # the missing camera, the mount parks and the re-centre then asks for
+        # the telescope; once parked, a retry skips the solve and asks only
+        # for the telescope.
+        if role in ("camera", "telescope"):
             calls["n"] += 1
         raise DeviceError(f"no {role}")
     monkeypatch.setattr(sim_hub, "require", refuse)
     await arm.tick()                                  # refusal
-    assert calls["n"] == 1 and not engine.running
+    # The solve fails with no camera, and the mount then parks and goes on
+    # to the re-centre (#1097), which asks for the camera too: the count is
+    # per attempt, not one.
+    first = calls["n"]
+    assert first >= 1 and not engine.running
     assert arm._retry_at == now["t"] + RETRY_INTERVAL_S
     now["t"] += 300
     await arm.tick()                                  # still backing off
-    assert calls["n"] == 1
+    assert calls["n"] == first
     now["t"] += 301                                   # past the 10-min mark
     await arm.tick()
-    assert calls["n"] == 2
+    assert calls["n"] > first, (first, arm.hold)
 
 
 async def test_give_up_when_window_closes_mid_retry(sim_hub, monkeypatch):
@@ -353,21 +362,21 @@ async def test_recovery_refuses_a_recenter_that_breaks_the_altitude_limits(
     # interval (#233).
     #
     # RED under mutant "limits reason keeps the gate sentence" (the limits
-    # branch returns ``f"re-centering after restart refused: {e}"`` again),
+    # branch returns ``f"re-centering for the resume refused: {e}"`` again),
     # observed verbatim (the gate reads the real clock, so its numbers vary
     # from run to run):
     #
-    #     E   AssertionError: re-centering after restart refused: target M42 altitude 22° below safety floor 89° (az 119°)
-    #     E   assert 'configured slew limits' in 're-centering after restart refused: target M42 altitude 22° below safety floor 89° (az 119°)'
+    #     E   AssertionError: re-centering for the resume refused: target M42 altitude 22° below safety floor 89° (az 119°)
+    #     E   assert 'configured slew limits' in 're-centering for the resume refused: target M42 altitude 22° below safety floor 89° (az 119°)'
     #
     # under "the held warning logs site_detail", observed verbatim:
     #
-    #     E   AssertionError: the held warning carries more than the retry interval: "auto-resume held: re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet (target M42 altitude 22° below safety floor 89° (az 118°)) — retrying in 10 min"
+    #     E   AssertionError: the held warning carries more than the retry interval: "auto-resume held: re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet (target M42 altitude 22° below safety floor 89° (az 118°)) — retrying in 10 min"
     #
     # and under "the tick drops the detail" (``tick``'s ``_set_hold``
     # passes ``site_detail=None``), observed verbatim:
     #
-    #     E   AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '1dee71803e514926b445da0cee3e670f', 'session_name': 'arm', 'owed': 5}
+    #     E   AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '1dee71803e514926b445da0cee3e670f', 'session_name': 'arm', 'owed': 5}
     #     E   assert 'below safety floor' in ''
     #
     # THE GATE'S MESSAGE IS WORDS SINCE #233 (H3 T11), and its altitude,
@@ -380,8 +389,8 @@ async def test_recovery_refuses_a_recenter_that_breaks_the_altitude_limits(
     #
     # "limits reason keeps the gate sentence", RED:
     #
-    #     E   AssertionError: re-centering after restart refused: slew refused: M42 would be below the mount's altitude floor by the end of a slew there
-    #     E   assert 'configured slew limits' in "re-centering after restart refused: slew refused: M42 would be below the mount's altitude floor by the end of a slew there"
+    #     E   AssertionError: re-centering for the resume refused: slew refused: M42 would be below the mount's altitude floor by the end of a slew there
+    #     E   assert 'configured slew limits' in "re-centering for the resume refused: slew refused: M42 would be below the mount's altitude floor by the end of a slew there"
     #
     # "the held warning logs site_detail": GREEN here now (1 passed). What it
     # would log is the gate's words, which have no number to catch. It goes
@@ -391,7 +400,7 @@ async def test_recovery_refuses_a_recenter_that_breaks_the_altitude_limits(
     #
     # "the tick drops the detail", RED:
     #
-    #     E   AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '41cb2d4ff4c1446493d8cd75b3319d03', 'session_name': 'arm', 'owed': 5}
+    #     E   AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '41cb2d4ff4c1446493d8cd75b3319d03', 'session_name': 'arm', 'owed': 5}
     #     E   assert 'altitude floor' in ''
     #
     # AND NOW IT DOES (H3 integration, the T11 verifier's required follow-up):
@@ -403,17 +412,17 @@ async def test_recovery_refuses_a_recenter_that_breaks_the_altitude_limits(
     # "the limits branch files the words" (``_refusal_site_detail = str(e)``,
     # the line before this change), RED, observed verbatim:
     #
-    #     E       AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '05db3df6afbf4fac8b9049dd2a78a249', 'session_name': 'arm', 'owed': 5, 'site_detail': "slew refused: M42 would be below the mount's altitude floor by the end of a slew there"}
+    #     E       AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '05db3df6afbf4fac8b9049dd2a78a249', 'session_name': 'arm', 'owed': 5, 'site_detail': "slew refused: M42 would be below the mount's altitude floor by the end of a slew there"}
     #     E       assert 'below safety floor' in "slew refused: M42 would be below the mount's altitude floor by the end of a slew there"
     #
     # "the held warning logs site_detail", RED again, observed verbatim:
     #
-    #     E       AssertionError: the held warning carries more than the retry interval: "auto-resume held: re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet (target M42 altitude 35° below safety floor 89° (az 223°)) — retrying in 10 min"
+    #     E       AssertionError: the held warning carries more than the retry interval: "auto-resume held: re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet (target M42 altitude 35° below safety floor 89° (az 223°)) — retrying in 10 min"
     #     E       assert Counter({'35'...: 1, '10': 1}) == Counter({'10': 1})
     #
     # "the tick drops the detail", RED, observed verbatim:
     #
-    #     E       AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': 'c4620d50d68c4cd48cf62c92ce44c767', 'session_name': 'arm', 'owed': 5}
+    #     E       AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': 'c4620d50d68c4cd48cf62c92ce44c767', 'session_name': 'arm', 'owed': 5}
     #     E       assert 'below safety floor' in ''
     assert arm.hold is not None, "a refused re-centre must leave a hold"
     assert "below safety floor" in arm.hold.get("site_detail", ""), (
@@ -754,8 +763,8 @@ async def test_a_later_refusal_does_not_carry_an_earlier_floor_detail(
     longer sets ``self._refusal_site_detail = None`` before the ladder),
     observed verbatim:
 
-        E   AssertionError: an earlier refusal's site detail rode a later hold: {'reason': 're-centering after restart failed: the mount did not answer', 'since': 1700088320.0, 'retry_at': 1700088920.0, 'session_id': '6ce7f1dbef74489a9eedda6e8c50492d', 'session_name': 'floor', 'owed': 1, 'site_detail': 'NGC 604 is at 10 deg, below its 30 deg start floor (it reaches 30 deg in about 12.2 h)'}
-        E   assert 'site_detail' not in {'owed': 1, 'reason': 're-centering after restart failed: the mount did not answer', 'retry_at': 1700088920.0, 'session_id': '6ce7f1dbef74489a9eedda6e8c50492d', ...}
+        E   AssertionError: an earlier refusal's site detail rode a later hold: {'reason': 're-centering for the resume failed: the mount did not answer', 'since': 1700088320.0, 'retry_at': 1700088920.0, 'session_id': '6ce7f1dbef74489a9eedda6e8c50492d', 'session_name': 'floor', 'owed': 1, 'site_detail': 'NGC 604 is at 10 deg, below its 30 deg start floor (it reaches 30 deg in about 12.2 h)'}
+        E   assert 'site_detail' not in {'owed': 1, 'reason': 're-centering for the resume failed: the mount did not answer', 'retry_at': 1700088920.0, 'session_id': '6ce7f1dbef74489a9eedda6e8c50492d', ...}
 
     (Mutant run by the H3 T1 verifier from a byte backup of resume_arm.py in
     a scratch copy of ``server/``; the file was restored byte-identical,
@@ -789,7 +798,7 @@ async def test_a_later_refusal_does_not_carry_an_earlier_floor_detail(
         f"premise: the second ladder cleared the floor and reached its "
         f"goto: {moved}")
     assert arm.hold is not None, "a failed re-centre must leave a hold"
-    assert arm.hold["reason"] == ("re-centering after restart failed: the "
+    assert arm.hold["reason"] == ("re-centering for the resume failed: the "
                                   "mount did not answer"), arm.hold
     assert "site_detail" not in arm.hold, (
         f"an earlier refusal's site detail rode a later hold: {arm.hold}")
@@ -805,19 +814,19 @@ async def test_a_limit_check_that_fails_keeps_its_text_off_the_reason(
     the limits, because nothing said it was.
 
     RED under mutant "a failed check keeps its text in the reason" (the
-    non-SafetyAbort arm returns ``f"re-centering after restart refused:
+    non-SafetyAbort arm returns ``f"re-centering for the resume refused:
     {e}"``), observed verbatim:
 
         E   AssertionError: assert 're-centering...d at az 212.5' == 're-centering...; not slewing'
-        E     - re-centering after restart refused: the slew-limit check failed; not slewing
-        E     + re-centering after restart refused: the horizon mask could not be read at az 212.5
+        E     - re-centering for the resume refused: the slew-limit check failed; not slewing
+        E     + re-centering for the resume refused: the horizon mask could not be read at az 212.5
 
     RED under mutant "every exception reads as the gate" (``isinstance(e,
     SafetyAbort)`` replaced by ``True``), observed verbatim:
 
         E   AssertionError: assert 're-centering...t slewing yet' == 're-centering...; not slewing'
-        E     - re-centering after restart refused: the slew-limit check failed; not slewing
-        E     + re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet
+        E     - re-centering for the resume refused: the slew-limit check failed; not slewing
+        E     + re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet
     """
     _trust_focus(monkeypatch)
     engine = SequenceEngine(sim_hub)
@@ -830,7 +839,7 @@ async def test_a_limit_check_that_fails_keeps_its_text_off_the_reason(
     refusal = await arm._recover(Session(name="limits",
                                          plan=_plan_with_floor(0.0)))
 
-    assert refusal == ("re-centering after restart refused: the slew-limit "
+    assert refusal == ("re-centering for the resume refused: the slew-limit "
                        "check failed; not slewing")
     assert numeric_tokens(refusal) == numeric_tokens("")
     assert arm._refusal_site_detail == (
