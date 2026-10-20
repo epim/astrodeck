@@ -141,7 +141,9 @@ async def test_the_operators_word_clears_a_reset_mount(rig):
 async def test_the_attestation_is_not_a_measurement(rig):
     """m4. Reading the position to confirm it would confirm the number the
     latch says is wrong. The route is a statement by the operator: it goes to
-    the driver and nowhere near the wire."""
+    the driver and nowhere near the wire. The one read allowed is the parked
+    flag (``:Gps#``), which is not a position: #1075 uses it to decide whether
+    to remember the park."""
     link, tel = await _reset_am5()
     rig.use(tel)
     handshake = len(link.sent)
@@ -149,8 +151,8 @@ async def test_the_attestation_is_not_a_measurement(rig):
     r = _post()
 
     assert r.status_code == 200, r.text
-    assert link.sent[handshake:] == [], (
-        f"an attestation went to the mount: {link.sent[handshake:]}")
+    sent = [c for c in link.sent[handshake:] if c != "Gps"]
+    assert sent == [], f"an attestation went to the mount: {sent}"
 
 
 async def test_the_attestation_is_in_the_audit_trail_with_who_said_it(rig):

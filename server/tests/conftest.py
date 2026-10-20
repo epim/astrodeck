@@ -91,6 +91,19 @@ def _fast_sim_delays(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _own_mount_park_record(tmp_path, monkeypatch):
+    """The AM5's "AstroDeck parked this mount" record (#1075) gets a file of
+    its own PER TEST. ``CONFIG_DIR`` is one throwaway directory for the whole
+    session (or xdist worker), so a record written by one test's ``park()``
+    would otherwise vouch for the next test's reconnect of a same-named
+    mount: a leak that passes in one order and fails in another."""
+    import astrodeck.config as config_mod
+    path = tmp_path / "mount_park_record.json"
+    monkeypatch.setattr(config_mod, "mount_park_record_path", lambda: path)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_calibration_settle(monkeypatch):
     """Runtime seam (test-suite fast-path), the native guider's half of
     ``_fast_sim_delays``: zero ``guide.native._CAL_SETTLE_S`` (#848's settle
