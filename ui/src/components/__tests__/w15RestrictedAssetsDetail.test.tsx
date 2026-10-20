@@ -9,7 +9,7 @@
 //
 // THE DEFECT. `GET /api/licensing/restricted` returns, on every row, a `detail`
 // clause: for the Player One SDK installed by the vendor's own installer it is
-// "installed by the vendor's installer (redistribution ruling pending, #632)".
+// "installed by the vendor's installer (bundled per the owner's ruling while Player One's reply is awaited, #632)".
 // The SDK IS in use (the camera opens from it, so the LED reads "in use"), but
 // whether a system install counts as "fetched" is still the owner's question,
 // and the row is the one place that says so. The panel's interface did not
@@ -65,7 +65,7 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 const INSTALLER_DETAIL =
-  "installed by the vendor's installer (redistribution ruling pending, #632)";
+  "installed by the vendor's installer (bundled per the owner's ruling while Player One's reply is awaited, #632)";
 
 const ROWS: any[] = [
   {

@@ -181,10 +181,10 @@ The exact versions, artifact hashes, upstream text sources and scope are in
 Full notices are linked below and reproduced in the generated credits.
 
 This inventory is not distribution clearance. WCSLIB and the GCC runtime retain
-explicit owner decisions under #638. Player One binaries are present in the
-executable even though the source tarball excludes them (#632). No written
-redistribution confirmation was found. The nebula background's provenance
-remains unresolved (#637). These findings are recorded in
+explicit owner decisions under #638. Player One binaries ship in every artifact
+under the owner's ruling of 2026-10-20 while Player One's reply is awaited
+(#632); no written redistribution confirmation was found. The nebula background
+is owner-made and the owner ruled it redistributable (#637). These findings are recorded in
 [the artifact audit](tools/licence/dependency-artifact-audit.md).
 
 | Component in the inspected artifact | Licence | Full text and notices |

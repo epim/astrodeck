@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+LIVE="github.event_name == 'push' || !inputs.dry_run"
 ROOT=Path(__file__).resolve().parents[2]
 WORKFLOW=ROOT/".github/workflows/release.yml"
 
@@ -36,6 +37,14 @@ MUTANTS=[
     ("REPORT-ISOLATION", 'pattern: accepted-*', 'pattern: "*"', 'test_diagnostics_cannot_be_published_as_payload', 'accepted-*'),
     ("IMAGE-NATIVE-REQUIRED", 'build-args: |\n            REQUIRE_NATIVE=1', 'build-args: |\n            REQUIRE_NATIVE=0', 'test_image_build_requires_the_native_engine', "'REQUIRE_NATIVE=1' not found in"),
     ("IMAGE-DOWNLOAD-REMOVED", '- name: Download the accepted linux payloads\n        uses: actions/download-artifact@v4', '- name: Download the accepted linux payloads\n        run: echo skipped', 'test_image_downloads_the_linux_native_wheels_it_installs', "exactly one artifact download"),
+    ("DRY-RUN-PUBLISHES", "if: always() && needs.release.result == 'success' && ("+LIVE+")", "if: always() && needs.release.result == 'success'", 'test_a_dispatch_is_a_dry_run_that_cannot_publish_or_push', "publish must be skipped on a dry run"),
+    ("DRY-RUN-PUSHES-IMAGE", "if: needs.binaries.result == 'success' && ("+LIVE+")", "if: needs.binaries.result == 'success'", 'test_a_dispatch_is_a_dry_run_that_cannot_publish_or_push', "image must be skipped on a dry run"),
+    ("DRY-RUN-DEFAULT-OFF", "default: true", "default: false", 'test_a_dispatch_is_a_dry_run_that_cannot_publish_or_push', "a dispatch must be a dry run unless the operator opts out"),
+    ("TAG-CHECK-ALWAYS", "        if: "+LIVE+"\n        shell: bash\n        run: |\n          python -c \"import os,tomllib", "        shell: bash\n        run: |\n          python -c \"import os,tomllib", 'test_a_dispatch_is_a_dry_run_that_cannot_publish_or_push', "a dry run on a branch has no version tag to match"),
+    ("REF-NAME-IN-ARTIFACT", '--version "$RELEASE_VERSION"', '--version "${GITHUB_REF_NAME#v}"', 'test_artifact_names_use_the_package_version_not_the_ref', "a dispatch ref is a branch"),
+    ("PUBLISH-NEEDS-BINARIES", "if: always() && needs.release.result == 'success' && (", "if: needs.release.result == 'success' && needs.binaries.result == 'success' && (", 'test_source_release_publishes_without_uncleared_binaries', "a failed binaries leg must not skip the source release"),
+    ("IMAGE-WITHOUT-BINARIES", "if: needs.binaries.result == 'success' && (", "if: (", 'test_source_release_publishes_without_uncleared_binaries', "needs.binaries.result == 'success'"),
+    ("EXPECT-ALL-EIGHT", 'run: python scripts/release_assets.py --dist dist --notes "$RUNNER_TEMP/release-notes.md"', 'run: python -c "import pathlib; assert len(list(pathlib.Path(\'dist\').iterdir()))>=8"', 'test_source_release_publishes_without_uncleared_binaries', "cleared payloads are checksummed by the tested script"),
     ("IMAGE-PROBE-BEFORE-TAG", _PROBE_FIRST, _RETAG_FIRST, 'test_nothing_user_visible_is_tagged_before_the_probe_passes', "the retag that creates :latest comes after the probe"),
 ]
 

@@ -10,7 +10,7 @@
 //
 // `GET /api/licensing/restricted` returns a `detail` clause on every row. For a
 // Player One SDK installed by the vendor's own installer it is "installed by the
-// vendor's installer (redistribution ruling pending, #632)": the SDK is in use
+// vendor's installer (bundled per the owner's ruling while Player One's reply is awaited, #632)": the SDK is in use
 // but whether a system install counts as "fetched" is the owner's open
 // question, and the row is the one place that says so. `RestrictedAsset` did
 // not carry the field and `RestrictedList` did not print it.
@@ -68,7 +68,7 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 const INSTALLER_DETAIL =
-  "installed by the vendor's installer (redistribution ruling pending, #632)";
+  "installed by the vendor's installer (bundled per the owner's ruling while Player One's reply is awaited, #632)";
 
 const ROWS: any[] = [
   {

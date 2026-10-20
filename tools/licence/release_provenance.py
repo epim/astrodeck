@@ -99,6 +99,33 @@ def read_zip(raw):
             files[name] = archive.read(item)
     return files
 
+# PyInstaller's ZlibArchiveWriter stores each collected module under its dotted
+# module name and does not itself check it. On Linux and macOS the stdlib
+# sysconfig data module (added by PyInstaller's hook-sysconfig from
+# sysconfig._get_sysconfigdata_name()) is named after the platform's multiarch
+# triple, so it holds hyphens: _sysconfigdata__linux_x86_64-linux-gnu,
+# _sysconfigdata__linux_aarch64-linux-gnu, _sysconfigdata__darwin_darwin.
+# It is imported by file path, never by an import statement, so it is the one
+# legitimate member whose name is not a Python identifier. Exactly that shape is
+# allowed: no dots, the fixed prefix, a platform token, then the multiarch triple.
+SYSCONFIGDATA_NAME = re.compile(r"_sysconfigdata_[a-z0-9]*_[a-z0-9]+_[a-z0-9_]+(?:-[a-z0-9_]+)*")
+
+
+def pyz_name_problem(name, seen):
+    """Why a PYZ member name is refused, naming the member and the rule; None when it is acceptable."""
+    shown = repr(name)[:120]
+    if not isinstance(name, str):
+        return "PYZ member name is not a str (rule: names are str): " + shown
+    if name in seen:
+        return "PYZ member name is a duplicate (rule: each name once): " + shown
+    if SYSCONFIGDATA_NAME.fullmatch(name):
+        return None
+    for part in name.split("."):
+        if not part.isidentifier():
+            return "PYZ member name has a non-identifier part " + repr(part)[:120] + " (rule: every dotted part is an identifier): " + shown
+    return None
+
+
 def validate_pyz(data):
     """Validate the raw list before PyInstaller converts it into a dictionary."""
     if len(data) < 17 or data[:4] != b"PYZ\0" or data[12:17] != b"\0" * 5:
@@ -113,8 +140,9 @@ def validate_pyz(data):
     seen, spans = set(), []
     total = 0
     for name, details in entries:
-        if not isinstance(name, str) or not all(part.isidentifier() for part in name.split(".")) or name in seen:
-            raise ValueError("duplicate or invalid PYZ member name")
+        problem = pyz_name_problem(name, seen)
+        if problem:
+            raise ValueError(problem)
         seen.add(name)
         kind, start, length = details
         if kind not in {0, 1, 3} or not isinstance(start, int) or not isinstance(length, int) or start < 17 or length < 0 or start + length > offset:

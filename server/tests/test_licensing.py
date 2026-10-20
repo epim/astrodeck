@@ -249,7 +249,7 @@ def test_probe_and_loader_ask_for_the_same_variable(monkeypatch):
 # that really has the vendor's SDK installed.
 
 _INSTALLER_DETAIL = ("installed by the vendor's installer "
-                     "(redistribution ruling pending, #632)")
+                     "(bundled per the owner's ruling while Player One's reply is awaited, #632)")
 
 
 @pytest.fixture
@@ -319,7 +319,8 @@ def test_the_row_says_where_an_installed_sdk_came_from(installer_path):
     MUTANT detail_never_says (``if _player_one_source() ==
     _BY_THE_VENDORS_INSTALLER`` replaced by ``if False`` in
     ``_player_one_detail``): RED (observed): ``assert None == "installed by
-    the vendor's installer (redistribution ruling pending, #632)"``."""
+    the vendor's installer (bundled per the owner's ruling while Player One's reply
+    is awaited, #632)"``."""
     _put_down(installer_path)
     row = _player_one_row()
     assert row["satisfied"] is True
@@ -334,8 +335,8 @@ def test_a_fetched_sdk_is_not_described_as_the_installers(
 
     MUTANT everything_is_the_installers (``else "other"`` replaced by ``else
     "installer"`` in ``_player_one_source``): RED (observed): ``assert
-    "installed by the vendor's installer (redistribution ruling pending,
-    #632)" is None``."""
+    "installed by the vendor's installer (bundled per the owner's ruling
+    while Player One's reply is awaited, #632)" is None``."""
     _put_down(installer_path)
     monkeypatch.setenv(_OPERATOR_FACING_ENV, str(fetched_player_one_sdk))
     row = _player_one_row()

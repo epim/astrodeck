@@ -5,31 +5,38 @@
 the way it bundles ZWO's MIT `libasi`, to keep the single-install / zero-vendor-software
 promise for the Poseidon-M Pro imaging camera?
 
-## Verdict: **NO GRANT TO REDISTRIBUTE. The owner's ruling is pending in #632.**
+## Verdict: **NO GRANT FROM PLAYER ONE. THE OWNER RULED TO SHIP WITH THE LIBRARIES (#632).**
 
 The SDK's own `license.txt` (Camera SDK V3.10.1) grants use of the SDK for development
 and has **no distribution verb**. The 2026-07-20 version of this page called it
 "MIT-style" and read it as allowing redistribution, then vendored the files on that
 reading. That was an interpretation, not a grant, and it is withdrawn here. Whether we
 may pass the files on is an owner decision, tracked in
-[#632](https://github.com/epim/astrodeck/issues/632). Written confirmation from Player One
-(support@player-one-astronomy.com) would settle it; none is recorded.
+[#632](https://github.com/epim/astrodeck/issues/632). On 2026-10-20 the owner ruled to
+ship with the Player One libraries until Player One says otherwise, and has emailed Player
+One. Written confirmation from Player One (support@player-one-astronomy.com) would settle
+it; none is recorded.
 
-## What the builds do while the ruling is pending
+## What the builds do while Player One's reply is awaited
+
+Under the `redistribute` record the frozen executables, the server wheel, the Docker
+image and the source tarball all carry the libraries. A `pending` record would instead
+have kept them out of the source tarball only.
 
 The copies in `server/astrodeck/vendor/playerone/` travel in three artifacts:
 
 | Artifact | Carries the six libraries? | Where that is recorded |
 |---|---|---|
-| Frozen (PyInstaller) executables | Yes | `packaging/distribution-policy.json`, `playerone` is `pending` and `pending_by_artifact.frozen` is `true` |
-| Server wheel | Yes | the same row, `pending_by_artifact.server-wheel` is `true` |
+| Frozen (PyInstaller) executables | Yes | `packaging/distribution-policy.json`, `playerone` is `redistribute` |
+| Server wheel | Yes | the same row |
 | Docker image | Yes: it runs `pip install ./server` | not covered by any gate yet (#655) |
-| Source tarball | No | the same row, `pending_by_artifact.source-tar` is `false` |
+| Source tarball | Yes | the same row (a `pending` record would exclude them from the tarball) |
 
-The release audit (`tools/licence/audit_release.py`) reports `OWNER_PENDING` for any
-frozen or wheel artifact that contains a Player One library, so no tagged release passes
-the gate until #632 is ruled. Published releases v0.3.23 to v0.3.28 were built this way
-(#632). Changing what published assets or git history carry is the owner's call.
+The release audit (`tools/licence/audit_release.py`) reported `OWNER_PENDING` for any
+artifact that contained a Player One library while the row was `pending`; the
+`redistribute` record resolves that finding. Published releases v0.3.23 to v0.3.28 were
+built before any ruling (#632). Changing what published assets or git history carry is
+the owner's call.
 
 A machine can instead fetch the SDK from the vendor (`server/astrodeck/licensing.py`,
 remedy `fetch`) and point `ASTRODECK_PLAYERONE_SDK_DIR` at it. Using the SDK is what the
@@ -60,7 +67,7 @@ not a reading.
 
 - **Player One confirms in writing:** record the reply here, beside the quote above and not
   instead of it, and in the licensing registry (`server/astrodeck/licensing.py`). The
-  distribution decision then moves out of `pending` in `packaging/distribution-policy.json`.
+  distribution decision record in `packaging/distribution-policy.json` then cites the reply.
 - **The owner rules that we may not:** the SDK moves to the fetch remedy only, the six
   libraries leave the repository and the packaging, and the gate fails any build that
   contains them.
@@ -83,4 +90,4 @@ public Rust binding declined to redistribute the DLL, so the interim verdict was
 UNCLEAR / do-not-bundle. Reading the in-package `license.txt` on 2026-07-20 moved that to a
 "permits" verdict, and the files were vendored. The text read is the same text quoted
 above and it has no distribution verb, so the honest state is the interim one: unclear,
-and awaiting the ruling in #632.
+and awaiting Player One's reply (#632); the owner ruled on 2026-10-20 to ship with the libraries meanwhile.

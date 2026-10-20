@@ -145,17 +145,20 @@ VENDORED: dict[str, dict] = {
             "prose, which contains no distribution verb (no copy, publish, "
             "distribute, sublicense or sell) and limits the SDK to \"secondary "
             "development of our company's cameras\". The inspected Windows executable and examined published "
-            "archives contain six compiled libraries; the source tarball excludes them. Owner decision: get written confirmation "
-            "from support@player-one-astronomy.com, or stop shipping the "
-            "binaries and require a vendor install."),
+            "archives contain six compiled libraries. Owner ruling 2026-10-20 "
+            "(#632): ship them in every artifact, the source tarball included, "
+            "until Player One says otherwise; written confirmation has been "
+            "requested from Player One."),
         "requires": (lp.NOTICE,),
         "summaries": [
             "Reproduce the vendor's notice with the distribution. Whether the "
-            "notice also grants redistribution is the open question below."],
+            "notice also grants redistribution is settled for now by the "
+            "owner's ruling below."],
         "notes": (
             "Lets AstroDeck drive Player One cameras without the vendor's own "
             "software.\n\n"
-            "OPEN QUESTION FOR THE OWNER. This SDK's licence file is written in "
+            "OWNER RULING, 2026-10-20 (#632): ship it until Player One says "
+            "otherwise. This SDK's licence file is written in "
             "the shape of MIT — it ends with MIT's notice-retention clause and "
             "MIT's warranty disclaimer word for word — but its middle paragraph "
             "is Player One's own prose, and that prose contains no distribution "
@@ -167,11 +170,11 @@ VENDORED: dict[str, dict] = {
             "A reasonable reading is that redistribution is intended: a runtime "
             "library is useless unless it ships, and the retained clause "
             "presupposes that copies will be distributed. But that is an "
-            "inference, not a grant. The fresh Windows executable and examined "
-            "published archives contain all six SDK libraries, while the inspected "
-            "source tarball excludes them. Written confirmation from "
-            "support@player-one-astronomy.com would close this; until then it "
-            "is listed here rather than quietly filed under MIT."),
+            "inference, not a grant. Every artifact, the source tarball "
+            "included, carries all six SDK libraries under the owner's ruling. "
+            "The owner has asked Player One for written confirmation; until it "
+            "arrives the SDK stays listed here rather than quietly filed under "
+            "MIT."),
     },
 }
 

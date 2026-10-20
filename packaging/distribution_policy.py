@@ -3,8 +3,9 @@
 """One owner decision source for release payload selection.
 
 Pending records preserve historical inclusion; inclusion is not legal approval.
-The source tar excludes Player One libraries, while frozen/server wheels retain
-those libraries until the owner explicitly chooses another mode.
+Under a pending Player One record the source tar excludes its libraries, while
+frozen/server wheels retain them. The owner ruled `redistribute` on 2026-10-20
+(#632, awaiting Player One's reply), which includes them in every artifact kind.
 """
 from __future__ import annotations
 import argparse

@@ -54,7 +54,8 @@ source changes. It records exact input hashes and a normalized UTF-8 source
 manifest so a new ASCII table in a Python file cannot be silently treated as
 original code. Do not automatically regenerate this manifest just to turn the
 gate green. The two PWA icons are attributed to their project commits; the
-unverified nebula artwork stays blocked.
+nebula artwork is owner-made and registered as Apache-2.0 on the owner's
+ruling of 2026-10-20 (#637).
 
 A registered credit must match the reviewed licence and resolve to intact full
 texts where required. Remote survey data are recorded separately from bundled

@@ -21,7 +21,7 @@ against the shipped `ASICamera2.h`.
 
 **Player One (`cameras/player_one_sdk.py`):** licence: the SDK's `license.txt` grants use
 for development and has no distribution verb, so whether we may redistribute the
-library is the owner's ruling, pending in #632 (see player-one-sdk-licensing.md);
+library is the owner's ruling of 2026-10-20 (ship with it, Player One's reply awaited, #632; see player-one-sdk-licensing.md);
 bindings ALREADY verified against the SDK's own
 `python/pyPOACamera.py` + `include/PlayerOneCamera.h` V3.10.1 (enum values, struct layouts,
 sensor-mode/LRN API, POASetConfig/POAGetConfig per-call convention); the vendored DLL loads

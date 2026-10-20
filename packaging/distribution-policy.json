@@ -2,34 +2,34 @@
   "schema_version": 1,
   "decisions": {
     "playerone": {
-      "mode": "pending",
+      "mode": "redistribute",
       "pending_by_artifact": {
         "source-tar": false,
         "frozen": true,
         "server-wheel": true,
         "native-wheel": false
       },
-      "evidence": "issues:199,632"
+      "evidence": "https://github.com/epim/astrodeck/issues/632#issuecomment-6299072230"
     },
     "dss2": {
       "mode": "fetch-only",
       "evidence": "issue:631"
     },
     "artwork": {
-      "mode": "pending",
-      "evidence": "issue:637"
+      "mode": "redistribute",
+      "evidence": "https://github.com/epim/astrodeck/issues/637#issuecomment-6299071149"
     },
     "wcslib": {
       "mode": "pending",
       "evidence": "issue:638"
     },
     "astrospheric": {
-      "mode": "pending",
-      "evidence": "issue:636"
+      "mode": "redistribute",
+      "evidence": "https://github.com/epim/astrodeck/issues/636#issuecomment-6299071684"
     },
     "iau": {
-      "mode": "pending",
-      "evidence": "owner grant required"
+      "mode": "redistribute",
+      "evidence": "https://github.com/epim/astrodeck/issues/1073#issuecomment-6299072925"
     }
   }
 }

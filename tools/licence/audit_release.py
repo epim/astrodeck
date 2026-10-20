@@ -31,7 +31,7 @@ import release_provenance as provenance
 
 PLATFORMS = {"linux-x86_64", "windows-x86_64", "linux-arm64", "macos-arm64", "source"}
 KINDS = {"source-tar", "frozen", "native-wheel", "server-wheel"}
-BASE = "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b"
+BASE = "b3ce0f1b8f3e2ce68fd7baa740d61c3848165837"
 UNACCOUNTED = {"UNACCOUNTED", "PROVENANCE", "SOURCE_CHANGED", "NATIVE_UNREVIEWED", "ARCHIVE", "ENVELOPE_UNREVIEWED", "UI_SOURCE", "UI_PROVENANCE", "NATIVE_SBOM", "NATIVE_SEAL"}
 BASE_CACHE = {}
 
@@ -198,10 +198,15 @@ def resolved_owner_messages(messages, files, rules, decisions):
         rule = lookup.get(name)
         if not rule:
             continue
-        component = "artwork" if name == "ui/dist/bg_nebula.png" else "iau" if name == "server/astrodeck/catalog/brightstars.py" else None
+        component = ("artwork" if name == "ui/dist/bg_nebula.png"
+                     else "iau" if name == "server/astrodeck/catalog/brightstars.py"
+                     # Owner ruling #632: the six registered SDK libraries only;
+                     # LICENSE/README are notices, never resolved here.
+                     else "playerone" if name.startswith("server/astrodeck/vendor/playerone/") and not audit_artifact.is_text_payload(name)
+                     else None)
         if component not in accepted:
             continue
-        digest = provenance.sha(provenance.normalized_source(data)) if name.endswith(".py") else provenance.sha(data)
+        digest = provenance.sha(provenance.normalized_source(data)) if name.endswith(".py") else audit_artifact.content_sha256(name, data)
         if digest != rule["sha256"]:
             continue
         for suffix in ("registered asset requires an owner decision", "asset licence is outside the allowed policy", "reviewed licence still needs owner clearance", "licence is outside the allowed policy"):
@@ -569,7 +574,8 @@ def frozen_review(files, kinds, proof, artifact_sha, credits, credits_bytes, ui,
         ui_output = outputs.get(canonical(name))
         ui_exact = ui_output is not None and ui_output.get("sha256") == record["sha256"]
         asset = assets.get(canonical(name))
-        asset_exact = asset is not None and asset.get("sha256") == record["sha256"]
+        asset_digest = audit_artifact.content_sha256(name, data)
+        asset_exact = asset is not None and asset.get("sha256") == asset_digest
         if not (ui_exact or asset_exact) and (row.get("sha256") != record["sha256"] or not row.get("record_verified") or not row.get("method")):
             errors.append(finding("PROVENANCE", "Payload has no verified current build input", name, record["component"]))
         component = row.get("component", "UNKNOWN")
@@ -595,7 +601,7 @@ def frozen_review(files, kinds, proof, artifact_sha, credits, credits_bytes, ui,
             for notice in (package or {}).get("notices", []):
                 if not notice_present(notice, notice_hashes, text_hashes, full_texts):
                     errors.append(finding("NOTICE_MISSING", "Current retained package notice is absent or differs from compiled credits", component=component))
-        if asset and asset["sha256"] != record["sha256"]:
+        if asset and asset["sha256"] != asset_digest:
             errors.append(finding("UNACCOUNTED", "Shipped asset differs from reviewed bytes", name))
         if is_native_payload(name, data) and name not in native_files and not asset:
             old = observed.get(name)

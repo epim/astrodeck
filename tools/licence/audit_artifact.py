@@ -38,6 +38,23 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+TEXT_SUFFIXES = {".txt", ".md", ".tsv", ".csv", ".json", ".rst"}
+TEXT_NOTICE_NAME = re.compile(r"(?:license|licence|notice|copying)(?:[-._].*)?", re.I)
+
+
+def is_text_payload(name: str) -> bool:
+    """Text payloads whose bytes depend on the checkout's newline convention."""
+    base = PurePosixPath(name.replace("\\", "/")).name
+    return PurePosixPath(base).suffix.lower() in TEXT_SUFFIXES or bool(TEXT_NOTICE_NAME.fullmatch(base))
+
+
+def content_sha256(name: str, data: bytes) -> str:
+    """Registry hash of a payload. A Windows CRLF checkout and a Linux LF checkout
+    of the same text file are the same reviewed content (#1073), so text payloads
+    are hashed after CRLF to LF; binary payloads stay exact."""
+    return sha256(data.replace(b"\r\n", b"\n") if is_text_payload(name) else data)
+
+
 def read_archive(path: Path):
     files, errors = {}, []
     roots = set()
@@ -127,7 +144,7 @@ def review(files: dict[str, bytes], rules: dict, credits: dict, ui_build: dict,
             record["component"] = rule["component"]
             if rule.get("blocked"):
                 errors.append(f"{name}: registered asset requires an owner decision")
-            if sha256(data) != rule["sha256"]:
+            if content_sha256(name, data) != rule["sha256"]:
                 errors.append(f"{name}: asset bytes differ from the reviewed source")
             try:
                 resolution = policy.resolve(rule["spdx"])
@@ -138,7 +155,7 @@ def review(files: dict[str, bytes], rules: dict, credits: dict, ui_build: dict,
             if credit := rule.get("credit"):
                 errors += credit_findings(name, rule["spdx"], entries.get(credit), pool)
             for notice, expected in rule.get("notices", {}).items():
-                if notice not in files or sha256(files[notice]) != expected:
+                if notice not in files or content_sha256(notice, files[notice]) != expected:
                     errors.append(f"{name}: required companion notice is absent or changed")
         elif canonical in METADATA:
             record["component"] = "AstroDeck metadata or accompanying licence text"

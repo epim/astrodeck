@@ -255,23 +255,7 @@ def test_build_survey_pack_needs_manifest(tmp_path):
     assert "server/astrodeck/catalog/_bundled_pack/dss2color" not in manifest["contents"]
 
 
-def test_the_player_one_binaries_never_ship_but_their_licence_does(tmp_path):
-    """#199. The SDK licence grants USE — "You can use our company's products
-    and this SDK to develop any products without any restrictions" — and
-    contains no distribution verb anywhere: not copy, publish, distribute,
-    sublicense or sell. It is MIT-SHAPED, closing with MIT's notice-retention
-    clause and warranty disclaimer verbatim, which is where the earlier reading
-    came from; the middle paragraph is Player One's own prose and is not MIT.
-
-    `vendor/playerone/README.md` asserted for weeks that it "permits
-    redistribution", and six binaries shipped on that sentence. So the release
-    carries none of them.
-
-    THE LICENCE AND README STILL SHIP, deliberately: they are what tell the
-    operator what to fetch and on what terms, and a compliance measure that
-    deletes the licence text along with the binary has made the situation
-    harder to audit, not easier.
-    """
+def _player_one_tree(tmp_path: Path) -> Path:
     repo = _fake_repo(tmp_path)
     vend = repo / "server" / "astrodeck" / "vendor" / "playerone"
     (vend / "linux-x86_64").mkdir(parents=True)
@@ -279,6 +263,41 @@ def test_the_player_one_binaries_never_ship_but_their_licence_does(tmp_path):
     (vend / "linux-x86_64" / "libPlayerOneCamera.so.3.10.0").write_bytes(b"ELF")
     (vend / "LICENSE").write_text("Player One SDK licence text")
     (vend / "README.md").write_text("what to fetch and from where")
+    return repo
+
+
+def test_the_source_tarball_carries_the_player_one_libraries_under_the_owner_ruling(tmp_path):
+    """#632, owner ruling of 2026-10-20: ship with the Player One libraries until
+    Player One says otherwise. The real packaging/distribution-policy.json
+    records `playerone` as `redistribute`, so the source bundle carries the
+    libraries as well as the licence and README, in every artifact kind.
+
+    Named mutant PLAYERONE-RULING-LOST (the policy row set back to `pending`,
+    whose source-tar entry is false): the DLL is missing from the bundle.
+    """
+    repo = _player_one_tree(tmp_path)
+    out = tmp_path / "dist"
+    build_release.build("9.9.9", repo, out)
+    staged = out / "astrodeck-9.9.9" / "server" / "astrodeck" / "vendor" / "playerone"
+
+    assert (staged / "PlayerOneCamera.dll").is_file(), "the ruled-in DLL is missing from the source bundle"
+    assert (staged / "linux-x86_64" / "libPlayerOneCamera.so.3.10.0").is_file(), \
+        "a versioned .so is missing — the suffix is not the last thing in the name"
+    assert (staged / "LICENSE").is_file()
+    assert (staged / "README.md").is_file()
+
+
+def test_a_fetch_only_player_one_decision_keeps_the_binaries_out_but_not_their_licence(tmp_path):
+    """#199. If Player One says no and the row goes to `fetch-only`, the binaries
+    leave the release while the licence and README still ship: they tell the
+    operator what to fetch and on what terms, and deleting the licence text with
+    the binary would make the situation harder to audit, not easier.
+    """
+    repo = _player_one_tree(tmp_path)
+    (repo / "packaging").mkdir()
+    policy = json.loads((Path(build_release.__file__).resolve().parents[1] / "packaging/distribution-policy.json").read_text(encoding="utf-8"))
+    policy["decisions"]["playerone"]["mode"] = "fetch-only"
+    (repo / "packaging/distribution-policy.json").write_text(json.dumps(policy), encoding="utf-8")
 
     out = tmp_path / "dist"
     build_release.build("9.9.9", repo, out)
