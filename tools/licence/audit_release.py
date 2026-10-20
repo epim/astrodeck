@@ -31,7 +31,7 @@ import release_provenance as provenance
 
 PLATFORMS = {"linux-x86_64", "windows-x86_64", "linux-arm64", "macos-arm64", "source"}
 KINDS = {"source-tar", "frozen", "native-wheel", "server-wheel"}
-BASE = "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b"
+BASE = "b3ce0f1b8f3e2ce68fd7baa740d61c3848165837"
 UNACCOUNTED = {"UNACCOUNTED", "PROVENANCE", "SOURCE_CHANGED", "NATIVE_UNREVIEWED", "ARCHIVE", "ENVELOPE_UNREVIEWED", "UI_SOURCE", "UI_PROVENANCE", "NATIVE_SBOM", "NATIVE_SEAL"}
 BASE_CACHE = {}
 

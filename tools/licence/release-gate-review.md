@@ -60,3 +60,45 @@ The source tar has 777 members and all are accounted; its eight findings are the
 The required external-needle privacy scan used privacy_scan.load_needles, patterns_for and scan_text entirely in memory on every expanded payload decoded with UTF-8 replacement. It also expanded the native source archive. External needles were present and nonempty; scanned counts were 777 for source, 88 for the native wheel and 3,524 for the executable. All three were clean, with no matching filenames. Reports contain artifact hashes, counts and marker paths only, never forbidden values or payload content. This covers the configured values and scanner rules, not all conceivable personal information. No raw server logs or application state were read.
 
 The gate source remains the reviewed correction with 65 passing tests and 25 named mutants killed, exact byte restoration and a passing restored suite. This final step changed only evidence files. Linux/macOS frozen artifacts remain unbuilt here and have no local clearance. Copyright stamping or any later source edit requires a specific reviewed-hash refresh and rebuilt artifact evidence; this report is bound to the three exact hashes, not a future checkout.
+
+## Delta review to b3ce0f1b (2026-10-20, #1073)
+
+The reviewed base moved from 6e8dad9d (2026-10-01) to b3ce0f1b8f3e2ce68fd7baa740d61c3848165837. That commit carries the owner rulings of 2026-10-20 (#637, #636, #632, and the iau row on #1073), the coverage change that removes astropy.wcs (#638), and the release workflow changes. Between the two bases, about 2,170 commits landed on main.
+
+Method. Every shipped file was compared with its copy at the old base:
+- the members of the source tarball built from b3ce0f1b, with LF line endings, through the release packager;
+- the 880 recorded UI build inputs.
+
+For each new or changed text file, the added lines were scanned for four things:
+- licence or copyright markers other than the project's own header;
+- provenance phrases ("adapted/ported/copied from", third-party URLs);
+- runs of twelve or more literal data lines, and long opaque tokens;
+- non-ASCII characters.
+
+Binary members were listed for review by hand. The scanner and its JSON reports are kept with the session record, not in the repository. Counts:
+- Tarball: 578 members. 316 changed, 230 new and 32 unchanged against the old base. ui/dist outputs are "new" by construction, since they are build products reviewed through their recorded inputs.
+- UI inputs: 837 changed, 37 new.
+
+Findings, each read by hand:
+- **Licence and origin flags.** Every licence and origin flag in the server, native and packaging delta is first-party prose: "derived from the site", "taken from", comments about notices and LGPL, and OpenNGC column notes for data already credited.
+- **WMM2025.** `ui/src/next/hubs/sky/sheets/pano/wmm2025.ts` is the one third-party table: the World Magnetic Model WMM2025 coefficients. They are US Government material from NGA/NCEI and in the public domain. The file records the source file, its md5 and the public-domain statement, and a test pins its digest. No credit is required. It is recorded here.
+- **noise.ts.** `ui/src/next/hubs/sky/sheets/pano/horizon/noise.ts` is ported from the project's own photosphereStability.ts.
+- **Non-ASCII.** Non-ASCII content is typographic: dashes, arrows, degree signs, section signs, box-drawing rules in comments, and Greek letters in formulas.
+- **Binary members.** The binary members are the UI's @fontsource woff/woff2 outputs (npm inputs, credited through the UI inventory), the two PWA icons and bg_nebula.png. bg_nebula.png is owner-made and redistributable, per the owner ruling on #637.
+- **Data assets.**
+  - `ngc_extras.tsv` changed in WP-129 (d39c6361, #181), which added axis-ratio and position-angle columns from the same OpenNGC source (CC-BY-SA-4.0). Its row now names the renamed generated credit.
+  - constellations.tsv, discoverers.tsv and ngc.tsv are unchanged. Their old registry hashes were CRLF hashes, and the gate now hashes text payloads after CRLF to LF.
+  - The ZWO LICENSE.txt notice is unchanged, and the same line-ending fix applies to it.
+- **Player One SDK.** The six libraries are now registered with their exact bytes. Under the #632 ruling they ship in the source tarball too.
+
+Evidence written:
+- BASE in audit_release.py.
+- reviewed_baseline.
+- reviewed_sources: 253 shipped server Python files and pyproject.toml, with CRLF-normalized hashes. Each existing row's component, credit and SPDX are kept; only brightstars.py carries any.
+- The ngc_extras.tsv row.
+
+Nothing was regenerated as a build step. A later change to a shipped file is SOURCE_CHANGED or UNACCOUNTED again until it is reviewed.
+
+Still open:
+- The wcslib row stays pending until a frozen build is shown free of WCSLIB.
+- The frozen executables keep their own provenance and native-rights findings, recorded above. Under the source-first workflow, those binaries are withheld rather than published.
