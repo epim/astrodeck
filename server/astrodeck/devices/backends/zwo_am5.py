@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timezone
 
 from ...catalog import coords
+from ... import config as config_store_mod
 from ...config import config_store
 from ...events import bus
 from .. import lx200
@@ -672,6 +673,10 @@ class ZwoAm5Telescope(Telescope):
         #: ``trust_position``, and deliberately NOT by a goto (see
         #: ``position_known``).
         self._position_untrusted = False
+        #: True once this instance knows the on-disk park record (#1075) is
+        #: gone. Starts False so the first motion command of a new instance
+        #: reads the file; a pulse-guide loop then costs nothing after that.
+        self._park_record_cleared = False
         #: Serializes `_park_now` against `pulse_guide` (WP-18, #342). Both
         #: issue motion commands on the one serial link, and a park landing
         #: while a pulse is mid-flight can interleave with it on the wire, or
@@ -1101,6 +1106,29 @@ class ZwoAm5Telescope(Telescope):
         except Exception:    # noqa: BLE001 - advisory read; no answer, no evidence
             return
         at_pole = abs(abs(dec) - 90.0) <= POLE_SIGNATURE_DEG
+        if at_pole and not self._position_untrusted:
+            # REMEMBER THE PARK (#1075). A parked AM5 always reads the home
+            # pole, so every reconnect of a mount WE parked used to latch,
+            # and at a site whose home view is obstructed only a human could
+            # clear it. When AstroDeck's own park record for THIS device is on
+            # disk (written when park() confirmed the mount parked, removed
+            # before any command that can move the tube) AND the mount still
+            # reports parked right now, the tube is where we left it: keep the
+            # latch as it was. The parked read is required: if an AM5 clears
+            # its parked flag on power-up, a power cycle fails this check and
+            # the latch stays; if it keeps the flag, the tube was parked at
+            # home by us when the power went and is still there. Either way
+            # the result is safe. Any failing condition is today's behaviour.
+            # RESIDUAL RISK: another controller (the ASIAIR app, the hand
+            # controller) could unpark and slew the mount while our link is
+            # down, then lose power mid-sky and report parked on power-up,
+            # which the record cannot see.
+            if await self._park_record_holds():
+                bus.log("info",
+                        f"{self.name}: position kept: AstroDeck parked the "
+                        "mount at home and it still reports parked (#1075)",
+                        "mount")
+                return
         was_untrusted = self._position_untrusted
         self._position_untrusted = was_untrusted or at_pole
         if self._position_untrusted and not was_untrusted:
@@ -1122,6 +1150,45 @@ class ZwoAm5Telescope(Telescope):
                     "every sync on the bench",
                     "mount")
 
+    def _park_key(self) -> str:
+        """Identity of this mount for the park record: the serial port and the
+        configured name. A different mount, port or profile name never reads
+        another's record."""
+        port = getattr(self._link, "port_path", "") or ""
+        return f"zwo-am5|{port}|{self.name}"
+
+    def _write_park_record(self) -> None:
+        config_store_mod.save_mount_park_record(self._park_key(), {
+            "device": self._park_key(),
+            "parked_by": "AstroDeck",
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        })
+        self._park_record_cleared = False
+
+    def _clear_park_record(self) -> None:
+        """Call BEFORE the command that can move the tube is sent, so a crash
+        mid-command leaves no record. Raises if a record could not be removed:
+        moving the tube with a stale record on disk is the unsafe outcome."""
+        if self._park_record_cleared:
+            return
+        try:
+            config_store_mod.clear_mount_park_record(self._park_key())
+        except Exception as exc:  # noqa: BLE001
+            raise DeviceError(
+                f"{self.name}: could not clear the park record, so the move "
+                f"was not sent ({type(exc).__name__})") from exc
+        self._park_record_cleared = True
+
+    async def _park_record_holds(self) -> bool:
+        rec = config_store_mod.load_mount_park_record(self._park_key())
+        if (not rec or rec.get("parked_by") != "AstroDeck"
+                or rec.get("device") != self._park_key()):
+            return False
+        try:
+            return await self.is_parked()
+        except Exception:  # noqa: BLE001 - cannot ask: today's behaviour
+            return False
+
     async def trust_position(self) -> None:
         """The operator says the tube is physically where the mount reports it
         (in practice: "I drove it to its home position by eye"), which clears
@@ -1132,6 +1199,15 @@ class ZwoAm5Telescope(Telescope):
                     "mount")
         self._position_untrusted = False
         await super().trust_position()      # the rig-level latch
+        # The operator attests the tube is where the mount reports, and a
+        # mount that reports parked is parked at home: remember it (#1075).
+        # If the parked read fails, write nothing.
+        try:
+            parked = await self.is_parked()
+        except Exception:  # noqa: BLE001 - cannot ask: no record
+            parked = False
+        if parked:
+            self._write_park_record()
 
     async def disconnect(self) -> None:
         try:
@@ -1189,6 +1265,7 @@ class ZwoAm5Telescope(Telescope):
         # Idempotent (at-scope finding 2026-07-20): :Spu# on an ALREADY-unparked
         # mount replies '0', which is not a failure — there is simply no park to
         # cancel. Check state first; only a parked mount gets the command.
+        self._clear_park_record()
         if not await self.is_parked():
             return
         self._note_model_change("unpark")
@@ -1222,6 +1299,7 @@ class ZwoAm5Telescope(Telescope):
         unparking sends a command the mount throws away, and because ``:hP#``
         is fire-and-forget there is no ack to notice it by. The first version
         of this fix did exactly that and reported success."""
+        self._clear_park_record()
         self._note_model_change("find_home")
         await self.unpark()        # a parked mount refuses :hP# outright
         await self._park_now()     # never skipped — "parked" is not "at home"
@@ -1252,8 +1330,20 @@ class ZwoAm5Telescope(Telescope):
         # 60s poll on the dawn path for no motion. ``find_home`` deliberately
         # bypasses this guard — see its docstring.
         if await self.is_parked():
+            # BOOTSTRAP (#1075). A mount parked before records existed (or
+            # whose record was lost) has none, and this early return would
+            # never write one. A parked AM5 always reads the pole, so
+            # position_known True here means the record held, the operator
+            # trusted it, or a sync cleared it: parked at home under a model
+            # we vouch for. Idempotent.
+            if self.position_known:
+                self._write_park_record()
             return
         await self._park_now()
+        # _park_now returns only when the parked flag was read back (it raises
+        # otherwise). Written here and not in _park_now: find_home parks and
+        # then unparks, and must leave no record.
+        self._write_park_record()
 
     async def _park_now(self) -> None:
         # Counted on entry, before the lock wait: a park asked for inside a
@@ -1811,6 +1901,8 @@ class ZwoAm5Telescope(Telescope):
     # ------------------------------------------------------------- motion
 
     async def set_tracking(self, on: bool) -> None:
+        if on:
+            self._clear_park_record()
         self._note_model_change("set_tracking")
         await self._cmd_ack("Te" if on else "Td",
                             "tracking on" if on else "tracking off")
@@ -1827,6 +1919,7 @@ class ZwoAm5Telescope(Telescope):
         at-scope validation item (plan Task 7)."""
         if rate not in TRACKING_RATES:
             raise DeviceError(f"{self.name}: unknown tracking rate {rate!r}")
+        self._clear_park_record()
         self._note_model_change("set_tracking_rate")
         await self._request(_TRACKING_RATE_CMD[rate], reply="none")
         self._tracking_rate = rate
@@ -1868,6 +1961,7 @@ class ZwoAm5Telescope(Telescope):
 
         ``e14`` is ``GotoRefused`` with the parked probe's words, like ``e6``.
         No message carries a coordinate; a separation is allowed."""
+        self._clear_park_record()
         await self._set_target(ra_hours, dec_deg)
         # Snapshot BEFORE :MS#: a stop that lands while :MS# is in flight
         # belongs to this goto.
@@ -2323,6 +2417,8 @@ class ZwoAm5Telescope(Telescope):
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
         if axis not in ("ra", "dec"):
             raise DeviceError(f"{self.name}: unknown axis {axis!r}")
+        if rate_deg_s != 0.0:
+            self._clear_park_record()
         if rate_deg_s == 0.0:
             # stop both directions of this axis (fire-and-forget)
             for d in ("e", "w") if axis == "ra" else ("n", "s"):
@@ -2423,6 +2519,7 @@ class ZwoAm5Telescope(Telescope):
         d = direction.lower()[0]
         if d not in "nsew":
             raise DeviceError(f"{self.name}: bad guide direction {direction!r}")
+        self._clear_park_record()
         async with self._pulse_park_lock:
             secs = self._capped_ms(direction, ms) / 1000.0
             if d == "e" and await self.get_tracking():
