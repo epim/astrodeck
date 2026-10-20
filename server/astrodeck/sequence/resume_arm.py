@@ -263,10 +263,10 @@ REFUSED_SYNC_UNVERIFIED_WORDS = (
 #: solved field is NOT within tolerance of the target, so the run would image
 #: a field it could not centre. Fixed words, as above.
 #: Spelled "re-centering", as REFUSED_SYNC_UNVERIFIED_RECENTRE_WORDS and the
-#: step's older holds ("re-centering after restart refused ...") are: one
+#: step's older holds ("re-centering for the resume refused ...") are: one
 #: ladder step words it one way to the operator (#850).
 REFUSED_SYNC_RECENTRE_WORDS = (
-    "re-centering after restart stopped and the run is not starting: "
+    "re-centering for the resume stopped and the run is not starting: "
     + SOLVE_REASON_SYNC_REFUSED
     + ", and another slew would land in the same place")
 
@@ -370,6 +370,39 @@ POSITION_UNKNOWN_NO_SOLVER_WORDS = (
 POSITION_UNKNOWN_RECENTRE_WORDS = (
     _POSITION_UNKNOWN_ACTION + " Its driver stopped vouching for the "
     "position during the resume, as a reopened link does")
+
+#: How long the ladder waits for the mount to say whether it is parked.
+PARKED_READ_TIMEOUT_S = 10.0
+
+#: A resume solve that failed WITHOUT a lit verdict, with the driver vouching
+#: for the position (#1097). Words only, and none of them claim a restart or
+#: an unknown position: the position is known, and nothing may have
+#: restarted. The failure's own text follows in parentheses.
+RESUME_SOLVE_FAILED_WORDS = "the resume's plate solve failed"
+
+#: The tail of that hold: what the ladder will not do on a failed solve.
+RESUME_SOLVE_FAILED_TAIL = (
+    "; not slewing until a solve can say where the mount points")
+
+#: The re-centre's own solve (at the target) found no light (#251, #1097).
+#: Words only: the verdict's numbers do not go in a hold a viewer reads.
+RECENTRE_NO_LIGHT_WORDS = (
+    NO_LIGHT_WORDS + ", so the resume's plate solve at the target cannot say "
+    "where the mount points")
+
+#: The re-centre's solve failed under a sky that showed light (cloud, too few
+#: stars), or on a failure nothing could judge.
+RECENTRE_SOLVE_FAILED_WORDS = (
+    "the resume's plate solve at the target could not solve the field")
+
+#: What the mount was left doing, appended to the two holds above.
+RECENTRE_PARKED_TAIL = "; the mount is parked and the next try starts from there"
+RECENTRE_NOT_PARKED_TAIL = "; the mount did not confirm it parked"
+
+#: The mount would not park when the ladder wanted it home (#1097).
+RESUME_PARK_FAILED_WORDS = (
+    "the resume's plate solve failed and the mount did not confirm it "
+    "parked; not slewing")
 
 #: The UI humanizer's keys that are still bare words (ui/src/lib/humanize.ts):
 #: a line holding "nina" beside "http", "error" or a 5xx status, or "camera"
@@ -2462,7 +2495,38 @@ class ResumeArm:
                     except Exception:  # noqa: BLE001 — bookkeeping, never a refusal
                         pass
 
-        # 2. POINTING — ALWAYS re-measure. Never gated on the fingerprint.
+        # 2. POINTING — re-measure where the mount STANDS, unless it stands at
+        #    park. Never gated on the fingerprint.
+        #
+        #    THE OWNER'S RULING, 2026-10-19 (#1097): "From a home or park
+        #    position the scope should always be able to slew to target without
+        #    being gated on plate solving home first. When in doubt or lost
+        #    otherwise when slewing from one target to another the scope should
+        #    just slew home then slew to target." The park view is the one view
+        #    the run never shoots, and it can be obstructed, so the in-place
+        #    blind solve below held an armed session for a whole night after
+        #    the engine's own cloud park. So:
+        #
+        #      A. PARKED and the driver vouches for the position (the same
+        #         ``position_known`` the rest of this module reads): no blind
+        #         solve. Step 3 slews to the first candidate and solves THERE.
+        #         (The driver reports parked, not "at home"; a mount homed but
+        #         not parked is solved in place, and B covers its failure.)
+        #      B. NOT parked, position known, the in-place solve failed for
+        #         ANY reason but no light, a refused or unconfirmed sync or a
+        #         software fault (the verdict is often UNKNOWN: no dark master
+        #         for the temperature): park the mount, then step 3 as in A.
+        #      C. A step-3 hold in an attempt that left the park parks the
+        #         mount again (``_recentre_hold``), so the next try starts from
+        #         home and the mount is not left tracking unattended.
+        #      D. Step 3 then owns the no-light verdict (``_ladder_light``,
+        #         ``_ladder_dark_kind``) that this solve used to set.
+        #
+        #    WHAT DOES NOT CHANGE: ``position_known`` False. An AM5 that lost
+        #    power reads its home pole on reconnect and the driver latches
+        #    that (#867, #1075). Its position is a default, not a measurement,
+        #    so it is solved in place and held on exactly as before, with no
+        #    slew and no park, whatever it reports about being parked.
         #
         #    The AM5 is a harmonic drive with NO BRAKE. A restart that preserved
         #    every byte of software state still cannot rule out that the tube
@@ -2486,7 +2550,22 @@ class ResumeArm:
         #    exactly the case where moving is a gamble.
         if self._must_stop():
             return None
-        if not self._can_solve():
+        #: True when step 2 did not measure the sky, so step 3's solve at the
+        #: target is the first one (and owns the no-light verdict, D).
+        unsolved_sky = False
+        #: True when the ladder took the mount off its park position, so a
+        #: step-3 hold puts it back (C).
+        repark = False
+        if (self._can_solve() and self._mount_position_known()
+                and await self._mount_is_parked()):
+            # CASE A (#1097): see the comment above.
+            unsolved_sky = True
+            repark = True
+            bus.log("info", "auto-resume: the mount is parked and its "
+                            "position is known, so it slews to the target "
+                            "and solves there, not at the park position "
+                            "(#1097)", "sequence")
+        elif not self._can_solve():
             # NO SOLVER, AND THE DRIVER SAYS IT DOES NOT KNOW WHERE IT POINTS
             # (#867 by another route, ruling R2). The standing choice to
             # resume a no-solver rig on the mount's model assumes the model
@@ -2546,9 +2625,8 @@ class ResumeArm:
                 # read by a viewer.
                 self._ladder_light = "dark"
                 self._ladder_dark_kind = e.reference_kind
-                return (f"{NO_LIGHT_WORDS}, so the blind plate solve after "
-                        f"the restart cannot say where the mount points; not "
-                        f"slewing")
+                return (f"{NO_LIGHT_WORDS}, so the resume's plate solve "
+                        f"cannot say where the mount points; not slewing")
             except SyncRefused as e:
                 # THE SOLVE WORKED AND THE MOUNT WOULD NOT TAKE ITS ANSWER
                 # (#850). Not a failed plate solve, so never the words of
@@ -2681,11 +2759,36 @@ class ResumeArm:
                 # verdict, not the text; a failure nothing could judge (no
                 # reference, a camera fault) is no evidence of light and
                 # leaves ``_ladder_light`` None.
-                if isinstance(e, FailedSolveError) and e.verdict.kind == CLOUD:
+                lit = (isinstance(e, FailedSolveError)
+                       and e.verdict.kind == CLOUD)
+                if lit:
                     self._ladder_light = "lit"
-                return (f"blind plate solve failed after restart ({e}) — refusing "
-                        "to slew a mount whose true position is unknown")
-            self._ladder_light = "lit"
+                if not self._mount_position_known():
+                    # The position IS unknown: today's words, today's hold.
+                    return (f"blind plate solve failed after restart ({e}) — "
+                            "refusing to slew a mount whose true position is "
+                            "unknown")
+                # CASE B (#1097): the position is known and the in-place solve
+                # failed, whatever the frame showed (most failures here carry
+                # an UNKNOWN verdict). "When in doubt, slew home then slew to
+                # target": park, then step 3 solves at the target.
+                if self._must_stop():
+                    return None
+                if not await self._park_for_resume():
+                    return RESUME_PARK_FAILED_WORDS
+                bus.log("info", "auto-resume: the plate solve where the mount "
+                                "stood failed, so the mount was parked and it "
+                                "slews to the target and solves there "
+                                "(#1097)", "sequence")
+                if not candidates:
+                    return (f"{RESUME_SOLVE_FAILED_WORDS} ({e})"
+                            f"{RESUME_SOLVE_FAILED_TAIL}")
+                unsolved_sky = True
+                repark = True
+            if not unsolved_sky:
+                # Not for case B: a failure that is not a CLOUD verdict is
+                # no evidence of light, and step 3 judges the sky there.
+                self._ladder_light = "lit"
             # AN ACCEPTED SYNC IS NOT ALWAYS A KNOWN POSITION (#867). Near the
             # pole the AM5's read-back cannot tell a sync it took from one it
             # ignored, so its driver keeps the position unknown
@@ -2805,7 +2908,7 @@ class ResumeArm:
                     # does for a failed solve or goto. The timed-out read's
                     # own sentence goes to ``site_detail``, the operator's.
                     self._refusal_site_detail = str(e)
-                    return ("re-centering after restart refused: the mount "
+                    return ("re-centering for the resume refused: the mount "
                             "did not answer the slew-limit check, so the "
                             "link to it may be down; not slewing")
                 # The gate's numbers (the altitude, the limit and the
@@ -2827,12 +2930,12 @@ class ResumeArm:
                 # was shown before.
                 if first_refusal is None:
                     words = (
-                        "re-centering after restart refused: the target "
+                        "re-centering for the resume refused: the target "
                         "is outside this rig's configured slew limits "
                         "(altitude floor, horizon, no-go wedges, pier "
                         "side or zenith keep-out); not slewing yet"
                         if isinstance(e, SlewRefused) else
-                        "re-centering after restart refused: the slew-limit "
+                        "re-centering for the resume refused: the slew-limit "
                         "check failed; not slewing")
                     first_refusal = (words, getattr(e, "site_detail", None)
                                      or str(e))
@@ -2880,14 +2983,25 @@ class ResumeArm:
                     # settle (#402), however the re-centre ended.
                     self._say_solve_timing(mark, "the re-centre")
             except GotoRefused as e:
+                # (A hold here parks again if the ladder left the park, C.)
                 # THE MOUNT SAID NO, which is a different thing from the slew
                 # failing, and the operator can act on the difference: a
                 # refusal names a limit to wait out or clear, a failure names
                 # something broken. The driver's own words, not the wire code
                 # the log used to carry alone.
-                return f"re-centering after restart refused by the mount: {e.reason}"
+                return await self._recentre_hold(
+                    f"re-centering for the resume refused by the mount: "
+                    f"{e.reason}", repark)
             except Exception as e:  # noqa: BLE001
-                return f"re-centering after restart failed: {e}"
+                if unsolved_sky and isinstance(e, NoLightError):
+                    return await self._hold_unsolved_recentre(
+                        "dark", e.reference_kind, repark)
+                if (unsolved_sky and isinstance(e, FailedSolveError)
+                        and e.verdict.kind == CLOUD):
+                    return await self._hold_unsolved_recentre(
+                        "lit", None, repark)
+                return await self._recentre_hold(
+                    f"re-centering for the resume failed: {e}", repark)
             # THE MOUNT REFUSED THE RE-CENTRE'S SYNC (#850). Away from the
             # pole the AM5 takes syncs, so a refusal here is a mount that will
             # not be corrected, and ``goto_and_center`` reports it only when
@@ -2907,14 +3021,92 @@ class ResumeArm:
             # above. Nothing moved, so ``_recentred`` stays unset.
             if isinstance(centring, dict) and centring.get("position_unknown"):
                 return POSITION_UNKNOWN_RECENTRE_WORDS
+            if (unsolved_sky and isinstance(centring, dict)
+                    and centring.get("solve_failed")):
+                # THE FIRST SOLVE OF THIS RESUME FAILED (#1097): step 2 did
+                # not measure the sky, so a failed solve here is the verdict
+                # step 2 would have given. The hub reports what the frame
+                # showed (`solve_light_keys`).
+                return await self._hold_unsolved_recentre(
+                    centring.get("solve_light"),
+                    centring.get("solve_dark_kind"), repark)
+            if (unsolved_sky and isinstance(centring, dict)
+                    and not centring.get("aborted")):
+                # A solve worked here (a refused sync is a solved field): the
+                # light reached the sensor, which ends a no-light spell.
+                self._ladder_light = "lit"
             if isinstance(centring, dict) and centring.get("sync_refused"):
-                return REFUSED_SYNC_RECENTRE_WORDS
+                return await self._recentre_hold(
+                    REFUSED_SYNC_RECENTRE_WORDS, repark)
             if isinstance(centring, dict) and centring.get("sync_unverified"):
-                return REFUSED_SYNC_UNVERIFIED_RECENTRE_WORDS
+                return await self._recentre_hold(
+                    REFUSED_SYNC_UNVERIFIED_RECENTRE_WORDS, repark)
             # The mount is tracking this target now: ``tick`` hands it to the
             # engine's idle clock with the start (#202).
             self._recentred = tgt
         return None
+
+    async def _mount_is_parked(self) -> bool:
+        """Does the mount report parked right now? False when it cannot say
+        (no mount, a query that raised or timed out): an unreadable state is
+        not a reason to skip the in-place solve (#1097). Bounded."""
+        ask = getattr(self.hub.devices.get("telescope"), "is_parked", None)
+        if not callable(ask):
+            return False
+        try:
+            return bool(await asyncio.wait_for(ask(), PARKED_READ_TIMEOUT_S))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - unreadable is not parked
+            return False
+
+    async def _park_for_resume(self) -> bool:
+        """Park the mount through the engine's fenced park (the hub motion
+        fence and lock, the read-back, the sun watch told) and say whether
+        it parked (#1097). Never raises but for a cancel. A position the
+        driver does not vouch for is not parked from (the engine's own rule,
+        #888): it answers False, and the caller holds."""
+        try:
+            return (await self.engine._fenced_park()) is True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - a failed park is a hold
+            _log.error("resume ladder: park failed", exc_info=e)
+            return False
+
+    async def _recentre_hold(self, reason: str, repark: bool) -> str:
+        """Return a step-3 hold, after parking the mount again when this
+        attempt took it off its park position (#1097, C).
+
+        Before this, a step-3 hold left the mount where the goto or the
+        centring stopped it, tracking, until the next retry. After a slew
+        away from park that is a mount left tracking unattended with no run
+        to watch it, so the next retry starts from home instead. A stop
+        request skips the park (an operator who asked the ladder to stop
+        owns the mount, ``stop_recovery``)."""
+        if repark and not self._must_stop():
+            await self._park_for_resume()
+        return reason
+
+    async def _hold_unsolved_recentre(self, light: str | None,
+                                      dark_kind: str | None,
+                                      repark: bool) -> str:
+        """The hold for a re-centre whose solve failed in an attempt where
+        step 2 measured nothing (#1097, D). Sets what step 2's solve set for
+        ``tick`` (the alert and the backoff read ``_ladder_light`` and
+        ``_ladder_dark_kind``), then parks again (C). Words only."""
+        if light == "dark":
+            self._ladder_light = "dark"
+            self._ladder_dark_kind = dark_kind
+            words = RECENTRE_NO_LIGHT_WORDS
+        else:
+            if light == "lit":
+                self._ladder_light = "lit"
+            words = RECENTRE_SOLVE_FAILED_WORDS
+        if repark and not self._must_stop():
+            parked = await self._park_for_resume()
+            words += RECENTRE_PARKED_TAIL if parked else RECENTRE_NOT_PARKED_TAIL
+        return words
 
     def _a_run_took_over(self) -> bool:
         """Has a run started since ``tick`` checked ``engine.running``?

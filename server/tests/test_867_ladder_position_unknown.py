@@ -420,7 +420,10 @@ async def test_a_real_am5_that_read_its_home_pole_holds_until_trust_position(
     await tel.trust_position()
     hub = _hub_with(tel, solve_raises=_refusal(0.4), centring=_CENTRED)
     assert await _arm(hub, monkeypatch)._recover(_session()) is None
-    assert hub.calls == ["solve", "center"]
+    # No solve first (#1097): the AM5 stands at its home pole, which it
+    # reports as parked, and a parked mount whose position is known is
+    # re-centred from the target, not solved at the park view.
+    assert hub.calls == ["center"]
 
 
 async def test_a_real_am5_that_ignored_a_near_pole_sync_holds_on_every_retry(
@@ -447,7 +450,8 @@ async def test_a_real_am5_that_ignored_a_near_pole_sync_holds_on_every_retry(
     hub = _SyncingHub(sync_to=(_RA_H, 89.97), centring=_CENTRED)
     hub.devices["telescope"] = tel
     assert await _arm(hub, monkeypatch)._recover(_session()) is None
-    assert hub.calls == ["solve", "center"]
+    # No solve first after Trust position (#1097), as above.
+    assert hub.calls == ["center"]
 
 
 # ================================================================ the words

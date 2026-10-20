@@ -99,7 +99,7 @@ FLOOR_DEG = 30.0
 T0 = 1_700_000_000.0
 
 #: The limits refusal's words, today's (``_recover``'s SafetyAbort arm).
-LIMITS_WORDS = ("re-centering after restart refused: the target is outside "
+LIMITS_WORDS = ("re-centering for the resume refused: the target is outside "
                 "this rig's configured slew limits (altitude floor, horizon, "
                 "no-go wedges, pier side or zenith keep-out); not slewing yet")
 
@@ -1004,7 +1004,7 @@ async def test_a_candidate_the_limits_refuse_gives_way_to_the_next(rig):
     RED under mutant "the first refusal ends the ladder", observed verbatim:
 
             assert await rig.arm(T0)._recover(_session([a, b])) is None
-        E   assert "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet" is None
+        E   assert "re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet" is None
     """
     a = _target("t-a", "NGC 604", *NGC604)
     b = _target("t-b", "M13", *M13)
@@ -1029,7 +1029,7 @@ async def test_with_no_shootable_candidate_it_refuses_in_the_first_ones_words(
         E   AssertionError: M13 is below its start floor; not slewing yet
         E   assert 'M13 is below...t slewing yet' == 're-centering...t slewing yet'
         E
-        E     - re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet
+        E     - re-centering for the resume refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet
         E     + M13 is below its start floor; not slewing yet
     """
     a = _target("t-a", "NGC 604", *NGC604, floor=FLOOR_DEG)

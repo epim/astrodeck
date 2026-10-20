@@ -76,10 +76,10 @@ A = ("t-a", "M31", 0.7123, 41.269)
 B = ("t-b", "M33", 1.5640, 30.660)
 T0 = 1_700_000_000.0
 
-DEAD_LINK_WORDS = ("re-centering after restart refused: the mount did not "
+DEAD_LINK_WORDS = ("re-centering for the resume refused: the mount did not "
                    "answer the slew-limit check, so the link to it may be "
                    "down; not slewing")
-LIMITS_WORDS = ("re-centering after restart refused: the target is outside "
+LIMITS_WORDS = ("re-centering for the resume refused: the target is outside "
                 "this rig's configured slew limits (altitude floor, horizon, "
                 "no-go wedges, pier side or zenith keep-out); not slewing yet")
 
@@ -178,14 +178,14 @@ async def test_a_pier_read_past_its_bound_names_the_link(rig):
     flight to abort.
 
     MUTANT "every SafetyAbort is a limits refusal": RED (observed):
-        AssertionError: re-centering after restart refused: the target is
+        AssertionError: re-centering for the resume refused: the target is
         outside this rig's configured slew limits (altitude floor, horizon,
         no-go wedges, pier side or zenith keep-out); not slewing yet
         assert 're-centering...t slewing yet' == 're-centering...; not
         slewing'
-          - re-centering after restart refused: the mount did not answer the
+          - re-centering for the resume refused: the mount did not answer the
         slew-limit check, so the link to it may be down; not slewing
-          + re-centering after restart refused: the target is outside this
+          + re-centering for the resume refused: the target is outside this
         rig's configured slew limits (altitude floor, horizon, no-go wedges,
         pier side or zenith keep-out); not slewing yet
     MUTANT "check_slew_limits keeps the run's suffix": RED (observed; the
