@@ -30,7 +30,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -86,7 +86,7 @@ jobs:
       CARGO_HOME: ${{ github.workspace }}/.probe/release/cargo-home
       CARGO_TARGET_DIR: ${{ github.workspace }}/.probe/release/cargo-target
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -177,7 +177,7 @@ jobs:
       CARGO_HOME: ${{ github.workspace }}/.probe/release/cargo-home
       CARGO_TARGET_DIR: ${{ github.workspace }}/.probe/release/cargo-target
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -250,7 +250,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -309,7 +309,7 @@ jobs:
     env:
       IMAGE_REPO: ghcr.io/${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
