@@ -660,5 +660,34 @@ class AdditionalBoundaryTests(unittest.TestCase):
                 errors,_=gate.frozen_review(files,{name:'x' for name in names},evidence,'artifact',{'groups':[],'licenses':{}},b'{}',{},root)
             self.assertEqual({e['path'] for e in errors if e['code']=='PRIVATE_METADATA'},set(names))
 
+
+class VersionBumpEvidenceTests(unittest.TestCase):
+    """version_bump_evidence carries a reviewed hash across a version line only (#1073)."""
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("version_bump_evidence", Path(__file__).with_name("version_bump_evidence.py"))
+        self.vb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.vb)
+        self.base = '"""AstroDeck."""\n__version__ = "0.3.45"\n'
+        self.toml = '[project]\nname = "astrodeck"\nversion = "0.3.45"\ndependencies = ["x>=0.3.45"]\n'
+    def test_a_version_line_change_is_carried(self):
+        self.assertTrue(self.vb.version_only_delta("server/astrodeck/__init__.py", self.base, self.base.replace("0.3.45", "0.3.46"), "0.3.46"))
+        self.assertTrue(self.vb.version_only_delta("server/pyproject.toml", self.toml, self.toml.replace('version = "0.3.45"', 'version = "0.3.46"'), "0.3.46"))
+    def test_line_endings_do_not_matter(self):
+        cur = self.base.replace("0.3.45", "0.3.46").replace("\n", "\r\n")
+        self.assertTrue(self.vb.version_only_delta("server/astrodeck/__init__.py", self.base, cur, "0.3.46"))
+    def test_any_other_change_is_refused(self):
+        cur = self.base.replace("0.3.45", "0.3.46") + "EVIL = 1\n"
+        self.assertFalse(self.vb.version_only_delta("server/astrodeck/__init__.py", self.base, cur, "0.3.46"))
+        # the dependency pin is not the version line and must not move with it
+        cur = self.toml.replace("0.3.45", "0.3.46")
+        self.assertFalse(self.vb.version_only_delta("server/pyproject.toml", self.toml, cur, "0.3.46"))
+    def test_the_new_version_must_be_the_one_written(self):
+        cur = self.base.replace("0.3.45", "0.3.47")
+        self.assertFalse(self.vb.version_only_delta("server/astrodeck/__init__.py", self.base, cur, "0.3.46"))
+    def test_two_version_lines_are_refused(self):
+        base = self.base + '__version__ = "0.3.45"\n'
+        self.assertFalse(self.vb.version_only_delta("server/astrodeck/__init__.py", base, base.replace("0.3.45", "0.3.46"), "0.3.46"))
+
 if __name__ == '__main__':
     unittest.main()

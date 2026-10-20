@@ -2,4 +2,4 @@
 # SPDX-License-Identifier: Apache-2.0
 """AstroDeck — open multi-vendor astrophotography controller."""
 
-__version__ = "0.3.45"
+__version__ = "0.3.46"
