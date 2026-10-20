@@ -4,7 +4,8 @@
 
 The August audit identified unresolved permissions. October artifact inspection
 found that packaging paths differ: the source tarball excludes Player One
-libraries, while the inspected PyInstaller executable contains them. These
+libraries, while the inspected PyInstaller executable contains them. Since the
+owner's ruling of 2026-10-20 (#632) every artifact carries them. These
 application checks cannot substitute for inspecting the files we distribute.
 
 FETCH obtains an asset from its publisher on the operator's machine. Use still
@@ -122,10 +123,10 @@ def _player_one_detail() -> str | None:
     """Says so when the SDK in use is the vendor installer's. Whether such an
     install counts as "fetched" is the owner's ruling (#632); it IS in use
     (the camera opens from it), so the row reads "in use", and this says
-    where it came from and that the redistribution question is still open."""
+    where it came from and that the files ship under the owner's ruling."""
     if _player_one_source() == _BY_THE_VENDORS_INSTALLER:
         return ("installed by the vendor's installer "
-                "(redistribution ruling pending, #632)")
+                "(bundled per the owner's ruling while Player One's reply is awaited, #632)")
     return None
 
 
@@ -164,7 +165,7 @@ REGISTRY: tuple[RestrictedAsset, ...] = (
             "products and this SDK to develop any products without any "
             "restrictions. — Player One Astronomy, SDK license.txt"),
         reading=(
-            'The vendor text preserves MIT-like notice and disclaimer language but uses a different grant. Redistribution is plausible, but written confirmation remains needed. The inspected source tarball excludes Player One binaries. The fresh Windows PyInstaller artifact and examined published archives contain all six SDK libraries, so the claim that releases carry none is incorrect. The owner must obtain redistribution confirmation or correct each packaging path; fetching on one installation does not fix shipped copies. The ruling is pending in #632, and until then the frozen, wheel and Docker builds carry the files under `pending` in packaging/distribution-policy.json.'),
+            'The vendor text preserves MIT-like notice and disclaimer language but uses a different grant. Written confirmation from Player One has not been received. On 2026-10-20 the owner ruled in #632 to ship with the Player One libraries until Player One says otherwise, and has emailed Player One for a reply. The source tarball, frozen executables, wheels and Docker image therefore carry all six SDK libraries (`redistribute` in packaging/distribution-policy.json). If Player One declines, the libraries leave every build and the SDK moves to the fetch remedy only.'),
         remedy="fetch",
         source="https://player-one-astronomy.com/service/software/",
         without="Player One cameras cannot be opened natively",

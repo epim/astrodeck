@@ -353,26 +353,119 @@ class ReleaseCreditsTests(unittest.TestCase):
         self.assertEqual((gen.collect_python, gen.collect_cargo), before)
 
 
+class LineEndingProofTests(unittest.TestCase):
+    """Registry hashes of text payloads do not depend on the checkout's newline convention (#1073).
+
+    Named mutants: EOL-NOTICE-EXACT (the notice comparison hashes raw bytes), EOL-ASSET-EXACT (the asset comparison
+    hashes raw bytes), EOL-NORMALIZES-BINARY (binary payloads also lose CRLF), EOL-IGNORES-CONTENT (normalization
+    replaces the whole payload)."""
+    NOTICE = "server/astrodeck/vendor/zwo/LICENSE.txt"
+    ASSET = "server/astrodeck/catalog/data/table.tsv"
+    TEXT = b"line one\nline two\nline three\n"
+
+    def review(self, notice_bytes, asset_bytes):
+        artifact = gate.audit_artifact
+        credits_bytes = b'{"groups":[],"licenses":{}}'
+        rules = {"assets": [{"path": self.ASSET, "sha256": hashlib.sha256(self.TEXT).hexdigest(), "component": "table",
+                             "spdx": "MIT", "notices": {self.NOTICE: hashlib.sha256(self.TEXT).hexdigest()}}],
+                 "reviewed_sources": []}
+        ui = {"credits_sha256": hashlib.sha256(credits_bytes).hexdigest(), "files": []}
+        errors, _ = artifact.review({self.NOTICE: notice_bytes, self.ASSET: asset_bytes}, rules, json.loads(credits_bytes), ui, credits_bytes, {})
+        return errors
+
+    def test_crlf_and_lf_copies_of_a_notice_and_an_asset_both_pass(self):
+        for body in (self.TEXT, self.TEXT.replace(b"\n", b"\r\n")):
+            errors = self.review(body, body)
+            self.assertFalse([e for e in errors if "companion notice" in e or "asset bytes differ" in e], errors)
+
+    def test_a_changed_byte_in_a_notice_or_an_asset_still_fails(self):
+        changed = self.TEXT.replace(b"two", b"twx")
+        for body in (changed, changed.replace(b"\n", b"\r\n")):
+            errors = self.review(body, self.TEXT)
+            self.assertTrue([e for e in errors if "companion notice" in e], errors)
+            errors = self.review(self.TEXT, body)
+            self.assertTrue([e for e in errors if "asset bytes differ" in e], errors)
+
+    def test_binary_payloads_stay_exact(self):
+        artifact = gate.audit_artifact
+        data = b"\x00\r\n\x01"
+        self.assertEqual(hashlib.sha256(data).hexdigest(), artifact.content_sha256("fonts/a.woff2", data))
+        self.assertEqual(hashlib.sha256(data).hexdigest(), artifact.content_sha256("lib/ASICamera2.dll", data))
+        self.assertNotEqual(hashlib.sha256(b"x\r\ny").hexdigest(), artifact.content_sha256("a.txt", b"x\r\ny"))
+        for name in ("a.txt", "b.md", "c.tsv", "d.csv", "e.json", "f.rst", "LICENSE", "NOTICE.md", "COPYING", "x/LICENSE-APACHE"):
+            self.assertTrue(artifact.is_text_payload(name), name)
+        for name in ("a.png", "a.dll", "a.woff", "licensed.bin", "a.py"):
+            self.assertFalse(artifact.is_text_payload(name), name)
+
+class OwnerArtworkRulingTests(unittest.TestCase):
+    """The nebula background is owner-made (#637, owner ruling of 2026-10-20).
+
+    Named mutants: NEBULA-BLOCKED (`blocked: true` put back on the row), NEBULA-SPDX-UNKNOWN (spdx set to UNKNOWN),
+    NEBULA-HASH-CHANGED (the reviewed sha256 replaced)."""
+    def test_registry_row_is_the_owners_apache_2_0_artwork_with_its_original_hash(self):
+        rules=json.loads((Path(__file__).resolve().parents[2]/"tools/licence/artifact-registry.json").read_text(encoding="utf-8"))
+        row=next(r for r in rules["assets"] if r["path"]=="ui/dist/bg_nebula.png")
+        self.assertNotIn("blocked",row)
+        self.assertEqual("Apache-2.0",row["spdx"])
+        self.assertEqual("https://github.com/epim/astrodeck/issues/637#issuecomment-6299071149",row["source"])
+        self.assertEqual("c44f5e8e23760a61f1685e2597124e875f3637966384c9318196606985c73b5b",row["sha256"])
+
 class AdditionalBoundaryTests(unittest.TestCase):
     def test_code_name_and_qualname_are_runtime_visible_proof(self):
         original=compile('def actual(): return 1','source.py','exec',dont_inherit=True)
         changed=original.replace(co_name='unreviewed',co_qualname='unreviewed')
         self.assertNotEqual(proof.code_shape(original),proof.code_shape(changed))
-    def pyz(self, duplicate=False, gap=False):
+    def pyz(self, duplicate=False, gap=False, name='fixture'):
         raw=marshal.dumps(compile('value=1','fixture.py','exec',dont_inherit=True))
         body=zlib.compress(raw)
         prefix=b'X' if gap else b''
         start=17+len(prefix)
-        entries=[('fixture',(0,start,len(body)))]
+        entries=[(name,(0,start,len(body)))]
         payload=prefix+body
         if duplicate:
-            entries.append(('fixture',(0,17+len(payload),len(body))))
+            entries.append((name,(0,17+len(payload),len(body))))
             payload+=body
         return b'PYZ\0'+b'\0'*4+struct.pack('!i',17+len(payload))+b'\0'*5+payload+marshal.dumps(entries)
     def test_pyz_duplicate_member_is_rejected_before_dict_conversion(self):
         self.assertEqual(proof.validate_pyz(self.pyz()),{'fixture'})
         with self.assertRaisesRegex(ValueError,'duplicate'):
             proof.validate_pyz(self.pyz(duplicate=True))
+    def test_pyz_name_errors_carry_the_member_and_the_rule(self):
+        # Named mutants: PYZ-ERROR-ANONYMOUS (the message returned to the old text with no name),
+        # PYZ-RULE-UNSAID (the three messages made identical).
+        cases=[('pkg-name','non-identifier','pkg-name'),
+               ('a..b','non-identifier',"a..b"),
+               ('1abc','non-identifier','1abc'),
+               (b'bytes','not a str',"b'bytes'")]
+        for name,rule,shown in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError) as caught:
+                    proof.validate_pyz(self.pyz(name=name))
+                self.assertIn(rule,str(caught.exception))
+                self.assertIn(shown,str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            proof.validate_pyz(self.pyz(duplicate=True))
+        self.assertIn("duplicate",str(caught.exception));self.assertIn("'fixture'",str(caught.exception))
+    def test_pyz_name_in_the_error_is_truncated(self):
+        name='x-'+'y'*500
+        with self.assertRaises(ValueError) as caught:
+            proof.validate_pyz(self.pyz(name=name))
+        message=str(caught.exception)
+        self.assertIn('x-yyy',message)
+        self.assertLess(len(message),400,'the member name is cut to 120 characters')
+    def test_pyz_allows_exactly_the_multiarch_sysconfig_data_module(self):
+        # PyInstaller's hook-sysconfig collects sysconfig._get_sysconfigdata_name(), which holds hyphens on Linux.
+        # Named mutants: SYSCONFIG-ANY-HYPHEN (the pattern widened to any name containing a hyphen),
+        # SYSCONFIG-REMOVED (the allowance deleted: the Linux crash returns).
+        for good in ('_sysconfigdata__linux_x86_64-linux-gnu','_sysconfigdata__linux_aarch64-linux-gnu','_sysconfigdata__darwin_darwin'):
+            with self.subTest(good=good):
+                self.assertEqual(proof.validate_pyz(self.pyz(name=good)),{good})
+        for bad in ('_sysconfigdata__linux_x86_64-linux-gnu.evil','evil._sysconfigdata__linux_x86_64-linux-gnu',
+                    '_sysconfigdata__linux_x86_64-linux-gnu ','_sysconfigdata__linux_x86_64-linux-gnu\n',
+                    'other__linux_x86_64-linux-gnu','_sysconfigdata_-','_sysconfigdata__Linux_x86-64','os-path'):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError,'non-identifier'):
+                    proof.validate_pyz(self.pyz(name=bad))
     def test_pyz_unexplained_payload_bytes_are_rejected(self):
         with self.assertRaisesRegex(ValueError,'unexplained'):
             proof.validate_pyz(self.pyz(gap=True))

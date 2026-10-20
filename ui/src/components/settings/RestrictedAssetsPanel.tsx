@@ -42,7 +42,7 @@ export interface RestrictedAsset {
   /** A clause the server says about a row that IS satisfied in a way worth
    *  saying, or null: the Player One SDK in use because the vendor's own
    *  installer put it there ("installed by the vendor's installer
-   *  (redistribution ruling pending, #632)"). Present on every row the route
+   *  (bundled per the owner's ruling while Player One's reply is awaited, #632)"). Present on every row the route
    *  returns since backlog WP-116 (#705); an older server sends none, which
    *  reads as null (`undefined` is falsy). */
   detail: string | null;

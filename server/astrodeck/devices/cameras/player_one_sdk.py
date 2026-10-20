@@ -7,9 +7,9 @@ header (include/PlayerOneCamera.h) from Camera SDK V3.10.1 (Windows), whose
 copies sit in ``vendor/playerone/`` WITHOUT a stated right to redistribute
 them. The vendor licence (LICENSE there) grants use for developing products
 and has no distribution verb; whether we may pass the files on is an owner
-ruling that is still pending in #632, and until it lands the frozen, wheel
-and Docker builds carry the files under ``pending`` in
-packaging/distribution-policy.json (analysis:
+ruling: on 2026-10-20 (#632) the owner ruled to ship with them until Player
+One says otherwise, so every build carries the files (``redistribute`` in
+packaging/distribution-policy.json) while Player One's reply is awaited (analysis:
 docs/hardware/player-one-sdk-licensing.md). Enum values, struct
 layouts, the sensor-mode API, and the POASetConfig/POAGetConfig calling
 convention (value passed per-call as c_int or c_double — NOT a union struct)

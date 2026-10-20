@@ -15,7 +15,7 @@
       "spdx": "MIT",
       "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
       "notices": {
-        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "995ebdaf782d676b750aa291ae649bc7df9e5c036b83cc5053779c9b5b7869c4"
       }
     },
     {
@@ -26,7 +26,7 @@
       "spdx": "MIT",
       "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
       "notices": {
-        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "995ebdaf782d676b750aa291ae649bc7df9e5c036b83cc5053779c9b5b7869c4"
       }
     },
     {
@@ -37,7 +37,7 @@
       "spdx": "MIT",
       "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
       "notices": {
-        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "995ebdaf782d676b750aa291ae649bc7df9e5c036b83cc5053779c9b5b7869c4"
       }
     },
     {
@@ -48,7 +48,7 @@
       "spdx": "MIT",
       "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
       "notices": {
-        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "995ebdaf782d676b750aa291ae649bc7df9e5c036b83cc5053779c9b5b7869c4"
       }
     },
     {
@@ -59,7 +59,7 @@
       "spdx": "MIT",
       "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
       "notices": {
-        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "995ebdaf782d676b750aa291ae649bc7df9e5c036b83cc5053779c9b5b7869c4"
       }
     },
     {
@@ -70,7 +70,7 @@
       "spdx": "MIT",
       "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
       "notices": {
-        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "995ebdaf782d676b750aa291ae649bc7df9e5c036b83cc5053779c9b5b7869c4"
       }
     },
     {
@@ -81,12 +81,12 @@
       "spdx": "MIT",
       "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
       "notices": {
-        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "995ebdaf782d676b750aa291ae649bc7df9e5c036b83cc5053779c9b5b7869c4"
       }
     },
     {
       "path": "server/astrodeck/catalog/data/constellations.tsv",
-      "sha256": "0bf8ebaccea931f1073b8d8132c9127ade3ec316fb01a2dba5e42c096f934b19",
+      "sha256": "2623463b3906cf05331aebbe3681500c22688f87f4298045638e3fe1fa3e56ff",
       "component": "Constellation assignments (IAU boundaries, via Astropy)",
       "credit": "Constellation assignments (IAU boundaries, via Astropy)",
       "spdx": "Apache-2.0",
@@ -94,7 +94,7 @@
     },
     {
       "path": "server/astrodeck/catalog/data/discoverers.tsv",
-      "sha256": "f64b8e8617f2f844ab492af7e1749077f9f6ec33e8260c81a72544b3f20380f9",
+      "sha256": "b962cedf59d4ab438416a3474906cc6b2a8410cf43fd9d3dad6cd4557a4ae1f2",
       "component": "Discoverer and discovery date (Wikidata)",
       "credit": "Discoverer and discovery date (Wikidata)",
       "spdx": "CC0-1.0",
@@ -102,7 +102,7 @@
     },
     {
       "path": "server/astrodeck/catalog/data/ngc.tsv",
-      "sha256": "89808b1a09f7f687bb5c5b2d5f3e925cef5eb07c323421e2df7b384d007ab5c7",
+      "sha256": "18a334dcdc7a22b9f74c8a460946201cc544aa52dde4e7620f1b3df0e0879cbd",
       "component": "OpenNGC deep-sky catalogue",
       "credit": "OpenNGC deep-sky catalogue",
       "spdx": "CC-BY-SA-4.0",
@@ -598,9 +598,8 @@
       "path": "ui/dist/bg_nebula.png",
       "sha256": "c44f5e8e23760a61f1685e2597124e875f3637966384c9318196606985c73b5b",
       "component": "Nebula background photograph",
-      "spdx": "UNKNOWN",
-      "blocked": true,
-      "source": "ui/public/bg_nebula.png; source/creation/licence evidence requested from owner"
+      "spdx": "Apache-2.0",
+      "source": "https://github.com/epim/astrodeck/issues/637#issuecomment-6299071149"
     }
   ],
   "reviewed_sources": [

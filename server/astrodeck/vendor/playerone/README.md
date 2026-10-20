@@ -10,8 +10,9 @@
 
 ## Licensing — READ THIS BEFORE SHIPPING ANY OF THESE FILES
 
-**We do not have a stated right to redistribute these binaries, and the owner
-has not yet ruled whether we may. The ruling is pending in #632.** This
+**We do not have a stated right to redistribute these binaries from Player One.
+The owner ruled on 2026-10-20 (#632) to ship with them until Player One says
+otherwise, and is awaiting Player One's reply.** This
 paragraph has been corrected twice. On 2026-08-09 it stopped asserting that the
 licence "permits redistribution", an interpretation that was read as a fact for
 weeks while six binaries shipped on it. On 2026-10-07 it stopped telling
@@ -35,16 +36,15 @@ A reasonable person may well conclude redistribution is intended — a runtime
 library is useless unless it ships, and a retained-notice clause presupposes
 copies. Intended is not granted.
 
-**What the builds do while the ruling is pending.** The files in this
-directory travel in three of our artifacts:
+**What the builds do while Player One's reply is awaited.** The files in this
+directory travel in every artifact:
 
-- The frozen (PyInstaller) executables and the server wheel carry them.
-  `packaging/distribution-policy.json` records both under `pending`
-  (`pending_by_artifact`), and the release audit reports OWNER_PENDING for any
-  of them that contains a Player One library.
+- The frozen (PyInstaller) executables, the server wheel and the source
+  tarball carry them. `packaging/distribution-policy.json` records the
+  `playerone` row as `redistribute` with the owner's ruling as evidence.
 - The Docker image runs `pip install ./server`, so it carries them too. No gate
   covers the image yet (#655).
-- The source tarball does not: its `pending_by_artifact` entry is `false`.
+- If Player One says no, the row goes back to excluding the libraries.
 
 A machine can instead fetch the SDK from the vendor
 (`server/astrodeck/licensing.py`, remedy `fetch`) and point

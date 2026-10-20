@@ -1,11 +1,23 @@
 name: release
 
-# Build all payloads first. No release upload happens unless every platform's
-# native wheel and frozen artifact, plus the source tarball, pass their gates.
+# Source first (#1073). The signed source tarball is what self-update needs, so
+# the release publishes as soon as the source job's gates pass. A platform's
+# executable and native wheel are uploaded to the release only when that
+# platform's own gates passed (its accepted-<platform> artifact exists only
+# then). No uncleared artifact is ever uploaded: when a platform's binaries are
+# withheld, the source release publishes alone and the release body says which.
 on:
   push:
     tags: ['v*']
+  # A dispatch is a dry run by default: every gate runs, nothing is published or
+  # pushed. dry_run=false is meant for re-running a tag ref and then needs the
+  # matching version tag, exactly like a tag push.
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run every gate but publish nothing and push no image'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -27,7 +39,11 @@ jobs:
           python-version: '3.12'
       - name: Install test dependencies
         run: python -m pip install -e "./server[dev]" PyYAML psutil setuptools wheel
+      - name: Require a plain package version
+        shell: bash
+        run: python -c "import re,tomllib; from pathlib import Path; v=tomllib.loads(Path('server/pyproject.toml').read_text())['project']['version']; assert re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+', v), 'package version must be plain X.Y.Z'"
       - name: Require a version tag matching the package
+        if: github.event_name == 'push' || !inputs.dry_run
         shell: bash
         run: |
           python -c "import os,tomllib; from pathlib import Path; p=tomllib.loads(Path('server/pyproject.toml').read_text()); expected='v'+p['project']['version']; assert os.environ['GITHUB_REF_TYPE']=='tag' and os.environ['GITHUB_REF_NAME']==expected, 'release ref must be the matching version tag'"
@@ -81,6 +97,9 @@ jobs:
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve the release version from the package
+        shell: bash
+        run: python -c "import os,re,tomllib; from pathlib import Path; v=tomllib.loads(Path('server/pyproject.toml').read_text())['project']['version']; assert re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+', v), 'package version must be plain X.Y.Z'; Path(os.environ['GITHUB_ENV']).open('a').write('RELEASE_VERSION='+v+chr(10))"
       - name: Install source artifact audit dependencies
         run: python -m pip install ./server "cryptography>=50.0.0"
       - name: Install locked UI dependencies
@@ -98,15 +117,15 @@ jobs:
       # ASTAP remains an explicitly recorded external prerequisite.
       - name: Build source release bundle
         shell: bash
-        run: python scripts/build_release.py --strict --version "${GITHUB_REF_NAME#v}" --out dist --allow-missing astap
+        run: python scripts/build_release.py --strict --version "$RELEASE_VERSION" --out dist --allow-missing astap
       - name: Gate every source archive member against reviewed evidence
         shell: bash
-        run: python tools/licence/audit_release.py --kind source-tar --artifact "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz" --platform linux-x86_64 --ui-inventory .probe/release/ui-inventory.json --credits .probe/release/credits.generated.json --report .probe/release/source-gate.json
+        run: python tools/licence/audit_release.py --kind source-tar --artifact "dist/astrodeck-$RELEASE_VERSION.tar.gz" --platform linux-x86_64 --ui-inventory .probe/release/ui-inventory.json --credits .probe/release/credits.generated.json --report .probe/release/source-gate.json
       - name: Unpack the accepted source bundle for its SBOM
         shell: bash
         run: |
           mkdir sbom-src
-          tar -xzf "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz" -C sbom-src
+          tar -xzf "dist/astrodeck-$RELEASE_VERSION.tar.gz" -C sbom-src
       - name: Generate source artifact SBOM
         uses: anchore/sbom-action@v0
         with:
@@ -223,8 +242,10 @@ jobs:
             .probe/release/native-gate.json
             .probe/release/frozen-gate.json
 
+  # Runs whatever the binaries legs did, but only after the source job passed.
   publish:
     needs: [release, binaries]
+    if: always() && needs.release.result == 'success' && (github.event_name == 'push' || !inputs.dry_run)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -236,6 +257,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Resolve the release version from the package
+        shell: bash
+        run: python -c "import os,re,tomllib; from pathlib import Path; v=tomllib.loads(Path('server/pyproject.toml').read_text())['project']['version']; assert re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+', v), 'package version must be plain X.Y.Z'; Path(os.environ['GITHUB_ENV']).open('a').write('RELEASE_VERSION='+v+chr(10))"
       - name: Download only accepted payloads
         uses: actions/download-artifact@v4
         with:
@@ -248,15 +272,15 @@ jobs:
         shell: bash
         run: |
           python -m pip install "cryptography>=50.0.0"
-          python scripts/sign_release.py "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz"
-      - name: Checksum every accepted executable and wheel
+          python scripts/sign_release.py "dist/astrodeck-$RELEASE_VERSION.tar.gz"
+      - name: Checksum the cleared executables and wheels and name the withheld platforms
         shell: bash
-        run: |
-          python -c "from pathlib import Path; import hashlib; xs=[p for p in Path('dist').iterdir() if p.is_file() and (p.suffix=='.whl' or p.name.startswith(('astrodeck-linux-','astrodeck-windows-','astrodeck-macos-')))]; assert len(xs)==8, 'expected four wheels and four executables'; [p.with_name(p.name+'.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n',encoding='utf-8') for p in xs]"
-      - name: Publish only the fully accepted release
+        run: python scripts/release_assets.py --dist dist --notes "$RUNNER_TEMP/release-notes.md"
+      - name: Publish the source release and the cleared binaries
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-notes.md
           files: |
             dist/astrodeck-*.tar.gz
             dist/astrodeck-*.tar.gz.sha256
@@ -269,13 +293,14 @@ jobs:
             dist/astrodeck-sbom.cdx.json
 
   # The image installs the release's own native wheels (the ones the binaries job
-  # gated and uploaded) and is proven before it is named: it is pushed under a
+  # gated and uploaded; it runs only when every binaries leg passed) and is proven before it is named: it is pushed under a
   # candidate name only, the native probe runs inside that exact pushed image on
   # both architectures, and only then does the version tag and :latest appear
   # (#655). Nothing user-visible exists before the probe passes. The inventory
   # gate over what the image adds beyond its base is #655 part B, not yet here.
   image:
-    needs: publish
+    needs: [publish, binaries]
+    if: needs.binaries.result == 'success' && (github.event_name == 'push' || !inputs.dry_run)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

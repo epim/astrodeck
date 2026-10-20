@@ -57,7 +57,21 @@ class ReleasePolicy(unittest.TestCase):
     def write_policy(self):
         (self.root / "packaging/distribution-policy.json").write_text(json.dumps(self.policy), encoding="utf-8")
 
+    def test_owner_rulings_of_2026_10_20_are_recorded(self):
+        """Named mutants: RULING-ROW-PENDING (any of the four rows set back to pending), WCSLIB-RULED (wcslib set to redistribute)."""
+        base = "https://github.com/epim/astrodeck/issues/"
+        expected = {"artwork": base + "637#issuecomment-6299071149", "astrospheric": base + "636#issuecomment-6299071684",
+                    "playerone": base + "632#issuecomment-6299072230", "iau": base + "1073#issuecomment-6299072925"}
+        for key, url in expected.items():
+            self.assertEqual("redistribute", self.policy["decisions"][key]["mode"], key)
+            self.assertEqual(url, self.policy["decisions"][key]["evidence"], key)
+        self.assertEqual("pending", self.policy["decisions"]["wcslib"]["mode"])
+        self.assertEqual("fetch-only", self.policy["decisions"]["dss2"]["mode"])
+        for kind in policy.KINDS:
+            self.assertTrue(policy.includes_playerone(kind, self.policy), kind)
+
     def test_pending_preserves_artifact_history(self):
+        self.policy["decisions"]["playerone"]["mode"] = "pending"
         self.assertFalse(policy.includes_playerone("source-tar", self.policy))
         self.assertTrue(policy.includes_playerone("frozen", self.policy))
         self.assertTrue(policy.includes_playerone("server-wheel", self.policy))
