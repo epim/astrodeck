@@ -25,8 +25,9 @@ THE CHECK IS ADVISORY, AND SAYS ONLY WHAT IT CAN SEE (backlog ruling, WP-123):
 
 THE GEOMETRY. The panel is the rectangle ``framing.panel_footprint`` lays out
 (the corner math ``reframe_carry`` measures, one copy of it). The light is the
-four corners ``WCS.calc_footprint`` gives from the header's NAXIS, taken at the
-outer pixel edges. Both are projected into the PANEL's own tangent plane with
+four corners ``_corner_footprint`` computes from the header's NAXIS, taken at
+the outer pixel edges (the corners ``astropy.wcs.WCS.calc_footprint`` gives;
+astropy.wcs is not imported here, see ``_corner_footprint``). Both are projected into the PANEL's own tangent plane with
 ``framing.project``, clipped (``clip_convex``) and compared by area: the
 fraction of the PANEL the light covers. A light bigger than the panel that
 holds it whole is covered; a light solved at half the plan's scale covers a
@@ -75,7 +76,6 @@ import warnings
 from dataclasses import dataclass
 
 from astropy.io import fits
-from astropy.wcs import WCS
 
 from ..catalog import framing
 from ..catalog.coords import angular_sep_deg
@@ -248,6 +248,120 @@ def _has_scale(header) -> bool:
     return math.isfinite(det) and det != 0.0
 
 
+def _sip_poly(header, name: str) -> dict[tuple[int, int], float]:
+    """The SIP coefficients ``name_p_q`` (``name`` is A or B) of a header, by
+    ``(p, q)``. The order card is required; a coefficient that is absent is
+    zero; a missing or malformed order raises (the caller reads that as "cannot
+    verify")."""
+    order = int(header[name + "_ORDER"])
+    if order < 0:
+        raise ValueError("negative SIP order")
+    coeffs: dict[tuple[int, int], float] = {}
+    for p in range(order + 1):
+        for q in range(order + 1 - p):
+            key = "%s_%d_%d" % (name, p, q)
+            if key in header:
+                coeffs[(p, q)] = float(header[key])
+    return coeffs
+
+
+def _linear_matrix(header):
+    """The 2x2 matrix taking intermediate pixel offsets to degrees, in the
+    order wcslib chooses one: PC with CDELT when any PC card is present, else
+    the CD matrix, else CDELT with CROTA2 (AIPS convention), else None."""
+    pc_keys = ("PC1_1", "PC1_2", "PC2_1", "PC2_2")
+    if any(k in header for k in pc_keys):
+        pc = ((float(header.get("PC1_1", 1.0)), float(header.get("PC1_2", 0.0))),
+              (float(header.get("PC2_1", 0.0)), float(header.get("PC2_2", 1.0))))
+        d1 = float(header.get("CDELT1", 1.0))
+        d2 = float(header.get("CDELT2", 1.0))
+        return ((d1 * pc[0][0], d1 * pc[0][1]), (d2 * pc[1][0], d2 * pc[1][1]))
+    if any(k in header for k in _CD_KEYS):
+        return ((float(header.get("CD1_1", 0.0)), float(header.get("CD1_2", 0.0))),
+                (float(header.get("CD2_1", 0.0)), float(header.get("CD2_2", 0.0))))
+    if "CDELT1" in header:
+        d1 = float(header["CDELT1"])
+        d2 = float(header.get("CDELT2", 1.0))
+        rho = math.radians(float(header.get("CROTA2", 0.0)))
+        c, s = math.cos(rho), math.sin(rho)
+        return ((d1 * c, -d2 * s), (d1 * s, d2 * c))
+    return None
+
+
+def _corner_footprint(header, nx: int, ny: int
+                      ) -> tuple[tuple[float, float], ...] | None:
+    """The four outer pixel corners of an ``nx`` x ``ny`` frame as
+    ``(ra_hours, dec_deg)``, from the header's own cards, or ``None`` when the
+    header is not a celestial TAN solution this can read.
+
+    This replaces ``astropy.wcs.WCS(header).calc_footprint(axes=(nx, ny),
+    center=False)``: astropy's ``_wcs`` extension statically links WCSLIB
+    (LGPL-3.0-or-later) and this was the last runtime use of it (#638), so the
+    frozen builds can leave it out. Read: CTYPE ``RA---TAN`` / ``DEC--TAN``
+    (each optionally ``-SIP``), CRVAL, CRPIX, the linear matrix
+    (``_linear_matrix``) and, under ``-SIP``, the forward A/B polynomials
+    applied to the pixel offset before the matrix. Corners are at FITS pixel
+    coordinates (0.5, 0.5), (0.5, ny+0.5), (nx+0.5, ny+0.5), (nx+0.5, 0.5), the
+    ring order ``calc_footprint`` returns. RA is in [0, 24). Anything else (a
+    different projection or axis order, a non-degree CUNIT, a singular
+    matrix) is ``None``; a malformed card raises and the caller maps that to
+    ``None`` too."""
+    ctype1 = str(header.get("CTYPE1", "")).strip().upper()
+    ctype2 = str(header.get("CTYPE2", "")).strip().upper()
+    sip = False
+    if ctype1.endswith("-SIP") and ctype2.endswith("-SIP"):
+        sip = True
+        ctype1, ctype2 = ctype1[:-4], ctype2[:-4]
+    if ctype1 != "RA---TAN" or ctype2 != "DEC--TAN":
+        return None
+    for key in ("CUNIT1", "CUNIT2"):
+        if str(header.get(key, "deg")).strip().lower() not in ("deg", ""):
+            return None
+    matrix = _linear_matrix(header)
+    if matrix is None:
+        return None
+    (m11, m12), (m21, m22) = matrix
+    det = m11 * m22 - m12 * m21
+    if not (math.isfinite(det) and det != 0.0):
+        return None
+    ra0 = float(header["CRVAL1"])
+    dec0 = float(header["CRVAL2"])
+    crpix1 = float(header["CRPIX1"])
+    crpix2 = float(header["CRPIX2"])
+    if not (math.isfinite(ra0) and math.isfinite(dec0) and abs(dec0) <= 90.0):
+        return None
+    a_poly = _sip_poly(header, "A") if sip else {}
+    b_poly = _sip_poly(header, "B") if sip else {}
+    # The native longitude of the celestial pole: wcslib's default for a
+    # zenithal projection is 180 unless the reference point is the north pole.
+    lonpole = math.radians(float(header.get(
+        "LONPOLE", 180.0 if dec0 < 90.0 else 0.0)))
+    ra0_r, dec0_r = math.radians(ra0), math.radians(dec0)
+    sin_d0, cos_d0 = math.sin(dec0_r), math.cos(dec0_r)
+    out = []
+    for px, py in ((0.5, 0.5), (0.5, ny + 0.5),
+                   (nx + 0.5, ny + 0.5), (nx + 0.5, 0.5)):
+        u, v = px - crpix1, py - crpix2
+        if sip:
+            du = sum(c * u ** p * v ** q for (p, q), c in a_poly.items())
+            dv = sum(c * u ** p * v ** q for (p, q), c in b_poly.items())
+            u, v = u + du, v + dv
+        x = m11 * u + m12 * v
+        y = m21 * u + m22 * v
+        r = math.hypot(x, y)
+        phi = math.atan2(x, -y)
+        theta = math.atan2(180.0 / math.pi, r) if r > 0.0 else math.pi / 2.0
+        dphi = phi - lonpole
+        sin_t, cos_t = math.sin(theta), math.cos(theta)
+        sin_dec = sin_t * sin_d0 + cos_t * cos_d0 * math.cos(dphi)
+        dec = math.asin(max(-1.0, min(1.0, sin_dec)))
+        ra = ra0_r + math.atan2(
+            -cos_t * math.sin(dphi),
+            sin_t * cos_d0 - cos_t * sin_d0 * math.cos(dphi))
+        out.append(((math.degrees(ra) % 360.0) / 15.0, math.degrees(dec)))
+    return tuple(out)
+
+
 def _read_footprint(path: str) -> FrameFootprint | None:
     """The outline of the light at ``path`` from its header, or ``None`` for
     anything that is not a usable plate solution. Never raises: a header this
@@ -266,14 +380,10 @@ def _read_footprint(path: str) -> FrameFootprint | None:
             nx, ny = int(header["NAXIS1"]), int(header["NAXIS2"])
             if nx <= 0 or ny <= 0:
                 return None
-            wcs = WCS(header)
-            if not wcs.has_celestial:
-                return None
-            world = wcs.calc_footprint(axes=(nx, ny), center=False)
-        corners = tuple(
-            (float(row[wcs.wcs.lng]) / 15.0, float(row[wcs.wcs.lat]))
-            for row in world)
+            corners = _corner_footprint(header, nx, ny)
     except Exception:           # noqa: BLE001 - unreadable is "cannot verify"
+        return None
+    if corners is None:
         return None
     if len(corners) != 4 or not all(
             math.isfinite(a) and math.isfinite(b) for a, b in corners):
