@@ -1739,6 +1739,52 @@ def save_focus_calibration(key: str | None, cal) -> None:
         pass
 
 
+# ------------------------------------------------- the park AstroDeck made (#1075)
+# "AstroDeck parked this mount at home and nothing has moved it since." A
+# reconnect of an AM5 reads its home pole whether the mount was parked there
+# by us or reset, and only the first is safe to trust. The record must survive
+# a server restart, a deploy and an OS reboot, so it lives on disk beside the
+# other small per-device state. A FUNCTION, NOT A MODULE CONSTANT, for the
+# reason given at ``focus_calibration_path``: ``CONFIG_DIR`` is rebound per
+# test.
+def mount_park_record_path() -> Path:
+    return CONFIG_DIR / "mount_park_record.json"
+
+
+def load_mount_park_record(key: str) -> dict | None:
+    """The record for this device key, or None. Never raises."""
+    try:
+        data = read_json_or(mount_park_record_path(), {})
+        entry = data.get(key) if isinstance(data, dict) else None
+        return entry if isinstance(entry, dict) else None
+    except Exception:  # noqa: BLE001 - an unreadable record is no record
+        return None
+
+
+def save_mount_park_record(key: str, record: dict) -> None:
+    """Best-effort: a record that failed to write only means a later reopen
+    latches, which is the safe direction. Never raises."""
+    try:
+        data = read_json_or(mount_park_record_path(), {})
+        if not isinstance(data, dict):
+            data = {}
+        data[key] = record
+        write_json_atomic(mount_park_record_path(), data)
+    except Exception:  # noqa: BLE001 - bookkeeping must not break a park
+        pass
+
+
+def clear_mount_park_record(key: str) -> None:
+    """Forget the record for this device key. RAISES when a record exists and
+    could not be removed: the caller is about to move the tube, and a record
+    left behind would later vouch for a position that is no longer true."""
+    data = read_json_or(mount_park_record_path(), {})
+    if not isinstance(data, dict) or key not in data:
+        return
+    data.pop(key, None)
+    write_json_atomic(mount_park_record_path(), data)
+
+
 def clear_focus_calibration(key: str | None) -> None:
     """Forget this focuser's measured span.
 
