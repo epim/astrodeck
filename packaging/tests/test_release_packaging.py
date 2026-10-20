@@ -202,7 +202,7 @@ class ReleasePolicy(unittest.TestCase):
             self.assertTrue((staged / "vendor/playerone/LICENSE").is_file())
             self.assertFalse((staged / "catalog/_bundled_pack/dss2color/tile.jpg").exists())
 
-    def execute_spec(self, analysis_datas=()):
+    def execute_spec(self, analysis_datas=(), astropy_rows=()):
         (self.root / "server/pyproject.toml").write_text('[tool.setuptools.package-data]\nastrodeck=[]\n', encoding="utf-8")
         policy.sync_package_data(self.root)
         webui = self.pkg / "webui"
@@ -216,7 +216,7 @@ class ReleasePolicy(unittest.TestCase):
             (directory / "direct_url.json").write_text('{"url":"file:///synthetic-private/build"}',encoding="utf-8")
             return [(str(directory),name + ".dist-info")]
         hooks.copy_metadata = metadata_rows
-        hooks.collect_data_files = lambda name:[]
+        hooks.collect_data_files = lambda name: list(astropy_rows) if name == "astropy" else []
         calls = {}
         def analysis(*args, **kwargs):
             calls.update(kwargs)
@@ -233,6 +233,20 @@ class ReleasePolicy(unittest.TestCase):
         self.assertIn("astrodeck_native", calls["hiddenimports"])
         self.assertIn((str(self.root / "metadata/astrodeck-native.dist-info/METADATA"), "astrodeck-native.dist-info"), calls["datas"])
         self.assertFalse(any(Path(source).name == "direct_url.json" for source,dest in calls["datas"]))
+
+    def test_spec_leaves_wcslib_out(self):
+        bs = chr(92)
+        rows = [(bs.join(["C:", "v", "astropy", "wcs", "WCSLIB_LICENSE.rst"]), bs.join(["astropy", "wcs"])),
+                (bs.join(["C:", "v", "astropy", "visualization", "wcsaxes", "x.dat"]),
+                 bs.join(["astropy", "visualization", "wcsaxes"])),
+                ("/v/site-packages/astropy/wcs/tests/data/a.hdr", "astropy/wcs/tests/data"),
+                (bs.join(["C:", "v", "astropy", "units", "keep.dat"]), bs.join(["astropy", "units"]))]
+        calls = self.execute_spec(astropy_rows=rows)
+        self.assertIn("astropy.wcs", calls["excludes"])
+        self.assertIn("astropy.visualization.wcsaxes", calls["excludes"])
+        dests = {dest for source, dest in calls["datas"]}
+        self.assertIn(bs.join(["astropy", "units"]), dests)
+        self.assertFalse([d for d in dests if "wcs" in d.lower() and "astropy" in d.lower()])
 
     def test_spec_removes_metadata_reintroduced_by_analysis(self):
         private=[("astrodeck-native.dist-info/direct_url.json","do-not-open-native","DATA"),

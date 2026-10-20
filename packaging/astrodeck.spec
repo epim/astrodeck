@@ -35,7 +35,12 @@ server_metadata = copy_metadata("astrodeck")
 datas = []
 datas += distributable_metadata(native_metadata)   # native version, real notices, source archive
 datas += distributable_metadata(server_metadata)   # entry points -> native backends
-datas += collect_data_files("astropy")
+# astropy.wcs statically links WCSLIB (LGPL-3.0-or-later) and the server no
+# longer imports it (#638), so its data files (WCSLIB_LICENSE.rst and the
+# rest) stay out of the binary with the extension itself.
+datas += [row for row in collect_data_files("astropy")
+          if not any(part in (str(row[0]) + "|" + str(row[1])).replace("\\", "/")
+                     for part in ("astropy/wcs/", "astropy/visualization/wcsaxes/"))]
 datas += collect_data_files("astropy_healpix")
 
 # The built SPA. Not optional: without it the binary is an API with no UI.
@@ -91,7 +96,8 @@ a = Analysis(
     # server never uses. Dropping them is most of the difference between a
     # ~120 MB binary and a ~350 MB one.
     excludes=["tkinter", "matplotlib", "pytest", "IPython", "notebook",
-              "PyQt5", "PyQt6", "PySide2", "PySide6"],
+              "PyQt5", "PyQt6", "PySide2", "PySide6",
+              "astropy.wcs", "astropy.visualization.wcsaxes"],
     noarchive=False,
 )
 # Automatic importlib.metadata hooks can add whole metadata directories.
