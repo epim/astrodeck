@@ -671,7 +671,7 @@
   "reviewed_sources": [
     {
       "path": "server/astrodeck/__init__.py",
-      "sha256": "89c55e1be37a4069aca7a7ec84217af0156c0a1076fabd9de422ebbfa2a11c50",
+      "sha256": "9bef4a019c4fb13cb0d008e1c77f3bc99537e05e0ec5c1a547038e56897994ba",
       "component": "AstroDeck application source"
     },
     {
@@ -1933,7 +1933,7 @@
     },
     {
       "path": "server/pyproject.toml",
-      "sha256": "2a0b937a971dacee2f2eb02381df548391a860d106560644c8301b4e11636aef",
+      "sha256": "58a6059e725f75d1577834d8008375264dbb2c0f5eea5434390c428de82f9e74",
       "component": "AstroDeck application source"
     }
   ],

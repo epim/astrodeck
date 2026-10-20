@@ -57,6 +57,13 @@ gate green. The two PWA icons are attributed to their project commits; the
 nebula artwork is owner-made and registered as Apache-2.0 on the owner's
 ruling of 2026-10-20 (#637).
 
+A release commit changes the version line in two reviewed sources,
+server/astrodeck/__init__.py and server/pyproject.toml. Run
+`python tools/licence/version_bump_evidence.py X.Y.Z` in that commit. It
+refreshes those two reviewed hashes only when each file is the reviewed base's
+copy with its version line changed and nothing else. Any other difference is
+refused and needs a review.
+
 A registered credit must match the reviewed licence and resolve to intact full
 texts where required. Remote survey data are recorded separately from bundled
 data. ODbL database grants do not replace original-image rights. Owner-required
