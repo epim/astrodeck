@@ -557,6 +557,19 @@ class AdditionalBoundaryTests(unittest.TestCase):
         self.assertEqual(gate.resolved_owner_messages(messages,{path:data},rules,decisions),messages[1:])
         self.assertEqual(gate.resolved_owner_messages(messages,{path:data+b'new'},rules,decisions),messages)
         self.assertEqual(gate.resolved_owner_messages(messages,{path:data},rules,[{'component':'artwork','mode':'pending','evidence':'owner-fixture'}]),messages)
+    def test_player_one_ruling_resolves_only_the_registered_library_question(self):
+        path='server/astrodeck/vendor/playerone/linux-x86_64/libPlayerOneCamera.so.3.10.0'
+        data=b'\x7fELF reviewed sdk fixture'
+        rules={'assets':[{'path':path,'sha256':proof.sha(data)}]}
+        ask=path+': reviewed licence still needs owner clearance'
+        other=path+': required companion notice is absent or changed'
+        ruled=[{'component':'playerone','mode':'redistribute','evidence':'owner-fixture'}]
+        self.assertEqual(gate.resolved_owner_messages([ask,other],{path:data},rules,ruled),[other])
+        self.assertEqual(gate.resolved_owner_messages([ask],{path:data+b'x'},rules,ruled),[ask])
+        self.assertEqual(gate.resolved_owner_messages([ask],{path:data},rules,[{'component':'playerone','mode':'pending','evidence':'owner-fixture'}]),[ask])
+        notice='server/astrodeck/vendor/playerone/LICENSE'
+        nask=notice+': reviewed licence still needs owner clearance'
+        self.assertEqual(gate.resolved_owner_messages([nask],{notice:b'text'},{'assets':[{'path':notice,'sha256':proof.sha(b'text')}]},ruled),[nask])
     def test_owner_disposition_handles_the_same_ui_in_frozen_location(self):
         name='astrodeck/webui/bg_nebula.png'
         data=b'artwork'

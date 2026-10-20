@@ -198,7 +198,12 @@ def resolved_owner_messages(messages, files, rules, decisions):
         rule = lookup.get(name)
         if not rule:
             continue
-        component = "artwork" if name == "ui/dist/bg_nebula.png" else "iau" if name == "server/astrodeck/catalog/brightstars.py" else None
+        component = ("artwork" if name == "ui/dist/bg_nebula.png"
+                     else "iau" if name == "server/astrodeck/catalog/brightstars.py"
+                     # Owner ruling #632: the six registered SDK libraries only;
+                     # LICENSE/README are notices, never resolved here.
+                     else "playerone" if name.startswith("server/astrodeck/vendor/playerone/") and not audit_artifact.is_text_payload(name)
+                     else None)
         if component not in accepted:
             continue
         digest = provenance.sha(provenance.normalized_source(data)) if name.endswith(".py") else audit_artifact.content_sha256(name, data)

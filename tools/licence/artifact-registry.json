@@ -600,6 +600,72 @@
       "component": "Nebula background photograph",
       "spdx": "Apache-2.0",
       "source": "https://github.com/epim/astrodeck/issues/637#issuecomment-6299071149"
+    },
+    {
+      "path": "server/astrodeck/vendor/playerone/PlayerOneCamera.dll",
+      "sha256": "7a6097316b73cb0889dc8ccd65e7c8efebc73a077193ba693edfb1227a25514a",
+      "component": "Player One Camera SDK",
+      "credit": "Player One Camera SDK",
+      "spdx": "LicenseRef-PlayerOne-SDK",
+      "source": "server/astrodeck/vendor/playerone/LICENSE",
+      "notices": {
+        "server/astrodeck/vendor/playerone/LICENSE": "e3c0564b663ac3412a2497552a92989c6f573054820ba2cba0deeca1ae3ea285"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/playerone/linux-arm32/libPlayerOneCamera.so.3.10.0",
+      "sha256": "76bf84c811b53bbdab2f52cb3ad5171773e585a2824b018eb53164d7a2779ccd",
+      "component": "Player One Camera SDK",
+      "credit": "Player One Camera SDK",
+      "spdx": "LicenseRef-PlayerOne-SDK",
+      "source": "server/astrodeck/vendor/playerone/LICENSE",
+      "notices": {
+        "server/astrodeck/vendor/playerone/LICENSE": "e3c0564b663ac3412a2497552a92989c6f573054820ba2cba0deeca1ae3ea285"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/playerone/linux-arm64/libPlayerOneCamera.so.3.10.0",
+      "sha256": "d3c8eff03613785b21014484f47f39431c52c5d723484b6dde74fb9667e7d637",
+      "component": "Player One Camera SDK",
+      "credit": "Player One Camera SDK",
+      "spdx": "LicenseRef-PlayerOne-SDK",
+      "source": "server/astrodeck/vendor/playerone/LICENSE",
+      "notices": {
+        "server/astrodeck/vendor/playerone/LICENSE": "e3c0564b663ac3412a2497552a92989c6f573054820ba2cba0deeca1ae3ea285"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/playerone/linux-x86/libPlayerOneCamera.so.3.10.0",
+      "sha256": "bfccdb9e7ce663a83e03a7f511f77c2cd4f344cf63adc27d33635e02a421d2e4",
+      "component": "Player One Camera SDK",
+      "credit": "Player One Camera SDK",
+      "spdx": "LicenseRef-PlayerOne-SDK",
+      "source": "server/astrodeck/vendor/playerone/LICENSE",
+      "notices": {
+        "server/astrodeck/vendor/playerone/LICENSE": "e3c0564b663ac3412a2497552a92989c6f573054820ba2cba0deeca1ae3ea285"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/playerone/linux-x86_64/libPlayerOneCamera.so.3.10.0",
+      "sha256": "117536d98ebe7b8d1af23eb6c07ea44a018584c54d142d03580bed71db7bb83d",
+      "component": "Player One Camera SDK",
+      "credit": "Player One Camera SDK",
+      "spdx": "LicenseRef-PlayerOne-SDK",
+      "source": "server/astrodeck/vendor/playerone/LICENSE",
+      "notices": {
+        "server/astrodeck/vendor/playerone/LICENSE": "e3c0564b663ac3412a2497552a92989c6f573054820ba2cba0deeca1ae3ea285"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/playerone/macos/libPlayerOneCamera.dylib",
+      "sha256": "5ec7a593ed4ea32b47ecdd307514171f9570125e9bbb025dee2d618a8a1827b5",
+      "component": "Player One Camera SDK",
+      "credit": "Player One Camera SDK",
+      "spdx": "LicenseRef-PlayerOne-SDK",
+      "source": "server/astrodeck/vendor/playerone/LICENSE",
+      "notices": {
+        "server/astrodeck/vendor/playerone/LICENSE": "e3c0564b663ac3412a2497552a92989c6f573054820ba2cba0deeca1ae3ea285"
+      }
     }
   ],
   "reviewed_sources": [
