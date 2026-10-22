@@ -41,7 +41,7 @@ The combined issues are the work. This plan orders them into waves, splits the l
 | C-19 | #1125 | Live stage status has one writer | #464 #742 | M |
 | C-20 | #1126 | Observatory envelope: open, bind the dome, close safely | #601 #602 #893 #657 #192 | L |
 | C-21 | #1127 | Site-derived moments reach only cleared principals | #748 #1067 | M |
-| C-22 | #1128 | Rig availability: Windows Update, off-box evidence, remote power | #1076 #606 #125 #605 | M |
+| C-22 | #1128 | Rig availability: Windows Update, off-box evidence | #1076 #606 #125 (#605 closed, D-J) | M |
 | C-23 | #1129 | Hardening leftovers | #831 #794 #1068 | S |
 
 Each combined issue's body holds the design and the done criteria. A coder's brief points at the combined issue and lists which members its WP covers; the coder reads the members for the evidence.
@@ -83,23 +83,23 @@ Cost rule: full suites run once per wave on the integrated tree, never per WP. W
    - #175: WP-124 built per-panel convergence end to end; CROTA2 sense confirmed 2026-10-07. Close.
    - #254: D-01 tooling (gate_run.py, worktree tooling) is on main. Close.
 3. Comment on #1073 that its remaining parts are: frozen-binary provenance backlog (its own body), #638 (owner), #1091 and #801 (wave 1, WP-1.8), and the WCSLIB data filter in `packaging/astrodeck.spec` (`a.datas` filter after Analysis, recorded in `release-reviewed-inputs.json`).
-4. Post the owner decision list below as a comment on this plan's PR, and go on with the defaults.
+4. Done 2026-10-22: the decision list was posted on PR #1130 and the owner answered the same day; the rulings below are folded in. Before each wave, read PR #1130 and the three pending issues (#638, #718, #826) for the owner's replies to the explanations.
 5. Install `py-spy` into a scratch venv (not the shared `.venv`) for WP-1.3's hang diagnosis.
 
-## Owner decisions (defaults in bold; the plan proceeds on the default)
+## Owner rulings (answered on PR #1130, 2026-10-22; RULED lines are binding, the rest proceed on the default in bold)
 
-- D-A (#880, C-03): a mount STOP or deadman during a run's goto: **hold the run with reason halted_by_operator; the operator resumes**. Alternative: end the run.
-- D-B (#893, C-20): closing the roof with the mount link down: **close only when the #1075 park record says we parked it and no motion command followed; otherwise refuse, alert and say why**. Alternative: close anyway on an unsafe trip.
-- D-C (#526, C-10 neighbour): `ROTATOR_BACKLASH_DEG` was 5; measured reversal backlash is 0.1 to 0.2 deg: **set 0.3**. The 2026-09-28 failure was coupling slip, not backlash.
-- D-D (#1094): a planned ending (stop time, max_run_min, window end) **promotes the queued session**; only an abort or a fault strands it. Alternative: keep promote-on-complete only.
-- D-E (#180 Part B): a panel set aside three nights running is **demoted to the end of the campaign with a note, never dropped**. Alternative: drop it.
-- D-F (#638): with `astropy.wcs` removed from runtime code (#1103) and the PyInstaller `a.datas` filter in place, **WCSLIB is not shipped and the pending record resolves to not-shipped**; the GPL-with-GCC-exception runtime inside OpenBLAS gets its notice text in THIRD-PARTY-NOTICES.md. Alternative: ship WCSLIB with the LGPL relink offer.
-- D-G (#718, XL): unify the NEW FLOW wizard with the stepped Send to Flow Wizard: **deferred past wave 6; no code until the owner picks it**.
-- D-H (#748, #1067, C-21): site-derived moments are **gated on `view.site_derived`** for log lines, alerts and the flip-hold edges.
-- D-I (#826): `solve_saved_lights` **defaults on when a plate solver is configured**, and `rotator_bin_deg` gets a Settings control.
-- D-J (#605): remote power is the owner's purchase (D-19 stands).
-- D-K (#823): the queued GitHub Pages deploy is cancelled by the owner in the Actions UI; the workflow gets `cancel-in-progress: true` on its concurrency group (WP-1.10).
-- D-L (#766, XL): NINA Sequencer import: **a design-first WP after wave 6 that produces a spec and a fixture set, no code until the owner reads it**.
+- D-A (#880, C-03) RULED: a manual STOP or a manual move during a run **pauses the run until the operator resumes it**. While paused nothing automatic happens: no re-centre, no next target, no auto-resume restart. WP 3.1 builds a `paused_by_operator` ladder state whose only exit is an operator resume.
+- D-B (#893, C-20) RULED: **the roof never closes unless the mount is confirmed parked, whatever the link state**. With the link down, `close_observatory` reopens the link once and reads the park state; if it cannot confirm, it refuses, leaves the roof open and pages. No park-record shortcut and no close-anyway path: a collision costs more than rain. WP 4.4.
+- D-C (#526) RULED: the 2026-09-28 symptom was the camera loose in the rotator. **#526 closed as that cause; `ROTATOR_BACKLASH_DEG` unchanged, no code.**
+- D-D (#1094) RULED: two ways to run "this, then that": **one flow with both targets in series, or two flows queued back to back**. Each target gets a bound of **frame count or maximum time, whichever comes first**. A planned ending (the time bound, stop time, `max_run_min`, window end) promotes the queued flow; an abort or a fault does not, and the log names the queued session when a run ends without promoting it. New WP 3.10.
+- D-E (#180 Part B) RULED: a failed panel is **skipped for the next panel, then revisited; if it fails again, the next panel that still needs frames, then back, and so on. Never dropped.** WP 6.2.
+- D-F (#638): explanation posted on PR #1130, awaiting the owner. Default: `astropy.wcs` is out of the runtime (#1103) and out of the build (`packaging/astrodeck.spec` excludes `astropy/wcs/`), so **WCSLIB is not shipped and the pending record resolves to not-shipped**; the GPL-with-GCC-exception runtime inside OpenBLAS gets its notice text in THIRD-PARTY-NOTICES.md. Open sub-question: the executables on releases v0.3.23 through v0.3.28 did contain WCSLIB; leave them (recommended) or delete those assets.
+- D-G (#718, XL): explanation posted, awaiting the owner. Default: **deferred past wave 6**. Recommended alternative: a small WP that adds the two missing questions (how the night ends, auto-resume) to NEW FLOW's own sheet.
+- D-H (#748, #1067, C-21) RULED: **split**. Each dawn-park or sun-watch event writes a night-file line carrying the site-computed moment, flagged `site_derived` and withheld from uncleared principals, and a separate alert-safe wording without the moment that the alert sinks forward. #1067's flip-hold edges stay gated as planned. WP 2.9.
+- D-I (#826): explanation posted, awaiting the owner. Default: `solve_saved_lights` **defaults on when a plate solver is configured**, and `rotator_bin_deg` gets a Settings control. WP 3.9.
+- D-J (#605) RULED: out of scope and not a GitHub matter. **#605 closed as not planned and removed from C-22.**
+- D-K (#823) RULED: the owner cancels the stuck Pages job; the workflow still gets `cancel-in-progress: true` on its concurrency group (WP 1.10).
+- D-L (#766, XL) RULED: proceed. **WP 6.3 produces a spec and a fixture set, no code until the owner reads it.**
 
 ## Wave 1 (foundations; engine owner C-01)
 
@@ -133,7 +133,7 @@ WP-2.1 runs first and merges before the rest of the wave starts (the others impo
 | 2.6 | #1117 C-11a | #900 #1058 #904 #903 #902 | `ui/src/next/hubs/sky/sheets/photosphere.ts`, `horizon.tsx`, their `__tests__`, the saved horizon schema (per-bin status), `tools/photosphere_sim` scorer's interpolation import (shared function) | L | paint unknown-overlap frames: the chart-yard variant publishes a Measured bin away from a step |
 | 2.7 | #1116 C-10 | #787 #828 #788 #790 #806 | `server/astrodeck/sequence/angle_check.py` (`allowed_error`), `server/astrodeck/sequence/models.py` (comment), the Sky card in `ui/src/next` (`commandedPa`), the sky-angle row writer (if it is in `engine.py`, that item moves to WP-3.1 as a shared function) | M | convergence 0 in the fallback: the 4x1 high-Dec case fails |
 | 2.8 | #1121 C-15 | #978 #805 #1019 #720 | `server/tests/_ratchet.py` (new), `server/tests/test_w2_ratchets.py`, ten source pins replaced (the issue lists candidates), the UI callers test, `ui/src/testing/driveTo.ts` (new), the wizard DOM tests | L | add one silent handler: the ratchet fails |
-| 2.9 | #1127 C-21 | #748 #1067 | `server/astrodeck/{logfmt,events}.py` (site_derived marker), `dawn_park.py`, `sun_watch.py`, `api/redact.py` (drop marked lines and flip-hold edges for uncleared principals), `alerting.py`, privacy tests | M | drop the marker in dawn_park: the viewer test sees the line |
+| 2.9 | #1127 C-21 | #748 #1067 | `server/astrodeck/{logfmt,events}.py` (site_derived marker), `dawn_park.py`, `sun_watch.py` (D-H: each event writes a flagged night-file line with the moment and a separate alert-safe wording without it), `api/redact.py` (drop marked lines and flip-hold edges for uncleared principals), `alerting.py` (forwards only the alert-safe wording), privacy tests | M | drop the marker in dawn_park: the viewer test sees the line; forward the flagged line: the alert-sink test fails |
 
 Release checkpoint: 0.3.47 after wave 2 (C-01, C-02 and C-14 change what a night does). Steps: `python tools/licence/version_bump_evidence.py 0.3.47` in the release commit, tag `v0.3.47`, verify `gh release view v0.3.47` lists the tarball, sha256, sig and SBOM; then self-update on the rig (needs the pinned key) or the staged ssh deploy.
 
@@ -141,15 +141,16 @@ Release checkpoint: 0.3.47 after wave 2 (C-01, C-02 and C-14 change what a night
 
 | WP | Issue | Covers | Owned files | Size | Mutant |
 |---|---|---|---|---|---|
-| 3.1 | #1109 C-03 | #1098 #857 #880 (#144 rig verify) | `server/astrodeck/sequence/recovery.py` (new: RecoveryLadder states and transitions), `server/astrodeck/sequence/engine.py` (owner: calls the ladder at failed centring, off-field solve, STOP and deadman), `resume_arm.py` if ResumeArm enters the ladder, `test_w3_recovery_ladder.py` | L | skip the home: the off-field night holds in place |
+| 3.1 | #1109 C-03 | #1098 #857 #880 (#144 rig verify) | `server/astrodeck/sequence/recovery.py` (new: RecoveryLadder states and transitions), `server/astrodeck/sequence/engine.py` (owner: calls the ladder at failed centring, off-field solve, STOP and deadman; D-A: STOP and a manual move enter `paused_by_operator`, whose only exit is an operator resume), `resume_arm.py` (ResumeArm never restarts a paused run), `test_w3_recovery_ladder.py` | L | skip the home: the off-field night holds in place; auto-resume a paused run: the D-A test fails |
 | 3.2 | #1114 C-08 | #188 #795 #796 #797 | `server/astrodeck/sequence/engine.py` (shared: `_record_session_frame` stamps mosaic_id, panel_id, labels), `server/astrodeck/sequence/{report,bundle}.py` (ids as keys), `server/astrodeck/api/app.py` (owner: CSV columns from `FrameRecord.model_fields`), `tools/gen_report_types.py` (new), `ui/src/types.report.generated.ts` (new), the gallery mosaic chip, `test_w3_mosaic_identity.py` | M | label as key: two same-named groups merge |
 | 3.3 | #1113 C-07a | #780 #781 #782 | `server/astrodeck/imaging/sessionstack.py` (per-panel budget, least-recently-visited eviction, add after accept), `server/astrodeck/api/app.py` (shared: `panel` query on the stack routes), `ui/src/components/PanelPicker.tsx` (new) used by the three surfaces, the WS stack event | M | restore least-recently-added: the four-panel rotating night never builds a stack |
 | 3.4 | #1117 C-11b | #905 #1060 #1059 | `ui/src/next/hubs/sky/sheets/pano/poseTrack.ts`, the tracer, the alignment report (north confidence), `tools/photosphere_sim` case files (a ruling row per gate for treeline), the scorer | L | ignore the measured gyro scale: overlay_moving fails at 2 percent |
 | 3.5 | #1108 C-02c | #599 (#308 stays rig-gated) | `server/astrodeck/site_horizon.py` (new: per-night (alt, az bin) refusals from obstructed frames), `server/astrodeck/api/app.py` (shared: suggestion route and accept route), the Site page offer in the UI, `test_w3_horizon_suggestion.py` | M | apply the mask without the press: the D-07 test fails |
 | 3.6 | #1112 C-06 rider | #809 | `server/astrodeck/api/app.py` (shared: retry-set-aside resolves against the same compile as the progress card), test | S | resolve against a fresh compile: the re-keyed group 404s |
-| 3.7 | #1128 C-22 | #1076 #606 (#125 closes on the rig; #605 owner) | `server/astrodeck/power_guard.py` or `bootcause.py` (pending reboot, active hours), `rig_beacon.py` (last log id, boot cause, pending flag), the preflight (`scripts/rig_precheck.py` and the arm gate in `hub.py`, owner), the relay's rig page (last ten pings), tests | M | ignore the pending flag: the arm test passes when it must refuse |
+| 3.7 | #1128 C-22 | #1076 #606 (#125 closes on the rig; #605 closed, D-J) | `server/astrodeck/power_guard.py` or `bootcause.py` (pending reboot, active hours), `rig_beacon.py` (last log id, boot cause, pending flag), the preflight (`scripts/rig_precheck.py` and the arm gate in `hub.py`, owner), the relay's rig page (last ten pings), tests | M | ignore the pending flag: the arm test passes when it must refuse |
 | 3.8 | #871 | docstring and abort path | `server/astrodeck/devices/backends/asiair_backend.py` (an abort does not wait behind a FITS download: cancel the download first), its test | S | remove the cancel: the abort test times out |
 | 3.9 | #178, #181, #826 (D-I) | mosaic UI wiring | `ui/src/.../TargetFramingSheet.tsx` (panelCsv prop), `server/astrodeck/catalog/region.py` (shape fields on region rows), the SUGGEST GRID ellipse use, the `rotator_bin_deg` Settings control and `solve_saved_lights` default | M | drop the shape fields: the region row test fails |
+| 3.10 | #1094 (D-D) | per-target time bound; queue hand-over on planned endings | `server/astrodeck/sequence/models.py` (`Target.max_time_min` beside `count`, 0 = none: the target is done when either is met), `server/astrodeck/sequence/engine.py` (shared with 3.1 on disjoint functions: the target-complete predicate and the run-end promote call; serial merge after 3.1 with a suite run between), `server/astrodeck/sequence/resume_arm.py` (promote the queued session on `WindowClosed`, `max_run_min`, the stop time and the per-target bound; never on abort, unsafe, error, quality stop or cooling skip; log "'<name>' is queued behind this session and will not start" when a run ends without promoting), the stepped Send to Flow Wizard and NEW FLOW option for the bound, `flows/doctor.py` (a target with neither bound and an unbounded stop gets the existing note), `test_w3_target_time_bound.py` | M | promote on abort too: the abort test fails; drop the time bound: the 60-minute sim target runs to its count |
 
 ## Wave 4 (engine owner C-05; C-19 shares)
 
@@ -159,7 +160,7 @@ Release checkpoint: 0.3.47 after wave 2 (C-01, C-02 and C-14 change what a night
 | 4.1b | #1111 C-05 + #1110 C-04b (engine) | #603 job C, #783 | `server/astrodeck/sequence/engine.py` (owner: `end_of_night` action for darks-after; twilight-sky flats metered; one flat set per distinct panel angle with ROTMECH), `flows/to_plan.py` (binds darks-after to end_of_night), sim night tests | L | skip the per-angle loop: the two-angle night shoots one set |
 | 4.2 | #1125 C-19 | #464 #742 | `server/astrodeck/sequence/engine.py` (shared: publish `flows.statuses` at stage transitions), `events.py`, `ui/src/store.ts` (one selector), both canvases' pills, LEDs and wires, the spec text, a recorded-WS DOM test | M | skip the publish: the pill never changes |
 | 4.3 | #1113 C-07b | #172 part B, #779 | `server/astrodeck/imaging/mosaic_preview.py` (new; tangent-plane placement using `sequence/coverage.py` helpers, bounded size), one route in `app.py` (owner), the Gallery preview beside the picker, `test_w4_mosaic_preview.py` (corner pixels of a 2x2) | L | place by panel order instead of WCS: the corner test fails |
-| 4.4 | #1126 C-20 | #601 #602 #893 #657 #192 | `server/astrodeck/sequence/roof.py` (envelope owner), `devices/base.py` (DomePolicy callers), `sequence/resume_arm.py` (open in recovery), the sim backend's cover and roof, `engine.py` (shared: open at run start, bind after connect), tests with and without actuators | L | skip the open: the sim-with-cover night solves through the cover |
+| 4.4 | #1126 C-20 | #601 #602 #893 #657 #192 | `server/astrodeck/sequence/roof.py` (envelope owner; D-B: `close_observatory` never closes without a confirmed park, reopens a dropped link once to read it, else refuses and pages), `devices/base.py` (DomePolicy callers), `sequence/resume_arm.py` (open in recovery), the sim backend's cover and roof, `engine.py` (shared: open at run start, bind after connect), tests with and without actuators | L | skip the open: the sim-with-cover night solves through the cover |
 
 Release checkpoint: 0.3.48 after wave 4.
 
@@ -180,19 +181,19 @@ Release checkpoint: 0.3.49 after wave 5.
 | WP | Issue | Covers | Owned files | Size |
 |---|---|---|---|---|
 | 6.1 | #187 | measure-then-lay-out mode for a fixed camera (ruling 3 on #189 settles re-frame identity) | `catalog/framing.py`, `flows/continuation.py`, `engine.py` (owner: first centring solve sets the grid angle), UI | L |
-| 6.2 | #180 Part B (D-E) | starving-panel policy | `sequence/group_rules.py`, `flows/tonight.py` note, test | M |
+| 6.2 | #180 Part B (D-E) | failed-panel rotation: skip to the next panel, revisit, never drop | `sequence/group_rules.py` (a failed panel goes to the back of the panels that still need frames and is retried every round), `flows/tonight.py` note (which panel was skipped and when it is next due), test whose mutant drops the panel after three failures | M |
 | 6.3 | #766 (D-L) | NINA import design: spec + fixtures, no code | `docs/flows/nina-import.md`, `server/tests/fixtures/nina/` | M |
 | 6.4 | #189 close | the tracker closes when #172 to #188 are closed or ruled | none | S |
 
 ## Rig-gated (code done or not needed; the next step is a measurement when the rig is on)
 
-#16 (D-10 reconnect profile check), #90 (two device numbers), #145 (pier-east sign on a real night), #144 (trust-position and the 409 on the rig; closes with C-03), #308 (overcast frames through the audit tool, now with the class column), #496 (D-12 supervisor restart), #526 (apply D-C on the rig), #594 (hardware), #597 (close on 2026-10-28 if no drops since relay v10), #789 (one measured hop), #851 and #882 (east-pulse bench walk; the per-night refused-sync count), #879 (NINA frame bench check), #1071 (pier-east flip night with C-01 deployed), #1051, #1056, #1057, #1061 (the owner's device recording, T31), #1055 (S54 after T31), #125 (closes when C-22 is on the rig).
+#16 (D-10 reconnect profile check), #90 (two device numbers), #145 (pier-east sign on a real night), #144 (trust-position and the 409 on the rig; closes with C-03), #308 (overcast frames through the audit tool, now with the class column), #496 (D-12 supervisor restart), #594 (hardware), #597 (close on 2026-10-28 if no drops since relay v10), #789 (one measured hop), #851 and #882 (east-pulse bench walk; the per-night refused-sync count), #879 (NINA frame bench check), #1071 (pier-east flip night with C-01 deployed), #1051, #1056, #1057, #1061 (the owner's device recording, T31), #1055 (S54 after T31), #125 (closes when C-22 is on the rig).
 
 The coordinator runs read-only rig checks itself over ssh when the rig is on; anything that moves the mount or restarts a process is handed to the owner as a one-line `!` command (the classifier refuses those even with a go-ahead).
 
 ## Owner-gated (no code until the ruling; defaults above)
 
-#718 (D-G), #638 (D-F), #880 (D-A, built on the default), #893 (D-B, built on the default), #1094 (D-D), #180 Part B (D-E), #605 (D-J), #823 (D-K, the cancel), #826 (D-I, built on the default), #766 (D-L).
+Still awaiting the owner's reply to the explanations on PR #1130: #718 (D-G), #638 (D-F), #826 (D-I, WP 3.9 builds the default if no reply by wave 3). Ruled 2026-10-22 and placed in the waves: #880 (D-A, WP 3.1), #893 (D-B, WP 4.4), #1094 (D-D, WP 3.10), #180 Part B (D-E, WP 6.2), #748 and #1067 (D-H, WP 2.9), #766 (D-L, WP 6.3). Closed on the rulings: #526 (D-C), #605 (D-J). #823 (D-K): the owner cancels the job; WP 1.10 adds the guard.
 
 ## New issues the coordinator will file as this runs
 
