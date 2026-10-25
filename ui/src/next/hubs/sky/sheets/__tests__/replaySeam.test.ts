@@ -120,7 +120,7 @@ const GOLDEN: Record<string, Golden> = {
     horizon: 'cf90d8e4b39ff5d1954551b32ac2df6df7a6084121357a1a40b487a65fdba020',
     panorama: '258c39c9f5b8f360efc11f69d2891cec7ee96dde1ebd9ccaf9e7810acb56a9ef',
     panoramaPixels: 'bcc929737031fd365b2c53839c2fdab96656bd033ce6ad83d0167a41e4844e0f',
-    summary: '97cfa72b840c4d2459e7c1c70898518ab3c9df2c2bea9e74e4c39a8318614bb1',
+    summary: 'd071c2d9e6422de11197bf255aea9f923d4c296c2b50b8d9e5c85f25e761d169',
   },
   'chartyard-shortpan-70': {
     captures: '09e28bc9af1555f282ff60dff16f3a907a019ff738f345b339a7fdf31e5c0540',
@@ -129,7 +129,7 @@ const GOLDEN: Record<string, Golden> = {
     horizon: 'cf90d8e4b39ff5d1954551b32ac2df6df7a6084121357a1a40b487a65fdba020',
     panorama: 'a3d91241e17417dc6b6ee635ef495644785d5cb646035c897b4dd3fe35046c26',
     panoramaPixels: '370ca51c32a477c9a3d0423fa19d6054d085604677b60de7a5d9c9cfe225253a',
-    summary: '2540b78311bba19188ebb35cdf47e8e2f31b031f53559478b611ef4e64adfede',
+    summary: '803d01d6faaa563bdc3312019f6d48adc9b8078fa7f263fd6f75b81782d069a1',
   },
 };
 const LEGACY_FILES = ['captures.jsonl', 'columns.json', 'events.jsonl', 'horizon.json', 'panorama.png', 'summary.json'];

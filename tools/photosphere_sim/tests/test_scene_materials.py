@@ -44,6 +44,7 @@ from sim.render import ThreeRenderer
 from sim.scene import MATERIAL_KINDS, Scene
 from sim.scene import load as load_scene
 from sim.truth import _lattice_grid, _octave_lattice_shape, horizon, landmark_directions
+from tests import renderer_gate
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCENES = ROOT / "scenes"
@@ -268,18 +269,10 @@ def open_renderer(scene: Scene) -> ThreeRenderer:
     fails to build the scene (a script error in ``render.js`` or
     ``materials.js``, a texture the recipe cannot make) is the very thing
     these tests exist to catch, so that error propagates and the test fails.
-    ``test_render_cardinal.py`` skips on any exception; a mutant in the
-    renderer would pass those quietly, which is why this does not.
+    The rule is ``tests/renderer_gate.py``'s, shared by every test that needs
+    the real renderer.
     """
-    try:
-        return ThreeRenderer(scene, CAM)
-    except ImportError as error:
-        raise unittest.SkipTest(f"playwright is not installed: {error!r}")
-    except Exception as error:  # noqa: BLE001 - classified below, never swallowed
-        text = str(error)
-        if "BrowserType.launch" in text or "Executable doesn't exist" in text:
-            raise unittest.SkipTest(f"headless Chromium unavailable: {error!r}")
-        raise
+    return renderer_gate.open_renderer(scene, CAM)
 
 
 def render_frame(objects, background=GREY_SKY) -> np.ndarray:

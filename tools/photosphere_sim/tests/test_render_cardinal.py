@@ -28,8 +28,9 @@ landmark's ``colour`` rather than its palette index, so the colour a blob is
 hunted by is ``tuple(lm["colour"])``; :data:`sim.palette.PALETTE` is used only
 to assert that colour is a palette colour at all.
 
-Skips, with the reason, when Chromium cannot launch. It never passes quietly:
-a skip is reported as a skip.
+Skips, with the reason, when Chromium cannot launch (``tests/renderer_gate.py``).
+It never passes quietly: a skip is reported as a skip, and a renderer that
+starts and then fails to load fails the suite (#954).
 """
 
 from __future__ import annotations
@@ -43,9 +44,9 @@ import numpy as np
 from sim import render as render_module
 from sim.geometry import Camera, look_basis, sky_vector, to_camera, wrap_deg
 from sim.palette import PALETTE
-from sim.render import ThreeRenderer
 from sim.scene import load as load_scene
 from sim.truth import landmark_directions
+from tests import renderer_gate
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -151,10 +152,7 @@ class Cardinal(unittest.TestCase):
     def setUpClass(cls):
         cls.scene = load_scene(ROOT / "scenes" / "chartyard.json")
         cls.landmarks = landmark_directions(cls.scene, C_REF)
-        try:
-            cls.renderer = ThreeRenderer(cls.scene, CAM)
-        except Exception as error:  # noqa: BLE001 - the reason is the point
-            raise unittest.SkipTest(f"headless Chromium unavailable: {error!r}")
+        cls.renderer = renderer_gate.open_renderer(cls.scene, CAM)
         cls.renderer.__enter__()
 
     @classmethod

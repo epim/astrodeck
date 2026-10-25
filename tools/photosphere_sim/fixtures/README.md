@@ -9,12 +9,12 @@ on them therefore ran on one machine and nowhere else.
 
 | case | scene | route | frames | camera | `fov_short_deg` | bytes |
 |---|---|---|---|---|---|---|
-| `chartyard-shortpan-60` | chartyard | shortpan | 95 | 240 x 320, 5 fps | 60 | 1 575 845 |
-| `chartyard-shortpan-70` | chartyard | shortpan | 95 | 240 x 320, 5 fps | 70 | 1 669 521 |
-| `treeline-panshort-41` | treeline | panshort-p23 | 103 | 90 x 160, 12 fps | 41.14 | 1 287 894 |
+| `chartyard-shortpan-60` | chartyard | shortpan | 95 | 240 x 320, 5 fps | 60 | 1 746 235 |
+| `chartyard-shortpan-70` | chartyard | shortpan | 95 | 240 x 320, 5 fps | 70 | 1 839 911 |
+| `treeline-panshort-41` | treeline | panshort-p23 | 103 | 90 x 160, 12 fps | 41.14 | 1 297 459 |
 
-3 245 366 bytes for the first pair, of which 2.69 MB is the 190 frame PNGs,
-0.41 MB the two `truth/` directories and 0.14 MB the observation streams. The
+3 586 146 bytes for the first pair, of which 2.69 MB is the 190 frame PNGs,
+0.41 MB the two `truth/` directories and 0.49 MB the observation streams. The
 third is described under its own heading below.
 
 ## How they were sized
@@ -87,6 +87,28 @@ fresh checkout with `autocrlf=true` and no rule returns 9 of the 21 text
 files as CRLF and breaks `hashes.observations` and `hashes.truth`; with the
 rule, a fresh clone reproduces all three hashes for both cases.
 
+## Fresh against their definitions
+
+A fixture is a committed copy of what `cases/<case>.json` builds, and it goes
+stale when the builder moves on (#953). The pair was recorded before the motion
+channel existed (`motion_events`, #105) and before the case definitions carried
+`gyro_noise_deg_s`, so for a while it replayed with no gyro witness at all, and
+`treeline-panshort-41`'s `truth/visibility.json` predated the blue and texture
+channels of the observability mask. All three were rebuilt with the commands in
+this file. The pair now carries 1 131 motion records each (a legacy case: the
+gyro noise is 0.05 deg/s Gaussian per axis, unrounded, drawn from `default_rng(0)`),
+and the treeline case carries 511 rounded to 0.1 deg/s, which is what a phone
+holding still delivers: exact zero triples on most samples.
+
+`tests/test_wp19_integrity.py` keeps them fresh. It rebuilds each fixture from
+its case definition with the flat renderer and compares every file that does not
+depend on the pixels (the observations, the actions, `scanner.json`, `truth/`
+except `visibility.json`, the manifest's fields and its observation hash) byte
+for byte, and it asserts each fixture holds a non-empty motion channel.
+`test_manifest_hashes.py` pins the frames and the rest. `truth/scene.json` is
+written with LF line endings whatever the checkout's `core.autocrlf` did to
+`scenes/*.json`, so a rebuild on Windows and on Linux is the same bytes.
+
 ## What this pair does NOT grade
 
 Worth being plain about, because "the simulator runs in CI now" would
@@ -142,8 +164,8 @@ replay of it.
 | frames | 103 PNGs, 998 517 bytes (9.5 KB each) |
 | camera | 90 x 160, 12 fps, `fov_short_deg` 41.14 |
 | `input/` other than frames | 183 435 bytes (1 405 observations: 791 orientation, 511 motion, 103 frame) |
-| `truth/` | 104 445 bytes |
-| whole directory | 116 files, 1 287 894 bytes (the budget is 1.5 MB) |
+| `truth/` | 114 010 bytes |
+| whole directory | 116 files, 1 297 459 bytes (the budget is 1.5 MB) |
 
 ### How it was sized
 

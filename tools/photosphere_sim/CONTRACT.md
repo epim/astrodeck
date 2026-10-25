@@ -59,7 +59,12 @@ frame PNGs. A case directory of the same shape may also live in `fixtures/`,
 which IS committed, and `--out fixtures` is how `make-case` writes one there.
 A fixture case is short and small enough to carry in the repository so that a
 replay-backed test runs on a clean checkout and in CI (issue #68);
-`fixtures/README.md` says what the committed pair is and how it was sized.
+`fixtures/README.md` says what the committed fixtures are and how they were sized.
+A fixture is a committed copy of what its case definition builds, and
+`tests/test_wp19_integrity.py` asserts that it still is, byte for byte, apart
+from the frames (`test_manifest_hashes.py` pins those). `truth/scene.json` is
+written with LF line endings whatever the checkout's, so the manifest's truth
+hash is the same on every machine.
 Nothing writes a `result/` into a committed case: a replay copies `input/` to
 a temporary directory and writes there, because `replayCase` empties and
 rewrites the `result/` of whatever directory it is given.
@@ -119,16 +124,32 @@ quantity the scanner reads, since `MotionStability` compares
 `truth/trajectory.jsonl` over the arc route: median error 0.0001 deg/s,
 and exactly 0 through a hold.
 
-A case declares `gyro_noise_deg_s`, Gaussian per axis. The default is 0,
-which makes a hold read EXACTLY zero - and the scanner discards an exact zero
-triple as synthetic (`MotionStability.observe`, issue #106: a real MEMS gyro has
-a noise floor and never reports one twice). So an exact stream does not model a
-quiet gyro, it models a dead one, and at every held attitude the witness goes
-stale. Every chart-yard case therefore sets 0.05 deg/s, a phone gyro's floor at
-60 Hz: a sample's magnitude near 0.09 against `QUIET_RATE_DEG_S` 0.5, and a
-random-walk drift near 0.007 degrees a second against `QUIET_DRIFT_DEG` 0.5. A
-case that wants a gyro too noisy to vouch for anything raises it; issue #76 is
-the measurement that forced this (arc075-60, 43 to 46 of 48 holds).
+A hold is modelled as small non-zero noise that the sensor then rounds, which is
+what a real phone delivers. Chromium rounds `rotationRate` to 0.1 deg/s, so a
+still phone with a quiet gyro reads an exact zero triple on about 96 percent of
+its samples and a non-zero one on the rest. Since #952 the scanner accepts an
+exact zero triple as a reading for `ZERO_TRUST_MS` (5 s) after the stream's last
+non-zero triple (issue #106 had discarded every exact zero as synthetic, which a
+real device contradicts); a stream of nothing but zeros, or zeros for longer
+than that, is a dead gyro and the witness goes stale. The witness is a stream of
+mostly zeros, not a stream with a noise floor. A case
+with a `realism` block models that: its `motion` block gives `bias_deg_s` 0.01
+and `noise_deg_s` 0.018 per axis, Gaussian, then `round_deg_s` 0.1 applied AFTER
+the noise (so a hold is rounded noise and never a dead stream), and a case that
+wants a gyro too noisy to vouch for anything raises the noise. The replay cases
+that exercise the zero handling are therefore the realism cases, the committed
+`treeline-panshort-41` fixture among them.
+
+A case with no `realism` block (the five legacy chart-yard cases) declares
+`gyro_noise_deg_s` instead, Gaussian per axis and not rounded, drawn from
+`default_rng(0)` (the legacy rule under "Seeding"). Its default is 0, which
+makes a hold read exactly zero on every sample: a dead gyro, and at every held
+attitude the witness goes stale. Every legacy case therefore sets 0.05 deg/s, a
+phone gyro's floor at 60 Hz: a sample's magnitude near 0.09 against
+`QUIET_RATE_DEG_S` 0.5, and a random-walk drift near 0.007 degrees a second
+against `QUIET_DRIFT_DEG` 0.5. These cases never read an exact zero, so they
+say nothing about the zero handling; issue #76 is the measurement that forced
+the 0.05 (arc075-60, 43 to 46 of 48 holds).
 
 `actions.jsonl`: `{"t_ms":0,"action":"begin"}` and `{"t_ms":<end>,"action":"finish"}`.
 
@@ -1199,7 +1220,7 @@ Definitions the gates share:
 | `overlay_complete` | frames in the window with a non-null basis are at least 95 % of the frames in the window (#898) | pan routes |
 | `overlay_settled_p95_lt_0_5`, `overlay_max_lt_10` | retired: absent from `gates`, still reported in `overlay` | pan routes |
 | `loop_residual_lt_0_25` | the angle of the rotation carrying `qinv(q_early) q_late` onto the same relative rotation of the truth poses, for the `loop.match` keyframes (through their `frame_id`), is below 0.25 degrees. Fails when `loop.closed` is false, the method is not `image`, or there is no match | pan, `expect_closure` |
-| `focal_err_lt_0_5pct` | `abs(f_norm x short px - truth fx) / truth fx` is below 0.5 %. Reported, not gated, on arc cases | pan, `still_pivot` |
+| `focal_err_lt_0_5pct` | `abs(f_norm x short px - reference fx) / reference fx` is below 0.5 %, where the reference is the effective fx (S49) when `loop.method` is `image` and the truth fx otherwise: a scan that closed by gyro, or did not close, never saw the ring's rolling-shutter warp (#1062). Reported, not gated, on arc cases | pan, `still_pivot` |
 | `north_err_lt_1` | the circular mean over the diagnostics keyframes of `heading(q)` minus the truth heading of that keyframe's frame is below 1 degree in magnitude | pan, `north_graded` |
 | `north_sigma_honest` | that error is at most 2.5 x the reported `sigma_deg`; true when no north is reported | pan, no compass bias (`realism.absolute.bias_deg` 0) |
 | `live_fill_p95_le_1000` | per raster cell: from the first window frame whose central 2-degree slit contains the cell to `begin_ms + first_seen x 100`; p95 at most 1000 ms. A cell the scan entered and never reported counts 10 000 ms. Under the frozen replay clock this grades keyframe-selection latency only | pan routes |
@@ -1228,10 +1249,12 @@ gates is exactly what graded the case. Cost is reported (`cost_ms`, from
   41.14 lens at a pitch of 22.98 degrees scores 0.9397 of the frustum, which is
   why the frustum cannot be the rule, and at least 0.999 of the footprint;
 - on a pan route: `loop` `{closed, method, match, residual_deg, note}`, `focal`
-  `{f_norm, short_px, truth_fx, effective_fx, state, error_fraction,
-  error_fraction_true_fx}` (`error_fraction`, which `focal_err_lt_0_5pct` grades,
-  is against `effective_fx`, the focal the delivered frames' rolling shutter
-  leaves a closed ring, equal to `truth_fx` without one; S49), `north`
+  `{f_norm, short_px, truth_fx, effective_fx, state, graded_against,
+  error_fraction, error_fraction_true_fx}` (`error_fraction`, which
+  `focal_err_lt_0_5pct` grades, is against `effective_fx`, the focal the
+  delivered frames' rolling shutter leaves a closed ring, equal to `truth_fx`
+  without one, when `loop.method` is `image`, and against `truth_fx` otherwise;
+  `graded_against` names which; S49), `north`
   `{error_deg, keyframes, reported, sigma_deg}` and `live_fill`
   `{cells, never, p95_ms, median_ms, max_ms, note}`.
 

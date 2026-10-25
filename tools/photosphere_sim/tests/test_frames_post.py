@@ -39,6 +39,7 @@ from sim.frames_post import (AutoExposure, FramePost, eis_offsets, horizontal_ra
                              offset_basis, resample, resolve_frames, subframe_times)
 from sim.geometry import Camera, angle_between, look_basis
 from sim.trajectory import FrameTruth
+from tests import renderer_gate
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -1049,15 +1050,16 @@ class FramesCase(unittest.TestCase):
 #: BEFORE task T20, for a case with no ``realism`` block and for one with a
 #: ``realism`` block that has no ``frames``. Like the committed fixtures'
 #: own hashes they are float arithmetic written out in decimal: a platform whose
-#: numpy rounds the last digit differently moves them.
+#: numpy rounds the last digit differently moves them. The ``truth`` hashes are of
+#: a ``truth/scene.json`` with LF line endings (#953), whatever the checkout's.
 LEGACY_STILL = {
     "frames": "1e95dd7a6e284b89ea6592fcb065b480ab4d773f741de2b4b3ad7fd0bc8c265b",
     "observations": "3a04ccd6f024c3d129d3fc2a55c601e24411e63953b0af2053eecca28fb7ae1b",
-    "truth": "f5bb34b8e0f120fe92c2ae28737b215b712c298afe2f88d32a6fdde5fcc2fe6c"}
+    "truth": "32197463726a07a5e1918eedbbe4ef6187712f62b16abb4b033740ec219bfda7"}
 LEGACY_PAN_NO_FRAMES = {
     "frames": "ec4dc443c63c964b3b87bb0a315befefbd89a587a1e530b11a2ade36f45c1b07",
     "observations": "cb0907f1eb9da9a9194241279165a6cc2435b7721d0ac09f01e0fc3be860f464",
-    "truth": "c75ff916bbea136f90d5fe92d3027a1647def294834a006812de282550c17b4b"}
+    "truth": "01f85076fb86cf2d008e7df93a93cd1177a00016ad11ca99a0060ba913d731f5"}
 
 
 class LegacyCasesAreUnchanged(unittest.TestCase):
@@ -1100,11 +1102,7 @@ class LegacyCasesAreUnchanged(unittest.TestCase):
 
 def _real_renderer_or_skip(scene_name, camera):
     from sim.scene import load
-    try:
-        renderer = render_module.ThreeRenderer(load(ROOT / "scenes" / f"{scene_name}.json"), camera)
-    except Exception as error:  # noqa: BLE001 - the reason is the point
-        raise unittest.SkipTest(f"headless Chromium unavailable: {error!r}")
-    return renderer
+    return renderer_gate.open_renderer(load(ROOT / "scenes" / f"{scene_name}.json"), camera)
 
 
 class RealRendererGradientEnergy(unittest.TestCase):

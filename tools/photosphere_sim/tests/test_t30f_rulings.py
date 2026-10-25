@@ -184,13 +184,14 @@ class EffectiveFocal(unittest.TestCase):
         predicted = frames_post.effective_focal(CAM.fx, [rate, rate], [10.0], READOUT_MS, h_fov) / CAM.fx
         self.assertLess(abs(measured - predicted) / predicted, 1e-3, (measured, predicted))
 
-    def test_the_scorer_grades_against_the_effective_focal_and_reports_the_true_error(self):
+    def test_the_scorer_grades_an_image_closed_scan_against_the_effective_focal_and_reports_the_true_error(self):
         frames = pan_frames(20.0)
         ids = [f["frame_id"] for f in frames]
         effective = score._effective_fx(camera_dict(), READOUT_MS, frames, ids)
         s = sim_scale(20.0)
         self.assertAlmostEqual(effective / CAM.fx, 1.0 / s, delta=2e-4)
         diagnostics = {"focal": {"f_norm": effective / CAM.width, "state": "closed"},
+                       "loop": {"closed": True, "method": "image"},
                        "keyframes": [{"frame_id": i} for i in ids]}
         block = score._score_focal(diagnostics, camera_dict(), READOUT_MS, frames)
         self.assertLess(block["error_fraction"], 1e-9)

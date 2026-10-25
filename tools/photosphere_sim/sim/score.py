@@ -1515,26 +1515,33 @@ def _effective_fx(camera: dict, readout_ms: float, frames: list, keyframe_ids) -
 
 def _score_focal(diagnostics: dict | None, camera: dict, readout_ms: float = 0.0,
                  frames: list | None = None) -> dict:
-    """The focal error, as a fraction, against the EFFECTIVE focal (S49).
+    """The focal error, as a fraction, against the focal the scan could know (S49).
 
-    ``|f_norm x short px - effective fx| / effective fx`` is what
-    ``focal_err_lt_0_5pct`` grades: the effective focal is the one a ring of
-    the delivered frames closes at (``frames_post.effective_focal``), equal to
-    the truth fx when the case has no rolling shutter. The error against the
-    truth fx itself is reported beside it as ``error_fraction_true_fx``.
+    The effective focal is the one a ring of the delivered frames closes at
+    (``frames_post.effective_focal``), equal to the truth fx when the case has
+    no rolling shutter. Only a scan whose loop closed by image measures it. A
+    scan that closed by gyro, or did not close, never saw the ring's warp, so
+    it is graded against the truth fx (#1062). ``error_fraction`` is
+    ``|f_norm x short px - reference| / reference`` for that reference, which
+    ``graded_against`` names, and is what ``focal_err_lt_0_5pct`` grades. The
+    error against the truth fx itself is always reported beside it as
+    ``error_fraction_true_fx``.
     """
     focal = (diagnostics or {}).get("focal") or {}
+    closed_by_image = ((diagnostics or {}).get("loop") or {}).get("method") == "image"
     short_px = float(min(camera["width"], camera["height"]))
     keyframe_ids = [k.get("frame_id") for k in ((diagnostics or {}).get("keyframes") or [])
                     if isinstance(k, dict)]
     effective = _effective_fx(camera, readout_ms, frames or [], keyframe_ids)
+    graded_against = "effective_fx" if closed_by_image else "truth_fx"
     block = {"f_norm": focal.get("f_norm"), "short_px": short_px,
              "truth_fx": float(camera["fx"]), "effective_fx": effective,
-             "state": focal.get("state"),
+             "state": focal.get("state"), "graded_against": graded_against,
              "error_fraction": None, "error_fraction_true_fx": None}
     if isinstance(block["f_norm"], (int, float)) and not isinstance(block["f_norm"], bool):
         measured = float(block["f_norm"]) * short_px
-        block["error_fraction"] = abs(measured - effective) / effective
+        reference = block[graded_against]
+        block["error_fraction"] = abs(measured - reference) / reference
         block["error_fraction_true_fx"] = abs(measured - block["truth_fx"]) / block["truth_fx"]
     return block
 
