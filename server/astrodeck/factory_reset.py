@@ -62,6 +62,7 @@ constants, so the route passes the live ``config.CONFIG_DIR`` / ``hub.CAPTURE_DI
 """
 from __future__ import annotations
 
+import glob
 import shutil
 from pathlib import Path
 
@@ -131,6 +132,26 @@ def _rm(path: Path) -> bool:
         bus.log("warning", f"factory reset could not remove {path.name}: {e}",
                 "config")
     return False
+
+
+def _atomic_sidecars(path: Path) -> list[Path]:
+    """What ``persist.write_json_atomic`` leaves beside ``path``: the ``.bak``
+    copy of the previous content, and any ``.<name>.<random>.tmp`` staging file
+    a crash stranded. The ``.bak`` holds the PREVIOUS owner's data (#1068), so a
+    reset that removes ``path`` removes these with it."""
+    staged = path.parent.glob(f".{glob.escape(path.name)}.*.tmp")
+    return [path.with_suffix(path.suffix + ".bak"), *staged]
+
+
+def _rm_entry(directory: Path, name: str, is_dir: bool) -> bool:
+    """Remove one setup entry and, for a file, everything the atomic writer
+    kept beside it. True when the entry itself was there."""
+    path = directory / name
+    removed = _rm(path)
+    if not is_dir:
+        for sidecar in _atomic_sidecars(path):
+            _rm(sidecar)
+    return removed
 
 
 def capture_inventory(capture_dir: Path) -> dict:
@@ -245,16 +266,16 @@ def factory_reset(store: ConfigStore, config_dir: Path, capture_dir: Path, *,
 
     # 2. Setup files beside the config.
     removed: list[str] = []
-    for name, _is_dir in _SETUP_ENTRIES:
-        if _rm(config_dir / name):
+    for name, is_dir in _SETUP_ENTRIES:
+        if _rm_entry(config_dir, name, is_dir):
             removed.append(name)
     # The recovery backup is a snapshot of the PREVIOUS install's config; leaving
     # it would let a corrupt-file recovery silently resurrect the old site.
     _rm(config_dir / "astrodeck.json.bak")
 
     if reset_auth:
-        for name, _is_dir in _AUTH_ENTRIES:
-            if _rm(config_dir / name):
+        for name, is_dir in _AUTH_ENTRIES:
+            if _rm_entry(config_dir, name, is_dir):
                 removed.append(name)
         # ``user_store`` is a process singleton with its OWN in-memory cache, so
         # deleting users.json on disk is not enough — without this the accounts

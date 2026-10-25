@@ -40,15 +40,28 @@ def client_ip(request) -> str:
     return "?"
 
 
+#: What a line is about, the first word of it. One sink, so an operator reads
+#: sign-ins with ``auth``, an operator attesting a physical fact (the tube is at
+#: home) with ``attest``, and user administration with ``admin`` (#794).
+CATEGORIES = ("auth", "attest", "admin")
+
+
 def record(event: str, *, ok: bool, request=None,
-           user: Optional[str] = None, reason: str = "") -> None:
+           user: Optional[str] = None, reason: str = "",
+           category: str = "auth") -> None:
     """Emit one audit line. ``event`` is a short verb (``login``,
     ``token_login``, ``first_run_admin``, ``revoke`` ...); ``ok`` is the
-    outcome; ``user`` is the account (omit for token-only paths). No secret is
-    ever passed here -- callers pass the username, never the password/token."""
+    outcome; ``user`` is the account (omit for token-only paths); ``category``
+    is one of :data:`CATEGORIES` and leads the line, so a filter for sign-ins
+    does not read an attestation. No secret is ever passed here -- callers pass
+    the username, never the password/token."""
+    if category not in CATEGORIES:
+        raise ValueError(f"unknown audit category {category!r}; "
+                         f"one of {', '.join(CATEGORIES)}")
     ip = client_ip(request) if request is not None else "?"
     status = "ok" if ok else "deny"
-    parts = [f"auth {event} {status}", f"user={user or '-'}", f"ip={ip}"]
+    parts = [f"{category} {event} {status}", f"user={user or '-'}",
+             f"ip={ip}"]
     if reason:
         parts.append(f"reason={reason}")
     msg = " ".join(parts)
