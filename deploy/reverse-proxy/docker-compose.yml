@@ -2,9 +2,17 @@ name: astrodeck-edge
 
 services:
   astrodeck:
+    # The image carries the native engine or the build stops with the reason (see
+    # docker-compose.yml at the repository root). Put the release's wheel for this
+    # architecture in native-wheels/ at the repository root, or point
+    # ASTRODECK_NATIVE_DIR at another directory (an absolute path is safest).
     build:
       context: ../..
       dockerfile: Dockerfile
+      additional_contexts:
+        native: "${ASTRODECK_NATIVE_DIR:-../../native-wheels}"
+      args:
+        REQUIRE_NATIVE: "1"
     user: "10001:10001"
     command: ["python", "-m", "astrodeck", "run", "--host", "0.0.0.0", "--port", "8800"]
     environment:

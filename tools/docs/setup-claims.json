@@ -1016,11 +1016,11 @@
   },
   {
     "page": "docs/guide/install-docker.md",
-    "claim": "The root Compose file is a loopback-only development and maintenance deployment. Use the separate TLS reverse-proxy deployment for other computers. The image builds the browser UI and Python server; it does not install the optional native engine or ASTAP.",
+    "claim": "The root Compose file is a loopback-only development and maintenance deployment. Use the separate TLS reverse-proxy deployment for other computers. The image builds the browser UI and Python server and installs the native engine from the release's wheel; it does not install ASTAP.",
     "source": "docker-compose.yml",
     "line": 14,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
     "sources": [
       {
         "path": "docker-compose.yml",
@@ -1061,21 +1061,41 @@
       {
         "path": "Dockerfile",
         "line": 87
+      },
+      {
+        "path": "Dockerfile",
+        "line": 117
+      },
+      {
+        "path": "docker-compose.yml",
+        "line": 26
+      },
+      {
+        "path": ".github/workflows/release.yml",
+        "line": 356
       }
     ],
     "id": "SETUP-046"
   },
   {
     "page": "docs/guide/install-docker.md",
-    "claim": "1. From the repository root, build the image and create a named administrator:",
+    "claim": "1. From the repository root, put the release's native wheel in `native-wheels/` (see [the native engine](#the-native-engine)), then build the image and create a named administrator:",
     "source": "docker-compose.yml",
     "line": 14,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
     "sources": [
       {
         "path": "docker-compose.yml",
         "line": 14
+      },
+      {
+        "path": "docker-compose.yml",
+        "line": 27
+      },
+      {
+        "path": "Dockerfile",
+        "line": 117
       }
     ],
     "id": "SETUP-047"
@@ -1236,11 +1256,11 @@
   },
   {
     "page": "docs/guide/install-docker.md",
-    "claim": "2. Build that Compose deployment, then run its `create-admin` command against its configuration volume before starting the stack.",
+    "claim": "2. Build that Compose deployment (it reads the same `native-wheels/` directory), then run its `create-admin` command against its configuration volume before starting the stack.",
     "source": "deploy/reverse-proxy/docker-compose.yml",
     "line": 3,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
     "sources": [
       {
         "path": "deploy/reverse-proxy/docker-compose.yml",
@@ -1261,6 +1281,10 @@
       {
         "path": "Dockerfile",
         "line": 87
+      },
+      {
+        "path": "deploy/reverse-proxy/docker-compose.yml",
+        "line": 13
       }
     ],
     "id": "SETUP-054"
@@ -1497,11 +1521,11 @@
   },
   {
     "page": "docs/guide/install-docker.md",
-    "claim": "2. Update the checkout, then run `docker compose build --pull` and `docker compose up -d`.",
+    "claim": "2. Update the checkout and replace the wheel in `native-wheels/` with the one from the same release, then run `docker compose build --pull` and `docker compose up -d`.",
     "source": "docker-compose.usb.yml",
     "line": 8,
     "verified_by": "source-trace",
-    "verification_note": "Read current source at b79c271f; no hardware run or deployment execution by setup author.",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
     "sources": [
       {
         "path": "docker-compose.usb.yml",
@@ -1522,6 +1546,14 @@
       {
         "path": "packaging/entry.py",
         "line": 44
+      },
+      {
+        "path": "docker-compose.yml",
+        "line": 27
+      },
+      {
+        "path": "Dockerfile",
+        "line": 117
       }
     ],
     "id": "SETUP-065"
@@ -8405,5 +8437,147 @@
       }
     ],
     "id": "SETUP-360"
+  },
+  {
+    "page": "docs/guide/install-docker.md",
+    "claim": "The image carries the native engine (`astrodeck_native`, behind native guiding and native autofocus) or the build stops. `docker compose build` installs the release wheel for the build machine's architecture from `native-wheels/` and runs the engine probe in the same step. A wheel that pip refuses, or one that installs but does not run, fails the build. With no wheel the build stops and names the directory to fill; Compose never produces an image without the engine.",
+    "source": "docker-compose.yml",
+    "line": 27,
+    "verified_by": "source-trace",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
+    "sources": [
+      {
+        "path": "docker-compose.yml",
+        "line": 27
+      },
+      {
+        "path": "docker-compose.yml",
+        "line": 29
+      },
+      {
+        "path": "Dockerfile",
+        "line": 116
+      },
+      {
+        "path": "Dockerfile",
+        "line": 117
+      },
+      {
+        "path": "packaging/native_probe.py",
+        "line": 31
+      }
+    ],
+    "id": "SETUP-361"
+  },
+  {
+    "page": "docs/guide/install-docker.md",
+    "claim": "1. Download the wheel for your architecture from the assets of the release you are building. Its name starts with `astrodeck_native-` and its platform tag contains `linux` and either `x86_64` or `aarch64`. Save it in `native-wheels/`; exactly one wheel for the architecture may be there.",
+    "source": "Dockerfile",
+    "line": 117,
+    "verified_by": "source-trace",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
+    "sources": [
+      {
+        "path": "Dockerfile",
+        "line": 117
+      },
+      {
+        "path": ".github/workflows/release.yml",
+        "line": 331
+      },
+      {
+        "path": "native-wheels/README.txt",
+        "line": 1
+      }
+    ],
+    "id": "SETUP-362"
+  },
+  {
+    "page": "docs/guide/install-docker.md",
+    "claim": "2. To keep wheels elsewhere, set `ASTRODECK_NATIVE_DIR` to the directory's absolute path. The reverse-proxy deployment reads the same variable and the same default directory.",
+    "source": "docker-compose.yml",
+    "line": 27,
+    "verified_by": "source-trace",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
+    "sources": [
+      {
+        "path": "docker-compose.yml",
+        "line": 27
+      },
+      {
+        "path": "deploy/reverse-proxy/docker-compose.yml",
+        "line": 13
+      }
+    ],
+    "id": "SETUP-363"
+  },
+  {
+    "page": "docs/guide/install-docker.md",
+    "claim": "3. After the build, `docker compose run --rm astrodeck python /opt/native_probe.py` prints the engine version and `\"native_available\": true`.",
+    "source": "Dockerfile",
+    "line": 115,
+    "verified_by": "source-trace",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
+    "sources": [
+      {
+        "path": "Dockerfile",
+        "line": 115
+      },
+      {
+        "path": "packaging/native_probe.py",
+        "line": 31
+      }
+    ],
+    "id": "SETUP-364"
+  },
+  {
+    "page": "docs/guide/install-docker.md",
+    "claim": "To skip the build, pull the published image `ghcr.io/epim/astrodeck`. The release workflow runs that probe in it on both architectures, and checks its installed packages and licences, before the image gets its version tag.",
+    "source": ".github/workflows/release.yml",
+    "line": 364,
+    "verified_by": "source-trace",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
+    "sources": [
+      {
+        "path": ".github/workflows/release.yml",
+        "line": 364
+      },
+      {
+        "path": ".github/workflows/release.yml",
+        "line": 397
+      },
+      {
+        "path": "tools/licence/audit_artifact.py",
+        "line": 488
+      }
+    ],
+    "id": "SETUP-365"
+  },
+  {
+    "page": "docs/guide/install-docker.md",
+    "claim": "The base image is Debian 13 (trixie) with glibc 2.41, so a wheel tagged for a newer glibc is refused at build time. A plain `docker build .` outside Compose, given no wheel, still makes a development image with no native engine and says so on stderr; do not use one for imaging.",
+    "source": "Dockerfile",
+    "line": 55,
+    "verified_by": "source-trace",
+    "verification_note": "Read current source for WP 1.8 (compose native context, Dockerfile RUN, release image job, image gate). The Dockerfile RUN and the compose arguments are executed under sh with stubs in server/tests/test_wp18_compose_native.py; no Docker daemon build was run.",
+    "sources": [
+      {
+        "path": "Dockerfile",
+        "line": 55
+      },
+      {
+        "path": "Dockerfile",
+        "line": 116
+      },
+      {
+        "path": "Dockerfile",
+        "line": 117
+      },
+      {
+        "path": "tools/licence/audit_artifact.py",
+        "line": 229
+      }
+    ],
+    "id": "SETUP-366"
   }
 ]

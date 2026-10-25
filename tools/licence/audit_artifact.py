@@ -5,10 +5,16 @@
 This is an inventory gate, not a legal opinion or proof about other platforms.
 Unknown binary/data inputs, blocked assets, changed hashes and missing notices
 fail closed. A source-tree registry alone never proves an archive's contents.
+
+--image reads a container image archive (an OCI layout, a `docker save` archive
+or a flat `docker export` filesystem) without running it and inventories the
+merged filesystem: the native wheel, every installed Python distribution with its
+licence, and the base-image facts the wheel's compatibility rests on.
 """
 from __future__ import annotations
 
 import argparse
+import email.parser
 import hashlib
 import importlib.util
 import json
@@ -215,6 +221,293 @@ def review(files: dict[str, bytes], rules: dict, credits: dict, ui_build: dict,
     return sorted(set(errors)), records
 
 
+# ---------------------------------------------------------------- container image
+# Measured 2026-10 on the pinned python:3.12-slim digest (#798): Debian 13 (trixie)
+# with glibc 2.41, not bookworm with 2.36. The native wheel's manylinux tag is
+# accepted or refused by pip against this glibc, so a moved base is a finding until
+# the wheel compatibility and the dpkg/libusb allowlist are reviewed again.
+IMAGE_BASE = {"codename": "trixie", "glibc": "2.41"}
+FIRST_PARTY = {"astrodeck", "astrodeck-native"}
+# Installer tooling that ships in every Python image; its licence is still checked.
+TOOLING = {"pip"}
+NATIVE = "astrodeck-native"
+IMAGE_READ_LIMIT = 64 * 1024 * 1024
+OS_RELEASE = ("usr/lib/os-release", "etc/os-release")
+DPKG_STATUS = "var/lib/dpkg/status"
+DIST_INFO = re.compile(r"^(?:.+/)?site-packages/[^/]+\.dist-info/(METADATA|WHEEL)$")
+MANYLINUX = re.compile(r"^manylinux_2_(\d+)_")
+LEGACY_MANYLINUX = {"manylinux1": 5, "manylinux2010": 12, "manylinux2014": 17}
+PROBE = "opt/native_probe.py"
+
+
+def distribution_name(name: str) -> str:
+    """PEP 503 normalisation, so pydantic_core and pydantic-core are one name."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def wanted_in_image(name: str) -> bool:
+    return name in OS_RELEASE or name == DPKG_STATUS or bool(DIST_INFO.match(name))
+
+
+def _json_member(archive: tarfile.TarFile, name: str) -> dict:
+    handle = archive.extractfile(name)
+    if handle is None:
+        raise ValueError(f"image archive lacks {name}")
+    return json.loads(handle.read().decode("utf-8"))
+
+
+def _blob(digest: str) -> str:
+    algorithm, _, value = digest.partition(":")
+    return f"blobs/{algorithm}/{value}"
+
+
+def _oci_manifest(archive: tarfile.TarFile) -> dict:
+    descriptors = _json_member(archive, "index.json").get("manifests", [])
+    while True:
+        if not descriptors:
+            raise ValueError("image archive holds no image manifest")
+        if len(descriptors) > 1:
+            raise ValueError("image archive holds several images; export one platform")
+        document = _json_member(archive, _blob(descriptors[0]["digest"]))
+        if "layers" in document:
+            return document
+        descriptors = document.get("manifests", [])
+
+
+def image_layers(archive: tarfile.TarFile) -> tuple[list[str] | None, str | None]:
+    """Layer member names in application order, and the config member, or (None, None)
+    for a flat filesystem export that has no layers."""
+    names = set(archive.getnames())
+    if "manifest.json" in names:
+        images = _json_member(archive, "manifest.json")
+        if len(images) != 1:
+            raise ValueError("image archive holds several images; export one platform")
+        return list(images[0]["Layers"]), images[0].get("Config")
+    if "index.json" in names:
+        manifest = _oci_manifest(archive)
+        return [_blob(layer["digest"]) for layer in manifest["layers"]], _blob(manifest["config"]["digest"])
+    return None, None
+
+
+def _safe_image_path(name: str) -> str | None:
+    """The member's path relative to the image root, "" for the root itself, None when unsafe."""
+    while name.startswith("./"):
+        name = name[2:]
+    parts = PurePosixPath(name).parts
+    if name.startswith("/") or ".." in parts or "\\" in name:
+        return None
+    return "/".join(parts)
+
+
+def _remove_below(directory: str, names: set[str], wanted: dict[str, bytes]) -> None:
+    prefix = directory + "/" if directory else ""
+    for name in [n for n in names if n.startswith(prefix)]:
+        names.discard(name)
+        wanted.pop(name, None)
+
+
+def apply_layer(layer: tarfile.TarFile, names: set[str], wanted: dict[str, bytes], errors: list[str]) -> None:
+    """Merge one layer over the filesystem so far, the way a container runtime does:
+    whiteouts delete what earlier layers made, an opaque marker hides a directory's
+    earlier contents, and anything else adds or replaces."""
+    additions = []
+    for member in layer.getmembers():
+        path = _safe_image_path(member.name)
+        if path is None:
+            errors.append("archive contains an unsafe member path")
+            continue
+        if not path:
+            continue
+        parent, _, leaf = path.rpartition("/")
+        if leaf == ".wh..wh..opq":
+            _remove_below(parent, names, wanted)
+        elif leaf.startswith(".wh."):
+            target = (parent + "/" if parent else "") + leaf[len(".wh."):]
+            names.discard(target)
+            wanted.pop(target, None)
+            _remove_below(target, names, wanted)
+        else:
+            additions.append((path, member))
+    for path, member in additions:
+        names.add(path)
+        wanted.pop(path, None)
+        if member.isfile() and wanted_in_image(path):
+            if member.size > IMAGE_READ_LIMIT:
+                errors.append(f"{path}: file exceeds the review limit")
+                continue
+            wanted[path] = layer.extractfile(member).read()
+
+
+def read_image(path: Path):
+    """(file names, the few files the gate reads, architecture, errors) of the merged image."""
+    names, wanted, errors, architecture = set(), {}, [], None
+    with tarfile.open(path, "r:*") as archive:
+        layer_names, config = image_layers(archive)
+        if config is not None and config in archive.getnames():
+            architecture = _json_member(archive, config).get("architecture")
+        if layer_names is None:
+            apply_layer(archive, names, wanted, errors)
+        for layer_name in layer_names or []:
+            handle = archive.extractfile(layer_name)
+            if handle is None:
+                raise ValueError(f"image archive lacks layer {layer_name}")
+            with tarfile.open(fileobj=handle, mode="r:*") as layer:
+                apply_layer(layer, names, wanted, errors)
+    return names, wanted, architecture, errors
+
+
+def parse_metadata(data: bytes):
+    return email.parser.BytesParser().parsebytes(data, headersonly=True)
+
+
+def declared_licence(message) -> str:
+    """What the installed metadata says: an SPDX expression, else the licence
+    classifiers, else a one-line License field."""
+    expression = (message.get("License-Expression") or "").strip()
+    if expression:
+        return expression
+    classifiers = [c.split("::")[-1].strip() for c in message.get_all("Classifier") or []
+                   if c.startswith("License ::")]
+    if classifiers:
+        return "; ".join(classifiers)
+    field = (message.get("License") or "").strip()
+    return " ".join(field.split())[:120]
+
+
+def base_facts(wanted: dict[str, bytes]) -> dict:
+    release = {}
+    source = next((wanted[n] for n in OS_RELEASE if n in wanted), b"")
+    for line in source.decode("utf-8", "replace").splitlines():
+        key, _, value = line.partition("=")
+        release[key.strip()] = value.strip().strip('"')
+    libc6 = None
+    for paragraph in wanted.get(DPKG_STATUS, b"").decode("utf-8", "replace").split("\n\n"):
+        fields = dict(line.split(": ", 1) for line in paragraph.splitlines() if ": " in line)
+        if fields.get("Package") == "libc6":
+            libc6 = fields.get("Version")
+    return {"id": release.get("ID"), "version_id": release.get("VERSION_ID"),
+            "codename": release.get("VERSION_CODENAME"), "libc6": libc6}
+
+
+def base_findings(base: dict) -> list[str]:
+    errors = []
+    if base["codename"] is None:
+        errors.append("the image does not record its operating system release")
+    if base["libc6"] is None:
+        errors.append("the image does not record its libc6 version")
+    if base["codename"] is not None and base["libc6"] is not None:
+        glibc = base["libc6"].split("-")[0]
+        if (base["codename"], glibc) != (IMAGE_BASE["codename"], IMAGE_BASE["glibc"]):
+            errors.append(
+                f"base image is {base['codename']} with libc6 {base['libc6']}, not the reviewed "
+                f"{IMAGE_BASE['codename']} with glibc {IMAGE_BASE['glibc']}: review which manylinux "
+                "wheels pip accepts and the dpkg and libusb allowlist before releasing on it")
+    return errors
+
+
+def glibc_needed(platform_tag: str) -> int | None:
+    """The glibc 2.N a manylinux platform tag needs, or None for a plain linux tag."""
+    match = MANYLINUX.match(platform_tag)
+    if match:
+        return int(match.group(1))
+    return LEGACY_MANYLINUX.get(platform_tag.split("_")[0])
+
+
+def native_findings(tags: list[str], libc6: str | None) -> list[str]:
+    """Findings for the installed native wheel's platform tags against the base glibc."""
+    platforms = sorted({p for tag in tags for p in tag.split("-")[-1].split(".")})
+    linux = [p for p in platforms if p.startswith(("manylinux", "linux_"))]
+    if not linux:
+        return [f"native wheel has no linux platform tag (WHEEL says {', '.join(platforms) or 'nothing'})"]
+    if libc6 is None:
+        return []
+    available = int(libc6.split("-")[0].split(".")[1])
+    needed = [glibc_needed(p) for p in linux]
+    if None in needed or min(needed) <= available:
+        return []
+    worst = min(linux, key=lambda p: glibc_needed(p))
+    return [f"native wheel tag {worst} needs glibc 2.{min(needed)}, the base has 2.{available}"]
+
+
+def python_distributions(wanted: dict[str, bytes]):
+    """(name, version, licence, dist-info directory, parse error) of every installed
+    distribution, in path order."""
+    found, errors = [], []
+    for path in sorted(wanted):
+        match = DIST_INFO.match(path)
+        if not match or match.group(1) != "METADATA":
+            continue
+        message = parse_metadata(wanted[path])
+        directory = path.rsplit("/", 1)[0]
+        if not message.get("Name"):
+            errors.append(f"{directory}: a distribution record has no name")
+            continue
+        found.append((distribution_name(message["Name"]), message["Name"], message.get("Version", ""),
+                      declared_licence(message), directory))
+    return found, errors
+
+
+def package_findings(distributions, credits: dict) -> list[str]:
+    errors = []
+    entries = {distribution_name(entry["name"]): entry
+               for group in credits["groups"] for entry in group["entries"]}
+    pool = credits.get("licenses", {})
+    for normal, display, _, licence, _ in distributions:
+        if normal in FIRST_PARTY:
+            continue  # Accounted by the source-tar and native-wheel gates; listed in the report.
+        if not licence:
+            errors.append(f"{display}: the installed metadata states no licence")
+        if normal in TOOLING:
+            if licence:
+                try:
+                    if policy.resolve(licence).flag:
+                        errors.append(f"{display}: reviewed licence still needs owner clearance")
+                except policy.Flag:
+                    errors.append(f"{display}: licence is outside the allowed policy")
+            continue
+        entry = entries.get(normal)
+        errors += credit_findings(display, entry["spdx"] if entry else "", entry, pool)
+    return errors
+
+
+def native_wheel_record(wanted: dict[str, bytes], names: set[str], distributions):
+    """(record or None, findings) for the one installed native wheel."""
+    native = [d for d in distributions if d[0] == NATIVE]
+    if not native:
+        return None, ["native wheel is absent: the image has no astrodeck_native distribution"]
+    if len(native) > 1:
+        return None, ["more than one native wheel is installed: " + ", ".join(sorted(d[4] for d in native))]
+    _, _, version, _, directory = native[0]
+    tags = [line.split(":", 1)[1].strip() for line in
+            wanted.get(directory + "/WHEEL", b"").decode("utf-8", "replace").splitlines()
+            if line.startswith("Tag:")]
+    package = directory.rsplit("/", 1)[0] + "/astrodeck_native/"
+    modules = sorted(n for n in names if n.startswith(package) and n.endswith(".so"))
+    errors = [] if modules else ["native wheel has no compiled extension module in the image"]
+    return {"name": NATIVE, "version": version, "tags": tags, "extension_modules": modules}, errors
+
+
+def audit_image(path: Path, credits: dict):
+    """(findings, report) for one image archive. Nothing in the image is executed."""
+    names, wanted, architecture, errors = read_image(path)
+    base = base_facts(wanted)
+    distributions, record_errors = python_distributions(wanted)
+    native, native_errors = native_wheel_record(wanted, names, distributions)
+    findings = errors + record_errors + base_findings(base) + native_errors + package_findings(distributions, credits)
+    if native is not None:
+        findings += native_findings(native["tags"], base["libc6"])
+    if PROBE not in names:
+        findings.append("the native probe is not in the image: nothing can report the engine at run time")
+    report = {
+        "architecture": architecture,
+        "base": base,
+        "native_wheel": native,
+        "python_packages": [{"name": normal, "version": version, "licence": licence, "path": directory}
+                            for normal, _, version, licence, directory in distributions],
+    }
+    return sorted(set(findings)), report
+
+
 def build_tarball(repo: Path, out: Path) -> Path:
     repo, out = repo.resolve(), out.resolve()
     if not out.is_relative_to(repo / ".probe"):
@@ -226,20 +519,47 @@ def build_tarball(repo: Path, out: Path) -> Path:
     return builder.build("licence-audit", repo, out, strict=True, allow_missing=("astap",))
 
 
-def main():
+def image_main(args) -> int:
+    image = args.image
+    credits_bytes = args.credits.read_bytes()
+    findings, report = audit_image(image, json.loads(credits_bytes))
+    report.update({
+        "artifact_sha256": sha256(image.read_bytes()), "findings": findings, "cleared": not findings,
+        "scope": "Only this image filesystem as exported: installed Python distributions, the native wheel and the "
+                 "base-image release. Other apt packages, the base image's own licence texts and anything outside "
+                 "a Python distribution require separate evidence.",
+    })
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    for finding in findings:
+        print(finding)
+    print(f"Image gate: {'FAIL' if findings else 'PASS'} "
+          f"({len(report['python_packages'])} packages, {len(findings)} findings)")
+    return int(bool(findings))
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--build", action="store_true")
+    parser.add_argument("--image", type=Path,
+                        help="a container image archive: an OCI layout, a docker save archive or a docker export tar")
+    parser.add_argument("--credits", type=Path, default=ROOT / "ui/src/credits.generated.json",
+                        help="generated credits that must account for every installed package (--image)")
     parser.add_argument("--out", type=Path, default=ROOT / ".probe/licence/gate")
     parser.add_argument("--ui-inventory", type=Path, default=ROOT / ".probe/licence/ui-build-inventory.json")
-    parser.add_argument("--report", type=Path, default=ROOT / ".probe/licence/artifact-gate-report.json")
-    args = parser.parse_args()
-    if args.build == bool(args.archive):
-        parser.error("select exactly one of --build or --archive")
+    parser.add_argument("--report", type=Path)
+    args = parser.parse_args(argv)
+    if [args.build, args.archive is not None, args.image is not None].count(True) != 1:
+        parser.error("select exactly one of --build, --archive or --image")
+    if args.image is not None:
+        args.report = args.report or ROOT / ".probe/licence/image-gate-report.json"
+        return image_main(args)
+    args.report = args.report or ROOT / ".probe/licence/artifact-gate-report.json"
     archive = build_tarball(ROOT, args.out) if args.build else args.archive
     files, errors = read_archive(archive)
     read_json = lambda path: json.loads(path.read_text(encoding="utf-8"))
-    credits_bytes = (ROOT / "ui/src/credits.generated.json").read_bytes()
+    credits_bytes = args.credits.read_bytes()
     findings, records = review(
         files, read_json(ROOT / "tools/licence/artifact-registry.json"),
         json.loads(credits_bytes), read_json(args.ui_inventory), credits_bytes,
