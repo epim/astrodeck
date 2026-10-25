@@ -37,11 +37,12 @@ import { useCallback, useEffect, useRef } from "react";
 import type { CSSProperties, JSX, PointerEvent as RPointerEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store";
-import { HonestButton } from "../ui";
 import { NODE_DEFS } from "./nodeDefs";
 import { clampZoom, nodeW, type FlowTier, type PortDir } from "./geometry";
-import { historyKeyAction, redoReason, undoReason, type PortKind } from "./flowsTypes";
+import type { PortKind } from "./flowsTypes";
+import { editorKeyAction } from "../../lib/keys";
 import { flowLoopRefusal, laneMismatchRefusal, type ProposedWire } from "./flowLoop";
+import FlowHistoryButtons from "./FlowHistoryButtons";
 import FlowNodeCard from "./FlowNodeCard";
 import FlowWireLayer from "./FlowWireLayer";
 import FlowWireDelete from "./FlowWireDelete";
@@ -183,28 +184,12 @@ interface Pinch {
 /** UNDO and REDO over the canvas's top-right corner, above `+ ADD STAGE`, at
  *  the tiers whose header has no room for them (#688 part 3, WP-117): the
  *  tablet row is already at the edge of 700 px and the phone row would lose its
- *  title. Honest-disabled, as the desktop header's pair is: dimmed, still
- *  pressable, and a press says why there is nothing to step to. 44 px tall, the
- *  touch floor, like the button under it. Its own subscriptions, a string or
- *  null each, so a node drag (a history write per pointer move) re-renders it
- *  only when a stack empties or fills. */
+ *  title. The pair itself is `FlowHistoryButtons`, shared with the phone FLOW
+ *  tab. */
 function FlowHistoryFloat(): JSX.Element {
-  const undoWhy = useStore((s) => undoReason(s.flows));
-  const redoWhy = useStore((s) => redoReason(s.flows));
-  const undo = useStore((s) => s.flowsUndo);
-  const redo = useStore((s) => s.flowsRedo);
-  const enqueueToast = useStore((s) => s.enqueueToast);
-  const explain = (reason: string): void => enqueueToast({ level: "warning", title: reason });
-  const cls = "h-11 px-4 rounded-[10px] border border-line2 bg-raise text-ink cursor-pointer "
-    + "font-display font-semibold text-[11px] tracking-[0.12em]";
   return (
     <div className="absolute right-3 bottom-24 z-[5] flex gap-2" data-testid="flow-history-float">
-      <HonestButton className={cls} reason={undoWhy} onExplain={explain} onClick={undo}>
-        <span data-testid="flow-undo">UNDO</span>
-      </HonestButton>
-      <HonestButton className={cls} reason={redoWhy} onExplain={explain} onClick={redo}>
-        <span data-testid="flow-redo">REDO</span>
-      </HonestButton>
+      <FlowHistoryButtons />
     </div>
   );
 }
@@ -566,27 +551,27 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
       // flow's name Ctrl+Z is the browser's own text undo, and under a modal it
       // does not rewrite a graph the operator cannot see. Consumed, so the
       // browser does not also act on the key.
-      const step = historyKeyAction(e);
-      if (step) {
-        e.preventDefault();
-        if (step === "undo") undo(); else redo();
-        return;
-      }
-      if (e.key === "Delete" || e.key === "Backspace") {
-        // Marked consumed, following Tooltip's convention (ui.tsx:525-529): an
-        // outer dismissable can then tell the key was already used. It also
-        // stops Backspace navigating back in browsers that still do that.
-        e.preventDefault();
-        deleteSel();
-      }
-      // ⚠ `f` = fit has NO design source. It exists because
-      // scripts/flows_visual_check.py:441 presses it with the comment
-      // "# fit-to-view, per the editor", and §F.4 item 1 lists adding it here as
-      // option (a) against changing the harness as option (b). §G-25 / §G-29 are
-      // OPEN — this is the option §D.5 assumes, not a ruling.
-      if (e.key === "f" || e.key === "F") {
-        e.preventDefault();
-        fit();
+      //
+      // EVERY KEY GOES THROUGH `editorKeyAction` (#769): a chord that carries
+      // ctrl, meta or alt the binding did not declare is the browser's, so
+      // Ctrl+F opens its find and Ctrl+Backspace is not a delete.
+      const action = editorKeyAction(e);
+      if (action === null) return;
+      // Marked consumed, following Tooltip's convention (ui.tsx:525-529): an
+      // outer dismissable can then tell the key was already used. For Delete
+      // and Backspace it also stops Backspace navigating back in browsers that
+      // still do that.
+      e.preventDefault();
+      switch (action) {
+        case "undo": undo(); break;
+        case "redo": redo(); break;
+        case "delete": deleteSel(); break;
+        // ⚠ `f` = fit has NO design source. It exists because
+        // scripts/flows_visual_check.py:441 presses it with the comment
+        // "# fit-to-view, per the editor", and §F.4 item 1 lists adding it here
+        // as option (a) against changing the harness as option (b). §G-25 /
+        // §G-29 are OPEN — this is the option §D.5 assumes, not a ruling.
+        case "fit": fit(); break;
       }
     };
     window.addEventListener("keydown", onKey);

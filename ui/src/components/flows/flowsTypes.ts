@@ -389,8 +389,9 @@ export const AUTOSAVE_PAUSED_NOTE =
 // slip is permanent two seconds after it is made unless it can be taken back
 // (#688 part 3, WP-117). The history lives in `FlowsState.history` and is
 // written by the slice's one commit choke point; everything here is the pure
-// part both editors import, so the classic header, the #/next toolbar and
-// the two canvases' key handlers cannot word or decide one thing two ways.
+// part both editors import, so the classic header and the #/next toolbar
+// cannot word one thing two ways. The chords that drive it live in
+// lib/keys.ts, which both canvases read.
 
 /** The most edits one open flow remembers. The 51st drops the oldest
  *  (backlog ruling for #688 part 3). Entries are references to graph objects
@@ -465,18 +466,3 @@ export const undoReason = (f: { history?: FlowHistory }): string | null =>
   canUndo(f) ? null : UNDO_NOTHING_REASON;
 export const redoReason = (f: { history?: FlowHistory }): string | null =>
   canRedo(f) ? null : REDO_NOTHING_REASON;
-
-/** What a keystroke asks of the history, or null for none: Ctrl or Cmd+Z is
- *  undo, Ctrl or Cmd+Shift+Z redo, and Ctrl+Y redo (Windows' own spelling;
- *  Cmd+Y is the browser's History on a Mac and is left alone). Alt, with any
- *  of them, is somebody else's chord. The caller decides WHETHER the key may
- *  act at all (never while typing, never under a modal) before it asks. */
-export function historyKeyAction(
-  e: { key: string; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean },
-): "undo" | "redo" | null {
-  if (e.altKey || (!e.ctrlKey && !e.metaKey)) return null;
-  const k = e.key.toLowerCase();
-  if (k === "z") return e.shiftKey ? "redo" : "undo";
-  if (k === "y" && e.ctrlKey && !e.metaKey && !e.shiftKey) return "redo";
-  return null;
-}

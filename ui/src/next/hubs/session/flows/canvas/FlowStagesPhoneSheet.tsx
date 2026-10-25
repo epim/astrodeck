@@ -90,7 +90,9 @@ import {
 
 import { flowOrder } from "../../../../../components/flows/autoLayout";
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
-import type { FlowEdgeRec, FlowNodeRec } from "../../../../../components/flows/flowsTypes";
+import {
+  redoReason, undoReason, type FlowEdgeRec, type FlowNodeRec,
+} from "../../../../../components/flows/flowsTypes";
 import {
   START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts,
 } from "../../../../../components/flows/flowRunControls";
@@ -298,6 +300,10 @@ const FOOT_STYLE = { flex: "1 1 auto", minWidth: 0 } as const;
  *  the mount sheet (next.css `.nx-dial`). */
 const NO_SHRINK = { flexShrink: 0 } as const;
 
+/** UNDO and REDO side by side above ADD STAGE, each half the row, and not
+ *  shrunk by a long stage list for NO_SHRINK's reason. */
+const HISTORY_ROW_STYLE = { display: "flex", gap: 8, flexShrink: 0 } as const;
+
 // -------------------------------------------------------------- a stage row
 
 function StageRow({ node, nodes, edges, openId, runLive }: {
@@ -490,6 +496,14 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   const readonly = useStore((s) => s.flows.record?.readonly ?? false);
   const save = useStore((s) => s.flowsSave);
   const applyFraming = useStore((s) => s.flowsApplyFraming);
+  // UNDO and REDO over the one history the desktop editor's Ctrl+Z and the
+  // toolbar also drive (#771): this sheet saves an edit two seconds after it is
+  // made, so a slip made here has to be reversible from here. Why each cannot
+  // act, or null when it can: a string or null, so exact under Object.is.
+  const undoWhy = useStore((s) => undoReason(s.flows));
+  const redoWhy = useStore((s) => redoReason(s.flows));
+  const undo = useStore((s) => s.flowsUndo);
+  const redo = useStore((s) => s.flowsRedo);
   // THE COUNTS LINE, read from the graph on every store write: a string or
   // null, so this subscription is exact under Object.is. Not captured when the
   // sheet opens: the save that switches the counts writes the switch into this
@@ -824,6 +838,30 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
               dropped it, leaving a screen that could open a flow, wire it and run it
               but never add anything to it. The block around it is what keeps it
               52 px tall under a long list (see NO_SHRINK). */}
+          <div style={HISTORY_ROW_STYLE}>
+            <ActionButton
+              kind="ghost"
+              full
+              data-testid="flow-stages-undo"
+              lockedReason={undoWhy}
+              onExplain={explain}
+              onPress={undo}
+              ariaLabel="Undo the last edit"
+            >
+              UNDO
+            </ActionButton>
+            <ActionButton
+              kind="ghost"
+              full
+              data-testid="flow-stages-redo"
+              lockedReason={redoWhy}
+              onExplain={explain}
+              onPress={redo}
+              ariaLabel="Redo the edit you undid"
+            >
+              REDO
+            </ActionButton>
+          </div>
           <div>
             <ActionButton
               kind="purple"

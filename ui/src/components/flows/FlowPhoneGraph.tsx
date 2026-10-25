@@ -23,6 +23,7 @@ import { useStore } from "../../store";
 import type { PortDir } from "./geometry";
 import { computeAutoLayout } from "./autoLayout";
 import { NODE_DEFS } from "./nodeDefs";
+import FlowHistoryButtons from "./FlowHistoryButtons";
 import FlowNodeCard from "./FlowNodeCard";
 import FlowWireLayer from "./FlowWireLayer";
 import FlowWireDelete from "./FlowWireDelete";
@@ -92,6 +93,12 @@ export default function FlowPhoneGraph(): JSX.Element {
       </div>
 
       <div className="px-3.5 pb-6">
+        {/* The same history the desktop header and Ctrl+Z drive (#771): the
+            phone's autosave fires two seconds after an edit made here, and
+            this tab is where the edit is made. */}
+        <div className="flex gap-2 mb-2" data-testid="flow-history-row">
+          <FlowHistoryButtons />
+        </div>
         <button
           type="button"
           onClick={() => setUi({ paletteOpen: true })}
