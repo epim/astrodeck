@@ -283,6 +283,8 @@ class FlowRig:
         self.nights: list[Night] = []
         self._hubs: list[tuple[Any, list]] = []
         self.night_no = 0
+        #: Set by `close`: the nights' line records are closed with the rig.
+        self._closed = False
         #: The loop time past which `read` fails the scenario (WALL_BUDGET_S).
         self._deadline: float | None = None
 
@@ -312,6 +314,7 @@ class FlowRig:
         return self
 
     async def close(self) -> None:
+        self._closed = True
         try:
             for night in self.nights:
                 await night.close()
@@ -349,6 +352,7 @@ class FlowRig:
         night.published = []
         self._watch_the_pier(night)
         self._watch_the_states(night)
+        self._keep_the_lines(night)
         self.mp.setattr(app_module, "hub", hub)
         self.mp.setattr(app_module, "engine", night.engine)
         self.mp.setattr(report_mod, "time",
@@ -414,6 +418,27 @@ class FlowRig:
         self.mp.setattr(events.bus, "publish", publish)
 
     # ---- the routes
+
+    def _keep_the_lines(self, night: Night) -> None:
+        """Keep recording the ``sequence`` lines of the rig's current night
+        after a run's terminal publish, where `Night` stops (#808): the
+        run's own "complete" line, `_finalize_report`'s and the wind-down's,
+        so `Night.lines` and `Night.said` see them. Only the lines: the
+        trace, ``states`` and ``events`` stay where the terminal publish
+        stopped them, which is what the golden comparison reads. Lines a
+        recording `Night` already took are not taken twice, and the record
+        closes with the rig."""
+        inner = events_mod.bus.log
+
+        def log(level, message, source="hub", **kw):
+            if (source == "sequence" and not night._recording
+                    and not self._closed and night is self.nights[-1]):
+                night.lines.append((night.clock.t, level, message))
+                if kw.get("site_derived"):
+                    night.flagged.append((night.clock.t, level, message))
+            return inner(level, message, source, **kw)
+
+        self.mp.setattr(events_mod.bus, "log", log)
 
     def as_role(self, role: str | None) -> None:
         """Requests from now resolve to ``role``'s principal, or to the open

@@ -113,11 +113,18 @@ def test_taking_the_worktree_down_leaves_the_link_target_alone(repo, monkeypatch
     """Issue #88's shape, on the one path in this tool that can reach live
     files. After a completed run the real `node_modules` must still be there.
 
-    MUTATION: `_unlink` becomes `shutil.rmtree(link)`. Observed on Windows:
-    7 failed / 9 passed, this case among them - `rmtree` descended through
-    the junction and emptied the target, so the fixture's `index.js` was
-    gone. That is the hazard, reproduced: the same call against a real run
-    would be walking the live `node_modules`.
+    MUTATION: `_unlink` becomes `shutil.rmtree(os.path.realpath(link))`.
+    Observed on Windows, Python 3.12.10: 2 failed / 18 passed, this case and
+    `test_the_link_is_a_junction_and_rmdir_is_what_removes_it` - the delete
+    went through the link's real path and emptied the target, so the
+    fixture's `index.js` was gone. That is the hazard, reproduced: the same
+    call against a real run would be walking the live `node_modules`.
+
+    The earlier mutant, a bare `shutil.rmtree(link)`, does NOT reproduce the
+    hazard on this interpreter (#741): 3.12 refuses a junction with
+    `OSError: Cannot call rmtree on a symbolic link` and never descends, so
+    that mutant fails the suite by crashing, not by emptying anything. The
+    refusal is pinned by `test_rmtree_refuses_a_junction_instead_of_descending`.
     """
     monkeypatch.setattr(gate, "LINKED", ("ui/node_modules",))
     monkeypatch.chdir(repo)
@@ -228,6 +235,32 @@ def test_the_link_is_a_junction_and_rmdir_is_what_removes_it(tmp_path):
     gate._unlink(link)
     assert not link.exists()
     assert (target / "keep.txt").read_text(encoding="utf-8") == "kept\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows thing")
+def test_rmtree_refuses_a_junction_instead_of_descending(tmp_path):
+    """The premise the docstring above records (#741): on this interpreter a
+    recursive delete over a junction raises and leaves the target's contents
+    alone. If a different interpreter descends instead, this fails and the
+    claim that only the real-path delete is hazardous has to be re-measured.
+
+    MUTATION: stand in for an interpreter that descends, by replacing
+    `shutil.rmtree` with `lambda p: real_rmtree(os.path.realpath(p))` at the
+    top of the case. Observed: `Failed: DID NOT RAISE <class 'OSError'>`.
+    The real call on 3.12.10 raises `OSError: Cannot call rmtree on a
+    symbolic link`, which is the behaviour this case pins."""
+    import shutil
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("kept\n", encoding="utf-8")
+    link = tmp_path / "link"
+    gate._link(target, link)
+    try:
+        with pytest.raises(OSError, match="symbolic link"):
+            shutil.rmtree(link)
+        assert (target / "keep.txt").read_text(encoding="utf-8") == "kept\n"
+    finally:
+        gate._unlink(link)
 
 
 # ------------------------------------- the command imports HEAD's astrodeck (#1027)
