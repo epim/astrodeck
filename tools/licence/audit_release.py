@@ -89,7 +89,7 @@ def owner_findings(files, kind, decisions):
         applies = {
             "playerone": any("vendor/playerone/" in "/" + n.lower() and re.search(r"\.(dll|dylib|lib|a)$|\.so(?:\.|$)", n.lower()) for n in files),
             "artwork": "bg_nebula." in names,
-            "wcslib": kind == "frozen" and ("astropy/wcs/_wcs" in names or "openblas" in names),
+            "wcslib": kind == "frozen" and "astropy/wcs/_wcs" in names,
             "astrospheric": kind in {"source-tar", "server-wheel", "frozen"},
             "iau": kind in {"source-tar", "server-wheel", "frozen"} and ("brightstars.py" in names or "astrodeck.catalog.brightstars" in names),
         }.get(component, False)
@@ -97,6 +97,8 @@ def owner_findings(files, kind, decisions):
             errors.append(finding("OWNER_PENDING", "Central distribution decision remains unresolved", component=component, decision=row.get("evidence")))
         if applies and component not in {"playerone", "dss2"} and row.get("mode") == "fetch-only":
             errors.append(finding("POLICY_EXCLUDED", "Fetch-only decision does not permit this retained component; the packager/service still needs a separately reviewed change", component=component, decision=row.get("evidence")))
+        if applies and component == "wcslib" and row.get("mode") == "not-shipped":
+            errors.append(finding("POLICY_EXCLUDED", "WCSLIB is not shipped (#638); astropy.wcs must stay out of the artifact", component=component, decision=row.get("evidence")))
         if component == "dss2" and not row.get("include_tiles", True) and any("/catalog/_bundled_pack/dss2color/" in "/" + n.lower() for n in files):
             errors.append(finding("POLICY_EXCLUDED", "Central policy forbids bundled DSS2 tiles", component=component, decision=row.get("evidence")))
         if component == "playerone" and applies and not row.get("include_binaries", True):

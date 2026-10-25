@@ -482,3 +482,29 @@ def test_reviewed_artifact_component_manifest_is_credited_with_exact_notices(cre
             assert original in rendered, "observed binary component lost its complete notice"
         if spec.get("flag"):
             assert entry.get("flag"), "observed restricted component lost its owner decision"
+
+
+
+GCC_EXCEPTION = "GPL-3.0-or-later WITH GCC-exception-3.1"
+
+
+def test_reviewed_exception_record_is_credited_without_an_owner_flag(credits, entries):
+    """A record the owner reviewed (#638, D-F) clears the generic copyleft flag for itself only."""
+    specs = json.loads((REPO / "tools/licence/bundled-components.json").read_text(encoding="utf-8"))
+    reviewed = [spec["name"] for spec in specs if spec.get("reviewed_exception")]
+    assert reviewed == ["GCC runtime library (inside NumPy OpenBLAS)"]
+    have = {entry["name"]: entry for entry in entries}
+    flagged = {e["name"] for g in credits["groups"] if g["id"] == "flagged" for e in g["entries"]}
+    for name in reviewed:
+        assert not have[name].get("flag"), "reviewed exception record is still flagged"
+        assert name not in flagged
+
+
+def test_generator_flags_a_copyleft_expression_unless_a_record_was_reviewed():
+    import gen_credits
+    pool = gen_credits.TextPool()
+    kwargs = dict(name="x", version="1", spdx=GCC_EXCEPTION, tier="t", group="bundled")
+    assert gen_credits._entry(pool, **kwargs).flag, "generic copyleft expression must stay flagged"
+    assert gen_credits._entry(pool, reviewed_exception=True, **kwargs).flag is None
+    explicit = gen_credits._entry(pool, reviewed_exception=True, flag="specific", **kwargs)
+    assert explicit.flag == "specific"

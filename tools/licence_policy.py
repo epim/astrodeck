@@ -16,6 +16,10 @@ The other half of this module is the FLAG list. A GPL dependency, a
 non-commercial data set, or a package with no licence statement at all is not
 something a generator gets to resolve — it is an owner decision and possibly a
 removal. Those raise ``Flag`` and the build stops rather than quietly shipping.
+
+AstroDeck ships no GPL-family code without a reviewed exception record. The one
+record is the GCC Runtime Library Exception for the runtime statically linked
+into NumPy's OpenBLAS (``tools/licence/bundled-components.json``, #638).
 """
 from __future__ import annotations
 
@@ -290,13 +294,13 @@ def resolve(expression: str | None) -> Resolution:
                    "Carry the GPL/LGPL texts and notices. Review corresponding source, "
                    "library replacement/relinking and reverse-engineering permissions "
                    "for this exact distribution form.", copyleft=True),
-            "WCSLIB in the onefile executable needs owner review of LGPL compliance (#638); classification is not clearance."),
+            "LGPL-3.0-or-later code needs a reviewed exception record and none ships (#638); classification is not clearance."),
         "gpl-3.0-or-later with gcc-exception-3.1": (
             Policy("GPL-3.0-or-later WITH GCC-exception-3.1", (LICENSE_TEXT, NOTICE),
                    "The GCC Runtime Library Exception can permit qualifying combined "
                    "target code under other terms. Preserve notices and verify the "
                    "exception's conditions for the shipped runtime."),
-            "GCC runtime exception recorded explicitly; confirm the shipped component and applicable conditions (#638)."),
+            "GCC runtime exception is reviewed only for the runtime inside NumPy's OpenBLAS (#638); any other component under it needs its own record."),
     }
     if raw.lower() in reviewed:
         pol, flag = reviewed[raw.lower()]

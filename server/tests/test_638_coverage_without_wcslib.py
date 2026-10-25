@@ -6,6 +6,7 @@ astropy.wcs is allowed HERE, as the oracle the first-party corners are held to.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -191,3 +192,90 @@ def test_entry_module_does_not_import_astropy_wcs():
     r = subprocess.run([sys.executable, "-I", "-c", code], cwd=str(SERVER),
                        capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------------------
+# D-F (the owner's ruling of 2026-10-23): WCSLIB is not shipped. The registry, the
+# notices and the generated credits carry no record of it, the frozen-artifact
+# guard fails if it ever comes back, and the GCC runtime inside NumPy's
+# OpenBLAS carries its exception notice.
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(ROOT / "tools" / "licence"))
+import audit_frozen  # noqa: E402
+
+REGISTRY = ROOT / "tools" / "licence" / "bundled-components.json"
+GCC_RECORD = "GCC runtime library (inside NumPy OpenBLAS)"
+GCC_NOTICE = "bundled-gcc-runtime-exception-3.1.txt"
+
+
+def _registry():
+    return json.loads(REGISTRY.read_text(encoding="utf-8"))
+
+
+def _guard_findings(member):
+    data = b"MZ\0member"
+    files = {member: data}
+    baseline = {"artifact_sha256": "whole-executable", "files": [
+        {"path": member, "sha256": audit_frozen.digest(data), "archive_type": "b"}]}
+    findings, _ = audit_frozen.review_frozen(files, baseline, "whole-executable")
+    return findings
+
+
+def test_registry_has_no_wcslib_record_and_no_wcslib_text_file():
+    assert not [r["name"] for r in _registry() if "wcslib" in json.dumps(r).lower()]
+    assert not sorted(p.name for p in (ROOT / "tools" / "licence_texts").glob("*wcslib*"))
+
+
+def test_notices_and_credits_do_not_mention_wcslib():
+    notices = (ROOT / "THIRD-PARTY-NOTICES.md").read_text(encoding="utf-8")
+    credits = (ROOT / "ui" / "src" / "credits.generated.json").read_text(encoding="utf-8")
+    for name, text in (("THIRD-PARTY-NOTICES.md", notices), ("credits.generated.json", credits)):
+        assert "wcslib" not in text.lower(), name + " still mentions WCSLIB"
+
+
+@pytest.mark.parametrize("member", [
+    "astropy/wcs/_wcs.pyd",
+    "astropy/wcs/_wcs.cpython-312-x86_64-linux-gnu.so",
+    "astropy-8.0.1.dist-info/licenses/licenses/WCSLIB_LICENSE.rst",
+])
+def test_frozen_guard_fails_when_wcslib_reappears_in_an_archive(member):
+    findings = _guard_findings(member)
+    assert any(member + ": WCSLIB is not shipped (#638)" in f for f in findings), findings
+
+
+def test_frozen_guard_is_silent_about_unrelated_astropy_members():
+    findings = _guard_findings("astropy/units/format/generic.py")
+    assert not [f for f in findings if "WCSLIB" in f], findings
+
+
+def test_openblas_runtime_no_longer_leaves_an_open_disposition():
+    findings = _guard_findings("numpy.libs/libscipy_openblas64_-ed4f167a5330424524f45258e7ca2c8d.dll")
+    assert not [f for f in findings if "#638" in f], findings
+
+
+def test_gcc_runtime_record_carries_its_exception_notice_without_a_flag():
+    record = next(r for r in _registry() if r["name"] == GCC_RECORD)
+    assert "flag" not in record
+    titles = [t["title"] for t in record["texts"]]
+    assert GCC_NOTICE in titles
+    body = (ROOT / "tools" / "licence_texts" / GCC_NOTICE).read_text(encoding="utf-8")
+    assert "GCC RUNTIME LIBRARY EXCEPTION" in body
+    assert "Version 3.1, 31 March 2009" in body
+    assert "libscipy_openblas" in body
+
+
+def test_gcc_runtime_notice_reaches_notices_and_credits():
+    notices = (ROOT / "THIRD-PARTY-NOTICES.md").read_text(encoding="utf-8")
+    assert GCC_NOTICE in notices
+    credits = json.loads((ROOT / "ui" / "src" / "credits.generated.json").read_text(encoding="utf-8"))
+    entry = next(e for g in credits["groups"] for e in g["entries"] if e["name"] == GCC_RECORD)
+    assert not entry.get("flag"), "the GCC runtime entry is flagged again"
+    assert GCC_NOTICE in [t["title"] for t in entry["texts"]]
+
+
+def test_policy_text_no_longer_claims_no_gpl_anywhere():
+    text = (ROOT / "tools" / "licence_policy.py").read_text(encoding="utf-8")
+    assert "no GPL-family code without a reviewed exception record" in text
+    assert "no GPL anywhere" not in text
+    assert "WCSLIB" not in text

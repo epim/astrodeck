@@ -196,11 +196,14 @@ def _entry(pool: TextPool, *, name: str, version: str, spdx: str | None,
            texts: list[dict] | None = None,
            requires: tuple[str, ...] | None = None,
            summaries: list[str] | None = None,
-           flag: str | None = None) -> Entry:
+           flag: str | None = None,
+           reviewed_exception: bool = False) -> Entry:
     res, auto_flag = _resolve(name, spdx)
     # An explicit registry flag says something specific ("the source URL 404s")
     # where the automatic one can only say "unrecognised". Prefer the specific.
-    flag = flag or auto_flag
+    # A record the owner reviewed as an exception (#638) has answered the
+    # generic copyleft question for itself; the automatic flag is dropped.
+    flag = flag or (None if reviewed_exception else auto_flag)
     ent = Entry(
         name=name, version=version, spdx=(spdx or "UNKNOWN"), tier=tier,
         group=group, url=url, notes=notes, texts=texts or [], flag=flag,
@@ -562,6 +565,7 @@ def collect_bundled_components(pool: TextPool) -> list[Entry]:
             tier="reviewed-artifact-component", group="bundled",
             url=spec.get("url", ""), notes=spec["notes"],
             texts=texts, flag=spec.get("flag"),
+            reviewed_exception=spec.get("reviewed_exception", False),
             requires=tuple(spec["requires"]) if "requires" in spec else None,
             summaries=spec.get("summaries")))
     return out

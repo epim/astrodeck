@@ -281,6 +281,17 @@ class ArchiveAndPolicyTests(unittest.TestCase):
     def test_native_wheel_does_not_borrow_service_issues(self):
         policy = [{'component': 'astrospheric', 'mode': 'pending', 'requires_owner_decision': True}]
         self.assertEqual(gate.owner_findings({}, 'native-wheel', policy), [])
+    def test_not_shipped_wcslib_is_silent_while_openblas_is_retained(self):
+        policy = [{'component': 'wcslib', 'mode': 'not-shipped', 'requires_owner_decision': False, 'evidence': 'owner-fixture'}]
+        files = {'numpy.libs/libscipy_openblas64_-x.dll': b'MZ'}
+        self.assertEqual(gate.owner_findings(files, 'frozen', policy), [])
+
+    def test_not_shipped_wcslib_fails_when_its_extension_reappears(self):
+        policy = [{'component': 'wcslib', 'mode': 'not-shipped', 'requires_owner_decision': False, 'evidence': 'owner-fixture'}]
+        errors = gate.owner_findings({'astropy/wcs/_wcs.pyd': b'MZ'}, 'frozen', policy)
+        self.assertEqual([(e['code'], e['component']) for e in errors], [('POLICY_EXCLUDED', 'wcslib')])
+        self.assertEqual(gate.owner_findings({'astropy/wcs/_wcs.pyd': b'MZ'}, 'server-wheel', policy), [])
+
     def test_current_generated_credits_must_match_ui_input(self):
         errors, good = gate.checked_ui({}, {'credits_sha256': 'old'}, b'new')
         self.assertFalse(good)

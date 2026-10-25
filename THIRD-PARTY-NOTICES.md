@@ -180,8 +180,10 @@ The exact versions, artifact hashes, upstream text sources and scope are in
 [the bundled-component record](tools/licence/bundled-components.json).
 Full notices are linked below and reproduced in the generated credits.
 
-This inventory is not distribution clearance. WCSLIB and the GCC runtime retain
-explicit owner decisions under #638. Player One binaries ship in every artifact
+This inventory is not distribution clearance. The GCC runtime inside NumPy's
+OpenBLAS ships under the GCC Runtime Library Exception, version 3.1; its notice
+and the exception text are linked below (owner ruling of 2026-10-23, #638).
+Player One binaries ship in every artifact
 under the owner's ruling of 2026-10-20 while Player One's reply is awaited
 (#632); no written redistribution confirmation was found. The nebula background
 is owner-made and the owner ruled it redistributable (#637). These findings are recorded in
@@ -189,10 +191,9 @@ is owner-made and the owner ruled it redistributable (#637). These findings are 
 
 | Component in the inspected artifact | Licence | Full text and notices |
 | --- | --- | --- |
-| WCSLIB (inside Astropy) 8.6 in Astropy 8.0.1 | LGPL-3.0-or-later | [bundled-wcslib-8.6-notice.txt](tools/licence_texts/bundled-wcslib-8.6-notice.txt); [bundled-wcslib-lgpl-3.0.txt](tools/licence_texts/bundled-wcslib-lgpl-3.0.txt); [bundled-gpl-3.0.txt](tools/licence_texts/bundled-gpl-3.0.txt) |
 | OpenBLAS (inside NumPy) 0.3.34.106.0 in NumPy 2.5.3 | BSD-3-Clause | [bundled-numpy-2.5.3-notices.txt](tools/licence_texts/bundled-numpy-2.5.3-notices.txt) |
 | LAPACK (inside NumPy OpenBLAS) Bundled with OpenBLAS 0.3.34.106.0 / NumPy 2.5.3; separate LAPACK revision not established | BSD-3-Clause-Open-MPI | [bundled-numpy-2.5.3-notices.txt](tools/licence_texts/bundled-numpy-2.5.3-notices.txt) |
-| GCC runtime library (inside NumPy OpenBLAS) Bundled with NumPy 2.5.3; separate GCC runtime revision not established | GPL-3.0-or-later WITH GCC-exception-3.1 | [bundled-numpy-2.5.3-notices.txt](tools/licence_texts/bundled-numpy-2.5.3-notices.txt) |
+| GCC runtime library (inside NumPy OpenBLAS) Bundled with NumPy 2.5.3; separate GCC runtime revision not established | GPL-3.0-or-later WITH GCC-exception-3.1 | [bundled-gcc-runtime-exception-3.1.txt](tools/licence_texts/bundled-gcc-runtime-exception-3.1.txt); [bundled-gpl-3.0.txt](tools/licence_texts/bundled-gpl-3.0.txt) |
 | CPython bundled interpreter 3.12.10 | PSF-2.0 | [bundled-cpython-3.12.10.txt](tools/licence_texts/bundled-cpython-3.12.10.txt) |
 | OpenSSL (CPython runtime libraries) 3.0.16 | Apache-2.0 | [bundled-openssl-3.0.16.txt](tools/licence_texts/bundled-openssl-3.0.16.txt) |
 | OpenSSL (inside cryptography) 4.0.3 in cryptography 50.0.2 | Apache-2.0 | [bundled-openssl-4.0.3.txt](tools/licence_texts/bundled-openssl-4.0.3.txt) |
