@@ -102,3 +102,21 @@ Nothing was regenerated as a build step. A later change to a shipped file is SOU
 Still open:
 - The wcslib row stays pending until a frozen build is shown free of WCSLIB.
 - The frozen executables keep their own provenance and native-rights findings, recorded above. Under the source-first workflow, those binaries are withheld rather than published.
+
+## Delta: OpenNGC snapshot pin (#804)
+
+`ngc.tsv` and `ngc_extras.tsv` are regenerated from one OpenNGC commit, `be3cd6c5498806a2fbb2f7e0452ef802dbb02be0` (master on 2026-10-18), by `server/tools/build_ngc_catalog.py`, which fetches that commit, checks NGC.csv and addendum.csv against recorded sha256 values, and refuses any ref that is not a full commit id. `ngc.tsv` records the commit and both checksums in its header. Same upstream, same licence (CC-BY-SA-4.0), same columns and same filter; no new source and no new field.
+
+Reviewed difference against the previously shipped files (which came from an unrecorded, older download):
+- `ngc.tsv`: 13,369 rows before and after, same ids. 141 rows differ: 97 magnitudes and 43 sizes, some rows both (OpenNGC data revisions, for example IC 2105 from 0.65 to 3.0 arcmin), and name or position changes on five rows. Flame Nebula moves from IC 434 to NGC 2024 and Cocoon Galaxy from NGC 4990 to NGC 4490, both upstream corrections; Mel072 has a new position and no magnitude.
+- `ngc_extras.tsv`: 12,013 rows before, 12,001 after. 2,436 rows differ, 2,385 of them only in redshift. 20 rows that carried only a redshift upstream has since removed are gone, 8 rows are new, and shape, minor-axis and position-angle cells moved on 51 rows. IC 2105 and IC 3231, which disagreed with `ngc.tsv` about size and so had no shape, now agree and have one.
+
+The registry rows for both files carry the new hashes, computed with `content_sha256` in `audit_artifact.py` (CRLF to LF for text).
+
+## Delta review for #638 (2026-10-23, owner ruling D-F)
+
+- **WCSLIB is not shipped.** `astropy.wcs` left the runtime in #1103, and `packaging/astrodeck.spec` excludes `astropy/wcs/` and `astropy/visualization/wcsaxes/`. The WCSLIB record, its two notice texts and its entries in `THIRD-PARTY-NOTICES.md` and the generated credits are removed. The executables on v0.3.23 through v0.3.28 stay as they are, and the archive baseline still lists `astropy/wcs/_wcs.pyd` because those binaries contain it.
+- **The guard stays.** `audit_frozen.py` no longer reports an open disposition for WCSLIB or for the OpenBLAS runtime. A frozen archive member `astropy/wcs/_wcs.*.pyd`, `astropy/wcs/_wcs.*.so` or any `WCSLIB_LICENSE.rst` is a finding: "WCSLIB is not shipped (#638)". `server/tests/test_638_coverage_without_wcslib.py` covers it.
+- **The final data TOC.** The spec removed `astropy/wcs/` rows before Analysis, but a PyInstaller hook could add them back. `metadata_payloads.filter_final_datas` now drops installer URLs and WCSLIB data from `a.datas` in one pass (#1073). `packaging/tests/test_release_packaging.py` feeds it hook-added rows.
+- **GCC Runtime Library Exception.** The record for the runtime statically linked into NumPy's OpenBLAS carries `bundled-gcc-runtime-exception-3.1.txt`, cut verbatim from the NumPy wheel notice, and the GPL text. The record is marked `reviewed_exception`, so `gen_credits.py` drops the automatic copyleft flag for it and for nothing else; the generic expression stays flagged. `licence_policy.py` states the rule: no GPL-family code without a reviewed exception record.
+- **Supersedes** the earlier line "The wcslib row stays pending until a frozen build is shown free of WCSLIB". The `wcslib` row in `packaging/distribution-policy.json` is now `not-shipped` (evidence: owner ruling D-F on PR #1130, 2026-10-23), a mode `packaging/distribution_policy.py` accepts. `audit_release.py` no longer emits `OWNER_PENDING wcslib`, and no longer ties the row to OpenBLAS; it emits `POLICY_EXCLUDED` for wcslib only when `astropy/wcs/_wcs` is present in a frozen artifact.

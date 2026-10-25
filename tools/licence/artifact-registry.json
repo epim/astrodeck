@@ -102,7 +102,7 @@
     },
     {
       "path": "server/astrodeck/catalog/data/ngc.tsv",
-      "sha256": "18a334dcdc7a22b9f74c8a460946201cc544aa52dde4e7620f1b3df0e0879cbd",
+      "sha256": "0f06e2b64ab694cdcd5ad61c460bdb56c88e42dccb86b584eef4229d7046cc33",
       "component": "OpenNGC deep-sky catalogue",
       "credit": "OpenNGC deep-sky catalogue",
       "spdx": "CC-BY-SA-4.0",
@@ -110,7 +110,7 @@
     },
     {
       "path": "server/astrodeck/catalog/data/ngc_extras.tsv",
-      "sha256": "69c8d533e53cc76b2e62a48f17413fa28b55e2c2b2df8e2783d9166312bd4bc2",
+      "sha256": "4af30713d5e19f931403c4bf8319c5af405b94ff64c987d2a98fd54e8725df2e",
       "component": "OpenNGC deep-sky catalogue \u2014 extra columns (Hubble type, minor axis, axis ratio, position angle, redshift, NED notes)",
       "credit": "OpenNGC deep-sky catalogue \u2014 extra columns (Hubble type, minor axis, axis ratio, position angle, redshift, NED notes)",
       "spdx": "CC-BY-SA-4.0",
