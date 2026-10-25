@@ -25,7 +25,7 @@ import type {
 import { runIsLive } from "../../lib/lastSessionFrame";
 import { isTransientLoadError, retryTransient, type LoadRetry } from "../../lib/retryLoad";
 import type { SequenceState, ToastLevel } from "../../types";
-import { isRunPhaseLive, knownSessions, runLatchEnds } from "./flowRunState";
+import { isRunPhaseLive, knownSessions, RUN_PHASE_BRIDGE_MS, runLatchEnds } from "./flowRunState";
 import { NODE_DEFS, createParams } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
 import {
@@ -63,13 +63,6 @@ export const LIVE_PROGRESS_MIN_MS = 30_000;
  *  param typed into) is one PUT and a pause is what ends it. Never a timer for
  *  a retry: see `autosaveFire`. */
 export const AUTOSAVE_QUIET_MS = 2000;
-
-/** How long the optimistic `flows.run.phase` is believed on its own when the
- *  autosave asks whether a run of this flow is live: the RUN button's own
- *  number (`RUN_PHASE_BRIDGE_MS`, #647). That one lives in flowRunControls.tsx,
- *  which imports this module, so it cannot be imported back without a cycle;
- *  w15FlowHeaderSaveState.test.tsx pins the two equal. */
-export const AUTOSAVE_RUN_BRIDGE_MS = 20_000;
 
 /** The end of the flow-log line an autosave that did not keep the edit says
  *  (`could not autosave: <reason>; <this>`): the ruling that a failed PUT is
@@ -1226,7 +1219,7 @@ export function createFlowsActions(
   const runLive = (): boolean => {
     const f = get().flows;
     const bridging = isRunPhaseLive(f.run.phase)
-      && (f.run.startedAt === null || Date.now() - f.run.startedAt < AUTOSAVE_RUN_BRIDGE_MS);
+      && (f.run.startedAt === null || Date.now() - f.run.startedAt < RUN_PHASE_BRIDGE_MS);
     return bridging
       || openFlowOwns(liveSessionOf(seqSeen));
   };

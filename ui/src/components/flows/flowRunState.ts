@@ -78,6 +78,24 @@ export function flowRunLive(known: readonly string[] | null | undefined,
   return runIsLive(sequence) && Array.isArray(known) && known.includes(running);
 }
 
+/** How long `flows.run.phase`'s optimistic guess is trusted ON ITS OWN, past
+ *  the moment `flowsRun` stamped `startedAt` (#647). Past this window the
+ *  display defers to the server's own answer alone, whether or not
+ *  `flowsSlice.ts`'s own `onSequence` clear has already landed - belt and
+ *  braces, since that clear fires only once the server has actually reported
+ *  the run over, and a dropped or delayed publish must not leave a STOP
+ *  label live forever either.
+ *
+ *  THE ONE DEFINITION (#716). Both the RUN button (`flowRunControls.tsx`) and
+ *  the autosave's "is a run of this flow live" read (`flowsSlice.ts`) believe
+ *  the latch for this long; this module is the one both can import without a
+ *  cycle, so the number lives here and nowhere else
+ *  (wp15uBridgeConstant.test.ts pins that). Not imported from `NowEmpty.tsx`'s
+ *  `RUN_PHASE_GRACE_MS`: that constant answers a different question (divert
+ *  navigation to Now), and importing a next/ screen's module into this shared
+ *  classic code would couple the two for no reason beyond sharing a number. */
+export const RUN_PHASE_BRIDGE_MS = 20_000;
+
 /** True while the engine still owns the rig, from `flows.run.phase` (the
  *  client's own OPTIMISTIC latch, never the server's own answer - that is
  *  `flowRunLive` above).

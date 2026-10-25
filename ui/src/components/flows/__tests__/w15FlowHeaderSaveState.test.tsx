@@ -103,8 +103,7 @@ const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../store");
 const { flowsApi } = await import("../../../lib/flowsApi");
 const { default: FlowHeader, saveStateClass } = await import("../FlowHeader");
-const { RUN_PHASE_BRIDGE_MS } = await import("../flowRunControls");
-const { AUTOSAVE_RUN_BRIDGE_MS, AUTOSAVE_QUIET_MS } = await import("../flowsSlice");
+const { AUTOSAVE_QUIET_MS } = await import("../flowsSlice");
 const {
   AUTOSAVE_PAUSED_NOTE, SAVE_READONLY_REASON, SAVE_STATE_CLEAN, SAVE_STATE_DIRTY,
   SAVE_STATE_READONLY, SAVE_STATE_SAVING, saveStateWord,
@@ -231,8 +230,6 @@ await testAsync("the classic header and the #/next toolbar say the same four wor
   eq(saveStateWord(true, false, true), SAVE_STATE_SAVING, "a PUT out outranks the edit it carries");
   eq(saveStateWord(true, false, false), SAVE_STATE_DIRTY, "an edit nobody is sending is unsaved");
   eq(saveStateWord(false, false, false), SAVE_STATE_CLEAN, "a clean flow is saved");
-  eq(AUTOSAVE_RUN_BRIDGE_MS, RUN_PHASE_BRIDGE_MS,
-    "the autosave's reading of the optimistic run latch drifted from the RUN button's (#647)");
 });
 
 // MUTANT "no pill" (FlowHeader.tsx: the `{editor && !phone && (` of section
@@ -339,10 +336,6 @@ await testAsync("over a live run an unsaved edit says why it is waiting, and onl
 //     subscription, so the edit was never saved
 //     expected "1 PUTs 2000 ms after an edit through the real store"
 //     got      "0 PUTs 2000 ms after an edit through the real store"
-// MUTANT "the bridge window drifts" (flowsSlice.ts `AUTOSAVE_RUN_BRIDGE_MS =
-// 20_000` made 15_000). Observed, 5/6, in the first case:
-//     expected 20000
-//     got      15000
 await testAsync("an edit through the real store is saved 2000 ms later, and the mounted pill follows it", async () => {
   seed({});
   await mount();

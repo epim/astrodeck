@@ -46,8 +46,9 @@
 // module for those exports must not itself run the whole suite — see the
 // `isMain` guard at the bottom of the file.
 
-import { readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -308,6 +309,7 @@ export function runOne(file, timeoutMs = TIMEOUT_MS, { exitGraceMs = 0 } = {}) {
     process.exit(0);   // no export: the parent reads the printed tally
   `;
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     // Why the RUNNER ended the child, when it did: "timeout" or "grace". Kept
     // here, and not read back from `err.killed`, because that flag is also set
     // by execFile's own maxBuffer kill and says nothing about WHICH of our two
@@ -368,6 +370,11 @@ export function runOne(file, timeoutMs = TIMEOUT_MS, { exitGraceMs = 0 } = {}) {
           exitedBeforeKill,
           graceKilled,
           exitGraceMs,
+          // How long the run took and what it was allowed (#754, #914): a
+          // child killed at its timeout is named with both, so a freeze that
+          // leaves no output at all still says how long it sat there.
+          elapsedMs: Date.now() - startedAt,
+          timeoutMs,
         });
       },
     );
@@ -638,7 +645,9 @@ function describeEnd(r) {
  *  ended badly: "0 failed" was the whole reason for a red file. */
 export function brokenReason(r) {
   if (r.timedOut) {
-    return `timed out after ${TIMEOUT_MS / 1000}s (${timeoutPhase(r).prose})`;
+    const limit = (r.timeoutMs ?? TIMEOUT_MS) / 1000;
+    const ran = typeof r.elapsedMs === "number" ? `elapsed ${(r.elapsedMs / 1000).toFixed(1)}s; ` : "";
+    return `timed out after ${limit}s (${ran}${timeoutPhase(r).prose})`;
   }
   const how = describeEnd(r);
   if (r.counts) {
@@ -648,6 +657,58 @@ export function brokenReason(r) {
   }
   return "no pass/fail tally in its output — cannot be scored"
     + (how === null ? "" : ` (the child ${how})`);
+}
+
+/** The most one broken file's block may print (#753). A child that floods its
+ *  stdout was printed whole, up to the 8 MiB maxBuffer, per broken file, and
+ *  the reason buried above it. */
+export const OUTPUT_CAP_BYTES = 64 * 1024;
+const FAILING_LINES_SHOWN = 40;
+const TAIL_LINES_SHOWN = 60;
+const LINE_CHARS_SHOWN = 300;
+// The first non-blank character of a failure line in the suite's own
+// conventions: `x name: why`, a ballot-x mark, `FAIL`.
+const FAILING_LINE = /^\s*(?:x|\u2717|FAIL|FAILED)\b/;
+
+const clipLine = (line) => (line.length > LINE_CHARS_SHOWN
+  ? `${line.slice(0, LINE_CHARS_SHOWN)} ...[line cut]`
+  : line);
+
+/** One broken file's output as it is printed: whole when it fits the cap,
+ *  otherwise a block that opens with a line saying how much was cut and where
+ *  the whole of it is (`fullPath`, which the caller writes), then the failing
+ *  cases, then the last lines. Returns `{ text, cut }`; `text` is at most
+ *  OUTPUT_CAP_BYTES. */
+export function capOutput(output, fullPath) {
+  const size = Buffer.byteLength(output, "utf8");
+  if (size <= OUTPUT_CAP_BYTES) return { text: output, cut: false };
+  const lines = output.split("\n");
+  const failing = lines.filter((l) => FAILING_LINE.test(l)).slice(0, FAILING_LINES_SHOWN).map(clipLine);
+  const tail = lines.slice(-TAIL_LINES_SHOWN).map(clipLine);
+  const parts = [`[output cut: ${size} bytes captured, showing the failing cases and the last `
+    + `${tail.length} lines; the whole of it is in ${fullPath}]`];
+  if (failing.length > 0) parts.push("failing cases:", ...failing);
+  parts.push(`last ${tail.length} lines:`, ...tail);
+  const text = parts.join("\n");
+  // A line of four-byte characters can outweigh its character count; the cap
+  // is in bytes, so the block is held to it by characters as a last resort.
+  return { text: Buffer.byteLength(text, "utf8") <= OUTPUT_CAP_BYTES
+    ? text : text.slice(0, OUTPUT_CAP_BYTES / 4), cut: true };
+}
+
+/** The block `main` prints for one broken file: the file and its reason, then
+ *  its output capped by `capOutput`. When the output was cut, the whole of it
+ *  is written under `outDir` first, at the path the block names. */
+export function formatBroken({ name, why, output }, outDir) {
+  const header = `\n--- ${name}: ${why}`;
+  if (!output) return header;
+  const fullPath = join(outDir, `${name.replace(/[^A-Za-z0-9._-]/g, "_")}.log`);
+  const { text, cut } = capOutput(output, fullPath);
+  if (cut) {
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(fullPath, output, "utf8");
+  }
+  return `${header}\n${text}`;
 }
 
 /** Typecheck the whole project before running anything, and fail the run if
@@ -724,10 +785,8 @@ async function main() {
   const gracedLine = gracedSummaryLine(results);
   if (gracedLine) console.log(gracedLine);
   if (broken.length) {
-    for (const b of broken) {
-      console.error(`\n--- ${b.name}: ${b.why}`);
-      if (b.output) console.error(b.output);
-    }
+    const outDir = join(tmpdir(), "astrodeck-ui-test-output");
+    for (const b of broken) console.error(formatBroken(b, outDir));
     console.error(`\n${broken.length} file(s) not green`);
     process.exit(1);
   }

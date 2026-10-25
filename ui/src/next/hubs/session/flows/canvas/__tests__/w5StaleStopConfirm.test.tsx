@@ -226,7 +226,7 @@ await testAsync(
 await testAsync(
   "an optimistic phase past the bridge window reads RUN with no transition ever observed (#647)",
   async () => {
-    const { RUN_PHASE_BRIDGE_MS } = await import("../../../../../../components/flows/flowRunControls");
+    const { RUN_PHASE_BRIDGE_MS } = await import("../../../../../../components/flows/flowRunState");
     seed({
       run: {
         ...useStore.getState().flows.run, phase: "running",
