@@ -54,6 +54,25 @@ from _flow_night import (T0, FlowRig, assert_the_three_agree,  # noqa: F401
 from _group_harness import group_store, ra_at  # noqa: F401
 
 FLOW = mosaic_flow(ra_hours=ra_at(-2.0), plan="L 10, R 10", cycles=3)
+
+
+async def read_settled(rig: FlowRig, night, fid: str):
+    """``rig.read`` once the run's report writes have landed (#1099).
+
+    A frame's report snapshot is written by a task the engine does not wait
+    for, on a worker thread, while the night's clock is held for the read.
+    ``FlowRig._report`` polls two seconds of real time for the snapshot, and
+    a write that is slower than that, or failed and was retried, left the
+    report a frame behind the ledger: a count mismatch that came and went
+    with the machine's load. ``SessionReporter.flush`` returns when the
+    report on disk holds everything the reporter recorded, so the read
+    after it has nothing to race."""
+    reporter = night.engine.reporter
+    if reporter is not None:
+        await reporter.flush()
+    return await rig.read(night, fid)
+
+
 MISSES = "M31 2-2"
 #: The reason the group driver sets 2-2 aside with (``GroupRun.
 #: _count_failure``), up to the last error, which is the hub's.
@@ -136,7 +155,7 @@ async def night_one(rig: FlowRig, fid: str, *, on_hold=None,
         rec = in_flight.pop() if in_flight else None
         if rec is None:
             clock_holds.pop(0)
-        reading = await rig.read(night, fid)
+        reading = await read_settled(rig, night, fid)
         if on_hold is not None:
             on_hold(night, reading, rec)
         shot = night.shots()[:-1] if rec is not None else night.shots()
@@ -148,7 +167,7 @@ async def night_one(rig: FlowRig, fid: str, *, on_hold=None,
         night.release()
         hold_at_the_next_instant()
     night.on_capture = None
-    return night, await rig.read(night, fid)
+    return night, await read_settled(rig, night, fid)
 
 
 async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(

@@ -35,7 +35,7 @@ import time
 from _flow_night import (FlowRig, assert_the_three_agree, flow_rig,  # noqa: F401
                          moved, shot_counts, steps_by_panel)
 from _group_harness import group_store  # noqa: F401
-from test_s7_sim_solve_failure import FLOW, MISSES, night_one
+from test_s7_sim_solve_failure import FLOW, MISSES, night_one, read_settled
 
 #: The runs' report ids: the plan's name slugged, then the local start in
 #: the harness's zone (UTC-4) on every machine, so a literal can name them.
@@ -191,7 +191,7 @@ async def test_continue_on_night_two_retries_the_set_aside_panel_and_counts_nigh
     assert await night.settle(), (
         f"{rig.at(night)}: night 2 never reached 2-2's second visit: 2-2 "
         f"was not retried")
-    mid = await rig.read(night, fid)
+    mid = await read_settled(rig, night, fid)
     at = mid.at
     assert visit_two[0]["target"] == MISSES, (
         f"{at}: night 2's second visit is to {visit_two[0]['target']}")
@@ -254,7 +254,7 @@ async def test_continue_on_night_two_retries_the_set_aside_panel_and_counts_nigh
         2, resaved), f"{at}: the progress route reads {again['session']}"
 
     await night.finish()
-    end = await rig.read(night, fid)
+    end = await read_settled(rig, night, fid)
     at = end.at
     assert len(end.session.nights) == 3 and \
         end.session.nights[:2] == [NIGHT_ONE_RUN, NIGHT_TWO_RUN], (

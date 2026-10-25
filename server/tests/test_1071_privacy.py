@@ -38,6 +38,7 @@ import astrodeck.api.app as app_module
 import astrodeck.devices.backends.zwo_am5 as am5
 import astrodeck.hub as hub_module
 import astrodeck.pulse_probe as pp
+from astrodeck.api.slow_requests import SLOW_REQUEST_SOURCE
 from astrodeck.devices import lx200
 from astrodeck.events import bus, night_key
 from astrodeck.guide.flight_recorder import FlightRecorder
@@ -124,6 +125,29 @@ def _find(forms: list[str], text: str) -> list[str]:
     return [f for f in forms if f in text]
 
 
+def _collect(lines: list[str]):
+    """A ``bus.log`` stand-in that keeps the lines the PROBE wrote.
+
+    The slow-request log (#858) writes a line for any request whose first
+    byte took 3 s or more, and on a loaded box the probe's own POST can be
+    one: ``slow request POST /api/mount/pulse-probe: answered after 3.4 s``.
+    Its numbers are the machine's clock and differ between the two runs,
+    which the token comparison reads as a number that tracks the site (#1119,
+    the suite under parallel load). The line is built from the method, the
+    route TEMPLATE and the durations, so no site value can reach it; it is
+    left out here, and the two runs' other lines are compared as before."""
+    def log(level, message, source="hub", **kw):
+        if source != SLOW_REQUEST_SOURCE:
+            lines.append(message)
+    return log
+
+
+#: Ends a probe that never finishes. It is NOT a speed assertion: a probe
+#: that takes minutes on a loaded box is slow, not leaking, and the leak
+#: scan below is the same however long the run took (#1119).
+_HANG_GUARD_S = 300.0
+
+
 # -------------------------------------------------- the pulse probe route
 
 
@@ -143,14 +167,12 @@ def _run_route(tmp_path, monkeypatch, ra_s: float, rate: float,
     monkeypatch.setattr(app_module.hub, "guider", None, raising=False)
     lines: list[str] = []
     real = bus.log
-    monkeypatch.setattr(
-        bus, "log", lambda level, message, source="hub", **kw: lines.append(
-            message))
+    monkeypatch.setattr(bus, "log", _collect(lines))
     app = app_module.create_app()
     with TestClient(app) as client:
         r = client.post("/api/mount/pulse-probe")
         assert r.status_code == 200, r.text
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + _HANG_GUARD_S
         folder = tmp_path / "guide" / night_key()
         while time.monotonic() < deadline:
             t = app_module.hub._busy.get("pulse_probe")
@@ -445,3 +467,38 @@ async def test_every_new_key_is_a_difference_a_rate_a_flag_or_a_count(
     r = await tel.probe_ra_drift(2.0)
     assert set(r) == probe_keys, set(r) ^ probe_keys
     assert not any(k.endswith(("_hours", "_deg", "_rad")) for k in r)
+
+
+# ------------------------------------ #1119: the comparison under parallel load
+
+
+def _logged(entries: list[tuple[str, str]]) -> list[str]:
+    """What ``_collect`` keeps of ``(source, message)`` entries."""
+    kept: list[str] = []
+    log = _collect(kept)
+    for source, message in entries:
+        log("info", message, source)
+    return kept
+
+
+def test_a_slow_request_line_does_not_read_as_a_number_that_tracks_the_site():
+    """Two runs of the same probe, one of whose POSTs the loaded box answered
+    in 3.4 s and the other in 4.1 s: the slow-request lines differ, the probe's
+    own lines do not, and the comparison finds nothing. A probe line that DOES
+    carry a site-moving number is still found, so the exclusion is of one
+    source and not of numbers.
+
+    MUTANT 11 (``_collect`` keeping every source): RED, the two durations
+    track."""
+    probe = ("hub", "tracking probe (rest): RA drift +0.00 arcsec/s")
+    run_a = _logged([probe, (SLOW_REQUEST_SOURCE,
+                             "slow request POST /api/mount/pulse-probe: "
+                             "answered after 3.4 s")])
+    run_b = _logged([probe, (SLOW_REQUEST_SOURCE,
+                             "slow request POST /api/mount/pulse-probe: "
+                             "answered after 4.1 s")])
+    assert run_a == run_b == [probe[1]]
+    assert not any_tracking(tracking_tokens(run_a, run_b))
+    leaking_a = _logged([("hub", "tracking probe: RA 3.2122 h")])
+    leaking_b = _logged([("hub", "tracking probe: RA 17.8025 h")])
+    assert any_tracking(tracking_tokens(leaking_a, leaking_b))

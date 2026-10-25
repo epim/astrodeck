@@ -47,6 +47,7 @@ import astrodeck.catalog.coords as coords_mod
 from _flow_night import (FlowRig, assert_the_three_agree, flow_rig,  # noqa: F401
                          mosaic_flow, panel_label, shot_counts, steps_by_panel)
 from _group_harness import LON, group_store, ra_at  # noqa: F401
+from test_s7_sim_solve_failure import read_settled
 
 FLOW = mosaic_flow(ra_hours=ra_at(-0.4), plan="L 10, R 10", cycles=20)
 #: A clock time inside the meridian wait, which runs from the moment the
@@ -170,7 +171,7 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
         f"premise, {rig.at(night)}: a frame was shot inside the warn window")
     assert counting[0]["t"] < night.t0 + IN_THE_WAIT_S, (
         f"premise, {rig.at(night)}: the counting frame comes before the wait")
-    early = await rig.read(night, fid)
+    early = await read_settled(rig, night, fid)
     assert (early.state.get("live") or {}).get("meridian_eta_s"), (
         f"{early.at}: premise, a countdown to grade the redaction against: "
         f"{early.state.get('live')}")
@@ -181,7 +182,7 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
     night.hold(night.t0 + IN_THE_WAIT_S)
     assert await night.settle(), (
         f"premise, {rig.at(night)}: the night reached the wait")
-    wait = await rig.read(night, fid)
+    wait = await read_settled(rig, night, fid)
     at = wait.at
     group, seen = wait.state["group"], wait.viewer["group"]
     assert (group["meridian_wait"], wait.state["detail"]) == (
@@ -231,7 +232,7 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
     night.release()
     assert await night.settle(), (
         f"premise, {rig.at(night)}: the night shot past the meridian")
-    flipped = await rig.read(night, fid)
+    flipped = await read_settled(rig, night, fid)
     at = flipped.at
     rec = after_the_flip[0]
     assert flipped.state["group"]["meridian_wait"] is True and \
@@ -244,7 +245,7 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
 
     night.on_capture = lambda rec: rec.update(side=tel._latched_side.value)
     await night.finish(wall_s=120.0)
-    end = await rig.read(night, fid)
+    end = await read_settled(rig, night, fid)
     at = end.at
 
     slews = night.pier_slews

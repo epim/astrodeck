@@ -895,6 +895,10 @@ class SessionReporter:
         ``_persist`` already logs and retries it on its own terms, and a
         flush exists to wait for the attempt, not to grade it.
 
+        AFTER THE WAIT THE REPORT ON DISK HOLDS EVERYTHING RECORDED BEFORE
+        THE CALL (#1099): a snapshot whose write failed twice, or a final
+        write whose retry has not yet run, is written once more here, awaited.
+
         Loops rather than a single pass, in case a write scheduled while this
         was waiting (an event recorded concurrently from elsewhere) left a
         new task behind -- cheap when, as in every call this codebase makes,
@@ -911,11 +915,25 @@ class SessionReporter:
         integration's extra flush in the engine's cancel arm hit it at every
         test teardown that cancelled a run mid-write (24 hung xdist workers on
         the merged tree)."""
+        redone = False
         while True:
             running = [t for t in self._pending if not t.done()]
-            if not running:
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
+                continue
+            if redone or self._written >= self._built:
                 return
-            await asyncio.gather(*running, return_exceptions=True)
+            # THE REPORT ON DISK MUST HOLD WHAT WAS RECORDED (#1099). No write
+            # is running and the newest snapshot built is not the one on
+            # disk: its write failed, and so did the one bounded retry
+            # (#579), or ``finalize``'s first attempt failed and its retry is
+            # still a thread's sleep away (#477). Nothing else will write
+            # while a night is held, so a reader after this flush would find
+            # the report a frame behind the record. One fresh snapshot,
+            # awaited; a disk that refuses it too is logged by ``_persist``
+            # and left, as a flush never grades the write.
+            redone = True
+            await self._write_async()
 
     def _snapshot(self) -> tuple[int, SessionReport]:
         """Build the report and number it. Called on the loop thread only, so

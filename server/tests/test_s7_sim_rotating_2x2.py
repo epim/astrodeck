@@ -34,6 +34,7 @@ from _flow_night import (FlowRig, assert_the_three_agree, flow_rig,  # noqa: F40
                          mosaic_flow, panel_label, shot_counts, steps_by_panel)
 from _group_harness import group_store, ra_at, watchdog_timeline  # noqa: F401
 from astrodeck.sequence.panel_order import order_panels
+from test_s7_sim_solve_failure import read_settled
 
 FLOW = mosaic_flow(ra_hours=ra_at(-2.0), plan="L 10, R 10", cycles=3)
 #: Every pass visits the four panels in the snake order ``panel_order``
@@ -129,7 +130,7 @@ async def test_a_rotating_2x2_visits_one_pass_at_a_time_and_every_reader_agrees(
     held = 0
     while await night.settle():
         rec = night.captures[-1]
-        reading = await rig.read(night, fid)
+        reading = await read_settled(rig, night, fid)
         at = reading.at
         held += 1
         visit = len(seen) - 1
@@ -155,7 +156,7 @@ async def test_a_rotating_2x2_visits_one_pass_at_a_time_and_every_reader_agrees(
         night.release()
     night.on_capture = None
 
-    end = await rig.read(night, fid)
+    end = await read_settled(rig, night, fid)
     at = end.at
     assert night.visits() == [(p, ("L", "R")) for _ in range(3) for p in
                               [f"M31 {label}" for label in PASS]], (
