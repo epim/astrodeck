@@ -247,12 +247,13 @@ jobs:
       - name: cargo clippy
         working-directory: native
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: cargo test
-        working-directory: native
-        run: |
-          cargo test --workspace
-          cargo test -p astro-star --features parallel
+      # BEFORE cargo test (#1138): astrodeck-native's test binary links
+      # libpython (pyo3, no extension-module), and with no Python set up pyo3
+      # took whatever python3 the image ships. ubuntu-26 ships one whose
+      # libpython3.12 is not on the linker path, so the job broke with the tree
+      # unchanged. Link and run against the interpreter this job chose.
       - uses: actions/setup-python@v5
+        id: py
         with:
           python-version: '3.12'
           cache: pip
@@ -261,6 +262,15 @@ jobs:
           # path is explicit -- an over-clever cache that fails the build is worse
           # than no cache at all.
           cache-dependency-path: '**/pyproject.toml'
+      - name: cargo test
+        working-directory: native
+        env:
+          PYO3_PYTHON: ${{ steps.py.outputs.python-path }}
+        run: |
+          LIBDIR="$("$PYO3_PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
+          export LD_LIBRARY_PATH="$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          cargo test --workspace
+          cargo test -p astro-star --features parallel
       - name: Build the astrodeck_native wheel (maturin)
         run: |
           pip install "maturin>=1.5,<2.0"

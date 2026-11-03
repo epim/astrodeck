@@ -139,7 +139,19 @@ def _login_then_callback(c, *, query: str = "", extra_preauth: dict | None = Non
     if extra_preauth is not None:
         forged = auth_routes._sign_preauth(
             {"state": state, "nonce": "NONCE", "cv": "verif", **extra_preauth})
+        # REPLACE the cookie /auth/login set, never add beside it (#1135). The
+        # rig's cookie is stored for the test host and a bare ``set`` stores the
+        # forgery for no domain, so the jar held both and sent both; the rig
+        # reads the last ``ad_oauth`` in the header, and httpx2 2.16.0 reversed
+        # the order, so the callback silently read the REAL cookie and the
+        # forged hint never reached it (the refusal case then passed vacuously).
+        c.cookies.delete(auth_routes.PREAUTH_COOKIE)
         c.cookies.set(auth_routes.PREAUTH_COOKIE, forged)
+        sent = [k.value for k in c.cookies.jar
+                if k.name == auth_routes.PREAUTH_COOKIE]
+        assert sent == [forged], (
+            f"the forged pre-auth cookie is not the only one the callback "
+            f"will receive ({len(sent)} in the jar)")
     return c.get(f"/auth/google/callback?code=abc&state={state}",
                  follow_redirects=False)
 
