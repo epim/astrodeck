@@ -118,7 +118,7 @@ class _FakeHub:
 def test_the_wrapper_records_a_seasonal_target_and_changes_nothing_else():
     seen, fake = [], _FakeCoords()
     hub_cls = type("H", (_FakeHub,), {})
-    install(hub_cls, fake, _Store, lambda *a: seen.append(a))
+    install(hub_cls, fake, lambda: _Store, lambda *a: seen.append(a))
     hub = hub_cls()
     assert hub._check_solar(*POLE) == "clear"
     assert seen == []
@@ -132,7 +132,7 @@ def test_the_wrapper_records_a_seasonal_target_and_changes_nothing_else():
 def test_a_pinned_sun_takes_the_calendar_out_so_nothing_is_recorded():
     seen, fake = [], _FakeCoords()
     hub_cls = type("H", (_FakeHub,), {})
-    install(hub_cls, fake, _Store, lambda *a: seen.append(a))
+    install(hub_cls, fake, lambda: _Store, lambda *a: seen.append(a))
     fake.sun_radec = lambda *a: (12.0, 0.0)          # a test pinned the Sun
     hub_cls()._check_solar(5.5881, 10.0)
     assert seen == []
@@ -141,9 +141,9 @@ def test_a_pinned_sun_takes_the_calendar_out_so_nothing_is_recorded():
 def test_the_wrapper_is_installed_once_and_a_disarmed_cone_records_nothing():
     seen, fake = [], _FakeCoords()
     hub_cls = type("H", (_FakeHub,), {})
-    install(hub_cls, fake, _Store, lambda *a: seen.append(a))
+    install(hub_cls, fake, lambda: _Store, lambda *a: seen.append(a))
     wrapped = hub_cls._check_solar
-    install(hub_cls, fake, _Store, lambda *a: seen.append(a))
+    install(hub_cls, fake, lambda: _Store, lambda *a: seen.append(a))
     assert hub_cls._check_solar is wrapped
     _Safety.solar_avoidance = False
     try:
@@ -151,6 +151,36 @@ def test_the_wrapper_is_installed_once_and_a_disarmed_cone_records_nothing():
     finally:
         _Safety.solar_avoidance = True
     assert seen == []
+
+
+def test_a_store_swapped_in_after_install_is_the_one_the_guard_reads():
+    """A test that swaps ``hub.config_store`` for one with the cone disarmed
+    has taken the calendar out, so its slews are not recorded. A store captured
+    once at install still said armed and flagged them on the hours of the day
+    when the clock-dependent targets fell near the ecliptic.
+
+    Mutant "the store is captured at install" (``store = store_of()`` before
+    ``check_solar`` and ``store.cfg()`` inside it). Observed:
+      AssertionError: assert [(5.5881, 10.0, ...)] == []"""
+    class _OffSafety:
+        solar_avoidance = False
+        solar_exclusion_deg = CONE
+
+    class _OffStore:
+        @staticmethod
+        def cfg():
+            return type("C", (), {"safety": _OffSafety()})
+
+    holder = {"store": _Store}
+    seen, fake = [], _FakeCoords()
+    hub_cls = type("H", (_FakeHub,), {})
+    install(hub_cls, fake, lambda: holder["store"], lambda *a: seen.append(a))
+    holder["store"] = _OffStore                       # the test's own store
+    hub_cls()._check_solar(5.5881, 10.0)
+    assert seen == []
+    holder["store"] = _Store                          # and back: armed again
+    hub_cls()._check_solar(5.5881, 10.0)
+    assert len(seen) == 1, "the pair: an armed store still records"
 
 
 # -------------------------------------------------- the guard in conftest.py
