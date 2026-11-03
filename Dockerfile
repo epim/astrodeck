@@ -12,9 +12,10 @@
 # builds one wheel per platform (packaging/build_native.py) and the image installs
 # exactly that wheel, handed in as the `native` build context (see below).
 #
-# The SPA is copied INSIDE the package (astrodeck/webui) rather than left beside
-# it, because a sibling directory is a repo-layout assumption that does not
-# survive being packaged — see api/app.py::_resolve_ui_dist.
+# The SPA is copied to /opt/astrodeck/webui and named by ASTRODECK_UI_DIR rather
+# than left beside the package, because a sibling directory is a repo-layout
+# assumption that does not survive being packaged — see
+# api/app.py::_resolve_ui_dist.
 
 # ----------------------------------------------------------------- UI build
 FROM --platform=$BUILDPLATFORM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS ui
@@ -27,7 +28,7 @@ COPY ui/ ./
 RUN npm run build
 
 # ------------------------------------------------------------- python build
-FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS build
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS build
 WORKDIR /src
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -53,7 +54,7 @@ RUN pip install --no-cache-dir --no-deps ./server
 FROM scratch AS native
 
 # ------------------------------------------------------------------ runtime
-FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS runtime
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS runtime
 LABEL org.opencontainers.image.title="AstroDeck" \
       org.opencontainers.image.description="Open, vendor-neutral astrophotography rig controller" \
       org.opencontainers.image.source="https://github.com/epim/astrodeck" \
@@ -80,10 +81,15 @@ RUN apt-get update \
 RUN groupadd --gid 10001 astrodeck && useradd --no-log-init --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin astrodeck
 
 COPY --from=build /opt/venv /opt/venv
-# The built SPA, inside the installed package.
-COPY --from=ui /ui/dist /opt/venv/lib/python3.12/site-packages/astrodeck/webui
+# The built SPA, at a path that does not name the Python version, found through
+# ASTRODECK_UI_DIR (api/app.py::_resolve_ui_dist, first in its order). It used
+# to be copied into /opt/venv/lib/python3.12/site-packages/astrodeck/webui, and
+# a base-image bump to 3.15 left that literal behind: the copy would have landed
+# in a directory no interpreter reads and the image served no interface.
+COPY --from=ui /ui/dist /opt/astrodeck/webui
 
 ENV PATH="/opt/venv/bin:$PATH" \
+    ASTRODECK_UI_DIR=/opt/astrodeck/webui \
     HOME=/tmp/home \
     TMPDIR=/tmp \
     XDG_CACHE_HOME=/tmp/.cache \

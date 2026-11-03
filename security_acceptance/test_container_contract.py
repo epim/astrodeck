@@ -684,6 +684,46 @@ def _assert_image_sandbox_primitives(docker: str, *, tag: str) -> None:
     assert probe.returncode == 0, probe.stdout + probe.stderr
 
 
+_UI_PROBE = """\
+import subprocess, sys, time, urllib.request
+server = subprocess.Popen(
+    [sys.executable, "-m", "astrodeck", "run", "--host", "127.0.0.1",
+     "--port", "8800"],
+    stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+body, error = b"", ""
+for _ in range(120):
+    try:
+        body = urllib.request.urlopen("http://127.0.0.1:8800/", timeout=2).read()
+        break
+    except Exception as exc:
+        error = repr(exc)
+        time.sleep(0.5)
+server.terminate()
+print(body[:300].decode("utf-8", "replace") or error)
+sys.exit(0 if b"<title>AstroDeck</title>" in body
+         and b'<div id="root">' in body else 1)
+"""
+
+
+def _assert_image_serves_its_ui(docker: str, *, tag: str) -> None:
+    """The built image answers ``/`` with the SPA, as its own user.
+
+    Nothing graded this. The SPA was copied to a path that named the Python
+    version (``/opt/venv/lib/python3.12/site-packages/astrodeck/webui``), so a
+    base-image bump to 3.15 would have copied it where no interpreter reads and
+    still passed every check above: the server runs, it serves no interface."""
+    probe = subprocess.run(
+        [docker, "run", "--rm", "--entrypoint", "python", tag, "-c", _UI_PROBE],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert probe.returncode == 0, (
+        "the image does not serve its web interface at /: "
+        + probe.stdout + probe.stderr)
+
+
 @pytest.mark.security_live
 def test_built_image_defaults_to_uid_10001_and_root_override_fails_closed():
     _require_linux_container_live()
@@ -710,6 +750,7 @@ def test_built_image_defaults_to_uid_10001_and_root_override_fails_closed():
     _assert_image_identity(docker, tag=relay_tag)
     _assert_image_sandbox_primitives(docker, tag=tag)
     _assert_image_sandbox_primitives(docker, tag=relay_tag)
+    _assert_image_serves_its_ui(docker, tag=tag)
     _assert_root_override_fails(
         docker,
         tag=tag,
