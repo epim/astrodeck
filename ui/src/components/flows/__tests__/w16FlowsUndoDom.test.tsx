@@ -67,8 +67,9 @@ const { flowsApi } = await import("../../../lib/flowsApi");
 const { default: FlowHeader } = await import("../FlowHeader");
 const { default: FlowCanvas } = await import("../FlowCanvas");
 const {
-  REDO_NOTHING_REASON, UNDO_NOTHING_REASON, historyKeyAction,
+  REDO_NOTHING_REASON, UNDO_NOTHING_REASON,
 } = await import("../flowsTypes");
+const { editorKeyAction } = await import("../../../lib/keys");
 const { NODE_DEFS } = await import("../nodeDefs");
 
 // ------------------------------------------------------------------- harness
@@ -336,7 +337,7 @@ await testAsync("the canvas float's UNDO and REDO act, and a dimmed press says w
 
 test("the chords: Ctrl or Cmd+Z undo, +Shift redo, Ctrl+Y redo, and nothing else", () => {
   const k = (key: string, o: Record<string, boolean> = {}) =>
-    historyKeyAction({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...o });
+    editorKeyAction({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...o });
   eq(k("z", { ctrlKey: true }), "undo", "Ctrl+Z");
   eq(k("z", { metaKey: true }), "undo", "Cmd+Z");
   eq(k("Z", { ctrlKey: true, shiftKey: true }), "redo", "Ctrl+Shift+Z (the key reads upper case)");

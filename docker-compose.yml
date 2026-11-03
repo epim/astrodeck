@@ -15,7 +15,18 @@ name: astrodeck-local
 
 services:
   astrodeck:
-    build: .
+    # The image carries the native engine (native guiding and autofocus) or the
+    # build stops with the reason: REQUIRE_NATIVE=1 refuses a build that was given
+    # no astrodeck_native wheel for this architecture, instead of producing a
+    # development image. Put the release's wheel for this architecture in
+    # native-wheels/ (or point ASTRODECK_NATIVE_DIR at another directory); see
+    # docs/guide/install-docker.md. Or skip the build and pull the published image.
+    build:
+      context: .
+      additional_contexts:
+        native: "${ASTRODECK_NATIVE_DIR:-./native-wheels}"
+      args:
+        REQUIRE_NATIVE: "1"
     image: astrodeck:latest
     user: "10001:10001"
     read_only: true

@@ -46,10 +46,12 @@ RUN pip install --no-cache-dir --no-deps ./server
 #   docker buildx build --build-context native=<directory of .whl files> --build-arg REQUIRE_NATIVE=1 .
 #
 # This empty stage is what the name `native` resolves to when no context is
-# given, which is what keeps a plain `docker build .` and docker-compose.yml's
-# `build: .` working: they produce a development image with no native engine, and
-# say so. A named context called `native` replaces this stage. BuildKit is
-# required (the default since Docker 23), because RUN --mount is BuildKit syntax.
+# given, which is what keeps a plain `docker build .` working: it produces a
+# development image with no native engine, and says so. The Compose files do not
+# take that route: they pass the `native` context (native-wheels/ by default) and
+# REQUIRE_NATIVE=1, so a compose build without the wheel fails with the reason. A
+# named context called `native` replaces this stage. BuildKit is required (the
+# default since Docker 23), because RUN --mount is BuildKit syntax.
 FROM scratch AS native
 
 # ------------------------------------------------------------------ runtime
@@ -119,7 +121,11 @@ RUN --mount=type=bind,from=native,target=/native \
     set -- /native/astrodeck_native-*-abi3-*linux*"$(uname -m)"*.whl; \
     if [ ! -e "$1" ]; then \
         if [ "${REQUIRE_NATIVE}" = 1 ]; then \
-            say "ERROR: REQUIRE_NATIVE=1 but the native build context holds no astrodeck_native wheel for $(uname -m)"; \
+            say "ERROR: REQUIRE_NATIVE=1 but the native build context holds no astrodeck_native wheel for $(uname -m)." \
+                "Supply the release wheel for this architecture as --build-context native=<dir>." \
+                "docker compose reads it from native-wheels/ (or ASTRODECK_NATIVE_DIR); the" \
+                "published image ghcr.io/epim/astrodeck already carries the engine." \
+                "See docs/guide/install-docker.md."; \
             exit 1; \
         fi; \
         say "" \

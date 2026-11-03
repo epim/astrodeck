@@ -26,7 +26,7 @@ ROOT = Path(SPECPATH).resolve().parent
 SERVER = ROOT / "server"
 sys.path.insert(0, str(ROOT / "packaging"))
 from distribution_policy import load_policy, selected_files, check_package_data
-from metadata_payloads import distributable_metadata, filter_installer_urls
+from metadata_payloads import distributable_metadata, filter_final_datas, is_wcslib_payload
 policy = load_policy(ROOT)
 check_package_data(ROOT, policy)
 
@@ -35,12 +35,11 @@ server_metadata = copy_metadata("astrodeck")
 datas = []
 datas += distributable_metadata(native_metadata)   # native version, real notices, source archive
 datas += distributable_metadata(server_metadata)   # entry points -> native backends
-# astropy.wcs statically links WCSLIB (LGPL-3.0-or-later) and the server no
-# longer imports it (#638), so its data files (WCSLIB_LICENSE.rst and the
-# rest) stay out of the binary with the extension itself.
+# WCSLIB is not shipped (#638, owner ruling D-F): the server no longer imports
+# astropy.wcs, so its extension and data files stay out of the binary. The same
+# omission is applied again to the final data TOC after Analysis.
 datas += [row for row in collect_data_files("astropy")
-          if not any(part in (str(row[0]) + "|" + str(row[1])).replace("\\", "/")
-                     for part in ("astropy/wcs/", "astropy/visualization/wcsaxes/"))]
+          if not is_wcslib_payload(row[0], row[1])]
 datas += collect_data_files("astropy_healpix")
 
 # The built SPA. Not optional: without it the binary is an API with no UI.
@@ -100,9 +99,10 @@ a = Analysis(
               "astropy.wcs", "astropy.visualization.wcsaxes"],
     noarchive=False,
 )
-# Automatic importlib.metadata hooks can add whole metadata directories.
-# Apply the same narrow omission to the final data TOC after those hooks run.
-a.datas = filter_installer_urls(a.datas, native_metadata + server_metadata)
+# Automatic importlib.metadata hooks can add whole metadata directories, and the
+# astropy hook can add astropy.wcs data. Apply the same narrow omissions to the
+# final data TOC after those hooks run.
+a.datas = filter_final_datas(a.datas, native_metadata + server_metadata)
 pyz = PYZ(a.pure)
 
 exe = EXE(

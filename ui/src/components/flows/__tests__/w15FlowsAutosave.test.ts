@@ -94,8 +94,9 @@ async function advance(ms: number): Promise<void> {
 }
 
 const {
-  createFlowsActions, FLOWS_INIT, AUTOSAVE_QUIET_MS, AUTOSAVE_RUN_BRIDGE_MS,
+  createFlowsActions, FLOWS_INIT, AUTOSAVE_QUIET_MS,
 } = await import("../flowsSlice");
+const { RUN_PHASE_BRIDGE_MS } = await import("../flowRunState");
 const { flowsApi } = await import("../../../lib/flowsApi");
 const { NODE_DEFS } = await import("../nodeDefs");
 type FlowsHost = import("../flowsSlice").FlowsHost;
@@ -397,7 +398,7 @@ await test("another flow's live run does not hold this flow's autosave", async (
 });
 
 // MUTANT "the latch never expires" (`(f.run.startedAt === null || Date.now()
-// - f.run.startedAt < AUTOSAVE_RUN_BRIDGE_MS)` made `true` in `runLive`): a
+// - f.run.startedAt < RUN_PHASE_BRIDGE_MS)` made `true` in `runLive`): a
 // `phase` left live by a run that ended while another flow was open (#647's
 // shape) holds this flow's autosave for the rest of the page's life.
 // Observed, 17/18:
@@ -409,7 +410,7 @@ await test("a run latch past its bridge window, with no live run behind it, hold
   const s = slice();
   await openF1(s);
   s.patchFlows({ run: { ...s.flows.run, phase: "running",
-                        startedAt: CLOCK - AUTOSAVE_RUN_BRIDGE_MS - 1 } });
+                        startedAt: CLOCK - RUN_PHASE_BRIDGE_MS - 1 } });
   edit(s, "M 31");
   await advance(2000);
   eq(puts.length, 1, "a stale optimistic phase held the flow's autosave for good");

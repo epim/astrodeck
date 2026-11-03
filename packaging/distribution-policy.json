@@ -20,8 +20,8 @@
       "evidence": "https://github.com/epim/astrodeck/issues/637#issuecomment-6299071149"
     },
     "wcslib": {
-      "mode": "pending",
-      "evidence": "issue:638"
+      "mode": "not-shipped",
+      "evidence": "owner ruling D-F on PR #1130 (2026-10-23)"
     },
     "astrospheric": {
       "mode": "redistribute",

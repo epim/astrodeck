@@ -37,7 +37,8 @@ import { useCallback, useEffect, useRef, type JSX, type PointerEvent as RPointer
 import { useShallow } from "zustand/react/shallow";
 
 import { clampZoom, type FlowTier, type PortDir } from "../../../../../components/flows/geometry";
-import { historyKeyAction, type PortKind } from "../../../../../components/flows/flowsTypes";
+import type { PortKind } from "../../../../../components/flows/flowsTypes";
+import { editorKeyAction } from "../../../../../lib/keys";
 // A LOGIC module, like geometry above: the flow-loop rule both editors and
 // flowsConnect share, in the server's sentence. Re-deriving it here is how two
 // copies of a rule drift apart.
@@ -437,20 +438,21 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
       // a sheet, for Delete's reason: the stage that changes is one the
       // operator cannot see changing. Consumed, so the browser does not also
       // act on the key.
-      const step = historyKeyAction(e);
-      if (step && !underSheet) {
-        e.preventDefault();
-        if (step === "undo") undo(); else redo();
-        return;
-      }
-      if ((e.key === "Delete" || e.key === "Backspace") && !underSheet) {
-        // Also stops Backspace navigating back in browsers that still do that.
-        e.preventDefault();
-        deleteSel();
-      }
-      if (e.key === "f" || e.key === "F") {
-        e.preventDefault();
-        fit();
+      //
+      // EVERY KEY GOES THROUGH `editorKeyAction` (#769): a chord that carries
+      // ctrl, meta or alt the binding did not declare is the browser's, so
+      // Ctrl+F opens its find and Ctrl+Backspace is not a delete. Fit changes
+      // only the view, so it alone may act under a sheet.
+      const action = editorKeyAction(e);
+      if (action === null) return;
+      if (underSheet && action !== "fit") return;
+      // Also stops Backspace navigating back in browsers that still do that.
+      e.preventDefault();
+      switch (action) {
+        case "undo": undo(); break;
+        case "redo": redo(); break;
+        case "delete": deleteSel(); break;
+        case "fit": fit(); break;
       }
     };
     window.addEventListener("keydown", onKey);

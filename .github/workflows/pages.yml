@@ -21,7 +21,8 @@ permissions:
 
 concurrency:
   group: pages-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
-  cancel-in-progress: false
+  # Latest wins: one stuck publish must not block every newer one (#823).
+  cancel-in-progress: true
 
 jobs:
   check:

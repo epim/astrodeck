@@ -296,8 +296,11 @@ jobs:
   # gated and uploaded; it runs only when every binaries leg passed) and is proven before it is named: it is pushed under a
   # candidate name only, the native probe runs inside that exact pushed image on
   # both architectures, and only then does the version tag and :latest appear
-  # (#655). Nothing user-visible exists before the probe passes. The inventory
-  # gate over what the image adds beyond its base is #655 part B, not yet here.
+  # (#655). Nothing user-visible exists before the probe passes. The same pushed
+  # digest is also exported per platform and inventoried by
+  # tools/licence/audit_artifact.py --image (the native wheel, every installed
+  # Python distribution and its licence, the trixie/glibc 2.41 base facts) before
+  # it is named; a candidate the gate, the probe or the retag rejected is deleted.
   image:
     needs: [publish, binaries]
     if: needs.binaries.result == 'success' && (github.event_name == 'push' || !inputs.dry_run)
@@ -313,6 +316,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      # The image gate is a Python script (standard library only).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       # Outside the workspace on purpose: this folder also receives the two frozen
       # binaries, which must not be sent to the build as part of its context.
       - name: Download the accepted linux payloads
@@ -349,6 +356,31 @@ jobs:
             REQUIRE_NATIVE=1
           push: true
           tags: ${{ env.IMAGE_REPO }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
+      # The inventory gate reads the pushed image's filesystem (`docker export` of a
+      # container made from it, by digest, per platform) and writes a report that
+      # names the native wheel, every installed Python distribution with its licence
+      # and the base-image release. A finding fails the step, so the image never
+      # gets a release name. The report is kept below whether or not it passed.
+      - name: Inventory the pushed image against the licence registry on both architectures
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE_REPO }}@${{ steps.candidate.outputs.digest }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            arch=${platform#linux/}
+            echo "image inventory on $platform"
+            container=$(docker create --platform "$platform" "$IMAGE")
+            docker export --output "$RUNNER_TEMP/image-$arch.tar" "$container"
+            docker rm "$container" > /dev/null
+            python tools/licence/audit_artifact.py --image "$RUNNER_TEMP/image-$arch.tar" --report "$RUNNER_TEMP/image-gate-$arch.json"
+          done
+      - name: Retain the image inventory reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-gate-report
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/image-gate-*.json
       # The probe runs the pushed image itself, by digest, on both architectures
       # (arm64 under QEMU). The printed verdict is asserted, not only the status, and
       # it reaches the log before it is judged: the probe reports WHY it failed (an
@@ -372,3 +404,30 @@ jobs:
           IMAGE: ${{ env.IMAGE_REPO }}@${{ steps.candidate.outputs.digest }}
           REF_NAME: ${{ github.ref_name }}
         run: docker buildx imagetools create --tag "$IMAGE_REPO:$REF_NAME" --tag "$IMAGE_REPO:latest" "$IMAGE"
+      # A candidate the gate, the probe or the retag rejected is deleted so rejected
+      # builds do not pile up on the package page (#801). Retagging gives the probed
+      # digest its release names, so after a successful run the candidate tag shares
+      # ONE package version with them and deleting that version would delete the
+      # release: this step runs only on failure, and it deletes only a version whose
+      # every tag is a candidate tag (or that has none).
+      - name: Delete the candidate image when it was rejected
+        if: failure() && steps.candidate.outputs.digest != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          package="${GITHUB_REPOSITORY#*/}"
+          if [ "$(gh api "/users/$GITHUB_REPOSITORY_OWNER" --jq .type)" = Organization ]; then
+            scope="orgs/$GITHUB_REPOSITORY_OWNER"
+          else
+            scope="users/$GITHUB_REPOSITORY_OWNER"
+          fi
+          versions="/$scope/packages/container/$package/versions"
+          id=$(gh api --paginate "$versions" --jq ".[] | select(.name == \"$DIGEST\") | select(all(.metadata.container.tags[]; startswith(\"candidate-\"))) | .id")
+          if [ -z "$id" ]; then
+            echo "no candidate-only package version for $DIGEST; nothing to delete"
+            exit 0
+          fi
+          gh api --method DELETE "$versions/$id"
+          echo "deleted the rejected candidate package version $id"

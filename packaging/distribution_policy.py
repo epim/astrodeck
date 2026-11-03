@@ -6,6 +6,8 @@ Pending records preserve historical inclusion; inclusion is not legal approval.
 Under a pending Player One record the source tar excludes its libraries, while
 frozen/server wheels retain them. The owner ruled `redistribute` on 2026-10-20
 (#632, awaiting Player One's reply), which includes them in every artifact kind.
+`not-shipped` records a component the owner ruled is in no artifact (WCSLIB,
+#638); the release audit fails if it reappears.
 """
 from __future__ import annotations
 import argparse
@@ -16,7 +18,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 KINDS = {"source-tar", "frozen", "server-wheel", "native-wheel"}
-MODES = {"pending", "fetch-only", "redistribute"}
+MODES = {"pending", "fetch-only", "redistribute", "not-shipped"}
 LIBRARY = re.compile(r"\.(?:dll|so(?:\..*)?|dylib|lib|a)$", re.I)
 
 

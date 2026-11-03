@@ -1,3 +1,5 @@
+> Superseded in part by the #638 ruling D-F (2026-10-23): WCSLIB is not shipped in any build since 0.3.46, and the GCC runtime exception is recorded. This file stays as the dated evidence for the inspected artifact.
+
 # Dependency and artifact licence audit
 
 Audit date: 2026-10-01. Source base: `bf3eaddd`, branch `codex/licence-audit`. This independent audit changes only this report and `dependency-*` evidence files. No application or packaging source was changed, no shared packages were installed, and neither executable was run.

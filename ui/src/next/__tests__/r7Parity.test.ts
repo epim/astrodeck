@@ -578,9 +578,11 @@ const IMPORT_DYN_RE = new RegExp(`import\\(\\s*(?:${QUOTED})\\s*\\)`, "g");
 // allow-list rule ever saw it (reproduced again in #198's S4-UHOSTN comment).
 /** `export (type )?{ <names> } from <spec>` - group 1 is the clause
  *  (including an optional leading `type `), groups 2-4 are `QUOTED`.
+ *  The clause is ONE braces group (`{[^}]*}`), so a bare local `export { X };`
+ *  earlier in the file cannot be swallowed into a later export-from (#715).
  *  `bindingsOf` already handles an `export type { ... }` clause identically
  *  to `import type { ... }` - same "type " prefix, same braces. */
-const EXPORT_NAMED_RE = new RegExp(`export\\s+((?:type\\s+)?\\{[\\s\\S]*?\\})\\s+from\\s+(?:${QUOTED})`, "g");
+const EXPORT_NAMED_RE = new RegExp(`export\\s+((?:type\\s+)?\\{[^}]*\\})\\s+from\\s+(?:${QUOTED})`, "g");
 /** `export * from <spec>` and `export * as ns from <spec>` - a re-export of
  *  EVERYTHING the module exports. There is no per-binding name to check
  *  against an allow-list, so this is recorded as a single "*" binding, the
@@ -910,6 +912,40 @@ test("an export re-export reaches RECORDS exactly like an import, including the 
   const logicRecords = recordsForFile(fakeFile, fakeRel, probeExportNamed('"', "{ FlowTier }", logicSpec, '"'));
   assert(logicRecords.length === 1 && logicRecords[0].module === "components/flows/geometry",
     `export { FlowTier } from a LOGIC_MODULES module produced the wrong record: ${JSON.stringify(logicRecords)}`);
+});
+
+// #715: a bare local `export { X };` ahead of a later `export { ... } from`
+// used to be read as ONE re-export. The clause pattern ran lazily from the
+// bare export's opening brace to the first closing brace that was followed by
+// `from <spec>`, so the recorded clause held whole functions, the binding
+// names were code fragments, and a real legacy re-export could vanish inside
+// the swallowed range.
+//
+// Named mutant "the clause spans braces groups" (EXPORT_NAMED_RE's
+// `\{[^}]*\}` -> `\{[\s\S]*?\}`). Observed red: "the recorded clause must be the
+// re-export's own braces group, got "{ SAVE_READONLY_REASON };...".
+test("a bare local export ahead of an export-from is not read as one re-export (#715)", () => {
+  const fakeFile = `${NEXT}hubs${SEP}fake${SEP}w15uProbe.tsx`;
+  const fakeRel = "hubs/fake/w15uProbe.tsx";
+  const spec = prelative(pdirname(fakeFile), `${SRC}components${SEP}flows${SEP}flowsTypes`)
+    .split(SEP).join("/");
+  const bare = ["ex" + "port", "{ SAVE_READONLY_REASON };"].join(" ");
+  const body = "export function saveStateTone(dirty: boolean) { return dirty ? 1 : 0; }";
+  const reexport = probeExportNamed('"', "{ FlowTier, type FlowKind }", spec, '"');
+  const text = [bare, body, reexport].join("\n");
+
+  const hits = [...text.matchAll(EXPORT_NAMED_RE)];
+  assert(hits.length === 1, `expected one export-from, the scan found ${hits.length}`);
+  assert(hits[0][1] === "{ FlowTier, type FlowKind }",
+    `the recorded clause must be the re-export's own braces group, got ${JSON.stringify(hits[0][1])}`);
+
+  const records = recordsForFile(fakeFile, fakeRel, text);
+  assert(records.length === 2
+    && records.every((r) => r.module === "components/flows/flowsTypes")
+    && records.map((r) => r.name).join(",") === "FlowTier,FlowKind"
+    && records[1].typeOnly,
+    "a bare local export ahead of a re-export must leave exactly one record, the "
+    + `re-export's own: ${JSON.stringify(records)}`);
 });
 
 // ================================== 2. no legacy presentation component is mounted

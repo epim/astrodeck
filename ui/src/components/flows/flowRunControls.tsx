@@ -45,7 +45,7 @@ import {
   nextRunFlags, type FlowContinueCode, type FlowContinueQuestion,
   type FlowRunAcceptance, type FlowsActions,
 } from "./flowsSlice";
-import { flowRunLive, isRunPhaseLive, knownSessions } from "./flowRunState";
+import { flowRunLive, isRunPhaseLive, knownSessions, RUN_PHASE_BRIDGE_MS } from "./flowRunState";
 import { unsavedRunReason } from "./flowsTypes";
 import {
   START_OVER_TITLE, graphResumes, runCopy, runReadouts, startOverBody,
@@ -248,19 +248,6 @@ export async function runAnsweringQuestions(
   }
   return { cancelled: false, answered };
 }
-
-/** How long `flows.run.phase`'s optimistic guess is trusted ON ITS OWN, past
- *  the moment `flowsRun` stamped `startedAt` (#647). Past this window the
- *  display defers to the server's own answer (`ours`) alone, whether or not
- *  `flowsSlice.ts`'s own `onSequence` clear has already landed - belt and
- *  braces, since that clear fires only once the server has actually reported
- *  the run over, and a dropped or delayed publish must not leave a STOP
- *  label live forever either. Not imported from `NowEmpty.tsx`'s identical
- *  `RUN_PHASE_GRACE_MS`: that constant answers a different question (divert
- *  navigation to Now), and importing a next/ screen's module into this
- *  shared classic hook would couple the two for no reason beyond sharing a
- *  number. */
-export const RUN_PHASE_BRIDGE_MS = 20_000;
 
 export interface FlowRunControls {
   /** Live-run flag; drives the glyph AND the word, so the state is never

@@ -55,3 +55,4 @@ ui/tools/domeshot/dome.png
 
 # Agent mutation copies belong in the session scratch root, never here (#475).
 /scratchpad/
+native-wheels/*.whl

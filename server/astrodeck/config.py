@@ -2362,6 +2362,24 @@ def _apply_migrations(cfg: AppConfig, stored: int) -> None:
                 "config")
 
 
+def _say_unusable_deadman(url: str) -> None:
+    """Say, once per load, that the stored dead-man's-switch url is one the ping
+    can never be sent to (#831). ``set_deadman`` refuses such a url at save
+    time, so one that gets here was written by an older build or by hand; it is
+    left as the owner wrote it and only named, because the ping would otherwise
+    skip it with a single log line on some later night. The line never carries
+    the url: its path is the ping secret (#694)."""
+    if not url:
+        return
+    from .alerting import deadman_url_problem   # lazy: it imports httpx
+    problem = deadman_url_problem(url)
+    if problem is not None:
+        bus.log("warning",
+                f"the stored dead-man's-switch url is unusable and no pings "
+                f"will be sent: {problem}. Set it again in Settings > Alerts.",
+                "config")
+
+
 class ConfigStore:
     """Module singleton (like ``hub``) owning the persisted ``AppConfig``.
 
@@ -2515,6 +2533,7 @@ class ConfigStore:
             bus.log("warning", horizon_note, "config")
         for note in limit_notes:
             bus.log("warning", note, "config")
+        _say_unusable_deadman(cfg.deadman_url)
 
         # A FILE FROM A NEWER BUILD IS NOT OURS TO REWRITE. `AppConfig` is a
         # plain BaseModel, so pydantic's default `extra="ignore"` drops every

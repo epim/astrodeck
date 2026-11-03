@@ -41,10 +41,12 @@ jobs:
       - run: pytest -q
       # Never deploy a relay with a known-vulnerable dependency (OPEN-006).
       # After the tests so the audit tool cannot perturb what they graded.
+      # tools/pip_audit_retry.py retries a PyPI outage three times and then
+      # warns and passes; a vulnerability finding still fails (#1106).
       - name: pip-audit (fail on a vulnerable dependency)
         run: |
           pip install pip-audit
-          pip-audit
+          python ../tools/pip_audit_retry.py -- pip-audit
 
   deploy:
     needs: test

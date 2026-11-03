@@ -9719,7 +9719,8 @@ def create_app(*, bind_host: str | None = None,
         # is the pole, so any number read from it is a latitude oracle (#140).
         from ..auth import audit as auth_audit   # lazy, as auth/deps.py does
         auth_audit.record("trust_position", ok=True, request=request,
-                          user=principal.email or principal.role)
+                          user=principal.email or principal.role,
+                          category="attest")
         return {"ok": True,
                 "position_known": bool(getattr(tel, "position_known", True))}
 

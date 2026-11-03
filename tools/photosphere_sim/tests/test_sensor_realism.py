@@ -22,16 +22,14 @@ Every test names the mutant it must catch. The four the task names:
   (d) omit the duplicate ``deviceorientation`` records in absolute-only mode:
       ``AbsoluteStream.test_absolute_only_writes_every_absolute_record_twice``.
 
-THE COMMITTED FIXTURES. The brief for this task asked for the two fixtures'
-``hashes.observations`` to be reproduced from their case definitions. They
-cannot be, as written: both fixtures were recorded (commit 3116d8d9) before
-``motion_events`` existed (commit 8845c4a6, issue #105), so their
-``observations.jsonl`` carries frames and orientation records only, while
-today's builder also writes the motion channel for the same definition.
-``LegacyCases.test_the_committed_fixtures_reproduce_without_the_motion_channel``
-proves what is true instead: the frame and orientation lines are reproduced
-byte for byte, so their hash is reproduced once the motion lines are set aside.
-The motion channel is pinned separately, by
+THE COMMITTED FIXTURES. The two chart-yard fixtures were first recorded (commit
+3116d8d9) before ``motion_events`` existed (commit 8845c4a6, issue #105), and
+were rebuilt for #953 so that they carry the motion channel their case
+definitions ask for.
+``LegacyCases.test_the_committed_fixtures_are_what_the_definition_builds``
+proves that ``hashes.observations`` is reproduced from the case definition, the
+motion lines included; ``tests/test_wp19_integrity.py`` keeps every fixture
+fresh against its definition. The motion channel is also pinned by
 ``LegacyCases.test_a_legacy_case_keeps_today_s_bytes``.
 """
 import copy
@@ -754,10 +752,6 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _jsonl_bytes(records) -> bytes:
-    return ("\n".join(json.dumps(r, separators=(",", ":")) for r in records) + "\n").encode("utf-8")
-
-
 class LegacyCases(unittest.TestCase):
     """A case definition with no ``realism`` block takes exactly the code path
     it always has. Built from the committed fixtures' own definitions, flat
@@ -777,24 +771,21 @@ class LegacyCases(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_the_committed_fixtures_reproduce_without_the_motion_channel(self):
-        """The frame and orientation lines of both fixtures are reproduced byte
-        for byte, so ``hashes.observations`` is reproduced once the motion lines
-        (which postdate the fixtures; see the module docstring) are set aside.
+    def test_the_committed_fixtures_are_what_the_definition_builds(self):
+        """The whole observation file of both fixtures, motion lines included, is
+        reproduced byte for byte, and so is ``hashes.observations``.
 
-        MUTATION: change any digit an orientation or frame record carries, for
-        example round ``alpha`` to 6 decimals in ``orientation_events``."""
+        MUTATION: change any digit an orientation, frame or motion record
+        carries, for example round ``alpha`` to 6 decimals in
+        ``orientation_events``."""
         for name in self.NAMES:
             with self.subTest(case=name):
                 committed = (FIXTURES / name / "input" / "observations.jsonl").read_bytes()
                 manifest = json.loads((FIXTURES / name / "manifest.json").read_text(encoding="utf-8"))
-                rebuilt = _read_jsonl(self.dirs[name] / "input" / "observations.jsonl")
-                self.assertEqual({r["kind"] for r in _read_jsonl(FIXTURES / name / "input" / "observations.jsonl")},
-                                 {"frame", "orientation"}, "the fixture is expected to predate #105")
-                self.assertIn("motion", {r["kind"] for r in rebuilt})
-                kept = _jsonl_bytes(r for r in rebuilt if r["kind"] != "motion")
-                self.assertEqual(kept, committed)
-                self.assertEqual(_sha256(kept), manifest["hashes"]["observations"])
+                rebuilt = (self.dirs[name] / "input" / "observations.jsonl").read_bytes()
+                self.assertIn("motion", {r["kind"] for r in _read_jsonl(FIXTURES / name / "input" / "observations.jsonl")})
+                self.assertEqual(rebuilt, committed)
+                self.assertEqual(_sha256(rebuilt), manifest["hashes"]["observations"])
 
     def test_a_legacy_case_keeps_today_s_bytes(self):
         """The whole file, motion channel included, is what it was before this

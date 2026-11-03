@@ -26,7 +26,11 @@ def run(target=None):
     cmd = [sys.executable, "-B", "-m", "unittest", "test_release_build_contexts" + (".BuildContexts." + target if target else "")]
     return subprocess.run(cmd,cwd=ROOT/"server/tests",text=True,capture_output=True)
 
-def main():
+def main(argv):
+    unknown=[a for a in argv if a!="--record"]
+    if unknown:
+        raise SystemExit("usage: mutate_build_contexts.py [--record]  (--record rewrites the tracked report)")
+    record="--record" in argv
     baseline=run()
     if baseline.returncode:
         raise RuntimeError("Unmutated context suite must pass first")
@@ -53,8 +57,17 @@ def main():
     if restored.returncode:
         raise RuntimeError("Restored context suite failed")
     evidence += ["## Restored suite", "", "```text", restored.stderr.strip(), "```", ""]
-    (ROOT/"deploy/reverse-proxy/build-context-mutations.md").write_text("\n".join(evidence),encoding="utf-8")
+    report=report_path(record)
+    report.parent.mkdir(parents=True,exist_ok=True)
+    report.write_text("\n".join(evidence),encoding="utf-8")
+    print("report written to "+str(report))
     print(restored.stderr,end="")
 
+def report_path(record):
+    """The committed evidence file only on --record; otherwise untracked .probe/ (#802)."""
+    if record:
+        return ROOT/"deploy/reverse-proxy/build-context-mutations.md"
+    return ROOT/".probe/build-context-mutations.md"
+
 if __name__=="__main__":
-    main()
+    main(sys.argv[1:])

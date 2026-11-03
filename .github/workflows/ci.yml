@@ -63,7 +63,7 @@ jobs:
       - name: pip-audit (fail on a vulnerable dependency)
         run: |
           pip install pip-audit
-          pip-audit
+          python ../tools/pip_audit_retry.py -- pip-audit
 
   # The setter and the independent verifier both call Win32 directly, so a
   # Linux-only unit lane cannot establish that protected DACLs really persist.
@@ -137,7 +137,7 @@ jobs:
       - name: pip-audit (fail on a vulnerable dependency)
         run: |
           pip install pip-audit
-          pip-audit
+          python ../tools/pip_audit_retry.py -- pip-audit
 
   # Container isolation has architecture-specific release requirements: the
   # image must be exercised by a native Linux kernel on both the ordinary

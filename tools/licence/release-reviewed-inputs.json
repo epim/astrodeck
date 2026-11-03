@@ -20,7 +20,7 @@
     {
       "path": "packaging/distribution-policy.json",
       "sha256": "d60926d6c75dbf94d552ae627ca1414ed06fe1a17479d900250d13d071a73e88",
-      "review": "Read every owner decision: Player One pending retains historical per-artifact differences; DSS2 fetch-only; artwork, WCSLIB, Astrospheric and IAU pending. This is not owner permission."
+      "review": "Read every owner decision: Player One pending retains historical per-artifact differences; DSS2 fetch-only; artwork, Astrospheric and IAU pending. This is not owner permission. Update 2026-10-23 (#638, ruling D-F): the WCSLIB row is now not-shipped (see release-gate-review.md)."
     },
     {
       "path": "packaging/distribution_policy.py",

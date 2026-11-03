@@ -65,10 +65,21 @@ class ReleasePolicy(unittest.TestCase):
         for key, url in expected.items():
             self.assertEqual("redistribute", self.policy["decisions"][key]["mode"], key)
             self.assertEqual(url, self.policy["decisions"][key]["evidence"], key)
-        self.assertEqual("pending", self.policy["decisions"]["wcslib"]["mode"])
+        wcslib = self.policy["decisions"]["wcslib"]
+        self.assertEqual("not-shipped", wcslib["mode"])
+        self.assertEqual("owner ruling D-F on PR #1130 (2026-10-23)", wcslib["evidence"])
         self.assertEqual("fetch-only", self.policy["decisions"]["dss2"]["mode"])
         for kind in policy.KINDS:
             self.assertTrue(policy.includes_playerone(kind, self.policy), kind)
+
+    def test_not_shipped_is_a_valid_mode_and_needs_no_owner_decision(self):
+        records = {row["component"]: row for row in policy.decision_records(self.policy, "frozen")}
+        self.assertFalse(records["wcslib"]["requires_owner_decision"])
+        self.assertEqual("not-shipped", records["wcslib"]["mode"])
+        self.policy["decisions"]["wcslib"]["mode"] = "shipped"
+        self.write_policy()
+        with self.assertRaisesRegex(ValueError, "invalid owner"):
+            policy.load_policy(self.root)
 
     def test_pending_preserves_artifact_history(self):
         self.policy["decisions"]["playerone"]["mode"] = "pending"
@@ -272,6 +283,19 @@ class ReleasePolicy(unittest.TestCase):
               ("other-1.0.dist-info/direct_url.json","other-distribution","DATA")]
         calls=self.execute_spec(private+keep)
         self.assertEqual(keep,calls["final_datas"])
+
+    def test_spec_drops_wcslib_rows_reintroduced_by_analysis(self):
+        bs = chr(92)
+        hook_rows = [
+            ("astropy/wcs/include/wcslib/wcs.h", "C:/v/astropy/wcs/include/wcslib/wcs.h", "DATA"),
+            (bs.join(["astropy", "wcs", "tests", "data", "a.hdr"]), "C:/v/astropy/wcs/tests/data/a.hdr", "DATA"),
+            ("astropy/visualization/wcsaxes/tests/data/cube_header", "C:/v/cube_header", "DATA"),
+            ("astropy-8.0.1.dist-info/licenses/licenses/WCSLIB_LICENSE.rst", "C:/v/WCSLIB_LICENSE.rst", "DATA"),
+        ]
+        keep = [("astropy/units/keep.dat", "C:/v/astropy/units/keep.dat", "DATA"),
+                ("astropy/nddata/tests/data/sip-wcs.fits", "C:/v/sip-wcs.fits", "DATA")]
+        calls = self.execute_spec(hook_rows + keep)
+        self.assertEqual(keep, calls["final_datas"])
 
     def test_spec_filters_actual_sdk_and_tile_files(self):
         self.policy["decisions"]["playerone"]["mode"] = "fetch-only"

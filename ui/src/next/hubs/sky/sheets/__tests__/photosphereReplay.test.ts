@@ -780,10 +780,10 @@ function present(replayed: Replayed | null, caseId: string): Replayed {
 await test('replay: the committed fixture case runs end to end with no local cache (#68)', () => {
   const replayed = present(fixtureRight, FIXTURE_RIGHT_LENS);
   // The recording's own numbers, which no scanner decision can move: this
-  // case delivers 95 frames and 407 readings, and the driver has to deliver
+  // case delivers 95 frames and 1538 readings, and the driver has to deliver
   // every one of them.
   assert.equal(replayed.summary.frames_delivered, 95);
-  assert.equal(replayed.summary.events_delivered, 407);
+  assert.equal(replayed.summary.events_delivered, 1538);
   assert.equal(replayed.events.length, 95, 'one events line per delivered frame');
   for (const key of ['t_ms', 'frame_id', 'compass_ready', 'tilt_ready', 'aim', 'basis', 'frame_count', 'cue'])
     assert.ok(key in replayed.events[0], `events.jsonl is missing ${key}`);

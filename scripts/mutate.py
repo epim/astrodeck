@@ -197,9 +197,15 @@ def _require_snapshot(target: Path) -> dict:
     return json.loads(state.read_text(encoding="utf-8"))
 
 
+def usage() -> str:
+    """The command lines of the docstring's Usage block, and nothing else."""
+    return "\n".join(line.strip() for line in __doc__.splitlines()
+                     if line.strip().startswith("python scripts/mutate.py"))
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
-        raise SystemExit(__doc__.strip().splitlines()[-6])
+        raise SystemExit(usage())
     cmd, target = argv[1], Path(argv[2])
     if cmd == "snapshot":
         print(f"snapshot {target.name}: {snapshot(target)}")

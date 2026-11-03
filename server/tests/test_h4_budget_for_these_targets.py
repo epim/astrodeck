@@ -78,6 +78,20 @@ UI_FIXTURE = (Path(__file__).resolve().parents[2] / "ui" / "src" / "next"
               / "tonight_budget_for_these_targets.json")
 REWRITE = os.environ.get("ASTRODECK_REWRITE_TONIGHT_BUDGET_FIXTURE") == "1"
 
+def write_fixture_preserving_eol(path: Path, text: str) -> bool:
+    """Write ``text`` (LF line endings) to ``path`` only if it differs from
+    what is there once line endings are ignored, in the file's own line
+    endings (CRLF where it has them). Returns whether it wrote. A fixture
+    this recipe does not own must not change bytes when its content did not
+    (#776)."""
+    existing = path.read_bytes() if path.is_file() else b""
+    if existing.replace(b"\r\n", b"\n") == text.encode("utf-8"):
+        return False
+    eol = "\r\n" if b"\r\n" in existing else "\n"
+    path.write_bytes(text.replace("\n", eol).encode("utf-8"))
+    return True
+
+
 #: 13:00 local solar time at the fixture's synthetic site, 2026-06-15, so the
 #: night is ahead (``test_flows_tonight``'s JUNE).
 JUNE = _dt.datetime(2026, 6, 15, 20, 0, tzinfo=_dt.timezone.utc).timestamp()
@@ -464,9 +478,9 @@ class TestTheRowSaysForTheseTargets:
         """
         want = _fixture_answer()
         if REWRITE:
-            UI_FIXTURE.write_bytes((json.dumps(
+            write_fixture_preserving_eol(UI_FIXTURE, json.dumps(
                 {"about": ABOUT, "response": want}, indent=1,
-                ensure_ascii=True) + "\n").encode("utf-8"))
+                ensure_ascii=True) + "\n")
         assert UI_FIXTURE.is_file(), f"premise: {UI_FIXTURE.name} exists"
         got = json.loads(UI_FIXTURE.read_bytes().decode("utf-8"))
         assert got["about"] == ABOUT

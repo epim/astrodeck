@@ -213,7 +213,11 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
               {"t_ms": last_present_ms + 1000, "action": "finish"}]
     _write_jsonl(out_dir / "input" / "actions.jsonl", actions)
 
-    (truth_dir / "scene.json").write_bytes(scene_path.read_bytes())
+    # The scene as one set of bytes on every checkout: the file follows the
+    # checkout's line endings (CRLF under autocrlf), and this copy is hashed
+    # into the manifest.
+    (truth_dir / "scene.json").write_bytes(
+        scene_path.read_bytes().replace(bytes([13, 10]), bytes([10])))
     _write_json(truth_dir / "camera.json", {
         "width": camera.width, "height": camera.height, "fov_short_deg": camera.fov_short_deg,
         "fx": camera.fx, "fy": camera.fy, "cx": camera.cx, "cy": camera.cy, "distortion": None,

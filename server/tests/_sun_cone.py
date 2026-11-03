@@ -68,11 +68,17 @@ def load_baseline(path: Path = BASELINE) -> frozenset[str]:
                      if ln.strip() and not ln.lstrip().startswith("#"))
 
 
-def install(hub_cls, coords_mod, config_store, sink) -> None:
+def install(hub_cls, coords_mod, store_of, sink) -> None:
     """Wrap ``hub_cls._check_solar`` once. ``sink(ra, dec, latitude)`` is
     called for each position asked of the REAL Sun (``coords_mod.sun_radec``
     is the function the module shipped with) that the cone can refuse on some
-    day. The wrapper answers exactly what the wrapped method answers."""
+    day. The wrapper answers exactly what the wrapped method answers.
+
+    ``store_of()`` returns the config store the real check reads, asked on
+    EVERY call: a test that swaps ``hub.config_store`` for one with the cone
+    disarmed has taken the calendar out, and a store captured once at install
+    still said armed, so its clock-dependent slews were flagged on some hours
+    of the day and not others (test_polar_native on CI at 06:38 UTC)."""
     if getattr(hub_cls._check_solar, "_sun_cone_guard", False):
         return
     real_check = hub_cls._check_solar
@@ -80,7 +86,7 @@ def install(hub_cls, coords_mod, config_store, sink) -> None:
 
     def check_solar(self, ra_hours, dec_deg, *args, **kwargs):
         try:
-            safety = config_store.cfg().safety
+            safety = store_of().cfg().safety
             cone = float(getattr(safety, "solar_exclusion_deg", 30.0))
             armed = bool(getattr(safety, "solar_avoidance", True))
             if (armed and cone > 0 and coords_mod.sun_radec is real_sun

@@ -114,7 +114,7 @@ def _stage_astap(astap_dir: Path, pkg_root: Path) -> tuple[list[str], str | None
             shutil.copytree(item, dest / item.name, ignore=_IGNORE, dirs_exist_ok=True)
         else:
             shutil.copy2(item, dest / item.name)
-    (dest / "NOTICE.txt").write_text(_ASTAP_NOTICE, encoding="utf-8")
+    (dest / "NOTICE.txt").write_text(_ASTAP_NOTICE, encoding="utf-8", newline="\n")
     problems: list[str] = []
     if not any((dest / n).exists()
                for n in ("astap", "astap.exe", "astap_cli", "astap_cli.exe")):
@@ -295,7 +295,9 @@ def build(version: str, repo_root: Path, out_dir: Path,
         # black Atlas, so the artifact can answer for itself.
         "omitted": {a: _ASSETS[a][1] for a in sorted(missing)},
     }
-    (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    # newline="\n": the same commit must build the same bytes on every platform (#1091).
+    (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n",
+                                           encoding="utf-8", newline="\n")
 
     tarball = out_dir / f"astrodeck-{version}.tar.gz"
     if tarball.exists():

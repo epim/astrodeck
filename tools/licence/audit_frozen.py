@@ -33,6 +33,13 @@ def read_frozen(path):
     return files
 
 
+def is_wcslib_member(lower):
+    """A member that means WCSLIB shipped: its extension or its licence file (#638)."""
+    if lower.startswith("astropy/wcs/_wcs.") and re.search(r"\.(?:pyd|so)(?:\.|$)", lower):
+        return True
+    return lower.rsplit("/", 1)[-1] == "wcslib_license.rst"
+
+
 def review_frozen(files, baseline, artifact_hash):
     expected = {row["path"]: row for row in baseline["files"] if row["archive_type"] != "o"}
     findings, records = [], []
@@ -55,10 +62,8 @@ def review_frozen(files, baseline, artifact_hash):
             findings.append(f"{name}: Player One redistribution needs owner confirmation (#632)")
         if "bg_nebula." in lower:
             findings.append(f"{name}: artwork provenance needs owner confirmation (#637)")
-        if lower.startswith("astropy/wcs/_wcs.") and re.search(r"\.(?:pyd|so)(?:\.|$)", lower):
-            findings.append(f"{name}: WCSLIB LGPL source/relinking disposition remains open (#638)")
-        if "libscipy_openblas" in lower or "libopenblas" in lower:
-            findings.append(f"{name}: OpenBLAS/GCC runtime exception disposition remains open (#638)")
+        if is_wcslib_member(lower):
+            findings.append(f"{name}: WCSLIB is not shipped (#638); astropy.wcs must stay out of the executable")
     # These are demonstrated limits of this exact baseline, not inferred licence
     # obligations of all future executables. A new review must explicitly close
     # them rather than inheriting a PASS from known member hashes.

@@ -2013,11 +2013,13 @@ class _SunConeGuard:
         self.verdicts: dict[str, str] = {}
 
     def install(self):
-        import astrodeck.config as config_mod
         import astrodeck.hub as hub_mod
         from _sun_cone import install
         from astrodeck.catalog import coords
-        install(hub_mod.Hub, coords, config_mod.config_store, self._record)
+        # The store Hub._check_solar reads: hub's own module attribute, which a
+        # test may swap, looked up on every call.
+        install(hub_mod.Hub, coords, lambda: hub_mod.config_store,
+                self._record)
 
     def _record(self, ra, dec, lat):
         if self.current is not None:
