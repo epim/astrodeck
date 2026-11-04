@@ -368,7 +368,11 @@ await withTempCase('photosphere-replay-', async root => {
     // right size, and two blanks are identical. Determinism over an empty
     // result is not evidence about the scanner.
     assert.ok(first.frames_accepted > 0, 'the replay accepted no frames at all');
-    assert.ok(first.cells_covered > 0, 'the replay covered no dome cells');
+    // This case holds ONE pose, so its frames are held and never vouched for (#904): a held frame turns no cell green
+    // and paints nothing the panorama publishes. That is the scanner doing its job, and it is why the two blanks below
+    // are not what grades determinism over content - the committed fixture's replays, which cover cells and paint a
+    // panorama, are compared byte for byte in replaySeam.test.ts and graded by the fixture case at the bottom here.
+    assert.equal(first.cells_covered, 0, 'a single pose turned cells green: nothing vouched for those frames');
   });
 
   await test('replay: the same case replayed twice produces the same panorama bytes', () => {
@@ -379,7 +383,7 @@ await withTempCase('photosphere-replay-', async root => {
     assert.equal(image.height, 300);
     let painted = 0;
     for (let i = 3; i < image.pixels.length; i += 4) if (image.pixels[i] === 255) painted++;
-    assert.ok(painted > 0, 'every pixel of the panorama is transparent: nothing was ever painted');
+    assert.equal(painted, 0, 'a held frame was painted into the published panorama');
   });
 
   await test('replay: one events line per delivered frame', () => {
@@ -405,7 +409,10 @@ await withTempCase('photosphere-replay-', async root => {
   await test('replay: horizon and columns are written in the shape the scorer reads', () => {
     const horizon = JSON.parse(readFileSync(join(result, 'horizon.json'), 'utf8'));
     assert.equal(typeof horizon.bins, 'number');
-    assert.equal(horizon.points.length, horizon.bins);
+    // `points` is the published polyline (each bin at both of its edges, #900),
+    // not one point per bin, so its length is not the bin count.
+    assert.ok(horizon.points.length >= 1);
+    assert.ok(horizon.points.every((p: { az: number }, i: number, all: { az: number }[]) => p.az >= 0 && p.az < 360 && (i === 0 || p.az > all[i - 1].az)));
     assert.ok(Array.isArray(horizon.uncertain_bins));
     const columns = JSON.parse(readFileSync(join(result, 'columns.json'), 'utf8'));
     assert.equal(columns.length, horizon.bins);
@@ -638,10 +645,10 @@ else await test(DOUBT, () => {
   // Mutation: latch on ANY overlap-wait (drop the LENS_DOUBT_AFTER test).
   // Observed red: 'a scan with the lens the scanner assumes was marked in
   // doubt' - arc075-60 refuses twice, never six in a row.
-  const bins = wrongLens.horizon.points.length;
+  const bins = wrongLens.horizon.bins;
   assert.equal(wrongLens.horizon.uncertain_bins.length, bins,
     `the wrong-lens scan still published ${bins - wrongLens.horizon.uncertain_bins.length} certain bins`);
-  assert.ok(rightLens.horizon.uncertain_bins.length < rightLens.horizon.points.length,
+  assert.ok(rightLens.horizon.uncertain_bins.length < rightLens.horizon.bins,
     'a scan with the lens the scanner assumes was marked in doubt');
 });
 
@@ -655,7 +662,7 @@ await test('traceSweep marks every bin uncertain in doubt, and is traceSkyCovera
   assert.equal(doubted.lensInDoubt, true);
   assert.equal(doubted.uncertainBins.length, 30);
   assert.ok(doubted.points.every(p => p.alt === 90), 'a doubted scan published open sky');
-  assert.deepEqual(doubted.points.map(p => p.az), sound.points.map(p => p.az), 'the azimuths moved');
+  assert.deepEqual(doubted.bins.map(b => b.status), Array.from({ length: 30 }, () => 'unknown'), 'a doubted bin kept a status');
 });
 
 const ACCEPTED_OVERLAP = 'replay: an accepted frame logs the overlap it passed on, so a refusal has something to be compared with (#130)';
@@ -804,7 +811,7 @@ await test('replay: the committed fixture case runs end to end with no local cac
   assert.ok(replayed.summary.frames_accepted > 0, 'the summary counted no accepted frame');
   assert.ok(replayed.summary.cells_covered > 0, 'the replay covered no dome cell');
   assert.ok(replayed.painted > 0, 'the panorama is entirely transparent: nothing was ever painted');
-  assert.equal(replayed.horizon.points.length, replayed.horizon.bins);
+  assert.ok(replayed.horizon.points.length >= 1);
   // Mutation: `GRAB_INTERVAL_MS = 1e9` in photosphere.ts, so the frame
   // callback never reaches its next sample. The scan runs, the log fills with
   // refusals and nothing is ever captured: this case reddens on "the scanner

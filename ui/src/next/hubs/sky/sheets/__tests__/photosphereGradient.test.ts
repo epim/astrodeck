@@ -53,12 +53,12 @@ const ramp = (pct: number, knee = Infinity) =>
 
 /** The shape in five bins of thirty, everything else flat sky. */
 const inFive = (c: SkyColumn) => traceSkyCoverage(
-  Array.from({ length: BINS }, (_, b) => [LOCAL.includes(b) ? c : flat])).points;
+  Array.from({ length: BINS }, (_, b) => [LOCAL.includes(b) ? c : flat])).bins;
 /** The same shape in EVERY bin. Nothing stands out against the mosaic, so
  *  `applyAzimuthSupport` promotes nothing and what is left is the column rule
  *  alone - which is what the issue means by the pre-#71 tracer's answer. */
 const alone = (c: SkyColumn) => traceSkyCoverage(
-  Array.from({ length: BINS }, () => [c])).points[LOCAL[2]].alt;
+  Array.from({ length: BINS }, () => [c])).bins[LOCAL[2]].alt;
 
 test("A steep local sky gradient publishes no more than the column rule alone", () => {
   // The defect, at the three gradients the issue measured. Before the fix all
@@ -130,10 +130,10 @@ test("A body too short to measure is left to the departure rule", () => {
     [b === 12 ? band(8) : b === 11 || b === 13 ? band(14) : flat]));
   const unflanked = traceSkyCoverage(Array.from({ length: BINS }, (_, b) =>
     [b === 12 ? band(8) : flat]));
-  assert.equal(unflanked.points[12].alt, 0,
+  assert.equal(unflanked.bins[12].alt, 0,
     'the 8-row band is published without its flanks, so the mosaic is not what '
     + 'this case grades');
-  assert.equal(mosaic.points[12].alt, 30,
+  assert.equal(mosaic.bins[12].alt, 30,
     'a floating obstruction whose body is too short to measure was refused');
 });
 

@@ -80,6 +80,8 @@ class LegacyScanner implements ScannerUnderTest {
       ...(record.cell === undefined ? {} : { cell: record.cell }),
       ...(record.basis === undefined ? {} : { basis: record.basis }),
       ...(record.sensorBasis === undefined ? {} : { sensor_basis: record.sensorBasis }),
+      // A frame held because its overlap could not be decided (#904).
+      ...(record.pending === undefined ? {} : { pending: record.pending }),
       ...(record.adjusted === undefined ? {} : { adjusted: record.adjusted }),
       // The four fields an `alignment-wait` carries (issue #76): which term
       // refused, which source was missing when that term was `no-pose`, the

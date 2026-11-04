@@ -96,7 +96,8 @@ from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       publish_frames, redacted,
                       set_frame_settings)
 from ..locations import (UNCHANGED, LocationLibraryFull, LocationNameCollision,
-                         location_store, normalize_horizon_points)
+                         location_store, normalize_horizon_bins,
+                         normalize_horizon_points)
 # Rig-level planning preferences (#D-FU-1). Its own router because the
 # models live in config.py (to avoid an import cycle) and the merge helpers
 # live beside them, not here.
@@ -2387,11 +2388,20 @@ class LocationBody(BaseModel):
     #: means "no drawn horizon"; ``[]`` means "no obstructions" (an explicit
     #: clear) — the two are NOT the same on apply.
     horizon_points: list[list[float]] | None = None
+    #: Which bins of that line a scan measured (#1117): ``[{alt, status}]``.
+    #: Absent means unchanged; sent with a new line it replaces the status; a
+    #: new line sent without it drops the stored status (``LocationStore.update``).
+    horizon_bins: list[dict] | None = None
 
     @field_validator("horizon_points", mode="before")
     @classmethod
     def _horizon_points_valid(cls, v):
         return normalize_horizon_points(v)
+
+    @field_validator("horizon_bins", mode="before")
+    @classmethod
+    def _horizon_bins_valid(cls, v):
+        return normalize_horizon_bins(v)
 
     @field_validator("name")
     @classmethod
@@ -5521,14 +5531,17 @@ def create_app(*, bind_host: str | None = None,
                 and abs(float(loc.latitude) - float(site.latitude)) <= 1e-6
                 and abs(float(loc.longitude) - float(site.longitude)) <= 1e-6)
 
-    def _write_active_horizon(points: list[list[float]] | None):
+    def _write_active_horizon(points: list[list[float]] | None,
+                              bins: list[dict] | None = None):
         """Copy a location's control points into ``config.safety.horizon`` (the
-        list of ``(az, alt)`` tuples the engine's obstruction rule reads).
+        list of ``(az, alt)`` tuples the engine's obstruction rule reads), and
+        the per-bin status that describes them beside it.
         Blocking: call under ``asyncio.to_thread``."""
         cur = config_store.cfg().safety
         horizon = None if points is None else [
             (float(a), float(h)) for a, h in points]
-        return config_store.set_safety(cur.model_copy(update={"horizon": horizon}))
+        return config_store.set_safety(cur.model_copy(
+            update={"horizon": horizon, "horizon_bins": bins}))
 
     @app.get("/api/site")
     @declare(CAP_VIEW_STATUS)
@@ -5597,7 +5610,8 @@ def create_app(*, bind_host: str | None = None,
         try:
             loc = await asyncio.to_thread(
                 location_store.create, body.name, body.latitude, body.longitude,
-                body.elevation_m, body.horizon_min_deg, body.horizon_points)
+                body.elevation_m, body.horizon_min_deg, body.horizon_points,
+                body.horizon_bins)
         except LocationNameCollision as e:
             raise HTTPException(409, detail={"code": "name_collision",
                                              "id": e.existing_id})
@@ -5627,6 +5641,7 @@ def create_app(*, bind_host: str | None = None,
         # cost (it is a safety floor), so it takes the same rule.
         sent = body.model_fields_set
         points = body.horizon_points if "horizon_points" in sent else UNCHANGED
+        bins = body.horizon_bins if "horizon_bins" in sent else UNCHANGED
         floor = (body.horizon_min_deg if "horizon_min_deg" in sent
                  else UNCHANGED)
         # What the row's polyline will BE after this write — computed before it,
@@ -5641,9 +5656,19 @@ def create_app(*, bind_host: str | None = None,
         # by hand — irreversibly, through the API. The sites sheet echoes the
         # stored points on every coordinate or name edit, so that fired
         # routinely.
+        # The status follows the same rule the store applies: sent, it is the
+        # new status; a different line sent without it clears the old one.
+        if bins is not UNCHANGED:
+            after_bins = body.horizon_bins
+        elif (points is not UNCHANGED
+              and after_points != (before.horizon_points if before else None)):
+            after_bins = None
+        else:
+            after_bins = before.horizon_bins if before else None
         write_through = (before is not None
                          and _location_is_active_site(before, cfg.site)
-                         and after_points != before.horizon_points)
+                         and (after_points != before.horizon_points
+                              or after_bins != before.horizon_bins))
         # Field-level RBAC, the same shape as ``_require_site_field_caps``: the
         # library itself is site description (config.site_optics), but the
         # moment an edit reaches ``config.safety.horizon`` it is writing a
@@ -5657,7 +5682,7 @@ def create_app(*, bind_host: str | None = None,
         try:
             loc = await asyncio.to_thread(
                 location_store.update, loc_id, body.name, body.latitude,
-                body.longitude, body.elevation_m, floor, points)
+                body.longitude, body.elevation_m, floor, points, bins)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
         except LocationNameCollision as e:
@@ -5669,7 +5694,8 @@ def create_app(*, bind_host: str | None = None,
             # an edit that stopped at locations.json would be a drawn line that
             # gates nothing until someone re-applied the location — a claim the
             # UI would make and nothing would keep.
-            await asyncio.to_thread(_write_active_horizon, loc.horizon_points)
+            await asyncio.to_thread(_write_active_horizon, loc.horizon_points,
+                                    loc.horizon_bins)
             bus.publish("config", version=config_store.cfg().version)
         # The row the site was applied FROM just moved, and a library edit does
         # not move the mount - so the pointer now names coordinates the rig is
@@ -5747,7 +5773,8 @@ def create_app(*, bind_host: str | None = None,
             if loc.horizon_points is not None:
                 safety = safety.model_copy(update={
                     "horizon": [(float(a), float(h))
-                                for a, h in loc.horizon_points]})
+                                for a, h in loc.horizon_points],
+                    "horizon_bins": loc.horizon_bins})
             # WHICH saved location is live (#D-FU-1). Set INSIDE the same
             # mutation as the site and the horizon, not beside it: the
             # pointer and the coordinates it points at have to land in one

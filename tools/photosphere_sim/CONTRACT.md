@@ -449,9 +449,19 @@ is near no landmark of its colour is `spurious`.
 
 The truth is `reference-horizon.json`'s `alt_max` clipped to `[0, 90]`, which
 `horizon.note` records: the scanner's floor is 0, and -10 in the truth means
-no ray hit anything. Measured bin `i` of `N` covers
-`[i * 360 / N, (i + 1) * 360 / N)`, addressed by index rather than by its
-`az`, and each truth bin takes the measured bin its centre falls in.
+no ray hit anything. The published `points` are a POLYLINE and are read the
+way every consumer of a saved horizon reads one: linear between the points,
+wrapped at 360, evaluated at each truth bin's centre (`_polyline_alt`; the
+finder's `horizonAltAt` and the engine floor's `interp_wrap` are the same
+reading, and `test_w2_6_interpolation.py` and `w2_6HorizonBins.test.ts` hold
+one probe table in both languages). A scanner that answers per azimuth bin
+publishes each bin at both of its edges, so its line is the step it describes;
+one that publishes a point per bin centre is graded by the slide between
+centres the planner actually reads (#900). `bins` is the scan's own bin count,
+declared in `horizon.json`, and is what `uncertain_bins` indexes: bin `i` of
+`N` covers `[i * 360 / N, (i + 1) * 360 / N)`. A file that declares no `bins`
+is read with one bin per point, and a point with no `az` sits at the centre of
+its bin.
 
 - Bins in `uncertain_bins` are UNRESOLVED. They are excluded from
   `signed_error_deg`, `false_open_sr` and `false_blocked_sr`; their area is
@@ -515,9 +525,9 @@ no ray hit anything. Measured bin `i` of `N` covers
   step), never its declared `min_width_deg`: the chart yard's roof-south and
   wall-east both declare 10 while spanning 146.6 and 84.0 degrees, so gating
   on the label would call two wide, genuinely scoreable obstacles
-  unresolvable. `product_bins` is the number of points in THIS result's own
-  `result/horizon.json` (whatever the scanner that produced it used, not a
-  constant); `resolvable` is `visible_width_deg >= 360 / product_bins`.
+  unresolvable. `product_bins` is the `bins` THIS result's own
+  `result/horizon.json` declares (the number of points where it declares none;
+  whatever the scanner that produced it used, not a constant); `resolvable` is `visible_width_deg >= 360 / product_bins`.
   `resolvable_width_deg` is `max(min_width_deg', 360 / product_bins)`, where
   `min_width_deg'` is the declared label floored at `EDITOR_MIN_WIDTH_DEG`
   (1.5577 degrees, issue #53: the owner's ruling that the narrowest obstruction

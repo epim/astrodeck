@@ -135,6 +135,63 @@ def normalize_horizon_points(points) -> list[list[float]] | None:
     return [[az, by_az[az]] for az in sorted(by_az)]
 
 
+#: What a scanned bin of a horizon is. ``measured`` is the only status a frame
+#: vouched for; ``edited`` and ``kept`` are a person's and a previous scan's
+#: values; the rest are bins no measurement answers for, saved blocked (#1117).
+HORIZON_BIN_STATUSES = ("measured", "low", "unknown", "tall", "edited", "kept")
+#: The panorama scanner's 0.5 degree grid is the finest scan there is.
+MAX_HORIZON_BINS = 720
+
+
+def normalize_horizon_bins(bins) -> list[dict] | None:
+    """Validate a per-bin horizon status, or raise ValueError.
+
+    ``bins`` is a list of ``{"alt": deg, "status": name}``, one per azimuth bin
+    of the scan that drew the line, bin 0 starting at azimuth 0. It rides BESIDE
+    ``horizon_points``: the points are what the engine and the finder read, the
+    bins say which parts of that line anything measured. ``None`` and ``[]``
+    both mean "no status saved", which a reader takes as "drawn by hand"."""
+    if bins is None:
+        return None
+    if isinstance(bins, (str, bytes)) or not isinstance(bins, (list, tuple)):
+        raise ValueError("horizon_bins must be a list of {alt, status} bins")
+    if not bins:
+        return None
+    if len(bins) > MAX_HORIZON_BINS:
+        raise ValueError(f"at most {MAX_HORIZON_BINS} horizon bins")
+    out: list[dict] = []
+    for raw in bins:
+        if not isinstance(raw, dict):
+            raise ValueError("each horizon bin must be an {alt, status} object")
+        status = raw.get("status")
+        if status not in HORIZON_BIN_STATUSES:
+            raise ValueError("horizon bin status must be one of "
+                             + ", ".join(HORIZON_BIN_STATUSES))
+        try:
+            alt = float(raw.get("alt"))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("horizon bin altitude must be a number")
+        if not math.isfinite(alt):
+            raise ValueError("horizon bin altitude must be finite")
+        if not (HORIZON_ALT_MIN_DEG <= alt <= HORIZON_ALT_MAX_DEG):
+            raise ValueError(
+                f"horizon bin altitude must be {HORIZON_ALT_MIN_DEG:g}.."
+                f"{HORIZON_ALT_MAX_DEG:g} degrees")
+        out.append({"alt": alt, "status": status})
+    return out
+
+
+def sanitize_horizon_bins(bins) -> list[dict] | None:
+    """What a STORED per-bin status becomes: the bins when they obey the rule,
+    ``None`` when they do not. The load door. A status is a note about a line,
+    not a safety input, so a damaged one is dropped rather than allowed to cost
+    the row or the config it sits in."""
+    try:
+        return normalize_horizon_bins(bins)
+    except ValueError:
+        return None
+
+
 def _thin_horizon(pts: list[list[float]]) -> list[list[float]]:
     """``pts`` (sorted, one per azimuth, more than the cap of them) as exactly
     ``MAX_HORIZON_POINTS`` points on an even azimuth grid, none of which lets
@@ -232,6 +289,10 @@ class SavedLocation(BaseModel):
     #: what the engine's obstruction rule reads). Additive and optional, so a
     #: locations.json written before this field loads unchanged with None.
     horizon_points: list[list[float]] | None = None
+    #: Which bins of that line a scan measured (#1117): ``[{alt, status}]``, or
+    #: None where the line was drawn by hand. Additive and optional like the
+    #: points. A row that carries bins the rule refuses loads without them.
+    horizon_bins: list[dict] | None = None
     created_ts: float = 0.0
     updated_ts: float = 0.0
 
@@ -242,6 +303,11 @@ class SavedLocation(BaseModel):
         so it sees the raw JSON/kwarg value (a tuple, a list of tuples, a
         malformed row) rather than something pydantic already coerced."""
         return normalize_horizon_points(v)
+
+    @field_validator("horizon_bins", mode="before")
+    @classmethod
+    def _horizon_bins_sanitized(cls, v):
+        return sanitize_horizon_bins(v)
 
     @field_validator("name")
     @classmethod
@@ -541,7 +607,8 @@ class LocationStore:
     def create(self, name: str, latitude: float, longitude: float,
                elevation_m: float,
                horizon_min_deg: float | None = None,
-               horizon_points: list | None = None) -> SavedLocation:
+               horizon_points: list | None = None,
+               horizon_bins: list | None = None) -> SavedLocation:
         items = self._items_now()
         collide = self._collision(name, None)
         if collide is not None:
@@ -553,6 +620,7 @@ class LocationStore:
                             longitude=longitude, elevation_m=elevation_m,
                             horizon_min_deg=horizon_min_deg,
                             horizon_points=horizon_points,
+                            horizon_bins=normalize_horizon_bins(horizon_bins),
                             created_ts=now, updated_ts=now)
         items.append(loc)
         self._save()
@@ -561,12 +629,17 @@ class LocationStore:
     def update(self, loc_id: str, name: str, latitude: float, longitude: float,
                elevation_m: float,
                horizon_min_deg: float | None | _Unchanged = UNCHANGED,
-               horizon_points: list | None | _Unchanged = UNCHANGED
+               horizon_points: list | None | _Unchanged = UNCHANGED,
+               horizon_bins: list | None | _Unchanged = UNCHANGED
                ) -> SavedLocation:
         """Overwrite a row. The two horizon fields default to :data:`UNCHANGED`
         ("not part of this edit"), NOT to ``None`` ("clear it"): a caller that
         omits them keeps what is stored, and a caller that means to clear one
-        says so by passing ``None`` (no floor) or ``[]`` (no obstructions)."""
+        says so by passing ``None`` (no floor) or ``[]`` (no obstructions).
+
+        ``horizon_bins`` follows the same rule, with one more: a new line sent
+        WITHOUT bins drops the stored ones, because bins describe a particular
+        line and a different line, edited by hand, is not what they say."""
         items = self._items_now()
         idx = next((i for i, it in enumerate(items) if it.id == loc_id), None)
         if idx is None:
@@ -582,6 +655,11 @@ class LocationStore:
             changes["horizon_min_deg"] = horizon_min_deg
         if not isinstance(horizon_points, _Unchanged):
             changes["horizon_points"] = normalize_horizon_points(horizon_points)
+            if (isinstance(horizon_bins, _Unchanged)
+                    and changes["horizon_points"] != existing.horizon_points):
+                changes["horizon_bins"] = None
+        if not isinstance(horizon_bins, _Unchanged):
+            changes["horizon_bins"] = normalize_horizon_bins(horizon_bins)
         updated = existing.model_copy(update=changes)
         # Re-validate ranges (model_copy skips validation).
         updated = SavedLocation(**updated.model_dump())

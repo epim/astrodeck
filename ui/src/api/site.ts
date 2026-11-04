@@ -4,7 +4,7 @@
 // (spec §5). Thin over the shared `api` fetch wrapper (api.ts): same ApiError
 // throwing + per-path timeouts. Each function maps 1:1 to a verified route.
 import { api } from "../api";
-import type { AppConfig, SavedLocation, Site } from "../types";
+import type { AppConfig, HorizonBinStatus, SavedLocation, Site } from "../types";
 
 /** Best-effort mount GPS read-back (GET /api/site/mount-gps). config.site_optics.
  *  Always resolves 200; `available:false` carries a human `detail`. */
@@ -29,6 +29,9 @@ export interface LocationInput {
   // -10..90. Omit/null = leave the location's line as "not drawn"; [] = no
   // obstructions. The server sorts and dedupes by azimuth and 422s a bad point.
   horizon_points?: [number, number][] | null;
+  // Which bins of that line a scan measured (#1117). Absent = unchanged; a new
+  // line sent without it drops the stored status; null clears it.
+  horizon_bins?: HorizonBinStatus[] | null;
 }
 
 /** PUT /api/site {site, version, horizon_min_deg?} -> redacted config payload.
