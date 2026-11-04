@@ -202,13 +202,48 @@ def test_the_parser_keeps_millimetres_as_millimetres():
     assert series["cloud_cover"] == [10, 100, 55]
 
 
-def test_the_fetch_actually_asks_for_precipitation():
+async def test_the_fetch_actually_asks_for_precipitation(monkeypatch):
     """A parser that handles a field nobody requested is dead code. The gate is
-    only as real as the request that feeds it."""
-    import inspect
+    only as real as the request that feeds it.
+
+    WP 2.8 (#978). This used to look for the word ``precipitation`` anywhere in
+    the source of ``_fetch_open_meteo`` (a comment would do). It makes the
+    fetch against a recording client and reads the field list it sends.
+
+    RED under mutant "the request leaves precipitation out" (``,precipitation``
+    removed from the ``minutely_15`` value in ``_fetch_open_meteo``), observed:
+
+        AssertionError: the Open-Meteo request does not ask for precipitation, so the rain gate has no data and can never fire
+    """
     from astrodeck import weather as weather_mod
-    src = inspect.getsource(weather_mod._fetch_open_meteo)
-    assert "precipitation" in src, (
+    asked: list[dict] = []
+
+    class _Reply:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {}
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, url, params=None):
+            asked.append(dict(params or {}))
+            return _Reply()
+
+    monkeypatch.setattr(weather_mod.httpx, "AsyncClient", _Client)
+    await weather_mod._fetch_open_meteo(40.0, -105.0)
+    assert len(asked) == 1, asked
+    fields = asked[0].get("minutely_15", "").split(",")
+    assert "precipitation" in fields, (
         "the Open-Meteo request does not ask for precipitation, so the rain "
         "gate has no data and can never fire")
 

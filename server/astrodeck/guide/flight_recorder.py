@@ -184,8 +184,8 @@ class FlightRecorder:
                 return
             rec["model_ra_rate_arcsec_s"] = ra
             rec["model_dec_rate_arcsec_s"] = dec
-        except Exception:                       # noqa: BLE001 - total
-            pass
+        except Exception:                       # noqa: BLE001
+            pass    # an unreadable step leaves the rate null; the loop goes on
 
     def add_pulse(self, direction: str, asked_ms: int, sent_ms: int,
                   at_limit: bool) -> None:

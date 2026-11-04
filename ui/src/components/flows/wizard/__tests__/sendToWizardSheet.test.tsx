@@ -206,6 +206,7 @@ const Sheet = sheetModule.default;
 const { DOCTOR_CLEAR, OPEN_FAILED, RUN_DID_NOT_START } = sheetModule;
 const { FLOW_OPEN_OVER_UNSAVED } = await import("../../flowsSlice");
 const M = await import("../wizardModel");
+const { driveTo, domWizardDriver } = await import("../../../../testing/driveTo");
 const { AUTO_RESUME_HELP, NODE_DEFS } = await import("../../nodeDefs");
 type WizardPrefill = import("../wizardModel").WizardPrefill;
 
@@ -326,24 +327,18 @@ function typeInto(el: any, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
   act(() => { setter.call(el, value); el.dispatchEvent(new win.Event("input", { bubbles: true })); });
 }
-function next(): void {
-  const b = btn("wizard-next");
-  assert(b && !locked(b), `NEXT is locked on ${stepNow()}: ${b?.getAttribute("title")}`);
-  click(b);
-}
+const wizard = domWizardDriver(doc, click);
+/** Press NEXT until the wizard is on `step` (testing/driveTo.ts: by name, never
+ *  by a count of presses, #720). */
+const toStep = (step: string): string[] => driveTo(step, wizard);
 function tickLRGB(): void {
   for (const f of ["L", "R", "G", "B"]) click(q(`wizard-filter-${f}`));
 }
 /** The walk to the review with the recorded answers. */
 function walkToReview(): void {
-  next();                    // target -> framing
-  next();                    // framing -> filters
+  toStep("filters");
   tickLRGB();
-  next();                    // filters -> guiding
-  next();                    // guiding -> night
-  next();                    // night -> resume
-  next();                    // resume -> review
-  eq(stepNow(), "review", "the walk did not reach the review");
+  toStep("review");
 }
 const wizardPosts = () => calls.filter((c) => c.method === "POST" && c.url.endsWith("/api/flows/wizard"));
 const runPosts = () => calls.filter((c) => c.method === "POST" && /\/run$/.test(c.url));
@@ -375,8 +370,7 @@ await test("the recorded prefill walks to one POST whose body is the recorded re
   eq(qa("wizard-ask-name").length + qa("wizard-ask-ra").length + qa("wizard-ask-dec").length, 0,
     "an arrived target field was asked again");
   assert(q("wizard-arrived-ra").textContent.includes(FX.request.ra), "the RA shown is not the prefill's");
-  next();
-  eq(stepNow(), "framing", "NEXT did not reach FRAMING");
+  toStep("framing");
   assert(q("wizard-grid").textContent.includes("3 x 2 panels"), `grid line: ${q("wizard-grid")?.textContent}`);
   assert(q("wizard-skip").textContent.includes("2-3"), "the skipped panel is not shown");
   assert(q("wizard-arrived-angle").textContent.includes("rotate to 30.0 deg"), "the arrived angle is not shown");
@@ -385,22 +379,17 @@ await test("the recorded prefill walks to one POST whose body is the recorded re
   eq(qa("wizard-field-changed").length, 0, "one camera read as two");
   click(q("wizard-edit-framing"));
   eq(edits, 1, "EDIT FRAMING did not hand the host the way back");
-  next();
-  eq(stepNow(), "filters", "NEXT did not reach FILTERS");
+  toStep("filters");
   assert(locked(btn("wizard-next")), "FILTERS opened with a filter already chosen for the operator");
   eq(q("wizard-missing").textContent, M.NEED_FILTER, "the missing line is not the NEXT lock's reason");
   assert(q("wizard-no-wheel"), "the assumed wheel is not said to be assumed");
   tickLRGB();
   eq(q("wizard-ask-cycles").value, "10", "subs of each did not start at the default");
-  next();
-  eq(stepNow(), "guiding", "NEXT did not reach GUIDING");
+  toStep("guiding");
   eq(q("wizard-guiding-on").getAttribute("aria-checked"), "true", "guiding did not start on");
-  next();
-  eq(stepNow(), "night", "NEXT did not reach NIGHT");
-  next();
-  eq(stepNow(), "resume", "NEXT did not reach RESUME");
-  next();
-  eq(stepNow(), "review", "NEXT did not reach REVIEW");
+  toStep("night");
+  toStep("resume");
+  toStep("review");
   eq(wizardPosts().length, 0, "something was generated before GENERATE");
   click(btn("wizard-generate"));
   await flush();
@@ -857,19 +846,15 @@ await test("a target with no name or coordinates is asked for them, and NEXT wai
 await test("a mosaic with no angle is asked for one, and the asked angle is posted", async () => {
   setup();
   mount(fxPrefill({ angleMode: null, paDeg: null }));
-  next();
-  eq(stepNow(), "framing", "NEXT did not reach FRAMING");
+  toStep("framing");
   assert(q("wizard-ask-pa") && q("wizard-angle-mode-0"), "no angle was asked");
   assert(locked(btn("wizard-next")), "NEXT is open with no angle");
   eq(q("wizard-missing").textContent, M.NEED_ANGLE, "the missing line");
   click(q("wizard-angle-mode-1"));
   typeInto(q("wizard-ask-pa"), "12.5");
-  next();
+  toStep("filters");
   tickLRGB();
-  next();
-  next();
-  next();
-  next();
+  toStep("review");
   click(btn("wizard-generate"));
   await flush();
   const body = wizardPosts()[0]?.body;
@@ -886,18 +871,15 @@ await test("a mosaic with no angle is asked for one, and the asked angle is post
 await test("a rig with no camera field is offered one target, and then posts no grid", async () => {
   setup({ optics: false });
   mount(fxPrefill());
-  next();
+  toStep("framing");
   eq(q("wizard-missing").textContent, M.NEED_OPTICS, "no optics was not said");
   eq(qa("wizard-ask-pa").length + qa("wizard-arrived-angle").length, 0, "an angle was shown for a grid that cannot exist");
   assert(locked(btn("wizard-next")), "NEXT is open on a mosaic with no field");
   click(q("wizard-single-target"));
   assert(q("wizard-planned-single"), "taking the offer does not say what it means");
-  next();
+  toStep("filters");
   tickLRGB();
-  next();
-  next();
-  next();
-  next();
+  toStep("review");
   click(btn("wizard-generate"));
   await flush();
   const body = wizardPosts()[0]?.body ?? {};
@@ -918,7 +900,7 @@ await test("a framing made at another camera's field says so on FRAMING", async 
   // The same camera at 500 mm: twice the field the door framed with.
   useStore.setState({ config: { optics: { ...OPTICS, focal_length_mm: 500 } } } as any);
   mount(fxPrefill());
-  next();
+  toStep("framing");
   const line = q("wizard-field-changed")?.textContent ?? "";
   assert(line.includes("1.35 x 0.90 deg") && line.includes("2.69 x 1.80 deg"),
     `the rig's other field was not said on FRAMING: ${JSON.stringify(line)}`);
@@ -927,7 +909,7 @@ await test("a framing made at another camera's field says so on FRAMING", async 
 await test("a single target is never asked an angle, and says where its angle is set", async () => {
   setup();
   mount(fxPrefill({ rows: 1, cols: 1, skip: "" }));
-  next();
+  toStep("framing");
   eq(qa("wizard-ask-pa").length, 0, "a single target was asked an angle");
   assert(q("wizard-one-target-angle"), "a single target framed at an angle does not say where it is set");
   assert(!locked(btn("wizard-next")), "NEXT is locked on a single target");
@@ -954,7 +936,7 @@ await test("a single target is never asked an angle, and says where its angle is
 await test("a single frame a door sends at a PA with no mode says the PA it was framed at (#460)", async () => {
   setup();
   mount(fxPrefill({ rows: 1, cols: 1, skip: "", angleMode: null, paDeg: 30 }));
-  next();
+  toStep("framing");
   const note = q("wizard-one-target-angle")?.textContent ?? "";
   assert(note.includes("Framed at PA 30.0 deg") && note.includes("on the TARGET in the editor"),
     `a PA dialled on a single frame was dropped without a word: ${JSON.stringify(note)}`);
@@ -963,7 +945,7 @@ await test("a single frame a door sends at a PA with no mode says the PA it was 
   unmount();
   setup();
   mount(fxPrefill({ rows: 1, cols: 1, skip: "", angleMode: null, paDeg: null }));
-  next();
+  toStep("framing");
   eq(qa("wizard-one-target-angle").length, 0, "a single frame that arrived with no angle got the angle note");
 });
 
@@ -1040,12 +1022,9 @@ await test("a refused answer is shown with the server's words, and nothing reads
 /** The walk to the NIGHT step with the recorded answers: TARGET and FRAMING
  *  have everything, FILTERS ticks L, R, G and B, GUIDING is the default. */
 function walkToNight(): void {
-  next();                    // target -> framing
-  next();                    // framing -> filters
+  toStep("filters");
   tickLRGB();
-  next();                    // filters -> guiding
-  next();                    // guiding -> night
-  eq(stepNow(), "night", "the walk did not reach NIGHT");
+  toStep("night");
 }
 
 /** The owner's label for RESUME, EXACTLY (ruling 7 on #189), spelled out here
@@ -1102,8 +1081,7 @@ await test("RESUME asks the owner's question in the owner's words, with the DUSK
   setup();
   mount(fxPrefill());
   walkToNight();
-  next();
-  eq(stepNow(), "resume", "NEXT did not reach RESUME");
+  toStep("resume");
   eq(q("wizard-resume-label").textContent, OWNER_LABEL, "the RESUME label is not the owner's words, exactly");
   const group = q("wizard-resume-on").closest('[role="radiogroup"]');
   eq(group.getAttribute("aria-label"), OWNER_LABEL, "the choice is not named by the owner's words");
@@ -1155,11 +1133,9 @@ await test("GENERATE with Off and a clock stop posts one request carrying those 
   walkToNight();
   click(q("wizard-stop-1"));
   typeInto(q("wizard-ask-stop-clock"), "03:30");
-  next();
-  eq(stepNow(), "resume", "NEXT did not reach RESUME");
+  toStep("resume");
   click(q("wizard-resume-off"));
-  next();
-  eq(stepNow(), "review", "NEXT did not reach REVIEW");
+  toStep("review");
   eq(q("wizard-summary-night").textContent, "NIGHTfrom astro dusk to 03:30 (clock time), min altitude 30 deg",
     "the review does not say the night as answered");
   assert(q("wizard-summary-resume").textContent.includes("off"), "the review does not say the flow resumes no later night");
@@ -1193,8 +1169,7 @@ await test("every NIGHT answer reaches the body: a sun-based start, an altitude,
   walkToNight();
   click(q("wizard-start-2"));                  // Civil dusk
   typeInto(q("wizard-ask-min-alt"), "42.5");
-  next();
-  next();
+  toStep("review");
   click(btn("wizard-generate"));
   await flush();
   eq(canon(wizardPosts()[0].body), canon({ ...FX.request, start: "Civil dusk", min_alt: 42.5 }), "a sun-based start and an altitude:");
@@ -1205,8 +1180,7 @@ await test("every NIGHT answer reaches the body: a sun-based start, an altitude,
   walkToNight();
   click(q("wizard-start-3"));
   typeInto(q("wizard-ask-start-clock"), "21:15");
-  next();
-  next();
+  toStep("review");
   click(btn("wizard-generate"));
   await flush();
   eq(canon(wizardPosts()[0].body), canon({ ...FX.request, start: "Clock time", start_clock: "21:15" }), "a Clock time start:");
@@ -1340,7 +1314,7 @@ await test("the classic host mounts the shared sheet lazily, and its EDIT FRAMIN
   });
   for (let i = 0; i < 20 && !q("send-to-wizard-sheet"); i++) await flush(10);
   assert(q("send-to-wizard-sheet"), "the host never mounted the shared sheet");
-  next();
+  toStep("framing");
   click(q("wizard-edit-framing"));
   eq(hostCloses, 1, "the host's EDIT FRAMING did not close the wizard back to the framing");
   act(() => { root.render(createElement(hostModule.SendToWizardHost, { prefill: null, onClose: () => {} })); });

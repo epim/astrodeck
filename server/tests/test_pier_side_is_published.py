@@ -55,18 +55,34 @@ class TestTheOneCopyOfTheRule:
         already done."""
         assert coords.pier_side_for_hour_angle(0.0) == "west"
 
-    def test_the_simulator_reads_the_same_copy(self):
+    @pytest.mark.parametrize("answer,side", [("east", PierSide.EAST),
+                                             ("west", PierSide.WEST)])
+    def test_the_simulator_reads_the_same_copy(self, monkeypatch, answer, side):
         """Two oracles that disagree about this is how the simulator ended up
         contradicting itself at 8 of 24 RA hours, at every sidereal time --
         which is what every meridian-flip decision taken in the simulator was
-        then graded against."""
-        import inspect
+        then graded against.
 
-        from astrodeck.devices import sim
-        src = inspect.getsource(sim.SimTelescope._side_for_ra)
-        assert "pier_side_for_hour_angle" in src, (
-            "the simulator has grown a private copy of the pier-side rule "
-            "again")
+        WP 2.8 (#978). This used to read ``SimTelescope._side_for_ra`` for the
+        text ``pier_side_for_hour_angle``. It puts a rule of its own in the one
+        copy's place and asks the simulator, at hours that the real rule puts
+        on both sides, so a simulator with a private copy of the rule answers
+        from that and not from the stand-in.
+
+        RED under mutant "the simulator keeps a private copy" (the last line of
+        ``_side_for_ra`` made ``PierSide.WEST if ha < 0 else PierSide.EAST``),
+        observed:
+
+            AssertionError: the simulator did not take its answer from the one copy
+        """
+        from astrodeck.devices.sim import SimRig, SimTelescope
+        monkeypatch.setattr(coords, "pier_side_for_hour_angle",
+                            lambda ha: answer)
+        tel = SimTelescope(SimRig())
+        for ra in (1.0, 7.0, 13.0, 19.0):
+            assert tel._side_for_ra(ra) == side, (
+                f"the simulator did not take its answer from the one copy "
+                f"(RA {ra}h)")
 
     def test_the_schedule_hour_angle_is_the_same_number(self):
         """`schedule.hour_angle_h` delegates rather than duplicating: two

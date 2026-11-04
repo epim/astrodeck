@@ -7,12 +7,11 @@ Ha step, the centring solve shot 0.3 s through a 3 nm passband, ASTAP returned
 no solution, centring fell back to a raw GoTo, and the pointing landed 66' off
 with nobody watching.
 """
-import inspect
-
 import pytest
 
 from astrodeck.focus.filter_offsets import (default_ref_slot, luminance_slot,
                                             solve_filter_slot)
+from _simhub import sim_hub  # noqa: F401  (fixture import)
 from astrodeck.hub import Hub
 
 # The wheel this was written against, in slot order.
@@ -101,35 +100,6 @@ class TestLuminanceVocabulary:
         assert default_ref_slot(["Ha", "L"], current_position=0) == 1
 
 
-class TestBothSolvePathsUseTheResolver:
-    """The centring path and the polar path drifted apart once already: polar
-    honoured the configured filter from 2026-08-07 and ``solve_and_sync``
-    never did, which is what made the 66' miss possible. Assert they reach
-    their answer THROUGH the shared function, so the next fix to one is
-    automatically a fix to the other."""
-
-    def test_hub_borrow_calls_the_resolver(self):
-        from astrodeck.hub import Hub
-        src = inspect.getsource(Hub._borrow_wheel_for_solve)
-        assert "solve_filter_slot(" in src
-
-    def test_polar_calls_the_resolver(self):
-        from astrodeck.polar import native
-        src = inspect.getsource(native._apply_solve_filter)
-        assert "solve_filter_slot(" in src
-
-    def test_solve_and_sync_borrows_and_returns(self):
-        """Symmetric by construction: the sequence engine derives its focuser
-        offset delta from the wheel's REAL position, so a borrow that is not
-        returned leaves the focuser one filter's worth of steps out."""
-        src = inspect.getsource(Hub.solve_and_sync)
-        assert "_borrow_wheel_for_solve()" in src
-        assert "_return_wheel_after_solve(" in src
-        borrow = src.index("_borrow_wheel_for_solve()")
-        give_back = src.index("_return_wheel_after_solve(")
-        assert borrow < give_back, "the wheel is returned before it is borrowed"
-
-
 @pytest.fixture
 async def rig_with_wheel(monkeypatch):
     """A sim rig whose wheel carries the 2026-08-09 slot layout and flags."""
@@ -214,3 +184,79 @@ class TestTheWheelActuallyMoves:
         h.devices.pop("filterwheel")
         assert await h._borrow_wheel_for_solve() is None
         await h._return_wheel_after_solve(2)
+
+
+def _wheel_layout(fw, moves):
+    """The 2026-08-09 layout and flags on ``fw``, and every move recorded."""
+    fw.filter_names = list(WHEEL)
+    fw.filter_offsets = [0, -18, 0, -18, -18, -15, 2, 0]
+    fw.filter_narrowband = list(NARROW)
+    fw.filter_opaque = list(OPAQUE)
+
+    async def record_move(slot):
+        moves.append(int(slot))
+        fw.rig.filter_slot = int(slot)
+    return record_move
+
+
+class TestBothSolvePathsUseTheResolver:
+    """The centring path and the polar path drifted apart once already: polar
+    honoured the configured filter from 2026-08-07 and ``solve_and_sync``
+    never did, which is what made the 66' miss possible. Each path is RUN here
+    with the wheel on a narrowband slot and graded on where the wheel went, so
+    the next fix to one is automatically a fix to the other.
+
+    WP 2.8 (#978). These three cases read the source of ``_borrow_wheel_for_
+    solve``, ``_apply_solve_filter`` and ``solve_and_sync`` for the call text
+    and the position of two strings; a path that called the resolver and threw
+    its answer away passed them. The centring borrow itself is graded by
+    ``TestTheWheelActuallyMoves`` above."""
+
+    async def test_the_polar_path_moves_off_narrowband_and_leaves_the_wheel(
+            self, rig_with_wheel, monkeypatch):
+        """RED under mutant "polar ignores the resolver" (the ``slot =
+        solve_filter_slot(...)`` assignment in ``native._apply_solve_filter``
+        made ``slot = int(current)``), observed:
+
+            AssertionError: the polar solve did not move to luminance: []
+        """
+        from astrodeck.polar import native
+        h = rig_with_wheel
+        fw = h.devices["filterwheel"]
+        fw.rig.filter_slot = 5                      # Ha, as at the flip
+        await native._apply_solve_filter(h, None)
+        assert h._moves == [0], f"the polar solve did not move to luminance: {h._moves}"
+        assert fw.rig.filter_slot == 0, (
+            "a polar run owns the camera for its whole arc and does not put "
+            "the wheel back")
+
+    async def test_the_polar_path_honours_the_configured_filter(
+            self, rig_with_wheel):
+        from astrodeck.polar import native
+        h = rig_with_wheel
+        h.devices["filterwheel"].rig.filter_slot = 1    # R: broadband, left alone
+        await native._apply_solve_filter(h, None)
+        assert h._moves == [], "a broadband slot was moved without being asked"
+        await native._apply_solve_filter(h, "G")
+        assert h._moves == [2], "the configured filter was not driven to"
+
+    async def test_solve_and_sync_borrows_and_returns(
+            self, sim_hub, monkeypatch):
+        """Symmetric by construction: the sequence engine derives its focuser
+        offset delta from the wheel's REAL position, so a borrow that is not
+        returned leaves the focuser one filter's worth of steps out.
+
+        RED under mutant "the borrow is never returned" (the
+        ``_return_wheel_after_solve(borrowed_slot)`` in ``Hub.solve_and_sync``'s
+        ``finally`` replaced by ``pass``), observed:
+
+            AssertionError: the wheel did not go to luminance and come back: [0]
+        """
+        fw = sim_hub.devices["filterwheel"]
+        moves: list[int] = []
+        monkeypatch.setattr(fw, "set_position", _wheel_layout(fw, moves))
+        fw.rig.filter_slot = 5                      # Ha, mid filter cycle
+        await sim_hub.solve_and_sync(exposure_s=0.05)
+        assert moves == [0, 5], (
+            f"the wheel did not go to luminance and come back: {moves}")
+        assert fw.rig.filter_slot == 5, "the solve left the wheel moved"

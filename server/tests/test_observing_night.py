@@ -122,17 +122,36 @@ def test_there_is_no_second_night_predicate():
 
 
 class TestWeatherUsesTheSameDefinition:
-    def test_tonight_delegates_rather_than_reimplementing(self):
-        """The two used to be separate copies of the same four lines. An AST
-        check, because "it happens to agree today" is what a value comparison
-        would prove."""
-        import ast
-        import inspect
+    def test_tonight_delegates_rather_than_reimplementing(
+            self, tmp_path, monkeypatch):
+        """The two used to be separate copies of the same four lines. Weather's
+        night is graded by putting a night of our own in the definition's place
+        and asking the service for tonight: "it happens to agree today" is what
+        comparing two values would prove, and a service that resolved its own
+        night would answer with its own.
+
+        WP 2.8 (#978). This used to walk the AST of ``WeatherService._tonight``
+        for the call names; a renamed helper passed it and a copy that computed
+        the same four lines under another call name failed it.
+
+        RED under mutant "weather resolves its own night" (``_tonight`` returns
+        ``(now, now + 3600.0)`` instead of calling the definition), observed:
+
+            AssertionError: weather did not take tonight from schedule.observing_night
+        """
+        from astrodeck.config import config_store
         from astrodeck.weather import WeatherService
-        src = inspect.getsource(WeatherService._tonight)
-        tree = ast.parse(src.lstrip())
-        called = {n.func.attr for n in ast.walk(tree)
-                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
-        assert "observing_night" in called
-        assert "_night_dusk" not in called and "_night_dawn" not in called, \
-            "weather is resolving its own night again"
+        monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+        monkeypatch.setattr(config_store, "_cfg", None)
+        asked: list[tuple] = []
+
+        def definition(site, twilight_deg, now):
+            asked.append((site, twilight_deg, now))
+            return (111.0, 222.0)
+
+        monkeypatch.setattr(schedule, "observing_night", definition)
+        cfg = config_store.cfg()
+        assert WeatherService()._tonight(JUNE) == (111.0, 222.0), (
+            "weather did not take tonight from schedule.observing_night")
+        assert asked == [(cfg.site, cfg.safety.twilight_deg, JUNE)], (
+            "weather asked the definition about a different site, twilight or time")
