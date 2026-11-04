@@ -22,7 +22,8 @@ is correct or reachable — a button behind a permission nobody has would still
 pass. It is a smoke detector for whole features wired to nothing, and that is
 the failure that keeps happening.
 
-TWO WAYS IT WAS BLIND, both closed on 2026-08-08 (#197):
+THREE WAYS IT WAS BLIND, the first two closed on 2026-08-08 (#197), the third
+by WP 2.8 (#805):
 
 * A COMMENT SATISFIED IT. ``_is_referenced`` matched the whole file as text, so
   when the UI stopped calling ``PUT /api/guide/camera-settings`` a stale comment
@@ -36,6 +37,16 @@ TWO WAYS IT WAS BLIND, both closed on 2026-08-08 (#197):
   other modules — every user-management route, and the whole local-auth login
   flow — and none of them was ever in the table. A detector that silently omits
   a ninth of what it is checking is the same failure one layer up.
+* AN UNMOUNTED FILE SATISFIED IT. The haystack was every ``.ts``/``.tsx`` under
+  ``ui/src``, so a string constant in a component nothing renders kept a route
+  looking wired. WP-130's two mosaic routes were named in GridSection.tsx while
+  no mounted component passed the props that make its buttons render (#805):
+  built, tested, unreachable, and green. The haystack is now the string
+  literals of the MODULES REACHABLE FROM THE ENTRY POINT (``ui/src/main.tsx``),
+  found by following ``import``/``export ... from``/``import()`` specifiers
+  through the real source tree. Reachability is per module: a module a mounted
+  file imports counts even if the importer never renders it, so this proves the
+  reference is in the built bundle, not that a user can press it.
 """
 from __future__ import annotations
 
@@ -150,13 +161,70 @@ def _routes() -> set[str]:
     return out
 
 
-def _ui_text() -> str:
-    files = [p for ext in ("*.ts", "*.tsx")
-             for p in _UI_SRC.rglob(ext)
-             if "__tests__" not in p.parts]
-    assert files, f"no UI sources under {_UI_SRC} — the test would pass vacuously"
+_UI_ENTRY = _UI_SRC / "main.tsx"
+
+#: A comment or any kind of string literal, whichever starts first, so a ``//``
+#: inside a string (a URL) is never read as a comment and a quote inside a
+#: comment never opens a string.
+_COMMENT_OR_STRING = re.compile(
+    r"""//[^\n]*|/\*.*?\*/|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""",
+    re.S)
+
+#: ``import x from "./a"``, ``export * from "./a"``, ``import "./a"`` and
+#: ``import("./a")``: the relative specifiers a module is built from. The UI
+#: has no path aliases, so a specifier that does not start with ``.`` is a
+#: package and leads nowhere in the tree.
+_IMPORT_SPEC = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(?\s*)(['"])(\.[^'"\n]*)\1""")
+
+
+def _without_comments(src: str) -> str:
+    return _COMMENT_OR_STRING.sub(
+        lambda m: "" if m.group().startswith(("//", "/*")) else m.group(), src)
+
+
+def _resolve_module(importer: Path, spec: str) -> Path | None:
+    """The source file a relative specifier names, or None (a stylesheet, JSON
+    or an image is not a module that can name a route)."""
+    base = importer.parent / spec
+    for cand in (base,
+                 base.with_name(base.name + ".ts"),
+                 base.with_name(base.name + ".tsx"),
+                 base / "index.ts",
+                 base / "index.tsx"):
+        if cand.is_file() and cand.suffix in (".ts", ".tsx"):
+            return cand.resolve()
+    return None
+
+
+def _mounted_modules(entry: Path) -> list[Path]:
+    """Every module reachable from ``entry`` by following imports."""
+    assert entry.is_file(), f"no UI entry point at {entry}"
+    seen: dict[Path, None] = {}
+    stack = [entry.resolve()]
+    while stack:
+        mod = stack.pop()
+        if mod in seen:
+            continue
+        seen[mod] = None
+        src = _without_comments(mod.read_text(encoding="utf-8", errors="ignore"))
+        for m in _IMPORT_SPEC.finditer(src):
+            dep = _resolve_module(mod, m.group(2))
+            if dep is not None:
+                stack.append(dep)
+    return list(seen)
+
+
+def _mounted_text(entry: Path) -> str:
+    """The source of every module the app is built from, joined."""
     return "\n".join(p.read_text(encoding="utf-8", errors="ignore")
-                     for p in files)
+                     for p in _mounted_modules(entry)
+                     if "__tests__" not in p.parts)
+
+
+def _ui_text() -> str:
+    text = _mounted_text(_UI_ENTRY)
+    assert text, f"no UI sources reachable from {_UI_ENTRY}: the test would pass vacuously"
+    return text
 
 
 def _string_literals(src: str) -> list[str]:
@@ -355,6 +423,85 @@ def test_an_apostrophe_in_prose_cannot_blind_the_rest_of_the_file():
            "const re = /[\"']/;\n"
            f'api.put("{_ROUTE}", body)\n')
     assert _is_referenced(_ROUTE, src)
+
+
+def _tree(root: Path, files: dict[str, str]) -> Path:
+    for name, body in files.items():
+        f = root / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(body, encoding="utf-8")
+    return root / "main.tsx"
+
+
+_NAMED = '  api.post("/api/rotator/sync-to-sky", {});\n'
+
+
+def test_a_route_named_only_by_an_unmounted_component_is_not_wired(tmp_path):
+    """THE FINDING (#805): GridSection.tsx named WP-130's two routes in a
+    constant while nothing mounted imported it, and the old whole-tree match
+    called both wired. A file nothing imports is not part of the app."""
+    entry = _tree(tmp_path, {
+        "main.tsx": 'import App from "./App";\n',
+        "App.tsx": 'export default () => null;\n',
+        "Unmounted.tsx": "export const X = () => {\n" + _NAMED + "};\n",
+    })
+    assert not _is_referenced("/api/rotator/sync-to-sky", _mounted_text(entry))
+
+
+@pytest.mark.parametrize("main", [
+    'import { X } from "./Wired";\n',
+    'export { X } from "./Wired";\n',
+    'export * from "./Wired";\n',
+    'import "./Wired";\n',
+    'const X = () => import("./Wired");\n',
+    'const X = lazy(() => import(\n  "./Wired"));\n',
+])
+def test_every_way_a_module_is_imported_mounts_it(tmp_path, main):
+    entry = _tree(tmp_path, {
+        "main.tsx": main,
+        "Wired.tsx": "export const X = () => {\n" + _NAMED + "};\n",
+    })
+    assert _is_referenced("/api/rotator/sync-to-sky", _mounted_text(entry)), main
+
+
+def test_a_module_reached_through_a_chain_and_a_folder_index_is_mounted(tmp_path):
+    entry = _tree(tmp_path, {
+        "main.tsx": 'import App from "./App";\n',
+        "App.tsx": 'import { Sheet } from "./sheets";\n',
+        "sheets/index.ts": 'export { Sheet } from "./Sheet";\n',
+        "sheets/Sheet.tsx": "export const Sheet = () => {\n" + _NAMED + "};\n",
+    })
+    assert _is_referenced("/api/rotator/sync-to-sky", _mounted_text(entry))
+
+
+@pytest.mark.parametrize("main", [
+    '// import { X } from "./Wired";\n',
+    '/* import { X } from "./Wired"; */\n',
+    'import { X } from "react";\n',
+    'import "./Wired.css";\n',
+])
+def test_a_comment_or_a_package_or_a_stylesheet_mounts_nothing(tmp_path, main):
+    """The other half, as for the route names themselves: a stale commented-out
+    import must not keep an abandoned component looking mounted."""
+    entry = _tree(tmp_path, {
+        "main.tsx": main,
+        "Wired.tsx": "export const X = () => {\n" + _NAMED + "};\n",
+        "Wired.css": "body {}\n",
+    })
+    assert not _is_referenced("/api/rotator/sync-to-sky", _mounted_text(entry)), main
+
+
+def test_the_mounted_graph_reaches_both_roots_of_the_real_app():
+    """The graph's own positive control: a resolver that stopped following
+    imports would leave the entry alone and every route would then be an
+    orphan, which the assertion above reports as a hundred findings and not as
+    one broken resolver."""
+    rel = {p.relative_to(_UI_SRC.resolve()).as_posix()
+           for p in _mounted_modules(_UI_ENTRY)}
+    assert len(rel) > 500, f"only {len(rel)} modules reachable from main.tsx"
+    for path in ("main.tsx", "AppRoot.tsx", "App.tsx", "next/NextApp.tsx",
+                 "store.ts", "views/CaptureView.tsx"):
+        assert path in rel, f"{path} is not reachable from the entry point"
 
 
 def test_the_real_ui_still_reads_as_a_ui():

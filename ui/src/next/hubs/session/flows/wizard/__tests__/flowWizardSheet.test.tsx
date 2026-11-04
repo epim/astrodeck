@@ -220,6 +220,7 @@ const { useStore } = await import("../../../../../../store");
 const { FLOWS_INIT } = await import("../../../../../../components/flows/flowsSlice");
 const { resetRouterCacheForTests, useRoute, currentRoute } = await import("../../../../../router");
 const { SheetHost } = await import("../../../../../shell/SheetHost");
+const { driveTo, domWizardDriver } = await import("../../../../../../testing/driveTo");
 const { FLOW_WIZARD_SHEET, closeWizard, flowWizardParams, openFlowWizard } = await import("../FlowWizardSheet");
 type WizardPrefill = import("../../../../../../components/flows/wizard/wizardModel").WizardPrefill;
 
@@ -302,32 +303,16 @@ async function unmountAll(): Promise<void> {
   root = createRoot(container);
 }
 const hash = (): string => String(win.location.hash);
-function nextStep(): void {
-  const b = btn("wizard-next");
-  assert(b && b.getAttribute("aria-disabled") !== "true", `NEXT is locked: ${b?.getAttribute("title")}`);
-  click(b);
-}
-const stepNow = (): string | null => q("wizard-step")?.getAttribute("data-step") ?? null;
-/** Press NEXT until the wizard is on `step`, and say which steps it passed.
- *  Every press must LEAVE the step it was on and the loop is bounded, so a step
- *  that is never reached fails here by name and the walk does not count presses
- *  (#720: adding NIGHT and RESUME to the wizard, backlog WP-100 / #196, turned
- *  two hard-coded presses into red cases that had nothing to do with either). */
-function nextUntil(step: string): string[] {
-  const visited: string[] = [];
-  for (let i = 0; i < 12 && stepNow() !== step; i++) {
-    const was = stepNow();
-    nextStep();
-    assert(stepNow() !== was, `NEXT did not leave ${was}`);
-    visited.push(String(stepNow()));
-  }
-  assert(stepNow() === step, `NEXT never reached ${step}: stopped on ${stepNow()} (passed ${visited.join(", ")})`);
-  return visited;
-}
+const wizard = domWizardDriver(doc, click);
+/** Press NEXT until the wizard is on `step` (testing/driveTo.ts: by name,
+ *  never by a count of presses; #720: adding NIGHT and RESUME to the wizard,
+ *  backlog WP-100 / #196, turned two hard-coded presses into red cases that
+ *  had nothing to do with either); the steps it passed. */
+const toStep = (step: string): string[] => driveTo(step, wizard);
 async function walkAndGenerate(): Promise<void> {
-  nextUntil("filters");
+  toStep("filters");
   for (const f of ["L", "R", "G", "B"]) click(q(`wizard-filter-${f}`));
-  const passed = nextUntil("review");
+  const passed = toStep("review");
   assert(passed.includes("night") && passed.includes("resume"),
     `the walk to REVIEW did not pass the NIGHT and RESUME steps: ${passed.join(", ")}`);
   click(btn("wizard-generate"));
@@ -375,7 +360,7 @@ await test("EDIT FRAMING pops the wizard back to the door, and CLOSE pops nothin
   await mountAt("#/sky");
   act(() => { openFlowWizard(PREFILL); });
   await until("the wizard", () => q("send-to-wizard-sheet") !== null);
-  nextStep();
+  wizard.press();
   click(q("wizard-edit-framing"));
   eq(currentRoute().sheets, [], "EDIT FRAMING did not pop the wizard back to the door");
   eq(hash(), "#/sky", "EDIT FRAMING did not land on the door's screen");

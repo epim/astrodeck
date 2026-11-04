@@ -23,6 +23,8 @@ under the normal command, and the file restored from the backup.
 """
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 import astrodeck.config as config_mod
@@ -215,9 +217,25 @@ async def test_the_record_is_cleared_before_the_command_goes_out(
 
 
 async def test_a_sync_does_not_clear_the_record(fixed_env, clock):
-    """Sync does not move the tube; it is not in the clearing set."""
-    import inspect
-    assert "_clear_park_record" not in inspect.getsource(am5.ZwoAm5Telescope.sync)
+    """Sync does not move the tube; it is not in the clearing set.
+
+    WP 2.8 (#978). This used to look for ``_clear_park_record`` in the source
+    of ``sync``, which a helper that clears the record on sync's behalf would
+    have slipped past. It syncs a parked-by-us mount and reads the record.
+
+    MUTANT "sync clears the record" (``self._clear_park_record()`` as the
+    first statement of ``ZwoAm5Telescope.sync``): RED - AssertionError: a sync
+    cleared the park record
+    """
+    fl, tel = await _parked_by_us(clock)
+    assert config_mod.load_mount_park_record(tel._park_key()) is not None
+    fl.script.update({"Sr01:00:00": "1", "Sd+20*00:00": "1", "CM": "N/A"})
+    fl.sent.clear()
+    with contextlib.suppress(Exception):    # the read-back may refuse; only the record matters
+        await tel.sync(1.0, 20.0)
+    assert "CM" in fl.sent, "premise: the sync reached the wire"
+    assert config_mod.load_mount_park_record(tel._park_key()) is not None, (
+        "a sync cleared the park record")
 
 
 async def test_find_home_leaves_no_record(fixed_env, clock):

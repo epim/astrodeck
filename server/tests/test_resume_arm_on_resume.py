@@ -62,25 +62,60 @@ def _plan():
 
 
 class TestArmingIsAboutTheActiveSession:
-    def test_a_fresh_run_is_armed(self, store):
-        from astrodeck.sequence.engine import SequenceEngine
-        import inspect
-        src = inspect.getsource(SequenceEngine.start)
-        assert "session.auto_resume = True" in src, \
-            "nothing arms the session at all"
+    async def test_a_fresh_run_is_armed(self, store, sim_hub):
+        """A fresh start arms the session it creates, in the store.
 
-    def test_arming_is_NOT_inside_the_fresh_only_branch(self):
-        """THE regression. If the assignment moves back under
-        `if session is None:` a resumed session goes unarmed again and the
-        silence returns."""
-        import inspect
+        WP 2.8 (#978). This used to read ``SequenceEngine.start`` for the text
+        ``session.auto_resume = True``, which stays green under a start that
+        arms an object it never saves and goes red under a refactor that keeps
+        the effect. It reads the store after a real ``start``.
+
+        RED under mutant "a fresh run is left unarmed" (``session.auto_resume =
+        resume`` in the same place), observed:
+
+            AssertionError: a fresh run left its session unarmed in the store
+        """
         from astrodeck.sequence.engine import SequenceEngine
-        src = inspect.getsource(SequenceEngine.start)
-        arm = src.index("session.auto_resume = True")
-        else_branch = src.index('session.status = "active"')
-        assert arm > else_branch, (
-            "auto_resume is set before the resume branch runs — it is back "
-            "inside the fresh-run-only path")
+        engine = SequenceEngine(sim_hub)
+        engine.start(_plan())
+        try:
+            stored = {s.id: s for s in store.load_all()}
+            assert stored[engine._session.id].auto_resume is True, (
+                "a fresh run left its session unarmed in the store")
+        finally:
+            await engine.abort()
+
+    async def test_a_resumed_run_is_armed_too(self, store, sim_hub):
+        """THE regression. A RESUMED session is armed as well as a fresh one;
+        if the assignment moves back under the fresh-only branch a resumed
+        session goes unarmed again and the silence of 2026-08-11 returns.
+
+        WP 2.8 (#978). This replaces ``test_arming_is_NOT_inside_the_fresh_
+        only_branch``, which compared the positions of two strings in the
+        source of ``start``. It starts a run on a dormant session whose flag
+        was cleared (what a superseded session looks like) and reads the store.
+
+        RED under mutant "a resume is left unarmed" (``session.auto_resume =
+        not resume`` inserted before ``self._session = session`` in
+        ``SequenceEngine.start``), observed:
+
+            AssertionError: a resumed run left its session unarmed in the store
+        """
+        from astrodeck.sequence.engine import SequenceEngine
+        superseded = Session(name="night one", created_ts=time.time(),
+                             status="dormant", plan=_plan(), auto_resume=False)
+        store.save(superseded)
+
+        engine = SequenceEngine(sim_hub)
+        engine.start(_plan(), session=superseded)
+        try:
+            stored = next(s for s in store.load_all() if s.id == superseded.id)
+            assert stored.auto_resume is True, (
+                "a resumed run left its session unarmed in the store")
+            assert engine._session.id == superseded.id, (
+                "premise: the run resumed the session it was handed")
+        finally:
+            await engine.abort()
 
     async def test_the_singleton_still_holds(self, store, sim_hub):
         """Starting a run leaves exactly ONE session armed, the one it
@@ -188,22 +223,7 @@ class TestTheRigSequenceThatFailed:
         assert store.armed() is not None
 
 
-class TestTheSilenceItself:
-    def test_tick_says_something_when_nothing_is_armed(self):
-        """25 minutes of nothing is not a diagnosis. Whatever the tick decides,
-        a dormant session that will NOT be resumed has to be visible somewhere —
-        otherwise the next person also spends the night reading session JSON by
-        hand.
-
-        This asserts the shape rather than the wording: `armed() is None` must
-        not be a bare early return."""
-        import inspect
-        from astrodeck.sequence.resume_arm import ResumeArm
-        src = inspect.getsource(ResumeArm.tick)
-        # The region between `armed is None` and the return that ends it.
-        start = src.index("if armed is None:")
-        region = src[start:start + 1800]
-        assert "bus.log" in region, (
-            "tick returns silently when nothing is armed — a dormant, unarmed "
-            "session is invisible, which is how 25 minutes of idle went "
-            "unexplained on 2026-08-11")
+# The silence itself (a tick that finds a dormant, unarmed session says so, once,
+# naming it) is graded by behaviour in test_w2_resume_arm.py
+# (``test_the_not_armed_note_*``): it ticks a real ResumeArm and reads the log.
+# WP 2.8 (#978) removed the source-text pin that stood here.

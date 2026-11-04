@@ -274,6 +274,7 @@ const nextFmt = await import("../next/hubs/session/flows/create/quickPayload");
 const { SEND_TO_WIZARD: SKY_LABEL } = await import("../next/hubs/sky/sheets/quickCopy");
 const { DEFAULT_OVERLAP, fovFromOptics } = await import("../lib/framing");
 const { draftFromParams, layoutOf } = await import("../components/flows/framing/framingModel");
+const { driveTo, domWizardDriver } = await import("../testing/driveTo");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -303,7 +304,6 @@ let root = createRoot(container);
 const q = (id: string): any => doc.querySelector(`[data-testid="${id}"]`);
 const qa = (id: string): any[] => Array.from(doc.querySelectorAll(`[data-testid="${id}"]`));
 const btn = (id: string): any => (q(id)?.closest("button") ?? null);
-const locked = (b: any) => b?.getAttribute("aria-disabled") === "true";
 function click(el: any): void {
   assert(el, "no element to click - the fixture is wrong, not the component");
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
@@ -324,28 +324,11 @@ async function until(what: string, cond: () => boolean): Promise<void> {
   throw new Error(`timed out waiting for ${what}`);
 }
 const stepNow = () => q("wizard-step")?.getAttribute("data-step");
-function next(): void {
-  const b = btn("wizard-next");
-  assert(b && !locked(b), `NEXT is locked on ${stepNow()}: ${q("wizard-missing")?.textContent ?? b?.getAttribute("title")}`);
-  click(b);
-}
-/** Press NEXT until the wizard is on `step`, and say which steps it passed.
- *  Every press must LEAVE the step it was on (an unmoving press is a lock the
- *  walk would otherwise loop on), and the loop is bounded, so a step that is
- *  never reached fails here by name instead of by a count of presses (#720:
- *  adding NIGHT and RESUME to the wizard turned a hard-coded count into six
- *  red cases in files that had nothing to do with either step). */
-function nextUntil(step: string): string[] {
-  const visited: string[] = [];
-  for (let i = 0; i < 12 && stepNow() !== step; i++) {
-    const was = stepNow();
-    next();
-    assert(stepNow() !== was, `NEXT did not leave ${was}: ${q("wizard-missing")?.textContent ?? ""}`);
-    visited.push(String(stepNow()));
-  }
-  eq(stepNow(), step, `NEXT never reached ${step} (passed ${visited.join(", ")})`);
-  return visited;
-}
+const wizard = domWizardDriver(doc, click);
+/** Press NEXT until the wizard is on `step` (testing/driveTo.ts: by name,
+ *  never by a count of presses, #720); the steps it passed. */
+const toStep = (step: string): string[] => driveTo(step, wizard);
+const next = (): void => wizard.press();
 const wizardPosts = () => calls.filter((c) => c.method === "POST" && c.url.endsWith("/api/flows/wizard"));
 /** Any request that could write the Plan: the plan library routes, and a
  *  sequence start (which would run the Plan the store holds). */
@@ -420,19 +403,19 @@ const fxTargets = (FX.answer.graph.nodes as any[]).filter((n) => n.type === "tar
  *  arrived), FILTERS (L, R, G, B), GUIDING (on), then the NIGHT and RESUME
  *  steps backlog WP-100 (#196) added, each left on its own default (so the
  *  body posted is still the recorded request byte for byte), and GENERATE.
- *  It drives to each step by NAME (`nextUntil`) and does not count presses. */
+ *  It drives to each step by NAME (`toStep`) and does not count presses. */
 async function walkToGenerate(mosaic: boolean, filters: string[] = ["L", "R", "G", "B"]): Promise<void> {
   await until("the wizard's sheet", () => q("send-to-wizard-sheet") !== null);
   eq(stepNow(), "target", "the wizard did not open on TARGET");
-  nextUntil("framing");
+  toStep("framing");
   if (mosaic) {
     eq(qa("wizard-arrived-angle").length, 0, "an angle MODE arrived, but no framing holds one");
     click(q("wizard-angle-mode-0"));
   }
-  nextUntil("filters");
+  toStep("filters");
   for (const f of filters) click(q(`wizard-filter-${f}`));
-  nextUntil("guiding");
-  const passed = nextUntil("review");
+  toStep("guiding");
+  const passed = toStep("review");
   assert(passed.includes("night") && passed.includes("resume"),
     `the walk to REVIEW did not pass the NIGHT and RESUME steps: ${passed.join(", ")}`);
   eq(wizardPosts().length, 0, "something was generated before GENERATE");
