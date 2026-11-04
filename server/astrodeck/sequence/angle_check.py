@@ -49,9 +49,12 @@ and raises.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from .models import Target, TargetGroup
 
 VerdictKind = Literal["ok", "off", "no_measurement"]
 
@@ -221,3 +224,94 @@ def angle_tolerance_deg(fov_x: float, fov_y: float, overlap: float,
         return 0.0
     s = k * min(ov * fy / (fx * (1.0 - ov)), ov * fx / (fy * (1.0 - ov)))
     return math.degrees(math.asin(min(1.0, s)))
+
+
+def _signed_turn(deg: float) -> float:
+    """``deg`` as a signed turn in [-180, 180)."""
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+def _convergence_term_deg(group: TargetGroup,
+                          members: Iterable[Target]) -> float:
+    """What a camera that cannot correct convergence takes off ``group``'s
+    corrected tolerance, in degrees: zero or negative.
+
+    A corrected block's members each carry their own angle, the layout angle
+    plus local north at the panel (``pa_deg``, #175), so a member's
+    convergence is ``rotation_deg - group.pa_deg``. Two neighbours are turned
+    against each other by the difference of their convergences, and the
+    worst seam's share of the overlap is the number
+    ``framing.convergence_share`` charges, read here from the members the
+    plan carries (a skipped panel has no member, so its seams are not
+    counted). The budget A.2 leaves the angle is ``ROTATION_BUDGET`` less that
+    share, and the term is what that does to the tolerance
+    (:func:`angle_tolerance_deg`, which answers 0 for a share that spends the
+    whole budget, M15).
+
+    A group that never corrected has members at the layout angle, so every
+    convergence is 0 and so is the term: its own tolerance was computed with
+    convergence charged. A group with no grid geometry, no layout angle or
+    members with no row and column has no seams to read, and answers 0."""
+    # Imported here, not at the top: ``catalog.framing`` loads the auth layer,
+    # which the engine has no use for (framing imports this module lazily for
+    # the same reason).
+    from ..catalog.framing import ROTATION_BUDGET, _seam_share
+
+    geometry = group.geometry
+    fov_x = _finite(geometry.get("fov_x"))
+    fov_y = _finite(geometry.get("fov_y"))
+    overlap = _finite(geometry.get("overlap"))
+    layout = _finite(group.pa_deg)
+    if (fov_x is None or fov_y is None or overlap is None or layout is None
+            or fov_x <= 0.0 or fov_y <= 0.0):
+        return 0.0
+    overlap = min(0.5, max(0.0, overlap))
+    north: dict[tuple[int, int], float] = {}
+    for m in members:
+        if m.mosaic_group != group.id or m.panel_row is None \
+                or m.panel_col is None:
+            continue
+        own = _finite(m.rotation_deg)
+        north[(m.panel_row, m.panel_col)] = (
+            0.0 if own is None else _signed_turn(own - layout))
+    share = 0.0
+    for (r, c), here in north.items():
+        beside, below = north.get((r, c + 1)), north.get((r + 1, c))
+        if beside is not None:      # side by side: a shared vertical edge
+            share = max(share, _seam_share(
+                fov_y / 2.0, abs(_signed_turn(here - beside)),
+                overlap * fov_x))
+        if below is not None:       # one above the other: a horizontal edge
+            share = max(share, _seam_share(
+                fov_x / 2.0, abs(_signed_turn(here - below)),
+                overlap * fov_y))
+    if share == 0.0:
+        return 0.0
+    return (angle_tolerance_deg(fov_x, fov_y, overlap, ROTATION_BUDGET - share)
+            - angle_tolerance_deg(fov_x, fov_y, overlap, ROTATION_BUDGET))
+
+
+def allowed_error(group: TargetGroup, members: Iterable[Target], *,
+                  rotating: bool) -> float | None:
+    """The sky-angle error a hop of ``group`` may show and still be ``ok``:
+    the group's own tolerance plus the convergence term, in degrees. The
+    one number both paths of the engine's angle check judge by (#787, #828).
+
+    ``rotating`` is whether a rotator corrects the camera tonight. While it
+    does, each panel is judged against its own angle and the group's
+    tolerance, which a corrected block computes with convergence taken as 0,
+    stands (the term is 0). With rotation off for the night (D-05) the
+    camera sits at the block's angle for every panel and cannot remove the
+    convergence the group's tolerance left out, so the term
+    (:func:`_convergence_term_deg`) charges it back, and the answer is what
+    ``framing.angle_tolerance_deg`` prints for the grid. Never negative.
+
+    ``members`` is any iterable of targets, the plan's included: those whose
+    ``mosaic_group`` is ``group.id`` are read. ``None`` when the group has no
+    tolerance, which disables the check (spec 3.4); a tolerance that is
+    negative or not finite is returned as it is, for the caller's own guard.
+    """
+    base = group.angle_tolerance_deg
+    if rotating or base is None or not 0.0 <= base < math.inf:
+        return base
+    return max(0.0, base + _convergence_term_deg(group, members))

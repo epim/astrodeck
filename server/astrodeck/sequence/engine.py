@@ -76,7 +76,7 @@ from .cloudstate import CloudState, verdict_from_info
 from .instructions import (
     FireRecord, FiredAction, TriggerContext, evaluate_instructions,
 )
-from .angle_check import angle_verdict, fresh_sky_angle
+from .angle_check import allowed_error, angle_verdict, fresh_sky_angle
 from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
                           GENERIC_SOLVE_FAILURE, HELD_PASS_ALERT_AT,
                           HELD_PASS_KINDS, REACH_RECHECK_S, SET_ASIDE_EXPIRY_S,
@@ -9051,11 +9051,16 @@ class SequenceEngine:
         angle. WITH ROTATION OFF FOR THE NIGHT (D-05) it is the group's: the
         camera sits at one angle, the block's, for every panel, and judged
         against a corner's own angle a camera nothing can turn would be set
-        aside for an angle it cannot reach."""
+        aside for an angle it cannot reach. The tolerance is
+        `angle_check.allowed_error`'s for the same reason: the group's own
+        while a rotator corrects, and with rotation off the fixed camera's,
+        which charges back the convergence a corrected group's leaves out
+        (#787, #828)."""
         rotates = group.rotate and not self._rotation_off_tonight()
         pa = (self._planned_pa(target, group) if rotates
               else group.pa_deg)
-        tol = group.angle_tolerance_deg
+        tol = allowed_error(group, self.plan.targets if self.plan else [],
+                            rotating=rotates)
         if (pa is None or tol is None or not math.isfinite(pa)
                 or not math.isfinite(tol) or tol < 0):
             return

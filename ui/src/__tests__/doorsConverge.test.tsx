@@ -556,18 +556,38 @@ await test("the Atlas's single target goes the same way, as one target with no g
   await settle();
 });
 
-await test("the Atlas's mosaic at a dial never turned off 0 arrives with NO PA, which the wizard asks for", async () => {
-  // `rotation_deg` starts at 0 for every framing session, so 0 is "nobody
-  // chose an angle" (`commandedPa`), and the door hands the COMMANDED PA:
-  // none. A door that handed the raw rotation would type 0 into the PA box
-  // and lay the grid out, and command the rotator, at an angle nobody chose.
+await test("the Atlas's mosaic at a dial never turned off 0 arrives as PA 0, north up (#790)", async () => {
+  // A grid is laid out at an angle whatever the dial says, so the door hands
+  // the COMMANDED PA (`commandedPa`), 0 included: the PA box arrives typed,
+  // and the block can reach the per-panel convergence correction.
   await mountAtlas(2, 3, 0);
   click(q("atlas-send-to-wizard"));
   await until("the wizard's sheet", () => q("send-to-wizard-sheet") !== null);
   next();
   eq(stepNow(), "framing", "NEXT did not reach FRAMING");
   assert(q("wizard-ask-pa") !== null, "the FRAMING step did not ask for the PA - the fixture is wrong, not the door");
-  eq(q("wizard-ask-pa")?.value, "", "an unturned dial arrived as a PA:");
+  eq(q("wizard-ask-pa")?.value, "0", "an unturned grid did not arrive as the north-up layout:");
+  click(btn("wizard-close"));
+  await settle();
+});
+
+await test("the Atlas's single frame at a dial never turned off 0 arrives with NO PA", async () => {
+  // One panel keeps the dead-band: 0 is "nobody chose an angle". The control is
+  // the same frame at 30, which does announce the angle it was framed at.
+  await mountAtlas(1, 1, 30);
+  click(q("atlas-send-to-wizard"));
+  await until("the wizard's sheet", () => q("send-to-wizard-sheet") !== null);
+  next();
+  eq(stepNow(), "framing", "NEXT did not reach FRAMING");
+  assert(q("wizard-one-target-angle") !== null, "control: a 1x1 at PA 30 did not carry its angle");
+  click(btn("wizard-close"));
+  await settle();
+  await mountAtlas(1, 1, 0);
+  click(q("atlas-send-to-wizard"));
+  await until("the wizard's sheet", () => q("send-to-wizard-sheet") !== null);
+  next();
+  eq(stepNow(), "framing", "NEXT did not reach FRAMING");
+  eq(q("wizard-one-target-angle"), null, "an unturned single frame arrived with a PA:");
   click(btn("wizard-close"));
   await settle();
 });
@@ -659,9 +679,12 @@ await test("the Sky's single target goes the same way, as one target with no gri
   await settle(20, 4);
 });
 
-await test("the Sky's mosaic at a dial never turned off 0 arrives with NO PA", async () => {
-  // The Sky's half of the Atlas case above: FRAME starts every session at
-  // rotation 0, and `framingPrefill` hands the commanded PA, none.
+await test("the Sky's mosaic at a dial never turned off 0 arrives as PA 0, north up (#790)", async () => {
+  // FRAME starts every session at rotation 0. A grid is laid out at an angle
+  // whatever the dial says, so `framingPrefill` hands the commanded PA, 0,
+  // and the block reaches the generator as a layout the per-panel convergence
+  // correction can command its corners from. (The Atlas's door above is the
+  // classic page's own `commandedPaDeg`, which still reads 0 as none.)
   await mountSky();
   click(doc.querySelector('[data-mosaic="3x2"]'));
   await settle();
@@ -671,7 +694,7 @@ await test("the Sky's mosaic at a dial never turned off 0 arrives with NO PA", a
   const r = currentRoute();
   eq(r.sheets, [FLOW_WIZARD_SHEET], "the door did not open the wizard over the sky");
   eq(r.params.wz_cols, "3", "precondition: the framing reached the route");
-  eq(r.params.wz_pa, undefined, "an unturned dial arrived as a PA:");
+  eq(r.params.wz_pa, "0", "an unturned grid did not arrive as the north-up layout:");
   await until("the wizard's sheet", () => q("send-to-wizard-sheet") !== null);
   click(btn("wizard-close"));
   await settle(20, 4);

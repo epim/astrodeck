@@ -501,7 +501,8 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       // angle constraint" sentinel (0 is a REAL position angle there), and this
       // still writes the angle explicitly: a rig on an older server still
       // ships 23.4.
-      graph = withRotation(graph, commandedPa(mine ? (framing?.rotation_deg ?? 0) : 0));
+      // One TARGET block, so `commandedPa` judges it as one panel.
+      graph = withRotation(graph, commandedPa(mine ? (framing?.rotation_deg ?? 0) : 0, 1));
       if (isPool) {
         graph = withTargetPool(graph, poolRows.rows.map((r) => (r.kind === "solar_system" ? r.id : r.name || r.id)));
       }

@@ -252,9 +252,10 @@ class TargetGroup(BaseModel):
     # (spec 5.1, 6.8). Bounded, so a star-poor panel is never a spin.
     max_failed_visits: int = Field(3, ge=1, le=20)
     pa_deg: float | None = None              # layout angle, CROTA2 convention (#145)
-    # members carry a rotation_deg: the layout ``pa_deg`` for a block no
-    # convergence correction applies to, else each panel's own ``pa_deg``
-    # (the layout angle plus its meridian convergence, #175)
+    # members of a rotating block carry a rotation_deg: the layout ``pa_deg``
+    # where no convergence correction applies, else each panel's own angle
+    # (the layout angle plus its meridian convergence, #175); members of a
+    # fixed block carry none
     rotate: bool = False
     # Computed in ``to_plan`` from the geometry, after convergence has taken
     # its share of the overlap (spec Appendix A.2). None disables the angle

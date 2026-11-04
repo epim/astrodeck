@@ -22,8 +22,8 @@
 // a rotation. Promising the second cost nothing to write and would cost a night
 // to discover, so the sentence says which slew is which (review #3).
 //
-// The 0.5 degree dead-band is lifted verbatim from `AtlasView.tsx:794`, and it
-// is load-bearing: rotation starts at 0 for every framing session, so treating 0
+// The 0.5 degree dead-band is `mosaic.ts`'s `PA_DEADBAND_DEG`, which the classic
+// Atlas reads too, and it is load-bearing: rotation starts at 0 for every framing session, so treating 0
 // as a commanded angle would bolt a rotate-to-PA loop onto every "just show me
 // this" tap.
 //
@@ -136,7 +136,7 @@ export function FramingCard({
   sendReason = null,
   onExplain,
 }: FramingCardProps): JSX.Element {
-  const commandedPaDeg = commandedPa(rotationDeg);
+  const commandedPaDeg = commandedPa(rotationDeg, rows * cols);
   const hand = commandedPaDeg != null && rotator ? adjustedPa(commandedPaDeg, rotator, rotatorRange) : null;
 
   // The off-grid stop is HELD, not recomputed from `rotationDeg` on every

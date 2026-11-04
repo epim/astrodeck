@@ -69,6 +69,7 @@ import {
   overrideProfileName,
 } from "../lib/effective";
 import { adjustedPa } from "../lib/rotation";
+import { commandedPa } from "../next/hubs/sky/frame/mosaic";
 import { useSkyRegion, type SkyRow } from "../lib/skyRegion";
 import { ObjectCard } from "../components/atlas/ObjectCard";
 import { SkyCanvas } from "../components/atlas/SkyCanvas";
@@ -793,11 +794,13 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   // frame now on this canvas is what made that legible: it could travel with the
   // mount and never turn, because nothing had commanded a turn.
   //
-  // Null below 0.5°, not 0: `rotation_deg` starts at 0 for every framing session,
-  // so posting it unconditionally would bolt a plate-solve rotate loop onto every
-  // "just show me this" tap — minutes of motion nobody asked for. Above the
-  // dial's own dead-band it is a real request and gets sent.
-  const commandedPaDeg = rotation_deg > 0.5 ? rotation_deg : null;
+  // For ONE panel, null below 0.5°, not 0: `rotation_deg` starts at 0 for every
+  // framing session, so posting it unconditionally would bolt a plate-solve
+  // rotate loop onto every "just show me this" tap — minutes of motion nobody
+  // asked for. Above the dial's own dead-band it is a real request and gets
+  // sent. A GRID commands its layout angle whatever the dial says, 0 (north up)
+  // included (`commandedPa`, #790).
+  const commandedPaDeg = commandedPa(rotation_deg, panelCount);
   // Whether that request can reach hardware. `status.rotator` is published only
   // when a rotator exists AND reports connected (hub.status) — the exact
   // condition goto_and_center rotates under — so this predicts the real outcome

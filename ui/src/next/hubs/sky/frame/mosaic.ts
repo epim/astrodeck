@@ -53,9 +53,11 @@ export const ROTS: readonly number[] = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135
  *  there is still exactly one number. */
 export { DEFAULT_OVERLAP as OVERLAP };
 
-/** `AtlasView.tsx:794`, verbatim and load-bearing: `rotation_deg` starts at 0
- *  for every framing session, so treating 0 as a commanded angle bolts a
- *  rotate-to-PA loop onto every "just show me this" tap. */
+/** Load-bearing, and the classic Atlas reads it through `commandedPa` too:
+ *  `rotation_deg` starts at 0 for every framing session, so treating 0 as a
+ *  commanded angle bolts a rotate-to-PA loop onto every "just show me this"
+ *  tap. It judges ONE panel only: a grid is laid out at an angle whatever the
+ *  dial says. */
 export const PA_DEADBAND_DEG = 0.5;
 
 /**
@@ -67,8 +69,16 @@ export const PA_DEADBAND_DEG = 0.5;
  * on the wire cannot drift apart. They had: the card promised a PA and the flow
  * carried 23.4, the node vocabulary's default until #150 (an older server still
  * ships it, which is why the -1 is still written explicitly).
+ *
+ * `panels` is the framing's grid, rows x cols. A GRID COMMANDS ITS LAYOUT: it is
+ * laid out at an angle whatever the dial says, 0 (north up) included, and a
+ * multi-panel block sent as "Any angle" is refused, so reading the untouched
+ * dial as "no angle" kept a north-up mosaic from the per-panel convergence
+ * correction (#790). "Any angle" is then only what the operator picks in the
+ * wizard. One panel keeps the dead-band: 0 there is "nobody chose".
  */
-export function commandedPa(rotationDeg: number): number | null {
+export function commandedPa(rotationDeg: number, panels: number): number | null {
+  if (panels > 1) return rotationDeg;
   return rotationDeg > PA_DEADBAND_DEG ? rotationDeg : null;
 }
 
@@ -120,9 +130,9 @@ export function overlapPercent(fraction: number): number {
  *   the object is framed where it was dragged to.
  * - NO ANGLE MODE. The framing holds a rotation and no mode (the prefill's
  *   own doc), so the wizard asks ROTATE TO or CAMERA FIXED AT with the PA
- *   already typed. The PA is the commanded one (`commandedPa`): a dial never
- *   turned off 0 commands nothing and arrives as no PA, which the wizard asks
- *   for rather than planning a grid at an angle nobody chose.
+ *   already typed. The PA is the commanded one (`commandedPa`): a grid
+ *   arrives with its layout angle, 0 (north up) included, and one panel at a
+ *   dial never turned off 0 arrives as no PA.
  * - No skipped panels: the Sky has no way to skip one.
  * - The FIELD is the one the reticle and the pitch were drawn from, null
  *   while the optics are unknown.
@@ -141,7 +151,7 @@ export function framingPrefill(
     ra: raHms(f.center.ra_hours),
     dec: decDms(f.center.dec_deg),
     angleMode: null,
-    paDeg: commandedPa(f.rotation_deg),
+    paDeg: commandedPa(f.rotation_deg, f.mosaic.rows * f.mosaic.cols),
     rows: f.mosaic.rows,
     cols: f.mosaic.cols,
     overlapPct: overlapPercent(f.mosaic.overlap),
