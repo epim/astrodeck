@@ -886,7 +886,8 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                         binning: int = 2, expose_guard=None,
                         hub=None, provider=None,
                         tracking_check=None,
-                        min_probe_stars: int | None = None) -> AutofocusResult:
+                        min_probe_stars: int | None = None,
+                        frame_context=None) -> AutofocusResult:
     """Run a V-curve autofocus sweep.
 
     ``step`` None — the default — sizes the sweep from this focuser's measured
@@ -907,6 +908,13 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     applied); ``None`` proceeds, because unreadable is not a verdict and a
     driver that cannot answer must not cost a focus run. ``None`` for the whole
     parameter — every existing caller — behaves exactly as before.
+
+    ``frame_context`` (optional, #1108): the ``imaging.frame_class.
+    FrameContext`` the native sweep hands the classifier beside each starved
+    point's frame. A caller that holds the camera's no-light reference puts it
+    there, so the sweep can read a point as ``no_light`` and keep its measured
+    span through a dark sky. Forwarded to the native provider only; the other
+    paths do not classify.
 
     ``min_probe_stars`` (optional, #558): a line for the sweep's own probe
     frame. When the probe counts fewer stars than this at the start position,
@@ -952,7 +960,8 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                 camera, focuser, exposure_s=exposure_s, gain=gain, step=step,
                 steps_each_side=steps_each_side, binning=binning,
                 expose_guard=expose_guard, tracking_check=tracking_check,
-                min_probe_stars=min_probe_stars)
+                min_probe_stars=min_probe_stars,
+                frame_context=frame_context)
 
     # --- legacy path (no provider context) ----------------------------------
     if getattr(focuser, "supports_native_autofocus", False):

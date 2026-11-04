@@ -7550,15 +7550,19 @@ class Hub:
                 f"plate solve: stopped while the wheel was moving, and it "
                 f"could not be sent back to {label} "
                 f"({_wheel_why(outcome, SOLVE_WHEEL_CANCEL_RESTORE_TIMEOUT_S)})"
-                f" — the next frame's filter move will correct it", "solve")
+                f"; the next frame's filter move turns it back, but its focus "
+                f"offset is measured from the filter the solve left loaded, so "
+                f"that frame may be out of focus", "solve")
 
     async def _return_wheel_after_solve(self, slot: int | None) -> None:
         """Put the wheel back where ``_borrow_wheel_for_solve`` found it.
 
         BOUNDED (#815), by ``SOLVE_WHEEL_MOVE_TIMEOUT_S``, for the reason the
         borrow is: a wheel jammed between slots never ends the wait on its
-        own. A return that times out says so and leaves the correction to the
-        next frame's filter move, as every other failure of it does."""
+        own. A return that times out says so and leaves the wheel to the next
+        frame's filter move, as every other failure of it does. That move
+        turns the wheel back but not the focus: its offset is taken from the
+        filter the solve left loaded (#817), and the warning says so."""
         if slot is None:
             return
         fw = self.devices.get("filterwheel")
@@ -7571,8 +7575,11 @@ class Hub:
             names = list(getattr(fw, "filter_names", []) or [])
             label = names[slot] if 0 <= slot < len(names) else f"slot {slot}"
             bus.log("warning", f"plate solve: could not return the wheel to "
-                               f"{label} ({_wheel_why(e)}) — the next frame's "
-                               f"filter move will correct it", "solve")
+                               f"{label} ({_wheel_why(e)}); the next frame's "
+                               f"filter move turns it back, but its focus "
+                               f"offset is measured from the filter this solve "
+                               f"left loaded, so that frame may be out of "
+                               f"focus", "solve")
 
     async def _narrowband_filter_loaded(self) -> str | None:
         """The name of the filter a solve frame is about to be exposed

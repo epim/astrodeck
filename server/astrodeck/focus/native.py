@@ -42,9 +42,11 @@ import numpy as np
 from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
+from ..imaging.frame_class import FrameClass, FrameContext, classify
 from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
 from .approach import approach as approach_position, configured_overshoot
 from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
+                        THIN_POINT_STARS, WING_RISE_FLOOR_PX, WING_RISE_FRAC,
                         assert_tracking, confirmed_best,
                         over_swept_advice,
                         AutofocusResult, curve_verdict, dropped_points_phrase,
@@ -109,6 +111,66 @@ FLAT_FAILURES = ("not_enough_spread", "fit_unavailable")
 #: count, which is a different frame (longer, usually finer-binned) and
 #: cleared it at about the first one.
 SPARSE_FIELD_WARN = 15
+
+#: The frame classes (``imaging.frame_class``) whose missing stars say nothing
+#: about the focus (#1077, #1108): a frame at the camera's no-light level, or
+#: one behind an obstruction, was starved by the sky or the foreground, so the
+#: point it would have been proves nothing about the span the sweep was sized
+#: from. Every other class (a clear field, cloud, unknown) keeps the sweep's
+#: old reading, that a sweep which could not measure its points was too wide
+#: or too narrow.
+LIGHTLESS_CLASSES = frozenset({FrameClass.NO_LIGHT, FrameClass.OBSTRUCTED})
+
+#: Measured points a minimum needs on EACH side to count as bracketed (#1077
+#: fix 3: "at least two measured points on each side of a clear minimum").
+#: One point on a side is a ramp that may still be falling.
+BRACKET_POINTS_EACH_SIDE = 2
+
+
+def bracketed_minimum(points: list[tuple[int, float, float]],
+                      counts: list[int]) -> tuple[int, float] | None:
+    """``(position, size)`` of the minimum the measured ``points`` bracket, or
+    None (#1077). PURE.
+
+    Asked when a sweep can no longer measure its next point, with what it
+    measured: ``points`` is ``[(position, hfr, sigma), ...]`` in any order and
+    ``counts`` the stars behind each, parallel. The minimum is bracketed when
+    it has ``BRACKET_POINTS_EACH_SIDE`` measured points on each side, each
+    wing rises at every step away from it and ends at least as far above it as
+    ``curve_verdict`` asks of a wing (``WING_RISE_FRAC``,
+    ``WING_RISE_FLOOR_PX``), and the tip was measured from at least
+    ``THIN_POINT_STARS`` stars (below that it is one detection's opinion).
+
+    This is the part of ``curve_verdict`` that makes a V a V, without its
+    scatter test: that test compares each interior point with the midpoint of
+    its neighbours, which a convex V with wide steps fails by construction
+    (the #1077 curve, 55.16 26.91 2.88 32.34 109.04, scores 4.1 against the 5
+    it needs). The vertex is the parabola through the tip and its two
+    neighbours when that lands between them, else the tip's own position."""
+    rows = sorted((int(p), float(h), int(n))
+                  for (p, h, _s), n in zip(points, counts))
+    last = len(rows) - 1
+    if last + 1 < 2 * BRACKET_POINTS_EACH_SIDE + 1:
+        return None
+    tip = min(range(last + 1), key=lambda k: rows[k][1])
+    if (tip < BRACKET_POINTS_EACH_SIDE
+            or last - tip < BRACKET_POINTS_EACH_SIDE
+            or rows[tip][2] < THIN_POINT_STARS):
+        return None
+    y_min = rows[tip][1]
+    need = max(WING_RISE_FRAC * y_min, WING_RISE_FLOOR_PX)
+    for walk in (range(tip, -1, -1), range(tip, last + 1)):
+        wing = [rows[k][1] for k in walk]
+        if (any(nxt <= prev for prev, nxt in zip(wing, wing[1:]))
+                or wing[-1] - y_min < need):
+            return None
+    xs = np.array([rows[k][0] for k in (tip - 1, tip, tip + 1)], dtype=float)
+    ys = np.array([rows[k][1] for k in (tip - 1, tip, tip + 1)], dtype=float)
+    a, b, _c = np.polyfit(xs, ys, 2)
+    vertex = -b / (2.0 * a) if a > 0 else rows[tip][0]
+    if not xs[0] < vertex < xs[2]:
+        vertex = rows[tip][0]
+    return int(round(vertex)), y_min
 
 
 def vcurve_report(points: list[tuple[int, float, float]],
@@ -276,7 +338,8 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                hfr_method: str | None = None,
                                tracking_check=None,
                                approach_overshoot_steps: int | None = None,
-                               min_probe_stars: int | None = None
+                               min_probe_stars: int | None = None,
+                               frame_context: FrameContext | None = None
                                ) -> AutofocusResult:
     """Run a V-curve autofocus sweep driven by the native Rust engine.
 
@@ -316,7 +379,14 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     set for the probe, read against a frame it was never set for). A clipped
     probe is never gated, whatever its count: its stars are merged, not
     missing, and waiting for a thicker sky would wait for the wrong thing
-    (the same reasoning as ``_failed``'s). A gated sweep also does not start
+    (the same reasoning as ``_failed``'s). ``frame_context`` None, the
+    default, is what the classifier is given beside each starved point's frame
+    (``imaging.frame_class.FrameContext``, #1108): without a no-light
+    reference in it the classifier can name an obstruction but never no light,
+    so a caller that holds the camera's reference passes it here. A starved
+    point whose frame reads ``no_light`` or ``obstructed`` was starved by the
+    sky, so a flat refusal then keeps the measured span it was sized from
+    (``LIGHTLESS_CLASSES``). A gated sweep also does not start
     its first point's move and exposure under the probe's measurement, as an
     ungated one does, so a declined probe costs the probe alone: no extra
     exposure and no focuser move (#722).
@@ -487,6 +557,11 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: missing, and the fix runs the opposite way from every other shortage.
     clipped: list[tuple[int, float]] = []
     attempted = 0
+    #: What the frame at each starved position read as (``classify``, #1108),
+    #: asked once per position, at its first drop: a retry of the same
+    #: position is the same failure, and classifying a frame costs a star
+    #: detection.
+    drop_class: dict[int, FrameClass] = {}
     #: The position the last drop happened at, and how many times in a row.
     #: The sweep engine advances only when a measurement is ADDED, so a dropped
     #: point leaves it asking for the same position again — see
@@ -602,6 +677,41 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         elif thin:
             bits.append("A firmer result would need " + levers + ".")
         return " ".join(bits)
+
+    def _lightless_positions() -> list[int]:
+        """The starved positions whose frames read as no light or an
+        obstruction (``LIGHTLESS_CLASSES``), in the order they were met."""
+        return [p for p, c in drop_class.items() if c in LIGHTLESS_CLASSES]
+
+    async def _accept_bracketed(cause: str) -> AutofocusResult | None:
+        """The sweep cannot measure its next point (``cause``): report the
+        minimum its measured points bracket as FOUND, as `bracketed_minimum`
+        judges it, or None to let the run fail as it did (#1077). The slope
+        those points showed is recorded for the next sweep and the focuser
+        settles on the minimum, as every other accepted run does."""
+        found = bracketed_minimum(points, counts)
+        if found is None:
+            return None
+        best, best_hfr = found
+        advice = _advice(ok=True)
+        await assert_tracking(tracking_check, "before storing the result")
+        await record_measured_span(focuser, _result_pts(), best, binning)
+        await _approach(best)
+        bus.publish("focus", state="done", points=_pts(),
+                    best={"position": best, "hfr": best_hfr}, advice=advice)
+        sky = _lightless_positions()
+        starved = (f"; the frames at {', '.join(str(p) for p in sky)} read as "
+                   f"{'/'.join(sorted({drop_class[p].value for p in sky}))}, "
+                   f"the sky's doing and not the focus's") if sky else ""
+        bus.log("info",
+                f"native autofocus: {cause}, but the {len(points)} points "
+                f"that were measured bracket a minimum at {best} (HFR "
+                f"{best_hfr:.2f}){starved}", "focus")
+        bus.log("info", vcurve_report(points, counts), "focus")
+        return AutofocusResult(
+            True, best, best_hfr, _result_pts(),
+            f"accepted on a bracketed minimum after the sweep ran out of "
+            f"measurable range: {cause}", advice=advice)
 
     try:
         # Before the probe frame, so a stopped mount costs one mount read and
@@ -1003,6 +1113,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     # to stop.
                     if n < MIN_STARS_PER_POINT:
                         dropped.append((pos, n))
+                        if pos not in drop_class:
+                            drop_class[pos] = await asyncio.to_thread(
+                                classify, frame, frame_context)
                         why = (f"only {n} stars — a fit point needs "
                                f"{MIN_STARS_PER_POINT}")
                         # A railed frame's missing stars MERGED; remember the
@@ -1071,6 +1184,14 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                 f"accepted on curve shape after the sweep ran "
                                 f"out of measurable range at {pos}: "
                                 f"{salvage.reason}", advice=advice)
+
+                        # A MINIMUM THE POINTS BRACKET IS FOUND, whatever
+                        # took the next one (#1077): the curve verdict above
+                        # is the stricter judge and has already refused.
+                        bracketed = await _accept_bracketed(
+                            f"{pos} could not be measured ({why})")
+                        if bracketed is not None:
+                            return bracketed
 
                         await _approach(start_pos)
                         reason = (
@@ -1253,7 +1374,22 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # letting one bad calibration narrow every sweep of the night
                 # into the same failure. An operator's explicit step is not
                 # ours to forget, hence `geometry.measured`.
-                if geometry.measured and reason in FLAT_FAILURES:
+                sky = _lightless_positions()
+                if geometry.measured and reason in FLAT_FAILURES and sky:
+                    # THE SKY STARVED THIS SWEEP, NOT THE SLOPE (#1077): a
+                    # point whose frame reads as no light or an obstruction
+                    # says nothing about the span it was sized from, and a
+                    # cloud must not cost the next night a working
+                    # calibration.
+                    bus.log("warning",
+                            f"autofocus: this sweep was sized from a measured "
+                            f"defocus slope and came back {reason}, but the "
+                            f"frames at {', '.join(str(p) for p in sky)} read "
+                            f"as "
+                            f"{'/'.join(sorted({drop_class[p].value for p in sky}))}"
+                            f" - the sky starved it, not the slope - keeping "
+                            f"that calibration", "focus")
+                elif geometry.measured and reason in FLAT_FAILURES:
                     forget_measured_span(focuser)
                     bus.log("warning",
                             f"autofocus: this sweep was sized from a measured "
