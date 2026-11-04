@@ -33,6 +33,15 @@ is made of (when the reference is a floor, a frame above it can still be no
 verdict: the line's own words say so). The numbers worth a look are the
 no_light rows on a night you know was overcast and moonless, on a cold sensor.
 
+THE CLASS COLUMN is the frame class (``astrodeck.imaging.frame_class``, the
+one classifier for a starless frame, #1108) that the logged verdict stands
+for: no_light, cloud or unknown. The log holds the verdict and its numbers,
+never the pixels, so the classes that need the pixels (stars, obstructed) can
+not appear here: an obstruction reads as the level it sits at, which is why
+the column is for grading the no-light band and not the classifier's
+structural tests. ``test_w2_frame_class.py`` pins the table below to
+``FrameClass``.
+
 NO SITE INPUT, AND NO SKY. The tool is given no latitude, longitude or site
 label, and it never computes where the Sun or the Moon is: that needs the
 site, and a tool that held it would be one more place for it to leak. The
@@ -97,6 +106,17 @@ _SOURCE_KINDS = (
     ("explicit reference", "explicit"),
 )
 
+#: The ``FrameClass`` value a logged light-check verdict stands for (see THE
+#: CLASS COLUMN above). A narrowband verdict claims nothing about the light
+#: path, so it is unknown. Standard library only, so the names are written
+#: out and a test holds them to ``FrameClass``.
+_CLASS_OF_VERDICT = {
+    "no_light": "no_light",
+    "cloud": "cloud",
+    "unknown": "unknown",
+    "narrowband": "unknown",
+}
+
 _NIGHT = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -121,6 +141,11 @@ class Reading:
     night: str = ""
     ts: float | None = None
     moonless: bool = False
+
+    @property
+    def frame_class(self) -> str:
+        """The ``FrameClass`` value this reading's verdict stands for."""
+        return _CLASS_OF_VERDICT[self.kind]
 
     @property
     def margin(self) -> float | None:
@@ -235,7 +260,8 @@ def collect(files: Iterable[Path], moonless: frozenset[str] = frozenset()
 _COLUMNS = (
     ("time", 8), ("verdict", 9), ("reference", 12), ("median", 8),
     ("level", 8), ("band", 6), ("margin", 7), ("exp_s", 6), ("bin", 3),
-    ("gain", 5), ("off", 4), ("sensor_C", 8), ("moonless", 8),
+    ("gain", 5), ("off", 4), ("sensor_C", 8), ("class", 10),
+    ("moonless", 8),
 )
 
 
@@ -257,7 +283,7 @@ def _cells(r: Reading) -> list[str]:
         _num(r.reference, ".1f"), _num(r.band, ".2f"),
         _num(r.margin, "+.2f"), _num(r.exposure_s, "g"),
         _num(r.binning, "d"), _num(r.gain, "d"), _num(r.offset, "d"),
-        _num(r.sensor_c, ".1f"), "M" if r.moonless else "",
+        _num(r.sensor_c, ".1f"), r.frame_class, "M" if r.moonless else "",
     ]
 
 
