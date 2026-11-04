@@ -35,7 +35,10 @@ concurrency:
 jobs:
   server:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45, not 30: on unchanged code this job took 18 to 28 minutes across
+    # hosted runners, and one run was cancelled at 99% with nothing failing
+    # (#1162). The --durations list below is where the next cut comes from.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: server
@@ -54,7 +57,8 @@ jobs:
       # -n auto overrides the repo addopts' -n 12 (tuned for the multi-core dev
       # box): hosted runners have 2-4 cores, and 12 workers oversubscribes them
       # enough to consistently trip wall-clock perf gates (test_render_perf_768).
-      - run: pytest -q -n auto
+      # --durations names the slowest tests in every run's log (#1162).
+      - run: pytest -q -n auto --durations=30
       # Dependency vulnerability gate (OPEN-006). pip-audit fails the build on a
       # known-vulnerable installed dependency; local editable packages
       # (astrodeck, astrodeck-native) are skipped, not failed. Runs AFTER the
