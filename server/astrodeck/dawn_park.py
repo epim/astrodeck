@@ -443,9 +443,10 @@ class DawnPark:
         # the same rule /api/mount/park follows. Warning level ON PURPOSE: the
         # AlertDispatcher routes warning and error to every configured sink, and
         # "your rig was left tracking through sunrise" is worth one message.
-        bus.log("warning", "dawn park: mount parked. The night ended without a "
-                           "sequence wind-down, so nothing else was going to "
-                           "stop it tracking into the Sun", "safety")
+        bus.log_with_alert("warning", "dawn park: mount parked. The night ended "
+                                      "without a sequence wind-down, so nothing "
+                                      "else was going to stop it tracking into "
+                                      "the Sun", "safety")
         await self._release_cooler(alt)
 
     # ------------------------------------------- guiding with nobody driving
@@ -597,19 +598,21 @@ class DawnPark:
                                 f"armed to resume tonight; warming the camera "
                                 f"anyway, its cooling stage will cool it again "
                                 f"at dusk (issue #35: a held setpoint cost "
-                                f"15 hours of TEC to save 4 minutes)", "safety")
+                                f"15 hours of TEC to save 4 minutes)", "safety",
+                                site_derived=True)
             state = await self.hub.warm_camera(source="dawn")
         except Exception as e:      # noqa: BLE001 - see the docstring
-            bus.log("warning", f"dawn: could not release the cooler ({e}); it "
-                               f"is still holding its setpoint with the night "
-                               f"over", "safety")
+            bus.log_with_alert("warning", f"dawn: could not release the cooler "
+                                          f"({e}); it is still holding its "
+                                          f"setpoint with the night over",
+                               "safety")
             return
         note = (state or {}).get("note") if isinstance(state, dict) else None
         if note:
             # "already at ambient", "no cooler" and friends: nothing happened,
             # and saying so beats a line claiming a warm that did not start.
             bus.log("info", f"dawn: the cooler needed no action ({note})",
-                    "safety")
+                    "safety", site_derived=True)
         elif armed is None:
             bus.log("info", f"dawn: the Sun is at {alt:+.1f}° and nothing is "
                             f"armed to use this camera tonight — warming it "
@@ -649,7 +652,8 @@ class DawnPark:
                 watch.note_parked()
         except Exception as e:      # noqa: BLE001 - see the docstring
             bus.log("debug", f"dawn park could not tell the sun watch the "
-                             f"mount is parked ({e})", "safety")
+                             f"mount is parked ({e})", "safety",
+                    site_derived=True)
 
     def _hands_off_reason(self, cfg) -> str | None:
         """Why this rig is somebody else's right now, or None if it is nobody's."""
@@ -670,10 +674,11 @@ class DawnPark:
             if not getattr(eng, "paused", False):
                 return ("a sequence run is in progress and owns its own "
                         "wind-down — racing it would be worse than waiting")
-            bus.log("warning",
-                    "dawn: a sequence run is PAUSED, which owns no wind-down "
-                    "— parking and warming anyway rather than leaving the rig "
-                    "out for the day", "safety")
+            bus.log_with_alert(
+                "warning",
+                "dawn: a sequence run is PAUSED, which owns no wind-down "
+                "— parking and warming anyway rather than leaving the rig "
+                "out for the day", "safety")
         solar = getattr(getattr(cfg, "safety", None), "solar_avoidance", True)
         if not solar:
             return ("this rig is configured for a solar session (sun avoidance "
@@ -717,9 +722,11 @@ class DawnPark:
         except Exception as e:      # noqa: BLE001 — includes the timeout
             self._fail(f"the mount's link is down and reopening it failed ({e})")
             return False
-        bus.log("warning", f"dawn park reopened the mount's link, which had "
-                           f"dropped — continuing with the park at Sun "
-                           f"{alt:+.1f}°", "safety", site_derived=True)
+        bus.log_with_alert(
+            "warning", f"dawn park reopened the mount's link, which had "
+            f"dropped — continuing with the park at Sun {alt:+.1f}°", "safety",
+            alert_message="dawn park reopened the mount's link, which had "
+                          "dropped; continuing with the park")
         return True
 
     async def _force_reopen_quietly(self, tel) -> None:
@@ -768,15 +775,16 @@ class DawnPark:
         mins = (self._clock() - self._fail_since) / 60.0
         tail = "" if n == 1 else (f" (attempt {n}, still failing after "
                                   f"{mins:.0f} min)")
-        bus.log("error", f"DAWN PARK FAILED: {why} — the mount may still be "
-                         f"tracking toward the Sun. Retrying every "
-                         f"{self._interval_s:.0f}s{tail}", "safety")
+        bus.log_with_alert("error", f"DAWN PARK FAILED: {why} — the mount may "
+                                    f"still be tracking toward the Sun. "
+                                    f"Retrying every "
+                                    f"{self._interval_s:.0f}s{tail}", "safety")
 
     def _clear_failure(self) -> None:
         """Forget a failure streak once something worked."""
         if self._fail_reason is not None and self._fail_count > 1:
             bus.log("info", f"dawn park recovered after {self._fail_count} "
-                            f"failed attempts", "safety")
+                            f"failed attempts", "safety", site_derived=True)
         self._fail_reason = None
         self._fail_count = 0
         self._read_warned = None
@@ -806,7 +814,7 @@ class DawnPark:
             return
         self._settled = True
         self._clear_failure()
-        bus.log("warning", POSITION_UNKNOWN_LINE, "safety")
+        bus.log_with_alert("warning", POSITION_UNKNOWN_LINE, "safety")
         await self._release_cooler(alt)
 
     @staticmethod
@@ -849,8 +857,9 @@ class DawnPark:
                 then = ("parking anyway, since parking a parked mount does "
                         "nothing" if parking else
                         "not parking, as its position is unknown")
-                bus.log("warning", f"dawn park could not read the mount's park "
-                                   f"state ({e}) — {then}", "safety")
+                bus.log_with_alert("warning", f"dawn park could not read the "
+                                              f"mount's park state ({e}) — "
+                                              f"{then}", "safety")
             return None
 
     def _hold(self, reason: str, alt: float) -> None:

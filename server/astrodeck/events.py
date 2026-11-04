@@ -143,6 +143,14 @@ def _wall() -> float:
 #: other event, so existing payloads stay byte-identical.
 SITE_DERIVED_KEY = "site_derived"
 
+#: The bus event type that carries the ALERT-SAFE wording of a site-timed
+#: line (D-H, #748): same level and source, no moment. Flagged
+#: ``site_derived`` like the line it accompanies, so no seam that serves a
+#: principal carries it (``api.redact`` drops it on every WS lane for every
+#: role), and not a ``log`` event, so it never reaches the ring or the night
+#: file. The alert dispatcher is its one reader.
+SITE_ALERT_TYPE = "site_alert"
+
 
 def is_site_derived(row: Any) -> bool:
     """Does this event carry the ``site_derived`` flag?
@@ -988,6 +996,25 @@ class EventBus:
                          **{SITE_DERIVED_KEY: True})
         else:
             self.publish("log", level=level, message=message, source=source)
+
+    def log_with_alert(self, level: str, message: str, source: str = "hub", *,
+                       alert_message: str | None = None) -> None:
+        """Publish one site-timed line AND the wording an alert sink may have.
+
+        For a warning or error whose moment a site computation set (a dawn
+        park, a sun watch in daylight): the page is the point of the line, and
+        a flagged line is never forwarded (``alerting``), so the event is two
+        publishes (D-H, #748). ``message`` goes to the log flagged
+        ``site_derived`` and reaches the night file and a holder of
+        ``view.site_derived``. ``alert_message`` goes out as a
+        :data:`SITE_ALERT_TYPE` event for the alert dispatcher and nothing
+        else. It defaults to ``message``, for a line whose words carry no value
+        computed from the site (the moment is the line's timestamp); a line
+        that names the Sun's altitude passes the wording without it."""
+        self.log(level, message, source, site_derived=True)
+        self.publish(SITE_ALERT_TYPE, level=level,
+                     message=message if alert_message is None else alert_message,
+                     source=source, **{SITE_DERIVED_KEY: True})
 
     @property
     def log_history(self) -> list[dict[str, Any]]:

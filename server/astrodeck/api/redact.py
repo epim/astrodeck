@@ -37,7 +37,8 @@ import io
 from ..auth.capabilities import (CAP_CONFIG_BACKEND, CAP_VIEW_SITE_DERIVED,
                                  CAP_VIEW_SITE_PRECISE, CAP_VIEW_WEATHER)
 from ..auth.principal import Principal
-from ..events import flip_hold_open, flip_hold_value, is_site_derived
+from ..events import (SITE_ALERT_TYPE, flip_hold_open, flip_hold_value,
+                      is_site_derived, note_flip_hold_value)
 
 # How often the long-lived /ws socket RE-authenticates its principal (seconds).
 # Auth is otherwise only checked at accept, so a revoked jti (POST
@@ -101,6 +102,28 @@ _MERIDIAN_DERIVED_STATUSES = frozenset({"counting", "due", "n_a_over_pole"})
 _MERIDIAN_UNKNOWN = "unknown"
 
 
+#: The mount fields a viewer reads as the last values served before a flip's
+#: hold opened (#1067). On a mount whose reported coordinates move during the
+#: flip slew they date the flip, as ``slewing`` does.
+_MOUNT_HELD_KEYS = ("ra_hours", "dec_deg", "tracking")
+
+
+def _hold_mount_pointing(mount: dict) -> None:
+    """While a flip's hold is open, the pointing and tracking fields of
+    ``mount`` are the last values this seam served before it, IN PLACE. Outside
+    the hold each frame served here is remembered. A hold that opens before
+    any frame was served has nothing to serve, so the fields read null, the
+    shape of a mount that reports nothing, never the live value."""
+    holding = flip_hold_open()
+    for k in _MOUNT_HELD_KEYS:
+        if k not in mount:
+            continue
+        if holding:
+            mount[k] = flip_hold_value(k)
+        else:
+            note_flip_hold_value(k, mount[k])
+
+
 def _strip_mount_derived(mount: dict, container: dict | None = None) -> None:
     """Remove the site-derived pointing values from a mount block IN PLACE.
 
@@ -113,6 +136,7 @@ def _strip_mount_derived(mount: dict, container: dict | None = None) -> None:
     ``_strip_camera_dew``). Unused here."""
     for k in _MOUNT_DERIVED_KEYS:
         mount.pop(k, None)
+    _hold_mount_pointing(mount)
     # While a meridian flip's hold is open the slew state is the last one seen
     # before it (#1037): the flip's slew would otherwise date it.
     if flip_hold_open() and "slewing" in mount:
@@ -774,6 +798,10 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     when-it-happened is the site, whatever the event is. A ``sequence``
     event's ``group.panel``/``group.pass`` are withheld while the group waits
     on the meridian rule (5.10), by the same helper as the GET route."""
+    # THE ALERT-SAFE WORDING OF A SITE-TIMED LINE IS FOR THE ALERT DISPATCHER
+    # ALONE (D-H, #748): a holder already reads the flagged line it stands for.
+    if ev_json.get("type") == SITE_ALERT_TYPE:
+        return None
     if is_site_derived(ev_json) and not (
             principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)):
         return None
