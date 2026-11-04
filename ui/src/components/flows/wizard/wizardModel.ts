@@ -41,6 +41,9 @@
 // node's default, and nothing here restates it.
 
 import { AUTO_RESUME_CHOICES, NODE_DEFS, TARGET_ANGLES } from "../nodeDefs";
+import {
+  CLOCK_TIME, DUSK_STOPS, NEED_STOP_CLOCK, clockOf, type DuskStop,
+} from "./nightAnswers";
 import { GRID_MAX, type RunReadouts } from "../framing/framingModel";
 import { compiledReadouts } from "../framing/framingApi";
 import type { FlowCompileResult, FlowUnmapped, FlowWizardAnswers } from "../../../lib/flowsApi";
@@ -78,18 +81,15 @@ export const NO_OPTICS_REASON = "set the camera and focal length in Settings > O
 /** wizard.py `CYCLES_MAX`: the most subs of each filter a door may ask for. */
 export const CYCLES_MAX = 10_000;
 
-/** wizard.py `CLOCK_TIME`: DUSK WINDOW's choice that reads its time from a
- *  clock field, for Start and for Stop alike. */
-export const CLOCK_TIME = "Clock time";
+/** wizard.py `CLOCK_TIME`, `DUSK_STOPS` and the clock reader: in the leaf
+ *  `nightAnswers.ts`, which the NEW FLOW sheets share without this module's
+ *  framing imports. Re-exported so this module's importers do not change. */
+export { CLOCK_TIME, DUSK_STOPS, NEED_STOP_CLOCK, clockOf };
+export type { DuskStop };
 /** wizard.py `DUSK_STARTS`: the Start choices the wizard offers, in the
  *  editor's order (nodeDefs.ts's DUSK `start` options). */
 export const DUSK_STARTS = ["Astro dusk", "Nautical dusk", "Civil dusk", "Clock time"] as const;
 export type DuskStart = (typeof DUSK_STARTS)[number];
-/** wizard.py `DUSK_STOPS`: the Stop choices the wizard offers. The editor's
- *  third, "None", is not one: a run with no stop images into daylight and does
- *  not park at dawn, and the server refuses it for a wizard night. */
-export const DUSK_STOPS = ["Dawn", "Clock time"] as const;
-export type DuskStop = (typeof DUSK_STOPS)[number];
 /** wizard.py `MIN_ALT_MIN_DEG` and `MIN_ALT_MAX_DEG`: the range of the lowest
  *  altitude a target is shot at, degrees, both ends answers. */
 export const MIN_ALT_MIN_DEG = 0;
@@ -305,13 +305,6 @@ export function cyclesOf(text: string): number | null {
   return n >= 1 && n <= CYCLES_MAX ? n : null;
 }
 
-/** A typed clock time as the server reads it (`checked_clock`): trimmed,
- *  strict HH:MM on the 24-hour clock, or null. ASCII digits only, as there. */
-export function clockOf(text: string): string | null {
-  const t = text.trim();
-  return /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(t) ? t : null;
-}
-
 /** A typed altitude floor in degrees, or null for anything that is not a
  *  plain decimal number from `MIN_ALT_MIN_DEG` to `MIN_ALT_MAX_DEG`. A plain
  *  decimal and not `Number(text)`, which reads "" as 0 and "0x1A" as 26. */
@@ -386,8 +379,6 @@ export const NEED_CYCLES = `Set how many subs of each filter to take: a whole nu
  *  server refuses it, so the sheet says so before GENERATE. */
 export const NEED_START_CLOCK =
   "Type the time the night starts, as HH:MM on the 24-hour clock (21:30): a Clock time start has no other way to say when.";
-export const NEED_STOP_CLOCK =
-  "Type the time the night stops, as HH:MM on the 24-hour clock (03:30): a Clock time stop has no other way to say when.";
 export const NEED_MIN_ALT =
   `Type the lowest altitude to shoot at, in degrees: a number from ${MIN_ALT_MIN_DEG} to ${MIN_ALT_MAX_DEG}.`;
 

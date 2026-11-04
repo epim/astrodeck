@@ -16,7 +16,7 @@ import { AUTO_RESUME_CHOICES, NODE_DEFS, createParams } from "../../../../../com
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 import {
   CLOCK_TIME, DUSK_STOPS, NEED_STOP_CLOCK, clockOf, type DuskStop,
-} from "../../../../../components/flows/wizard/wizardModel";
+} from "../../../../../components/flows/wizard/nightAnswers";
 import type { FlowWizardAnswers } from "../../../../../lib/flowsApi";
 
 /** Question 1. Order and labels from the flows contract; `Deep-sky target` is
