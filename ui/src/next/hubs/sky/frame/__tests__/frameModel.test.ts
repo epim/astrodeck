@@ -213,13 +213,13 @@ test("a framing belongs to the target it was framed for, and to no other", () =>
 // card's hash parser for its synthetic MOSAIC row. S6 left all three with no
 // production caller, and the integration deleted them with their cases.
 
-test("the 0.5 degree dead-band decides whether an angle is COMMANDED", () => {
+test("the 0.5 degree dead-band decides whether one panel COMMANDS an angle", () => {
   // Load-bearing: `rotation_deg` starts at 0 for every framing session, so
   // treating 0 as a command bolts a rotate-to-PA loop onto every "show me this"
   // tap - minutes of motion nobody asked for.
-  eq(commandedPa(0), null, "a fresh session commands nothing:");
-  eq(commandedPa(0.4), null, "inside the dead-band:");
-  eq(commandedPa(30), 30, "a real angle:");
+  eq(commandedPa(0, 1), null, "a fresh session commands nothing:");
+  eq(commandedPa(0.4, 1), null, "inside the dead-band:");
+  eq(commandedPa(30, 1), 30, "a real angle:");
 });
 
 // ============================================================== 5. the copy
