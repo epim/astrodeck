@@ -1304,17 +1304,23 @@ class GroupRun:
 
     # -- the pass
 
-    def close_pass(self) -> PassEnd:
+    def close_pass(self, frame_cause: str | None = None) -> PassEnd:
         """Decide the pass boundary (:meth:`_decide_pass_end`), then feed
         D-03's held-pass streak (backlog ruling, owner-approved 2026-09-30;
         #563, #576): see :meth:`_apply_held_pass_rule` for what the streak
         does. Nothing is cleared here beyond what ``_decide_pass_end``
-        already clears; :meth:`start_pass` begins the next pass."""
-        end, is_held, deferrals = self._decide_pass_end()
+        already clears; :meth:`start_pass` begins the next pass.
+
+        ``frame_cause`` (#1093, #1108): what the solve frames of every panel
+        the pass tried showed, in fixed words (an obstruction in the
+        foreground, cloud, no light), when the caller knows. The centring
+        hold's sentence then names it instead of "the sky or the geometry"."""
+        end, is_held, deferrals = self._decide_pass_end(frame_cause)
         return self._apply_held_pass_rule(end, is_held, deferrals)
 
     def _decide_pass_end(
-            self) -> tuple[PassEnd, bool, list[tuple[str, PanelDeferred]]]:
+            self, frame_cause: str | None = None
+    ) -> tuple[PassEnd, bool, list[tuple[str, PanelDeferred]]]:
         """Decide the pass boundary: the centring pass rule and the
         guide-start rule first, then the held deferrals, then
         :func:`pass_boundary`.
@@ -1351,11 +1357,13 @@ class GroupRun:
             # is what they share: the target low behind an obstruction, a
             # cloud bank, the haze near the horizon. No panel is struck, and
             # the group waits and tries again, as a cloud hold waits for the
-            # sky rather than giving up on it.
+            # sky rather than giving up on it. The caller names which of
+            # them the frames showed when it read them (``frame_cause``).
+            blame = frame_cause or "the sky or the geometry"
             return PassEnd(
                 "centring_hold", (),
                 f"centring failed on every one of the {tried} panels tried in "
-                f"pass {self.pass_no}: the sky or the geometry is to blame, "
+                f"pass {self.pass_no}: {blame} is to blame, "
                 f"not a panel, so no panel's failure count moved; holding the "
                 f"mosaic {CENTRING_HOLD_RETRY_S / 60:.0f} minutes before the "
                 f"next pass"), True, held_centring

@@ -68,9 +68,11 @@ from ..guide.base import rms_total_arcsec
 # there is one copy; the `guide` package, which `hub` imports, loads it
 # already, so this costs nothing at import.
 from ..guide.native import _ENGINE_MAX_DURATION_MS as _NATIVE_PULSE_CAP_MS
-from ..hub import (GOTO_NOT_ARRIVED_REASON, SOLVE_REASON_SYNC_REFUSED,
-                   SOLVE_REASON_SYNC_UNVERIFIED, Hub,
-                   destination_pier_side_in_mount_frame, slew_in_mount_frame)
+from ..hub import (GOTO_NOT_ARRIVED_REASON, SOLVE_REASON_SOLVER_MISSING,
+                   SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED,
+                   Hub, destination_pier_side_in_mount_frame,
+                   slew_in_mount_frame)
+from ..imaging.frame_class import FrameClass, FrameContext, classify
 from ..imaging.processing import to_jpeg
 from . import schedule
 from .cloudstate import CloudState, verdict_from_info
@@ -1812,6 +1814,12 @@ class SequenceEngine:
         #: the set-aside panels come back, through ``Session.set_aside``, and
         #: tonight's pier change, through ``Session.group_pier`` (#312).
         self._group_runs: dict[str, GroupRun] = {}
+        #: What each panel's failed centring solve showed this pass, by group
+        #: id (`_note_pass_frame_class`): the classes that name a cause
+        #: (`_FRAME_WORDS`), one per panel that missed. Read and cleared at the
+        #: pass boundary (`_close_group_pass`), whose centring-hold sentence
+        #: names the cause when every panel agrees (`_pass_blame`, #1108).
+        self._pass_frame_classes: dict[str, list[FrameClass]] = {}
         #: The group whose member the scheduler last chose (or waits for),
         #: or None. ``state.group`` is published while this is set and only
         #: then, so a run with no group never carries the key (spec 5.10).
@@ -6396,6 +6404,7 @@ class SequenceEngine:
         measured, from the record `start` read (#312, `_restore_group_pier`).
         """
         self._group_runs = {}
+        self._pass_frame_classes = {}
         self._group_side = {}
         self._group_side_verified = set()
         self._group_pier_saved = {}
@@ -7661,7 +7670,12 @@ class SequenceEngine:
         """
         run = self._group_runs[group.id]
         mosaic = group.name or group.id
-        end = run.close_pass()
+        # Taken at EVERY boundary, so a pass that did not hold leaves nothing
+        # for the next one to say. Before ``close_pass``, which reads the
+        # panels the pass tried and may clear them.
+        blame = self._pass_blame(self._pass_frame_classes.pop(group.id, []),
+                                 len(run.centring_attempted))
+        end = run.close_pass(frame_cause=blame)
         by_id = {t.id: t for t in (self.plan.targets if self.plan else [])}
         quiet = end.boundary == "set_aside_all"
         # THE CENTRING MISSES THIS BOUNDARY COUNTED (#534): held since their
@@ -9968,6 +9982,77 @@ class SequenceEngine:
     #: number, not re-derived.
     _NO_LIGHT_MAX_RETRIES = 6
 
+    #: What a hold says a failed solve's frame showed (#1108), by class: the
+    #: classes that name a cause. A clear star field and a frame with no
+    #: verdict (``STARS``, ``UNKNOWN``) are not here and keep the generic
+    #: wording, so the hold never claims more than the pixels showed.
+    _FRAME_WORDS = {
+        FrameClass.OBSTRUCTED: "an obstruction in the foreground, not the sky",
+        FrameClass.NO_LIGHT: "no light reaching the sensor",
+        FrameClass.CLOUD: "cloud (starless, low in contrast)",
+    }
+
+    async def _classify_failed_solve(self, result) -> FrameClass | None:
+        """Why did this centring find nothing to solve? (#1108, #1093, #721)
+
+        The one question the holds ask the classifier
+        (`imaging.frame_class.classify`). A fault the solver layer named
+        (``solve_reason`` is ``SOLVE_REASON_SOLVER_MISSING``) is
+        ``SOLVER_MISSING`` without reading a pixel. Otherwise the frame the
+        hub solved is classified, and only when the result says its solve
+        FAILED (``solve_failed``): ``hub.last_frame`` is an older frame when
+        the goto never solved (a refused or aborted one), and a verdict on
+        that would blame the wrong field. None when there is nothing to read.
+
+        NO LIGHT IS THE HUB'S VERDICT, NOT THE CLASSIFIER'S. ``solve_light``
+        "dark" was judged against the reference the hub holds for this
+        frame's readout, a self-shot included, which the classifier is not
+        given: without a reference it reads a black frame as cloud. It
+        replaces only a cloud or unknown reading, never an obstruction (a
+        frame mostly behind a tree reads at the black level too) and never a
+        frame that holds stars."""
+        if not isinstance(result, dict):
+            return None
+        if result.get("solve_reason") == SOLVE_REASON_SOLVER_MISSING:
+            return classify(None, FrameContext(solver_missing=True))
+        frame = getattr(self.hub, "last_frame", None)
+        if not result.get("solve_failed") or frame is None:
+            return None
+        cls = await asyncio.to_thread(classify, frame)
+        if (cls in (FrameClass.CLOUD, FrameClass.UNKNOWN)
+                and result.get("solve_light") == "dark"):
+            return FrameClass.NO_LIGHT
+        return cls
+
+    async def _note_pass_frame_class(self, group: TargetGroup,
+                                     result) -> None:
+        """Keep what a panel's failed centring solve showed, for the pass
+        boundary to say (`_close_group_pass`)."""
+        cls = await self._classify_failed_solve(result)
+        if cls in self._FRAME_WORDS:
+            self._pass_frame_classes.setdefault(group.id, []).append(cls)
+
+    #: What a centring hold's sentence blames when the solve frames named a
+    #: cause, in fixed words (`GroupRun.close_pass`, ``frame_cause``).
+    _PASS_BLAME = {
+        FrameClass.OBSTRUCTED: "an obstruction in the foreground",
+        FrameClass.NO_LIGHT: "no light reaching the sensor",
+        FrameClass.CLOUD: "cloud",
+    }
+
+    @staticmethod
+    def _pass_blame(seen: list[FrameClass], tried: int) -> str | None:
+        """The cause a pass's centring hold may name: what the solve frames
+        showed (``seen``, one class per panel whose frame could be named,
+        `_note_pass_frame_class`), but only when EVERY one of the ``tried``
+        panels was named and they all read the same class. The sentence is
+        about the pass, so it claims no more than all of its frames showed;
+        None leaves the generic words."""
+        classes = set(seen)
+        if len(seen) != tried or len(classes) != 1:
+            return None
+        return SequenceEngine._PASS_BLAME.get(classes.pop())
+
     async def _hold_for_light(self, target: Target, rotation: float | None,
                               hop_centring: dict, *,
                               announce: bool = True,
@@ -10019,6 +10104,7 @@ class SequenceEngine:
         # its own line, and this one names autofocus and calibration, which
         # is setup's wording and wrong mid-run.
         said = not announce
+        said_class: FrameClass | None = None
         attempts = 0
         # A RETRY WHOSE SYNC THE MOUNT DID NOT TAKE ENDS THE HOLD (#850, the
         # orchestrator brief's ruling 5), refused or unverified alike
@@ -10033,7 +10119,28 @@ class SequenceEngine:
               and attempts < self._NO_LIGHT_MAX_RETRIES
               and (window is None or time.time() < window["end_unix"])):
             self._enforce_stop_boundary(target)   # may raise StopTarget
-            if not said:
+            # WHAT THE FRAME SHOWED (#1108): asked of the classifier on every
+            # pass of the loop, since a retry can meet a different sky.
+            cls = await self._classify_failed_solve(hop_centring)
+            if cls is FrameClass.SOLVER_MISSING:
+                # A configuration fault waits for nobody (#721): no goto, no
+                # sleep. The caller reads the result's ``solve_reason`` and
+                # stops the target.
+                bus.log("error",
+                        f"{target.name}: {SOLVE_REASON_SOLVER_MISSING}; "
+                        f"waiting will not clear it, so the hold for light "
+                        f"ends here without a retry", "sequence")
+                break
+            if cls in self._FRAME_WORDS and cls is not said_class:
+                bus.log("warning",
+                        f"{target.name}: centring found nothing to solve; the "
+                        f"frame shows {self._FRAME_WORDS[cls]}. Holding, and "
+                        f"retrying every "
+                        f"{CENTRING_HOLD_RETRY_S / 60:.0f} min, before "
+                        f"autofocus and guider calibration spend themselves "
+                        f"on it (#596)", "sequence")
+                said_class, said = cls, True
+            elif not said:
                 bus.log("warning",
                         f"{target.name}: centring found nothing to solve — "
                         f"holding for light before autofocus and guider "
@@ -10210,6 +10317,10 @@ class SequenceEngine:
         # same bookkeeping as ``sync_stop``, before the angle lock, the focus
         # sweep and the guider start that a field off target would waste.
         miss_stop: dict | None = None
+        # A single target whose centring said the rig has no plate solver
+        # (#721): a fault, stopped at the same point and for the same reasons
+        # as ``miss_stop``.
+        solver_stop: dict | None = None
         # The sky angle as it stood when the goto returned (ruling 9, spec
         # 5.6 step 4), or None.
         hop_angle: dict | None = None
@@ -10378,6 +10489,7 @@ class SequenceEngine:
                         # deferred (`_group_hop_checks`), never shot off its
                         # tile (spec 5.6 step 4).
                         hop_miss = detail
+                        await self._note_pass_frame_class(member, result)
                     elif self._centring_miss(result, target) is not None:
                         # A MISS IS NOT IMAGED ON (#852): on 2026-10-07 a lone
                         # target logged "centering converged to 255.0' —
@@ -10407,7 +10519,12 @@ class SequenceEngine:
                         # is the stop below, not "still no light".
                         sync_reason = self._sync_not_taken(result)
                         if sync_reason is None and not result["centered"]:
-                            if result.get("error_arcmin") is None:
+                            if (result.get("solve_reason")
+                                    == SOLVE_REASON_SOLVER_MISSING):
+                                # The hold ended on the first attempt as a
+                                # fault; stopped below, not "continuing".
+                                solver_stop = result
+                            elif result.get("error_arcmin") is None:
                                 bus.log(
                                     "warning",
                                     f"{target.name}: still no light after "
@@ -10605,6 +10722,15 @@ class SequenceEngine:
             if miss_stop is not None:
                 self._stop_if_centring_missed(miss_stop, target,
                                               "centring at acquisition")
+            # A MISSING PLATE SOLVER STOPS THE TARGET HERE (#721), at the
+            # same point: nothing the rig can wait for will centre it.
+            if solver_stop is not None:
+                bus.log("warning",
+                        f"{target.name}: stopping this target; centring at "
+                        f"acquisition: {SOLVE_REASON_SOLVER_MISSING}",
+                        "sequence")
+                raise StopTarget(
+                    f"centring at acquisition: {SOLVE_REASON_SOLVER_MISSING}")
 
         # [group] THE HOP'S OWN CHECKS (#189 S2, spec 5.6 step 4). After the
         # idle watch has learned the mount is on this panel, so a deferral
@@ -18663,9 +18789,12 @@ class SequenceEngine:
                 isinstance(res, dict) and not res.get("centered")
                 and res.get("error_arcmin") is None
                 and not res.get("aborted")):
+            # A hold that ended on a missing solver held for nothing (#721).
+            held = ("" if res.get("solve_reason") == SOLVE_REASON_SOLVER_MISSING
+                    else " while holding for light")
             bus.log("warning",
                     f"{name}: stopping this target; {where}: the field never "
-                    f"solved while holding for light", "sequence")
+                    f"solved{held}", "sequence")
             self._mark_pointing_unverified(target)
             raise StopTarget(
                 f"{where}: {res.get('solve_reason') or CENTRING_NO_LIGHT}")
