@@ -87,7 +87,6 @@ SILENT_HANDLERS: dict[tuple[str, str, str], int] = {
     ('guide/flight_recorder.py', 'add_pulse', 'Exception'): 1,
     ('guide/flight_recorder.py', 'walk_legs', 'Exception'): 1,
     ('guide/flight_recorder.py', 'walk_step', 'Exception'): 1,
-    ('guide/native.py', '_record_cycle', 'Exception'): 1,
     ('guide/native.py', 'dump_flight_recorder', 'Exception'): 1,
     ('guide/phd2.py', '_reconnect', 'Exception'): 1,
     ('guide/phd2.py', 'disconnect', 'Exception'): 1,
