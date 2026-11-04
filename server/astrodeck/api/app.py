@@ -7920,7 +7920,7 @@ def create_app(*, bind_host: str | None = None,
 
     calibration_demand = DemandCache()
 
-    def _flow_demand(rec, flow_id: str, setpoint, can_cool: bool,
+    def _flow_demand(rec, flow_id: str, setpoint_c, can_cool: bool,
                      closes_on_unsafe: bool, facts) -> tuple[tuple, int]:
         """``(lights, quota)`` a flow asks of the calibration library: the
         matrix's demand, before the live rotator turns the sky angles into
@@ -7938,7 +7938,7 @@ def create_app(*, bind_host: str | None = None,
         compiled = compile_plan(rec.graph, rec.name)
         try:
             plan, _lost = to_sequence_plan(
-                compiled, rec.graph, flow_id=flow_id, cool_to=setpoint,
+                compiled, rec.graph, flow_id=flow_id, cool_to=setpoint_c,
                 camera_can_cool=can_cool, closes_on_unsafe=closes_on_unsafe,
                 rig=facts)
             lights = tuple(
