@@ -53,6 +53,7 @@ import { checkPanoSupport, requestIosMotionPermission } from './pano/support';
 import { declinationDeg, decimalYear } from './pano/wmm';
 import type { HorizonDraft, ScanResult } from './pano/types';
 import { acceptSuggested, draftFromPoints, draftToPoints, editDraft, shiftDraft } from './horizonDraft';
+import { binsDescribe, parseSavedBins, type HorizonBin } from './horizonBins';
 import { BandPanorama, shiftRaster } from './pano/bandPanorama';
 import { PANO_H, PANO_W } from './pano/types';
 import { REVIEW_TEXT } from './pano/copy';
@@ -133,6 +134,11 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const [sourceLoc, setSourceLoc] = useState<SavedLocation | null>(null);
   const [legacy, setLegacy] = useState(false);
   const [points, setPoints] = useState<HorizonPoint[]>([]);
+  // What each bin of the line is: measured by a frame, or not measured at all
+  // (#904, #1117). It describes `points` only while `binsDescribe` says it
+  // still does, so an edit by hand silently retires it.
+  const [bins, setBins] = useState<HorizonBin[] | null>(null);
+  const liveBins = bins && binsDescribe(bins, points) ? bins : null;
   const [byHand, setByHand] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -173,7 +179,9 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
             setSiteName(loc.name);
             sitePos.current = positionOf(loc.latitude, loc.longitude, loc.elevation_m);
             setLegacy(false);
-            setPoints((loc.horizon_points ?? []).map(([az, alt]) => ({ az, alt })));
+            const stored = (loc.horizon_points ?? []).map(([az, alt]) => ({ az, alt }));
+            setPoints(stored);
+            setBins(parseSavedBins(loc.horizon_bins));
             setByHand(true);
             setPhotoKey(`location:${loc.id}`);
             return;
@@ -186,6 +194,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
         setSiteName(site.name?.trim() || "the active site");
         if(typeof site.latitude==='number' && typeof site.longitude==='number') setPhotoKey(`active:${site.latitude}:${site.longitude}:${site.elevation_m ?? 0}`);
         sitePos.current = positionOf(site.latitude, site.longitude, site.elevation_m);
+        setBins(parseSavedBins(useStore.getState().config?.safety?.horizon_bins));
         if (Object.prototype.hasOwnProperty.call(site, "horizon_points")) {
           setLegacy(false);
           setPoints((site.horizon_points ?? []).map(([az, alt]) => ({ az, alt })));
@@ -222,6 +231,10 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     if (writeLocked) { explainWrite(writeLocked); return; }
     if ((guided || reviewDraft) && !commit) { setPoints(next); setDirty(true); setSaved(false); onDirty?.(); return; }
     const prev = points;
+    // The status goes down with the line it describes and with nothing else: a
+    // line that has been edited since is saved with no status at all, which a
+    // reader takes as "drawn by hand", never as a measurement.
+    const nextBins = bins && binsDescribe(bins, next) ? bins : null;
     setPoints(next);
     setSaving(true);
     try {
@@ -233,6 +246,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
           elevation_m: sourceLoc.elevation_m,
           horizon_min_deg: sourceLoc.horizon_min_deg,
           horizon_points: next.map((p) => [p.az, p.alt] as [number, number]),
+          horizon_bins: nextBins,
         };
         const updated = await updateLocation(sourceLoc.id, body);
         setSourceLoc(updated);
@@ -243,7 +257,8 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
       } else {
         const safety = useStore.getState().config?.safety;
         if (!safety) throw new Error("Safety config not loaded yet - try again.");
-        await setSafetyConfig({ ...safety, horizon: next.map((p) => [p.az, p.alt] as [number, number]) });
+        const written = { ...safety, horizon: next.map((p) => [p.az, p.alt] as [number, number]), horizon_bins: nextBins };
+        await setSafetyConfig(written);
         await loadConfig();
       }
       setDirty(false); setSaved(true); onSaved?.();
@@ -511,7 +526,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     setPanorama(image); setReviewZoom(1); setReviewDraft(true);
     setPhotoStored(false);
     if(photoKey) void writePanorama(photoKey,image).then(setPhotoStored);
-    setPoints(proposal.points); setByHand(false); setDirty(true); setSaved(false); onDirty?.();
+    setPoints(proposal.points); setBins(proposal.bins); setByHand(false); setDirty(true); setSaved(false); onDirty?.();
     setTrace(proposal.points);
     setTraceUncertain(proposal.uncertainBins.length);
     setLensInDoubt(!!proposal.lensInDoubt);
@@ -587,7 +602,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const remaining = sweep?.cells.filter(c=>!c.captured) ?? [];
   const onlyOverhead = remaining.length > 0 && remaining.every(c=>c.alt>78);
   const scanDirection = onlyOverhead ? "Point the rear camera straight up, with the screen facing the ground. It captures automatically. If it doesn’t register, keep it pointing up and tap Capture overhead."
-    : `${sweep?.captureCue ?? 'Bring a blue dot into the centre ring.'} Green cells are captured. ${remaining.length} patches left.`;
+    : `${sweep?.captureCue ?? 'Bring a blue dot into the centre ring.'} Green cells are captured. ${remaining.length} patches left.${sweep?.heldFrames ? ` ${sweep.heldFrames} held: a patch with no features to match, such as plain sky, stays unmeasured until a neighbour that has features lines up with it. Sweep it again together with one.` : ''}`;
   const scanHint = openingCamera ? "Opening camera… Allow camera access if your browser asks."
     : sweep?.error ?? (sweep?.complete ? "Overhead captured. The scan is complete—review the horizon next."
     : scanning && onlyOverhead ? scanDirection
@@ -644,6 +659,11 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
             <rect x={0} y={SKY_Y} width={STRIP_W} height={HY(-10)-SKY_Y} fill="url(#photosphere-unscanned)"/>
             <image data-testid="horizon-panorama" href={panorama} x={0} y={SKY_Y} width={STRIP_W} height={HY(-10)-SKY_Y} preserveAspectRatio="none"/>
           </>}
+          {liveBins && liveBins.map((bin, i) => bin.status === 'measured' || bin.status === 'edited' || bin.status === 'kept' ? null : (
+            <rect key={`b${i}`} data-testid="horizon-bin-status" data-status={bin.status} data-bin={i}
+              x={HX(i * 360 / liveBins.length)} y={SKY_Y} width={HX(360 / liveBins.length)} height={GROUND_Y - SKY_Y}
+              fill="rgba(255,180,84,.16)" stroke="rgba(255,180,84,.5)" strokeDasharray="2 3" strokeWidth={0.6} />
+          ))}
           {trace && trace.length > 0 && (
             <polyline
               points={trace.map((p) => `${HX(p.az)},${HY(p.alt)}`).join(" ")}
@@ -766,11 +786,11 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
           <small>Choose another rear camera if this lens is blurry or noisy. Lens names come from your phone.</small>
         </label>}
         {!scanning && !openingCamera && sweep?.previewReady && <>
-          {suggestedLens!==null && (!sweep.hasLensCalibration || sweep.cameraViewAngle!==suggestedLens) && <div className="photosphere-error">
+          {suggestedLens!==null && (sweep.lensViewAngleSource==='default' || sweep.cameraViewAngle!==suggestedLens) && <div className="photosphere-error">
             <p>A view angle fitted to your scan is ready to test. Use the same camera lens and zoom. This is a trial correction, not a full camera calibration.</p>
             <ActionButton kind="secondary" size="md" onPress={()=>{sweep.setCameraViewAngle(suggestedLens);setLensAngleDraft(String(sweep.cameraViewAngle));setFrameTick(t=>t+1);}}>Try scan angle · {suggestedLens}°</ActionButton>
           </div>}
-          <details className="photosphere-detail"><summary>Camera alignment · {sweep.hasLensCalibration?'saved view angle':'estimated view angle'}</summary>
+          <details className="photosphere-detail"><summary>Camera alignment · {sweep.lensViewAngleSource==='measured'?'measured view angle':sweep.lensViewAngleSource==='user-estimate'?'your view angle, not measured':'estimated view angle'}</summary>
             <p>The camera’s view angle determines where roofs and trees appear in the scan. This estimate may need calibration for your lens.</p>
             <label>View angle across the short edge (degrees) <input type="number" min={35} max={100} step={.1}
               aria-label="Camera view angle in degrees" value={lensAngleDraft} onChange={e=>setLensAngleDraft(e.target.value)}

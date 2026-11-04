@@ -2014,6 +2014,12 @@ export interface NoGoWedge {
   alt_max: number;
 }
 
+/** One azimuth bin of a scanned horizon (server locations.HORIZON_BIN_STATUSES). */
+export interface HorizonBinStatus {
+  alt: number;
+  status: string;
+}
+
 export interface SafetyConfig {
   // #239 stage A: lead time for the live meridian-flip ETA chip.
   meridian_flip_warn_min?: number;
@@ -2023,6 +2029,8 @@ export interface SafetyConfig {
   min_alt_deg: number;                  // global pier-collision floor (mount-alt). 0 = off
   max_alt_deg?: number;                 // zenith keep-out CEILING. 90 = off (#101)
   horizon: [number, number][] | null;   // sorted (az,alt) control points
+  // Which bins of `horizon` a scan measured (#1117); null where it was drawn by hand.
+  horizon_bins?: HorizonBinStatus[] | null;
   // Hard-edged obstruction wedges: inside [az_min, az_max] the mount must stay
   // above alt_max. Distinct from `horizon`, whose points interpolate — a pier
   // declared at az 180 would otherwise slope a floor across the southern sky.
@@ -2387,6 +2395,9 @@ export interface SavedLocation {
   // leaves the configured profile alone); `[]` = no obstructions, an explicit
   // clear. Copied into config.safety.horizon when the location is applied.
   horizon_points?: [number, number][] | null;
+  // Which bins of that line a scan measured (#1117), bin 0 starting at azimuth 0.
+  // Null/absent = drawn by hand. A line edited since is saved without it.
+  horizon_bins?: HorizonBinStatus[] | null;
   created_ts: number;
   updated_ts: number;
 }

@@ -343,11 +343,13 @@ async function approachAndHold(rvfc=true,step=2,lag=0){
 }
 
 await test('A still phone captures within 1.5 s of the hold, with no sensor event at all',async()=>{
-  const {sweep,cell,tick,silentFrom}=await approachAndHold();
+  // "Captured" in this file means a frame was TAKEN (`frameCount`): since #904 the first frame of a scan is held
+  // until a later one agrees with it, so a cell does not turn green on it and green no longer measures the witness.
+  const {sweep,tick,silentFrom}=await approachAndHold();
   let capturedAfter:number|null=null;
   for(let i=0;i<20&&capturedAfter===null;i++){
     tick();
-    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-silentFrom;
+    if(sweep.frameCount>0)capturedAfter=clock-silentFrom;
   }
   assert.notEqual(capturedAfter,null,'DEADLOCK: a still phone never captured');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness, the acceptance row is 1500`);
@@ -1076,12 +1078,12 @@ await test('A still phone captures on the interval fallback, with no requestVide
   // above never runs there. The fallback used to pass NO stability at all,
   // which left the strict rule in force and the original deadlock intact on
   // every browser without that API.
-  const {sweep,cell,tick,silentFrom}=await approachAndHold(false);
+  const {sweep,tick,silentFrom}=await approachAndHold(false);
   assert.ok(intervalFn,'the interval fallback was never started');
   let capturedAfter:number|null=null;
   for(let i=0;i<5&&capturedAfter===null;i++){
     tick();
-    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-silentFrom;
+    if(sweep.frameCount>0)capturedAfter=clock-silentFrom;
   }
   assert.notEqual(capturedAfter,null,'DEADLOCK: a still phone never captured on the fallback path');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness, the acceptance row is 1500`);
@@ -1131,7 +1133,7 @@ await test('P1: the interval fallback learns nothing from a stalled, still-playi
 });
 
 await test('P1: a frozen fallback video recovers once frames flow and a fresh reading arrives',async()=>{
-  const {sweep,cell,tick,aim}=await approachAndHold(false);
+  const {sweep,tick,aim}=await approachAndHold(false);
   paused=true;
   for(let i=0;i<10;i++)tick();
   paused=false;
@@ -1142,7 +1144,7 @@ await test('P1: a frozen fallback video recovers once frames flow and a fresh re
   let capturedAfter:number|null=null;
   for(let i=0;i<6&&capturedAfter===null;i++){
     tick();
-    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-from;
+    if(sweep.frameCount>0)capturedAfter=clock-from;
   }
   assert.notEqual(capturedAfter,null,'no capture after the video recovered and the sensor spoke');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms after the fresh reading`);
@@ -1172,7 +1174,7 @@ await test('P1: a frozen fallback video recovers once frames flow and a fresh re
  *  The condition is cleared in a `finally`, so a case that fails part way
  *  through cannot leave the flag standing for the cases after it. */
 async function mediaGateCase(set:()=>void,clear:()=>void){
-  const {sweep,cell,tick,aim,silentFrom}=await approachAndHold(false);
+  const {sweep,tick,aim,silentFrom}=await approachAndHold(false);
   const mediaAt=mediaTime;
   try{
     set();
@@ -1190,7 +1192,7 @@ async function mediaGateCase(set:()=>void,clear:()=>void){
     let capturedAfter:number|null=null;
     for(let i=0;i<6&&capturedAfter===null;i++){
       tick();
-      if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-from;
+      if(sweep.frameCount>0)capturedAfter=clock-from;
     }
     assert.notEqual(capturedAfter,null,'the condition cleared and nothing was ever captured again');
     assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms after the condition cleared and the sensor spoke`);
@@ -1344,11 +1346,11 @@ await test('Frames flowing again end the refusal run, and the total remembers it
 });
 
 await test('P2: a valid 10 degree final step in 100 ms captures like any other approach',async()=>{
-  const {sweep,cell,tick,silentFrom}=await approachAndHold(true,10);
+  const {sweep,tick,silentFrom}=await approachAndHold(true,10);
   let capturedAfter:number|null=null;
   for(let i=0;i<20&&capturedAfter===null;i++){
     tick();
-    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-silentFrom;
+    if(sweep.frameCount>0)capturedAfter=clock-silentFrom;
   }
   assert.notEqual(capturedAfter,null,'a quick final movement was rejected for the whole hold');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness`);
@@ -1372,7 +1374,7 @@ await test('P2: a magnetometer outlier as the last event is refuted by the still
   let capturedAfter:number|null=null;
   for(let i=0;i<20&&capturedAfter===null;i++){
     tick();
-    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-good;
+    if(sweep.frameCount>0)capturedAfter=clock-good;
   }
   assert.notEqual(capturedAfter,null,'the outlier blocked the hold');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms after the good reading`);
@@ -1408,7 +1410,7 @@ await test('A camera that reports its frames 250 ms late still captures a still 
   // how long its own camera takes to hand a frame over. Timed by capture, and
   // this is the whole of change 1, the same break lands 50 ms BEFORE the
   // reading, which is where it happened - it is the tail of the approach.
-  const {sweep,cell,tick,silentFrom}=await approachAndHold(true,2,250);
+  const {sweep,tick,silentFrom}=await approachAndHold(true,2,250);
   // The turn ends with the reading; three of its frames are still in flight,
   // and the last pair of them straddles the reading in capture time (-50 ms,
   // +50 ms) while trailing it by 200 ms in callback time.
@@ -1416,7 +1418,7 @@ await test('A camera that reports its frames 250 ms late still captures a still 
   let capturedAfter:number|null=null;
   for(let i=0;i<20&&capturedAfter===null;i++){
     tick();
-    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-silentFrom;
+    if(sweep.frameCount>0)capturedAfter=clock-silentFrom;
   }
   assert.notEqual(capturedAfter,null,'DEADLOCK: a still phone never captured behind a 250 ms camera pipeline');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness, the acceptance row is 1500`);
@@ -1624,7 +1626,7 @@ await test('P1: a paused preview is not captured by the overhead button either',
 await test('P1: once the camera delivers again, the same chattering sensor captures',async()=>{
   // The gate has to be a gate, not a wall: the recovery is what says the fix
   // refuses a frozen camera rather than refusing the fallback path.
-  const {sweep,cell,aim}=await approachAndHold(false);
+  const {sweep,aim}=await approachAndHold(false);
   stalled=true;
   for(let i=0;i<10;i++)beat(aim);
   assert.equal(sweep.frameCount,0,'the frozen element captured');
@@ -1633,7 +1635,7 @@ await test('P1: once the camera delivers again, the same chattering sensor captu
   let capturedAfter:number|null=null;
   for(let i=0;i<12&&capturedAfter===null;i++){
     beat(aim);
-    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-from;
+    if(sweep.frameCount>0)capturedAfter=clock-from;
   }
   assert.notEqual(capturedAfter,null,'the camera recovered and nothing was ever captured again');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms after the camera resumed`);
@@ -1659,9 +1661,9 @@ await test('One delivered frame is captured once, however many times the grab ru
   // delivering, and the callback path is the one that knows the frame's own
   // identity. Without the identity clause the same picture goes into the
   // mosaic twice - a duplicate the panorama would weight as two observations.
-  const {sweep,cell,tick,represent}=await approachAndHold();
+  const {sweep,tick,represent}=await approachAndHold();
   let captured=false;
-  for(let i=0;i<20&&!captured;i++){tick();captured=!!sweep.cells.find((c)=>c.id===cell.id)?.captured;}
+  for(let i=0;i<20&&!captured;i++){tick();captured=sweep.frameCount>0;}
   assert.ok(captured,'nothing was captured, so there is no second grab to judge');
   assert.equal(sweep.captureLog.at(-1)?.outcome,'accepted');
   const frames=sweep.frameCount;

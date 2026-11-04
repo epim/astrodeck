@@ -5,6 +5,10 @@
 import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, overlapConflictTerm, type CameraBasis } from './photosphereGeometry';
 import { CameraPoseHistory, MotionStability, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
 import { registerFrame, SEARCH_CEILING_DEG } from './photosphereRegistration';
+import { shortFovDeg } from './pano/rotation';
+import { LOCK_MIN_RATIOS } from './pano/focal';
+import type { FocalLike } from './pano/types';
+import { binsFromTrace, pointsFromBins, BLOCKED_ALT_DEG, type HorizonBin } from './horizonBins';
 import { VisualStability, GRID_W, GRID_H, CELL_SAMPLES, STALE_FRAME_MS } from './photosphereStability';
 
 /** The size the stillness sample is drawn at: an integer multiple of the
@@ -158,6 +162,45 @@ export interface CaptureRecord {
   featureCorrelation?: number | null;
   samples?: number;
   searched?: boolean;
+  /** `accepted` only (#904): the overlap test could not decide, so the frame
+   *  is held and counts toward nothing until a later frame's overlap agrees. */
+  pending?: boolean;
+}
+
+/** A frame whose overlap test could not decide (#904): every scan's first frame
+ *  and most blank-sky frames. It is placed by the sensor pose alone, so nothing
+ *  has checked it, and it stays out of the coverage, the trace and the green
+ *  cells until a later frame that agrees with it BY ITSELF is taken near it. */
+interface PendingFrame {
+  record: SweepFrame;
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  basis: CameraBasis;
+  lens: ReturnType<typeof cameraLens>;
+}
+
+/** How far from an agreeing frame a held frame may be and still be vouched for
+ *  by it, as a fraction of the camera's short-axis view angle. At half, the two
+ *  fields of view share at least half their short axis, which is what the
+ *  overlap test needs (a quarter of the visible samples) to decide on. */
+const PENDING_REACH = .5;
+/** ...and how close is too close. A second frame from the same pose agrees with
+ *  the first by being the same picture, which says nothing about where either
+ *  was aimed; the overlap vouches for a held frame only when the phone had
+ *  turned by at least this many degrees between the two, so the pixels had to
+ *  move the way the sensor said they would. */
+const PENDING_MIN_DEG = 3;
+/** Held frames kept per scan. The oldest is dropped, and a dropped frame can no
+ *  longer be vouched for: it simply never becomes measured. */
+const PENDING_LIMIT = 32;
+
+/** Do two frames hold the same tile of the sweep? A tile is a bin, a band and,
+ *  below the overhead, an altitude rounded to 5 degrees. */
+function sameTileAs(a: SweepFrame): (f: SweepFrame) => boolean {
+  const altitude = Math.round((a.altitude ?? 0) / 5) * 5;
+  return f => f.bin === a.bin && f.band === a.band
+    && (a.band === OVERHEAD_BAND || Math.round((f.altitude ?? 0) / 5) * 5 === altitude);
 }
 
 /** Does this outcome end a run of `overlap-wait` refusals (see
@@ -222,6 +265,22 @@ export function extendsOverlapRun(outcome: CaptureOutcome): boolean {
 /** The log records; it decides nothing. Bounded so a long-running scan
  *  cannot grow this without limit. */
 const CAPTURE_LOG_LIMIT = 4096;
+/** How many of the newest records the alignment report carries, each with every
+ *  sub-reason field and none of its bases (#902). The histogram beside them
+ *  counts the whole log, so the report stays small and still says what the
+ *  whole scan did. */
+const REPORT_LOG_RECORDS = 256;
+
+/** The capture log as the alignment report carries it: how often each outcome
+ *  happened over the whole log, and the newest records with their refusal
+ *  reasons. The bases are left out because they are large and the sample
+ *  bundle already holds the ones that matter. */
+export function captureLogReport(log: readonly CaptureRecord[]) {
+  const outcomes: Record<string, number> = {};
+  for (const record of log) outcomes[record.outcome] = (outcomes[record.outcome] ?? 0) + 1;
+  const records = log.slice(-REPORT_LOG_RECORDS).map(({ basis: _basis, sensorBasis: _sensorBasis, ...reasons }) => reasons);
+  return { total: log.length, outcomes, records };
+}
 
 /** Secure context + `getUserMedia` - what CAPTURE PHOTOSPHERE needs before it
  *  can even ask for a camera. Same reason string as the AR camera/gyro
@@ -348,7 +407,12 @@ export function projectSweepColumns(frames: SweepFrame[], bins: number,
 }
 
 export interface SkyTrace {
+  /** The line this scan publishes, as `pointsFromBins` writes it from `bins`:
+   *  each bin's value at both of its edges, so a bin answers for its whole
+   *  width and not only at its centre (#900). */
   points: { az: number; alt: number }[];
+  /** One altitude and status per azimuth bin: what was measured. */
+  bins: HorizonBin[];
   uncertainBins: number[];
   /** Set by `traceSweep` alone: the scan reached the lens-doubt run on an
    *  uncalibrated lens, so every bin is uncertain (issue #129). */
@@ -372,8 +436,8 @@ export interface SkyTrace {
 export function traceSweep(sweep: { columns(): (number[] | SkyBin)[]; lensDoubtedThisScan: boolean }): SkyTrace {
   const trace = traceSkyCoverage(sweep.columns());
   if (!sweep.lensDoubtedThisScan) return trace;
-  return { points: trace.points.map(p => ({ ...p, alt: 90 })),
-    uncertainBins: trace.points.map((_, i) => i), lensInDoubt: true };
+  const bins = trace.bins.map(() => ({ alt: BLOCKED_ALT_DEG, status: 'unknown' as const }));
+  return { points: pointsFromBins(bins), bins, uncertainBins: bins.map((_, i) => i), lensInDoubt: true };
 }
 
 /** One sampled column of sky: per-row luminance, and the blueness of the same
@@ -386,13 +450,23 @@ export interface SkyColumn { lum: number[]; blue: number[] }
  *  bin's worst case, which one ray through its centre cannot see. */
 export type SkyBin = SkyColumn[];
 
-/** Columns sampled across each azimuth bin. Five, so the samples sit 2.4
+/** Columns sampled across each azimuth bin. Five, so the samples sit 3
  *  degrees apart at 30 bins: finer than anything the product can resolve (the
  *  scorer calls an obstacle narrower than one bin unresolvable), so nothing
  *  the answer is graded on can hide between two samples. Odd, so one sample
  *  lands exactly on the bin centre - the column `centreColumns` publishes and
- *  the uncertainty rule reads, unchanged. */
-export const BIN_SAMPLES = 5;
+ *  the uncertainty rule reads, unchanged.
+ *
+ *  They span the bin's WHOLE width (#900). Five equal fifths put the outer
+ *  samples 1.2 degrees inside the bin's edges, so a wall that starts in the
+ *  last 1.2 degrees was never seen by the bin it stood in and the bin was
+ *  published as wide open. The raster is read on a grid of `BIN_SUBGRID`
+ *  columns per bin and these are the ones taken: the centre first, then the two
+ *  outermost (zero and a third of a degree from each edge at 30 bins) and the
+ *  two between. */
+const BIN_SUBGRID = 36;
+const BIN_SAMPLE_COLUMNS = [18, 0, 9, 27, 35];
+export const BIN_SAMPLES = BIN_SAMPLE_COLUMNS.length;
 /** The rows of accepted sky a row is tested against - the sky model is the
  *  median of the last twelve, per channel, so it FOLLOWS the column instead of
  *  standing still. A real sky is not flat: airlight brightens it toward the
@@ -1020,10 +1094,8 @@ export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTr
   const alts = measured.map((columnsHere, index) =>
     uncertainBins.includes(index) ? 90 : columnsHere.reduce((alt, c) => Math.max(alt, c.alt), 0));
   applyAzimuthSupport(measured, alts, bins.length);
-  return {
-    points: alts.map((alt, index) => ({ az: Math.round((index + .5) / columns.length * 360), alt })),
-    uncertainBins,
-  };
+  const published = binsFromTrace(alts, uncertainBins);
+  return { points: pointsFromBins(published), bins: published, uncertainBins };
 }
 
 /** What one column of the tracer cannot see, and the mosaic can. Raises a bin's
@@ -1328,6 +1400,25 @@ export const LENS_DOUBT_AFTER = 6;
  *  derivation, the arithmetic and where the linearisation it rests on parts
  *  company with the exact relation. */
 const LENS_SCALE_TOLERANCE = .1;
+
+/** Where the scan's camera view angle came from (#903, doc 14 section 4.5):
+ *  `default` is the 60 degree guess, `user-estimate` a number somebody typed or
+ *  a setup link suggested, `measured` a focal fit. Only `measured` counts as a
+ *  calibrated lens. */
+export type LensSource = 'default' | 'user-estimate' | 'measured';
+
+/** What `lensProfileKey` holds. The key once held a bare number and called it
+ *  calibrated; that number migrates as a user estimate, because nothing proves
+ *  it was ever measured. Anything unreadable is no stored lens at all. */
+function storedLens(raw: string | null): { degrees: number; source: 'user-estimate' | 'measured' } | null {
+  if (raw === null) return null;
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return null; }
+  const degrees = typeof value === 'number' ? value : (value as { degrees?: unknown } | null)?.degrees;
+  if (typeof degrees !== 'number' || !(degrees >= 35 && degrees <= 100)) return null;
+  const source = (value as { source?: unknown } | null)?.source;
+  return { degrees, source: source === 'measured' ? 'measured' : 'user-estimate' };
+}
 /** How often the interval fallback grabs, and the cadence the frame-callback
  *  path throttles its own grabs to, so the two paths capture at one rate. It is
  *  also the RESOLUTION OF THE WITNESS on the fallback: that path observes only
@@ -1403,6 +1494,13 @@ export class PhotosphereSweep {
   private video: HTMLVideoElement | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private frames: SweepFrame[] = [];
+  /** Every frame placed on the sky, vouched for or not. Overlap tests run
+   *  against THIS, so a frame is judged against everything that was shown to the
+   *  user; the trace, the coverage and the green cells read `panorama`, which
+   *  holds only what a later frame agreed with (#904). */
+  private provisional: SkyPanorama | null = null;
+  private pending: PendingFrame[] = [];
+  private lastHeldAt: number | null = null;
   private headingHandler: ((e: Event) => void) | null = null;
   private heading = 0;
   private altitude = 0;
@@ -1431,7 +1529,12 @@ export class PhotosphereSweep {
   private lastAlpha = 0;
   private imageAspect = 4 / 3;
   private shortAxisFov=60;
-  private lensCalibrated=false;
+  /** Where `shortAxisFov` came from (#903). The guard that stops a refusing
+   *  scan publishing a certain horizon, the lens cue and the carried-correction
+   *  bound all ask whether the lens is MEASURED, and only a focal fit is. A
+   *  typed or stored number is a starting estimate. */
+  private lensSource:LensSource='default';
+  private get lensCalibrated():boolean {return this.lensSource==='measured';}
   private lensProfileKey='';
   private lastCaptureAt: number | null = null;
   private poses = new CameraPoseHistory();
@@ -1565,7 +1668,13 @@ export class PhotosphereSweep {
   }
 
   get frameCount(): number {
-    return this.frames.length;
+    return this.frames.length + this.pending.length;
+  }
+
+  /** Frames taken whose overlap could not be decided and that no later frame
+   *  has vouched for yet. They are drawn as nothing and published as nothing. */
+  get heldFrames(): number {
+    return this.pending.length;
   }
 
   get currentHeading(): number {
@@ -1892,12 +2001,24 @@ export class PhotosphereSweep {
   get aspectRatio(): number { return this.video?.videoWidth && this.video.videoHeight ? this.video.videoWidth/this.video.videoHeight : this.imageAspect; }
   get cameraViewAngle():number {return this.shortAxisFov;}
   get hasLensCalibration():boolean {return this.lensCalibrated;}
+  get lensViewAngleSource():LensSource {return this.lensSource;}
   get lensDoubtedThisScan():boolean {return this.lensDoubted;}
   get lens() {return cameraLens(this.aspectRatio,1,this.shortAxisFov);}
+  /** A typed or suggested view angle: the registration starts from it, and the
+   *  lens stays unmeasured, so the lens cue and the lens-doubt guard stay on. */
   setCameraViewAngle(degrees:number):boolean {
+    return this.adoptViewAngle(degrees,'user-estimate');
+  }
+  /** The one door to a MEASURED lens: a focal estimator that has locked on at
+   *  least `LOCK_MIN_RATIOS` image-to-gyro ratios. A prior is not a fit. */
+  adoptFocalFit(focal:Pick<FocalLike,'state'|'fBest'|'ratios'>):boolean {
+    if(focal.state==='prior' || focal.ratios<LOCK_MIN_RATIOS)return false;
+    return this.adoptViewAngle(shortFovDeg(focal.fBest),'measured');
+  }
+  private adoptViewAngle(degrees:number,source:'user-estimate'|'measured'):boolean {
     if(this.recording || !Number.isFinite(degrees) || degrees<35 || degrees>100)return false;
-    this.shortAxisFov=degrees;this.lensCalibrated=true;
-    try {if(this.lensProfileKey)localStorage.setItem(this.lensProfileKey,String(degrees));}catch { /* session-only when storage is blocked */ }
+    this.shortAxisFov=degrees;this.lensSource=source;
+    try {if(this.lensProfileKey)localStorage.setItem(this.lensProfileKey,JSON.stringify({degrees,source}));}catch { /* session-only when storage is blocked */ }
     return true;
   }
   get cells() { return DOME_CELLS.map(c => ({ ...c, captured:this.coveredCells.has(c.id) })); }
@@ -1920,6 +2041,7 @@ export class PhotosphereSweep {
     return {id:cell.id,captured:this.coveredCells.has(cell.id)};
   }
   get justCaptured(): boolean { return this.lastCaptureAt!==null && Date.now()-this.lastCaptureAt<1000; }
+  get justHeld(): boolean { return this.lastHeldAt!==null && Date.now()-this.lastHeldAt<1000; }
   get captureCue(): string {
     // ONE clock read for the whole decision. Several of the tests below consult
     // the witness, and a getter that read `performance.now()` at each of them
@@ -2069,6 +2191,7 @@ export class PhotosphereSweep {
       return 'The direction this phone reports has drifted too far from the picture for me to correct. Return to a green patch and hold still there. Keep the camera lens in the same spot.';
     if(this.overlapWait)return 'I can’t match this view yet. Return to a green patch, hold still, then move slowly toward the next blue dot. Keep the camera lens in the same spot.';
     if(this.justCaptured)return 'Captured. Move to another blue dot.';
+    if(this.justHeld)return 'Held, not matched yet. Aim at a neighbouring blue dot so this patch can be checked against it.';
     const target=this.aimTargetAt(now);
     if(target?.captured)return 'Already captured. Aim at a blue dot.';
     if(target)return 'Hold here… capturing this patch.';
@@ -2127,7 +2250,7 @@ export class PhotosphereSweep {
     // anchor the first scan's own refusals had already argued against. The
     // mosaic it was derived against is replaced on the next line.
     this.visualAnchor = null;
-    this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
+    this.frames = []; this.panorama = new SkyPanorama(); this.provisional = new SkyPanorama(); this.pending = []; this.lastHeldAt=null; this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
   /** The user explicitly aims the rear camera up. This still reads an actual
@@ -2142,7 +2265,7 @@ export class PhotosphereSweep {
     const generation = this.generation;
     this.video = video;
     this.canvas = canvas;
-    this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null;
+    this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.provisional = null; this.pending = []; this.lastHeldAt=null; this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null;
     // A new scan: the diagnostic log from any earlier session is no longer
     // about this camera session, so it starts over. `stop()` never does this.
     this.captureRecords = []; this.hasCapturedFrame = false;
@@ -2206,8 +2329,8 @@ export class PhotosphereSweep {
     // become a universal constant for another phone, lens or video aspect.
     const crop=Math.min(this.imageAspect,1/this.imageAspect).toFixed(3);
     this.lensProfileKey=`astrodeck.photosphere.lens.${this.deviceId || 'default'}.${crop}`;
-    this.shortAxisFov=60;this.lensCalibrated=false;
-    try {const stored=Number(localStorage.getItem(this.lensProfileKey));if(stored>=35&&stored<=100){this.shortAxisFov=stored;this.lensCalibrated=true;}}catch { /* private browsing */ }
+    this.shortAxisFov=60;this.lensSource='default';
+    try {const stored=storedLens(localStorage.getItem(this.lensProfileKey));if(stored){this.shortAxisFov=stored.degrees;this.lensSource=stored.source;}}catch { /* private browsing */ }
     stream.getVideoTracks?.().forEach(track => track.addEventListener?.("ended", () => {
       if (generation !== this.generation) return;
       this.issue = "The camera stopped. Close the scan and open it again.";
@@ -2492,7 +2615,7 @@ export class PhotosphereSweep {
    *  anything - every gate below still returns its own `false` on its own
    *  terms, this just names which one fired. */
   private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number; gap?: PoseGap;
-    overlapTerm?: 'brightness'|'edges'|'both'; correlation?: number | null; featureCorrelation?: number | null; samples?: number; searched?: boolean }): void {
+    overlapTerm?: 'brightness'|'edges'|'both'; correlation?: number | null; featureCorrelation?: number | null; samples?: number; searched?: boolean; pending?: boolean }): void {
     // The exception to "records, never decides", and here deliberately: this is
     // the single point every outcome passes through, so the run of overlap
     // refusals the cue reads cannot miss one. Counting it at the two
@@ -2695,6 +2818,13 @@ export class PhotosphereSweep {
     // without it a refusal's numbers have nothing to be compared against, and
     // "the still route agrees here and the arc does not" cannot be measured.
     let capturedOverlap: { correlation: number | null; featureCorrelation: number | null; samples: number } | undefined;
+    // False only for a frame placed by the sensor pose alone because the overlap
+    // test could not decide (#904). A manual or tilt-only overhead has no
+    // overlap test to wait for and keeps its old standing.
+    let vouched = true;
+    let capturedLens: ReturnType<typeof cameraLens> | undefined;
+    // The held frames this one agrees with, which it vouches for in turn.
+    let supporters: PendingFrame[] = [];
     try {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -2703,10 +2833,10 @@ export class PhotosphereSweep {
       // clears one without the other. Kept, and logged as `no-image` (the
       // nearest existing outcome - nothing to add a frame to), as a
       // defensive TS non-null guard rather than a real behavioural gate.
-      if (!this.panorama) { this.recordCapture(now,'no-image'); return false; }
+      if (!this.panorama || !this.provisional) { this.recordCapture(now,'no-image'); return false; }
       const lens=cameraLens(video.videoWidth,video.videoHeight,this.shortAxisFov);
       if (basis && !manualOverhead) {
-        const registration=registerFrame(this.panorama,data,canvas.width,canvas.height,basis,lens);
+        const registration=registerFrame(this.provisional,data,canvas.width,canvas.height,basis,lens);
         const overlap=registration.overlap;
         if(registration.adjusted && rawBasis){
           // `rawBasis` is the SENSOR pose and `registration.basis` the FINAL
@@ -2739,7 +2869,18 @@ export class PhotosphereSweep {
         const target=targetCell(basis!.forward);
         if(!target){this.recordCapture(now,'no-target');return false;}
         if(this.coveredCells.has(target.id)){this.recordCapture(now,'already-captured');return false;}
-        this.panorama.add(data,canvas.width,canvas.height,basis,lens);
+        this.provisional.add(data,canvas.width,canvas.height,basis,lens);
+        capturedLens=lens;
+        // Agreeing with the mosaic is not enough on its own: the mosaic holds
+        // frames nobody has checked, and a frame that agrees only with those has
+        // shown nothing. It is vouched for by the MEASURED mosaic, or by a held
+        // frame it agrees with by itself (`heldAgreeing`).
+        if(overlap.result==='agree'){
+          supporters=this.heldAgreeing(data,canvas.width,canvas.height,basis!,lens);
+          vouched=supporters.length>0 || this.panorama.checkOverlap(data,canvas.width,canvas.height,basis!,lens).result==='agree';
+        }
+        else vouched=false;
+        if(vouched)this.panorama.add(data,canvas.width,canvas.height,basis,lens);
         // THE ANCHOR IS SET BY A FRAME THAT ENTERED THE MOSAIC, and not by any
         // frame a registration happened to adjust on its way to being refused
         // (issue #94). `visualAnchor` is a latest-wins transfer applied to
@@ -2774,7 +2915,9 @@ export class PhotosphereSweep {
       } else if (overhead) {
         // Without heading, an entire overhead photograph cannot be oriented.
         // Keep only its centre at the shared zenith; do not invent a sky cap.
-        this.panorama.addZenith(data,canvas.width,canvas.height,tilt&&skyAngles(tilt.forward).alt>=85?tilt:null,lens);
+        const zenith=tilt&&skyAngles(tilt.forward).alt>=85?tilt:null;
+        this.panorama.addZenith(data,canvas.width,canvas.height,zenith,lens);
+        this.provisional.addZenith(data,canvas.width,canvas.height,zenith,lens);
       }
     } catch { this.issue = "Could not read the camera image. Close the scan and try again."; this.recording = false; this.recordCapture(now,'read-failed'); return false; }
     const column = columnFromImageData(data, canvas.width, canvas.height, 24);
@@ -2783,29 +2926,25 @@ export class PhotosphereSweep {
     const altitude=manualOverhead?90:measured!.alt;
     const band = overhead ? OVERHEAD_BAND : bandForAltitude(altitude) ?? -1;
     const bin = band === OVERHEAD_BAND ? 0 : binForHeading(measured!.az, this.bins);
-    const targetAltitude = band === OVERHEAD_BAND ? 90 : Math.round(altitude / 5) * 5;
-    const sameTile = (f:SweepFrame)=>f.bin===bin&&f.band===band&&(band===OVERHEAD_BAND||Math.round((f.altitude??0)/5)*5===targetAltitude);
 
-    this.frames = this.frames.filter(f => !sameTile(f));
     // Browsers expose no calibrated lens FOV. This remains an editable estimate.
     this.issue = null;
-    this.frames.push({ bin, band, column, blue, altitude, manualOverhead,
-      verticalFov: video.videoHeight > video.videoWidth ? 60 : 45 });
-    const previousCoverage=this.coveredCells.size;
-    // The zenith cap is the one cell that can be painted by frames nobody
-    // pointed at it: a side frame's vertical field of view reaches the pole
-    // from well down the sky, and the tilt-only overhead paint (`addZenith`)
-    // has no heading and so can only claim the single zenith point. So the cap
-    // needs a frame that MEANT it - either the overhead band, or an oriented
-    // frame accepted with the cap as its target. Before the aim cone was
-    // widened those were the same thing, because the cap could only be targeted
-    // from altitude 85 up; now it can be targeted from about 80, and requiring
-    // the band alone left the user holding on a dot that was being captured
-    // over and over and never turned green.
-    for(const cell of DOME_CELLS) {
-      if(this.panorama?.covered(cell) && (cell.alt < 89 || this.overheadCaptured || this.aimedZenith)) this.coveredCells.add(cell.id);
+    const record:SweepFrame={ bin, band, column, blue, altitude, manualOverhead,
+      verticalFov: video.videoHeight > video.videoWidth ? 60 : 45 };
+    if(!vouched){
+      // Held, not measured (#904): nothing has checked where this frame sits.
+      this.pending=this.pending.filter(p=>!sameTileAs(record)(p.record));
+      this.pending.push({record,data:new Uint8ClampedArray(data),width:canvas.width,height:canvas.height,basis:capturedBasis!,lens:capturedLens!});
+      if(this.pending.length>PENDING_LIMIT)this.pending.shift();
+      this.lastHeldAt=Date.now();
+      this.hasCapturedFrame = true;
+      this.lastCapturedFrameId = frameId;
+      this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted, ...capturedOverlap, pending: true });
+      return true;
     }
-    if(this.coveredCells.size>previousCoverage)this.lastCaptureAt=Date.now();
+    this.admit(record);
+    this.promote(supporters);
+    this.refreshCoverage();
     this.hasCapturedFrame = true;
     // This capture is now associated with the frame it was taken from, so the
     // same delivered picture cannot be captured twice BY THE SAME PATH. There
@@ -2821,6 +2960,62 @@ export class PhotosphereSweep {
     return true;
   }
 
+  /** The cells the measured mosaic now covers turn green, and a capture that
+   *  grew the coverage is what the cue calls `justCaptured`. */
+  private refreshCoverage(): void {
+    const previousCoverage=this.coveredCells.size;
+    // The zenith cap is the one cell that can be painted by frames nobody
+    // pointed at it: a side frame's vertical field of view reaches the pole
+    // from well down the sky, and the tilt-only overhead paint (`addZenith`)
+    // has no heading and so can only claim the single zenith point. So the cap
+    // needs a frame that MEANT it - either the overhead band, or an oriented
+    // frame accepted with the cap as its target. Before the aim cone was
+    // widened those were the same thing, because the cap could only be targeted
+    // from altitude 85 up; now it can be targeted from about 80, and requiring
+    // the band alone left the user holding on a dot that was being captured
+    // over and over and never turned green.
+    for(const cell of DOME_CELLS) {
+      if(this.panorama?.covered(cell) && (cell.alt < 89 || this.overheadCaptured || this.aimedZenith)) this.coveredCells.add(cell.id);
+    }
+    if(this.coveredCells.size>previousCoverage)this.lastCaptureAt=Date.now();
+  }
+
+  /** The held frames the frame in `data`, placed at `basis`, agrees with BY
+   *  ITSELF: near enough to share a view and turned from it by at least
+   *  `PENDING_MIN_DEG`, and with an overlap test that decides `agree` against
+   *  that held frame alone. The mosaic cannot say this - it holds every frame
+   *  at once, so a frame agreeing with the confirmed ones around it agrees with
+   *  nothing in particular - and a blank-sky frame can never say it, because
+   *  an overlap test needs texture on both sides. Such a frame stays held. */
+  private heldAgreeing(data: Uint8ClampedArray, width: number, height: number, basis: CameraBasis, lens: ReturnType<typeof cameraLens>): PendingFrame[] {
+    const reach = PENDING_REACH * this.shortAxisFov;
+    return this.pending.filter(held => {
+      const apart = poseSeparation(held.basis, basis);
+      if (apart < PENDING_MIN_DEG || apart > reach) return false;
+      const alone = new SkyPanorama();
+      alone.add(held.data, held.width, held.height, held.basis, held.lens);
+      return alone.checkOverlap(data, width, height, basis, lens).result === 'agree';
+    });
+  }
+
+  /** Held frames that were agreed with join the measured mosaic and the
+   *  measured set (#904). */
+  private promote(frames: readonly PendingFrame[]): void {
+    if (!frames.length || !this.panorama) return;
+    for (const held of frames) {
+      this.panorama.add(held.data, held.width, held.height, held.basis, held.lens);
+      this.admit(held.record);
+    }
+    this.pending = this.pending.filter(p => !frames.includes(p));
+  }
+
+  /** A frame joins the measured set, replacing the one that held its tile. */
+  private admit(record: SweepFrame): void {
+    const sameTile = sameTileAs(record);
+    this.frames = this.frames.filter(f => !sameTile(f));
+    this.frames.push(record);
+  }
+
   /** What the tracer reads: `BIN_SAMPLES` columns across each azimuth bin, in
    *  both channels, the bin's centre column FIRST so the uncertainty rule
    *  still reads the column it has always read. The frame-fold fallback has no
@@ -2828,11 +3023,10 @@ export class PhotosphereSweep {
   columns(): SkyBin[] {
     const panorama = this.panorama;
     if (panorama) {
-      const fine = this.bins * BIN_SAMPLES, centre = (BIN_SAMPLES - 1) >> 1;
+      const fine = this.bins * BIN_SUBGRID;
       const lum = panorama.columns(fine), blue = panorama.blueColumns(fine);
-      const order = [centre, ...Array.from({ length: BIN_SAMPLES }, (_, k) => k).filter(k => k !== centre)];
       return Array.from({ length: this.bins }, (_, bin) =>
-        order.map(k => ({ lum: lum[bin * BIN_SAMPLES + k], blue: blue[bin * BIN_SAMPLES + k] })));
+        BIN_SAMPLE_COLUMNS.map(k => ({ lum: lum[bin * BIN_SUBGRID + k], blue: blue[bin * BIN_SUBGRID + k] })));
     }
     const lum = projectSweepColumns(this.frames, this.bins);
     const blue = projectSweepColumns(this.frames, this.bins, 'blue');
@@ -2871,6 +3065,8 @@ export class PhotosphereSweep {
       // per-frame pixel readback that correction grew ninefold.
       preview:this.video?.videoWidth?{width:this.video.videoWidth,height:this.video.videoHeight}:null,
       readback:readbackSummary(this.readbackMs),
+      lensViewAngle:{degrees:this.shortAxisFov,source:this.lensSource},
+      captureLog:captureLogReport(this.captureRecords),
       samples:this.scanSamples},null,2);
   }
 

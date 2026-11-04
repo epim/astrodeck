@@ -237,6 +237,10 @@ class SafetyConfig(BaseModel):
     #: here is a minimum (observed on the AM5N, 2026-07-30).
     max_alt_deg: float = Field(90.0, ge=0, le=90)
     horizon: list[tuple[float, float]] | None = None  # sorted (az,alt) control pts
+    #: Which bins of ``horizon`` a scan measured (#1117), ``[{alt, status}]``;
+    #: None where the line was drawn by hand. Nothing here gates a slew: the
+    #: line above does. A damaged value loads as None.
+    horizon_bins: list[dict] | None = None
     nogo_box: list[dict] | None = None     # optional [{az_min,az_max,alt_max}] pier guard
     enforce_pier_limits: bool = False      # only settable if mount reports pier side
     #: Minutes the engine will refuse to expose, waiting for a meridian flip it
@@ -309,6 +313,12 @@ class SafetyConfig(BaseModel):
     # after max_pause_min it SafetyAborts with the roof left CLOSED (fail-safe). Left
     # out of SAFETY_PRESETS on purpose (advanced opt-in, no surprise roof cycling).
     reopen_dome_when_safe: bool = False
+
+    @field_validator("horizon_bins", mode="before")
+    @classmethod
+    def _horizon_bins_sanitized(cls, v):
+        from .locations import sanitize_horizon_bins  # local: locations imports config
+        return sanitize_horizon_bins(v)
 
     @field_validator("min_alt_deg")
     @classmethod
@@ -2698,6 +2708,13 @@ class ConfigStore:
 
     def set_safety(self, safety: SafetyConfig) -> AppConfig:
         cfg = self.cfg()
+        if (safety.horizon_bins is not None
+                and safety.horizon != cfg.safety.horizon
+                and safety.horizon_bins == cfg.safety.horizon_bins):
+            # A new line that arrives with the OLD bins is a line edited by a
+            # writer that does not know about them (#1117): the bins describe
+            # the line they were saved with, so they go.
+            safety = safety.model_copy(update={"horizon_bins": None})
         cfg.safety = safety
         return self.bump_and_save()
 

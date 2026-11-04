@@ -181,9 +181,9 @@ test('Overlapping colour frames form a full panorama with tall obstructions in p
   assert.ok(DOME_CELLS.every(c=>panorama.covered(c)));
   const trace=traceSkyCoverage(panorama.columns(30));
   assert.deepEqual(trace.uncertainBins,[]);
-  const house=trace.points.find(p=>p.az===54)!;near(house.alt,75,3);
-  near(trace.points.find(p=>p.az===210)!.alt,35,3);
-  near(trace.points.find(p=>p.az===138)!.alt,8,3);
+  const house=trace.bins[4];near(house.alt,75,3);
+  near(trace.bins[17].alt,35,3);
+  near(trace.bins[11].alt,8,3);
   assert.ok(panorama.pixels.some((value,i)=>i%4===2&&value===240),'Blue sky RGB was discarded');
 });
 test('A partial panorama leaves unobserved pixels transparent and reports uncertain horizons',()=>{

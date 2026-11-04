@@ -112,24 +112,31 @@ interface Golden {
 // Taken at fc892251 from the replay as it stood before the seam existed, on
 // Node 24.14 (Windows, x64). `summary` is the SHA-256 of the summary's JSON
 // without `app_commit`, re-serialised as the replay writes it.
+// RE-TAKEN for WP 2.6 (#904, #900), on the same Node, because the legacy scanner's
+// published results changed on purpose: a frame whose overlap cannot be decided is
+// held and reaches neither the mosaic nor the trace until another frame agrees with
+// it (`captures.jsonl`, which now also carries `pending`, `panorama.png`, `summary.json`, `events.jsonl`), the bins are
+// sampled across their whole width (`columns.json`), and the saved line is each bin at
+// both of its edges (`horizon.json`). Nothing else about the replay moved: the same
+// fixtures, the same 95 frames, the same pose stream.
 const GOLDEN: Record<string, Golden> = {
   'chartyard-shortpan-60': {
-    captures: '37ad1ec5d510a5bd0d83d30aa73a109d1b07e036f336c4c95594998cf842bce6',
-    columns: 'b396bd5acfba3afa94899fa4d1c45ea77b28f261f6fc5b09d85344e705ffba86',
-    events: '33b876ae2cacd9b158a8c7eb6876b3f5b303e5ddea8847669f47b757c72568b9',
-    horizon: 'cf90d8e4b39ff5d1954551b32ac2df6df7a6084121357a1a40b487a65fdba020',
-    panorama: '258c39c9f5b8f360efc11f69d2891cec7ee96dde1ebd9ccaf9e7810acb56a9ef',
-    panoramaPixels: 'bcc929737031fd365b2c53839c2fdab96656bd033ce6ad83d0167a41e4844e0f',
-    summary: 'd071c2d9e6422de11197bf255aea9f923d4c296c2b50b8d9e5c85f25e761d169',
+    captures: '36670f109e3a22225bc0656b201cb53de950230e14e4631512ad2b6059ded8da',
+    columns: 'd2bf228b0b35e52db09f3bddde1c4fbea21084a71ee930a53853e323c5484df3',
+    events: 'aea199e2387ae3acc86f4014a218836c35895c8a378c627efce5184cc28eff22',
+    horizon: 'a84176f4976564846f98ea618b519277e9c1b488e8280d61c41fe4bb8270311d',
+    panorama: '8349ccdb838c626e1052775a17a68839a86642c5a3c3210b1aa1b83b13953a2f',
+    panoramaPixels: 'b7c9741781b48d13552bde8172d7d5ea793a70c7a3de63b08dd1f97a75d664b1',
+    summary: '769bacd95a0a348e8fd8d05c697d20468a974a91d7c8aae46d3e132dbe651729',
   },
   'chartyard-shortpan-70': {
-    captures: '09e28bc9af1555f282ff60dff16f3a907a019ff738f345b339a7fdf31e5c0540',
-    columns: 'ae16c472b717ffb255d960dd7d9722351fede0a7e6de006fd68dc3c15db05ce8',
-    events: 'aa9dcdcc30b90253dd95d3c081528f58c9de9a3882199dc6baa735ef25d00ee2',
-    horizon: 'cf90d8e4b39ff5d1954551b32ac2df6df7a6084121357a1a40b487a65fdba020',
-    panorama: 'a3d91241e17417dc6b6ee635ef495644785d5cb646035c897b4dd3fe35046c26',
-    panoramaPixels: '370ca51c32a477c9a3d0423fa19d6054d085604677b60de7a5d9c9cfe225253a',
-    summary: '803d01d6faaa563bdc3312019f6d48adc9b8078fa7f263fd6f75b81782d069a1',
+    captures: '687640ba1d548ffe37e509e65c5199e0f9e3c27ab7027298e7d5f6abfb944bcd',
+    columns: '874d12edc36cf706b7a84de749d49c32279f925e382021271e45e7a46792c4e5',
+    events: 'ff046b938c439fbe94b7e65e7ad193906a4cd3e43c16793f39e8f9109da58eca',
+    horizon: 'a84176f4976564846f98ea618b519277e9c1b488e8280d61c41fe4bb8270311d',
+    panorama: '5180e4a4caeedf1bd5902df1d453240a56dcc6404dbb94dbe0b5a73c6cffa45d',
+    panoramaPixels: 'fe0e6004da91ae4efb660fba537efb56934c4fc7d5096b39c5e6987d48d7c923',
+    summary: '92f95f79c3e81d8de85a91ad9d43c92c404ea87c353b633719293832085e8455',
   },
 };
 const LEGACY_FILES = ['captures.jsonl', 'columns.json', 'events.jsonl', 'horizon.json', 'panorama.png', 'summary.json'];

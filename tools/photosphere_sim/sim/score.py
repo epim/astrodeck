@@ -403,27 +403,41 @@ def _score_landmarks(scene: dict, landmarks: list, c_ref: np.ndarray,
 
 
 def _measured_profile(measured: dict | None, truth_bins: int):
-    """The measured boundary resampled onto the truth's bins, with its mask.
+    """The measured boundary read as a consumer reads it, with its mask.
 
-    Returns ``(alt, resolved, bins)``. Bin ``i`` of a measured profile of ``N``
-    bins covers ``[i * 360 / N, (i + 1) * 360 / N)``, so a truth bin takes the
-    measured bin its centre falls in. With no measured profile at all nothing
-    is resolved: silence is not a flat horizon.
+    Returns ``(alt, resolved, bins)``. ``points`` is the published polyline and
+    is read through :func:`_polyline_alt`, the reading the finder, the dome, the
+    ranked list and the engine floor give a saved horizon: linear between the
+    points, wrapped at 360 (#900). It used to be read as steps, bin ``i`` of
+    ``N`` holding one value over ``[i * 360 / N, (i + 1) * 360 / N)``, which no
+    consumer does, so an edge falling between two bin centres was graded as a
+    sliver and the planner's half-open reading of it was never graded.
+
+    ``bins`` is the scan's own bin count: the file's declared ``bins`` where it
+    declares one (a polyline of edge points is longer than the bins it was
+    drawn from), else the number of points. It is what ``uncertain_bins``
+    indexes and the resolution the obstacle rule must respect. A point with no
+    ``az`` sits at its bin's centre. With no measured profile at all nothing is
+    resolved: silence is not a flat horizon.
     """
     if not measured or not measured.get("points"):
         return np.zeros(truth_bins), np.zeros(truth_bins, dtype=bool), 0
     points = measured["points"]
-    values = np.array([float(p["alt"]) for p in points], dtype=np.float64)
-    # The array is the profile. A declared bin count that disagrees with it
-    # describes a file that does not exist, so the points win.
-    bins = len(points)
+    declared = measured.get("bins")
+    bins = int(declared) if isinstance(declared, int) and declared > 0 else len(points)
+    line = [(float(p["az"]) if "az" in p else (i + 0.5) * 360.0 / len(points), float(p["alt"]))
+            for i, p in enumerate(points)]
     uncertain = np.zeros(bins, dtype=bool)
     for index in measured.get("uncertain_bins", []) or []:
         if 0 <= int(index) < bins:
             uncertain[int(index)] = True
-    centres = (np.arange(truth_bins) + 0.5) * (360.0 / truth_bins)
+    # Written as a scanner writes its own centres, multiply then divide, so a
+    # truth bin that sits exactly on a control point reads that point's value to
+    # the last bit and not the last bit of an interpolation: the area buckets
+    # below turn a one-ulp difference into a different cell.
+    centres = (np.arange(truth_bins) + 0.5) * 360.0 / truth_bins
     owner = np.minimum((centres / (360.0 / bins)).astype(np.int64), bins - 1)
-    return values[owner], ~uncertain[owner], bins
+    return _polyline_alt(line, centres), ~uncertain[owner], bins
 
 
 def _area_below(cos_cumulative: np.ndarray, centres: np.ndarray,

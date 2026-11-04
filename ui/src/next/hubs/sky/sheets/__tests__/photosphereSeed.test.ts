@@ -48,14 +48,14 @@ test("An arc of sky at a different exposure is sky, not a blocked dome", () => {
                                [200, "+64"]] as const) {
     const trace = arc(5, level);
     for (const b of [0, 1, 2, 3, 4]) {
-      assert.equal(trace.points[b].alt, 0,
+      assert.equal(trace.bins[b].alt, 0,
         `an arc of five bins of empty sky at ${note} published `
-        + `${trace.points[b].alt} in bin ${b}`);
+        + `${trace.bins[b].alt} in bin ${b}`);
     }
     assert.deepEqual(trace.uncertainBins, [],
       `the arc at ${note} left bins unmeasured`);
     for (const b of [10, 20]) {
-      assert.equal(trace.points[b].alt, 0,
+      assert.equal(trace.bins[b].alt, 0,
         `bin ${b} is at the pooled level and must be unaffected`);
     }
   }
@@ -75,12 +75,12 @@ test("Two bins are an arc; one bin on its own is not measurable", () => {
     const alone = arc(1, level);
     assert.deepEqual(alone.uncertainBins, [0],
       `a lone bin at ${level} against a pool of ${POOL} was not marked `
-      + `unmeasurable: it published ${alone.points[0].alt}`);
+      + `unmeasurable: it published ${alone.bins[0].alt}`);
     const pair = arc(2, level);
     assert.deepEqual(pair.uncertainBins, [],
       `two adjacent bins at ${level} vouch for each other and must be measured`);
-    assert.equal(pair.points[0].alt, 0);
-    assert.equal(pair.points[1].alt, 0);
+    assert.equal(pair.bins[0].alt, 0);
+    assert.equal(pair.bins[1].alt, 0);
   }
 });
 
@@ -100,7 +100,7 @@ test("A bright bin cannot vouch for itself by measuring the gap its own way", ()
   const bright = arc(1, 171);
   assert.deepEqual(bright.uncertainBins, [0],
     `a lone bin 40 per cent above the pool vouched for itself and published `
-    + `${bright.points[0].alt}`);
+    + `${bright.bins[0].alt}`);
 });
 
 test("A wall is still a wall", () => {
@@ -123,10 +123,10 @@ test("A wall is still a wall", () => {
     [b < 5 ? column(row => (row >= 40 ? POOL * 0.4 : POOL))
            : sky(POOL)]));
   for (const b of [0, 1, 2, 3, 4]) {
-    assert.equal(wall.points[b].alt, 51,
+    assert.equal(wall.bins[b].alt, 51,
       `bin ${b} lost a wall that starts at row 40`);
   }
-  for (const b of [10, 20]) assert.equal(wall.points[b].alt, 0, `bin ${b}`);
+  for (const b of [10, 20]) assert.equal(wall.bins[b].alt, 0, `bin ${b}`);
 });
 
 // NOT CHANGED, and recorded here because the issue asks about it. Its last

@@ -29,9 +29,9 @@ test("A nearby house reaching 75 degrees is retained above the low sweep", () =>
   assert.ok(columns.every(col => col.slice(0, 91).every(Number.isFinite)));
   const trace = traceSkyCoverage(columns);
   assert.equal(trace.uncertainBins.length, 0);
-  assert.ok(trace.points[0].alt >= 75 && trace.points[0].alt <= 77);
-  assert.equal(trace.points[1].alt, 0);
-  assert.ok(isObstructed(trace.points, 70, trace.points[0].az));
+  assert.ok(trace.bins[0].alt >= 75 && trace.bins[0].alt <= 77);
+  assert.equal(trace.bins[1].alt, 0);
+  assert.ok(isObstructed(trace.points, 70, 90));
 });
 test("Overhead tilt needs no heading and accepts either side of the beta wrap", () => {
   for (const beta of [180, -180, 176, -176]) {
@@ -56,8 +56,8 @@ test("Near-overhead branches survive even when sky is visible beneath them", () 
   // Mutation: keep only runs that reach the bottom of the column, and this
   // floating branch reads as open sky.
   const trace = traceSkyCoverage(projectSweepColumns(scan(alt => alt >= 74 && alt <= 88), 2));
-  assert.ok(trace.points[0].alt >= 88);
-  assert.equal(trace.points[1].alt, 0);
+  assert.ok(trace.bins[0].alt >= 88);
+  assert.equal(trace.bins[1].alt, 0);
 });
 // 101 rows from the zenith down, one degree of altitude each, as the panorama
 // hands them to the tracer. Grey (blueness 0) unless the case says otherwise.
@@ -78,8 +78,8 @@ test("A wall brighter than 0.7 of the sky level is still the horizon", () => {
   // no colour - and both of these read as open sky.
   const trace = traceSkyCoverage([[warm], [bright]]);
   assert.deepEqual(trace.uncertainBins, []);
-  assert.equal(trace.points[0].alt, 25);
-  assert.equal(trace.points[1].alt, 25);
+  assert.equal(trace.bins[0].alt, 25);
+  assert.equal(trace.bins[1].alt, 25);
 });
 test("A bright band of sky lying on the top of a wall is not part of the wall", () => {
   // The chart yard's sky carries bright stripes, and three of them sit
@@ -89,7 +89,7 @@ test("A bright band of sky lying on the top of a wall is not part of the wall", 
   // is reported 3 degrees too tall.
   // Mutation: place the boundary at the run's first row and it reports 28.
   const stripe = sample(row => (row < 63 ? 122 : row < 66 ? 170 : 104), row => (row < 66 ? 0 : -24));
-  assert.equal(traceSkyCoverage([[stripe]]).points[0].alt, 25);
+  assert.equal(traceSkyCoverage([[stripe]]).bins[0].alt, 25);
 });
 test("A dark disc in the sky with open sky beneath it is not a horizon", () => {
   // Ten rows, so it is larger than any marking the chart yard paints and still
@@ -99,14 +99,14 @@ test("A dark disc in the sky with open sky beneath it is not a horizon", () => {
   const disc = sample(row => (row >= 30 && row < 40 ? 40 : 122));
   const trace = traceSkyCoverage([[disc]]);
   assert.deepEqual(trace.uncertainBins, []);
-  assert.equal(trace.points[0].alt, 0);
+  assert.equal(trace.bins[0].alt, 0);
 });
 test("The dim wall the old threshold did see is still seen, with no colour at all", () => {
   // 130 against a sky level of 200 - below the old rule's 0.7, and grey, so
   // the luminance half of the test is the only thing that can find it.
   // Mutation: drop the luminance half and keep chroma only, and it reports 0.
   const wall = sample(row => (row < 70 ? 200 : 130));
-  assert.equal(traceSkyCoverage([[wall]]).points[0].alt, 21);
+  assert.equal(traceSkyCoverage([[wall]]).bins[0].alt, 21);
 });
 // The shape issue #73 was measured in: 30 identical bins of one sky, so the
 // pooled seed and the column say the same thing and nothing else is in frame.
@@ -127,7 +127,7 @@ test("An empty sky that brightens toward the horizon is not a horizon", () => {
     const ramp = sample(row => (row <= 90 ? 100 + ((top - 100) * row) / 90 : 45));
     const trace = traceSkyCoverage(everywhere(ramp));
     assert.deepEqual(trace.uncertainBins, []);
-    assert.ok(trace.points.every(p => p.alt === 0), `sky 100 to ${top} published ${trace.points[0].alt}`);
+    assert.ok(trace.bins.every(p => p.alt === 0), `sky 100 to ${top} published ${trace.bins[0].alt}`);
   }
 });
 test("An ordinary clear sky, brightening and whitening together, is not a horizon", () => {
@@ -139,7 +139,7 @@ test("An ordinary clear sky, brightening and whitening together, is not a horizo
     row => (row <= 90 ? 95 - (65 * row) / 90 : -20));
   const trace = traceSkyCoverage(everywhere(clear));
   assert.deepEqual(trace.uncertainBins, []);
-  assert.ok(trace.points.every(p => p.alt === 0));
+  assert.ok(trace.bins.every(p => p.alt === 0));
 });
 test("An auto-exposure seam at a band boundary is not a horizon", () => {
   // The sweep captures three elevation bands and the phone re-exposes between
@@ -152,7 +152,7 @@ test("An auto-exposure seam at a band boundary is not a horizon", () => {
     const seam = sample(row => (row < 45 ? 122 : 122 * factor));
     const trace = traceSkyCoverage(everywhere(seam));
     assert.deepEqual(trace.uncertainBins, []);
-    assert.ok(trace.points.every(p => p.alt === 0), `a x${factor} seam published ${trace.points[0].alt}`);
+    assert.ok(trace.bins.every(p => p.alt === 0), `a x${factor} seam published ${trace.bins[0].alt}`);
   }
 });
 test("The wall is still the wall under a sky that brightens", () => {
@@ -160,7 +160,7 @@ test("The wall is still the wall under a sky that brightens", () => {
   // than 122. A model that follows the sky must not follow it past the wall.
   // Mutation: any of the three above.
   const wall = sample(row => (row < 66 ? 100 + (40 * row) / 90 : 104), row => (row < 66 ? 0 : -24));
-  assert.equal(traceSkyCoverage([[wall]]).points[0].alt, 25);
+  assert.equal(traceSkyCoverage([[wall]]).bins[0].alt, 25);
 });
 test("A bright zenith row does not block the sky under it", () => {
   // `projectSweepColumns` writes the overhead sample into row 0 of EVERY bin,
@@ -170,7 +170,7 @@ test("A bright zenith row does not block the sky under it", () => {
   const glare = sample(row => (row === 0 ? 255 : 122));
   const trace = traceSkyCoverage(everywhere(glare));
   assert.deepEqual(trace.uncertainBins, []);
-  assert.ok(trace.points.every(p => p.alt === 0));
+  assert.ok(trace.bins.every(p => p.alt === 0));
 });
 test("A dark zenith SAMPLE blocks every bin but does not call that certain (issue #100)", () => {
   // The residual #100 left open. Row 0 is the one overhead sample painted into
@@ -184,8 +184,8 @@ test("A dark zenith SAMPLE blocks every bin but does not call that certain (issu
   // 'a single dark sample was published as a certain dome'.
   const lone = sample(row => (row === 0 ? 80 : 122));
   const trace = traceSkyCoverage(everywhere(lone));
-  assert.ok(trace.points.every(p => p.alt === 90),
-    `the block itself must not move: ${trace.points.map(p => p.alt)}`);
+  assert.ok(trace.bins.every(p => p.alt === 90),
+    `the block itself must not move: ${trace.bins.map(p => p.alt)}`);
   assert.equal(trace.uncertainBins.length, 30,
     `a single dark sample was published as a certain dome: uncertain ${JSON.stringify(trace.uncertainBins)}`);
 });
@@ -196,7 +196,7 @@ test("A zenith that is really covered is still blocked, and certain", () => {
   // zenith was downgraded to uncertain'.
   const roof = sample(row => (row <= 5 ? 80 : 122));
   const trace = traceSkyCoverage(everywhere(roof));
-  assert.ok(trace.points.every(p => p.alt === 90), `${trace.points.map(p => p.alt)}`);
+  assert.ok(trace.bins.every(p => p.alt === 90), `${trace.bins.map(p => p.alt)}`);
   assert.deepEqual(trace.uncertainBins, [], 'a covered zenith was downgraded to uncertain');
 });
 test("A glint on top of a roof costs the boundary the glint's own height", () => {
@@ -207,7 +207,7 @@ test("A glint on top of a roof costs the boundary the glint's own height", () =>
   // is the price of that one: no column can tell a stripe of sky above a wall
   // from a glint on top of a roof.
   const roof = sample(row => (row < 40 ? 122 : row < 42 ? 255 : 60));
-  assert.equal(traceSkyCoverage([[roof]]).points[0].alt, 49);
+  assert.equal(traceSkyCoverage([[roof]]).bins[0].alt, 49);
 });
 test("robustSpread is a spread one wild sample cannot move", () => {
   assert.equal(robustSpread([]), 0);
@@ -237,7 +237,7 @@ test("A wall with a soft edge is found at its top, not lost to it", () => {
   // had a window above) and the 6 and 10-row edges read 0 again.
   for (const [edge, top] of [[3, 24], [5, 26], [6, 27], [10, 31]]) {
     const wall = sample(edged(200, 130, edge, 70));
-    const alt = traceSkyCoverage([[wall]]).points[0].alt;
+    const alt = traceSkyCoverage([[wall]]).bins[0].alt;
     assert.ok(Math.abs(alt - top) <= 1, `a ${edge}-row edge published ${alt}, not ${top}`);
   }
 });
@@ -247,7 +247,7 @@ test("A warm wall with a soft edge is found at its top too", () => {
   // indefinitely - at 20 rows this wall was reported as open sky as well.
   // Mutation: drop the lagged test and this reads 25, the bottom of the edge.
   const wall = sample(edged(122, 104, 6, 70), edged(0, -24, 6, 70));
-  const alt = traceSkyCoverage([[wall]]).points[0].alt;
+  const alt = traceSkyCoverage([[wall]]).bins[0].alt;
   assert.ok(Math.abs(alt - 27) <= 1, `the warm wall published ${alt}, not 27`);
 });
 // A whole mosaic: 30 bins of one sampled column each, so a case can say what
@@ -297,12 +297,12 @@ test("A floating departure is a roof, a marking or a disc by its height and its 
       : bin === 13 ? roof : bin === 7 ? marking : bin === 20 ? glare
         : bin === 25 ? disc : openSky));
   assert.deepEqual(trace.uncertainBins, []);
-  assert.equal(trace.points[12].alt, 61);
-  assert.equal(trace.points[13].alt, 61);
-  assert.equal(trace.points[7].alt, 0);
-  assert.equal(trace.points[20].alt, 0);
-  assert.equal(trace.points[25].alt, 0);
-  assert.equal(trace.points[2].alt, 0);
+  assert.equal(trace.bins[12].alt, 61);
+  assert.equal(trace.bins[13].alt, 61);
+  assert.equal(trace.bins[7].alt, 0);
+  assert.equal(trace.bins[20].alt, 0);
+  assert.equal(trace.bins[25].alt, 0);
+  assert.equal(trace.bins[2].alt, 0);
   // And a mosaic too narrow to have neighbours gets the single-column answer,
   // unchanged: five bins are 72 degrees each, a structure in one of them is a
   // fifth of the compass, and the median of that row is as likely to be the
@@ -310,7 +310,7 @@ test("A floating departure is a roof, a marking or a disc by its height and its 
   // Mutation: let any number of bins vote and the roof reports 61 here too.
   const narrow = traceSkyCoverage(Array.from({ length: 5 }, (_, bin) =>
     [bin === 1 ? wall : bin === 2 ? roof : openSky]));
-  assert.deepEqual(narrow.points.map(p => p.alt), [0, 61, 0, 0, 0]);
+  assert.deepEqual(narrow.bins.map(p => p.alt), [0, 61, 0, 0, 0]);
 });
 test("A wall behind an edge too soft for one column is found across the mosaic", () => {
   // Issue #74's surviving half. A fifteen-row edge walks the local model down
@@ -325,15 +325,15 @@ test("A wall behind an edge too soft for one column is found across the mosaic",
   for (const [edge, top] of [[11, 32], [13, 34], [15, 36], [16, 37]]) {
     const wall = sample(edged(200, 130, edge, 70));
     const trace = traceSkyCoverage(mosaic(bin => (bin < 5 ? wall : plain)));
-    assert.equal(trace.points[2].alt, top, `a ${edge}-row edge published ${trace.points[2].alt}, not ${top}`);
-    assert.equal(trace.points[20].alt, 0);
+    assert.equal(trace.bins[2].alt, top, `a ${edge}-row edge published ${trace.bins[2].alt}, not ${top}`);
+    assert.equal(trace.bins[20].alt, 0);
   }
   // Where it runs out, pinned rather than rounded away: at seventeen rows the
   // narrow allowance has been walked too and the GREY wall is lost entirely.
   // The cliff issue #74 measured is still a cliff; the mosaic moves it from 13
   // rows to 17.
   const soft = sample(edged(200, 130, 17, 70));
-  assert.equal(traceSkyCoverage(mosaic(bin => (bin < 5 ? soft : plain))).points[2].alt, 0);
+  assert.equal(traceSkyCoverage(mosaic(bin => (bin < 5 ? soft : plain))).bins[2].alt, 0);
   // A WARM wall has chroma to walk as well, and it never falls off that cliff:
   // past sixteen rows it is under-reported and it stays under-reported, by
   // about the edge's own height. An earlier round of this comment said it
@@ -342,7 +342,7 @@ test("A wall behind an edge too soft for one column is found across the mosaic",
   const warmly = sample(() => 122);
   for (const [edge, top] of [[16, 37], [18, 27], [20, 28], [22, 30], [30, 35]]) {
     const wall = sample(edged(122, 104, edge, 70), edged(0, -24, edge, 70));
-    const alt = traceSkyCoverage(mosaic(bin => (bin < 5 ? wall : warmly))).points[2].alt;
+    const alt = traceSkyCoverage(mosaic(bin => (bin < 5 ? wall : warmly))).bins[2].alt;
     assert.equal(alt, top, `a warm ${edge}-row edge published ${alt}, not ${top} (true top ${21 + edge})`);
   }
 });
@@ -360,8 +360,8 @@ test("A grey wall 32 per cent darker than its sky is found across the mosaic", (
     const wall = sample(row => (row < 70 ? 200 : 200 * (1 - darker)));
     const trace = traceSkyCoverage(mosaic(bin => (bin < 5 ? wall : plain)));
     assert.deepEqual(trace.uncertainBins, []);
-    assert.equal(trace.points[20].alt, 0);
-    return trace.points[2].alt;
+    assert.equal(trace.bins[20].alt, 0);
+    return trace.bins[2].alt;
   };
   assert.equal(at(.32), 21);
   // The other end of `AZ_DEPARTURE`, and it is the same assertion as the seam
@@ -395,8 +395,8 @@ test("An arc of the compass exposed dimmer than the rest is open sky, not a dome
     const trace = traceSkyCoverage(mosaic(bin =>
       sample(row => (bin < 5 ? dim : 122) * (row <= 90 ? 1 : .4))));
     assert.deepEqual(trace.uncertainBins, []);
-    assert.ok(trace.points.every(p => p.alt === 0),
-      `a mosaic dimmer by ${Math.round((1 - dim / 122) * 100)} per cent over five bins published ${trace.points[0].alt}`);
+    assert.ok(trace.bins.every(p => p.alt === 0),
+      `a mosaic dimmer by ${Math.round((1 - dim / 122) * 100)} per cent over five bins published ${trace.bins[0].alt}`);
   }
 });
 test("An exposure seam over PART of the compass is not a horizon either", () => {
@@ -416,8 +416,8 @@ test("An exposure seam over PART of the compass is not a horizon either", () => 
       return sample(row => (row < 45 ? 122 : 122 * (1 - step)));
     }));
     assert.deepEqual(trace.uncertainBins, []);
-    assert.ok(trace.points.every(p => p.alt === 0),
-      `a ${depth * 100} per cent seam over ${width * 12} degrees published ${trace.points[5].alt}`);
+    assert.ok(trace.bins.every(p => p.alt === 0),
+      `a ${depth * 100} per cent seam over ${width * 12} degrees published ${trace.bins[5].alt}`);
   }
 });
 test("An exposure seam in every bin is still not a horizon at the narrow allowance", () => {
@@ -434,7 +434,7 @@ test("An exposure seam in every bin is still not a horizon at the narrow allowan
     return sample(row => (row < 45 ? level : level * .7));
   }));
   assert.deepEqual(trace.uncertainBins, []);
-  assert.ok(trace.points.every(p => p.alt === 0), `a mosaic-wide seam published ${trace.points[0].alt}`);
+  assert.ok(trace.bins.every(p => p.alt === 0), `a mosaic-wide seam published ${trace.bins[0].alt}`);
 });
 test("A bin answers for its whole width, not for the ray through its centre", () => {
   // The product publishes one altitude per 12 degree bin, so the honest number
@@ -444,25 +444,25 @@ test("A bin answers for its whole width, not for the ray through its centre", ()
   const blocked = sample(row => (row < 51 ? 122 : 40));
   const trace = traceSkyCoverage([[open, blocked]]);
   assert.deepEqual(trace.uncertainBins, []);
-  assert.equal(trace.points[0].alt, 40);
+  assert.equal(trace.bins[0].alt, 40);
 });
 test("Returning to the lower elevation cannot erase a high obstruction", () => {
   const frames = scan(alt => alt <= 82);
   frames.push(frame(0, 0, 0, () => false));
   const trace = traceSkyCoverage(projectSweepColumns(frames, 2));
-  assert.ok(trace.points[0].alt >= 82);
+  assert.ok(trace.bins[0].alt >= 82);
 });
 test("An unscanned upper sky is unknown and cannot be accepted as open sky", () => {
   const trace = traceSkyCoverage(projectSweepColumns([frame(0, 0, 0, () => false)], 2));
   assert.deepEqual(trace.uncertainBins, [0, 1]);
-  assert.ok(trace.points.every(p => p.alt === 90));
+  assert.ok(trace.bins.every(p => p.alt === 90));
 });
 test("A blocked zenith remains blocked even if subsequent high views look clear", () => {
   const frames = scan(() => false);
   frames.splice(frames.length - 1, 1);
   frames.unshift(frame(0, OVERHEAD_BAND, 90, () => true));
   const trace = traceSkyCoverage(projectSweepColumns(frames, 2));
-  assert.ok(trace.points.every(p => p.alt === 90));
+  assert.ok(trace.bins.every(p => p.alt === 90));
 });
 test("Manual review can retain obstructions all the way to 90 degrees", () => {
   assert.equal(altFromY(SKY_Y), 90);
@@ -491,25 +491,25 @@ test("The anchor reaches one bin and six rows, and both limits are the rule (#10
 
   // ADJACENT, tops four rows apart: inside the slop, so the wall vouches.
   const near = place({ 5: wall, 6: floating(34) });
-  assert.ok(near.points[6].alt > 0,
-    `a band beside the wall, four rows off its top, was not published: ${near.points[6].alt}`);
+  assert.ok(near.bins[6].alt > 0,
+    `a band beside the wall, four rows off its top, was not published: ${near.bins[6].alt}`);
 
   // ADJACENT, tops ten rows apart: outside the six-row slop. The wall is right
   // there, but it is not evidence for a surface at a quite different altitude.
   const offset = place({ 5: wall, 6: floating(40) });
-  assert.equal(offset.points[6].alt, 0,
+  assert.equal(offset.bins[6].alt, 0,
     "a band ten rows off the wall's top was anchored anyway, so the slop decides nothing");
 
   // TWO BINS AWAY, same top row: inside the slop but outside the reach.
   const distant = place({ 5: wall, 7: floating(30) });
-  assert.equal(distant.points[7].alt, 0,
+  assert.equal(distant.bins[7].alt, 0,
     "a band two bins from the wall was anchored, so the one-bin reach decides nothing");
 
   // ...and the same band one bin closer IS published, which is what makes the
   // line above about the reach rather than about the band.
   const adjacent = place({ 5: wall, 6: floating(30) });
-  assert.ok(adjacent.points[6].alt > 0,
-    `the same band in the adjacent bin was not published: ${adjacent.points[6].alt}`);
+  assert.ok(adjacent.bins[6].alt > 0,
+    `the same band in the adjacent bin was not published: ${adjacent.bins[6].alt}`);
 });
 
 test('the column rule and the azimuth rule spell one measured fact (#107)', () => {
