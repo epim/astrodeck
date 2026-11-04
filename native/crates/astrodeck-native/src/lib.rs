@@ -1520,7 +1520,7 @@ impl GuideEngine {
     /// Current guide-error statistics in the host's `GuideStats` bus shape
     /// (spec §3.2/§3.5): `{guiding, rms_ra, rms_dec, rms_total, snr,
     /// recent:[[t,ra,dec],...], secondaries:[[x,y],...], lock:[x,y]|None,
-    /// tracking:[x,y]|None}`.
+    /// tracking:[x,y]|None, star_flux:f64|None, star_hfd:f64|None}`.
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = self.inner.stats();
         let d = PyDict::new(py);
@@ -1574,6 +1574,20 @@ impl GuideEngine {
         match s.tracking {
             Some((x, y)) => d.set_item("tracking", PyList::new(py, [x, y])?)?,
             None => d.set_item("tracking", py.None())?,
+        }
+        // #1083, #1085: the flux and half-flux diameter (binned px) of the
+        // star the engine last accepted, or None while no star is tracked.
+        // The host compares a re-acquired star against the lock star's with
+        // them, and records them per cycle.
+        match s.star {
+            Some(star) => {
+                d.set_item("star_flux", star.flux)?;
+                d.set_item("star_hfd", star.hfd)?;
+            }
+            None => {
+                d.set_item("star_flux", py.None())?;
+                d.set_item("star_hfd", py.None())?;
+            }
         }
         Ok(d)
     }

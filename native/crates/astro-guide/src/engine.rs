@@ -73,7 +73,7 @@ use crate::settle::{Settle, SettleState};
 use crate::starfind::{star_find, was_found, FindParams};
 use crate::track::{AvgDist, DistanceChecker, MassChecker};
 use crate::transforms::{camera_to_mount, mount_to_camera, norm_angle, Cal, Parity, PierSide};
-use crate::types::{Action, AxisPulse, Direction, FrameMeta, MeasuredStar};
+use crate::types::{Action, AxisPulse, Direction, FrameMeta, MeasuredStar, StarShape};
 
 /// `MassChecker` base time window (dossier §3.1 `DefaultTimeWindowMs`).
 const MASS_WINDOW_MS: f64 = 22500.0;
@@ -309,6 +309,15 @@ pub struct GuideStatsSnapshot {
     /// `search_origin` is `None` (no star currently tracked — a fresh
     /// session, or a stale loss before the next star is found).
     pub tracking: Option<(f64, f64)>,
+
+    /// The flux and half-flux diameter of the star the engine last accepted
+    /// (the lock-establishing star, then each accepted frame's star). `None`
+    /// exactly when no star is being tracked: a fresh session, or a stale
+    /// loss before the next star is accepted. #1083, #1085: before this
+    /// field the host could not tell the lock star from another star the
+    /// full-frame re-acquire landed on, and could not record the star's
+    /// shape per cycle.
+    pub star: Option<StarShape>,
 }
 
 /// Fast-recenter-after-dither state (dossier §11.2; `guider.cpp:912-919`
@@ -395,6 +404,9 @@ pub struct GuideEngine {
 
     recent: VecDeque<(f64, f64, f64)>,
     last_snr: f64,
+    /// Flux and HFD of the star last accepted into the guiding loop; cleared
+    /// with the search origin (see [`GuideStatsSnapshot::star`]).
+    star_shape: Option<StarShape>,
     /// Timestamp of the last frame that advanced the GP gear clock (finding
     /// M6): every accepted frame AND every dead-reckoned lost-star frame
     /// (`deduce_move` — upstream sets `last_time_ = now` on dark points too,
@@ -564,6 +576,7 @@ impl GuideEngine {
             recenter: None,
             recent: VecDeque::with_capacity(RECENT_CAP),
             last_snr: 0.0,
+            star_shape: None,
             last_gp_ts: None,
             secondaries: Vec::new(),
             primary_dist_stats: PrimaryDistStats::new(),
@@ -659,6 +672,7 @@ impl GuideEngine {
         self.recenter = None;
         self.recent.clear();
         self.last_snr = 0.0;
+        self.star_shape = None;
         self.last_gp_ts = None;
         // Multi-star state (dossier §4): a fresh session boundary is also
         // where `multi_star_broken`'s "for the session" scope ends.
@@ -782,6 +796,10 @@ impl GuideEngine {
             if let Some(s) = star.filter(|s| s.found) {
                 self.lock = Some((s.x, s.y));
                 self.search_origin = Some((s.x, s.y));
+                self.star_shape = Some(StarShape {
+                    flux: s.mass,
+                    hfd: s.hfd,
+                });
                 self.last_good_find_s = Some(now);
                 self.rebuild_secondaries(measured); // dossier §2.6/§4; P3-T1
             }
@@ -851,6 +869,7 @@ impl GuideEngine {
                 // is unchanged and remains the "bounded" half of "bounded
                 // auto-reselect".
                 self.search_origin = None;
+                self.star_shape = None;
                 return Action::LockLost;
             }
             // Dead-reckoning move (dossier §3.3; `MOVEOPTS_DEDUCED_MOVE`):
@@ -984,6 +1003,10 @@ impl GuideEngine {
         let distance_ra = mount.0.abs();
         self.avg_dist.update(now, distance, distance_ra);
         self.last_snr = s.snr;
+        self.star_shape = Some(StarShape {
+            flux: s.mass,
+            hfd: s.hfd,
+        });
         self.push_recent(now, mount.0, mount.1);
 
         // M6 (finding M6): advance PPEC's gear clock on the real frame
@@ -1741,6 +1764,7 @@ impl GuideEngine {
             secondaries: self.secondaries.iter().map(|s| (s.x, s.y)).collect(),
             lock: self.lock, // #204: the authoritative offset reference, verbatim
             tracking: self.search_origin, // #649 (WP-81): the currently-tracked star, verbatim
+            star: self.star_shape,
         }
     }
 
@@ -2522,6 +2546,89 @@ mod tests {
             e.stats().tracking,
             Some((130.0, 100.0)),
             "tracking must follow the star the engine actually reacquired"
+        );
+    }
+
+    /// #1083, #1085: `stats().star` is the flux and half-flux diameter of the
+    /// star the engine is tracking. It follows a re-acquire onto another
+    /// star, which is how the host sees a swap, and it is `None` while no
+    /// star is tracked.
+    ///
+    /// Named mutant: do not write `star_shape` on the accepted-frame path --
+    /// the last assertion fails (`the shape follows the star the engine
+    /// accepted`, left `None`, right `Some(StarShape { flux: 800.0, hfd: 3.6
+    /// })`).
+    #[test]
+    fn stats_publishes_the_tracked_stars_flux_and_hfd() {
+        let mut e = GuideEngine::new(EngineConfig::default());
+        e.set_calibration(test_cal());
+        e.begin_guiding();
+        assert_eq!(e.stats().star, None, "no star tracked yet");
+
+        // found_star() is flux 1000, HFD 3.0.
+        e.ingest(
+            &FrameMeta {
+                timestamp_s: 0.0,
+                exposure_s: 1.0,
+            },
+            &[found_star()],
+        );
+        assert_eq!(
+            e.stats().star,
+            Some(StarShape {
+                flux: 1000.0,
+                hfd: 3.0
+            }),
+            "the lock-establishing star's shape is published"
+        );
+
+        let lost = MeasuredStar {
+            x: 100.0,
+            y: 100.0,
+            snr: 0.0,
+            mass: 0.0,
+            hfd: 0.0,
+            found: false,
+        };
+        for i in 1..=11 {
+            e.ingest(
+                &FrameMeta {
+                    timestamp_s: i as f64 * 2.0,
+                    exposure_s: 1.0,
+                },
+                &[lost],
+            );
+        }
+        assert_eq!(
+            e.stats().star,
+            None,
+            "no star is tracked after a stale loss"
+        );
+
+        // A re-acquire onto a different star: 30 px away, 20% fainter and a
+        // little wider, inside the mass gate's 0.5 change threshold.
+        let other = MeasuredStar {
+            x: 130.0,
+            y: 100.0,
+            snr: 20.0,
+            mass: 800.0,
+            hfd: 3.6,
+            found: true,
+        };
+        e.ingest(
+            &FrameMeta {
+                timestamp_s: 24.0,
+                exposure_s: 1.0,
+            },
+            &[other],
+        );
+        assert_eq!(
+            e.stats().star,
+            Some(StarShape {
+                flux: 800.0,
+                hfd: 3.6
+            }),
+            "the shape follows the star the engine accepted"
         );
     }
 }

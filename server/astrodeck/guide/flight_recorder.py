@@ -110,16 +110,22 @@ class FlightRecorder:
 
     # ------------------------------------------------------------ recording
 
-    def begin_cycle(self, *, star=None, lock=None, snr=None, err_px=None,
-                    scale: float = 1.0, scale_known: bool = False,
-                    action: str = "", asked=None, pier: str = "unknown",
+    def begin_cycle(self, *, star=None, lock=None, snr=None, hfd=None,
+                    flux=None, err_px=None, scale: float = 1.0,
+                    scale_known: bool = False, action: str = "", asked=None,
+                    pier: str = "unknown",
                     measured: bool = False) -> dict | None:
         """Open this cycle's record and put it in the ring. ``err_px`` is the
-        engine's (ra, dec) in px for a measured frame, else None. The caller
-        adds the pulses as they are sent (``add_pulse``). Returns the record
-        so the caller can hand it back, or None on any failure."""
+        engine's (ra, dec) in px for a measured frame, else None. ``hfd`` is
+        the guide star's half-flux diameter in px and ``flux`` its integrated
+        flux, from the engine, for a measured frame, else None; the record
+        carries the radius, ``hfr``. The caller adds the pulses as they are
+        sent (``add_pulse``) and the mount model's rate once it has read it
+        (``note_model_step``). Returns the record so the caller can hand it
+        back, or None on any failure."""
         try:
             now = time.monotonic()
+            diameter = _round(hfd)
             rec = {
                 "t": round(now, 3),
                 "dt": (round(now - self._last_t, 3)
@@ -133,13 +139,12 @@ class FlightRecorder:
                 "asked": asked or [],
                 "pulses": [],
                 "snr": _round(snr, 1),
-                "hfr": None,            # the engine does not publish one
+                "hfr": None if diameter is None else _round(diameter / 2.0, 3),
+                "flux": _round(flux, 1),
                 # The mount model's change since the previous cycle, arcsec
-                # per second (#1071). NULL ON PURPOSE: the hub's status poller
-                # reads the mount every 2 s but keeps no reading and no time
-                # (the AM5 driver's ``_last_pos`` has no stamp), so there is
-                # no free cache to difference, and the guide loop must not
-                # gain serial reads for it.
+                # per second (#1071, #1089). Null until ``note_model_step``
+                # fills it: the mount cannot say, the read failed or was too
+                # late, or a sync or slew moved the model in the window.
                 "model_ra_rate_arcsec_s": None,
                 "model_dec_rate_arcsec_s": None,
                 "pier_side": pier,
@@ -159,6 +164,28 @@ class FlightRecorder:
             return None
 
     _cur: dict | None = None
+
+    def note_model_step(self, rec: dict | None, step: dict | None) -> None:
+        """Put the mount model's rate on ``rec``, the cycle that ended the
+        window ``step`` measured (#1089). ``step`` is the driver's differences
+        (``model_step_since``): arcsec moved and the seconds it took. The rate
+        stays null for no step, a window a sync or slew disturbed, or one
+        longer than a cycle gap, which is a stop and a restart. Differences
+        only: no position passes through here."""
+        try:
+            if rec is None or not isinstance(step, dict) or step.get("disturbed"):
+                return
+            seconds = float(step["seconds"])
+            if not 0.0 < seconds <= _CYCLE_GAP_S:
+                return
+            ra = _round(float(step["ra_step_arcsec"]) / seconds)
+            dec = _round(float(step["dec_step_arcsec"]) / seconds)
+            if ra is None or dec is None:
+                return
+            rec["model_ra_rate_arcsec_s"] = ra
+            rec["model_dec_rate_arcsec_s"] = dec
+        except Exception:                       # noqa: BLE001 - total
+            pass
 
     def add_pulse(self, direction: str, asked_ms: int, sent_ms: int,
                   at_limit: bool) -> None:

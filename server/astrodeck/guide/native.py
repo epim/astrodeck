@@ -46,6 +46,7 @@ import contextlib
 import json
 import math
 import random
+import statistics
 import threading
 import time
 from collections import deque
@@ -164,6 +165,77 @@ _ENGINE_SEARCH_REGION_PX = 15.0
 #: (21.8 px). Eight, the star-loss budget, would let one 34 px (188 arcsec)
 #: away walk in unseen.
 RELOCK_UNCONFIRMED_FRAMES = 3
+
+#: #1083: how a re-acquired star is told from the lock star. The engine's own
+#: gate for a different star is the mass gate (MASS_CHANGE_THRESHOLD, a 0.5
+#: change against the engine's water marks), and it let both wrong stars of
+#: 2026-10-17 and 2026-10-19 through, so the host compares against the lock
+#: star's own recent flux and half-flux diameter with tighter bounds. Each is
+#: a fraction of the lock star's value: a re-acquired star whose flux differs
+#: by more than STAR_FLUX_TOLERANCE, or whose HFD differs by more than
+#: STAR_HFD_TOLERANCE, is not the lock star, and the loss stands.
+#:
+#: These are judgements, not measurements: #1083 records the swaps' offsets
+#: (7.1 and 4.0 arcsec from the lock) and no flux or HFD. 0.35 of the flux is
+#: a third of a magnitude, wider than the frame-to-frame scatter of a guide
+#: star in good seeing and thin haze, narrower than the 0.5 gate. 0.30 of the
+#: HFD allows the swell of poor seeing and a little defocus. The flight
+#: recorder now carries both values per cycle, so the first nights on this
+#: show whether a true return is ever refused and the bounds can be tuned from
+#: data. A false refusal costs a recovery (re-centre, restart); a missed swap
+#: costs minutes of walking the mount, which is the worse error.
+STAR_FLUX_TOLERANCE = 0.35
+STAR_HFD_TOLERANCE = 0.30
+#: The lock star's shape is the median of its last STAR_IDENTITY_FRAMES
+#: measured frames, so one noisy frame does not move it, and nothing is judged
+#: until STAR_IDENTITY_MIN_FRAMES have been seen (a session's first frames
+#: have no baseline to compare with).
+STAR_IDENTITY_FRAMES = 20
+STAR_IDENTITY_MIN_FRAMES = 5
+
+
+def _usable(v) -> float | None:
+    """``v`` as a positive finite float, or None."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f > 0 else None
+
+
+class StarIdentity:
+    """The lock star's flux and half-flux diameter, as the median of its last
+    measured frames, and the test of whether another star's shape is the same
+    star (#1083)."""
+
+    def __init__(self) -> None:
+        self._flux: deque[float] = deque(maxlen=STAR_IDENTITY_FRAMES)
+        self._hfd: deque[float] = deque(maxlen=STAR_IDENTITY_FRAMES)
+
+    def observe(self, flux, hfd) -> None:
+        """Take one measured frame of the lock star. A frame whose flux or
+        HFD is missing or not a positive number is not taken."""
+        f, h = _usable(flux), _usable(hfd)
+        if f is None or h is None:
+            return
+        self._flux.append(f)
+        self._hfd.append(h)
+
+    def mismatch(self, flux, hfd) -> str:
+        """Why ``flux`` and ``hfd`` are not the lock star's, in words with the
+        numbers, or "" when they match or there is nothing to judge with (too
+        few frames seen, or an unreadable value)."""
+        f, h = _usable(flux), _usable(hfd)
+        if f is None or h is None or len(self._flux) < STAR_IDENTITY_MIN_FRAMES:
+            return ""
+        base_f = statistics.median(self._flux)
+        base_h = statistics.median(self._hfd)
+        why = []
+        if abs(f - base_f) > STAR_FLUX_TOLERANCE * base_f:
+            why.append(f"flux {f:.0f} against the lock star's {base_f:.0f}")
+        if abs(h - base_h) > STAR_HFD_TOLERANCE * base_h:
+            why.append(f"HFD {h:.1f} px against the lock star's {base_h:.1f} px")
+        return " and ".join(why)
 
 # Wall-clock backstop for a full calibration walk (~6 legs).
 #
@@ -905,6 +977,9 @@ class NativeGuider(Guider):
         # would have held it, kept only so each re-lock can log the distance
         # that rule would have judged (see ``_note_lock``).
         self._lock_xy_brightest: tuple[float, float] | None = None
+        # #1083: the lock star's flux and HFD over its last measured frames,
+        # which a star re-acquired after a loss must match.
+        self._identity = StarIdentity()
 
         # NOV-7: a small host hint set during the finding/calibrating steps
         # (which precede ``_active`` going True and are otherwise invisible to
@@ -1018,6 +1093,11 @@ class NativeGuider(Guider):
         self._fr = FlightRecorder()
         self._pier_believed = "unknown"
         self._probe_task: asyncio.Task | None = None
+        # #1089: the mount model's mark from the end of the previous cycle,
+        # and the task that reads the mount for this cycle's rate. One task at
+        # a time, started after the cycle's pulse.
+        self._model_mark_id: int | None = None
+        self._model_task: asyncio.Task | None = None
 
     # ------------------------------------------------------- camera settings
 
@@ -1138,9 +1218,10 @@ class NativeGuider(Guider):
 
     async def disconnect(self) -> None:
         await self.stop_guiding()
-        task, self._probe_task = self._probe_task, None
-        if task is not None and not task.done():
-            task.cancel()
+        for task in (self._probe_task, self._model_task):
+            if task is not None and not task.done():
+                task.cancel()
+        self._probe_task = self._model_task = None
         # The guider is done, so its engine is too. NOT in ``stop_guiding``: a
         # stop is not the end of the guider, and the meridian flip stops it,
         # re-slews, and then asks THIS engine to mirror its calibration
@@ -1255,6 +1336,8 @@ class NativeGuider(Guider):
                 self._relock_unconfirmed = 0
                 self._lock_moved_px = 0.0
                 self._lock_xy_brightest = None
+                self._identity = StarIdentity()
+                self._model_mark_id = None
                 # #848/#849: a start is a new session for the probation, the
                 # runaway streaks, the self-stop reason and the first-dither
                 # clause, and the engine below starts with no memory of the
@@ -2200,7 +2283,7 @@ class NativeGuider(Guider):
                 measured = self._measurement_mark() not in (mark, None)
                 if measured:
                     self._gp_fed_at = time.time()
-                self._record_cycle(action, measured)
+                rec = self._record_cycle(action, measured)
                 # #849/#848: THE GUIDER JUDGES ITS OWN CORRECTIONS, on its own
                 # cadence, before this frame's pulse goes out: the runaway
                 # gate and the calibration probation. It runs whether or not a
@@ -2212,12 +2295,18 @@ class NativeGuider(Guider):
                 # BEFORE the dispatch: a pulse action resets ``_reacquire``,
                 # and the re-lock this is looking for is exactly the frame on
                 # which that happens (GN-03).
-                self._note_lock(action, frame)
+                self._note_lock(action, frame, measured)
+                if self._lost:
+                    # The re-lock check stopped the guider on this frame: the
+                    # correction it computed is aimed at the star just
+                    # refused, and is not sent.
+                    break
                 if (self._reuse_pulse_pending
                         and action["action"] in ("pulse", "pulse_pair")):
                     await self._prove_reuse_with_first_pulse(action)
                 else:
                     await self._dispatch(action)
+                self._schedule_model_read(rec)
                 self._sync_settle_window(action)
                 self._last_stats = self.stats()
                 bus.publish("guide", **self._last_stats.__dict__)
@@ -2237,10 +2326,12 @@ class NativeGuider(Guider):
 
     # ------------------------------------------------ flight recorder (#1071)
 
-    def _record_cycle(self, action: dict, measured: bool) -> None:
+    def _record_cycle(self, action: dict, measured: bool) -> dict | None:
         """Open this cycle's record in the flight recorder, from the engine's
-        own stats. Total: it runs on every guide frame and must never stop the
-        loop."""
+        own stats, and return it (None when it could not be opened). The star's
+        shape is recorded on a measured frame only: the engine keeps the last
+        accepted star's shape across a frame it rejected. Total: it runs on
+        every guide frame and must never stop the loop."""
         try:
             s = self._engine.stats()
             err = None
@@ -2254,13 +2345,55 @@ class NativeGuider(Guider):
             elif kind == "pulse_pair":
                 asked = [{"dir": p.get("dir"), "ms": p.get("ms")}
                          for p in (action.get("ra"), action.get("dec")) if p]
-            self._fr.begin_cycle(
+            shape = self._star_shape(s) if measured else None
+            return self._fr.begin_cycle(
                 star=s.get("tracking"), lock=s.get("lock"), snr=s.get("snr"),
+                hfd=shape[1] if shape else None,
+                flux=shape[0] if shape else None,
                 err_px=err, scale=self._image_scale,
                 scale_known=self._image_scale_known, action=str(kind),
                 asked=asked, pier=self._pier_believed, measured=measured)
         except Exception:                       # noqa: BLE001 - total
+            return None
+
+    @staticmethod
+    def _star_shape(stats: dict) -> tuple[float, float] | None:
+        """``(flux, hfd)`` of the star the engine last accepted, from a stats
+        dict, or None when the wheel publishes none or holds no star."""
+        flux, hfd = stats.get("star_flux"), stats.get("star_hfd")
+        if flux is None or hfd is None:
+            return None
+        try:
+            return float(flux), float(hfd)
+        except (TypeError, ValueError):
+            return None
+
+    def _schedule_model_read(self, rec: dict | None) -> None:
+        """Ask the mount, off the guide loop, how far its model moved since the
+        previous cycle, for ``rec`` (#1089). After the cycle's pulse, so no
+        read sits between a frame and its correction; one at a time, so a slow
+        mount skips a cycle instead of queueing reads behind it."""
+        try:
+            task = self._model_task
+            if rec is None or (task is not None and not task.done()):
+                return
+            if not getattr(self.tel, "can_measure_model_step", False):
+                return
+            self._model_task = asyncio.get_running_loop().create_task(
+                self._read_model_step(rec))
+        except RuntimeError:        # no running loop: nothing to read on
             pass
+
+    async def _read_model_step(self, rec: dict) -> None:
+        """The mount model's movement since the last mark, recorded on ``rec``
+        as a rate, then a new mark for the next cycle. Differences only: the
+        readings stay in the driver (#140). Total."""
+        try:
+            step = await self._leg_step(self._model_mark_id)
+            self._fr.note_model_step(rec, step)
+            self._model_mark_id = await self._leg_mark()
+        except Exception:                       # noqa: BLE001 - total
+            self._model_mark_id = None
 
     def dump_flight_recorder(self, event: str) -> None:
         """Write the ring to ``captures/guide/<night>/`` and say so in the
@@ -2464,6 +2597,9 @@ class NativeGuider(Guider):
                             and e - s["e0"] >= self._growth_px(axis)):
                         self._stop_for_runaway(axis, s, e)
                         return True
+                    if s["len"] >= RUNAWAY_PULSES + 1 and self._on_another_star(
+                            axis, s):
+                        return True
                 else:
                     streaks[axis] = None
         if p is None or p.verdict is not None:
@@ -2510,6 +2646,27 @@ class NativeGuider(Guider):
                 f"frames measured the star)")
             return True
         return False
+
+    def _on_another_star(self, axis: str, streak: dict) -> bool:
+        """Whether a streak at the axis limit is running on a star that is not
+        the lock star, by the same identity check a re-lock gets (#1083); if
+        so the guider has stopped itself and the pulse must not go out. Where
+        the error is heading says nothing here: a wrong star's error shrinks
+        as the mount chases the old lock. Never raises."""
+        try:
+            shape = self._star_shape(self._engine.stats())
+            other = self._identity.mismatch(*shape) if shape else ""
+        except Exception:                       # noqa: BLE001 - no evidence
+            return False
+        if not other:
+            return False
+        limit = int((self._axis_limit_ms or {}).get(axis,
+                                                    _ENGINE_MAX_DURATION_MS))
+        self._stop_for_relock(
+            f"{streak['len'] - 1} corrections in a row at the {limit} ms "
+            f"limit, {streak['dir']}, on a star that is not the lock star "
+            f"({other})")
+        return True
 
     def _grown_streak(self, errs) -> tuple[str, float, int] | None:
         """An open streak whose axis error has grown by G: ``(axis, growth,
@@ -3003,7 +3160,7 @@ class NativeGuider(Guider):
             r = _ENGINE_SEARCH_REGION_PX
         return r + max(0.0, self._lock_moved_px)
 
-    def _note_lock(self, action: dict, frame) -> None:
+    def _note_lock(self, action: dict, frame, measured: bool) -> None:
         """Track the lock position across a star loss and COUNT the re-locks
         (GN-03).
 
@@ -3076,7 +3233,24 @@ class NativeGuider(Guider):
         and the old lock, not as the zero distance the true star's own
         return would otherwise produce. Absent (an older wheel, or a test
         double that scripts ``stats()`` with no ``"tracking"`` key), this
-        falls back to the pre-#649 frame-rescan behaviour unchanged."""
+        falls back to the pre-#649 frame-rescan behaviour unchanged.
+
+        THE RE-LOCK IS ALSO CHECKED FOR WHO IT IS (#1083). Position cannot tell
+        the lock star from another star that lands within a few arcsec of it
+        (2026-10-17: 7.1 arcsec, 2026-10-19: 4.0 arcsec, both "the same star"
+        by ``_RELOCK_SAME_STAR_PX``, both a different star, and the guider
+        walked the mount arcminutes chasing the old lock). The engine
+        publishes the flux and half-flux diameter of the star it accepted
+        (``star_flux``, ``star_hfd``); the guider keeps the lock star's own
+        (``StarIdentity``, over its measured frames), and a star re-acquired
+        after a loss that does not match it within ``STAR_FLUX_TOLERANCE`` and
+        ``STAR_HFD_TOLERANCE`` is refused: the guider stops through
+        ``_stop_for_relock`` and the recovery the sequence engine runs for a
+        lost guider takes over. The frame's own correction is not sent. While
+        a wheel that publishes the shape holds no star yet, the check waits
+        and the watch stays armed; a wheel that publishes nothing is not
+        checked, as before. ``measured`` is the engine's own record that the
+        frame was accepted."""
         kind = action.get("action")
         if kind in ("lock_lost", "cal_step"):
             return
@@ -3096,6 +3270,9 @@ class NativeGuider(Guider):
         engine_lock = s.get("lock")
         if engine_lock is not None:
             engine_lock = (float(engine_lock[0]), float(engine_lock[1]))
+        shape = self._star_shape(s)
+        if measured and shape is not None and not self._relock_pending:
+            self._identity.observe(*shape)
         if (self._lock_xy is not None and not self._relock_pending
                 and self._lock_moved_px <= 0.0):
             return                     # steady state: no star-find to pay for
@@ -3132,6 +3309,11 @@ class NativeGuider(Guider):
                 self._lock_xy = near
                 self._lock_moved_px = 0.0
             return
+        if shape is None and "star_flux" in s:
+            # The engine reports guiding but holds no accepted star yet (its
+            # re-acquire frame was rejected): there is nothing to identify.
+            # The watch stays armed for the frame that does.
+            return
         # #649/WP-81 (WP-41 residual 1): once a loss has armed the watch,
         # trust the ENGINE's own report of which star it just accepted
         # (``stats()["tracking"]``, the live search origin) over this host's
@@ -3151,6 +3333,12 @@ class NativeGuider(Guider):
         engine_tracking = s.get("tracking")
         if engine_tracking is not None:
             near = (float(engine_tracking[0]), float(engine_tracking[1]))
+        other = self._identity.mismatch(*shape) if shape is not None else ""
+        if other:
+            self._stop_for_relock(
+                f"the star re-acquired after the loss is not the lock star "
+                f"({other})")
+            return
         # Same unit contract as ``stats()``'s ``recent``: multiply by the image
         # scale (1.0 when there is none), and let ``is_arcsec`` say what the
         # number means. Only the LOG needs to name the unit out loud.
