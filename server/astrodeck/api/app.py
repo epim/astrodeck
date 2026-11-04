@@ -138,6 +138,7 @@ from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
 from ..site_gate import site_is_set
 from ..calibration import CalibrationLibrary, MatchTolerance
+from ..calibration.keys import mech_angle_from_header
 from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
 from ..mount_offset import nudge as nudge_offset
@@ -152,7 +153,8 @@ from ..provenance import effective_config
 # The flows package is imported by SUBMODULE. flows/__init__ re-exports only
 # doctor/models/nodes — it predates five of the nine modules — so
 # `from ..flows import compile_plan` is an ImportError, not a style choice.
-from ..flows.calibration_health import (CalNeed, DEFAULT_QUOTA, KIND_ORDER,
+from ..flows.calibration_health import (CalNeed, DEFAULT_QUOTA, DemandCache,
+                                        KIND_ORDER,
                                         frame_from_header, health_matrix)
 from ..flows.compile import compile_plan
 from ..flows.continuation import (AdoptEvidence, AdoptMatches, adopt_detail,
@@ -1792,6 +1794,31 @@ def _get_master_library():
     if lib:
         return CalibrationLibraryAdapter(lib)
     return NullMasterLibrary()
+
+
+@functools.lru_cache(maxsize=4096)
+def _rotmech_of(path: str, mtime_ns: int) -> float | None:
+    """The ROTMECH card of the FITS file at ``path``, read once per file and
+    modification time (a header read is a few milliseconds, and a night is
+    hundreds of lights); None for a file that has none or cannot be read."""
+    try:
+        from astropy.io import fits           # lazy, as every caller here is
+        return mech_angle_from_header(fits.getheader(path))
+    except Exception:                          # noqa: BLE001 - unknown, not fatal
+        return None
+
+
+def light_rotator_angle(path: str) -> float | None:
+    """The rotator MECHANICAL angle a saved light was shot at (its ROTMECH
+    card, #176), or None when the file is gone, unreadable or predates the
+    card. Blocking: reads the file's header. The stacking bundle groups its
+    lights by this and asks the library for the flat at the same angle
+    (#784, #825)."""
+    try:
+        mtime_ns = os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+    return _rotmech_of(path, mtime_ns)
 
 
 def _iso_utc(ts) -> str:
@@ -6123,10 +6150,12 @@ def create_app(*, bind_host: str | None = None,
         if report is None:
             raise HTTPException(404, "report not found")
         try:
-            b = build_bundle(report, _get_master_library(),
-                             is_local=hub._is_local_save, layout=layout,
-                             weight_altitude=weight_altitude,
-                             keep_threshold=keep_threshold)
+            b = await asyncio.to_thread(
+                build_bundle, report, _get_master_library(),
+                is_local=hub._is_local_save, layout=layout,
+                weight_altitude=weight_altitude,
+                keep_threshold=keep_threshold,
+                light_angle=light_rotator_angle)
         except ValueError as e:
             raise HTTPException(400, str(e))
         return bundle_summary(b)
@@ -6166,10 +6195,12 @@ def create_app(*, bind_host: str | None = None,
         if report is None:
             raise HTTPException(404, "report not found")
         try:
-            b = build_bundle(report, _get_master_library(),
-                             is_local=hub._is_local_save, layout=layout,
-                             weight_altitude=weight_altitude,
-                             keep_threshold=keep_threshold)
+            b = await asyncio.to_thread(
+                build_bundle, report, _get_master_library(),
+                is_local=hub._is_local_save, layout=layout,
+                weight_altitude=weight_altitude,
+                keep_threshold=keep_threshold,
+                light_angle=light_rotator_angle)
         except ValueError as e:
             raise HTTPException(400, str(e))
         b = externalize_bundle(b, gallery_module.relpath_under_capture)
@@ -6219,10 +6250,12 @@ def create_app(*, bind_host: str | None = None,
         if report is None:
             raise HTTPException(404, "report not found")
         try:
-            b = build_bundle(report, _get_master_library(),
-                             is_local=hub._is_local_save, layout=layout,
-                             weight_altitude=weight_altitude,
-                             keep_threshold=keep_threshold)
+            b = await asyncio.to_thread(
+                build_bundle, report, _get_master_library(),
+                is_local=hub._is_local_save, layout=layout,
+                weight_altitude=weight_altitude,
+                keep_threshold=keep_threshold,
+                light_angle=light_rotator_angle)
         except ValueError as e:
             raise HTTPException(400, str(e))
         if not b.groups:
@@ -7885,6 +7918,41 @@ def create_app(*, bind_host: str | None = None,
 
     # ------------------------------------------------ calibration library (PRO-1)
 
+    calibration_demand = DemandCache()
+
+    def _flow_demand(rec, flow_id: str, setpoint, can_cool: bool,
+                     closes_on_unsafe: bool, facts) -> tuple[tuple, int]:
+        """``(lights, quota)`` a flow asks of the calibration library: the
+        matrix's demand, before the live rotator turns the sky angles into
+        mechanical ones. Blocking (the plan expansion searches the catalogue
+        by name), so the route runs it on a worker thread, through
+        ``calibration_demand``.
+
+        ``lights`` is one ``(sky angle, steps)`` per plan target. A mosaic's
+        PANELS are plan targets, each with the angle it is commanded (a
+        rotating block's own ``pa_deg``, #175), and the compile alone has
+        only the block; so the plan is what is read. A graph the plan refuses
+        (``GraphNotRunnable``, a half-built flow is the normal state of an
+        editor) falls back to the compile's targets with no angle, which is
+        what this route always did for them."""
+        compiled = compile_plan(rec.graph, rec.name)
+        try:
+            plan, _lost = to_sequence_plan(
+                compiled, rec.graph, flow_id=flow_id, cool_to=setpoint,
+                camera_can_cool=can_cool, closes_on_unsafe=closes_on_unsafe,
+                rig=facts)
+            lights = tuple(
+                (t.rotation_deg, tuple(
+                    {"exposure_s": s.exposure_s, "gain": s.gain,
+                     "binning": s.binning, "filter": s.filter}
+                    for s in t.steps if str(s.frame_type).lower() == "light"))
+                for t in plan.targets)
+        except GraphNotRunnable:
+            lights = tuple((None, tuple(t.get("steps") or []))
+                           for t in compiled.get("targets") or [])
+        cq = (compiled.get("automation") or {}).get("calibration_queue") or {}
+        return lights, int(cq.get("quota") or DEFAULT_QUOTA)
+
     @app.get("/api/calibration/health",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -7958,34 +8026,16 @@ def create_app(*, bind_host: str | None = None,
                 rec = await asyncio.to_thread(flow_store.get, flow_id)
             except KeyError:
                 raise HTTPException(404, detail={"code": "not_found"})
-            compiled = compile_plan(rec.graph, rec.name)
-            # THE LIGHTS, ONE GROUP PER PLAN TARGET: ``(sky angle, steps)``. A
-            # mosaic's PANELS are plan targets, each with the angle it is
-            # commanded (a rotating block's own ``pa_deg``, #175), and the
-            # compile alone has only the block; so the plan is what is read.
-            # A graph the plan refuses (``GraphNotRunnable``, a half-built
-            # flow is the normal state of an editor) falls back to the
-            # compile's targets with no angle, which is what this route
-            # always did for them.
-            lights: list[tuple[float | None, list[dict]]] = []
-            try:
-                _plan, _lost = to_sequence_plan(
-                    compiled, rec.graph, flow_id=flow_id,
-                    cool_to=getattr(config_store.cfg().cooling,
-                                    "setpoint_c", None),
-                    camera_can_cool=_camera_can_cool(),
-                    closes_on_unsafe=bool(
-                        config_store.cfg().safety.close_dome_on_unsafe),
-                    rig=_rig_facts())
-                for t in _plan.targets:
-                    lights.append((t.rotation_deg, [
-                        {"exposure_s": s.exposure_s, "gain": s.gain,
-                         "binning": s.binning, "filter": s.filter}
-                        for s in t.steps
-                        if str(s.frame_type).lower() == "light"]))
-            except GraphNotRunnable:
-                lights = [(None, list(t.get("steps") or []))
-                          for t in compiled.get("targets") or []]
+            # The demand is the flow's: computed once per saved revision and
+            # per set of rig facts the compile reads, on a worker thread (#827).
+            facts = _rig_facts()
+            closes = bool(config_store.cfg().safety.close_dome_on_unsafe)
+            can_cool = _camera_can_cool()
+            lights, quota = await asyncio.to_thread(
+                calibration_demand.get,
+                (flow_id, rec.updated_ts, setpoint, can_cool, closes, facts),
+                lambda: _flow_demand(rec, flow_id, setpoint, can_cool, closes,
+                                     facts))
             seen: set[tuple] = set()
             for sky, steps in lights:
                 # One angle per target: a rotating mosaic's panels each have
@@ -8004,8 +8054,6 @@ def create_app(*, bind_host: str | None = None,
                         temp_c=setpoint, binning=int(step.get("binning") or 1),
                         filter=str(step.get("filter") or "")),
                         rotation_deg=mech))
-            cq = (compiled.get("automation") or {}).get("calibration_queue") or {}
-            quota = int(cq.get("quota") or DEFAULT_QUOTA)
         c = config_store.cfg().calibration
 
         def scan_frames() -> list:

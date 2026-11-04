@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Sequence
 
 CAL_FRAME_TYPES = frozenset({"DARK", "BIAS", "FLAT"})
 
@@ -117,6 +117,21 @@ def mech_angle_from_header(header: Mapping) -> float | None:
     the strength of a number that moves when the rotator is re-synced, so it
     is never read here, and such a frame is unknown."""
     return mech_angle(header.get(ROTATOR_CARD, None))
+
+
+def circular_mean_angle(angles: Sequence[float]) -> float | None:
+    """The mean of mechanical angles ON THE CIRCLE, in [0, 360), to a
+    milli-degree; None for none. 359.6 and 0.4 average to 0.0, where an
+    arithmetic mean says 180 and names the opposite side of the camera. The
+    angles of one stack are within a degree or two of each other, so the
+    resultant is never near zero."""
+    if not angles:
+        return None
+    s = sum(math.sin(math.radians(a)) for a in angles)
+    c = sum(math.cos(math.radians(a)) for a in angles)
+    if s == 0.0 and c == 0.0:
+        return angles[0]
+    return round(math.degrees(math.atan2(s, c)) % 360.0, 3) % 360.0
 
 
 def rotator_bin(angle: float | None, width: float) -> int | float | None:

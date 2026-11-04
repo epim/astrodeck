@@ -13,7 +13,6 @@ is ``strip_rows × width × n_frames × 4 B`` — independent of full-frame size
 rather than a naive ``np.stack`` of every full frame."""
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -26,7 +25,8 @@ from ..gallery import THUMBS_DIRNAME, TRASH_DIRNAME
 from ..imaging.fitsio import write_name_card
 from ..persist import read_json_or, safe_id_path, write_json_atomic
 from .keys import (CAL_FRAME_TYPES, ROTATOR_BIN_DEG, ROTATOR_CARD, CalKey,
-                   key_from_header, key_index_id, mech_angle)
+                   circular_mean_angle, key_from_header, key_index_id,
+                   mech_angle)
 from .matcher import Gap, LightNeed, MasterRecord, MatchTolerance, coverage_for
 from .stacker import stack_frames
 
@@ -103,22 +103,7 @@ class _Bucket:
     angles: list[float] = field(default_factory=list)
 
     def mean_angle(self) -> float | None:
-        return _circular_mean(self.angles)
-
-
-def _circular_mean(angles: list[float]) -> float | None:
-    """The mean of mechanical angles ON THE CIRCLE, in [0, 360), to a
-    milli-degree; None for none. 359.6 and 0.4 average to 0.0, where an
-    arithmetic mean says 180 and would stamp a master that matches a light
-    on the opposite side of the camera. The flats of one bin are within a
-    degree or two of each other, so the resultant is never near zero."""
-    if not angles:
-        return None
-    s = sum(math.sin(math.radians(a)) for a in angles)
-    c = sum(math.cos(math.radians(a)) for a in angles)
-    if s == 0.0 and c == 0.0:
-        return angles[0]
-    return round(math.degrees(math.atan2(s, c)) % 360.0, 3) % 360.0
+        return circular_mean_angle(self.angles)
 
 
 def _valid_row(r: object) -> bool:
