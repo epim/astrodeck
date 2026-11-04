@@ -813,8 +813,10 @@ async def test_the_alert_is_said_once_and_again_on_the_blind_cadence(
         cfg, pinned_sun, sky, monkeypatch):
     """While latched and the Sun is above the dawn-park threshold: ONE
     error line in fixed words, said again every ``BLIND_LOG_EVERY`` ticks,
-    on source "safety" and unflagged, which the AlertDispatcher maps to an
-    error alert (the channel the blind-in-daylight line pages through).
+    on source "safety", flagged ``site_derived`` (its moment is the Sun
+    crossing the threshold), with a ``site_alert`` twin that the
+    AlertDispatcher maps to an error alert (WP 2.9, D-H, #748). The flagged
+    line itself maps to no alert.
     Below the threshold it says no error; the Sun going down and up again
     says it at once. No park throughout.
 
@@ -832,8 +834,8 @@ async def test_the_alert_is_said_once_and_again_on_the_blind_cadence(
         published.append((type, data))
     monkeypatch.setattr(events.bus, "publish", publish)
 
-    def lines() -> list[dict]:
-        return [d for t, d in published if t == "log"
+    def lines(kind: str = "log") -> list[dict]:
+        return [d for t, d in published if t == kind
                 and d.get("message") == POSITION_UNKNOWN_DAYLIGHT]
 
     hub, tel = _approach_rig(cfg)
@@ -848,9 +850,14 @@ async def test_the_alert_is_said_once_and_again_on_the_blind_cadence(
     said = lines()
     assert len(said) == 3
     assert all(d["level"] == "error" and d["source"] == "safety"
-               and not d.get(events.SITE_DERIVED_KEY) for d in said), said
+               and d.get(events.SITE_DERIVED_KEY) is True for d in said), said
     dispatcher = AlertDispatcher(events.bus, lambda: cfg)
-    alerts = [dispatcher._alert_for(events.Event("log", d)) for d in said]
+    assert [dispatcher._alert_for(events.Event("log", d)) for d in said] \
+        == [None] * 3, "the flagged line itself is never forwarded"
+    twins = lines(events.SITE_ALERT_TYPE)
+    assert len(twins) == 3
+    alerts = [dispatcher._alert_for(events.Event(events.SITE_ALERT_TYPE, d))
+              for d in twins]
     assert [a and (a.level, a.message) for a in alerts] == [
         ("error", POSITION_UNKNOWN_DAYLIGHT)] * 3, alerts
 
@@ -858,7 +865,8 @@ async def test_the_alert_is_said_once_and_again_on_the_blind_cadence(
     await _tick_n(w, now, 1)
     sky["alt"] = -2.0
     await _tick_n(w, now, 1)
-    assert len(lines()) == 4, "the next Sun-up says it at once"
+    assert len(lines()) == 4 == len(lines(events.SITE_ALERT_TYPE)), (
+        "the next Sun-up says it at once")
     assert tel.park_calls == 0 and tel.tracking_calls == []
 
 

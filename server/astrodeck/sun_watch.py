@@ -927,7 +927,7 @@ class SunWatch:
             return None
 
     def _hold(self, reason: str, sep: float | None,
-              level: str = "info") -> None:
+              level: str = "info", *, site_derived: bool = False) -> None:
         """Say why nothing happened — once per approach, per reason.
 
         Silence here would be indistinguishable from a net that fired and
@@ -936,7 +936,8 @@ class SunWatch:
             return
         self._held = reason
         where = ": " if sep is None else f" (Sun {sep:.0f}° away): "
-        bus.log(level, f"sun watch held off{where}{reason}", "safety")
+        bus.log(level, f"sun watch held off{where}{reason}", "safety",
+                site_derived=site_derived)
 
     def _blind(self, reason: str, cfg) -> None:
         """One more tick with an unreadable position. Escalates by REPETITION
@@ -989,9 +990,10 @@ class SunWatch:
         dawn park acts on, a mount that is not parked may be tracking toward it
         and nothing can see it, and "10 minutes blind" does not say so. This
         line does, and it is an ERROR because the alert sinks route only
-        warning and error. It is deliberately NOT flagged ``site_derived`` for
-        the same reason: such a line never reaches a sink (``alerting``), and
-        the page is the point (dawn park's own lines are unflagged too).
+        warning and error. Its moment is the Sun crossing that threshold at the
+        site, so it is written as a flagged line with its alert-safe twin
+        (``EventBus.log_with_alert``, D-H, #748): a viewer never reads the
+        line, and the page still goes out.
 
         The threshold is ``dawn_park.park_threshold_deg``, read where dawn park
         reads it, and the Sun's altitude is computed for ``hub.site`` as dawn
@@ -1019,11 +1021,12 @@ class SunWatch:
         if self._blind_daylight_said or self._parked_noted_at is not None:
             return
         self._blind_daylight_said = True
-        bus.log("error", f"sun watch BLIND IN DAYLIGHT: {reason}; the Sun is "
-                         f"above the dawn-park threshold ({threshold:+.0f}°), so "
-                         f"a mount that is not parked may be tracking toward it "
-                         f"with nothing watching{self._fallback_note()} "
-                         f"(blind for {mins:.0f} min, tick {n})", "safety")
+        bus.log_with_alert(
+            "error", f"sun watch BLIND IN DAYLIGHT: {reason}; the Sun is "
+            f"above the dawn-park threshold ({threshold:+.0f}°), so "
+            f"a mount that is not parked may be tracking toward it "
+            f"with nothing watching{self._fallback_note()} "
+            f"(blind for {mins:.0f} min, tick {n})", "safety")
 
     def _sun_against_dawn_threshold(self, cfg) -> tuple[bool, float] | None:
         """``(is the Sun at or above the dawn-park threshold, that threshold)``,
@@ -1078,9 +1081,10 @@ class SunWatch:
         fixed words (``POSITION_UNKNOWN_DAYLIGHT``) says this net cannot
         protect the tube and gives the safe order, and it is said again every
         ``BLIND_LOG_EVERY`` ticks while that lasts, the blind escalation's
-        cadence. Error level, source "safety", never flagged site_derived:
-        the AlertDispatcher routes warning and error logs to every configured
-        sink, the channel the blind-in-daylight line pages through. The Sun
+        cadence. Error level, source "safety", written with its alert-safe twin
+        (``EventBus.log_with_alert``): the AlertDispatcher routes that twin to
+        every configured sink, the channel the blind-in-daylight line pages
+        through. The Sun
         going back below the threshold resets the count, so the next dawn
         says it at once. Below the threshold one info hold says why the net
         stands down.
@@ -1119,7 +1123,7 @@ class SunWatch:
             self._unknown_daylight_ticks = 0
         if verdict is not None and not verdict[0]:
             self._unknown_daylight_ticks = 0
-            self._hold(POSITION_UNKNOWN_NIGHT_HOLD, None)
+            self._hold(POSITION_UNKNOWN_NIGHT_HOLD, None, site_derived=True)
             return
         n = self._unknown_daylight_ticks
         self._unknown_daylight_ticks = n + 1
@@ -1127,7 +1131,7 @@ class SunWatch:
             if verdict is None:
                 bus.log("warning", POSITION_UNKNOWN_SUN_UNKNOWN, "safety")
             else:
-                bus.log("error", POSITION_UNKNOWN_DAYLIGHT, "safety")
+                bus.log_with_alert("error", POSITION_UNKNOWN_DAYLIGHT, "safety")
 
     def _latched_at_park(self, tel, cfg) -> bool:
         """The one gate, asked again at the park itself (#888, owner ruling

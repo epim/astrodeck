@@ -83,7 +83,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .aio import reap
-from .events import RELAY_GAP, SITE_DERIVED_KEY, bus
+from .events import RELAY_GAP, SITE_ALERT_TYPE, SITE_DERIVED_KEY, bus
 from .rig_beacon import is_closed_vocabulary
 
 # State-change event types are NEVER deduped (C1-18). These are subscribed by
@@ -840,6 +840,16 @@ class AlertDispatcher:
             # default is to never forward one. The line still reaches a
             # holder through the UI (`/api/logs`, `_redact_log_rows_for`)
             # and the durable night-log file, which this never touches.
+            # A flagged warning or error that must still page is published
+            # with its alert-safe wording (`EventBus.log_with_alert`), the
+            # next arm.
+            alert = AlertEvent(data["level"], data["level"],
+                               data.get("message", ""),
+                               source=data.get("source", ""))
+        elif t == SITE_ALERT_TYPE and data.get("level") in ("warning", "error"):
+            # The alert-safe wording of a site-timed line (D-H, #748): the
+            # words without the moment-bearing detail, mapped exactly as the
+            # unflagged log line it stands for would have been.
             alert = AlertEvent(data["level"], data["level"],
                                data.get("message", ""),
                                source=data.get("source", ""))
