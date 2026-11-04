@@ -213,6 +213,17 @@ const LOGIC_MODULES: Record<string, string> = {
     "the wizard prefill and its wz_* route params. The #/next flowWizard sheet carries the " +
     "prefill in the route with the shared sheet's own reader, so a reload reopens the wizard " +
     "the door opened and the two UIs cannot read a door's prefill apart.",
+  // #718, WP 2.10: a leaf with no imports, split out of wizardModel so NEW
+  // FLOW does not pull the framing modules into the classic flows chunk
+  // (classicFrameHost.test). Without this entry, observed on PR #1164's CI:
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   5 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/create/wizardModel.ts imports CLOCK_TIME from
+  //   components/flows/wizard/nightAnswers; ...
+  "components/flows/wizard/nightAnswers":
+    "#718 WP 2.10 - DUSK_STOPS, CLOCK_TIME, clockOf, NEED_STOP_CLOCK, DuskStop: the night's " +
+    "stop answers. The #/next NEW FLOW sheet asks how the night ends with the stepped sheet's " +
+    "own choices and clock reader, so the two sheets cannot offer or parse a stop apart.",
   // #356, S7: the loop chip on both canvases withholds its count by the
   // slice's own reader rather than by `dirty`. Recorded by the S7
   // integration, a DELIBERATE PIN CHANGE. Without this entry (the tree S7

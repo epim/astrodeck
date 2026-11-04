@@ -12,8 +12,12 @@
 // Pure and separate from `wizard.tsx` so the payload the sheet sends can be
 // graded without a DOM.
 
-import { createParams } from "../../../../../components/flows/nodeDefs";
+import { AUTO_RESUME_CHOICES, NODE_DEFS, createParams } from "../../../../../components/flows/nodeDefs";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
+import {
+  CLOCK_TIME, DUSK_STOPS, NEED_STOP_CLOCK, clockOf, type DuskStop,
+} from "../../../../../components/flows/wizard/nightAnswers";
+import type { FlowWizardAnswers } from "../../../../../lib/flowsApi";
 
 /** Question 1. Order and labels from the flows contract; `Deep-sky target` is
  *  the default. */
@@ -38,6 +42,69 @@ export const AUTOMATION_DEFAULTS: readonly string[] = ["Guiding", "HFR watchdog"
 /** The literal run of spaces is part of the placeholder - it is what separates
  *  the single-target example from the comma-list one without a second field. */
 export const TARGET_PLACEHOLDER = "M16    ·    or: M16, M17, M8, NGC 6946";
+
+/** Questions 4 and 5 (#718): how the night ends and whether the flow resumes on
+ *  later nights. The choices are the stepped Send to Flow Wizard sheet's own
+ *  (`DUSK_STOPS`, `AUTO_RESUME_CHOICES`), imported and never copied. */
+export { AUTO_RESUME_CHOICES, CLOCK_TIME, DUSK_STOPS };
+export type { DuskStop };
+
+/** What each stop choice does, so the choice says something the words do not.
+ *  Rendered as the option's `sub`; never sent to the server. */
+export const STOP_SUB: Record<DuskStop, string> = {
+  Dawn: "images until dawn, then parks",
+  "Clock time": "stops at a time you type",
+};
+
+/** What each auto-resume choice does (the stepped sheet's review wording).
+ *  Rendered as the option's `sub`; never sent to the server. */
+export const RESUME_SUB: Record<(typeof AUTO_RESUME_CHOICES)[number], string> = {
+  On: "resumes on later nights until every frame is taken",
+  Off: "tonight only; continue it by hand",
+};
+
+export interface NightAnswers {
+  stop: DuskStop;
+  /** Typed text; read by `clockOf` and asked only beside "Clock time". */
+  stopClock: string;
+  autoResume: boolean;
+}
+
+const DUSK_DEFAULTS = NODE_DEFS.dusk.params as { stop: string; autoResume: string };
+
+/** The answers the sheet opens with: DUSK WINDOW's own defaults, which is what a
+ *  flow generated without these two questions has always had. */
+export const NIGHT_DEFAULTS: NightAnswers = {
+  stop: DUSK_DEFAULTS.stop as DuskStop,
+  stopClock: "",
+  autoResume: DUSK_DEFAULTS.autoResume !== AUTO_RESUME_CHOICES[1],
+};
+
+/** Why GENERATE cannot go: a "Clock time" stop with no valid time is a boundary
+ *  that never arrives, and the server refuses it. Null when nothing is missing. */
+export function nightGap(n: NightAnswers): string | null {
+  return n.stop === CLOCK_TIME && clockOf(n.stopClock) === null ? NEED_STOP_CLOCK : null;
+}
+
+/** The one body GENERATE posts. The night's two answers go up ONLY when they
+ *  differ from DUSK WINDOW's defaults, as the stepped sheet's `wizardBody`
+ *  does: the server reads a missing key as "not given", so a sheet nobody
+ *  changed them in posts the three-answer body it always did. A clock goes
+ *  with its "Clock time" and with nothing else. */
+export function wizardBody(
+  kind: string, autos: readonly string[], target: string, night: NightAnswers,
+): FlowWizardAnswers {
+  const body: FlowWizardAnswers = { kind, options: [...autos], target: target.trim() };
+  if (night.stop !== NIGHT_DEFAULTS.stop) {
+    body.stop = night.stop;
+    const clock = clockOf(night.stopClock);
+    if (night.stop === CLOCK_TIME && clock !== null) body.stop_clock = clock;
+  }
+  if (night.autoResume !== NIGHT_DEFAULTS.autoResume) {
+    body.auto_resume = night.autoResume ? AUTO_RESUME_CHOICES[0] : AUTO_RESUME_CHOICES[1];
+  }
+  return body;
+}
 
 /** The only thing that can stop GENERATE FLOW now is a capability or a request
  *  already in flight. Kept as one exported string so the button's reason and

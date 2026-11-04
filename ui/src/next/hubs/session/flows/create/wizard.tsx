@@ -43,10 +43,12 @@ import {
 import {
   FLOW_OPEN_FAILED, flowOpenFailure, libraryErrorNow, openFlowById,
 } from "../openFlow";
+import { AUTO_RESUME_LABEL } from "../../../../../components/flows/nodeDefs";
 import {
-  AUTOMATIONS, AUTOMATION_DEFAULTS, BLANK_FAILED, BLANK_NAME, BLANK_TAGLINE, BUSY_REASON,
-  GENERATE_FAILED, KIND_SUB, KINDS, TARGET_PLACEHOLDER, WIZARD_NOTE, blankNodes,
-  type WizardKind,
+  AUTOMATIONS, AUTOMATION_DEFAULTS, AUTO_RESUME_CHOICES, BLANK_FAILED, BLANK_NAME,
+  BLANK_TAGLINE, BUSY_REASON, CLOCK_TIME, DUSK_STOPS, GENERATE_FAILED, KIND_SUB, KINDS,
+  NIGHT_DEFAULTS, RESUME_SUB, STOP_SUB, TARGET_PLACEHOLDER, WIZARD_NOTE, blankNodes, nightGap,
+  wizardBody, type DuskStop, type NightAnswers, type WizardKind,
 } from "./wizardModel";
 import "./create.css";
 
@@ -83,6 +85,7 @@ export function FlowNewSheet(): JSX.Element {
   const [kind, setKind] = useState<WizardKind>(KINDS[0]);
   const [autos, setAutos] = useState<readonly string[]>(AUTOMATION_DEFAULTS);
   const [target, setTarget] = useState("");
+  const [night, setNight] = useState<NightAnswers>(NIGHT_DEFAULTS);
   const [creating, setCreating] = useState(false);
   const [generating, setGenerating] = useState(false);
 
@@ -94,18 +97,16 @@ export function FlowNewSheet(): JSX.Element {
     : busy ? BUSY_REASON : null;
   const generateReason = !canCreate
     ? `Generating a flow needs ${accessPhrase("control.capture")}.`
-    : busy ? BUSY_REASON : null;
+    : busy ? BUSY_REASON : nightGap(night);
 
   /** The server generates AND saves, so there is one call and the id it returns
    *  is openable. */
   const generate = async (): Promise<void> => {
     setGenerating(true);
     try {
-      const rec = (await flowsApi.generateFromWizard({
-        kind,
-        options: [...autos],
-        target: target.trim(),
-      })) as { id?: string };
+      const rec = (await flowsApi.generateFromWizard(
+        wizardBody(kind, autos, target, night),
+      )) as { id?: string };
       if (!rec?.id) throw new Error("the server returned a flow with no id");
       // OPEN, AND NAVIGATE ONLY WHEN IT LANDED (#553). `flowsOpen` leaves the
       // record that was open before in place when its read fails, and since
@@ -258,6 +259,46 @@ export function FlowNewSheet(): JSX.Element {
               ariaLabel="Target, or candidates separated by commas"
             />
           </Field>
+        </section>
+
+        {/* 4. how the night ends. Two choices where the editor's DUSK WINDOW
+            has three: a run with no stop images into daylight and does not
+            park at dawn, which the server refuses for a wizard night. */}
+        <section className="nx-create-group" data-testid="flow-wizard-night">
+          <Label size={10}>HOW DOES THE NIGHT END?</Label>
+          <Segmented<DuskStop>
+            data-testid="flow-wizard-stop"
+            label="How does the night end"
+            value={night.stop}
+            onChange={(stop) => setNight((n) => ({ ...n, stop }))}
+            options={DUSK_STOPS.map((s) => ({ value: s, label: s, sub: STOP_SUB[s] }))}
+          />
+          {night.stop === CLOCK_TIME && (
+            <Field label="STOP AT (HH:MM)" htmlFor="flow-wizard-stop-clock">
+              <TextInput
+                id="flow-wizard-stop-clock"
+                data-testid="flow-wizard-stop-clock"
+                value={night.stopClock}
+                onChange={(stopClock) => setNight((n) => ({ ...n, stopClock }))}
+                placeholder="03:30"
+                mono
+                ariaLabel="Stop time, HH:MM on the 24-hour clock"
+              />
+            </Field>
+          )}
+        </section>
+
+        {/* 5. whether the flow resumes on later nights: the owner's question,
+            in the owner's words. */}
+        <section className="nx-create-group" data-testid="flow-wizard-resume">
+          <Label size={10}>{AUTO_RESUME_LABEL.toUpperCase()}</Label>
+          <Segmented<(typeof AUTO_RESUME_CHOICES)[number]>
+            data-testid="flow-wizard-resume-choice"
+            label={AUTO_RESUME_LABEL}
+            value={night.autoResume ? AUTO_RESUME_CHOICES[0] : AUTO_RESUME_CHOICES[1]}
+            onChange={(choice) => setNight((n) => ({ ...n, autoResume: choice === AUTO_RESUME_CHOICES[0] }))}
+            options={AUTO_RESUME_CHOICES.map((c) => ({ value: c, label: c, sub: RESUME_SUB[c] }))}
+          />
         </section>
 
         <Card tone="default">

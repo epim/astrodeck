@@ -24,8 +24,14 @@ import { accessPhrase, useCanControlCapture } from "../../lib/caps";
 import { handleRadioKeyDown, rovingTabIndex } from "../../lib/radiogroup";
 import { flowsApi } from "../../lib/flowsApi";
 import { useStore } from "../../store";
-import { createParams } from "./nodeDefs";
+import { AUTO_RESUME_LABEL, createParams } from "./nodeDefs";
 import type { FlowNodeRec } from "./flowsTypes";
+// The night's two answers (#718) are the #/next sheet's own model, imported so
+// the body, the defaults and the gap on a Clock time stop exist once.
+import {
+  AUTO_RESUME_CHOICES, CLOCK_TIME, DUSK_STOPS, NIGHT_DEFAULTS, nightGap, wizardBody,
+  type NightAnswers,
+} from "../../next/hubs/session/flows/create/wizardModel";
 
 /** Question 1. Order and labels from §C.14; `Deep-sky target` is the default. */
 const KINDS = ["Deep-sky target", "Best of several", "EAA quick look"] as const;
@@ -92,6 +98,7 @@ export default function FlowWizard() {
   const [kind, setKind] = useState<WizardKind>(KINDS[0]);
   const [autos, setAutos] = useState<readonly string[]>(AUTOMATION_DEFAULTS);
   const [target, setTarget] = useState("");
+  const [night, setNight] = useState<NightAnswers>(NIGHT_DEFAULTS);
   const [creating, setCreating] = useState(false);
   const [generating, setGenerating] = useState(false);
 
@@ -108,7 +115,7 @@ export default function FlowWizard() {
     : busy ? "Already creating a flow — one moment." : null;
   const generateReason = !canCreate
     ? `Generating a flow needs ${accessPhrase("control.capture")}.`
-    : busy ? "Already creating a flow — one moment." : null;
+    : busy ? "Already creating a flow — one moment." : nightGap(night);
 
   /** The server generates AND saves, so there is one call and the id it returns
    *  is openable. The three answers go up exactly as the sheet holds them: the
@@ -117,11 +124,9 @@ export default function FlowWizard() {
   const generate = async () => {
     setGenerating(true);
     try {
-      const rec = (await flowsApi.generateFromWizard({
-        kind,
-        options: [...autos],
-        target: target.trim(),
-      })) as { id?: string };
+      const rec = (await flowsApi.generateFromWizard(
+        wizardBody(kind, autos, target, night),
+      )) as { id?: string };
       if (!rec?.id) throw new Error("the server returned a flow with no id");
       close();
       await flowsOpen(rec.id);
@@ -307,6 +312,93 @@ export default function FlowWizard() {
           className="field !text-[13px] !p-2.5 min-h-[44px]"
         />
       </label>
+
+      {/* ── 4. how the night ends. Two choices where the editor's DUSK WINDOW
+          has three: a run with no stop images into daylight and does not park
+          at dawn, which the server refuses for a wizard night. */}
+      <div className="flex flex-col gap-1.5">
+        <span
+          id="flows-wiz-stop"
+          className="font-display font-semibold text-[9.5px] tracking-[0.18em] text-dim"
+        >
+          HOW DOES THE NIGHT END?
+        </span>
+        <div role="radiogroup" aria-labelledby="flows-wiz-stop" className="flex flex-wrap gap-2">
+          {DUSK_STOPS.map((s, i) => {
+            const on = s === night.stop;
+            return (
+              <button
+                key={s}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                tabIndex={rovingTabIndex(i, DUSK_STOPS.indexOf(night.stop))}
+                onClick={() => setNight((n) => ({ ...n, stop: s }))}
+                onKeyDown={(e) => handleRadioKeyDown(e, i, DUSK_STOPS.length,
+                  (idx) => setNight((n) => ({ ...n, stop: DUSK_STOPS[idx] })))}
+                className={`flex-1 min-w-[140px] min-h-[44px] px-2.5 py-2 rounded-[10px]
+                  border font-mono text-[11px] transition-colors cursor-pointer ${
+                    on
+                      ? "border-accent text-accent bg-accent-fill"
+                      : "border-line2 text-dim bg-transparent hover:border-accent"
+                  }`}
+              >
+                {s}
+              </button>
+            );
+          })}
+        </div>
+        {night.stop === CLOCK_TIME && (
+          <label className="flex flex-col gap-[5px]">
+            <span className="font-display font-semibold text-[9.5px] tracking-[0.18em] text-dim">
+              STOP AT (HH:MM)
+            </span>
+            <input
+              value={night.stopClock}
+              onChange={(e) => setNight((n) => ({ ...n, stopClock: e.target.value }))}
+              placeholder="03:30"
+              aria-label="Stop time, HH:MM on the 24-hour clock"
+              className="field !text-[13px] !p-2.5 min-h-[44px]"
+            />
+          </label>
+        )}
+      </div>
+
+      {/* ── 5. whether the flow resumes on later nights: the owner's question,
+          in the owner's words. */}
+      <div className="flex flex-col gap-1.5">
+        <span
+          id="flows-wiz-resume"
+          className="font-display font-semibold text-[9.5px] tracking-[0.18em] text-dim"
+        >
+          {AUTO_RESUME_LABEL.toUpperCase()}
+        </span>
+        <div role="radiogroup" aria-labelledby="flows-wiz-resume" className="flex flex-wrap gap-2">
+          {AUTO_RESUME_CHOICES.map((c, i) => {
+            const on = (c === AUTO_RESUME_CHOICES[0]) === night.autoResume;
+            return (
+              <button
+                key={c}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                tabIndex={rovingTabIndex(i, night.autoResume ? 0 : 1)}
+                onClick={() => setNight((n) => ({ ...n, autoResume: c === AUTO_RESUME_CHOICES[0] }))}
+                onKeyDown={(e) => handleRadioKeyDown(e, i, AUTO_RESUME_CHOICES.length,
+                  (idx) => setNight((n) => ({ ...n, autoResume: idx === 0 })))}
+                className={`flex-1 min-w-[140px] min-h-[44px] px-2.5 py-2 rounded-[10px]
+                  border font-mono text-[11px] transition-colors cursor-pointer ${
+                    on
+                      ? "border-accent text-accent bg-accent-fill"
+                      : "border-line2 text-dim bg-transparent hover:border-accent"
+                  }`}
+              >
+                {c}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <p className="text-[11px] text-faint leading-[1.5] [text-wrap:pretty]">
         Generates a complete, valid graph — then everything is just stages and wires
