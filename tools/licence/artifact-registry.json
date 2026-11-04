@@ -671,7 +671,7 @@
   "reviewed_sources": [
     {
       "path": "server/astrodeck/__init__.py",
-      "sha256": "9bef4a019c4fb13cb0d008e1c77f3bc99537e05e0ec5c1a547038e56897994ba",
+      "sha256": "452aeae2d80165ff34733dc656c8b562b9b0440d4263d5e097b8f1d2af9901a1",
       "component": "AstroDeck application source"
     },
     {
@@ -1532,6 +1532,11 @@
       "component": "AstroDeck application source"
     },
     {
+      "path": "server/astrodeck/imaging/frame_class.py",
+      "sha256": "6aeac65ed7b2de6da7f35b0b204fa527e5d3cac6944eacb5ebc0405112cafff3",
+      "component": "AstroDeck application source"
+    },
+    {
       "path": "server/astrodeck/imaging/livestack.py",
       "sha256": "5f8a8e34f656be5c32ca3b914678c1a49508998f88390ed36406c0646599660f",
       "component": "AstroDeck application source"
@@ -1933,7 +1938,7 @@
     },
     {
       "path": "server/pyproject.toml",
-      "sha256": "58a6059e725f75d1577834d8008375264dbb2c0f5eea5434390c428de82f9e74",
+      "sha256": "58378289489ec855ae17c1a35c8f4bc4cb6d6f236a35ee4d451fb8ca637473b0",
       "component": "AstroDeck application source"
     }
   ],

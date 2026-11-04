@@ -19,13 +19,13 @@
     },
     {
       "path": "packaging/distribution-policy.json",
-      "sha256": "d60926d6c75dbf94d552ae627ca1414ed06fe1a17479d900250d13d071a73e88",
-      "review": "Read every owner decision: Player One pending retains historical per-artifact differences; DSS2 fetch-only; artwork, Astrospheric and IAU pending. This is not owner permission. Update 2026-10-23 (#638, ruling D-F): the WCSLIB row is now not-shipped (see release-gate-review.md)."
+      "sha256": "823213cc995f55e0777afe6ff93aa6f008cce4369de8128e569aad8868b3dd19",
+      "review": "Read the complete diff from b3ce0f1b: the wcslib decision changes from pending (evidence issue:638) to not-shipped (evidence: owner ruling D-F on PR #1130, 2026-10-23); no other decision (Player One, DSS2, artwork, Astrospheric, IAU) changes. Owner ruling D-F: WCSLIB is not shipped in any artifact."
     },
     {
       "path": "packaging/distribution_policy.py",
-      "sha256": "78e25447d2ff50bc3aed9b9a260bda378ec5c3e00d97e8f2d0386c7aa2302deb",
-      "review": "Read complete selector and static package-data parity/check/sync implementation. It rejects unknown modes/kinds and DSS2 redistribution, contains no package install or app/device access. Other fetch-only decisions require gate findings until payload behavior is separately changed."
+      "sha256": "df75c46e15f6cb714ff45709698737e6ecd818d37c05953b003a87d04a77a215",
+      "review": "Read the complete diff from b3ce0f1b: MODES gains not-shipped, and the module docstring gains two lines saying a not-shipped record is a component the owner ruled is in no artifact (WCSLIB, #638) and that the release audit fails if it reappears. The validator logic, the six required decision names and the selector are unchanged; no package install or device access."
     },
     {
       "path": "packaging/entry.py",
@@ -44,32 +44,32 @@
     },
     {
       "path": "server/astrodeck/api/app.py",
-      "sha256": "4b79c651dc5350fc6cbe46e9d1609f7d099db37790c76198bb1d531d951face3",
-      "review": "Read complete immutable 6e8..e764 diff: session PATCH validation, singleton disarm and persistence now share session_store.write_locked on the worker thread. Existing application concurrency logic; no new dependency, third-party code or dataset.",
+      "sha256": "3b3d4403ab178ddacf9dad9f9f53bc0cc908605ac509ae98968d7cf2428eafa6",
+      "review": "Read the complete diff from b3ce0f1b: horizon_bins carried through the location create, update, apply and active-site write-through routes (#1117); the stacking-bundle routes build the bundle on a worker thread with a light_rotator_angle reader of the ROTMECH FITS card (#784, #825); the calibration health route computes a flow's demand once per revision through DemandCache (#827); the flow progress route adds owes_more for a complete session (#778, #1112); trust_position audit lines carry category attest (#794). First-party route code; astropy is already a dependency and is imported lazily as elsewhere in the file.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/config.py",
-      "sha256": "985af8a1e02b2b82d4adf23c1ad5f72a5421e46a295ba2aca9d4f16302d2236d",
-      "review": "Read complete immutable 6e8..e764 diff: adds monitor_reads_clouds configuration and computes field of view with standard-library math and a nonpositive focal-length guard. No third-party code, data or dependency change.",
+      "sha256": "5d2e183ad9fcf878b3eebdc10a1978d97cd630ad412b8cc68265523ecc2ae9de",
+      "review": "Read the complete diff from b3ce0f1b: SafetyConfig gains horizon_bins (sanitized on load, a note beside the horizon and not a safety input, #1117), set_safety drops bins that arrive with a changed line, and a load-time warning names an unusable dead-man's-switch url without printing it (#831). First-party; the horizon_bins sanitizer is imported lazily from locations.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/focus/native.py",
-      "sha256": "85261e08f8886c17efb53aa5b50bd41298e155bde51b62b5bd97b19d8080cbcd",
-      "review": "Read complete immutable 6e8..e764 diff: sparse-star autofocus comparison now includes negative counts. Existing control logic only; no third-party material or dependency change.",
+      "sha256": "9ff29f00b35d713e4bee99a57a0ab8f3cdbbd3566289e310d7bd814c0ea6dcda",
+      "review": "Read the complete diff from b3ce0f1b: the native sweep classifies each starved point's frame with imaging.frame_class, accepts a minimum the measured points bracket (bracketed_minimum, a pure V-shape test using a parabola through three points, #1077), and keeps a measured span when the sky starved the sweep (LIGHTLESS_CLASSES, #1108). First-party; numpy.polyfit only.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/guide/native.py",
-      "sha256": "6588bdf767326b144618bc555f2d50f9b66edf0490fec3783f6b011ce187322b",
-      "review": "Read complete immutable 6e8..e764 diff: consumes the native engine's authoritative stats lock when available while retaining the older-wheel fallback. Existing binding/control logic; no new dependency or third-party material.",
+      "sha256": "8882c95805d11ea3f6a33cf81c936f3de14e32f90461942dfffbb8be6b5340f0",
+      "review": "Read the complete diff from b3ce0f1b: StarIdentity (median flux and HFD of the lock star over its last 20 frames) and its tolerances refuse a star re-acquired after a loss, or a runaway streak, that is not the lock star (#1083); the per-cycle mount-model rate is read off the guide loop (#1089); the tolerances are documented as judgements with the two 2026-10 swaps that motivated them. First-party; statistics.median only.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/hub.py",
-      "sha256": "ccc18644ac27e0807de341b240f40a8b9eb41386deffbd9e40475a94553d01bd",
-      "review": "Read complete immutable 6e8..e764 diff: adds a rotator command/paired-solve trust test, resets trust on reconnect and refuses rotation after measured failure. Existing project logic and internal imports; no new dependency or third-party material. No live device evidence was read.",
+      "sha256": "17e74cd28a00f5dfb1cffbbeca0c395661235bc4cc0504d0cd8e3cc88468ed91",
+      "review": "Read the complete diff from b3ce0f1b: two plate-solve wheel-return warnings are reworded to say the focus offset follows the filter the solve left loaded (#817), and a camera-rotation warning is shown only for a guider that guides through the imaging sensor, via _rotation_touches_guide_calibration (#1066). First-party.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -80,8 +80,8 @@
     },
     {
       "path": "server/astrodeck/sequence/engine.py",
-      "sha256": "b3cf336346c7982b99925b19aa8d9d42ed57f811672a0c2059bc34736bcae39a",
-      "review": "Read complete immutable 6e8..e764 diff: closes a fitted cover before panel lighting; records whether each exposure/retake was guided for the RMS quality gate; adds a bounded frame-verdict cloud fallback for a connected monitor configured without cloud sensing. Existing control logic; no new dependency, third-party code or data.",
+      "sha256": "2fa78cab050dc09caa0f8482807bc55943fdbe17c6c23070b4bb63958c719b66",
+      "review": "Read the complete diff from b3ce0f1b: guide-RMS verdicts over the frame's own exposure samples, a hold and bounded retry spells while guiding is over the ceiling, and a settle wait after a guiding start (#1096); frame classification names the cause of a failed centring and stops a target on a missing plate solver (#1108, #1093, #721); ledger entries carry eccentricity, reject reason and guide verdict (#1095); the angle check uses allowed_error (#787, #828); inactive-guider words (#1078). First-party engine logic.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -92,8 +92,8 @@
     },
     {
       "path": "server/astrodeck/sequence/session.py",
-      "sha256": "fa276686485da943b0c3bb3779078bb1aa0b8f4c11875c92f59df8b6fd846aa3",
-      "review": "Read complete immutable 6e8..e764 diff: migrated synthetic legacy frames retain the default unstamped timestamp instead of an invented capture time. Existing data migration logic; no third-party dataset or dependency.",
+      "sha256": "ff6b8fc69a9f8b3fb313ec103cac5073124ccf5188ada630e4962a63e1eab490",
+      "review": "Read the complete diff from b3ce0f1b: SessionFrame gains reject_reason and guide_verdict, omitted from the file when absent by a wrap serializer (#1095, #1096); Session gains owed_under and owes_more; a docstring is updated (#778, #1112). First-party.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -104,26 +104,26 @@
     },
     {
       "path": "ui/src/components/flows/flowRunControls.tsx",
-      "sha256": "e48477e12e5384863457c341f11a8e8e3876caaffedff21874bfcd2ffa4c6dde",
-      "review": "Read complete immutable 6e8..e764 diff: propagates disarmed-session warnings, bounds optimistic run display, exposes the actual stop decision for confirmation and moves the shared phase predicate. Existing application state/UI code; no new external package, asset or data.",
+      "sha256": "51643117b87e45c717ee1ad6ecc92884138af3bdde32f927b858661a74dadc6f",
+      "review": "Read the complete diff from b3ce0f1b: the RUN_PHASE_BRIDGE_MS constant and its comment move to flowRunState.ts and are imported from there (#716); behaviour unchanged. First-party.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "ui/src/components/flows/flowRunState.ts",
-      "sha256": "a39f0974fe3422d8416f703e5a8bda7325d151c43903855359729950635b94e0",
-      "review": "Read complete immutable 6e8..e764 diff: receives the existing live-phase predicate to avoid a module cycle. No third-party material or dependency.",
+      "sha256": "43fc609ab75e50a6cfcb8e68503bb845d244fcd269cade3b2e4cb188eaca2757",
+      "review": "Read the complete diff from b3ce0f1b: gains the single definition of RUN_PHASE_BRIDGE_MS (20,000 ms) with its comment, moved from flowRunControls.tsx so the autosave and the RUN button share one number (#716). First-party.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "ui/src/components/flows/flowsSlice.ts",
-      "sha256": "7d817f2e6f67fcbfc8de862bf6b13a102d1554524ed43b778061e58fa113321d",
-      "review": "Read complete immutable 6e8..e764 diff: timestamps and clears the optimistic run state and returns server disarmed-session information after a successful start. Existing state-management logic; no third-party additions.",
+      "sha256": "09ae875b5e9bdec513a021ba25a20e4e2d3db11785c7189f8798b4d7f8e10c3f",
+      "review": "Read the complete diff from b3ce0f1b: the duplicate AUTOSAVE_RUN_BRIDGE_MS constant is deleted and the autosave's runLive reads RUN_PHASE_BRIDGE_MS from flowRunState (#716). Same value, no behaviour change. First-party.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "ui/src/components/flows/flowsTypes.ts",
-      "sha256": "2df3b793ad6978bf2b5573cb45c61ceaea729d088a31c12c15b1746ace007572",
-      "review": "Read complete immutable 6e8..e764 diff: adds startedAt to the existing run state type. No dependency, external code, asset or data.",
+      "sha256": "d1d584cb95bb557e51d00192dbfa34f39d4501de8241ceed3651b0205c15c826",
+      "review": "Read the complete diff from b3ce0f1b: historyKeyAction and its comment are removed (their job moves to lib/keys.ts, #769) and a header comment is updated to say so. Pure deletion of first-party code.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -182,8 +182,8 @@
     },
     {
       "path": "ui/src/next/hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx",
-      "sha256": "c5734ddcbdc5f7cba13e875b020d85eafd1df885cd63c802af2d34a5d5fe6f27",
-      "review": "Read complete immutable 6e8..e764 diff: passes the actual stop decision to the shared run-confirmation helper on phones. No third-party material or dependency.",
+      "sha256": "cf93a2436885f8ceace952f23345b107ea84597d4e2da4ce14df17cf4bb746fd",
+      "review": "Read the complete diff from b3ce0f1b: adds UNDO and REDO ActionButtons above ADD STAGE in the phone stages sheet, on the store's flowsUndo and flowsRedo with undoReason and redoReason (#771). First-party.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -212,15 +212,15 @@
     },
     {
       "path": "native/crates/astro-guide/src/engine.rs",
-      "sha256": "7298b832941035708a405dab0da1a73207653a3ab53571e0b514f2c75986ec30",
-      "review": "Read the complete 6e8..e764 WP-41 diff: adds authoritative guide-lock coordinates to the existing stats snapshot and exercises lock establishment/dither in Rust tests. Existing project code, unchanged Cargo dependencies and licensing; no new third-party data or code provenance asserted.",
+      "sha256": "dcad8b0a4cb60be5e6571e44123459f8a49a02a8cc81f6ab24d2e1682b539387",
+      "review": "Read the complete diff from b3ce0f1b: the guide engine keeps the flux and half-flux diameter of the star it last accepted (new star_shape field, set on lock and on each accepted frame, cleared on a stale loss and on reset) and publishes it in the stats snapshot as star, plus one unit test (#1083, #1085). First-party Rust, no dependency, no data.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea",
       "reviewer": "parent; complete immutable native diff review"
     },
     {
       "path": "native/crates/astrodeck-native/src/lib.rs",
-      "sha256": "b385fa8908c7cbab4d1617373b951c6cf5bce56a1e72cba0929162b2409317e6",
-      "review": "Read the complete 6e8..e764 WP-41 diff: exposes the existing engine lock as Python stats lock:[x,y] or None and updates its API comment. Existing project binding code, no dependency or license change.",
+      "sha256": "9dc68b193e134c341e3d41c43fcd5d13e5ccd98398e2254108bd4a167f477b08",
+      "review": "Read the complete diff from b3ce0f1b: GuideEngine.stats() adds star_flux and star_hfd to the dict it returns (None when no star is tracked) and its doc comment names them (#1083, #1085). First-party PyO3 glue, no new crate or dependency.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea",
       "reviewer": "parent; complete immutable native diff review"
     },
@@ -228,6 +228,246 @@
       "path": "packaging/metadata_payloads.py",
       "sha256": "491556e9af902e8c1eb347252027d71e092d17def7d1f33f59a8856fa680db2f",
       "review": "Read complete helper: expands distribution metadata directory pairs into per-file entries, rejects files resolving outside the metadata root and omits only that root's PEP 610 direct_url.json. Other metadata, nested notices, SBOM and native source bytes retain destinations. No application/config/device access or dependency addition. Final post-Analysis correction: Read complete helper and exact post-d836 addition: filter_installer_urls builds only the two selected root destination names for direct_url.json, normalizes slash separators, and filters final TOC destination names without opening metadata contents. Nested files, other distributions, source paths and row order remain unchanged. The existing explicit directory expansion still checks containment."
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES.md",
+      "sha256": "66eb054d78ba017ac462c96a047cadbed2c7d8a5516a1c0504dedd061edc67ac",
+      "review": "Read the complete diff from b3ce0f1b (one hunk of prose and two table rows, nothing else). Under owner ruling D-F (#638, 2026-10-23) the WCSLIB table row is deleted and the sentence saying WCSLIB and the GCC runtime keep owner decisions is replaced by one stating the GCC runtime inside NumPy's OpenBLAS ships under the GCC Runtime Library Exception 3.1; the GCC row now links bundled-gcc-runtime-exception-3.1.txt (checked: its text is a verbatim substring of the NumPy 2.5.3 wheel notice) and the GPL text instead of the whole NumPy notices file. No component, licence, notice text or credit is added."
+    },
+    {
+      "path": "native/crates/astro-guide/src/types.rs",
+      "sha256": "e44c95696d54bdf2b98db3cc7c8e27561314026a721ec01f99ac3c274cad449b",
+      "review": "Read the complete diff from b3ce0f1b: adds the StarShape struct (flux, hfd) with its doc comment, the type engine.rs publishes (#1083, #1085). First-party Rust."
+    },
+    {
+      "path": "ui/src/api/site.ts",
+      "sha256": "386b2e2d16a37159f7e82755192ed0cede3341e5f7efec9245b88beb6363a748",
+      "review": "Read the complete diff from b3ce0f1b: LocationInput gains an optional horizon_bins field typed HorizonBinStatus[] with a comment on its three states (#1117). First-party type and comment."
+    },
+    {
+      "path": "ui/src/components/flows/FlowCanvas.tsx",
+      "sha256": "ec94a3b64cccfb6f23f8daa9c23967a4fb008905d69823b114e9b50d0e67b0cd",
+      "review": "Read the complete diff from b3ce0f1b: the canvas key handler goes through the new editorKeyAction (lib/keys.ts) instead of testing e.key directly, so Ctrl+F and Ctrl+Backspace are the browser's (#769), and the float's UNDO/REDO pair is replaced by the shared FlowHistoryButtons component. First-party editor logic; the pre-existing comment text moved with it."
+    },
+    {
+      "path": "ui/src/components/flows/FlowHistoryButtons.tsx",
+      "sha256": "82d52880c36636c9f7f8d2fed7338f50976b53202760594b076d0083b24eff03",
+      "review": "New file, read in full: the classic editor's UNDO and REDO button pair (two HonestButton elements over the store's flowsUndo and flowsRedo), extracted from the FlowCanvas float so the phone FLOW tab can show it (#688, #771). First-party, carries the project header, imports only local modules."
+    },
+    {
+      "path": "ui/src/components/flows/FlowPhoneGraph.tsx",
+      "sha256": "c24516d770e633e3d7cd6c0cab6c9e490abdbf10fea9322706067929a7bbf579",
+      "review": "Read the complete diff from b3ce0f1b: renders the shared FlowHistoryButtons in a row above ADD STAGE on the phone graph (#771). First-party."
+    },
+    {
+      "path": "ui/src/components/flows/FlowWizard.tsx",
+      "sha256": "4a4a687a216cc132e474c900629363087b30d4ac3028c161dce9d11b3e1acac8",
+      "review": "Read the complete diff from b3ce0f1b: adds two answers to the classic Send to Flow wizard, HOW DOES THE NIGHT END (Dawn or Clock time with an HH:MM field) and Automatic resume (On or Off), reusing the #/next wizardModel constants and wizardBody, and blocks GENERATE with nightGap when a Clock time stop has no time (#718). First-party React and copy."
+    },
+    {
+      "path": "ui/src/components/flows/runCopy.ts",
+      "sha256": "123c8ec36044343d17824e2a93c9a7c3a286826e7d998ebf9fc13168fc353fb1",
+      "review": "Read the complete diff from b3ce0f1b: runCopy now reads CONTINUE for a complete session the route says owes_more, through a new continues() predicate, besides a dormant one (#778, #1112); comments updated. First-party copy logic."
+    },
+    {
+      "path": "ui/src/components/flows/wizard/nightAnswers.ts",
+      "sha256": "f7df821449eeb97537b149fdf74e0292ee39935fc5ba506d1e531267ba5ecb8e",
+      "review": "New file, read in full: a dependency-free leaf holding CLOCK_TIME, DUSK_STOPS, clockOf and NEED_STOP_CLOCK, moved out of wizardModel.ts so the NEW FLOW sheets share them without the framing imports (#718). First-party, project header, imports nothing."
+    },
+    {
+      "path": "ui/src/components/flows/wizard/wizardModel.ts",
+      "sha256": "790ce55373e659a0f6ee8e25f0cdfff2db766c257765d95a7386decfeeab485f",
+      "review": "Read the complete diff from b3ce0f1b: the four constants above are deleted here and re-exported from the new nightAnswers.ts leaf; no behaviour change. First-party."
+    },
+    {
+      "path": "ui/src/lib/flowsApi.ts",
+      "sha256": "e577fbfa06c0a4436428bbf0da65366b2ff989d34cfeaaac5ca34d1d53ee4a4b",
+      "review": "Read the complete diff from b3ce0f1b: FlowProgressSession gains an optional owes_more boolean with its doc comment (server field added by #778, #1112). First-party type."
+    },
+    {
+      "path": "ui/src/lib/keys.ts",
+      "sha256": "dd9fe9d44df9a77fc8fe7d6a997036178c571274b3d06a966b52f03d8bee066a",
+      "review": "New file, read in full: one keyboard-binding matcher (matches, actionFor, EDITOR_KEYS, editorKeyAction) in which a binding names the modifiers it needs and any other ctrl, meta or alt makes the event not that binding (#1124, #769). First-party logic of about 80 lines, project header, no imports, no copied code."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/canvas/FlowCanvasSurface.tsx",
+      "sha256": "dec92550fbaab85ba586c58fb32ebb67b739ae127328df4ff8fd9d0f04c1b1ca",
+      "review": "Read the complete diff from b3ce0f1b: the #/next canvas key handler goes through editorKeyAction and a switch on the action, with fit alone allowed under a sheet (#769). First-party."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/create/wizard.tsx",
+      "sha256": "a69252e053d4aab3beafdf4973a4cb67e624faa24b83839d7607dcae482fd50b",
+      "review": "Read the complete diff from b3ce0f1b: the #/next NEW FLOW sheet gains the two night questions (how the night ends, Automatic resume) as Segmented controls with a stop-clock field, and posts wizardBody (#718). First-party React and copy."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
+      "sha256": "356e0a45d557b62e1d2278208a17e64a8ec199eca8b3e89a302642df73c88ed9",
+      "review": "Read the complete diff from b3ce0f1b: adds NightAnswers, NIGHT_DEFAULTS, STOP_SUB, RESUME_SUB, nightGap and wizardBody, which sends the night answers only when they differ from DUSK WINDOW's defaults (#718). First-party pure logic."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/frame/FramingCard.tsx",
+      "sha256": "c86b4a37dc78c1856fcfe19c58153852f81f6eeaf4c326de8b33350c4c290f91",
+      "review": "Read the complete diff from b3ce0f1b: commandedPa is called with the grid's panel count, and a header comment is reworded to point at mosaic.ts's PA_DEADBAND_DEG (#790). First-party."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/frame/mosaic.ts",
+      "sha256": "cd2f8bfaba2898186bbed5ea1424ca2082fcb81db2fb751dda964d75e98b7b1d",
+      "review": "Read the complete diff from b3ce0f1b: commandedPa takes the panel count and returns the layout angle for any grid, 0 included, keeping the 0.5 degree dead-band for one panel only, with comments to match (#790). First-party."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/horizon.tsx",
+      "sha256": "f16429f438b77f3dcaeb7d5b2390f94905f223f285b1c96e8cd41c3445d9c7e5",
+      "review": "Read the complete diff from b3ce0f1b: the horizon sheet loads, saves and draws the per-bin status of a scanned line (horizonBins), drops it when the line is edited by hand, marks unmeasured bins on the strip, and words the view-angle source as measured, your estimate or estimated (#904, #903, #1117). First-party React."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/horizonBins.ts",
+      "sha256": "19262ab4fa7cc72d2e53ac7ecf20226486fa8e3748c40f1a9cc5605445690aae",
+      "review": "New file, read in full: the per-bin horizon model (BinStatus, pointsFromBins turning bins into a polyline in which the higher bin keeps a shared edge, binsFromTrace, parseSavedBins, binsDescribe) (#900, #904, #1117). First-party algorithm, project header, imports only the local horizonModel."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/photosphere.ts",
+      "sha256": "c559cc194b7cad36ee2c453365b117d5386168028cc1d4a3f93e2e4bb893fbf1",
+      "review": "Read the complete diff from b3ce0f1b: frames whose overlap test cannot decide are held and counted only once a later frame vouches for them (#904), bin sampling spans the whole bin width with 36 subcolumns (#900), the lens view angle records its source default, user-estimate or measured and stored lens profiles migrate (#903), the alignment report carries a capture-log summary (#902), and SkyTrace carries bins. First-party scanner logic with its own constants; no external algorithm or data."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/quick.tsx",
+      "sha256": "038c6756ce228e5531d460570eb202c2e0e2d719dbe0a30122e7b9563f729a7a",
+      "review": "Read the complete diff from b3ce0f1b: one call site passes 1 as the panel count to commandedPa, with a comment (#790). First-party."
+    },
+    {
+      "path": "ui/src/views/AtlasView.tsx",
+      "sha256": "171280cc247001567518dc26f4a10b2e86ab36dea2adc1489fea69713361091b",
+      "review": "Read the complete diff from b3ce0f1b: the classic Atlas imports commandedPa from the #/next mosaic module and calls it with the panel count instead of its inline 0.5 degree test, with the comment reworded (#790). First-party."
+    },
+    {
+      "path": "server/astrodeck/alerting.py",
+      "sha256": "3509309a0d0a20c13e451f17065338cc42338c9cae8fb1d3f1729da7fc7a2256",
+      "review": "Read the complete diff from b3ce0f1b: AlertDispatcher gains an arm for the new SITE_ALERT_TYPE event, mapping its warning or error level exactly as the unflagged log line would be, plus a comment on the preceding arm (D-H, #748). First-party."
+    },
+    {
+      "path": "server/astrodeck/api/redact.py",
+      "sha256": "3afa0fb4df260a4ea12c2081c56e033c385aafdd3b64f22e539aabb03fe1ae0c",
+      "review": "Read the complete diff from b3ce0f1b: the WebSocket redaction drops the new site_alert event for every role, and the mount's ra_hours, dec_deg and tracking fields are served as the last values from before a flip hold while the hold is open (_hold_mount_pointing, #1067, D-H #748). First-party; it withholds values and adds none."
+    },
+    {
+      "path": "server/astrodeck/auth/audit.py",
+      "sha256": "5669e9cac39574f1df6a027cf5313216305b1adfe26c14c58e88a6cf3dc3c7e1",
+      "review": "Read the complete diff from b3ce0f1b: record() gains a category argument (auth, attest or admin, a ValueError otherwise) that leads the audit line, with the CATEGORIES tuple (#794). First-party."
+    },
+    {
+      "path": "server/astrodeck/calibration/keys.py",
+      "sha256": "23e51308d6a0aef1a545e8ec96ca40c492ad717bd6dcce0fbe9cf44106405e02",
+      "review": "Read the complete diff from b3ce0f1b: circular_mean_angle (the library's private _circular_mean, unchanged in arithmetic, moved here and made public) and a Sequence import. First-party."
+    },
+    {
+      "path": "server/astrodeck/calibration/library.py",
+      "sha256": "1b3ee87bd633230a97c13326f52ffadf7e21f899cd69d0047b29114cd530971e",
+      "review": "Read the complete diff from b3ce0f1b: deletes the private _circular_mean and the math import and calls the keys.py circular_mean_angle instead; behaviour unchanged. First-party."
+    },
+    {
+      "path": "server/astrodeck/calibration/matcher.py",
+      "sha256": "5c860ada770df466e02d934902ac4a9cb423f5831446a55896949f6dc281d4b8",
+      "review": "Read the complete diff from b3ce0f1b: adds unknown_angle_refusal, the sentence and test for withholding a flat from lights whose rotator angle is not recorded when the library's flats are keyed by angle (#784, #825). First-party."
+    },
+    {
+      "path": "server/astrodeck/dawn_park.py",
+      "sha256": "dfe137a5d6d0bb530fd9861eca0b2596bd5db1d2668edbab9796556381cb03c1",
+      "review": "Read the complete diff from b3ce0f1b: dawn-park warnings and errors that must still page are published with bus.log_with_alert, and the moment-bearing info lines are flagged site_derived (D-H, #748). Message wording is kept except one alert-safe variant without the Sun altitude. First-party."
+    },
+    {
+      "path": "server/astrodeck/devices/sim.py",
+      "sha256": "e6f8155c7963ad672135cbd8640f95aed3d582693c594b7e257d2d96496157a1",
+      "review": "Read the complete diff from b3ce0f1b: SimTelescope gains can_measure_model_step, model_mark, model_step_since and measure_model_step, the sim twin of the AM5 driver's mount-model step read, keeping marks and returning differences only (#1071, #1089). First-party test-rig code."
+    },
+    {
+      "path": "server/astrodeck/events.py",
+      "sha256": "f366fdddef1d535aa602022ef0c3c05a2503589da41f84c9baf0b4dd6b5ce40e",
+      "review": "Read the complete diff from b3ce0f1b: adds the SITE_ALERT_TYPE constant and EventBus.log_with_alert, which publishes a site-derived log line plus an alert-safe twin event for the alert dispatcher alone (D-H, #748). First-party."
+    },
+    {
+      "path": "server/astrodeck/factory_reset.py",
+      "sha256": "9f87664fd92d5bbadeec88551c91e55e5319f2a6f01fc4cdd8a585daf35549f8",
+      "review": "Read the complete diff from b3ce0f1b: a reset also removes the .bak copy and stranded .tmp staging files that the atomic JSON writer leaves beside each setup file, since the .bak holds the previous owner's data (#1068). First-party."
+    },
+    {
+      "path": "server/astrodeck/flows/calibration_health.py",
+      "sha256": "6c43b1c6f19b36ffba78c3f8c106ed1040a3dbbee33d5ffb2a6086e589420823",
+      "review": "Read the complete diff from b3ce0f1b: health summaries say rotator angle instead of PA, and DemandCache is added, a small thread-safe LRU keyed per flow revision so the health route does not recompile the plan on every request (#827). First-party."
+    },
+    {
+      "path": "server/astrodeck/flows/compile.py",
+      "sha256": "cb9ad5c10baecd315cd6df362bf73cf3d7f9433c4fa15520dacd7beb49c839f8",
+      "review": "Read the complete diff from b3ce0f1b: a docstring about the campaign until shape is reworded to say the to_plan note was deleted with the shape (#772). Comment only."
+    },
+    {
+      "path": "server/astrodeck/flows/continuation.py",
+      "sha256": "a6b3e4a5fafe51b3b2df5a11280ccc649575fc5c2f272ee4dd3dd3d4ab91b92b",
+      "review": "Read the complete diff from b3ce0f1b: reopen_report asks the session's new owes_more and owed_under instead of recomputing the owed count inline (#778, #1112); same result. First-party."
+    },
+    {
+      "path": "server/astrodeck/flows/examples.py",
+      "sha256": "623484b5336152d6f3e5824b7cb950815421fd0c3e9fef7956a66b6e2fe713eb",
+      "review": "Read the complete diff from b3ce0f1b: the campaign example drops its stored repeat override, which nothing reads any more, and its docstring is updated (#773, #746). First-party example data."
+    },
+    {
+      "path": "server/astrodeck/flows/to_plan.py",
+      "sha256": "d73544776af16cbf70c845be9e0ab4143b36936e757f433f9f71b8d7630932e0",
+      "review": "Read the complete diff from b3ce0f1b: the campaign note loses its nights_30 branch (that shape no longer exists, #772) and the park-and-close loss note names the Settings > Safety 'Close roof at end-of-night' option. First-party copy."
+    },
+    {
+      "path": "server/astrodeck/flows/tonight.py",
+      "sha256": "9cc8295e61e35aedcc6c45e06bf5d25160b10df790745f7a73d7b10adac5cfcc",
+      "review": "Read the complete diff from b3ce0f1b: the CAMPAIGN tab, the brief and the story's dawn row read the night's shape from one NightFacts taken off the compiled plan (night_facts, _wind_down, _story_darks, _dawn_note) instead of three graph readings (#1112, #819, #775). First-party; the old _DAWN constants are removed."
+    },
+    {
+      "path": "server/astrodeck/focus/autofocus.py",
+      "sha256": "ebefe63e4baf37f93e995f1acf7df0db5007b143d3ec738a2c3ac73e7a8c9aa6",
+      "review": "Read the complete diff from b3ce0f1b: run_autofocus accepts a frame_context and forwards it to the native sweep (#1108). First-party."
+    },
+    {
+      "path": "server/astrodeck/guide/flight_recorder.py",
+      "sha256": "ba6111d28e2657754a187fc7707fb7735b96d5b499e5778daa95350c9522db77",
+      "review": "Read the complete diff from b3ce0f1b: begin_cycle records the guide star's hfr and flux, and note_model_step fills the mount-model rate from the driver's differences, leaving it null for a disturbed or over-long window (#1071, #1089). First-party."
+    },
+    {
+      "path": "server/astrodeck/imaging/frame_class.py",
+      "sha256": "6aeac65ed7b2de6da7f35b0b204fa527e5d3cac6944eacb5ebc0405112cafff3",
+      "review": "New file, read in full (288 lines): classify() names why a frame holds no usable stars (stars, obstructed, no light, cloud, solver missing, unknown) from block medians, a sharp-edge test and the existing solve.light, clouds and stars modules (#1108, #1093, #1077, #721). First-party pure numpy code with every threshold named and sourced in comments, project header, imports only local modules and numpy; no copied code or data."
+    },
+    {
+      "path": "server/astrodeck/locations.py",
+      "sha256": "feca0a381d7214cf42e770d7a7f7b27c702913a43e756f3d667d0ad799460bb4",
+      "review": "Read the complete diff from b3ce0f1b: horizon_bins on SavedLocation with normalize_horizon_bins (strict) and sanitize_horizon_bins (load door), and create and update carry or drop the bins with the line (#1117). First-party."
+    },
+    {
+      "path": "server/astrodeck/sequence/angle_check.py",
+      "sha256": "bc9992b5cbff23da892c486a9ec8e28ca652faeb5be05b2ffc18acaa1377feef",
+      "review": "Read the complete diff from b3ce0f1b: adds allowed_error and _convergence_term_deg, which charge back the convergence a fixed camera cannot correct from the members' angles using the framing module's _seam_share (#787, #828). First-party geometry."
+    },
+    {
+      "path": "server/astrodeck/sequence/bundle.py",
+      "sha256": "5cebb5460be3c23a40e0d3c5b14cca8e41d99703dacc8a1935ce9ab29093a451",
+      "review": "Read the complete diff from b3ce0f1b: stacking bundles group lights by rotator-angle bin, ask the library for the flat at the group's circular-mean angle, withhold a flat when the angle is unknown and the library's flats are keyed by angle, and put the angle in the manifest (#784, #825, #188). First-party."
+    },
+    {
+      "path": "server/astrodeck/sequence/group_rules.py",
+      "sha256": "df9197d2df6e8027da5baad23a961e81db5ecf9bd327bb11ea901f8d8e475e26",
+      "review": "Read the complete diff from b3ce0f1b: close_pass and _decide_pass_end take an optional frame_cause that the centring-hold sentence names in place of 'the sky or the geometry' (#1093, #1108). First-party."
+    },
+    {
+      "path": "server/astrodeck/sequence/models.py",
+      "sha256": "18eeed0ce754cf939013e05e6f371e819ded5fdda53ffe236bef4034c53db309",
+      "review": "Read the complete diff from b3ce0f1b: one comment on TargetGroup.rotate is reworded (members of a fixed block carry no rotation). Comment only."
+    },
+    {
+      "path": "server/astrodeck/sequence/report.py",
+      "sha256": "7ca60929ebd45ebecba78f7a25be4bb04cacbae7ae5ea7f99554b9d7c403b950",
+      "review": "Read the complete diff from b3ce0f1b: flush rewrites one fresh snapshot, awaited, when no write is running and the newest snapshot built is not the one on disk, so the report on disk holds everything recorded (#1099). First-party."
+    },
+    {
+      "path": "server/astrodeck/sun_watch.py",
+      "sha256": "0a55584fc69cab08f090e2a5cdef69910d02084c12e9f0e8f26e15c21283b9bc",
+      "review": "Read the complete diff from b3ce0f1b: sun-watch holds can be flagged site_derived, and the blind-in-daylight and position-unknown-in-daylight errors are published with bus.log_with_alert so they still page without carrying the site-derived moment to a viewer (D-H, #748). First-party."
     }
   ],
   "upstream_review": {
