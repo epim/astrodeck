@@ -8850,6 +8850,17 @@ class Hub:
                 with contextlib.suppress(Exception):
                     await self.resume_loop()
 
+    def _rotation_touches_guide_calibration(self) -> bool:
+        """Does turning the imaging camera turn the connected guider's camera
+        (#1066)? Only a guider that guides through the imaging sensor says so
+        (``shares_the_imaging_sensor``, which the native backend sets exactly
+        when no separate guide camera is assigned). A guide-scope rig, and a
+        guider that cannot say (the PHD2 bridge), are not claimed to be
+        touched."""
+        g = self.guider
+        return bool(g and g.connected
+                    and getattr(g, "shares_the_imaging_sensor", False))
+
     async def _rotate_to_pa_attempts(self, rot, cam, solver, rcfg, target,
                                      exposure_s, max_attempts, epoch,
                                      adjusted_to, moved, error, prev_error,
@@ -8997,10 +9008,12 @@ class Hub:
             if _rotation.angle_equals_mod180(distance, 0.0, rcfg.tolerance_deg):
                 bus.publish("rotator", action="rotated",
                             pa_deg=round(orientation, 2))
-                if moved and self.guider and self.guider.connected:
+                if moved and self._rotation_touches_guide_calibration():
                     bus.log("warning",
-                            "camera rotated — guide calibration may be stale; "
-                            "PHD2 will re-calibrate or flip as needed", "guide")
+                            f"camera rotated: {self.guider.name} guides "
+                            f"through the imaging camera, so its calibration "
+                            f"no longer matches the camera angle; calibrate "
+                            f"it again before guiding", "guide")
                 return {"rotated": True, "pa_deg": orientation,
                         "adjusted_to": adjusted_to, "attempts": attempt,
                         "error_deg": round(error, 2)}
