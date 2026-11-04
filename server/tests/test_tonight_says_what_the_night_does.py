@@ -12,9 +12,17 @@ for every flow-derived plan, so the cooler is never held; and no lane shoots
 darks after a shutdown at all - the calibration queue's darks are only ever
 taken inside a cloud hold, matched to the step the clouds interrupted.
 
-Meanwhile the CAMPAIGN tab's `_DAWN`, on the same page, said the opposite:
+Meanwhile the CAMPAIGN tab's dawn note, on the same page, said the opposite:
 "Dawn parks the mount and warms the camera - the dome is not driven and the
 cooler does not stay cold for day darks."
+
+RE-PINNED FOR WP 2.5 (#819, #1112). The second half of that account turned
+out to be false of the campaign Example: its calibration queue is wired to
+SHUTDOWN COMPLETE, so `plan_extras` funds `day_darks` and the wind-down shoots
+them between the park and the warm. Both surfaces now say what the PLAN says
+(`tonight.night_facts`), including the day darks and that the dome closes only
+through Settings > Safety, and `test_w2_notes_from_plan.py` holds every note to
+the compiled plan. The cooler claim is unchanged: it is never held.
 
 So the app contradicted itself about what the rig would do overnight, and only
 one of the two could be checked against anything: the existing binding test
@@ -78,12 +86,13 @@ class TestTheBriefDoesNotPromiseTheCoolerOrDayDarks:
                 "warms it - the operator is told their day darks will happen "
                 "on a sensor that will be at ambient")
 
-    def test_it_does_not_claim_day_darks_are_banked(self):
+    def test_it_says_the_day_darks_the_plan_funds(self):
         rec, compiled = _campaign()
+        plan, _ = to_sequence_plan(compiled, rec.graph)
         text = _brief_text(rec, compiled)
-        assert "day darks" not in text, (
-            "the night story still promises day darks; nothing shoots them - "
-            "the only automatic darks in the engine are the cloud hold's")
+        assert plan.day_darks > 0, "premise: the campaign funds day darks"
+        assert f"{plan.day_darks} day darks are taken" in text, (
+            "the night story does not say the day darks the plan funds")
 
     def test_it_still_says_the_things_that_ARE_true(self):
         """The guard against fixing a lie by deleting the sentence. The mount
@@ -104,12 +113,13 @@ class TestTheTwoTabsAgree:
     def test_neither_surface_claims_a_cooler_hold(self):
         """The contradiction itself, as one assertion. `_DAWN` (campaign tab)
         and `brief` (night story) describe the same dawn on the same rig."""
-        from astrodeck.flows.tonight import _DAWN
+        from astrodeck.flows.tonight import _campaign as campaign_tab
         rec, compiled = _campaign()
         text = _brief_text(rec, compiled)
-        assert "does not stay cold" in _DAWN, (
-            "_DAWN changed - if the cooler hold was BUILT, this whole file "
-            "needs rewriting rather than relaxing")
+        note = campaign_tab(rec.graph, None)["note"]
+        assert "does not stay cold" in note, (
+            "the campaign note changed - if the cooler hold was BUILT, this "
+            "whole file needs rewriting rather than relaxing")
         assert "held cold" not in text, (
             "the night story and the campaign tab disagree about the cooler")
 

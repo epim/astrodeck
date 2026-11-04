@@ -397,6 +397,13 @@ export interface FlowProgressSession {
    *  from a server older than S7 (see `armed`). The editor's replay line
    *  compares it with the open record's `updated_ts` (`replayNotice`). */
   plan_saved_ts?: number | null;
+  /** Whether a press of RUN would ASK to reopen this COMPLETE session: the
+   *  flow was edited to owe frames the finished session does not hold, and
+   *  shares a step with it (server `continuation.reopen_report`, #179; added
+   *  by the ROUTE, #778, #1112). The run button then reads CONTINUE before
+   *  the press (`runCopy`). Present only on a complete session; a server
+   *  older than #1112 sends none, which reads as "owes nothing". */
+  owes_more?: boolean;
 }
 
 export interface FlowProgress {

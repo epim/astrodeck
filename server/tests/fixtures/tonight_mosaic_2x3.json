@@ -678,7 +678,7 @@
      "pct": null
     }
    ],
-   "note": "The session log is unavailable, so captured totals cannot be shown. Dawn parks the mount and warms the camera - the dome is not driven and the cooler does not stay cold for day darks. Each dusk resumes where the session log left off. 4 of 6 mosaic panels done, 9 of 12 subs captured.",
+   "note": "The session log is unavailable, so captured totals cannot be shown. Dawn parks the mount and warms the camera - no day darks are queued, so the cooler does not stay cold; the roof closes only if Settings > Safety 'Close roof at end-of-night' is on. Each dusk resumes where the session log left off. 4 of 6 mosaic panels done, 9 of 12 subs captured.",
    "panels": [
     {
      "block": "t",

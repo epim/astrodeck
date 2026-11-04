@@ -22472,8 +22472,7 @@ def test_5_9_says_the_button_copy_as_s5_built_it():
                     "${counts})`;" in fn
                 and "const counts = `${banked}/${total} subs`;" in fn)
     rule = ('if (live) return plain("STOP");' in fn,
-            'if (!session || session.status !== "dormant") return '
-            'plain("RUN");' in fn,
+            'if (!session || !continues(session)) return plain("RUN");' in fn,
             # Since H4 (#511) the route's own night, never ``nights`` plus
             # one; S5's sentence is history the spec keeps.
             "const night = readable && finite(session.continue_night) ? "

@@ -440,10 +440,20 @@ class TestWhoMayReadIt:
 #:     'status'}
 #:       Extra items in the left set:
 #:       'continue_night'
+#:
+#: DELIBERATE PIN CHANGE (WP 2.5, #778, #1112): the session gains
+#: ``owes_more``, which the ROUTE adds (``continuation.reopen_report``) on a
+#: COMPLETE session only: whether a press would ask to reopen it. A flag, not
+#: derived from the site. The #1112 list against the new route, observed on a
+#: complete session:
+#:
+#:     AssertionError: session carries keys outside the allow-list
+#:       Extra items in the left set:
+#:       'owes_more'
 ALLOWED = {
     "top": {"flow_id", "session", "blocks", "orphaned"},
     "session": {"id", "status", "nights", "count_mode", "armed",
-                "plan_saved_ts", "continue_night"},
+                "plan_saved_ts", "continue_night", "owes_more"},
     "block": {"node_id", "name", "kind", "banked", "owed", "total", "panels",
               "grid", "skipped", "group_id"},
     "grid": {"rows", "cols"},
@@ -867,10 +877,13 @@ class TestTheCounts:
         #       {'armed': False, 'plan_saved_ts': None}
         #
         # Unchanged in H4 (#511): a complete session, which RUN starts afresh
-        # rather than continues, carries no ``continue_night``.
+        # rather than continues, carries no ``continue_night``. DELIBERATE PIN
+        # CHANGE (WP 2.5, #778): it carries ``owes_more``, true here because
+        # the seeded session holds 2 subs of the flow's 5.
         assert got["session"] == {"id": done.id, "status": "complete",
                                   "nights": 1, "count_mode": "attempts",
-                                  "armed": False, "plan_saved_ts": None}
+                                  "armed": False, "plan_saved_ts": None,
+                                  "owes_more": True}
         assert _steps(got)[0][1] == 2
 
         _seed(fid, plan, _frames(t.id, t.steps[0].id, 3), created=200.0,
@@ -963,6 +976,72 @@ class TestTheCounts:
         assert got["session"] is None
         assert _steps(got) == [(t.steps[0].id, 0, 3), (t.steps[1].id, 0, 2)]
         assert got["orphaned"] == {"frames": 0, "steps": 0}
+
+
+# =================================================== a complete session owes more
+
+#: LR with L raised from 3 to 5: the same step ids (a count is not part of a
+#: step's identity), two more subs owed.
+LR_L5 = _graph(_capture("c1", "L", count=5), _capture("c2", "R", count=2))
+
+
+class TestACompleteSessionSaysWhetherItOwesMore:
+    """The progress route's ``session`` carries ``owes_more`` for a COMPLETE
+    session (#778, #1112, WP 2.5): the answer ``reopen_report`` gives (the
+    session shares a step with tonight's compile and, counted by it, still owes
+    frames), so the run button reads CONTINUE before the press."""
+
+    async def _finished(self, api):
+        fid = await api.save_flow(LR)
+        _c, plan = _compiled(LR, fid)
+        t = plan.targets[0]
+        frames = (_frames(t.id, t.steps[0].id, 3)
+                  + _frames(t.id, t.steps[1].id, 2))
+        _seed(fid, plan, frames, created=100.0, status="complete")
+        return fid
+
+    async def test_a_raised_count_reads_true(self, api):
+        """RED before the route sent the key: ``KeyError: 'owes_more'``."""
+        fid = await self._finished(api)
+        await api.put_flow(fid, LR_L5)
+        got = await api.ok(fid)
+        assert got["session"]["status"] == "complete"
+        assert got["session"]["owes_more"] is True, got["session"]
+
+    async def test_an_unchanged_flow_reads_false(self, api):
+        """RED before the route sent the key: ``KeyError: 'owes_more'``."""
+        fid = await self._finished(api)
+        got = await api.ok(fid)
+        assert got["session"]["owes_more"] is False, got["session"]
+
+    async def test_a_changed_recipe_beside_a_shared_step_reads_true(self, api):
+        """R's exposure changed: L is still shared and complete, and R is a
+        new step owing its 2 subs, which is an extension of the session."""
+        fid = await self._finished(api)
+        await api.put_flow(fid, LR_R90)
+        got = await api.ok(fid)
+        assert got["session"]["owes_more"] is True, got["session"]
+
+    async def test_a_flow_sharing_no_step_reads_false(self, api):
+        """Both recipes changed: the flow owes frames but shares no step id
+        with the session, so a press starts fresh and the button says RUN."""
+        fid = await self._finished(api)
+        await api.put_flow(fid, _graph(_capture("c1", "L", exposure=90.0),
+                                       _capture("c2", "R", exposure=90.0,
+                                                count=2)))
+        got = await api.ok(fid)
+        assert got["session"]["owes_more"] is False, got["session"]
+
+    async def test_other_statuses_carry_no_key(self, api):
+        """Only a complete session is asked: a dormant one is continued
+        straight away, so the key stays out of its answer."""
+        fid = await api.save_flow(LR)
+        _c, plan = _compiled(LR, fid)
+        t = plan.targets[0]
+        _seed(fid, plan, _frames(t.id, t.steps[0].id, 1), created=100.0)
+        got = await api.ok(fid)
+        assert got["session"]["status"] == "dormant"
+        assert "owes_more" not in got["session"], got["session"]
 
 
 # ======================================================== the route's plumbing

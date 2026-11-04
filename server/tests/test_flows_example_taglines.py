@@ -128,8 +128,8 @@ CAMPAIGN_TAGLINE = ("The pool hands out targets until every quota is met; "
                     "mount and warms the camera, and each dusk resumes "
                     "mid-cycle from the session log.")
 
-#: The dawn fact the tagline and the CAMPAIGN tab (`tonight._DAWN`) both say,
-#: in the same words, so a reader of the library card and a reader of the tab
+#: The dawn fact the tagline and the CAMPAIGN tab (`tonight._PARK_WARM`, said
+#: by `tonight._dawn_note`) both say, in the same words, so a reader of the library card and a reader of the tab
 #: cannot be told two different things about one night.
 DAWN_FACT = "parks the mount and warms the camera"
 
@@ -144,16 +144,18 @@ class TestTheCampaignExamplesTagline:
     cold for day darks", and the CAMPAIGN tab on the same page said the
     cooler does NOT stay cold for day darks and that the dome is not driven.
     Two surfaces disagreed about one night, and the card is the one an
-    operator reads when choosing a flow.
+    operator reads when choosing a flow. (Since WP 2.5, #1112, the tab's note
+    is made from the compiled plan: it names the day darks the plan funds
+    and says the dome closes only through Settings > Safety.)
 
     The card now says only what both agree on and the compiled plan keeps:
     the mount parks, the camera warms, each dusk resumes. It makes no claim
     about the dome and none about the cooler. It does NOT say day darks are
     taken either: the wind-down does take them for this Example (the queue is
     wired to SHUTDOWN COMPLETE and the plan funds `day_darks`), between the
-    park and the warm, but the CAMPAIGN tab's `_DAWN` still denies them, and a
-    card that disagreed with the tab again would re-open this issue. That
-    sentence belongs to Tonight's copy, not to this card.
+    park and the warm. Tonight's notes say so, in the plan's own count
+    (`tonight.night_facts`, held by `test_w2_notes_from_plan.py`); the card
+    stays short and carries the one dawn fact the notes share.
     """
 
     def test_it_makes_no_promise_the_campaign_tab_denies(self):

@@ -43,7 +43,7 @@
 // whatever #166's fix does to it, with no change here (#510, B16).
 //
 // Pure: no store, no React, no clock. Each answers from its arguments alone.
-import type { FlowProgress } from "../../lib/flowsApi";
+import type { FlowProgress, FlowProgressSession } from "../../lib/flowsApi";
 import type { SequenceState } from "../../types";
 import { flowRunLive } from "./flowRunState";
 import type { FlowGraphRec } from "./flowsTypes";
@@ -106,6 +106,12 @@ export function graphResumes(graph: FlowGraphRec | null | undefined): boolean {
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+/** Whether a press now CONTINUEs this session: it is dormant (continued
+ *  straight away), or it is complete and the flow now owes more (the press
+ *  asks, then reopens it). The one rule behind the verb. */
+const continues = (s: FlowProgressSession): boolean =>
+  s.status === "dormant" || (s.status === "complete" && s.owes_more === true);
+
 /** The RUN button's copy.
  *
  *  STOP while `live` (the engine owns the rig for this flow): the button then
@@ -131,14 +137,23 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
  *  panels and orphaned frames are in no block's sums because they fill no
  *  quota.
  *
+ *  CONTINUE too when the route names a COMPLETE session that `owes_more`
+ *  (#778, #1112): the flow was edited to owe frames the finished session does
+ *  not hold, so the press is ASKED about first (409 `reopen`, #179,
+ *  `askContinue` in flowRunControls.tsx) and CONTINUEs that same session on a
+ *  yes. The button says so before the press and not after it. `owes_more` is
+ *  the server's own answer (`Session.owes_more` under the compile the route
+ *  holds, with the shared-step test `reopen_report` adds), never one worked
+ *  out here from the blocks: a re-framed block owes frames and shares no step,
+ *  and its press starts fresh. No night number is printed for it, since the
+ *  route sends `continue_night` for a dormant session only: a press that asks
+ *  first has not chosen a night.
+ *
  *  RUN otherwise: no answer yet, no session (never run, or the newest was
- *  abandoned: the route answers null for both), a complete session, or an
- *  active one that is not live here. `run_flow` starts all of those fresh,
- *  except a complete session whose flow was edited to owe more: that press
- *  is ASKED about first (409 `reopen`, #179, `askContinue` in
- *  flowRunControls.tsx) and CONTINUEs the finished session on a yes. The
- *  button still reads RUN there, since the progress route does not say
- *  which complete session would be asked.
+ *  abandoned: the route answers null for both), a complete session that owes
+ *  nothing more (or one the route did not say owes more: a server older than
+ *  this field), or an active one that is not live here. `run_flow` starts all
+ *  of those fresh.
  *
  *  A dormant session whose numbers do not read as numbers still reads
  *  CONTINUE, since that is what the press does, but with no parenthetical:
@@ -159,7 +174,7 @@ export function runCopy(flowName: string, progress: FlowProgress | null | undefi
        notice: verb === "STOP" ? "" : notice });
   if (live) return plain("STOP");
   const session = progress?.session;
-  if (!session || session.status !== "dormant") return plain("RUN");
+  if (!session || !continues(session)) return plain("RUN");
 
   const name = (flowName ?? "").trim().toUpperCase();
   const blocks = Array.isArray(progress?.blocks) ? progress!.blocks : [];
