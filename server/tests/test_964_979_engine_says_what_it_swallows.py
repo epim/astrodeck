@@ -373,14 +373,9 @@ async def _guide_rms_floor(eng, hub, mp):
     return eng._guide_rms_judged()
 
 
-async def _ledger_guide_rms(eng, hub, mp):
+async def _guide_verdict_read(eng, hub, mp):
     mp.setattr(hub, "guider", _Guider(stats=_boom()), raising=False)
-    plan = _plan()
-    eng._plan = plan
-    eng._session = Session(name="s", created_ts=time.time(), plan=plan)
-    target = plan.targets[0]
-    return eng._record_session_frame(target, target.steps[0], {},
-                                     auto_accepted=True)
+    return eng._guide_verdict(0.0, 1.0)
 
 
 async def _limit_recovery_guider(eng, hub, mp):
@@ -456,8 +451,8 @@ _SITES = [
      ("guide RMS could not be read, so frames go ungated",), "RuntimeError"),
     ("guide_rms_floor", _guide_rms_floor,
      ("guide RMS floor could not be read",), "RuntimeError"),
-    ("ledger_guide_rms", _ledger_guide_rms,
-     ("guide RMS could not be read for a frame's ledger entry",),
+    ("guide_verdict_read", _guide_verdict_read,
+     ("guide verdict could not be read",),
      "RuntimeError"),
     ("limit_recovery_guider", _limit_recovery_guider,
      ("guider would not stop for the limit recovery",), "RuntimeError"),

@@ -33,9 +33,10 @@ import functools
 import logging
 import math
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Mapping, NamedTuple, NoReturn
 
 from ..aio import reap
@@ -987,6 +988,23 @@ POSITION_UNKNOWN_STOP = ("the mount's position is unknown, so the run "
 GUIDE_RETRY_GAP_S = 60.0
 GUIDE_RETRY_WAIT_S = 600.0
 MAX_GUIDE_RETRIES_PER_TARGET_NIGHT = 6
+#: #1096: GUIDING THAT IS RUNNING BUT OVER THE CEILING IS HELD FOR TOO. The
+#: guard above refused only a stopped guider, so a loop pulled in at 8 arcsec
+#: after a calibration, or stuck at 7, was shot in full and rejected, and ten
+#: such rejects set the step aside. The guard now reads the guider's last
+#: ``GUIDE_TRAIL_S`` seconds of timestamped samples (long enough to hold
+#: several guide cycles, short enough to see a settle) and holds, re-checking
+#: every ``GUIDE_SETTLE_POLL_S``, for at most ``GUIDE_OVER_HOLD_S``; past that
+#: a mosaic panel is stopped for the visit (the group defers it) and any
+#: other target takes a retry spell above. A window with fewer than
+#: ``GUIDE_MIN_SAMPLES`` samples is not a verdict. After a guiding start the
+#: engine waits up to ``GUIDE_SETTLE_MAX_S`` for the loop to settle before
+#: the first shutter, the wait a dither already makes.
+GUIDE_TRAIL_S = 30.0
+GUIDE_MIN_SAMPLES = 3
+GUIDE_SETTLE_POLL_S = 5.0
+GUIDE_SETTLE_MAX_S = 180.0
+GUIDE_OVER_HOLD_S = 300.0
 #: StopTarget reasons: fixed words, no figures (#618).
 GUIDE_RECOVERY_OFF_STOP = ("guiding has stopped, recovery is off for this "
                            "plan, and the guide-RMS reject would refuse "
@@ -994,6 +1012,9 @@ GUIDE_RECOVERY_OFF_STOP = ("guiding has stopped, recovery is off for this "
 GUIDE_RETRIES_SPENT = ("guiding did not come back after the retries tonight, "
                        "and the guide-RMS reject refuses frames shot "
                        "without it")
+GUIDE_OVER_RETRIES_SPENT = ("guiding stayed over the guide-RMS ceiling "
+                            "through the retries tonight, and the reject "
+                            "refuses frames shot over it")
 #: Operator lines for the two "continuing unguided" sites that now hold (the
 #: action comes first). The raw exception text goes on its own evidence line,
 #: as L_RESUME_FAIL does.
@@ -1024,6 +1045,121 @@ _REJECT_WORDS = {
     REJECT_GUIDE_RMS: "over the guide RMS ceiling",
     REJECT_ECCENTRICITY: "over the eccentricity ceiling",
 }
+#: The StopTarget reason when a mosaic panel's guiding stayed over the
+#: ceiling past the hold: the group defers the visit (#1096).
+GUIDE_OVER_STOP = ("guiding stayed over the guide-RMS ceiling, and the reject "
+                   "refuses frames shot over it")
+#: The fraction of a frame's stars above this eccentricity is kept in the
+#: ledger beside the median (#1095), a fixed line so nights compare.
+ECC_RECORD_ABOVE = 0.80
+
+
+@dataclass(frozen=True)
+class GuideVerdict:
+    """What the guider's own timestamped samples say about one stretch of
+    time (#1096): the RMS over the samples inside it, in arcsec when the
+    guider can say so (``exact``) and otherwise the arcsec floor of its
+    pixels, how many samples that is, and the ceiling it is read against.
+
+    ``rms`` is None when no sample falls inside the stretch: nothing to judge.
+    A guider that publishes no samples at all is judged on its own figure
+    (``samples`` 0), as the gate always did."""
+    rms: float | None
+    exact: bool
+    samples: int
+    ceiling: float
+
+    @property
+    def over(self) -> bool:
+        return (self.ceiling > 0 and self.rms is not None
+                and self.rms > self.ceiling)
+
+    @property
+    def word(self) -> str:
+        """The verdict as the ledger keeps it."""
+        if self.rms is None:
+            return "unjudged"
+        return "over_ceiling" if self.over else "within_ceiling"
+
+
+def guide_verdict(stats, lo: float, hi: float, ceiling: float) -> GuideVerdict:
+    """The guider's RMS over the samples stamped in ``[lo, hi]``.
+
+    The samples are ``stats.recent`` (``{t, ra, dec}`` in the unit
+    ``stats.is_arcsec`` names), the same list the guider's own ``rms_total``
+    is computed over, so a window is a slice of what the old gate read whole.
+    The unit conversion is `rms_total_arcsec`'s and the pixel floor
+    `policy.guide_rms_floor_arcsec`'s, so a verdict is judged exactly as
+    the rolling figure was."""
+    recent = list(getattr(stats, "recent", None) or [])
+    if not recent:
+        rms = rms_total_arcsec(stats)
+        if rms is not None:
+            return GuideVerdict(rms, True, 0, ceiling)
+        return GuideVerdict(guide_rms_floor_arcsec(stats), False, 0, ceiling)
+    window = [s for s in recent if lo <= float(s["t"]) <= hi]
+    if not window:
+        return GuideVerdict(None, True, 0, ceiling)
+    value = math.sqrt(sum(float(s["ra"]) ** 2 + float(s["dec"]) ** 2
+                          for s in window) / len(window))
+    view = SimpleNamespace(rms_total=value,
+                           is_arcsec=getattr(stats, "is_arcsec", False),
+                           image_scale=getattr(stats, "image_scale", 0.0))
+    rms = rms_total_arcsec(view)
+    if rms is not None:
+        return GuideVerdict(rms, True, len(window), ceiling)
+    return GuideVerdict(guide_rms_floor_arcsec(view), False, len(window),
+                        ceiling)
+
+
+async def take_guide_retry_spell(engine, target, *,
+                                 over_ceiling: bool = False) -> None:
+    """One retry spell (#873): charged to the target's per-night count and
+    the long wait; the target stops when the count is spent. Shared by the
+    stopped-guider hold (`_hold_for_guiding`) and the over-ceiling hold
+    (`_hold_for_over_ceiling`, #1096), which word it for their own cause
+    (``over_ceiling``) and each decide what the wait buys."""
+    name = getattr(target, "name", "this target")
+    key = engine._budget_key(target)
+    spells = engine._guide_retry_spells.get(key, 0)
+    if spells >= MAX_GUIDE_RETRIES_PER_TARGET_NIGHT:
+        if over_ceiling:
+            bus.log("warning",
+                    f"Set Reject above (guide RMS) to 0 to shoot over "
+                    f"the ceiling; stopping {name}: guiding stayed over "
+                    f"it through tonight's {spells} retries", "sequence")
+            raise StopTarget(GUIDE_OVER_RETRIES_SPENT)
+        bus.log("warning",
+                f"Set Reject above (guide RMS) to 0 to shoot without "
+                f"guiding; stopping {name}: guiding did not come back "
+                f"after tonight's {spells} retries", "sequence")
+        raise StopTarget(GUIDE_RETRIES_SPENT)
+    engine._guide_retry_spells[key] = spells + 1
+    # #1071: before the spell's wait, ask the mount whether its RA drive
+    # is really tracking (ten seconds, one line; a failure is ignored).
+    await engine._probe_tracking("guiding hold")
+    wait_min = GUIDE_RETRY_WAIT_S / 60.0
+    tally = f"({spells + 1}/{MAX_GUIDE_RETRIES_PER_TARGET_NIGHT})"
+    if over_ceiling:
+        bus.log("warning",
+                f"To shoot over the ceiling, set Reject above (guide "
+                f"RMS) to 0. No frames are shot while guiding is over "
+                f"it; guiding is checked again in {wait_min:.0f} min "
+                f"{tally}", "sequence")
+        engine._set_state(detail=f"holding: guiding is over the RMS "
+                                 f"ceiling; checking again in "
+                                 f"{wait_min:.0f} min")
+    else:
+        bus.log("warning",
+                f"To shoot without guiding, set Reject above (guide RMS) "
+                f"to 0. No frames are shot unguided while it is set; "
+                f"guiding is retried in {wait_min:.0f} min {tally}",
+                "sequence")
+        engine._set_state(detail=f"holding: guiding stopped; retrying "
+                                 f"guiding in {wait_min:.0f} min")
+    await engine._guide_retry_wait(target, GUIDE_RETRY_WAIT_S)
+
+
 #: The StopTarget reason when the in-place re-check found the report jumped
 #: further than ``POINTING_RESET_PLAUSIBLE_DEG`` and the field will not
 #: solve, on a mount that cannot lose its frame (``frame_can_reset`` False,
@@ -2055,6 +2191,24 @@ class SequenceEngine:
         #: signature, and a new required/keyword parameter at the real call
         #: sites would raise ``TypeError`` through one of those replacements.
         self._frame_guided: bool | None = None
+        #: What the guider's samples inside the frame now being graded say
+        #: (#1096), read right as the shutter closes beside ``_frame_guided``
+        #: and read back by ``_check_quality``'s guide-RMS gate and the
+        #: ledger. None before a frame is graded, for a frame the guider was
+        #: not guiding, and for every direct ``_check_quality(info)`` call
+        #: (judged then on the guider's own figure, as the gate always was).
+        #: Cleared at ``_begin_frame``, so no frame reads another's.
+        self._frame_verdict: GuideVerdict | None = None
+        #: The mark of the stand-down line already said (#737): the sky
+        #: read's key, so the line is said once per target per run.
+        self._stand_down_said_at: tuple | None = None
+        #: Whether guiding has run in this hop (a start that worked), which
+        #: tells an inactive guider that was stopped from one that never
+        #: started (`_maybe_recover_guiding`'s line, #1078).
+        self._guide_ran_this_hop = False
+        #: A guiding start has returned and the loop has not been waited on
+        #: yet (#1096): the frame loop settles it before the next shutter.
+        self._guide_unsettled = False
         # Measured ONCE per hold and counted down, so the library walk happens
         # once rather than before every frame. None = not yet measured.
         self._hold_darks_want: int | None = None
@@ -10541,6 +10695,7 @@ class SequenceEngine:
             # re-runs this setup, and a start that failed there must not stand
             # beside one that worked at the hop.
             self._hop_guide_started = False
+            self._guide_ran_this_hop = False
             if guider is None or not getattr(guider, "connected", False):
                 why = ("no guider is connected" if guider is None else
                        f"the guider ({getattr(guider, 'name', 'guider')}) "
@@ -10634,10 +10789,12 @@ class SequenceEngine:
                     # a hold's release re-runs, and read by `_hop` only after
                     # the hop's own setup.
                     self._hop_guide_started = True
+                    self._guide_ran_this_hop = True
                     if member is not None:
                         # A guider that starts is not dead, so a group that
                         # went unguided defers failures again.
                         self._group_unguided.discard(member.id)
+                    self._guide_unsettled = True
 
         # AN UNFRAMED TARGET'S ANGLE (ruling 9): locked on the first fresh
         # measurement, or, once locked, checked against it on a fixed camera.
@@ -11407,6 +11564,11 @@ class SequenceEngine:
             # #848: was the guider guiding at the top of this iteration? Read
             # once here, after every recovery above (the re-check's hold can
             # restart guiding too), compared at the shutter below.
+            # #1096: a guiding start returns when the loop is running, not
+            # when it has settled; wait for it before the first shutter.
+            if self._guide_unsettled:
+                self._guide_unsettled = False
+                await self._settle_guiding(target)
             guided_at_top = await self._frame_was_guided()
             # #873: THE PRE-SHUTTER GUARD. A frame that `_check_quality`'s
             # D-06 gate will refuse for being unguided is not shot: it costs
@@ -11421,6 +11583,17 @@ class SequenceEngine:
             if self._guide_gate_refuses(guided_at_top,
                                         calibration=target.calibration):
                 await self._hold_for_guiding(target)
+                continue
+            # #1096: ...AND ONE THAT IS GUIDING BUT OVER THE CEILING. The
+            # guard above promised no frame the reject will refuse and
+            # covered only a stopped guider; under persistent bad guiding
+            # that shot every frame in full, rejected it, and walked the run
+            # into the reject guards. Held here on the guider's last
+            # `GUIDE_TRAIL_S` seconds, bounded, then a retry spell or (for a
+            # panel) a deferral.
+            if guided_at_top and self._guide_over_ceiling_now(
+                    target.calibration):
+                await self._hold_for_over_ceiling(target)
                 continue
             await self._enforce_tracking(step, target)
             await self._enforce_cooling()
@@ -11549,8 +11722,8 @@ class SequenceEngine:
             # read also tells `_check_quality`'s guide-RMS gate whether this
             # frame was actually guided, since a stopped guider's cached RMS
             # reads as a flat 0.00 rather than as "unreadable".
-            guided = await self._frame_was_guided()
-            self._frame_guided = guided
+            guided = await self._grade_guiding()
+            verdict = self._frame_verdict
             # The frame loop's last look at the mount (#165). Accepted or
             # rejected, the exposure is what the idle clock runs from.
             self._idle_since = time.time()
@@ -11650,7 +11823,8 @@ class SequenceEngine:
                                 f"focus baseline HFR {self._focus_baseline_hfr:.2f} px "
                                 f"(relative watchdogs measure against this)",
                                 "sequence")
-                self._record_frame(key, i, target, step, info, guided=guided)
+                self._record_frame(key, i, target, step, info, guided=guided,
+                                   verdict=verdict)
                 i += 1
                 taken_this_visit += 1
             elif quota:
@@ -11660,7 +11834,9 @@ class SequenceEngine:
                 # not advance; the frame still needs cadence bookkeeping so it
                 # can't pollute the next frame's overhead sample.
                 self._record_session_frame(target, step, info,
-                                           auto_accepted=False)
+                                           auto_accepted=False,
+                                           reject_reason=reject_reason,
+                                           verdict=verdict)
                 self._end_discarded_frame()
                 # A REJECT IS AN ATTEMPT (#147). The visit is bounded by
                 # attempts, as `_visit_done` says; without this a rejecting
@@ -11680,7 +11856,9 @@ class SequenceEngine:
                 # attempts mode: legacy escalation path (warn / discard).
                 if not await self._handle_reject(info, key, i, target, step):
                     self._record_frame(key, i, target, step, info,
-                                       accepted=False, guided=guided)
+                                       accepted=False, guided=guided,
+                                       reject_reason=reject_reason,
+                                       verdict=verdict)
                 i += 1
                 taken_this_visit += 1
             if ctx is not None:
@@ -11703,7 +11881,9 @@ class SequenceEngine:
                 # attempts mode, retake: unlink and re-expose, after the rules.
                 if not await self._handle_reject(info, key, i, target, step):
                     self._record_frame(key, i, target, step, info,
-                                       accepted=False, guided=guided)
+                                       accepted=False, guided=guided,
+                                       reject_reason=reject_reason,
+                                       verdict=verdict)
                 i += 1
                 taken_this_visit += 1
 
@@ -11920,8 +12100,7 @@ class SequenceEngine:
             # back, or gone down, since the frame that was rejected. Read
             # once, fed to both `_check_quality`'s guide-RMS gate (#142 /
             # D-06) and `_record_frame` below.
-            guided = await self._frame_was_guided()
-            self._frame_guided = guided
+            guided = await self._grade_guiding()
             # the rejected original was NOT folded into the running median (only
             # ACCEPTED frames anchor it now), so let an accepted retake contribute
             # its single good sample — one logical frame, at most one median sample.
@@ -11941,7 +12120,7 @@ class SequenceEngine:
             self._reporter_record(target, step, new_info, accepted=accepted)
             if accepted:
                 self._record_frame(key, i, target, step, new_info,
-                                   guided=guided)
+                                   guided=guided, verdict=self._frame_verdict)
                 return True
             # retaken frame still bad → discard and stop retaking this one.
             self._unlink_saved(new_info)
@@ -15622,6 +15801,7 @@ class SequenceEngine:
         # opens, so the frame record can say how many fell inside it.
         self._capped_at_open = (id(self.hub.guider),
                                 self._guider_saturated_counts())
+        self._frame_verdict = None
 
     def _guider_saturated_counts(self) -> dict[str, int] | None:
         """The guider's lifetime counts of corrections at its axis limit, by
@@ -15663,7 +15843,9 @@ class SequenceEngine:
         return {d: n for d, n in diff.items() if n > 0}
 
     def _record_frame(self, key: str, i: int, target: Target, step, info: dict,
-                      *, accepted: bool = True, guided: bool = True) -> None:
+                      *, accepted: bool = True, guided: bool = True,
+                      reject_reason: str | None = None,
+                      verdict: GuideVerdict | None = None) -> None:
         now = time.time()
         # A calibration target the plan does not hold (day darks, DUSK FLATS,
         # cloud-hold darks) is not the plan's frame (#939, #969); the two
@@ -15721,14 +15903,25 @@ class SequenceEngine:
             self._guiding_recoveries = 0
         # ledger append + atomic session save replaces the retired resume-file
         # _persist (same per-frame write cost — sessions spec §3).
-        self._record_session_frame(target, step, info, auto_accepted=accepted)
+        self._record_session_frame(target, step, info, auto_accepted=accepted,
+                                   reject_reason=reject_reason,
+                                   verdict=verdict)
         self._set_state()
 
     def _record_session_frame(self, target: Target, step, info: dict,
-                              *, auto_accepted: bool) -> SessionFrame | None:
-        """Append one ledger entry (metrics: hfr / stars / guide_rms /
-        sensor_temp_c — floats only, absent when unmeasured) + save the session
-        atomically. Best-effort: a ledger hiccup must never break capture."""
+                              *, auto_accepted: bool,
+                              reject_reason: str | None = None,
+                              verdict: GuideVerdict | None = None
+                              ) -> SessionFrame | None:
+        """Append one ledger entry (metrics: hfr / stars / ecc_median /
+        ecc_frac_080 / guide_rms / guide_samples / sensor_temp_c - floats
+        only, absent when unmeasured; plus the reject reason and the guide
+        verdict, #1095) + save the session atomically. Best-effort: a ledger
+        hiccup must never break capture.
+
+        ``verdict`` is what the guider's samples inside THIS frame's exposure
+        said (`_grade_guiding`); None for a frame it was not guiding, which
+        carries no guide figure, since an idle guider's is stale."""
         if self._session is None:
             return None
         metrics: dict[str, float] = {}
@@ -15737,15 +15930,10 @@ class SequenceEngine:
                 metrics["hfr"] = float(info["hfr"])
             if info.get("stars") is not None:
                 metrics["stars"] = float(info["stars"])
-        try:
-            if self.hub.guider and self.hub.guider.connected:
-                rms = getattr(self.hub.guider.stats(), "rms_total", None)
-                if rms is not None:
-                    metrics["guide_rms"] = float(rms)
-        except Exception as e:
-            self._say_swallowed(
-                "the guide RMS could not be read for a frame's ledger entry",
-                e)
+            metrics.update(self._eccentricity_metrics(info))
+        if verdict is not None and verdict.exact and verdict.rms is not None:
+            metrics["guide_rms"] = float(verdict.rms)
+            metrics["guide_samples"] = float(verdict.samples)
         frame = getattr(self.hub, "last_frame", None)
         temp = getattr(frame, "temperature_c", None) if frame is not None else None
         if temp is not None:
@@ -15755,7 +15943,9 @@ class SequenceEngine:
                           night=self.reporter.id if self.reporter else "",
                           target_id=target.id, step_id=step.id,
                           path=str(saved) if saved else "", metrics=metrics,
-                          auto_accepted=auto_accepted)
+                          auto_accepted=auto_accepted,
+                          reject_reason=reject_reason,
+                          guide_verdict=verdict.word if verdict else None)
         try:
             self._session.frames.append(sf)
             # save_run_state, not save: our copy's `auto_resume` is from
@@ -15765,6 +15955,23 @@ class SequenceEngine:
             bus.log("warning", f"session log write failed: {e}", "sequence")
         self._spawn_thumb(sf)
         return sf
+
+    @staticmethod
+    def _eccentricity_metrics(info: dict) -> dict[str, float]:
+        """A frame's star elongation for the ledger (#1095), accepted or not:
+        the grader's median and the fraction of its marks above
+        ``ECC_RECORD_ABOVE``. Absent when the frame carries none."""
+        out: dict[str, float] = {}
+        if info.get("ecc") is not None:
+            out["ecc_median"] = float(info["ecc"])
+        marks = info.get("star_list")
+        eccs = ([float(m["ecc"]) for m in marks
+                 if isinstance(m, dict) and m.get("ecc") is not None]
+                if isinstance(marks, list) else [])
+        if eccs:
+            out["ecc_frac_080"] = (sum(1 for e in eccs if e > ECC_RECORD_ABOVE)
+                                   / len(eccs))
+        return out
 
     def _spawn_thumb(self, sf: SessionFrame | None) -> None:
         """Fire-and-forget ~512px review thumbnail (spec §3). Best-effort by
@@ -17888,7 +18095,7 @@ class SequenceEngine:
                 # "continuing unguided" would be false. The frame loop's
                 # guard holds, and its spell line says what happens.
                 return
-            if getattr(self, "_stand_down_said_at", None) != here:
+            if self._stand_down_said_at != here:
                 bus.log("warning", f"{why}; standing down from recovery and "
                         f"continuing unguided", "sequence")
                 self._stand_down_said_at = here
@@ -17956,7 +18163,7 @@ class SequenceEngine:
         else:
             self._guiding_recoveries += 1
             bus.log("warning",
-                    f"guiding lost — attempting recovery "
+                    f"{self._inactive_guider_words()} - attempting recovery "
                     f"({self._guiding_recoveries}/{_MAX_GUIDING_RECOVERIES})",
                     "sequence")
             self._set_state(detail="recovering guiding")
@@ -18063,6 +18270,8 @@ class SequenceEngine:
                     self._recovery_recentres[charged_key] = max(
                         0, self._recovery_recentres.get(charged_key, 0) - 1)
             return
+        self._guide_ran_this_hop = True
+        self._guide_unsettled = True
         # ...and do not hand control back until the guider has stopped pulsing.
         await self._await_guider_quiet("the next frame")
 
@@ -18305,6 +18514,8 @@ class SequenceEngine:
         # The hold is what those failures bought, so the counter starts again
         # from here; leaving it set would hold on every frame afterwards.
         self._dither_settle_fails = 0
+        self._guide_ran_this_hop = True
+        self._guide_unsettled = True
         await self._await_guider_quiet("the next frame")
 
     async def _charge_field_hold(self, why: str, target) -> None:
@@ -19879,6 +20090,9 @@ class SequenceEngine:
                             f"{target.name}: guiding did not restart after the "
                             f"recovery ({e}) — continuing unguided",
                             "sequence")
+            else:
+                self._guide_ran_this_hop = True
+                self._guide_unsettled = True
         # The last word is the mount's, not ours.
         if not bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
                                    "tracking readback after re-centring")):
@@ -20091,6 +20305,146 @@ class SequenceEngine:
         except Exception:
             return False
 
+    def _guide_verdict(self, lo: float, hi: float) -> GuideVerdict | None:
+        """The guider's samples stamped in ``[lo, hi]`` as a `GuideVerdict`
+        (#1096), or None when no guider is connected or it is not guiding: an
+        idle guider's samples are stale (#854) and say nothing about the
+        stretch."""
+        try:
+            g = self.hub.guider
+            if not (g and g.connected):
+                return None
+            stats = g.stats()
+            if not getattr(stats, "guiding", False):
+                return None
+            return guide_verdict(stats, lo, hi,
+                                 float(self._policy.max_guide_rms))
+        except Exception as e:      # noqa: BLE001 - unreadable judges nothing
+            self._say_swallowed(
+                "the guide verdict could not be read, so frames go ungated "
+                "on it", e)
+            return None
+
+    async def _grade_guiding(self) -> bool:
+        """Read, as the shutter closes, whether the frame was guided (#134,
+        #142 / D-06) and what the guider's samples inside its exposure say
+        (#1096): [shutter open, now], where the shutter opened at
+        ``_begin_frame``. The two reads are one moment, and the rest of the
+        frame's grading and its ledger entry read them back."""
+        guided = await self._frame_was_guided()
+        self._frame_guided = guided
+        self._frame_verdict = self._guide_verdict(self._frame_started_at,
+                                                  time.time())
+        return guided
+
+    def _quoted_guide_rms(self) -> float | None:
+        """The guide RMS a verdict sentence quotes beside a rejection (#854):
+        the frame's own exposure figure when the loop read one, in arcsec
+        only; outside the frame loop, the guider's figure while it guides."""
+        verdict = self._frame_verdict
+        if verdict is not None:
+            return verdict.rms if verdict.exact else None
+        return self._guide_rms() if self._guiding_now() else None
+
+    def _trailing_guide_verdict(self) -> GuideVerdict | None:
+        """The guider's last ``GUIDE_TRAIL_S`` seconds, as a verdict."""
+        now = time.time()
+        return self._guide_verdict(now - GUIDE_TRAIL_S, now)
+
+    def _guide_over_ceiling_now(self, calibration: bool = False) -> bool:
+        """Is guiding RUNNING but over the ceiling (#1096)? Half of the
+        pre-shutter guard, beside `_guide_gate_refuses` (a stopped guider):
+        the guard asks both, so no frame is shot that the guide-RMS reject
+        will refuse. A window with too few samples is no verdict."""
+        if not self._guide_reject_armed(calibration):
+            return False
+        verdict = self._trailing_guide_verdict()
+        return (verdict is not None and verdict.samples >= GUIDE_MIN_SAMPLES
+                and verdict.over)
+
+    async def _settle_guiding(self, target) -> None:
+        """Wait for the guide loop to settle after a guiding start, before
+        the first shutter (#1096). A start returns when the loop is running,
+        not when it has settled: on 2026-10-19 the first exposure after a
+        calibration opened at once, with Dec still being pulled in at the
+        pulse cap, and three frames were rejected. A dither waits for its
+        settle; this is the same wait for a start.
+
+        Waits while the guider's last ``GUIDE_TRAIL_S`` seconds hold too few
+        samples to judge or are over the ceiling, up to
+        ``GUIDE_SETTLE_MAX_S``, on the engine's hold gates. A guider that
+        publishes no samples cannot be waited on and is not."""
+        if not self._guide_reject_armed(getattr(target, "calibration", False)):
+            return
+        deadline = time.time() + GUIDE_SETTLE_MAX_S
+        said = False
+        while True:
+            verdict = self._trailing_guide_verdict()
+            if verdict is None or verdict.samples == 0:
+                return
+            if verdict.samples >= GUIDE_MIN_SAMPLES and not verdict.over:
+                return
+            if time.time() >= deadline:
+                bus.log("warning",
+                        f'guiding had not settled under the '
+                        f'{verdict.ceiling:.1f}" ceiling after '
+                        f'{GUIDE_SETTLE_MAX_S:.0f} s; the frame loop takes it '
+                        f'from here', "sequence")
+                return
+            if not said:
+                bus.log("info", "holding the first exposure until the guide "
+                                "loop has settled", "sequence")
+                self._set_state(detail="waiting for the guide loop to settle")
+                said = True
+            await self._guide_retry_wait(target, GUIDE_SETTLE_POLL_S)
+
+    async def _hold_for_over_ceiling(self, target) -> None:
+        """Hold the frame loop while guiding is running but over the ceiling
+        (#1096). Returns; the caller `continue`s, so its own gates run again.
+
+        Re-checks every ``GUIDE_SETTLE_POLL_S``, on the engine's hold gates,
+        and returns the moment the trailing window is under the ceiling. Past
+        ``GUIDE_OVER_HOLD_S`` a mosaic panel stops for the visit (the group
+        defers it, #303) and any other target takes one of the retry spells
+        `_hold_for_guiding` takes, capped per target per night, so the
+        20-reject night stop is never reached through frames the guard could
+        have refused."""
+        verdict = self._trailing_guide_verdict()
+        if verdict is not None and verdict.rms is not None:
+            phrase = self._trail_phrase(verdict.rms, verdict.ceiling,
+                                        verdict.ceiling, verdict.exact)
+            bus.log("warning", f"{phrase}; no frame is shot until it is "
+                               f"under it", "sequence")
+        self._set_state(detail="holding: guiding is over the RMS ceiling")
+        until = time.time() + GUIDE_OVER_HOLD_S
+        while self._guide_over_ceiling_now():
+            if time.time() >= until:
+                break
+            await self._guide_retry_wait(target, GUIDE_SETTLE_POLL_S)
+        else:
+            return
+        group = self._group_of(target) if target is not None else None
+        if group is not None and group.id not in self._group_unguided:
+            raise StopTarget(GUIDE_OVER_STOP)
+        await take_guide_retry_spell(self, target, over_ceiling=True)
+
+    def _inactive_guider_words(self) -> str:
+        """Why an inactive guider is inactive, in words (#1078): a lost star,
+        a guider that stopped itself, one that was stopped after running (the
+        operator's Stop, say), one that never started, or, when its phase
+        says nothing, only that it is not running. The old line said a star
+        was lost for every one of them, which sent the operator to look for
+        cloud when a calibration had failed."""
+        phase = self._guider_phase()
+        if phase == "lost":
+            return "the guide star went missing"
+        if phase == "stopped":
+            return "guiding stopped itself"
+        if phase == "idle":
+            return ("guiding was stopped" if self._guide_ran_this_hop
+                    else "guiding never started")
+        return "guiding is not running"
+
     def _field_trailing_now(self, *, aborting: bool = False
                             ) -> tuple[float, float, float, bool] | None:
         """``(rms, limit, ceiling, exact)`` while the guider is guiding and its
@@ -20252,28 +20606,7 @@ class SequenceEngine:
             await self._maybe_recover_guiding(target)
             await self._guide_retry_wait(target, GUIDE_RETRY_GAP_S)
             return
-        key = self._budget_key(target)
-        spells = self._guide_retry_spells.get(key, 0)
-        if spells >= MAX_GUIDE_RETRIES_PER_TARGET_NIGHT:
-            bus.log("warning",
-                    f"Set Reject above (guide RMS) to 0 to shoot without "
-                    f"guiding; stopping {name}: guiding did not come back "
-                    f"after tonight's {spells} retries", "sequence")
-            raise StopTarget(GUIDE_RETRIES_SPENT)
-        self._guide_retry_spells[key] = spells + 1
-        # #1071: before the spell's wait, ask the mount whether its RA drive
-        # is really tracking (ten seconds, one line; a failure is ignored).
-        await self._probe_tracking("guiding hold")
-        wait_min = GUIDE_RETRY_WAIT_S / 60.0
-        bus.log("warning",
-                f"To shoot without guiding, set Reject above (guide RMS) to "
-                f"0. No frames are shot unguided while it is set; guiding "
-                f"is retried in {wait_min:.0f} min "
-                f"({spells + 1}/{MAX_GUIDE_RETRIES_PER_TARGET_NIGHT})",
-                "sequence")
-        self._set_state(detail=f"holding: guiding stopped; retrying guiding "
-                               f"in {wait_min:.0f} min")
-        await self._guide_retry_wait(target, GUIDE_RETRY_WAIT_S)
+        await take_guide_retry_spell(self, target)
         # Fresh attempts, and the sky read once for them (#704, #737).
         self._guiding_recoveries = 0
         self._sky_read_at_bound = None
@@ -20392,7 +20725,18 @@ class SequenceEngine:
                 # #854: pixels with no scale are judged through a FLOOR (the
                 # smallest arcsec they can be at any guide scale), so a
                 # runaway is rejected whether or not the focal length is set.
-                rms, exact = self._guide_rms_judged()
+                #
+                # #1096: THE FRAME IS JUDGED ON ITS OWN EXPOSURE. The real
+                # frame loop has already read the guider's samples inside
+                # [shutter open, shutter close] (`_grade_guiding`); the
+                # guider's rolling window, about 150 s, reaches back before
+                # the shutter opened, so one bad minute rejected frames whose
+                # own exposures were fine and a good stretch carried a bad
+                # one through. Only a call outside the frame loop, which has
+                # no exposure, falls back to the guider's own figure.
+                verdict = self._frame_verdict
+                rms, exact = ((verdict.rms, verdict.exact) if verdict
+                              else self._guide_rms_judged())
                 if not exact and self._guiding_now():
                     self._warn_rms_unit_once()
                 ceiling = self._policy.max_guide_rms
@@ -20418,8 +20762,7 @@ class SequenceEngine:
             # E6b arm above), and quoting a stale runaway figure would send
             # the operator to the mount for a fault in focus.
             reason = self._policy.eccentricity_reject_reason(
-                info, guide_rms=(self._guide_rms() if self._guiding_now()
-                                 else None))
+                info, guide_rms=self._quoted_guide_rms())
             if reason:
                 self._rejected += 1
                 bus.log("warning", reason, "sequence")

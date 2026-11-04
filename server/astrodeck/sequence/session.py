@@ -28,7 +28,7 @@ from typing import Any
 from uuid import uuid4
 
 import pydantic_core
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_serializer
 
 from .. import hub as _hubmod
 from ..events import night_key
@@ -151,6 +151,28 @@ class SessionFrame(BaseModel):
     metrics: dict[str, float] = Field(default_factory=dict)
     auto_accepted: bool = True
     override: str | None = None     # "accept" | "reject" | None
+    #: Why the grader refused the frame (the engine's REJECT_* word), or None
+    #: for an accepted frame and for every ledger written before the field
+    #: (#1095). Kept here because the engine's own copy is overwritten by the
+    #: next frame.
+    reject_reason: str | None = None
+    #: What the guider's samples inside this frame's exposure said:
+    #: "within_ceiling", "over_ceiling" or "unjudged" (#1096); None when the
+    #: guider was not guiding, and for ledgers written before the field.
+    guide_verdict: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _without_the_grades_it_lacks(self, handler):
+        """A grade the frame does not have is left out of its entry, not
+        written as null: the file is rewritten after every banked frame and
+        holds all of them, and two nulls on each cost the per-frame byte
+        budget (``test_s7_ledger_cost.py``). Read back, the defaults put
+        them back."""
+        data = handler(self)
+        for key in ("reject_reason", "guide_verdict"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
     def effective(self) -> bool:
         """Effective acceptance = override if set else auto_accepted."""

@@ -54,7 +54,7 @@ from astrodeck.sequence.session import session_store
 GAVE_UP = ("guiding could not be kept after 2 recovery attempts without a "
            "frame")
 #: What a recovery attempt says, numbered ``(k/2)``.
-ATTEMPT = "guiding lost \u2014 attempting recovery"
+ATTEMPT = "attempting recovery"
 #: The warn escalation's stand-down.
 STOOD_DOWN = "standing down from recovery and continuing unguided"
 
@@ -139,8 +139,8 @@ def _visits(night: Night, who: str) -> list[str]:
 
 def _attempts(night: Night) -> list[str]:
     """Every recovery attempt's number, ``"1/2"``, in order."""
-    return [m[len(ATTEMPT) + 2:-1] for _t, _lvl, m in night.lines
-            if m.startswith(ATTEMPT)]
+    return [m[m.index(ATTEMPT) + len(ATTEMPT) + 2:-1]
+            for _t, _lvl, m in night.lines if ATTEMPT in m]
 
 
 # ------------------------------------------------------------ the mosaic
