@@ -322,10 +322,17 @@ NOT_A_SET_ASIDE: tuple[NotASetAside, ...] = (
     NotASetAside(AUTOMATION,
                  "preparing tomorrow night's automation while tonight runs",
                  1, _RUN_COPY),
-    NotASetAside(TONIGHT, "the session ledger seeds the next night", 1,
-                 "the Dawn line's truth table: a session remaining at dawn "
-                 "resumes from its ledger the following dusk. That is the "
-                 "multi-night resume, whatever was or was not set aside."),
+    # The comment above the CAMPAIGN note for a pool with no DUSK WINDOW
+    # (#775, WP 2.5). The old row here, "the session ledger seeds the next
+    # night", stood for a comment in the removed `_DAWN` block; the dawn
+    # note is now made from the plan's facts and says no such thing.
+    NotASetAside(TONIGHT,
+                 "there is no schedule for a later night to resume in.", 1,
+                 "a flow with no DUSK WINDOW has no window to resume in, which "
+                 "is a statement about auto-resume and says nothing of a "
+                 "set-aside. Its words are kept true by "
+                 "tests/test_w2_notes_from_plan.py::"
+                 "test_a_pool_with_no_dusk_window_says_it_has_none."),
 )
 
 

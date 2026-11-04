@@ -67,7 +67,7 @@ from astrodeck.flows.models import FlowGraph, FlowNode
 from astrodeck.flows.nodes import NODE_DEFS, create_params, dusk_auto_resume
 from astrodeck.flows.store import (AUTO_RESUME_NOTE, FLOW_SCHEMA, FlowStore,
                                    schema_for)
-from astrodeck.flows.tonight import _DAWN, _DAWN_OFF, _campaign, brief
+from astrodeck.flows.tonight import _campaign, _dawn_note, brief, night_facts
 from astrodeck.persist import ensure_dir
 
 SPEC = (Path(__file__).resolve().parents[2] / "docs" / "superpowers" / "specs"
@@ -332,7 +332,9 @@ def test_the_doctors_campaign_is_the_dusk_window_that_makes_it_one():
 def test_a_pool_campaign_ends_its_note_with_the_dusk_resume_and_an_off_pool_does_not():
     """The CAMPAIGN tab's note for a pool, On: it is a campaign and the dawn
     clause is `_DAWN`; Off: it is not, and the note says what Off does. The
-    option decides both, so the row and the sentence cannot disagree.
+    option decides both, so the row and the sentence cannot disagree. (`_DAWN`
+    and `_DAWN_OFF` were constants until WP 2.5, #1112; the clause is now
+    `_dawn_note` of the compiled plan's facts, `night_facts`.)
 
     MUTANT "tonight keys on repeat" (`_campaign`'s ``is_campaign`` read from
     `repeat` again) turned this red, run from a byte backup and restored and
@@ -342,12 +344,19 @@ def test_a_pool_campaign_ends_its_note_with_the_dusk_resume_and_an_off_pool_does
     on = _campaign(_stored(_example("example-pool"), autoResume="On",
                            repeat="Single night"), None)
     assert on["is_campaign"] is True and on["has_pool"] is True
-    assert on["note"].endswith(_DAWN), on["note"]
+    on_dawn = _dawn_note(night_facts(compile_plan(
+        _stored(_example("example-pool"), autoResume="On",
+                repeat="Single night"))))
+    assert on["note"].endswith(on_dawn), on["note"]
+    assert on_dawn.endswith("Each dusk resumes where the session log left off.")
     off = _campaign(_stored(_example("example-pool"), autoResume="Off",
                             repeat="Nightly until pool complete"), None)
     assert off["is_campaign"] is False and off["has_pool"] is True
     assert "Automatic resume is off" in off["note"], off["note"]
-    assert _DAWN_OFF.split(". ")[-1] not in on["note"]
+    off_dawn = _dawn_note(night_facts(compile_plan(
+        _stored(_example("example-pool"), autoResume="Off",
+                repeat="Nightly until pool complete"))))
+    assert off_dawn.split(". ")[-1] not in on["note"]
 
 
 def test_a_mosaic_without_a_pool_is_no_campaign_on_the_tab():
