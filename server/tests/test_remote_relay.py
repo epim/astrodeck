@@ -31,6 +31,8 @@ from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
 import astrodeck.api.redact as redact_module
+from _deadline import wait_until
+from _group_harness import contention_factor
 from astrodeck.auth import (CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
                             CAP_VIEW_WEATHER, Principal,
                             principal_for_role, reset_active_provider,
@@ -648,6 +650,9 @@ def test_run_loop_never_raises_on_connect_failure():
 
     cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
                        device_token=TEST_DEVICE_TOKEN, home_id="home-1")
+    # Read before the scenario starts: both waits below are patience and not a
+    # measurement, and scale with the load on the box (#1099, #1119).
+    load = contention_factor()
 
     async def _scenario():
         client = RelayClient(_noop_app, lambda: cfg, connect=_bad_connect)
@@ -657,10 +662,13 @@ def test_run_loop_never_raises_on_connect_failure():
         rc._backoff_delay = lambda attempt: 0.001
         try:
             task = asyncio.create_task(client.run())
-            await asyncio.sleep(0.05)  # let it retry a few times
-            assert attempts["n"] >= 2
+            # Let it retry a few times: until it has, and not a fixed 50 ms,
+            # which one timer tick of a loaded Windows box can spend whole.
+            assert await wait_until(lambda: attempts["n"] >= 2,
+                                    timeout_s=10.0 * load), attempts
             client.stop()
-            await asyncio.wait_for(task, timeout=2.0)  # ends cleanly, no raise
+            # ends cleanly, no raise
+            await asyncio.wait_for(task, timeout=2.0 * load)
         finally:
             rc._backoff_delay = orig
 

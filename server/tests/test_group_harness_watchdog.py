@@ -39,17 +39,35 @@ import time
 
 import pytest
 
-from _group_harness import (SPIN_BOUND_S, Night, SpinNeverYielded, group_hub,
-                            group_store, single, watchdog_timeline)
+from _group_harness import (Night, SpinNeverYielded, _SpinWatchdog,
+                            contention_factor, group_hub, group_store, single,
+                            watchdog_slack_s, watchdog_timeline)
 from astrodeck.sequence import SequenceEngine
 from astrodeck.sequence.models import SequencePlan
 
 #: The watchdog's bound in these cases, in real seconds: short, so the file
 #: stays quick, and still many loop turns long.
 BOUND_S = 1.0
-#: A spin's own limit: well past the bound, so only a missing or broken
-#: watchdog ever lets a spin reach it.
-SPIN_LIMIT_S = 8.0 * BOUND_S
+
+
+def spin_bound_s() -> float:
+    """The spin case's bound for the box as it is: ``BOUND_S`` on an idle one,
+    and more under load (#1119). A real step that holds the loop's thread 1.1 s
+    (a session file written while the box is busy, seen under 40 burners with
+    ``Night.run`` naming ``_write_private_atomic`` as the spinning frame) is a
+    starved thread and not a spin, and no bound that short can tell the two.
+    What counts as a spin on an idle box has not moved."""
+    return BOUND_S * contention_factor()
+
+
+def spin_limit_s() -> float:
+    """A spin's own limit: well past the bound, so only a missing or broken
+    watchdog ever lets a spin reach it. Eight bounds, so past bound plus
+    `watchdog_slack_s` at any contention (#755): a watcher the load starved
+    must not look like a watchdog that never fired."""
+    return 8.0 * spin_bound_s()
+
+
 #: The bound the NON-spin controls run under (#702). The spin case wants a SHORT
 #: bound, so the file stays quick; a control that must see NO spin wants a bound
 #: past anything a loaded box does to a night that is doing nothing wrong, which
@@ -152,20 +170,42 @@ async def test_a_spin_that_never_yields_fails_the_night_and_names_the_spin(
     the frame was `_close_group_pass` (engine.py:4261) logging the set-aside
     again, which is the loop coming round.
     """
+    await run_the_spin_case(group_hub, monkeypatch)
+
+
+async def run_the_spin_case(group_hub, monkeypatch, *,
+                            watcher_starved_s: float = 0.0) -> None:
+    """The spin case's whole body, for the case above and for the one that
+    starves the watcher thread on purpose (test_1119_contention_factor.py):
+    ``watcher_starved_s`` holds the watcher thread off that many real seconds
+    when it starts, which is what a loaded box did to it in #755."""
     spun_out: list[float] = []
+    # Read before the spin starts: a reading blocks the thread (#1119).
+    bound_s = spin_bound_s()
+    limit_s = spin_limit_s()
+    slack_s = watchdog_slack_s(bound_s)
+
+    if watcher_starved_s:
+        real_watch = _SpinWatchdog._watch
+
+        def starved_watch(self) -> None:
+            time.sleep(watcher_starved_s)      # the thread was not scheduled
+            real_watch(self)
+
+        monkeypatch.setattr(_SpinWatchdog, "_watch", starved_watch)
 
     async def nothing() -> None:
         return None
 
     async def spin_without_yielding(self, plan):
         started = time.monotonic()
-        while time.monotonic() - started < SPIN_LIMIT_S:
+        while time.monotonic() - started < limit_s:
             await nothing()            # an await that never suspends
         spun_out.append(time.monotonic() - started)
 
     monkeypatch.setattr(SequenceEngine, "_run_scheduled",
                         spin_without_yielding)
-    night = Night(group_hub, monkeypatch, spin_bound_s=BOUND_S)
+    night = Night(group_hub, monkeypatch, spin_bound_s=bound_s)
     done, failed, took = await _run(night)
 
     assert not spun_out, (
@@ -186,21 +226,28 @@ async def test_a_spin_that_never_yields_fails_the_night_and_names_the_spin(
     # (The pattern is `_group_harness.watchdog_timeline`'s, shared with the
     # two other tests that read it, so none of them drifts from the text.)
     away_s, reported_bound_s = watchdog_timeline(failed)
-    assert reported_bound_s == BOUND_S, (
+    assert reported_bound_s == pytest.approx(bound_s, rel=1e-4), (
         f"the report's own bound ({reported_bound_s} s) does not match "
-        f"this case's BOUND_S ({BOUND_S} s): {failed}")
-    # The watcher polls every min(0.25, bound_s / 8) = 0.125 s here, so a
-    # tick-sized overshoot past BOUND_S is normal; the rest of the margin is
-    # for a watcher THREAD starved by load rather than the loop itself.
+        f"this case's bound ({bound_s:g} s): {failed}")
+    # The watcher polls every min(0.25, bound_s / 8) = 0.125 s at the idle
+    # bound, so a tick-sized overshoot past the bound is normal; the rest of
+    # the margin is for a watcher THREAD starved by load rather than the loop
+    # itself.
     # MEASURED beside a CPU burner (WP-68's proof for #620, not a rerun):
     # 40 CPU-bound processes saturating all 24 cores at 100%, 8 runs of
     # this case -- away_s stayed 1.0-1.1 s every time (the watcher's own
     # 0.125 s tick granularity, not the load), while `took` (the OLD bound)
     # ranged 1.17-3.02 s on the SAME runs: the wall clock is what the load
     # stretches, not the watchdog's own measurement.
-    assert away_s < BOUND_S + 1.0, (
+    # #755: that margin was a flat second, and the watcher thread is starved
+    # like any other: 2.10 s was measured for this bound in 2 of ~18 runs
+    # under 40 burners. `watchdog_slack_s` scales the tick and the second by
+    # the measured contention factor (#1119); `assert not spun_out` above is
+    # still the discriminator that the watchdog fired before the spin's limit.
+    assert away_s < bound_s + slack_s, (
         f"the watchdog's OWN timeline measured {away_s:.2f} s away, for a "
-        f"bound of {BOUND_S} s -- not this test's wall clock, which took "
+        f"bound of {bound_s:g} s (slack {slack_s:.2f} s at this box's "
+        f"contention) -- not this test's wall clock, which took "
         f"{took:.2f} s in total (raise delivery + night.close() teardown "
         f"included, both outside the watchdog's own measurement): {failed}")
     assert "the event loop did not come back" in failed, failed
@@ -330,7 +377,8 @@ async def test_the_watchdog_is_gone_when_the_run_returns(
     the bound matter: a watchdog left running has to outlast it to be caught.
 
     Also pins the default: a Night built without ``spin_bound_s`` arms the
-    named ``SPIN_BOUND_S``.
+    measured one, ``default_spin_bound_s()`` (``SPIN_BOUND_S`` times the
+    contention factor, #756).
 
     MUTANT "the watchdog is never stopped" (`_SpinWatchdog.stop` returns at
     once, _group_harness.py): the watchdog outlives its run and, a bound
@@ -346,7 +394,7 @@ async def test_the_watchdog_is_gone_when_the_run_returns(
     watchdog too, so this case passed with it gone, observed 2026-10-07.)
     """
     default = inspect.signature(Night).parameters["spin_bound_s"].default
-    assert default == SPIN_BOUND_S, default
+    assert default is None, default     # None: the measured bound (#756)
 
     async def ends_at_once(self, plan):
         await asyncio.sleep(0.005)

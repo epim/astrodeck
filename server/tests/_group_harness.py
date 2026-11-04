@@ -185,6 +185,103 @@ SPIN_BOUND_S = 10.0
 #: poll it would only stall a task of its own.
 MERIDIAN_HOLD_BOUND_S = 0.5
 
+# ---------------------------------------------------------- contention factor
+#
+# Every real-time bound in this harness was sized on an idle box, and a box
+# running another suite beside this one stretches all of them at once: the
+# spin watchdog's own timeline (#755), the first night's cold start against
+# the spin bound (#756), the 60 s a night is given (#1099). The bounds move
+# with the load; what they bound does not. `contention_factor` is the one
+# number they move by, measured and not guessed (#1119).
+
+#: What an idle thread loses to its own scheduler at most: one Windows timer
+#: tick, 15.6 ms. A stretch away shorter than this is not load.
+IDLE_GAP_S = 0.016
+#: The factor never goes above this: a box so loaded that a thread is away a
+#: second at a time still gets a finite budget, not one a hung test sits out.
+CONTENTION_CAP = 16.0
+#: How long a reading is trusted. A suite runs for minutes beside work that
+#: starts and stops, so one reading at session start goes stale.
+CONTENTION_MAX_AGE_S = 30.0
+#: How long the thread spins to take a reading.
+_CONTENTION_WINDOW_S = 0.3
+#: A gap between two clock reads shorter than this is the read itself.
+_CLOCK_READ_S = 0.0002
+#: ``(factor, perf_counter when it was read)``, or None before the first.
+_contention_cache: tuple[float, float] | None = None
+
+
+def measure_contention(clock: Callable[[], float] = time.perf_counter,
+                       window_s: float = _CONTENTION_WINDOW_S) -> float:
+    """How many times slower than idle this thread runs right now, at least
+    1.0 and at most ``CONTENTION_CAP``.
+
+    The thread reads ``clock`` as fast as it can for ``window_s``. On an
+    idle core consecutive reads are microseconds apart; when the scheduler
+    takes the core away the next read lands late, and the sum of those late
+    stretches is the time the thread did not run. Two readings come out of
+    it, and the larger is the factor: the share of the window the thread did
+    not run (wall over the time it ran, which is what a CPU-bound step costs
+    under load), and the longest single stretch away over ``IDLE_GAP_S``
+    (which is what a thread that wakes to a loop, a lock or a socket costs,
+    and is the larger of the two when a box has more runnable threads than
+    cores). Not ``time.thread_time``: its tick is 15.6 ms on Windows, as
+    coarse as the thing measured."""
+    started = last = clock()
+    stolen = worst = 0.0
+    while True:
+        now = clock()
+        gap = now - last
+        if gap > _CLOCK_READ_S:
+            stolen += gap
+            worst = max(worst, gap)
+        last = now
+        if now - started >= window_s:
+            break
+    wall = now - started
+    ran = max(wall - stolen, wall * 0.01)
+    factor = max(wall / ran, worst / IDLE_GAP_S, 1.0)
+    return min(factor, CONTENTION_CAP)
+
+
+def contention_factor() -> float:
+    """The measured contention factor of this process, read again once the
+    last reading is ``CONTENTION_MAX_AGE_S`` old. A reading blocks the calling
+    thread for its window (0.3 s), so a test that times something takes this
+    before it starts timing; conftest.py's ``contention`` fixture takes the
+    first one at session start."""
+    global _contention_cache
+    cached = _contention_cache
+    if cached is None or time.perf_counter() - cached[1] > CONTENTION_MAX_AGE_S:
+        cached = (max(1.0, measure_contention()), time.perf_counter())
+        _contention_cache = cached
+    return cached[0]
+
+
+def default_spin_bound_s() -> float:
+    """``SPIN_BOUND_S`` for the box as it is: what `Night` arms when a test
+    names no bound. A cold first night is CPU-bound work with no await in it
+    and was measured holding the loop away 6 to 11 s under 40 burners against
+    about 1 s idle (#756); that is not a spin, and a bound that cannot tell
+    the two would fail the night that did nothing wrong."""
+    return SPIN_BOUND_S * contention_factor()
+
+
+def wall_budget_s(wall_s: float) -> float:
+    """``wall_s`` real seconds for the box as it is: the budget `Night.run`,
+    `settle`, `until` and `finish` actually wait. The caller still names, and
+    a failure still reports, the figure it asked for."""
+    return wall_s * contention_factor()
+
+
+def watchdog_slack_s(bound_s: float) -> float:
+    """How far past ``bound_s`` the spin watchdog's OWN timeline may read
+    when it fires: the watcher's tick (``min(0.25, bound_s / 8)``, the
+    interval it wakes at) plus a second, times the contention factor. The
+    watcher is a thread like any other and a loaded box starves it; #755
+    measured 2.10 s for a bound of 1.0 s under 40 burners, 1.1 s idle."""
+    return (min(0.25, bound_s / 8.0) + 1.0) * contention_factor()
+
 
 def ra_at(ha_h: float, t: float = T0, lon: float = LON) -> float:
     """The RA whose hour angle at ``t`` is ``ha_h`` (HA = LST - RA)."""
@@ -581,6 +678,11 @@ class _SpinWatchdog:
 
     def __init__(self, bound_s: float, what: str) -> None:
         self.bound_s = float(bound_s)
+        #: How long after the raise the loop may stay away before the last
+        #: resort ends the process: one bound, times the contention factor.
+        #: A loop thread starved by a loaded box can take longer than a bound
+        #: to run the raise it was sent, and is no spin for that.
+        self.grace_s = self.bound_s * contention_factor()
         self.what = what
         self.loop_thread = threading.get_ident()
         self.beat = time.monotonic()
@@ -633,7 +735,7 @@ class _SpinWatchdog:
                                     {"report": self.report})
                     _raise_in_thread(self.loop_thread, exc_type)
                     fired_at = time.monotonic()
-                elif time.monotonic() - fired_at >= self.bound_s:
+                elif time.monotonic() - fired_at >= self.grace_s:
                     self._last_resort(away)
 
     def _describe(self, away: float) -> str:
@@ -673,7 +775,7 @@ class _SpinWatchdog:
         lines = [
             f"{self.what}: the event loop did not come back for {away:.1f} s "
             f"of real time, against a bound of {self.bound_s:g} s "
-            f"(_group_harness.SPIN_BOUND_S unless the test set its own). "
+            f"(_group_harness.default_spin_bound_s() unless the test set its own). "
             f"A spin that never yields (#319): the engine kept running "
             f"without reaching an await that suspends, so the night's "
             f"wall-clock bound (wall_s) could not run either.",
@@ -822,12 +924,16 @@ class Night:
     seen at the next wake.
 
     ``spin_bound_s`` is the spin watchdog's bound for `run` (#319), in real
-    seconds; only the watchdog's own tests shorten it.
+    seconds; only the watchdog's own tests shorten it. Left out it is
+    ``default_spin_bound_s()``, ``SPIN_BOUND_S`` times the measured
+    contention factor (#756), and every ``wall_s`` below is multiplied by
+    the same factor (#1099, #1119): the figure a test passes is what the
+    night needs on an idle box.
     """
 
     def __init__(self, hub, monkeypatch, *, t0: float = T0,
                  horizon_s: float = HORIZON_S,
-                 spin_bound_s: float = SPIN_BOUND_S,
+                 spin_bound_s: float | None = None,
                  stars: Callable[[str, str], int] | None = None,
                  goto: Callable[[str, int, dict], dict] | None = None,
                  guide: Callable[[str, int], bool] | None = None,
@@ -845,7 +951,8 @@ class Night:
         self.t0 = float(t0)
         self.clock = _Clock(time, self.t0)
         self.horizon = self.t0 + horizon_s
-        self.spin_bound_s = float(spin_bound_s)
+        self.spin_bound_s = float(default_spin_bound_s() if spin_bound_s is None
+                                  else spin_bound_s)
         #: The last `run`'s watchdog, kept for a test to read its
         #: ``max_away``; None before the first run.
         self.watchdog: _SpinWatchdog | None = None
@@ -1058,8 +1165,8 @@ class Night:
                 ra, dec = await tel.get_position()
                 return await hub._compute_meridian(tel, ra, dec)
             try:
-                meridian = await asyncio.wait_for(compute(),
-                                                  MERIDIAN_HOLD_BOUND_S)
+                meridian = await asyncio.wait_for(
+                    compute(), MERIDIAN_HOLD_BOUND_S * contention_factor())
             except Exception:  # noqa: BLE001 - the poll it stands for swallows too
                 meridian = None
         hub.last_meridian = meridian
@@ -1184,9 +1291,11 @@ class Night:
         ended (False). A hold set later, by an ``on_capture`` that picks a
         capture still to come, is waited for as well. Bounded in REAL time:
         a night that neither reaches its hold nor ends in ``wall_s`` fails
-        the test, and so does a spin the watchdog `arm` started caught."""
+        the test, and so does a spin the watchdog `arm` started caught.
+        ``wall_s`` is scaled by the contention factor (`wall_budget_s`)."""
+        budget = wall_budget_s(wall_s)
         loop = asyncio.get_running_loop()
-        end = loop.time() + wall_s
+        end = loop.time() + budget
         while loop.time() < end:
             self._check_watchdog()
             if not self.engine.running:
@@ -1270,9 +1379,10 @@ class Night:
 
     async def run(self, plan, *, wall_s: float = 60.0, **start_kw) -> bool:
         """Start ``plan`` and wait until the run has ended and wound down.
-        False when the harness's WALL-CLOCK bound (``wall_s`` real seconds)
-        or the fake horizon comes first: the run was still going, which is
-        the failure a spin that yields produces.
+        False when the harness's WALL-CLOCK bound (``wall_s`` real seconds,
+        times the contention factor, `wall_budget_s`) or the fake horizon
+        comes first: the run was still going, which is the failure a spin
+        that yields produces.
 
         A spin that never yields gives this loop no turn at all, so the
         bound above never runs. The watchdog armed here catches that one
@@ -1280,6 +1390,7 @@ class Night:
         the test with the watchdog's report. Armed before ``start``, since a
         spin may begin at the first step, and stopped on the way out
         whatever the way out is."""
+        budget = wall_budget_s(wall_s)
         dog = _SpinWatchdog(self.spin_bound_s, "Night.run")
         self.watchdog = dog
         dog.start()
@@ -1291,7 +1402,7 @@ class Night:
             # the loop runs only at the next await that suspends (#368).
             await self._hold_the_meridian()
             loop = asyncio.get_running_loop()
-            end = loop.time() + wall_s
+            end = loop.time() + budget
             while loop.time() < end and not self.frozen.is_set():
                 dog.pet()
                 if dog.report is not None:

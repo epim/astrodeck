@@ -64,6 +64,7 @@ from astropy.io import fits
 import astrodeck.events as events_mod
 import astrodeck.hub as hub_module
 from _deadline import wait_until
+from _group_harness import contention_factor
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 BOUND_S = 0.3
@@ -71,6 +72,15 @@ BOUND_S = 0.3
 #: does. Several bounds of headroom, so a case that stalls four devices is not
 #: failed by arithmetic, and far under the 90 s of a wheel move.
 LIMIT_S = 12.0
+#: What one capture on the simulator costs besides the stall, in seconds, and
+#: how many bounds the stall may cost beside it: a stalled read costs ONE bound
+#: and the rest of the capture is the exposure, the file write and the loop's
+#: own turns. 2.58 s was measured for a capture bounded at 0.3 s with another
+#: suite on the box (#1099); every real-time figure below is read through
+#: ``contention_factor`` (#1119) so the ceiling moves with the load and not the
+#: thing it ceilings. ``waited >= BOUND_S * 0.5`` below stays: it is the
+#: premise that the capture did wait on the stall, and load only lengthens it.
+CAPTURE_CEILING_S = BOUND_S * 8
 
 #: (device, the method that stalls, the cards that go missing with it).
 STALLS = [
@@ -86,6 +96,14 @@ STALLS = [
 ]
 EVERY_CARD = {"FOCPOS", "FOCTEMP", "ROTATANG", "ROTMECH", "OBJCTRA", "OBJCTDEC",
               "MOUNTRA", "MOUNTDEC", "SET-TEMP"}
+
+
+@pytest.fixture(autouse=True)
+def load():
+    """The contention factor, read before the case starts timing anything: a
+    reading blocks its thread for 0.3 s and must not land inside a stopwatch
+    (#1119). Handed to the case so it scales its ceiling by it."""
+    return contention_factor()
 
 
 @pytest.fixture(autouse=True)
@@ -150,7 +168,7 @@ class _Stalled:
 
 async def _within(coro, what: str):
     try:
-        return await asyncio.wait_for(coro, LIMIT_S)
+        return await asyncio.wait_for(coro, LIMIT_S * contention_factor())
     except asyncio.TimeoutError:
         pytest.fail(f"{what} waited on a device whose read never returned")
 
@@ -185,7 +203,7 @@ async def test_a_healthy_rig_writes_every_card_the_cases_take_away(sim_hub):
 
 @pytest.mark.parametrize("device,method,cards", STALLS)
 async def test_a_stalled_device_does_not_hold_the_capture(
-        sim_hub, monkeypatch, device, method, cards):
+        sim_hub, monkeypatch, load, device, method, cards):
     """The device's read never returns. The capture comes back after about one
     bound, the file is written, and the cards that read feeds are not in it
     while every other card still is."""
@@ -197,8 +215,10 @@ async def test_a_stalled_device_does_not_hold_the_capture(
         assert stalled.calls >= 1, "premise: the capture read the device"
         assert waited >= BOUND_S * 0.5, (
             f"the capture did not wait on the device at all ({waited:.2f} s)")
-        assert waited < BOUND_S * 8, (
-            f"the capture took {waited:.2f} s; the bound is {BOUND_S} s")
+        assert waited < CAPTURE_CEILING_S * load, (
+            f"the capture took {waited:.2f} s; the bound is {BOUND_S} s "
+            f"(ceiling {CAPTURE_CEILING_S * load:.2f} s at this box's "
+            f"contention, {load:.2f})")
         header = _header(sim_hub)
         present = sorted(c for c in cards if c in header)
         assert not present, f"a card from a read that never returned: {present}"
@@ -229,7 +249,7 @@ async def test_a_stalled_device_does_not_hold_an_unsaved_frame_or_its_promote(
 
 
 async def test_every_header_device_stalled_costs_each_one_bound(
-        sim_hub, monkeypatch):
+        sim_hub, monkeypatch, load):
     """The worst night: the mount, the cooler, the focuser and the rotator all
     stall. Each is waited on once, the focuser once and not twice, and the
     frame is still saved, with the cards of none of them."""
@@ -244,8 +264,9 @@ async def test_every_header_device_stalled_costs_each_one_bound(
         await _save(sim_hub)
         waited = time.monotonic() - began
         # Four devices, four bounds; five reads would be five.
-        assert waited < BOUND_S * 4 + 3.0, (
-            f"{waited:.2f} s for four stalled devices at {BOUND_S} s each")
+        assert waited < (BOUND_S * 4 + 3.0) * load, (
+            f"{waited:.2f} s for four stalled devices at {BOUND_S} s each "
+            f"(contention {load:.2f})")
         header = _header(sim_hub)
         assert not (EVERY_CARD & set(header)), sorted(EVERY_CARD & set(header))
         assert stalls[3].calls == 0, (

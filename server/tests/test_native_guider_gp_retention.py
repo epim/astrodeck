@@ -375,6 +375,12 @@ class _Mount:
 _TRAIN_FRAMES = 16      # 1 star check + 1 lock + 14 accepted -> a real window
 
 
+#: Real seconds a start may take here. It returns in milliseconds; a start that
+#: sat out the calibration's probation (#1079) is a failure at this bound, not
+#: a wait of 150 s.
+_START_BOUND_S = 60.0
+
+
 @pytest.fixture
 def _reuse_rig(tmp_path, monkeypatch):
     """A PPEC guider for profile ``prof1`` whose persisted calibration is
@@ -383,6 +389,12 @@ def _reuse_rig(tmp_path, monkeypatch):
     monkeypatch.setattr(configmod, "CONFIG_DIR", tmp_path)
     clock = _WallClock()
     monkeypatch.setattr(nativemod, "time", clock)
+    # #1079: a real start waits for the calibration's probation (#848), up to
+    # the engine's start bound less this margin, in REAL seconds (150 s of the
+    # 180 s bound), and this starved camera never gives it a verdict. Spent at
+    # once, the start returns and the test reads what it came to read. Every
+    # test below that starts did instead sit out the 150 s: this file took 751 s.
+    monkeypatch.setattr(nativemod, "_START_MARGIN_S", 1.0e9)
     d = tmp_path / "guider"
     d.mkdir(parents=True, exist_ok=True)
     (d / "prof1.json").write_text(
@@ -399,7 +411,7 @@ async def _session(g, clock, serve: int) -> None:
     then return with the camera starved (the loop is parked in an exposure)."""
     import asyncio
     g.cam = _StarCam(clock, serve)
-    await g.start_guiding()
+    await asyncio.wait_for(g.start_guiding(), timeout=_START_BOUND_S)
     await asyncio.wait_for(g.cam.starved.wait(), timeout=30.0)
 
 
@@ -970,7 +982,7 @@ async def test_a_stop_after_the_loops_own_death_persists(_reuse_rig, tmp_path):
     import asyncio
     g, clock = _reuse_rig
     g.cam = _StarThenBlankCam(clock, _TRAIN_FRAMES)
-    await g.start_guiding()
+    await asyncio.wait_for(g.start_guiding(), timeout=_START_BOUND_S)
     await asyncio.wait_for(g._loop_task, timeout=30.0)     # died on its own
     assert g._lost and not g._active, "the loop did not die of the star loss"
     died_at = clock.wall

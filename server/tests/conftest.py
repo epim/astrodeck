@@ -12,10 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import importlib.util
 import itertools
 import os
 import shutil
 import sys
+import tempfile
+import time
+import uuid
 from pathlib import Path, PurePath
 
 import pytest
@@ -2067,7 +2071,88 @@ class _SunConeGuard:
         return report
 
 
+#: Under the temp root: one directory per pytest session, so two sessions on a
+#: machine never reach into each other's (#909, #916). pytest's own
+#: ``pytest-of-<user>/pytest-N`` is shared by every session and swept by each.
+_SESSION_TEMP_NAME = "astrodeck-pytest"
+#: A session directory this old belongs to a run that has long ended (a failed
+#: one keeps its files for the evidence; a killed one never cleaned up).
+_SESSION_TEMP_STALE_S = 24 * 3600.0
+
+
+def _own_basetemp(config) -> Path | None:
+    """The base temp directory for this session to own, or None when it is not
+    this function's to choose: the run was given ``--basetemp``, or this is an
+    xdist worker, whose base temp is its controller's ``popen-gwN`` inside the
+    controller's own. Sweeps the stale ones on the way (`_SESSION_TEMP_STALE_S`).
+    ``PYTEST_DEBUG_TEMPROOT`` moves the root, as it does pytest's own."""
+    if config.option.basetemp or hasattr(config, "workerinput"):
+        return None
+    root = Path(os.environ.get("PYTEST_DEBUG_TEMPROOT")
+                or tempfile.gettempdir()).resolve() / _SESSION_TEMP_NAME
+    root.mkdir(parents=True, exist_ok=True)
+    oldest = time.time() - _SESSION_TEMP_STALE_S
+    for old in root.iterdir():
+        try:
+            if old.stat().st_mtime < oldest:
+                shutil.rmtree(old, ignore_errors=True)
+        except OSError:
+            continue
+    return root / f"{os.getpid()}-{uuid.uuid4().hex[:6]}"
+
+
+class _SessionBasetemp:
+    """Removes the session's own base temp when every test passed. Kept on any
+    other exit: the files of a failed test are what the failure is read from.
+    At unconfigure and not at session finish, which for the controller is
+    before xdist has shut its workers down."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.passed = False
+
+    def pytest_sessionfinish(self, session, exitstatus) -> None:
+        self.passed = int(exitstatus) == 0
+
+    def pytest_unconfigure(self, config) -> None:
+        if self.passed:
+            shutil.rmtree(self.path, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def contention():
+    """Take the harness's first contention reading at session start, so the
+    0.3 s it costs is not inside a test that times something (#1119). Only
+    when a test module of this run already imported the harness."""
+    harness = sys.modules.get("_group_harness")
+    return harness.contention_factor() if harness is not None else 1.0
+
+
+@pytest.fixture(autouse=True)
+def _native_guiders_are_closed():
+    """Release the engine of every NativeGuider a test makes, on the thread it
+    ran on, as the test ends (#700, #1119): no test leaves one to the cyclic
+    collector, which under xdist can free it on execnet's thread.
+
+    A throwaway tree that copies only this file (test_real_config_guard.py,
+    test_capture_root_isolated.py) has no helper beside it and no guider to
+    close: the block is skipped there, as `_sun_cone` is in pytest_configure."""
+    if importlib.util.find_spec("_native_fixtures") is None:
+        yield
+        return
+    from _native_fixtures import native_guiders_closed
+    with native_guiders_closed():
+        yield
+
+
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
+    # Before pytest's own tmpdir plugin reads ``--basetemp`` (#909, #916).
+    basetemp = _own_basetemp(config)
+    if basetemp is not None:
+        config.option.basetemp = str(basetemp)
+        config.pluginmanager.register(_SessionBasetemp(basetemp),
+                                      "astrodeck-session-basetemp")
     # Registered at configure time, so it is in place for pytest_sessionstart,
     # which is before collection imports anything (see the class).
     config.pluginmanager.register(
