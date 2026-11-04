@@ -32,8 +32,10 @@ import pytest
 
 from _flow_night import (FlowRig, assert_the_three_agree, flow_rig,  # noqa: F401
                          mosaic_flow, panel_label, shot_counts, steps_by_panel)
-from _group_harness import group_store, ra_at, watchdog_timeline  # noqa: F401
+from _group_harness import (group_store, ra_at,  # noqa: F401
+                            watchdog_slack_s, watchdog_timeline)
 from astrodeck.sequence.panel_order import order_panels
+from test_group_harness_watchdog import spin_bound_s
 from test_s7_sim_solve_failure import read_settled
 
 FLOW = mosaic_flow(ra_hours=ra_at(-2.0), plan="L 10, R 10", cycles=3)
@@ -42,12 +44,12 @@ FLOW = mosaic_flow(ra_hours=ra_at(-2.0), plan="L 10, R 10", cycles=3)
 #: pass starts with them tied: each panel shot one pass in the last. So the
 #: night is this, three times, each visit one pass of the cycle, L then R.
 PASS = ("1-1", "1-2", "2-2", "2-1")
-#: The watchdog's bound in the spin case, in real seconds, as
-#: test_group_harness_watchdog.py shortens it: many loop turns long.
-BOUND_S = 1.0
-#: The spin's own real-time limit, well past the bound, so only a missing
-#: watchdog lets the spin reach it, and such a run ends instead of hanging.
-SPIN_LIMIT_S = 8.0 * BOUND_S
+#: The watchdog's bound in the spin case is ``spin_bound_s()``, as
+#: test_group_harness_watchdog.py has it: 1 s on an idle box, many loop turns
+#: long, and scaled by the measured contention factor under load (#1119).
+#: The spin's own real-time limit is eight bounds, well past the bound plus
+#: the watchdog's slack, so only a missing watchdog lets the spin reach it,
+#: and such a run ends instead of hanging.
 
 
 async def test_a_rotating_2x2_visits_one_pass_at_a_time_and_every_reader_agrees(
@@ -201,7 +203,11 @@ async def _spin_scenario(flow_rig, monkeypatch,
     watchdog's own timeline is then untouched and the test's wall clock is
     not, which is the shape #683 (and #620 before it) failed on."""
     rig: FlowRig = flow_rig
-    night = await rig.night(spin_bound_s=BOUND_S)
+    # Read before the spin starts: a contention reading blocks the thread.
+    bound_s = spin_bound_s()
+    limit_s = 8.0 * bound_s
+    slack_s = watchdog_slack_s(bound_s)
+    night = await rig.night(spin_bound_s=bound_s)
     fid = await rig.save_flow(FLOW)
     real = night.engine._record_session_frame
     spins: list[float] = []
@@ -211,7 +217,7 @@ async def _spin_scenario(flow_rig, monkeypatch,
         if not spins and len(night.engine._session.frames) == 2:
             started = time.monotonic()
             spins.append(started)
-            while time.monotonic() - started < SPIN_LIMIT_S:
+            while time.monotonic() - started < limit_s:
                 pass                   # no await: the loop never comes back
             spun_out.append(time.monotonic() - started)
         return real(*a, **kw)
@@ -257,12 +263,13 @@ async def _spin_scenario(flow_rig, monkeypatch,
     # overshoot is normal; the rest of the margin is for a starved watcher
     # THREAD.
     away_s, reported_bound_s = watchdog_timeline(report)
-    assert reported_bound_s == BOUND_S, (
+    assert reported_bound_s == pytest.approx(bound_s, rel=1e-4), (
         f"{at}: the report's own bound ({reported_bound_s:g} s) is not this "
-        f"case's BOUND_S ({BOUND_S:g} s): {report}")
-    assert away_s < BOUND_S + 1.0, (
+        f"case's bound ({bound_s:g} s): {report}")
+    assert away_s < bound_s + slack_s, (
         f"{at}: the watchdog's OWN timeline measured {away_s:.2f} s away for "
-        f"a bound of {BOUND_S:g} s, not this test's wall clock ({wall_s:.1f} "
+        f"a bound of {bound_s:g} s (slack {slack_s:.2f} s at this box's "
+        f"contention), not this test's wall clock ({wall_s:.1f} "
         f"s from the spin's start to the failure being read): {report}")
     assert "Night (route-started run): the event loop did not come back" \
         in report and "#319" in report, f"{at}: the failure was {report}"
@@ -284,7 +291,7 @@ async def test_a_spin_in_a_route_started_run_fails_with_the_watchdog_report(
 
     The spin is in the engine's own call, ``_record_session_frame``, as the
     night banks its third frame, and it carries a real-time limit of its own
-    (``SPIN_LIMIT_S``, eight bounds; test_group_harness_watchdog.py's
+    (eight bounds; test_group_harness_watchdog.py's
     pattern), so with the watchdog missing the spin runs out and the night
     goes on, and the case fails rather than hangs. The CONTROL is the first
     case in this file: the same watchdog armed for a whole night that never

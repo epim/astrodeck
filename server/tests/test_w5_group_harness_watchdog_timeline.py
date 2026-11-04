@@ -34,18 +34,21 @@ import time
 
 import pytest
 
-from _group_harness import Night, watchdog_timeline
+from _group_harness import Night, watchdog_slack_s, watchdog_timeline
 from astrodeck.sequence import SequenceEngine
 
-from test_group_harness_watchdog import BOUND_S, SPIN_LIMIT_S, _plan, _run  # noqa: F401 (shared harness + fixtures)
+from test_group_harness_watchdog import _plan, _run, spin_bound_s, spin_limit_s  # noqa: F401 (shared harness + fixtures)
 from test_group_harness_watchdog import group_hub, group_store  # noqa: F401 (fixtures)
 
-#: Added to `Night.close`'s real teardown: enough to push this test's own
-#: wall clock (`took`, as the OLD assertion read it) past the OLD bound of
-#: BOUND_S + 3.0 = 4.0 s, while the watchdog's own measurement (`away_s`,
-#: read from its report) is untouched, since the watchdog has already
-#: fired and written that report before `close` is ever called.
-SLOW_TEARDOWN_S = 3.5
+#: Added to `Night.close`'s real teardown on top of the watchdog's slack:
+#: enough to push this test's own wall clock (`took`, as the OLD assertion
+#: read it) past the OLD bound of BOUND_S + 3.0 = 4.0 s, and past the slack
+#: `away_s` is held to on this box (#1119; 1.125 s idle, more under load), so
+#: a teardown that leaked into the watchdog's own measurement would show,
+#: while that measurement (`away_s`, read from its report) is untouched,
+#: since the watchdog has already fired and written that report before
+#: `close` is ever called.
+SLOW_TEARDOWN_MARGIN_S = 2.5
 
 
 async def test_a_slow_teardown_does_not_move_the_watchdogs_own_timeline(
@@ -64,25 +67,30 @@ async def test_a_slow_teardown_does_not_move_the_watchdogs_own_timeline(
     -- the exact false failure #620 reported from a genuinely loaded box,
     reproduced here from the slow teardown alone, with no load at all.
     """
+    bound_s = spin_bound_s()               # read before the spin (#1119)
+    limit_s = spin_limit_s()
+    slack_s = watchdog_slack_s(bound_s)
+    slow_teardown_s = slack_s + SLOW_TEARDOWN_MARGIN_S
+
     async def nothing() -> None:
         return None
 
     async def spin_without_yielding(self, plan):
         started = time.monotonic()
-        while time.monotonic() - started < SPIN_LIMIT_S:
+        while time.monotonic() - started < limit_s:
             await nothing()            # an await that never suspends
 
     real_close = Night.close
 
     async def slow_close(self) -> None:
-        await asyncio.sleep(SLOW_TEARDOWN_S)
+        await asyncio.sleep(slow_teardown_s)
         await real_close(self)
 
     monkeypatch.setattr(SequenceEngine, "_run_scheduled",
                         spin_without_yielding)
     monkeypatch.setattr(Night, "close", slow_close)
 
-    night = Night(group_hub, monkeypatch, spin_bound_s=BOUND_S)
+    night = Night(group_hub, monkeypatch, spin_bound_s=bound_s)
     done, failed, took = await _run(night)
 
     assert failed is not None, f"the night did not fail; run returned {done!r}"
@@ -94,14 +102,14 @@ async def test_a_slow_teardown_does_not_move_the_watchdogs_own_timeline(
     # a slow teardown, because it fires and writes its report BEFORE
     # `close` (and the slow sleep inside this test's double of it) ever
     # runs.
-    assert away_s < BOUND_S + 1.0, (
+    assert away_s < bound_s + slack_s, (
         f"the watchdog's own timeline measured {away_s:.2f} s away for a "
-        f"bound of {BOUND_S} s -- the slow teardown leaked into the "
+        f"bound of {bound_s:g} s -- the slow teardown leaked into the "
         f"watchdog's OWN measurement, which should be impossible: {failed}")
     # Premise: this scenario actually exercises something. If `took` had
     # stayed small, a slow teardown would not be slowing anything and this
     # test would prove nothing about #620.
-    assert took >= BOUND_S + SLOW_TEARDOWN_S - 0.5, (
+    assert took >= bound_s + slow_teardown_s - 0.5, (
         f"the slow teardown did not actually slow the wall clock ({took:.2f}"
-        f" s, expected at least {BOUND_S + SLOW_TEARDOWN_S - 0.5:.2f} s) -- "
+        f" s, expected at least {bound_s + slow_teardown_s - 0.5:.2f} s) -- "
         f"this scenario proves nothing about #620 without it")

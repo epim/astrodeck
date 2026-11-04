@@ -39,13 +39,16 @@ import pytest
 
 from _flow_night import flow_rig  # noqa: F401 (fixture)
 from _group_harness import (_SpinWatchdog, group_store,  # noqa: F401 (fixture)
-                            watchdog_timeline)
-from test_s7_sim_rotating_2x2 import BOUND_S, _spin_scenario
+                            watchdog_slack_s, watchdog_timeline)
+from test_group_harness_watchdog import spin_bound_s
+from test_s7_sim_rotating_2x2 import _spin_scenario
 
-#: Added after the watchdog has raised its report: enough to push the test's own
-#: wall clock (`SpinRun.wall_s`) past the OLD bound of BOUND_S + 3.0 = 4.0 s
-#: even though the watchdog fires at about BOUND_S.
-SLOW_AFTER_REPORT_S = 3.5
+#: Added after the watchdog has raised its report, on top of the watchdog's
+#: slack at this box's contention (#1119): enough to push the test's own wall
+#: clock (`SpinRun.wall_s`) past the OLD bound of bound + 3.0 s (4.0 s idle),
+#: and past the slack `away_s` is held to, even though the watchdog fires at
+#: about its bound.
+SLOW_AFTER_REPORT_MARGIN_S = 2.5
 
 
 async def test_a_slow_wait_after_the_report_does_not_move_the_watchdogs_timeline(
@@ -70,20 +73,24 @@ async def test_a_slow_wait_after_the_report_does_not_move_the_watchdogs_timeline
     stays green under the same mutant on an idle box, which is why a proof that
     forces the delay is needed.
     """
+    slow_s = watchdog_slack_s(spin_bound_s()) + SLOW_AFTER_REPORT_MARGIN_S
     run = await _spin_scenario(flow_rig, monkeypatch,
-                               after_report_delay_s=SLOW_AFTER_REPORT_S)
+                               after_report_delay_s=slow_s)
 
     # Premise: the delay really did stretch the test's own clock past the old
     # bound. If it had not, this case would prove nothing about #683.
-    assert run.wall_s > BOUND_S + 3.0, (
+    assert run.wall_s > run.bound_s + 3.0, (
         f"the delay did not push the wall clock ({run.wall_s:.2f} s) past the "
-        f"old bound of {BOUND_S + 3.0:.1f} s, so this case proves nothing "
+        f"old bound of {run.bound_s + 3.0:.1f} s, so this case proves nothing "
         f"about #683")
-    assert run.away_s < BOUND_S + 1.0, (
+    assert run.away_s < run.bound_s + watchdog_slack_s(run.bound_s), (
         f"the watchdog's own timeline measured {run.away_s:.2f} s away for a "
-        f"bound of {BOUND_S:g} s, though the wait after its report is what "
+        f"bound of {run.bound_s:g} s, though the wait after its report is what "
         f"was slow: {run.report}")
-    assert run.bound_s == BOUND_S, run.bound_s
+    # The scenario has already matched this against the bound it armed; the
+    # contention factor can be read again in between, so only the floor is
+    # asserted here: the idle bound of 1 s.
+    assert run.bound_s >= 1.0, run.bound_s
 
 
 @pytest.mark.parametrize("what", ["Night.run", "Night (route-started run)"])

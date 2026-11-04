@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
-import time
 from contextlib import contextmanager
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
@@ -570,35 +569,38 @@ def test_a_wrong_dacl_is_still_repaired_and_the_repair_verifies(
 
 
 @on_windows
-def test_hardening_a_large_directory_twice_is_far_cheaper_the_second_time(tmp_path):
-    """The cost of the skip, measured rather than asserted from the source.
+def test_hardening_a_large_directory_twice_does_not_propagate_the_second_time(
+    monkeypatch, tmp_path
+):
+    """The skip, asserted as the mechanism and not as a wall-clock ratio (#1081).
 
-    Measured on a Windows 11 development machine (NVMe, 2000 files), three
-    runs: first 77.21 / 75.43 / 76.03 ms, second 0.48 / 0.51 / 1.09 ms, so
-    160x / 149x / 70x.  On the rig the same shape cost 279 ms at 1000 files and
-    7.0 s on ``captures/`` (about 7400 files), which is what stalled the event
-    loop.
+    The cost the skip saves is the propagating ``SetSecurityInfo``: on the rig
+    it cost 279 ms at 1000 files and 7.0 s on ``captures/`` (about 7400 files),
+    which is what stalled the event loop.  An earlier version of this test
+    timed the two calls and demanded 50x; it measured 160x, 149x and 70x on a
+    development machine and 9.5x on a hosted runner (35.13 ms against 332.38
+    ms, run 39151918772), so a red check on an unrelated PR said nothing about
+    the code.  What the test is for is the call, and a call is counted
+    deterministically: the first hardening of a tree writes the DACL once, the
+    second writes it no more.
 
     MUTATION: delete the ``else: return`` after the pre-set verification in
-    ``harden_private_path``.  Observed under that mutation, same three runs:
-    second 84.75 / 73.16 / 68.94 ms against firsts of 76.64 / 103.67 /
-    75.80 ms -- ratios 0.9x / 1.4x / 1.1x, and the assertion fails.
+    ``harden_private_path``.  Under that mutation the second call falls
+    through to ``SetSecurityInfo`` again, ``set_calls`` reads 2, and the
+    assertion fails.
     """
     target = tmp_path / "tree"
     target.mkdir()
-    for index in range(2000):
+    for index in range(50):
         (target / f"f{index:04d}.bin").write_bytes(b"x")
 
-    start = time.perf_counter()
+    proxy = _count_set_security_info(monkeypatch)
     windows_acl.harden_private_path(target, directory=True)
-    first = time.perf_counter() - start
+    assert proxy.set_calls == 1, "the first hardening of the tree wrote no DACL"
 
-    start = time.perf_counter()
     windows_acl.harden_private_path(target, directory=True)
-    second = time.perf_counter() - start
-
-    assert second * 50 <= first, (
-        f"re-hardening an already-private directory cost {second * 1000:.2f} ms "
-        f"against {first * 1000:.2f} ms for the first call; the propagating "
-        "SetSecurityInfo is still running on a path that is already correct"
+    assert proxy.set_calls == 1, (
+        f"re-hardening an already-private directory wrote the DACL again "
+        f"({proxy.set_calls} SetSecurityInfo calls); the propagating call is "
+        "still running on a path that is already correct"
     )

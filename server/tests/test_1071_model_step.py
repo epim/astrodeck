@@ -35,6 +35,7 @@ from astrodeck.devices.base import Telescope
 from astrodeck.devices.sim import SimRig, SimTelescope
 from astrodeck.events import night_key
 
+from _group_harness import contention_factor
 from test_1071_probe_window import VClock, vclock  # noqa: F401
 from test_zwo_am5 import FakeLink, _connect_script, fixed_env  # noqa: F401
 
@@ -129,6 +130,7 @@ async def test_a_ten_pulse_west_train_moves_the_model_by_what_was_commanded(
     link = PulseModelLink()
     tel = await _tel(link)
     assert tel.can_measure_model_step is True
+    load = contention_factor()      # before the train: a reading blocks (#1119)
 
     async def train():
         for _ in range(10):
@@ -136,7 +138,15 @@ async def test_a_ten_pulse_west_train_moves_the_model_by_what_was_commanded(
 
     step = await tel.measure_model_step(train)
     commanded = link.moved_ms["w"] / 1000.0 * RATE
-    assert commanded == pytest.approx(10 * 0.150 * RATE, rel=0.25)
+    # The premise that the pulses ran at about the rate: the model is moved by
+    # the REAL start-to-stop time of each pulse, which a pulse thread can only
+    # overshoot, never undershoot. A quarter over, flat, failed in a full
+    # parallel run (#1099); the overshoot is scheduling and moves with the
+    # load (#1119). The grade is the next assertion: the step measured is the
+    # displacement the model made, whatever the pulses lasted.
+    nominal = 10 * 0.150 * RATE
+    assert 0.75 * nominal <= commanded <= nominal * (1.0 + 0.25 * load), (
+        commanded, nominal, load)
     assert step["ra_step_arcsec"] == pytest.approx(commanded, abs=0.5), step
     assert step["dec_step_arcsec"] == 0.0
     assert step["ra_quantum_arcsec"] == pytest.approx(0.15)

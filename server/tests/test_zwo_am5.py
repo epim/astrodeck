@@ -11,6 +11,7 @@ import time
 import pytest
 
 from _deadline import wait_until
+from _group_harness import contention_factor
 from _humanizer_mirror import CLIP_AT, shown_whole
 from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 from astrodeck.devices.serial_link import LinkError, SerialLink
@@ -1171,7 +1172,10 @@ async def test_the_halt_drain_is_bounded_not_indefinite(fixed_env, monkeypatch):
     await tel.stop()
     assert tel._halting is True
 
-    await asyncio.wait_for(tel.park(), 10.0)     # must not hang
+    # Must not hang. The park costs real seconds (it waits a second for the
+    # drive to stop and polls the mount), so the ceiling moves with the load on
+    # the box: it failed in a full parallel run and passed alone (#1099, #1119).
+    await asyncio.wait_for(tel.park(), 10.0 * contention_factor())
     assert "hP" in fl.sent
 
 

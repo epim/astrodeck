@@ -117,6 +117,12 @@ class _Mount:
         return SimpleNamespace(value="west")
 
 
+#: Real seconds a start may take here. It returns in milliseconds; a start that
+#: sat out the calibration's probation (#1079) is a failure at this bound, not
+#: a wait of 150 s.
+_START_BOUND_S = 60.0
+
+
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     """A PPEC guider for profile ``prof1`` whose persisted calibration is
@@ -125,6 +131,12 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(configmod, "CONFIG_DIR", tmp_path)
     clock = _WallClock()
     monkeypatch.setattr(nativemod, "time", clock)
+    # #1079: a real start waits for the calibration's probation (#848), up to
+    # the engine's start bound less this margin, in REAL seconds (150 s of the
+    # 180 s bound), and this starved camera never gives it a verdict. Spent at
+    # once, the start returns and the test reads what it came to read. Every
+    # test below that starts did instead sit out the 150 s: this file took 600 s.
+    monkeypatch.setattr(nativemod, "_START_MARGIN_S", 1.0e9)
     d = tmp_path / "guider"
     d.mkdir(parents=True, exist_ok=True)
     (d / "prof1.json").write_text(
@@ -140,7 +152,7 @@ async def _start(g, clock, frames) -> None:
     """``start_guiding`` for real, then wait until the loop has processed
     every frame after the star check and is parked on the next exposure."""
     g.cam = _ScriptCam(clock, frames)
-    await g.start_guiding()
+    await asyncio.wait_for(g.start_guiding(), timeout=_START_BOUND_S)
     await asyncio.wait_for(g.cam.starved.wait(), timeout=30.0)
 
 
