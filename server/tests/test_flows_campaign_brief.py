@@ -582,8 +582,9 @@ class TestWhatTheCampaignTabWillSay:
         c = _campaign(bare, None)
         assert c["has_pool"] is True and c["is_campaign"] is False
         assert c["note"] == (
-            "Automatic resume is on (DUSK WINDOW): a subsequent night "
-            "resumes this flow where the session log left off."), c["note"]
+            "This flow has no DUSK WINDOW, so it has no window to resume in: "
+            "a subsequent night does not resume by itself; CONTINUE it by "
+            "hand."), c["note"]
         assert "Repeat" not in c["note"], c["note"]
 
     def test_the_members_are_the_pools_own_names_and_quota(self):

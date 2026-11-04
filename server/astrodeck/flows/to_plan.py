@@ -1073,25 +1073,15 @@ def _automation(compiled: dict, out: list[dict], *,
     # What is genuinely not honoured is the STOP CONDITION, and only for one of
     # its two forms - so that is what this says now.
     if compiled.get("campaign"):
-        camp = compiled["campaign"]
-        until = str(camp.get("until") or "")
         runs = ("It images until its window closes, goes dormant with "
                 "auto-resume armed, and comes back the next night picking up "
                 "from the session log - targets already finished are skipped "
                 "rather than reshot")
-        if until == "nights_30":
-            out.append(_note(
-                "campaign",
-                f"{runs}. Nothing counts NIGHTS, though: the campaign ends when "
-                f"every target has the frames it asked for, however many nights "
-                f"that takes, so 'until {until}' is not a limit the run "
-                f"enforces"))
-        else:
-            out.append(_note(
-                "campaign",
-                f"{runs}. The campaign ends when every target reaches its "
-                f"requested frame count. Tonight shows the integration-goal "
-                f"hours as estimates"))
+        out.append(_note(
+            "campaign",
+            f"{runs}. The campaign ends when every target reaches its "
+            f"requested frame count. Tonight shows the integration-goal "
+            f"hours as estimates"))
 
     auto = compiled.get("automation") or {}
     if "dome" in auto:
@@ -1193,8 +1183,8 @@ NODE_LOSS: dict[str, str] = {
     "parkclose": (
         "most of what this node promises already happens, but not because it "
         "is here: every flow's night ends with the mount parked and the dust "
-        "cover shut whether or not this node is on the canvas, and the dome "
-        "closes only if Settings > Safety has 'close dome when done' ticked. "
+        "cover shut whether or not this node is on the canvas, and the roof "
+        "closes only if Settings > Safety has 'Close roof at end-of-night' on. "
         "What does NOT happen because of THIS node is the cooler setting - the "
         "camera is warmed at the end of every run regardless of 'Hold cold "
         "(day darks)'. Darks after a shutdown come from a calibration step "

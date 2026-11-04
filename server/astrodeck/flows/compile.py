@@ -1153,8 +1153,9 @@ def campaign_block(graph: FlowGraph) -> dict | None:
 
     ``until`` HAS ONE SHAPE, ``pool_complete``. It used to be ``nights_30`` for
     any ``repeat`` that did not name a pool, a stop condition nothing ever
-    counted (``to_plan`` said "Nothing counts NIGHTS" in a note), so a flow
-    could promise a limit the run would not keep. The session is complete when
+    counted, so a flow could promise a limit the run would not keep (``to_plan``
+    once had a note for it, deleted with the shape, #772). The session is
+    complete when
     every target has the frames it asked for, however many nights that takes,
     which is what ``pool_complete`` says and the only thing a campaign does.
 

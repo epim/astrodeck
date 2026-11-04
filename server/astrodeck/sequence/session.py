@@ -707,6 +707,21 @@ class Session(BaseModel):
                 out[s.id] = max(0, s.count - counts.get(s.id, 0))
         return out
 
+    def owed_under(self, plan: SequencePlan) -> int:
+        """Frames still owed counted by ``plan`` instead of the session's own:
+        tonight's compile and its ``count_mode``, swapped in on a copy (the
+        session's own plan owes nothing by construction once it is complete),
+        so the session itself is not touched."""
+        return self.model_copy(update={"plan": plan}).owed()
+
+    def owes_more(self, plan: SequencePlan) -> bool:
+        """Whether, counted by ``plan``, this session still owes frames: the
+        question a COMPLETE session is asked when its flow was edited, and the
+        one the run button answers CONTINUE by before the press (#778, #1112).
+        ``continuation.reopen_report`` is this question plus the shared-step
+        test, and the one place that decides it."""
+        return self.owed_under(plan) > 0
+
     def owed(self) -> int:
         """Frames still owed across every step (mode-aware, floored at 0).
 
@@ -1259,10 +1274,13 @@ class SessionStore:
         NEVER PAST THE NEWEST. Whatever became of the newest session, an
         older one is a ledger the operator chose to leave, and reading it
         again (the chip) or continuing it (Run) would reopen it unasked.
-        A complete newest is returned: the chip shows what it banked, and
-        Run, which continues only a dormant session, starts fresh (reopening
-        a complete one is I-30). An abandoned newest is None: the operator
-        closed it, so there is nothing to show and nothing to continue.
+        A complete newest is returned: the chip shows what it banked. Run
+        continues a dormant session straight away; a complete one it asks
+        about first when the flow now owes more (``owes_more``, 409
+        ``reopen``, #179) and continues the same session on a yes, and starts
+        fresh when the flow owes nothing more. An abandoned newest is None:
+        the operator closed it, so there is nothing to show and nothing to
+        continue.
 
         Through ``newest_for_flow``, so the order (created, not updated) and
         the skip over an unreadable file are that method's rules and not a

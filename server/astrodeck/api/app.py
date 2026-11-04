@@ -7361,6 +7361,14 @@ def create_app(*, bind_host: str | None = None,
             night = continue_night(session, now)
             if night is not None:
                 out["session"]["continue_night"] = night
+            # A COMPLETE session is the one a press ASKS about (409 `reopen`,
+            # #179), and whether it will is `reopen_report`'s answer on the
+            # compile this route already holds, so the run button reads
+            # CONTINUE before the press (#778, #1112). Other statuses leave
+            # the key out: a dormant session is continued straight away.
+            if session.status == "complete":
+                out["session"]["owes_more"] = (
+                    reopen_report(session, plan) is not None)
         return out
 
     # ORDERING: declared with the static /api/flows/<segment> routes, before

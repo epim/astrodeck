@@ -53,11 +53,11 @@ from typing import Any
 
 from ..sequence.schedule import (_clock_time_near_now, hours_to_meridian_flip,
                                  observing_night, prev_sun_event)
-from .compile import (CAMPAIGN_UNTIL, _finite, _grid_of, campaign_block,
+from .compile import (_finite, _grid_of,
                       compile_plan, flow_order, grid_size, is_multi_panel,
                       loop_wires, needs_wire_scoping, owner_of, parse_skip)
 from .models import FlowGraph, _not_a_count
-from .nodes import NODE_DEFS, dusk_auto_resume, parse_cycle_plan, target_angle
+from .nodes import NODE_DEFS, parse_cycle_plan, target_angle
 from .rig import RigFacts
 
 #: Fallback imaging twilight when neither the caller nor the config has one.
@@ -889,10 +889,13 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
         # plan from, and said "resumes at the next dusk" of an Off flow. A
         # plain boolean: no figure the site decides.
         "resume_across_nights": plan_dict.get("resume_across_nights") is not False,
-        # The CAMPAIGN tab and the STORY tab's brief. Both read the GRAPH, not
-        # the compile, so both are empty when a caller hands in a plan dict -
-        # the same rule the dawn story already follows for the report sink.
-        "campaign": _campaign(graph, frames_by_target, progress),
+        # The CAMPAIGN tab and the STORY tab's brief. Both read the GRAPH for
+        # the nodes they quote, so both are empty when a caller hands in a plan
+        # dict - the same rule the dawn story already follows for the report
+        # sink - and every fact about the night's shape they state is the
+        # compile's (``night_facts``).
+        "campaign": _campaign(graph, frames_by_target, progress,
+                              plan=plan_dict),
         # The brief is handed this compile, so the visit it states is read
         # off the same entry the budget prices its hops from, and the rig
         # facts, so the guider it names is the one the run will use (#506).
@@ -1964,11 +1967,14 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     # this brief.
     saf, df = n("safety"), n("duskflats")
     guide, af = n("guide"), n("autofocus")
-    # WHETHER THIS FLOW IS A CAMPAIGN is the compile's own block, read through
-    # the one function that writes it (`compile.campaign_block`, #195, WP-118):
-    # a POOL in a flow whose Automatic resume is On. The two campaign sentences
-    # below keyed on DUSK's `repeat` until then.
-    campaign = campaign_block(g)
+    # EVERY FACT A SENTENCE BELOW STATES ABOUT THE NIGHT'S SHAPE IS THE
+    # COMPILE'S (#1112, WP 2.5): ``night_facts`` reads it off the plan, never
+    # off the graph, so the brief, the CAMPAIGN tab and the story's dawn row
+    # cannot disagree with each other or with the plan. The graph decides
+    # WHICH sentences appear (a node earns its sentence) and quotes the
+    # operator's own params; whether the flow is a campaign, what the wind-down
+    # shoots and what the dome does are the plan's.
+    facts = night_facts(plan if plan is not None else compile_plan(g))
     seg: list[str] = []
 
     if dusk is not None:
@@ -2093,10 +2099,9 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     # night ignores. Before S2 this sentence promised more than engine memory
     # kept. test_set_aside_promises.py maps it to the tests that prove each
     # half.
-    if pool is not None and str(pool.params.get("onFloor") or "").strip() \
-            .lower().startswith("advance"):
+    if facts.advance_floor_deg is not None:
         seg.append(f"If the active target sinks to the "
-                   f"{pool.params.get('minAlt')}° floor, it is set aside for "
+                   f"{facts.advance_floor_deg:g}° floor, it is set aside for "
                    f"tonight - a restart tonight does not retry it, the next "
                    f"night does - and the next best takes over.")
 
@@ -2157,27 +2162,29 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         # WHAT ACTUALLY HAPPENS, not what the node's dials say.
         #
         # This sentence used to add "with the cooler held cold" whenever the
-        # PARK + CLOSE node's `cooler` dial said Hold, and ", banking capped day
-        # darks" whenever it was wired to a calibration queue. Neither happens:
+        # PARK + CLOSE node's `cooler` dial said Hold. It does not happen:
         # `plan_extras` hardcodes `warm_cooler_when_done=True` for every
-        # flow-derived plan, and no lane shoots darks after a shutdown at all -
-        # the calibration queue's darks are only ever taken inside a cloud hold.
-        #
-        # The campaign tab already said so in `_DAWN`, so the two tabs of the
-        # same page contradicted each other about the same rig on the same
-        # night. This is the one that was wrong.
+        # flow-derived plan. Day darks are a different matter: a calibration
+        # queue wired to SHUTDOWN COMPLETE funds them (`plan_extras`
+        # `day_darks`) and the wind-down shoots them between the park and the
+        # warm, so the sentence states the plan's count, whatever the node's
+        # dials say.
         #
         # The dropped dials belong in the unmapped list, not in a hedge here -
         # a story that says "the cooler MIGHT be held" is worse than one that
         # says what the night does. See `_automation`'s parkclose note.
-        t = (f"When astronomical night ends, the mount parks and the "
-             f"{str(pc.params.get('closure')).lower()} closes")
-        t += ", then the camera warms"
+        #
+        # THE WIND-DOWN IS THE PLAN'S (#819, #1112): what is shot between the
+        # park and the warm and what the dome does are said by
+        # ``_wind_down``, the words the CAMPAIGN tab and the story's dawn row
+        # use. The node's `closure` dial is not read: the dome closes at the
+        # end of a night only through Settings > Safety, which no node sets.
+        t = f"When astronomical night ends, the rig {_wind_down(facts)}"
         # A CAMPAIGN, WHICH IS NEVER AN OFF FLOW (#195): an Off plan is
         # disarmed where its night ends, so a later dusk resumes nothing, and
-        # this sentence would be a claim nothing keeps. `campaign_block` is
-        # None for it, so the clause is not said.
-        if campaign is not None:
+        # this sentence would be a claim nothing keeps. The compile writes no
+        # `campaign` block for it, so the clause is not said.
+        if facts.campaign:
             t += ("; the flow re-arms at the next dusk and resumes mid-cycle "
                   "from the session log")
         seg.append(t + ".")
@@ -2186,10 +2193,7 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         seg.append("Rain, wind, or power failure aborts and parks "
                    "unconditionally - a stale reading counts as unsafe.")
 
-    if (campaign is not None and pool is not None
-            and campaign.get("until") == CAMPAIGN_UNTIL):
-        members = [m for m in str(pool.params.get("members") or "").split(",")
-                   if m.strip()]
+    if facts.campaign and facts.pool:
         # THE QUOTA IS NAMED ONLY WHERE IT GOVERNS (WP-118). The pool's
         # `quota` is a count of CYCLES and reaches the run through a FILTER
         # CYCLE stage alone (`to_plan._quota_cycles`); a CAPTURE LOOP under a
@@ -2199,12 +2203,12 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         # it appeared. Keyed on the campaign block it reaches every pool flow
         # with Automatic resume On, a capture-loop pool included, and quoting
         # the dial there would promise a finish line the run does not keep.
-        if any(x.type == "cycle" for x in g.nodes):
-            seg.append(f"Once all {len(members)} targets hold their "
-                       f"{pool.params.get('quota')}-cycle quota, the rig "
+        if facts.pool_cycles:
+            seg.append(f"Once all {len(facts.pool)} targets hold their "
+                       f"{facts.pool_quota:g}-cycle quota, the rig "
                        f"stays parked.")
         else:
-            seg.append(f"Once all {len(members)} targets have the frames "
+            seg.append(f"Once all {len(facts.pool)} targets have the frames "
                        f"they ask for, the rig stays parked.")
 
     return " ".join(seg)
@@ -2276,28 +2280,113 @@ def banked_hours_by_target_from_reports(reports: Iterable[Any]
     return out
 
 
-#: What every campaign note says about the end of a night, in ONE place because
-#: it was said three times and two of the three clauses were untrue.
-#:
-#: It read "Dawn parks + closes; the cooler stays cold for day darks; each dusk
-#: resumes mid-cycle."
-#:
-#: * PARKS is true - `plan_extras` sets `park_when_done=True` for every flow.
-#: * CLOSES is not. No dome action reaches the engine; `to_plan` reports that
-#:   separately at danger weight, and this line was quietly contradicting it.
-#: * THE COOLER STAYS COLD is not either, and it is the expensive one to
-#:   believe: `plan_extras` also sets `warm_cooler_when_done=True`, so the TEC
-#:   ramps up at dawn. An operator who read this and left the rig expecting a
-#:   cold sensor for day darks would come back to a warm one and a dark library
-#:   indexed at a temperature the frames do not have.
-#: * RESUMES MID-CYCLE is true - the session ledger seeds the next night.
-#:
-#: The design asks for the cooler to stay cold, and that is a real request, but
-#: answering it means changing what the run does rather than what this sentence
-#: claims. Recorded on the campaign item; the copy tells the truth meanwhile.
-_DAWN = ("Dawn parks the mount and warms the camera - the dome is not driven "
-         "and the cooler does not stay cold for day darks. Each dusk resumes "
-         "where the session log left off.")
+@dataclass(frozen=True)
+class NightFacts:
+    """What the COMPILED PLAN says about how the night goes and ends: the one
+    reading every sentence about it is made from (#1112, WP 2.5).
+
+    The CAMPAIGN tab's dawn note, the brief's night-end and pool sentences
+    and the story's dawn row each re-read the flow graph with a rule of their
+    own, and they disagreed with each other and with the plan: day darks the
+    plan funds and a note that denied them (#819), a DUSK WINDOW a pool flow
+    does not have (#775), a dome that "closes" where only a Settings box
+    closes it (#819). Each fact below is one the compile writes, or
+    ``plan_extras`` derives from the compile, so a note that states it cannot
+    say something the plan does not.
+
+    ``window`` is a DUSK WINDOW's presence (``compile_plan`` writes a
+    ``start_mode`` of "now" for a flow with none); ``campaign`` the compile's
+    own ``campaign`` block (``compile.campaign_block``); ``resumes`` the plan's
+    ``resume_across_nights``, True unless it is an explicit Off; ``day_darks``
+    what the wind-down shoots between the park and the warm
+    (``to_plan.plan_extras``, the plan's own field); ``pool`` the first POOL's
+    member names with its ``pool_quota``, in cycles, and ``pool_cycles``
+    whether a FILTER CYCLE stage counts them; ``advance_floor_deg`` the floor a
+    pool set to advance sets a target aside at, None for one that keeps
+    imaging."""
+    window: bool
+    campaign: bool
+    resumes: bool
+    day_darks: int
+    pool: tuple[str, ...]
+    pool_quota: float
+    pool_cycles: bool
+    advance_floor_deg: float | None
+
+
+def night_facts(compiled: Mapping[str, Any] | None) -> NightFacts:
+    """The facts every note about the night is made from, read off
+    ``compiled`` (``compile.compile_plan``'s answer) and nothing else. An empty
+    or missing compile is a flow nobody described: no window, no campaign, no
+    pool, no day darks, and it resumes, as a flow with no opinion always has.
+    """
+    # to_plan imports this module, so it is imported where it is used.
+    from .to_plan import plan_extras
+    compiled = compiled or {}
+    members = [t for t in compiled.get("targets") or []
+               if isinstance(t, Mapping) and "pool_rank" in t]
+    first = members[0] if members else {}
+    members = [t for t in members if t.get("node_id") == first.get("node_id")]
+    steps = [s for t in members for s in t.get("steps") or []
+             if isinstance(s, Mapping)]
+    return NightFacts(
+        window=(compiled.get("schedule") or {}).get("start_mode",
+                                                    "now") != "now",
+        campaign=bool(compiled.get("campaign")),
+        resumes=compiled.get("resume_across_nights") is not False,
+        day_darks=int(plan_extras(dict(compiled)).get("day_darks", 0)),
+        pool=tuple(str(t.get("name") or "") for t in members),
+        pool_quota=_num(first.get("quota_cycles")),
+        pool_cycles=any(s.get("strategy") == "cycle" for s in steps),
+        advance_floor_deg=(_num(first.get("min_altitude_deg"))
+                           if first.get("on_floor") == "advance" else None))
+
+
+#: The dawn fact every surface says in these words, so the library card, the
+#: CAMPAIGN tab and the brief cannot be told two things about one night.
+_PARK_WARM = "parks the mount and warms the camera"
+
+#: What the dome does at the end of a night, which is a SETTING and not a fact
+#: of any plan (`to_plan.NODE_LOSS["parkclose"]`): the roof closes only if
+#: Settings > Safety has "Close roof at end-of-night" on
+#: (`safety.close_dome_when_done`), in the words both Settings surfaces show.
+#: It said "the dome is not driven" on one tab and "the dust flap + dome
+#: closes" on the other.
+_DOME = ("the roof closes only if Settings > Safety 'Close roof at "
+         "end-of-night' is on")
+
+
+def _day_darks_clause(n: int) -> str:
+    """What the wind-down does about day darks, from the plan's count.
+
+    The cooler is not a held setting: nothing keeps it cold past those darks,
+    and the camera warms as soon as they are done, so an operator who walked
+    away expecting a cold sensor for later darks would come back to a warm one
+    (the class this note was first written to fix). ``plan_extras`` funds the
+    darks only for a calibration queue wired to SHUTDOWN COMPLETE, and the
+    engine takes them between the park and the warm ramp, with the sensor
+    still at setpoint."""
+    if n <= 0:
+        return "no day darks are queued, so the cooler does not stay cold"
+    verb, noun = ("is", "dark") if n == 1 else ("are", "darks")
+    return (f"{n} day {noun} {verb} taken between the two while the sensor is "
+            f"still at setpoint, and the cooler does not stay cold beyond "
+            f"them")
+
+
+def _wind_down(facts: NightFacts) -> str:
+    """How a night ends, said once for the CAMPAIGN tab and the brief."""
+    return f"{_PARK_WARM} - {_day_darks_clause(facts.day_darks)}; {_DOME}"
+
+
+def _story_darks(n: int) -> str:
+    """The story's dawn row names the day darks only where the plan funds
+    them; the row is otherwise the words it has always had."""
+    if n <= 0:
+        return ""
+    verb, noun = ("is", "dark") if n == 1 else ("are", "darks")
+    return f", {n} day {noun} {verb} taken at setpoint"
+
 
 #: What a flow that turned DUSK WINDOW's Automatic resume Off says in place of
 #: the last sentence (#195, owner ruling 7 on #189): the engine disarms such a
@@ -2307,15 +2396,13 @@ _DAWN = ("Dawn parks the mount and warms the camera - the dome is not driven "
 #: flow.
 _NO_LATER_RESUME = ("a subsequent night does not resume by itself; CONTINUE it "
                     "by hand")
-_DAWN_OFF = ("Dawn parks the mount and warms the camera - the dome is not "
-             "driven and the cooler does not stay cold for day darks. A "
-             "subsequent night does not resume by itself; CONTINUE it by hand.")
-
-
-def _dawn_note(resumes: bool) -> str:
-    """``_DAWN``, or ``_DAWN_OFF`` for a flow whose plan does not resume on
-    subsequent nights."""
-    return _DAWN if resumes else _DAWN_OFF
+def _dawn_note(facts: NightFacts) -> str:
+    """The CAMPAIGN note's sentences about the end of a night and what comes
+    after it, from the plan's facts (``night_facts``)."""
+    tail = (f"{_NO_LATER_RESUME[:1].upper()}{_NO_LATER_RESUME[1:]}."
+            if not facts.resumes
+            else "Each dusk resumes where the session log left off.")
+    return f"Dawn {_wind_down(facts)}. {tail}"
 
 
 #: The CAMPAIGN note's words for the forecast nobody makes, said once so the
@@ -2489,7 +2576,8 @@ def _panels_clause(rows: list[dict] | None) -> str:
 
 def _campaign(graph: FlowGraph | None,
               frames_by_target: Callable[[], Mapping[str, Mapping[str, int]]] | None,
-              progress: ProgressSource = None) -> dict:
+              progress: ProgressSource = None,
+              plan: Mapping[str, Any] | None = None) -> dict:
     """The CAMPAIGN tab: how much of the pool's quota each member has banked,
     and how far each panel of a mosaic has got.
 
@@ -2530,22 +2618,19 @@ def _campaign(graph: FlowGraph | None,
     """
     g = graph.with_defaults() if graph is not None else None
     pool = _first(g, "pool")
-    dusk = _first(g, "dusk")
     cyc = _first(g, "cycle")
     mosaics = [n for n in g.nodes if is_multi_panel(n)] if g is not None else []
-    # A CAMPAIGN IS THE COMPILE'S OWN BLOCK (#195, WP-118): `campaign_block`
-    # is the one function that writes the plan's `campaign` key, so the row
-    # says "campaign" exactly when the plan does, and never from `repeat`,
-    # which no editor offers any more. That is a POOL in a flow whose
-    # Automatic resume is On; a mosaic with no pool is not one, whatever the
-    # DUSK WINDOW holds.
-    is_campaign = g is not None and campaign_block(g) is not None
-    # WHETHER THE FLOW COMES BACK ON A SUBSEQUENT NIGHT is DUSK WINDOW's Automatic
-    # resume (#195), read as the compile reads it (`dusk_auto_resume`), so
-    # the note and the plan cannot disagree. A flow with no DUSK WINDOW
-    # carries no opinion and resumes, as it always has.
-    resumes = dusk is None or dusk_auto_resume(dusk.params)
-    dawn = _dawn_note(resumes)
+    # A CAMPAIGN IS THE COMPILE'S OWN BLOCK (#195, WP-118), and WHETHER THE
+    # FLOW COMES BACK ON A SUBSEQUENT NIGHT is the plan's own flag, which is
+    # DUSK WINDOW's Automatic resume as the compile reads it. Both are read off
+    # the compile through ``night_facts`` (#1112), never off the graph, so the
+    # note and the plan cannot disagree: a pool in a flow whose Automatic resume
+    # is On is a campaign, a mosaic with no pool is not one, and a flow with no
+    # DUSK WINDOW carries no opinion and resumes, as it always has.
+    facts = night_facts(plan if plan is not None
+                        else compile_plan(g) if g is not None else None)
+    is_campaign, resumes = facts.campaign, facts.resumes
+    dawn = _dawn_note(facts)
 
     if pool is None and mosaics:
         rows = _panel_rows(mosaics, progress)
@@ -2610,13 +2695,18 @@ def _campaign(graph: FlowGraph | None,
         # campaign" (#195). The editor no longer offers Repeat, and a flow
         # nobody has touched IS resuming (Automatic resume defaults On), so it
         # says which of the two this flow is. A pool in a flow whose Automatic
-        # resume is On is a campaign (`campaign_block`, WP-118), so the only
+        # resume is On is a campaign (`night_facts`, WP-118), so the only
         # pool flows that reach this branch are the Off ones, and one with no
         # DUSK WINDOW at all, which carries no opinion and resumes as it
         # always has.
-        if resumes:
+        if resumes and facts.window:
             note = ("Automatic resume is on (DUSK WINDOW): a subsequent night "
                     "resumes this flow where the session log left off.")
+        elif resumes:
+            # NO WINDOW, NO DUSK WINDOW TO NAME (#775): the flow carries no
+            # opinion, and there is no schedule for a later night to resume in.
+            note = ("This flow has no DUSK WINDOW, so it has no window to "
+                    f"resume in: {_NO_LATER_RESUME}.")
         else:
             note = ("Automatic resume is off (DUSK WINDOW → Automatic "
                     f"resume): {_NO_LATER_RESUME}, or turn the option on.")
@@ -2825,7 +2915,8 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     #    disarmed where its night ends, so "the run resumes the remainder
     #    next clear night" would be untrue of it. It reads the COMPILED plan,
     #    like every other row of this tab.
-    resumes = plan.get("resume_across_nights") is not False
+    facts = night_facts(plan)
+    resumes = facts.resumes
     remainder = ("the run resumes the remainder next clear night" if resumes
                  else _NO_LATER_RESUME)
     for b in out["budget"]:
@@ -2910,11 +3001,14 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     # because this is where an operator reads the night, not the editor's
     # issue list.
     if "stop_mode" not in sched or stop_mode == "dawn":
-        timed.append(row(dawn, f"Dawn: loop ends, mount parks, camera warms{closers}"))
+        timed.append(row(dawn, f"Dawn: loop ends, mount parks"
+                               f"{_story_darks(facts.day_darks)}, camera "
+                               f"warms{closers}"))
     elif stop_mode == "time" and night["window_stop_unix"] is not None:
         timed.append(row(night["window_stop_unix"],
-                         f"Run stops at the set clock time: mount parks, "
-                         f"camera warms{closers}"))
+                         f"Run stops at the set clock time: mount parks"
+                         f"{_story_darks(facts.day_darks)}, camera "
+                         f"warms{closers}"))
     else:
         timed.append(row(
             dawn,

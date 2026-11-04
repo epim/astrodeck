@@ -703,14 +703,13 @@ def reopen_report(session: Session, plan: SequencePlan) -> ReopenReport | None:
     if session.status != "complete":
         return None
     rep = plan_replace_report(session, plan)
-    after = session.model_copy(update={"plan": plan}).owed()
-    if not rep.kept or after <= 0:
+    if not rep.kept or not session.owes_more(plan):
         return None
     return ReopenReport(
         session_id=session.id, recorded=len(session.frames),
         accepted=session.total_accepted(),
         quota=sum(st.count for t in plan.targets for st in t.steps),
-        owed=after)
+        owed=session.owed_under(plan))
 
 
 def reopen_detail(report: ReopenReport) -> str:

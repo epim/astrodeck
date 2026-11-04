@@ -45,8 +45,9 @@ import pytest
 from astrodeck.catalog import framing
 from astrodeck.flows.examples import examples
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
-from astrodeck.flows.tonight import (_DAWN, _DAWN_OFF, _NO_LATER_RESUME,
-                                     _campaign, brief, resolve_tonight)
+from astrodeck.flows.compile import compile_plan
+from astrodeck.flows.tonight import (_NO_LATER_RESUME, _campaign, _dawn_note,
+                                     brief, night_facts, resolve_tonight)
 from astrodeck.hub import Hub
 
 SITE = {"latitude": 40.0, "longitude": -105.0, "elevation_m": 1600.0,
@@ -164,6 +165,13 @@ def test_a_cycle_row_of_an_off_flow_says_it_too():
 
 # ============================================================ the CAMPAIGN tab
 
+def _dawn(graph) -> str:
+    """The CAMPAIGN note's closing words for ``graph``: ``_dawn_note`` of the
+    facts its compiled plan holds (it was the constants ``_DAWN`` and
+    ``_DAWN_OFF`` until WP 2.5, #1112, made it a function of the plan)."""
+    return _dawn_note(night_facts(compile_plan(graph)))
+
+
 def test_a_pool_flow_that_resumes_says_so_and_names_no_repeat():
     """example-pool is a pool that resumes, and the note says that rather than
     the advice it used to give (set DUSK WINDOW -> Repeat), which points at a
@@ -179,15 +187,15 @@ def test_a_pool_flow_that_resumes_says_so_and_names_no_repeat():
     opinion about resuming, and is pinned here on that flow."""
     c = _campaign(_example("example-pool"), None)
     assert c["has_pool"] is True and c["is_campaign"] is True
-    assert c["note"].endswith(_DAWN), c["note"]
+    assert c["note"].endswith(_dawn(_example("example-pool"))), c["note"]
     assert "Repeat" not in c["note"] and "Single-night" not in c["note"]
     bare = _example("example-pool")
     bare.nodes = [n for n in bare.nodes if n.type != "dusk"]
     c = _campaign(bare, None)
     assert c["has_pool"] is True and c["is_campaign"] is False
-    assert c["note"] == ("Automatic resume is on (DUSK WINDOW): a subsequent "
-                         "night resumes this flow where the session log left "
-                         "off.")
+    assert c["note"] == ("This flow has no DUSK WINDOW, so it has no window "
+                         "to resume in: a subsequent night does not resume by "
+                         "itself; CONTINUE it by hand.")
     assert "Repeat" not in c["note"] and "Single-night" not in c["note"]
 
 
@@ -205,12 +213,13 @@ def test_a_pool_flow_that_is_off_says_so_and_does_not_promise_a_campaign():
 
 
 def test_a_campaign_that_resumes_keeps_the_dawn_sentence_word_for_word():
-    """`_DAWN` is unchanged (another file asserts on it), and every campaign
-    note an ON flow reads still ends with it."""
-    assert _DAWN.endswith("Each dusk resumes where the session log left off.")
+    """Every campaign note an ON flow reads still ends with the dawn
+    sentence about resuming, word for word."""
+    dawn = _dawn(_example("example-campaign"))
+    assert dawn.endswith("Each dusk resumes where the session log left off.")
     c = _campaign(_example("example-campaign"), None)
     assert c["is_campaign"] is True
-    assert c["note"].endswith(_DAWN), c["note"]
+    assert c["note"].endswith(dawn), c["note"]
 
 
 def test_a_campaign_that_is_off_says_a_later_night_does_not_resume():
@@ -247,16 +256,20 @@ def test_a_mosaic_with_no_pool_of_an_off_flow_ends_its_note_the_same_way():
     on = _campaign(_example("example-m31-mosaic"), None)
     off = _campaign(_set_dusk(_example("example-m31-mosaic"),
                               autoResume="Off"), None)
-    assert on["has_pool"] is False and on["note"].endswith(_DAWN), on["note"]
-    assert off["note"].endswith(_DAWN_OFF), off["note"]
-    assert on["note"][:-len(_DAWN)] == off["note"][:-len(_DAWN_OFF)]
+    on_dawn = _dawn(_example("example-m31-mosaic"))
+    off_dawn = _dawn(_set_dusk(_example("example-m31-mosaic"),
+                               autoResume="Off"))
+    assert on["has_pool"] is False and on["note"].endswith(on_dawn), on["note"]
+    assert off["note"].endswith(off_dawn), off["note"]
+    assert on["note"][:-len(on_dawn)] == off["note"][:-len(off_dawn)]
 
 
 def test_the_two_off_sentences_agree():
     """ONE PHRASE, said by both tabs, so the page cannot tell an operator two
     things about the same flow."""
     assert _NO_LATER_RESUME == OFF
-    assert _DAWN_OFF.endswith("A " + OFF[2:] + ".")
+    off = _dawn(_set_dusk(_example("example-m31-mosaic"), autoResume="Off"))
+    assert off.endswith("A " + OFF[2:] + ".")
 
 
 # ================================================================ the brief

@@ -649,7 +649,17 @@ async def _route_sessions(rig) -> list[dict]:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, body, backup=False)
     before = await session_of(old)
-    return [live, dormant, before]
+
+    # A COMPLETE session, the one the route adds `owes_more` to (WP 2.5,
+    # #778): written whole, as a finished night leaves it.
+    done = await rig.save_flow(LR, name="finished")
+    body = Session(name="finished", created_ts=200.0, updated_ts=200.0,
+                   status="complete", plan=_compiled(LR, done),
+                   origin="flow", origin_id=done).model_dump()
+    path = session_store._path(body["id"])
+    write_json_atomic(path, body, backup=False)
+    complete = await session_of(done)
+    return [live, dormant, before, complete]
 
 
 async def test_the_progress_session_type_is_what_the_route_answers(rig):
@@ -700,9 +710,9 @@ async def test_the_progress_session_type_is_what_the_route_answers(rig):
     shapes = [(s["status"], s["armed"], s["plan_saved_ts"] is None)
               for s in records]
     assert shapes == [("active", False, False), ("dormant", True, False),
-                      ("dormant", True, True)], (
+                      ("dormant", True, True), ("complete", False, True)], (
         f"premise: a live session, an armed one frozen at a saved version, "
-        f"and an armed one older than S7: {shapes}")
+        f"an armed one older than S7, and a complete one: {shapes}")
 
     ts = _flows_api("FlowProgressSession")
     sent = set().union(*map(set, records))

@@ -212,13 +212,19 @@ def _campaign() -> FlowRecord:
       nothing keeps it cold past those darks, and the camera warms as soon as
       they are done.
 
+    WHAT MAKES IT A CAMPAIGN is that it has a pool and its DUSK WINDOW's
+    Automatic resume is On, which is the default (``compile.campaign_block``);
+    it stores no `repeat` override, which nothing reads any more (#773).
+
     THE LIBRARY CARD SAYS LESS THAN THIS (#746). Its tagline used to promise
-    "Dawn parks + closes with the cooler held cold for day darks", while the
-    CAMPAIGN tab (`tonight._DAWN`) said the dome is not driven and the cooler
-    does not stay cold. It now says only what both surfaces and the compiled
-    plan agree on: the mount parks, the camera warms, each dusk resumes.
+    "Dawn parks + closes with the cooler held cold for day darks", which the
+    compiled plan does not keep. It now says only what Tonight's notes and the
+    plan agree on: the mount parks, the camera warms, each dusk resumes
+    (Tonight's notes also name the day darks the plan funds and leave the dome
+    to Settings > Safety, from ``tonight.night_facts``).
     ``test_flows_example_taglines`` pins the words and the plan flags behind
-    them.
+    them, and ``test_w2_notes_from_plan`` holds every note to the compiled
+    plan.
     """
     return FlowRecord(
         id="example-campaign", readonly=True, folder=EXAMPLES_FOLDER,
@@ -246,8 +252,7 @@ def _campaign() -> FlowRecord:
              ("n13", "clear", "n15", "stop"), ("n18", "ready", "n15", "panel"),
              ("n1", "nightend", "n21", "do"), ("n21", "closed", "n15", "do"),
              ("n3", "unsafe", "n19", "do"), ("n20", "floor", "n10", "do")],
-            {"n1": {"repeat": "Nightly until pool complete"},
-             "n20": {"members": "M33, NGC 7331, IC 1396, M45", "quota": 45},
+            {"n20": {"members": "M33, NGC 7331, IC 1396, M45", "quota": 45},
              "n3": {"watch": "Rain + wind + power (pair with Cloud Watch)"}}))
 
 
