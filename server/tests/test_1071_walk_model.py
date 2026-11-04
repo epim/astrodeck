@@ -33,6 +33,7 @@ import pytest
 import astrodeck.devices.backends.zwo_am5 as am5
 import astrodeck.guide.native as nativemod
 import astrodeck.hub as hub_module
+from astrodeck.devices.base import Telescope
 from astrodeck.devices.sim import SimRig, SimTelescope
 from astrodeck.events import bus, night_key
 
@@ -365,10 +366,11 @@ async def test_marks_are_bounded_at_sixteen_and_an_unknown_mark_gives_none(
             "disturbed_by", "ra_quantum_arcsec", "dec_quantum_arcsec"}
     assert await tel.model_step_since(10 ** 6) is None
     assert await tel.model_step_since(0) is None
+    # The sim mount measures its model since #1089; the base methods are
+    # called on it directly.
     sim = SimTelescope(SimRig())
-    assert sim.can_measure_model_step is False
-    assert await sim.model_mark() is None
-    assert await sim.model_step_since(1) is None
+    assert await Telescope.model_mark(sim) is None
+    assert await Telescope.model_step_since(sim, 1) is None
 
 
 async def test_the_driver_step_since_a_mark_is_what_was_commanded(fixed_env):
@@ -508,29 +510,23 @@ async def test_a_walk_leaks_neither_coordinate_under_two_synthetic_sites(
 # ------------------------------------------------------------ the guide loop
 
 
-async def test_the_guide_loop_records_a_null_model_rate_and_reads_nothing_more(
+async def test_the_guide_loop_records_a_model_rate_and_never_reads_the_position(
         monkeypatch):
-    """No free cache exists: the hub's status poller reads the mount every
-    2 s and keeps neither the reading nor its time, and the AM5 driver's
-    ``_last_pos`` has no stamp. So every cycle records the model rates as
-    null, and the guide loop makes NO read of the mount's position, marks or
-    steps.
+    """The guide loop reads the mount's model through the driver's mark API
+    once per cycle, after the pulse, and never the coordinates (#1089): the
+    rows carry the model's rate, and no position is read.
 
-    MUTANT L1 (``begin_cycle`` recording ``0.0`` for the RA rate): RED, a
-    non-null rate."""
+    MUTANT L1 (``_schedule_model_read`` made a no-op): RED, no mark was read
+    and no row has a rate."""
     mount = ModelMount()
-    reads = {"n": 0}
-    real_pos, real_mark = mount.get_position, mount.model_mark
+    reads = {"pos": 0}
+    real_pos = mount.get_position
 
     async def pos():
-        reads["n"] += 1
+        reads["pos"] += 1
         return await real_pos()
 
-    async def mark():
-        reads["n"] += 1
-        return await real_mark()
-
-    mount.get_position, mount.model_mark = pos, mark
+    mount.get_position = pos
     g = make_guider(profile=profile_id("wm10"), mount=mount)
     eng = ScriptedEngine(
         [(pulse("east", 300), (1.0 + k, 0.0)) for k in range(6)],
@@ -542,6 +538,7 @@ async def test_the_guide_loop_records_a_null_model_rate_and_reads_nothing_more(
         await stop_loop(g)
     cycles = list(g._fr.ring)
     assert len(cycles) >= 4
-    assert all(c["model_ra_rate_arcsec_s"] is None
-               and c["model_dec_rate_arcsec_s"] is None for c in cycles)
-    assert reads["n"] == 0, "the guide loop read the mount for its record"
+    assert mount.mark_reads >= 2
+    assert reads["pos"] == 0, "the guide loop read the mount's coordinates"
+    rated = [c for c in cycles if c["model_ra_rate_arcsec_s"] is not None]
+    assert len(rated) >= 2, cycles

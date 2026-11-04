@@ -237,9 +237,10 @@ async def test_a_driver_that_cannot_measure_does_not_run_the_action():
         ran.append(1)
 
     assert Telescope.can_measure_model_step is False
+    # The sim mount measures its model since #1089, so the base method is
+    # called on it directly: what every driver gets that does not override.
     tel = SimTelescope(SimRig())
-    assert tel.can_measure_model_step is False
-    assert await tel.measure_model_step(action) is None
+    assert await Telescope.measure_model_step(tel, action) is None
     assert ran == []
 
 

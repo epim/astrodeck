@@ -1076,6 +1076,14 @@ class SimTelescope(Telescope):
     #: exercisable.
     needs_guiding = True
 
+    #: The sim mount's model is the rig's own position, so it can say how far
+    #: it moved between two reads (#1071, #1089): ``model_mark`` and
+    #: ``model_step_since``, as the AM5 driver does.
+    can_measure_model_step = True
+
+    #: Marks kept before the oldest is dropped, as the AM5 driver does.
+    MODEL_MARKS_MAX = 16
+
     def __init__(self, rig: SimRig, name: str = "Sim Mount EQ6-R"):
         super().__init__(name)
         self.rig = rig
@@ -1087,6 +1095,10 @@ class SimTelescope(Telescope):
         #: left the mount on (#298), or None before the first of them. A sync
         #: and an unpark leave it as it is (#392). See `pier_side`.
         self._latched_side: PierSide | None = None
+        #: Marks taken by ``model_mark``: id -> (perf_counter stamp, RA hours,
+        #: Dec degrees, slewing). The readings never leave the sim mount.
+        self._model_marks: dict[int, tuple[float, float, float, bool]] = {}
+        self._model_mark_seq = 0
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.1))
@@ -1097,6 +1109,50 @@ class SimTelescope(Telescope):
 
     async def get_position(self) -> tuple[float, float]:
         return self.rig.ra_hours, self.rig.dec_deg
+
+    async def measure_model_step(self, action) -> dict | None:
+        """Run ``action`` and report how far the rig's position moved across
+        it (#1071). The pulse probe calls this when ``can_measure_model_step``
+        is set, and relies on it to run the action."""
+        mark = await self.model_mark()
+        try:
+            await action()
+            return await self.model_step_since(mark)
+        finally:
+            self._model_marks.pop(mark, None)
+
+    async def model_mark(self) -> int:
+        """Keep the rig's position and a ``perf_counter`` stamp under a new
+        integer id (#1089). Only the id leaves; ``model_step_since`` reports
+        differences."""
+        self._model_mark_seq += 1
+        self._model_marks[self._model_mark_seq] = (
+            time.perf_counter(), self.rig.ra_hours, self.rig.dec_deg,
+            self._slewing)
+        while len(self._model_marks) > self.MODEL_MARKS_MAX:
+            del self._model_marks[next(iter(self._model_marks))]
+        return self._model_mark_seq
+
+    async def model_step_since(self, mark: int) -> dict | None:
+        """How far the rig's position moved since ``mark``, in arcsec, RA the
+        short way round 24 h, and the seconds it took (not rounded: a sim
+        cycle under the fast test path is milliseconds long). A slew at either
+        end disturbs the window. None for a mark not held."""
+        held = self._model_marks.get(mark)
+        if held is None:
+            return None
+        t0, ra0, dec0, slewing = held
+        d_ra_hours = (self.rig.ra_hours - ra0 + 12.0) % 24.0 - 12.0
+        disturbed = slewing or bool(self._slewing)
+        return {
+            "ra_step_arcsec": d_ra_hours * 15.0 * 3600.0,
+            "dec_step_arcsec": (self.rig.dec_deg - dec0) * 3600.0,
+            "seconds": time.perf_counter() - t0,
+            "ra_quantum_arcsec": 0.0,
+            "dec_quantum_arcsec": 0.0,
+            "disturbed": disturbed,
+            "disturbed_by": ["slewing"] if disturbed else [],
+        }
 
     async def is_slewing(self) -> bool:
         return self._slewing

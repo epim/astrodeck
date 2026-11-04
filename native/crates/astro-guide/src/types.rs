@@ -80,6 +80,17 @@ pub struct FrameMeta {
     pub exposure_s: f64,
 }
 
+/// What the engine knows of the star it is tracking beyond where it is: its
+/// integrated flux (the star's `mass`) and half-flux diameter in binned
+/// pixels. The host reads it from the stats snapshot to tell one star from
+/// another after a re-acquire and to record the star's brightness and size
+/// cycle by cycle (#1083, #1085).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StarShape {
+    pub flux: f64,
+    pub hfd: f64,
+}
+
 /// A star measured this frame (positions in binned pixels; dossier §1).
 #[derive(Debug, Clone, Copy)]
 pub struct MeasuredStar {
