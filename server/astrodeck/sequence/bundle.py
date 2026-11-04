@@ -18,12 +18,17 @@ import csv
 import io
 import math
 import shlex
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 from typing import Callable, Protocol, runtime_checkable
 
 from .report import FrameRecord, SessionReport, _is_light
+from ..calibration.keys import (ROTATOR_BIN_DEG, circular_mean_angle,
+                                mech_angle, rotator_bin)
+from ..calibration.matcher import (LightNeed, MatchTolerance, best_master,
+                                   unknown_angle_refusal)
 from ..naming import sanitize_component
 
 # The calibration kinds we ask the master library for, in a fixed display order.
@@ -60,6 +65,9 @@ class CalibKey:
     binning: int | None
     filter: str | None
     temp_c: float | None
+    #: The rotator's mechanical angle the group's lights were shot at, None
+    #: when it is not recorded (#784). Only a Flat is keyed by it.
+    rotator_mech_deg: float | None = None
 
 
 @runtime_checkable
@@ -121,6 +129,11 @@ class Group:
     #: co-added, so ``mosaic`` is part of what makes a group (``build_bundle``).
     mosaic: str | None = None
     panel: str | None = None
+    #: The mean of the lights' rotator mechanical angles (their ROTMECH cards);
+    #: None when none is recorded. A group is one stack and a stack is one
+    #: flat, so the lights of a group are within one angle bin of each other
+    #: (``build_bundle``).
+    rotator_mech_deg: float | None = None
 
 
 @dataclass(frozen=True)
@@ -158,7 +171,9 @@ class CalibrationLibraryAdapter:
       frame types are upper-case — we upper-case on the way in.
     * ``filter`` is "" for Dark/Bias (only Flat keys on filter).
     * Dark/Flat delegate to PRO-1's :func:`best_master` (returns the record; we
-      take ``.path``). ``best_master`` has no BIAS predicate, so Bias does a
+      take ``.path``). A flat is asked for at the group's rotator angle
+      (``CalibKey.rotator_mech_deg``), and withheld when that angle is unknown
+      and the library's flats are keyed by angle (``flat_refusal``). ``best_master`` has no BIAS predicate, so Bias does a
       direct best-effort scan (exact gain/offset/binning, temp within
       ``MatchTolerance().temp_tol_c``, nearest temp wins)."""
 
@@ -179,12 +194,33 @@ class CalibrationLibraryAdapter:
         except Exception:
             return None
 
-    def match(self, key: CalibKey) -> str | None:
+    @staticmethod
+    def _need(key: CalibKey, ft: str) -> LightNeed:
+        """The matcher's description of the group's light. Flat keys on
+        filter and on the rotator's mechanical angle; Dark/Bias ignore both
+        (design: filter "" for those)."""
+        flat = ft == "FLAT"
+        return LightNeed(exposure_s=key.exposure_s, gain=key.gain,
+                         offset=key.offset, temp_c=key.temp_c,
+                         binning=key.binning,
+                         filter=(key.filter or "") if flat else "",
+                         rotator_mech_deg=key.rotator_mech_deg if flat else None)
+
+    def flat_refusal(self, key: CalibKey) -> str | None:
+        """Why ``match`` withholds a flat for ``key`` although the library
+        holds flats for its filter (``matcher.unknown_angle_refusal``), or
+        None. Optional beyond the :class:`MasterLibrary` Protocol, read
+        through ``getattr`` by :func:`build_bundle`."""
+        if (key.frame_type or "").upper() != "FLAT":
+            return None
         try:
-            from ..calibration.matcher import (LightNeed, MatchTolerance,
-                                               best_master)
+            masters = self._lib.list_masters()
         except Exception:
             return None
+        return unknown_angle_refusal(self._need(key, "FLAT"), masters,
+                                     MatchTolerance())
+
+    def match(self, key: CalibKey) -> str | None:
         ft = (key.frame_type or "").upper()          # DARK | FLAT | BIAS
         try:
             masters = self._lib.list_masters()
@@ -196,11 +232,10 @@ class CalibrationLibraryAdapter:
             return self._match_bias(key, masters, MatchTolerance())
         if ft not in ("DARK", "FLAT"):
             return None
-        # Flat keys on filter; Dark/Bias ignore it (design: filter "" for those).
-        filt = (key.filter or "") if ft == "FLAT" else ""
-        need = LightNeed(exposure_s=key.exposure_s, gain=key.gain,
-                         offset=key.offset, temp_c=key.temp_c,
-                         binning=key.binning, filter=filt)
+        need = self._need(key, ft)
+        if ft == "FLAT" and unknown_angle_refusal(need, masters,
+                                                  MatchTolerance()):
+            return None
         try:
             rec = best_master(need, masters, MatchTolerance(), ft)
         except Exception:
@@ -273,6 +308,60 @@ def _group_dir(target: str, filt: str | None, exp: float,
     b = binning if binning is not None else "NA"
     leaf = f"{exp:g}s_g{g}_bin{b}"
     return f"{t}/{f}/{leaf}"
+
+
+def _group_dirs(order: list[tuple]) -> dict[tuple, str]:
+    """Each group key's bundle-relative folder.
+
+    A distinct key is not a distinct STACK while two groups share a folder:
+    the build script copies a group's lights into its ``lights/`` and the
+    stacker opens that folder as one stack. So a folder that more than one
+    mosaic's group would land in is put under each such group's mosaic (#188),
+    and a folder that groups of one target at different rotator angles would
+    share takes the angle's bin as a suffix (``_r5``, the library's own
+    spelling of a flat's angle). Every other folder is what it has always
+    been, and a group with no recorded angle never gets a suffix.
+
+    A key is ``(target, filter, exposure, gain, binning, mosaic, angle_bin)``."""
+    bases = {k: _group_dir(k[0], k[1], k[2], k[3], k[4]) for k in order}
+    mosaics_in: dict[str, set] = {}
+    for k in order:
+        mosaics_in.setdefault(bases[k], set()).add(k[5])
+    shared = {d for d, ms in mosaics_in.items() if len(ms) > 1}
+    dirs: dict[tuple, str] = {}
+    for k in order:
+        gdir = bases[k]
+        if k[5] and gdir in shared:
+            gdir = f"{sanitize_component(k[5], 'loose') or 'Mosaic'}/{gdir}"
+        dirs[k] = gdir
+    taken = Counter(dirs.values())
+    return {k: (f"{d}_r{k[6]}" if taken[d] > 1 and k[6] is not None else d)
+            for k, d in dirs.items()}
+
+
+def _read_angle(reader: Callable[[str], float | None] | None,
+                path: str) -> float | None:
+    """A light's rotator mechanical angle through ``reader``, None when there is
+    no reader, it raises, or it returns something that is not an angle: an
+    unreadable frame is an unknown angle, not a reason to fail the bundle."""
+    if reader is None:
+        return None
+    try:
+        return mech_angle(reader(path))
+    except Exception:           # noqa: BLE001 - unknown, not fatal
+        return None
+
+
+def _flat_refusal(library: MasterLibrary, key: CalibKey) -> str | None:
+    """Why ``library`` withheld the flat for ``key`` on purpose, when it can
+    say (``CalibrationLibraryAdapter.flat_refusal``); None otherwise."""
+    fn = getattr(library, "flat_refusal", None)
+    if not callable(fn):
+        return None
+    try:
+        return fn(key)
+    except Exception:           # noqa: BLE001 - the reason is optional
+        return None
 
 
 def _median_or_none(values: list[float]) -> float | None:
@@ -355,7 +444,8 @@ def _library_size(library: MasterLibrary) -> int | None:
     return int(n) if isinstance(n, int) and n >= 0 else None
 
 
-def _master_gap_warning(groups: list[Group], library: MasterLibrary) -> str | None:
+def _master_gap_warning(groups: list[Group], library: MasterLibrary,
+                        withheld_flats: int = 0) -> str | None:
     """The sentence for "this bundle ships lights with no calibration", or None.
 
     Why this exists: the manifest used to carry ``warnings: []`` next to
@@ -366,12 +456,18 @@ def _master_gap_warning(groups: list[Group], library: MasterLibrary) -> str | No
     were already correct; what was missing is the one thing the booleans cannot
     say — WHY there is no master and WHAT to do about it. Shooting calibration
     frames does not build masters: that is a separate library rebuild, which
-    nothing in the export path points at."""
+    nothing in the export path points at.
+
+    ``withheld_flats`` groups lack a flat on purpose (their rotator angle is
+    unknown, ``build_bundle`` says so in a sentence of its own): the library
+    HAS a flat for them, so "none of the masters match" would be untrue of
+    them and they are left out of this one."""
     if not groups:
         return None
     n_groups = len(groups)
     missing = {k: sum(1 for g in groups if k in g.missing_masters)
                for k in _MASTER_KINDS}
+    missing["Flat"] -= withheld_flats
     gaps = [k for k in _MASTER_KINDS if missing[k]]
     if not gaps:
         return None
@@ -402,13 +498,19 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
                  is_local: Callable[[str], bool],
                  layout: str = "grouped",
                  weight_altitude: bool = False,
-                 keep_threshold: float | None = None) -> Bundle:
+                 keep_threshold: float | None = None,
+                 light_angle: Callable[[str], float | None] | None = None
+                 ) -> Bundle:
     """Build a :class:`Bundle` from a finished report + a master library.
 
     1. Select light subs with a truthy, ``is_local`` ``saved_path``.
-    2. Group by (target, filter, exposure, gain, binning, mosaic): a mosaic's
-       panel is a separate stack and is never co-added with another mosaic's
-       (#188).
+    2. Group by (target, filter, exposure, gain, binning, mosaic, rotator
+       angle bin): a mosaic's panel is a separate stack and is never co-added
+       with another mosaic's (#188), and lights shot at two rotator angles
+       are two stacks because a flat serves one (#784, #825). ``light_angle``
+       maps a saved path to the light's rotator mechanical angle (its ROTMECH
+       card; the route reads the file), None when unknown; without it no
+       light has an angle and the grouping is what it was before.
     3. Weight each sub within its group and normalize so the best sub = 1.0.
        ``weight_altitude`` (opt-in, off by default) folds a ``sin(alt)``
        transparency term into that weight (§4 decision 2 follow-up).
@@ -444,36 +546,35 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
 
     # 1 + 2: select locals, group in first-seen order. THE MOSAIC IS PART OF
     # THE KEY (#188): two mosaics whose panels carry the same target name are
-    # different stacks, and a panel is never co-added with anything else.
+    # different stacks, and a panel is never co-added with anything else. SO
+    # IS THE ROTATOR ANGLE'S BIN (#784, #825): a stack gets one flat, and a
+    # flat is only the flat of the angle it was shot at.
     grouped: dict[tuple, list[FrameRecord]] = {}
+    angles_of: dict[tuple, list[float | None]] = {}
     order: list[tuple] = []
     for fr in report.frames:
         if not _is_light(fr.frame_type):
             continue
         if not fr.saved_path or not is_local(fr.saved_path):
             continue
+        angle = _read_angle(light_angle, fr.saved_path)
         key = (fr.target, fr.filter, fr.exposure_s, fr.gain, fr.binning,
-               fr.mosaic or None)
+               fr.mosaic or None, rotator_bin(angle, ROTATOR_BIN_DEG))
         if key not in grouped:
             grouped[key] = []
+            angles_of[key] = []
             order.append(key)
         grouped[key].append(fr)
+        angles_of[key].append(angle)
 
-    # A distinct key is not a distinct STACK while two groups share a folder:
-    # the build script copies a group's lights into its ``lights/`` and the
-    # stacker opens that folder as one stack. So a folder that more than one
-    # mosaic's group would land in is put under each such group's mosaic.
-    # Every other folder is what it has always been.
-    bases = {k: _group_dir(k[0], k[1], k[2], k[3], k[4]) for k in order}
-    mosaics_in: dict[str, set] = {}
-    for k in order:
-        mosaics_in.setdefault(bases[k], set()).add(k[5])
-    shared_dirs = {d for d, ms in mosaics_in.items() if len(ms) > 1}
-
+    dirs = _group_dirs(order)
     groups: list[Group] = []
+    withheld: list[str] = []         # why a group's flat was held back
     for key in order:
-        target, filt, exp, gain, binning, _mosaic = key
+        target, filt, exp, gain, binning, _mosaic, _abin = key
         frames = grouped[key]
+        angles = [a for a in angles_of[key] if a is not None]
+        group_angle = circular_mean_angle(angles)
         # From the group's first frame, as the panel is: every frame of a
         # group carries the mosaic its key names.
         mosaic = frames[0].mosaic or None
@@ -491,9 +592,7 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
         max_raw = max(raw) if raw else 0.0
         norm = [(w / max_raw) if max_raw > 0 else 1.0 for w in raw]
 
-        gdir = bases[key]
-        if mosaic and gdir in shared_dirs:
-            gdir = f"{sanitize_component(mosaic, 'loose') or 'Mosaic'}/{gdir}"
+        gdir = dirs[key]
         panel = next((f.panel for f in frames if f.panel), None)
         lights: list[LightEntry] = []
         for fr, w in zip(frames, norm):
@@ -520,7 +619,7 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
         for kind in _MASTER_KINDS:
             ck = CalibKey(frame_type=kind, exposure_s=exp, gain=gain,
                           offset=offset, binning=binning, filter=filt,
-                          temp_c=temp_c)
+                          temp_c=temp_c, rotator_mech_deg=group_angle)
             path = None
             try:
                 path = library.match(ck)
@@ -531,12 +630,16 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
                 master_sources[kind.lower()] = path
             else:
                 missing.append(kind)
+                if kind == "Flat":
+                    why = _flat_refusal(library, ck)
+                    if why:
+                        withheld.append(why)
 
         groups.append(Group(
             dir=gdir, target=target, filter=filt, exposure_s=exp, gain=gain,
             binning=binning, lights=tuple(lights), masters=masters,
             master_sources=master_sources, missing_masters=tuple(missing),
-            mosaic=mosaic, panel=panel))
+            mosaic=mosaic, panel=panel, rotator_mech_deg=group_angle))
 
     # 5. Warn about what this bundle does NOT contain. `warnings: []` is read as
     #    "nothing to report", so it must never be empty while the bundle is
@@ -548,9 +651,14 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
             "the manifest describes the run; there is nothing to stack.")
     # (skipped when there is no library at all — the line above already says so,
     #  and "rebuild the library" is the wrong advice when none is configured.)
-    gap = None if no_library else _master_gap_warning(groups, library)
+    gap = None if no_library else _master_gap_warning(groups, library,
+                                                       len(withheld))
     if gap:
         warnings.append(gap)
+    if withheld:
+        warnings.append(f"No master Flat for {len(withheld)} of "
+                        f"{len(groups)} groups, withheld on purpose: "
+                        f"{withheld[0]}.")
 
     return Bundle(report_id=report.id, plan_name=report.plan_name, layout=layout,
                   groups=tuple(groups), warnings=tuple(warnings),
@@ -612,7 +720,8 @@ def externalize_bundle(bundle: Bundle,
               lights=tuple(_replace_src(l, _rel(l.src)) for l in g.lights),
               masters=dict(g.masters), master_sources=_sources(g),
               missing_masters=tuple(g.missing_masters),
-              mosaic=g.mosaic, panel=g.panel)
+              mosaic=g.mosaic, panel=g.panel,
+              rotator_mech_deg=g.rotator_mech_deg)
         for g in bundle.groups)
     return Bundle(report_id=bundle.report_id, plan_name=bundle.plan_name,
                   layout=bundle.layout, groups=groups,
@@ -662,6 +771,7 @@ def manifest_json(bundle: Bundle) -> dict:
                 "target": g.target,
                 "mosaic": g.mosaic,
                 "panel": g.panel,
+                "rotator_mech_deg": g.rotator_mech_deg,
                 "filter": g.filter,
                 "exposure_s": g.exposure_s,
                 "gain": g.gain,
@@ -710,6 +820,7 @@ def bundle_summary(bundle: Bundle) -> dict:
                 "target": g.target,
                 "mosaic": g.mosaic,
                 "panel": g.panel,
+                "rotator_mech_deg": g.rotator_mech_deg,
                 "filter": g.filter,
                 "exposure_s": g.exposure_s,
                 "gain": g.gain,

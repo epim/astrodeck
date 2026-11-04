@@ -222,7 +222,7 @@ class TestFlatsAndRotation:
                              kinds=["FLAT"], now=NOW)
         row = row_of(rows, "FLAT")
         assert row.verdict == "STALE"
-        assert "PA 90" in next(r.text for r in row.reasons if r.code == "drift")
+        assert "rotator angle 90" in next(r.text for r in row.reasons if r.code == "drift")
 
     def test_the_rotation_check_wraps(self):
         """359.5° and 0.5° are one degree apart. A naive subtraction calls that

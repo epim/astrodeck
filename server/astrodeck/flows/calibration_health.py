@@ -76,7 +76,9 @@ the note about which existing walk to feed it from.
 """
 from __future__ import annotations
 
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable, Sequence
@@ -279,7 +281,7 @@ class HealthRow:
 
     @property
     def summary(self) -> str:
-        """The prototype's ``v`` column: "180s g100 · −5°C", "Ha g100 · PA 23°".
+        """The prototype's ``v`` column: "180s g100 · −5°C", "Ha g100 · rotator 23°".
 
         Identity first, then the condition it was shot under. Gain rides in the
         flat row too, where the prototype's fixture shows only the filter,
@@ -295,7 +297,7 @@ class HealthRow:
         if self.temp_c is not None:
             bits.append(f"{_signed(self.temp_c)}°C")
         if self.rotation_deg is not None:
-            bits.append(f"PA {self.rotation_deg:g}°")
+            bits.append(f"rotator {self.rotation_deg:g}°")
         if self.binning != 1:
             bits.append(f"bin {self.binning}")
         return " · ".join(bits)
@@ -481,8 +483,8 @@ def _drift_reason(kind: str, need: CalNeed, drifted: list[CalFrame],
 
         closest = min(drifted, key=_apart)
         return Reason(REASON_DRIFT,
-                      f"{n} flat(s) at these settings but at PA "
-                      f"{_angle(closest):g}° — tonight is PA "
+                      f"{n} flat(s) at these settings but at rotator angle "
+                      f"{_angle(closest):g}° — tonight is rotator angle "
                       f"{want_deg:g}°, past the "
                       f"±{tol.rotator_tol_deg:g}° a dust shadow survives")
     want = need.light.temp_c
@@ -660,3 +662,46 @@ def health_matrix(
             rows.append(_build_row(kind, need, supply, master_list, quota=want,
                                    tol=tol, horizon_days=horizon, now=at))
     return rows
+
+
+class DemandCache:
+    """What a flow asks of the calibration library, computed once per revision.
+
+    ``GET /api/calibration/health`` used to compile the flow and expand its
+    plan (``to_sequence_plan``, whose catalogue name searches cost 10 to 35 ms)
+    for every request, and the editor asks every time the flow or the library
+    changes (#827). The demand is a function of the flow's saved revision and
+    the rig facts the compile reads, so the caller keys on both and the second
+    read of an unchanged flow computes nothing.
+
+    Bounded, least recently used first out, so a long session over many flows
+    holds a few. Thread-safe: the route computes on a worker thread, and two
+    requests for one revision wait for the first computation rather than
+    repeat it. A computation that raises is not stored."""
+
+    def __init__(self, capacity: int = 16) -> None:
+        self._capacity = max(1, int(capacity))
+        self._lock = threading.Lock()
+        self._done: OrderedDict = OrderedDict()
+        self._building: dict = {}
+
+    def get(self, key, compute: Callable[[], object]):
+        with self._lock:
+            if key in self._done:
+                self._done.move_to_end(key)
+                return self._done[key]
+            gate = self._building.setdefault(key, threading.Lock())
+        with gate:
+            with self._lock:
+                if key in self._done:
+                    return self._done[key]
+            try:
+                value = compute()
+            finally:
+                with self._lock:
+                    self._building.pop(key, None)
+            with self._lock:
+                self._done[key] = value
+                while len(self._done) > self._capacity:
+                    self._done.popitem(last=False)
+            return value

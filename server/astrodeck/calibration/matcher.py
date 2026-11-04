@@ -149,6 +149,29 @@ def flat_matches(need: LightNeed, m: MasterRecord, tol: MatchTolerance) -> bool:
             and _rotator_ok(need, m, tol.rotator_tol_deg))
 
 
+def unknown_angle_refusal(need: LightNeed, masters: list[MasterRecord],
+                          tol: MatchTolerance) -> str | None:
+    """Why no flat may be applied to ``need``, or None when one may.
+
+    A light whose rotator angle is not recorded matches every flat of its
+    filter (``_rotator_ok``), so once the library holds flats keyed by angle
+    ``best_master`` returns one of them for a light shot at any angle, and a
+    stack calibrated with the wrong one carries a dust ring beside every mote
+    (#784, #825). Where a wrong flat is APPLIED (the stacking bundle) that is
+    refused instead, and this is the sentence that says so. ``best_master``
+    itself keeps reading an unknown angle as no constraint: the health matrix
+    asks it while the rotator is disconnected, and a row that read MISSING
+    for that would be a false alarm."""
+    if _known(need.rotator_mech_deg):
+        return None
+    if not any(flat_matches(need, m, tol) and _known(m.rotator_mech_deg)
+               for m in masters):
+        return None
+    return ("the rotator angle these lights were shot at is not recorded, and "
+            "the library's flats for this filter are keyed by rotator angle, "
+            "so any one of them could be the wrong one")
+
+
 def best_master(need: LightNeed, masters: list[MasterRecord], tol: MatchTolerance,
                 frame_type: str) -> MasterRecord | None:
     """Closest matching master of ``frame_type`` (nearest mechanical angle
