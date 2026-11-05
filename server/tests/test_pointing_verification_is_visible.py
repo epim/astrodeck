@@ -17,6 +17,7 @@ import asyncio
 
 import pytest
 
+import _sky
 import astrodeck.hub as hub_module
 from astrodeck.hub import Hub
 
@@ -79,7 +80,7 @@ async def test_goto_and_center_records_its_own_verdict(hub, monkeypatch):
     monkeypatch.setattr(hub, "solve_current_frame", no_stars, raising=False)
     hub.note_pointing_verified(True, error_arcmin=0.1)      # pretend it was good
     try:
-        await hub.goto_and_center(5.5881, -5.3911, max_attempts=1)
+        await hub.goto_and_center(*_sky.target(), max_attempts=1)
     except Exception:
         pass
     p = (await hub.poll_status())["mount"]["pointing"]

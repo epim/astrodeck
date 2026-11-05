@@ -32,10 +32,11 @@ of the dates can slip between them, so add a date when you suspect one.
 Exit status 0: no date-dependent failure. 1: at least one. 2: usage error.
 
 WHAT THE REPLAY CANNOT SEE (see README.md beside this file): everything
-``shift_clock`` does not shift (file times the OS stamps, ``time.monotonic``,
-child processes). A test that stamps a file with the OS and reads its age
-against the clock must stamp it with ``time.time()`` (``os.utime``) instead:
-``KNOWN_ARTIFACTS`` is for the ones that cannot, and is empty on purpose.
+``shift_clock`` does not shift (``time.monotonic``, child processes, and file
+times outside the temp root; the suite's conftest moves the file times under
+it, ``_ReplayedFileTimes``). A test that hands files to a child process
+carries ``@pytest.mark.real_file_times``. ``KNOWN_ARTIFACTS`` is for the ones
+that cannot be fixed that way, and is empty on purpose.
 
 Pure parts first (``dates_for``, ``offset_seconds``, ``engine_using_files``,
 ``parse_failures``, ``date_dependent``) so a test can grade them without a
@@ -58,7 +59,7 @@ SERVER = TESTS.parent
 #: Test ids that fail under ANY large shift for a reason that is not the test's
 #: date reading (a blind spot of the plugin that the test cannot be fixed
 #: around). Empty: the one known case, a freshness age read off a file's
-#: st_mtime, is fixed in the test (it stamps its files with the shifted clock).
+#: st_mtime, is fixed by the conftest's file-time shift (_ReplayedFileTimes).
 KNOWN_ARTIFACTS: frozenset[str] = frozenset()
 
 #: MM-DD of the default seasons.

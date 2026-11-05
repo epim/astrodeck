@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 from astrodeck.config import RotatorConfig, config_store
@@ -461,9 +462,10 @@ async def test_a_move_the_camera_did_not_follow_is_named_before_the_abort(
     """
     sim_hub._rotation_trusted = True
     _rig_at(sim_hub, play=30.0, slack=15.0)
-    sim_hub.sim_rig.ra_hours, sim_hub.sim_rig.dec_deg = 5.0, 10.0
+    sim_hub.sim_rig.ra_hours, sim_hub.sim_rig.dec_deg = _sky.target()
 
-    result = await sim_hub.goto_and_center(5.0, 10.0, rotation_deg=PA - 5.7)
+    result = await sim_hub.goto_and_center(*_sky.target(),
+                                           rotation_deg=PA - 5.7)
 
     assert result.get("rotation_skipped") is True, result
     msgs = [m for _, m, _ in bus_lines]

@@ -392,17 +392,21 @@ def test_a_shift_of_months_can_still_convert_times(tmp_path):
 def test_an_unset_variable_leaves_the_iers_settings_alone(tmp_path, shift):
     """The IERS relaxation belongs to a shifted run. With no shift asked for,
     astropy's download, age limit and out-of-range behaviour are what astropy
-    ships (or the machine's own astropy config file says), so a plugin left
-    in a command line cannot hide a stale table from a real-clock run.
+    ships, so a plugin left in a command line cannot hide a stale table from
+    a real-clock run.
 
     RED under M11, ``relax_iers`` called whether or not a shift is asked for
     (observed, verbatim, [unset]):
 
         AssertionError: assert [False, None, 'warn'] == [True, 30.0, 'error']
     """
+    # What astropy ships, read from the settings' own defaults and not from
+    # ``iers.conf``: this process may itself be under a replay, which has
+    # already relaxed ``iers.conf`` (#1120).
     from astropy.utils import iers
-    shipped = [iers.conf.auto_download, iers.conf.auto_max_age,
-               iers.conf.iers_degraded_accuracy]
+    shipped = [iers.Conf.auto_download.defaultvalue,
+               iers.Conf.auto_max_age.defaultvalue,
+               iers.Conf.iers_degraded_accuracy.defaultvalue]
     suite = _suite(tmp_path)
     proc = _run(suite, shift, probe="test_iers_probe.py")
     assert proc.returncode == 0, proc.stdout + proc.stderr

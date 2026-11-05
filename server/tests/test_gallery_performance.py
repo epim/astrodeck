@@ -24,6 +24,9 @@ def write(root, name, ts=1700000000, **kw):
     return _write(root, name, ts=ts, **kw)
 
 
+# The child below has no date-replay shim, so it must read the file times the
+# parent wrote against (#1120).
+@pytest.mark.real_file_times
 def test_metadata_survives_real_process_restart(cap):
     write(cap, "one.fits")
     write(cap, "two.fits")

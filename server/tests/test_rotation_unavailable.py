@@ -30,6 +30,7 @@ which only repeat the dict with an object address, are left out.
 """
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 from astrodeck.devices.base import DeviceError
@@ -52,7 +53,7 @@ def logs(monkeypatch):
 
 
 #: The goto target every case uses. The same field test_goto_rotation.py uses.
-RA, DEC = 5.0, 10.0
+RA, DEC = _sky.target()
 
 
 @pytest.fixture(autouse=True)

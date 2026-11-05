@@ -55,6 +55,7 @@ from astrodeck.config import ConfigStore, Site
 from astrodeck.devices.base import DeviceError
 from astrodeck.hub import Hub
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 #: A made-up site (never the real rig's -- project rule). At this latitude a
@@ -267,7 +268,7 @@ def test_a_single_target_start_is_refused_for_a_masked_target(client, monkeypatc
 
 # ========================================================== (b) solve_transient
 
-RA, DEC = 5.0, 10.0
+RA, DEC = _sky.target()
 
 
 # NOT autouse: this file also carries (a)'s plain hub-unit and app-route

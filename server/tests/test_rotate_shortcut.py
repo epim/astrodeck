@@ -57,6 +57,7 @@ from pathlib import Path
 
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 from astrodeck import sky_angle
@@ -66,7 +67,7 @@ from astrodeck.solve.base import SolveResult
 from astrodeck.solve.simsolver import SimSolver
 
 #: The goto target every case uses (the field test_goto_rotation.py uses).
-RA, DEC = 5.0, 10.0
+RA, DEC = _sky.target()
 
 
 @pytest.fixture(autouse=True)

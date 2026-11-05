@@ -12,10 +12,10 @@ in `Hub.goto_and_center` without needing a real solver.
 """
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
-_TARGET_RA = 5.0
-_TARGET_DEC = 10.0
+_TARGET_RA, _TARGET_DEC = _sky.target()
 # Close enough to the target to converge on attempt 1 (default tolerance is
 # 0.02 deg = 1.2'), but NOT equal to it -- so a bug that recorded the target
 # instead of the solve is caught, and NOT equal to whatever the sim mount's

@@ -27,8 +27,12 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+import _sky
 import astrodeck.api.app as app_module
 from astrodeck.config import ConfigStore
+
+#: Clear of the Sun on every day of the year (_sky.py).
+TARGET = _sky.target()
 
 
 @pytest.fixture
@@ -510,7 +514,8 @@ def test_same_lane_409_carries_a_code(client, paced_slews):
     assert "goto" in _lanes(client), "precondition: the lane is occupied"
 
     r = client.post("/api/mount/goto",
-                    json={"ra_hours": 5.0, "dec_deg": 10.0, "center": False})
+                    json={"ra_hours": TARGET[0], "dec_deg": TARGET[1],
+                          "center": False})
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
     assert detail["code"] == "lane_busy"
@@ -611,7 +616,8 @@ def test_a_slew_is_refused_while_an_alignment_is_measuring(client):
         assert "polar" in _lanes(client), "precondition: the alignment is measuring"
 
         r = client.post("/api/mount/goto",
-                        json={"ra_hours": 5.6, "dec_deg": -5.4, "center": False})
+                        json={"ra_hours": TARGET[0], "dec_deg": TARGET[1],
+                              "center": False})
         assert r.status_code == 409, (
             f"a slew was ACCEPTED during an alignment ({r.status_code}) — it moves "
             f"the mount between two of the three measured points: {r.text[:200]}")

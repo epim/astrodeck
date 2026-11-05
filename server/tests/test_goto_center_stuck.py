@@ -15,10 +15,10 @@ mean the mount is inert — stop, say so, and flag the result.
 """
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
-_TARGET_RA = 5.0
-_TARGET_DEC = 10.0
+_TARGET_RA, _TARGET_DEC = _sky.target()
 
 
 def _fixed_solver(dec_offset_deg: float):
