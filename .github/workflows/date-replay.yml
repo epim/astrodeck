@@ -1,0 +1,49 @@
+name: date-replay
+
+# The server suite with the clock moved to 2026-06-15 12:00 UTC, once a week
+# (#1120). The Sun sits near RA 5 h that day, the position the suite's goto
+# tests used to aim at, so a test that depends on the date of the year, on a
+# file's age or on today's sky fails here and nowhere else, with no code change
+# behind it (#1069, #1070). tests/tools/README.md says how to read a replay.
+# Its own workflow, not a job of ci.yml: a schedule trigger there would run
+# every job of ci.yml weekly.
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+# Its own group, so a push to main never cancels a replay that is half done.
+concurrency:
+  group: date-replay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-date-replay:
+    runs-on: ubuntu-latest
+    # 60, against ci.yml's server job at 45 (#1162): a replay cancelled at its
+    # limit would read as a failure of the date.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          # setup-python's pip cache defaults to globbing **/requirements.txt and
+          # ERRORS when nothing matches. Deps here live in pyproject.toml, so the
+          # path is explicit.
+          cache-dependency-path: '**/pyproject.toml'
+      - run: pip install -e ".[dev]"
+      # The shift is the seconds from now to the replayed instant, read when
+      # the job runs. PYTHONPATH makes the plugin importable by the controller
+      # and by every worker. -n auto overrides the repo addopts' -n 12, as in
+      # ci.yml.
+      - name: Run the server suite with the clock at 2026-06-15
+        env:
+          PYTHONPATH: ${{ github.workspace }}/server/tests/tools
+        run: |
+          export ASTRODECK_SHIFT_CLOCK_S=$(( $(date -u -d '2026-06-15 12:00:00' +%s) - $(date -u +%s) ))
+          pytest -q -n auto -p shift_clock --durations=30

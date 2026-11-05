@@ -44,6 +44,7 @@ import astrodeck.events as events_mod
 import astrodeck.sequence.engine as engine_mod
 from _group_harness import (Night, grid_plan, group_hub,  # noqa: F401
                             group_store)
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from astrodeck.devices.base import DeviceError
 from astrodeck.devices.sim import SimRotator
@@ -52,7 +53,7 @@ from astrodeck.solve.simsolver import SimSolver
 
 #: The goto target the rotation cases use (the field test_goto_rotation.py and
 #: test_w14_rotator_preflight.py use).
-RA, DEC = 5.0, 10.0
+RA, DEC = _sky.target()
 
 #: A solve frame's name since #532: ``<kind>-<12 hex digits>.fits``.
 _UNIQUE = re.compile(r"^(?P<kind>.+)-[0-9a-f]{12}\.fits$")

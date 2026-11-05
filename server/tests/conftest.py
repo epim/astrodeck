@@ -326,6 +326,14 @@ class _RealConfig:
     #: Where the current test's window starts in ``reads``, set by the
     #: guard; a repeat is dropped only within one window.
     mark: int = 0
+    #: How many per-test windows are open. The guard holds it above zero from
+    #: its setup to its teardown.
+    windows: int = 0
+    #: The reaches made with no window open: while a module- or session-scoped
+    #: fixture set up or tore down, or after the guard's own teardown. No test
+    #: is blamed for them, so the session fixture fails on them at its end
+    #: (#1120).
+    stray: list[str] = []
 
     @staticmethod
     def _key(path) -> str:
@@ -379,6 +387,8 @@ class _RealConfig:
 
     @classmethod
     def note(cls, line: str) -> None:
+        if not cls.windows and line not in cls.stray:
+            cls.stray.append(line)
         # A leaky test may read in a loop: one line per run of reads, but
         # never across windows, or the next test's first read of the same
         # seam would be dropped and that test pass unnamed (it was, until
@@ -891,10 +901,12 @@ def _config_reads_stay_off_the_real_one(nodeid: str):
     so test_real_config_guard.py can drive it."""
     mark = len(_RealConfig.reads)
     outer, _RealConfig.mark = _RealConfig.mark, mark
+    _RealConfig.windows += 1
     try:
         yield
     finally:
         _RealConfig.mark = outer
+        _RealConfig.windows -= 1
     got = list(dict.fromkeys(_RealConfig.reads[mark:]))
     if got:
         # Names only, never values: that config holds the site and the
@@ -942,6 +954,30 @@ def _no_test_reads_the_real_config(_never_touch_the_real_config, request):
     Its cases, a throwaway run of this conftest with a deliberately leaky
     fixture, are in test_real_config_guard.py."""
     yield from _config_reads_stay_off_the_real_one(request.node.nodeid)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_reach_of_the_real_config_outside_a_test(_never_touch_the_real_config):
+    """Fail the session if anything reached the developer's real config while
+    no test was being guarded (#1120).
+
+    ``_no_test_reads_the_real_config`` blames a test for what happens inside
+    its own window. What a module- or session-scoped fixture does at setup or
+    teardown, and what runs after that guard's teardown, is outside every
+    window, so it was seen by the watchers and reported by nobody. They are
+    collected in ``_RealConfig.stray``, and this fixture, which asks for the
+    session fixture and so is torn down before the redirect is put back,
+    raises on them at the end of the session: on the last test of the worker,
+    naming the seams and never a value."""
+    yield
+    if _RealConfig.stray:
+        raise AssertionError(
+            f"the developer's real config was reached outside any test's "
+            f"guard window: {', '.join(_RealConfig.stray)}. That is a "
+            f"module- or session-scoped fixture, or a fixture torn down "
+            f"after the guard, so no test is named: find the fixture that "
+            f"builds a ConfigStore(), ProfileLibrary() or other store with no "
+            f"path, or that puts a path back (issues #341, #1120).")
 
 
 def _config_a_reader_would_see(store) -> object:
@@ -1083,22 +1119,18 @@ def _a_test_leaves_the_config_as_it_found_it(request):
     leaves the cached object the very same object.
 
     ITS TEARDOWN MUST BE THE LAST ONE, after ``monkeypatch`` has undone its
-    edits, or every correctly patched test is reported as a leak. Pytest sets
-    up higher-scoped fixtures first, then the autouse ones ahead of the rest,
-    and the autouse fixtures of one conftest in ``dir()`` order - alphabetical
-    - and tears down in reverse. So this name sorts ahead of
-    ``_fast_sim_delays``, which is what brings ``monkeypatch`` in for every
-    test, and it asks for no fixture that could set ``monkeypatch`` up first.
-    RED under mutant "set up after monkeypatch" (renamed
-    ``_z_test_leaves_the_config_as_it_found_it``): every test in
-    ``test_the_mount_floor_needs_a_site.py`` that patches the config errors
-    at teardown, its monkeypatch control included (observed, verbatim):
-
-        __ ERROR at teardown of test_a_config_edit_through_monkeypatch_is_not_a_leak __
-        E           AssertionError: tests/test_the_mount_floor_needs_a_site.py::
-        test_a_config_edit_through_monkeypatch_is_not_a_leak left the
-        process-wide config changed: safety.max_alt_deg, safety.min_alt_deg,
-        site.name. ...
+    edits, or every correctly patched test is reported as a leak. Pytest tears
+    down in reverse of set up, so this has to set up BEFORE ``monkeypatch``.
+    That used to hold by the fixtures' names (the autouse fixtures of one
+    conftest set up in ``dir()`` order, and this one sorts ahead of
+    ``_fast_sim_delays``, which brings ``monkeypatch`` in), and it failed for
+    any fixture that came ahead of it and asked for ``monkeypatch``: a scratch
+    plugin's (the replay tool of #682) made every test that patched a config
+    field through ``monkeypatch`` fail at teardown with 'left the process-wide
+    config changed', the field patched and put back (#807). Now it holds by
+    dependency: the ``monkeypatch`` fixture below is this conftest's own and
+    asks for this guard, so wherever ``monkeypatch`` is first requested, from
+    a plugin or from a test, this is already up and is torn down after it.
 
     The named mutant that puts #227's leak back, and the mutants of the
     helpers above, are recorded where they are graded, in that file.
@@ -1112,6 +1144,15 @@ def _a_test_leaves_the_config_as_it_found_it(request):
     restoring it, and then blamed on that test.
     """
     yield from _config_left_as_found(request.node.nodeid)
+
+
+@pytest.fixture
+def monkeypatch(_a_test_leaves_the_config_as_it_found_it):
+    """pytest's own ``monkeypatch``, set up after the config guard so that it
+    is torn down before it, whoever asks for it first (#807). Everything else
+    is the built-in fixture's: a ``MonkeyPatch`` undone at teardown."""
+    with pytest.MonkeyPatch.context() as patch:
+        yield patch
 
 
 @pytest.fixture(autouse=True)
@@ -1349,10 +1390,9 @@ def _captures_are_the_tests_own(_never_touch_the_real_captures, monkeypatch):
     Removed at teardown (a test that captures real simulator frames leaves
     megabytes), which is also why a test must not rely on another's.
 
-    Its name sorts after ``_a_test_leaves_the_config_as_it_found_it`` and
-    ahead of the other autouse fixtures here, so it is what sets up
-    ``monkeypatch`` for every test, and the config guard still sets up
-    first (see that fixture)."""
+    Its name sorts ahead of the other autouse fixtures here, so it is what
+    sets up ``monkeypatch`` for every test, and the config guard still sets
+    up first, because ``monkeypatch`` asks for it (see that fixture)."""
     root = _CaptureRoots.parent / f"t{next(_CaptureRoots.serial)}"
     _CaptureRoots.moved = _point_the_capture_root_at(monkeypatch, root)
     yield root
@@ -2119,6 +2159,192 @@ class _SessionBasetemp:
             shutil.rmtree(self.path, ignore_errors=True)
 
 
+class _ReplayedFileTimes:
+    """File times as the replayed clock sees them (#1070).
+
+    ``shift_clock`` moves ``time.time`` by a fixed offset and leaves the times
+    the OS stamps on files alone, so a file written during a run replayed
+    months ahead reads, against the shifted clock, months old. The calibration
+    library's freshness rule (``iter_cal_headers``) and the hub's solve-frame
+    sweep both age a file by ``time.time() - st_mtime``, and each went red
+    under replay for that reason alone (test_w17_dusk_flats_panel,
+    test_h4_solve_frame_unique_names). So did pytest's own sweep of stale
+    session directories (``_own_basetemp``): every directory another live
+    session had made looked a day old and was removed under it.
+
+    This moves the time fields of an ``os.stat`` or ``os.lstat`` result, and of
+    a ``DirEntry.stat`` from ``os.scandir``, by the clock's offset for a path
+    under the temp root, so a file's age is what it would be with no replay.
+    Every way of reading a time moves together: a test that reads one through
+    ``Path.stat`` and the code under test another through ``scandir`` must
+    agree. Nothing outside the temp root is touched: the import system
+    compares a source file's mtime with the one stored in its .pyc, and a
+    shifted source would recompile on every import.
+
+    A test that stamps a file itself (``os.utime`` with a time) has already
+    chosen the number it wants read back, usually ``time.time()`` or an age
+    from it, and a second shift would hand it another. ``os.utime`` is wrapped
+    to remember the mtime such a stamp sets, and a read leaves alone any file
+    whose mtime is one of them, by value and not by name, so a stamped file
+    that is renamed or copied with its times keeps the stamp. A later write
+    moves the mtime to a value no stamp set, and the file is shifted like any
+    other, as one touched by ``os.utime(path)`` with no time (now).
+
+    Not covered, because they hold no path or are not Python: ``os.fstat``
+    and a child process, which has no shim and reads the file times the OS
+    stamped. A test that writes files here and has a child read them back
+    (a cache keyed on file times) carries ``@pytest.mark.real_file_times``,
+    which pauses the shim for it (``_real_file_times_for_a_marked_test``).
+    Installed by ``pytest_configure`` when ``shift_clock`` is in force, and
+    only then."""
+
+    def __init__(self, shift_s: float, roots) -> None:
+        self.shift_s = shift_s
+        self.roots = frozenset(
+            os.path.normcase(spelling(root)) for root in roots if root
+            for spelling in (os.path.abspath, os.path.realpath))
+        self._stamped: set[int] = set()
+        self._real: tuple | None = None
+        self.paused = False
+
+    def _key(self, path) -> str | None:
+        """The path as the roots are spelt, or None when it is not under one."""
+        if path is None or isinstance(path, int):
+            return None
+        try:
+            key = os.path.normcase(os.path.abspath(os.fsdecode(path)))
+        except (TypeError, ValueError, OSError):
+            return None
+        under = any(key == root or key.startswith(root + os.sep)
+                    for root in self.roots)
+        return key if under else None
+
+    def shifted(self, st: os.stat_result) -> os.stat_result:
+        """``st`` with every time field moved by the offset."""
+        fields = {name: getattr(st, name) for name in dir(st)
+                  if name.startswith("st_")}
+        for name, value in fields.items():
+            if name.endswith("time_ns"):
+                fields[name] = value + round(self.shift_s * 1e9)
+            elif name.endswith("time"):
+                fields[name] = value + self.shift_s
+        seq = list(st)
+        for index, name in ((7, "st_atime"), (8, "st_mtime"),
+                            (9, "st_ctime")):
+            seq[index] = int(fields[name])
+        return os.stat_result(seq, fields)
+
+    def read(self, path, st: os.stat_result) -> os.stat_result:
+        """``st``, as read from ``path``, the way the replayed clock sees it."""
+        if (self.paused or self._key(path) is None
+                or st.st_mtime_ns in self._stamped):
+            return st
+        return self.shifted(st)
+
+    def install(self) -> None:
+        import functools
+        real_stat, real_lstat = os.stat, os.lstat
+        real_utime, real_scandir = os.utime, os.scandir
+        self._real = (real_stat, real_lstat, real_utime, real_scandir)
+
+        def reading(real):
+            @functools.wraps(real)
+            def statted(path, *args, **kwargs):
+                return self.read(path, real(path, *args, **kwargs))
+            return statted
+
+        @functools.wraps(real_utime)
+        def utime(path, *args, **kwargs):
+            real_utime(path, *args, **kwargs)
+            given = args[0] if args else kwargs.get("times")
+            if given is not None or kwargs.get("ns") is not None:
+                self._stamped.add(real_stat(
+                    path, dir_fd=kwargs.get("dir_fd"),
+                    follow_symlinks=kwargs.get("follow_symlinks", True)
+                ).st_mtime_ns)
+
+        @functools.wraps(real_scandir)
+        def scandir(path=None):
+            scan = real_scandir(path)
+            if self._key(os.curdir if path is None else path) is None:
+                return scan
+            return _ReplayedScan(scan, self)
+
+        os.stat, os.lstat, os.utime, os.scandir = (
+            reading(real_stat), reading(real_lstat), utime, scandir)
+
+    def uninstall(self) -> None:
+        if self._real is not None:
+            os.stat, os.lstat, os.utime, os.scandir = self._real
+            self._real = None
+
+
+class _ReplayedEntry:
+    """A ``DirEntry`` whose ``stat`` reads on the replayed clock; everything
+    else is the entry's own."""
+
+    def __init__(self, entry, times: _ReplayedFileTimes) -> None:
+        self._entry = entry
+        self._times = times
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        return self._times.read(
+            self._entry.path, self._entry.stat(follow_symlinks=follow_symlinks))
+
+    def __getattr__(self, name):
+        return getattr(self._entry, name)
+
+    def __fspath__(self) -> str:
+        return self._entry.path
+
+    def __repr__(self) -> str:
+        return repr(self._entry)
+
+
+class _ReplayedScan:
+    """What ``os.scandir`` hands back under a replay: the iterator and context
+    manager it always was, over ``_ReplayedEntry`` objects."""
+
+    def __init__(self, scan, times: _ReplayedFileTimes) -> None:
+        self._scan = scan
+        self._times = times
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> _ReplayedEntry:
+        return _ReplayedEntry(next(self._scan), self._times)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._scan.close()
+
+    def close(self) -> None:
+        self._scan.close()
+
+
+_FILE_TIMES = pytest.StashKey()
+
+
+@pytest.fixture(autouse=True)
+def _real_file_times_for_a_marked_test(request):
+    """Pause ``_ReplayedFileTimes`` for a test marked ``real_file_times``: it
+    hands the files it writes to a child process, which reads the OS's own
+    times (#1120). A no-op in a run that is not replayed."""
+    times = request.config.stash.get(_FILE_TIMES, None)
+    if times is None or request.node.get_closest_marker(
+            "real_file_times") is None:
+        yield
+        return
+    times.paused = True
+    try:
+        yield
+    finally:
+        times.paused = False
+
+
 @pytest.fixture(autouse=True, scope="session")
 def contention():
     """Take the harness's first contention reading at session start, so the
@@ -2147,6 +2373,21 @@ def _native_guiders_are_closed():
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
+    # FIRST, before anything below reads a file's age: under a replay the
+    # sweep of stale session directories in ``_own_basetemp`` ages them
+    # against the shifted clock (#1070).
+    shift_s = getattr(sys.modules.get("shift_clock"), "_shift_s", None)
+    if shift_s is not None:
+        file_times = _ReplayedFileTimes(shift_s, [
+            tempfile.gettempdir(), os.environ.get("PYTEST_DEBUG_TEMPROOT"),
+            config.option.basetemp])
+        file_times.install()
+        config.add_cleanup(file_times.uninstall)
+        config.stash[_FILE_TIMES] = file_times
+    config.addinivalue_line(
+        "markers", "real_file_times: hands the files it writes to a child "
+        "process, so file times are not moved by a date replay "
+        "(_ReplayedFileTimes)")
     # Before pytest's own tmpdir plugin reads ``--basetemp`` (#909, #916).
     basetemp = _own_basetemp(config)
     if basetemp is not None:

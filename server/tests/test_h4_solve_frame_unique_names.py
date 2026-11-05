@@ -38,12 +38,13 @@ from pathlib import Path
 
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 import astrodeck.hub as hub_module
 from astrodeck.solve.simsolver import SimSolver
 
-RA, DEC = 5.0, 10.0
+RA, DEC = _sky.target()
 _UNIQUE = re.compile(r"^(?P<kind>[a-z_]+)-[0-9a-f]{12}\.fits$")
 
 

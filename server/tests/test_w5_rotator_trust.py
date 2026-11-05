@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 from astrodeck.devices.base import DeviceError
@@ -219,8 +220,8 @@ async def test_goto_and_center_degrades_a_failed_self_test_too(sim_hub):
     not a special case that needs its own plumbing" -- test_w4_rotator_
     sign.py); the self-test refusal above is the same shape again."""
     sim_hub._rotation_trusted = False
-    sim_hub.sim_rig.ra_hours, sim_hub.sim_rig.dec_deg = 5.0, 10.0
+    sim_hub.sim_rig.ra_hours, sim_hub.sim_rig.dec_deg = _sky.target()
 
-    result = await sim_hub.goto_and_center(5.0, 10.0, rotation_deg=45.0)
+    result = await sim_hub.goto_and_center(*_sky.target(), rotation_deg=45.0)
 
     assert result.get("rotation_skipped") is True, result

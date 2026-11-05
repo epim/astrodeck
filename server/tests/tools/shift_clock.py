@@ -30,8 +30,9 @@ the clock itself and never asks ``time.time``), and ``datetime.datetime.now``
 / ``utcnow``, reached through a subclass swapped into the ``datetime`` module
 (a C type takes no attribute assignment). ``date.today`` already asks
 ``time.time``. What is not: ``time.monotonic`` and the other elapsed-time
-clocks, file times the OS stamps (``st_mtime``), ``ctime`` / ``asctime``,
-child processes, and any module that bound the real function before this
+clocks, file times the OS stamps (``st_mtime``; the suite's conftest moves
+those for a path under the temp root, ``_ReplayedFileTimes``), ``ctime`` /
+``asctime``, child processes, and any module that bound the real function before this
 hook ran. See README.md beside this file for how to run it.
 
 astropy's IERS table is the one thing a shift of more than about 30 days

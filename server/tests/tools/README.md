@@ -54,8 +54,8 @@ Remove-Item Env:ASTRODECK_SHIFT_CLOCK_S, Env:PYTHONPATH
   the run ending `unsafe: slew blocked by sun-exclusion cone`: the target is
   inside the Sun's 30 degree cone on those dates (`Hub._check_solar` reads the
   Sun by the calendar and no site). That is a fixture, not an hour: use a
-  target clear of the Sun all year (the north ecliptic pole, RA 18 h Dec
-  +66.56, is 90 degrees from it every day) or pin `coords.sun_radec`, as
+  target clear of the Sun all year (`_sky.target()`: an ecliptic pole,
+  90 degrees from the Sun every day) or pin `coords.sun_radec`, as
   test_w4_target_window_and_light_hold.py does (#1026). Sweep dates in 15 day
   steps, not hours.
 - Red at EVERY offset, offset 0 included: suspect the replay before the test.
@@ -89,8 +89,9 @@ Not moved:
 
 - `time.monotonic`, `perf_counter` and `asyncio`'s clock: they measure elapsed
   time, not the hour.
-- File times the OS stamps (`st_mtime`). A cache or freshness check that
-  compares a file's mtime with `time.time()` sees the offset as age.
+- File times the OS stamps, in a process this plugin alone is loaded in. The
+  suite's conftest moves them (below); a run without that conftest sees the
+  offset as the age of every file.
 - `time.ctime` and `time.asctime` with no argument.
 - A child process. It has the variable in its environment but not the plugin.
 - A module that bound the real function before the hook ran (in practice only
@@ -167,15 +168,20 @@ date.
 
 ### What the plugin does not shift (expected artifacts)
 
-- **File times the OS stamps** (`st_mtime`). The calibration library ages a
-  frame by its mtime against `time.time()` (`calibration/library.py`,
-  `iter_cal_headers`), so under a large shift every file written in the run
-  reads months old. `test_w17_dusk_flats_panel.py::test_a_restart_finds_fresh_
-  flats_and_shoots_none` was red under any shift of more than the freshness
-  window for that reason alone. The cure is in the test: stamp the files with
-  `os.utime(path, (time.time(), time.time()))` after the code under test wrote
-  them. `KNOWN_ARTIFACTS` in `date_replay.py` is for a case that cannot be
-  fixed that way, and is empty.
+- **File times a child process reads.** The calibration library ages a frame
+  by its mtime against `time.time()` (`calibration/library.py`,
+  `iter_cal_headers`), so a file written in a replayed run used to read months
+  old (`test_w17_dusk_flats_panel.py::test_a_restart_finds_fresh_flats_and_
+  shoots_none` was red for that reason alone). The suite's `conftest.py` now
+  moves the time fields of `os.stat`, `os.lstat` and `DirEntry.stat` by the
+  clock's offset for a path under the temp root (`_ReplayedFileTimes`), so a
+  file's age is what it is without a replay. A time a test sets with
+  `os.utime(path, (t, t))` is read back as `t`, not shifted again, and keeps
+  that through a rename. Not moved: `os.fstat` and a child process. A test
+  that writes files and has a child read them (a cache keyed on file times)
+  carries `@pytest.mark.real_file_times`, which pauses the shift for it.
+  `KNOWN_ARTIFACTS` in `date_replay.py` is for a case that cannot be fixed that
+  way, and is empty.
 - `time.monotonic`, `time.perf_counter` and the event loop's clock: elapsed
   time is real, which is right.
 - Child processes that do not load the plugin, and any module that bound the

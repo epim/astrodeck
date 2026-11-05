@@ -34,7 +34,11 @@ from astrodeck.devices.base import DeviceError
 from astrodeck.events import bus
 
 from _deadline import wait_until
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
+
+#: Clear of the Sun on every day of the year (_sky.py).
+TARGET = _sky.target()
 
 
 #: Gain used to mark the LIVE LOOP's exposures apart from a solve's (which
@@ -230,7 +234,7 @@ async def test_an_armed_aid_does_not_refuse_the_run_that_needs_the_camera(
     sim_hub.arm_bahtinov()
     await _start_wedged_loop(sim_hub)
 
-    result = await sim_hub.goto_and_center(5.0, 10.0)
+    result = await sim_hub.goto_and_center(*TARGET)
 
     assert result["centered"] is True
     assert sim_hub.bahtinov is None and sim_hub.looping is False
@@ -299,7 +303,7 @@ async def test_goto_and_center_centers_with_a_loop_running(sim_hub, _hang_the_lo
     ONE uncorrected slew -- leaving the tube wherever that landed."""
     await _start_wedged_loop(sim_hub)
 
-    result = await sim_hub.goto_and_center(5.0, 10.0)
+    result = await sim_hub.goto_and_center(*TARGET)
 
     assert result["centered"] is True
     assert "solve_failed" not in result
@@ -321,7 +325,7 @@ async def test_the_loop_is_gone_before_the_mount_ever_moves(sim_hub, monkeypatch
     await sim_hub.start_loop(0.01, LOOP_MARKER_GAIN, 10)
     assert sim_hub.looping is True
 
-    await sim_hub.goto_and_center(5.0, 10.0)
+    await sim_hub.goto_and_center(*TARGET)
 
     assert looping_at_each_slew, "the mount never slewed; the test proved nothing"
     assert not any(looping_at_each_slew)
@@ -338,7 +342,7 @@ async def test_a_goto_refused_at_the_sun_cone_leaves_the_loop_alone(sim_hub, mon
     await sim_hub.start_loop(0.01, LOOP_MARKER_GAIN, 10)
 
     with pytest.raises(DeviceError):
-        await sim_hub.goto_and_center(5.0, 10.0)
+        await sim_hub.goto_and_center(*TARGET)
 
     assert sim_hub.looping is True
     assert sim_hub.live_stacker is not None
@@ -367,7 +371,7 @@ async def test_an_abort_during_the_loop_teardown_still_fences_the_slew(sim_hub, 
         return out
     monkeypatch.setattr(sim_hub, "yield_camera_for", yield_then_abort)
 
-    result = await sim_hub.goto_and_center(5.0, 10.0)
+    result = await sim_hub.goto_and_center(*TARGET)
 
     assert result["aborted"] is True
     assert slews == []

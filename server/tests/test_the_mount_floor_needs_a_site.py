@@ -283,7 +283,9 @@ def test_a_site_with_no_coordinates_cannot_EXIST_to_be_judged():
 # a conftest cannot hold tests and this file is where the leak was found. The
 # guard's body is `_config_left_as_found`, a plain generator, so the cases
 # below drive it against a PRIVATE store and never have to leave a real leak
-# on the process-wide one to watch it fire.
+# on the process-wide one to watch it fire. Its place in the teardown order is
+# held by conftest's own `monkeypatch` fixture, which asks for the guard
+# (#807); test_w2_3_date_replay.py runs that in a throwaway session.
 
 def _private_store(tmp_path):
     """A store in the state the session store is in after its first reader:
@@ -602,16 +604,20 @@ def test_a_config_edit_through_monkeypatch_is_not_a_leak(monkeypatch):
     real guard around this test must compare only after monkeypatch has put
     them back.
 
-    RED under mutant "set up after monkeypatch" (the guard renamed
+    RED under mutant "set up after monkeypatch" when conftest's own
+    ``monkeypatch`` fixture did not exist and the guard was renamed
     ``_z_test_leaves_the_config_as_it_found_it``, which sorts after
-    ``_fast_sim_delays``) (observed, verbatim):
+    ``_fast_sim_delays`` (observed, verbatim):
         __ ERROR at teardown of test_a_config_edit_through_monkeypatch_is_not_a_leak __
         E           AssertionError: tests/test_the_mount_floor_needs_a_site.py::
         test_a_config_edit_through_monkeypatch_is_not_a_leak left the
         process-wide config changed: safety.max_alt_deg, safety.min_alt_deg,
         site.name. Every later test on this worker read...
     and so did every other test here that patches the config through
-    monkeypatch: seven errors at teardown, this one included.
+    monkeypatch: seven errors at teardown, this one included. The order no
+    longer rests on the guard's name (#807), so the rename alone is no longer a
+    mutant; the one that is, is the ``monkeypatch`` fixture dropped from
+    conftest.py, and the name is then what holds it again.
     """
     from astrodeck.config import config_store
     cfg = config_store.cfg()

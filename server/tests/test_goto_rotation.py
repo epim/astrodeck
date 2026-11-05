@@ -4,7 +4,10 @@
 meridian-flip mod-180 no-op, sequence/route threading."""
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
+
+TARGET = _sky.target()
 
 
 @pytest.fixture
@@ -40,7 +43,7 @@ async def test_goto_and_center_rotates_before_centering(sim_hub):
     rig = sim_hub.sim_rig
     rig.rotator_pa_offset_deg = 20.0
     rig.rotator_mech_deg = 0.0
-    result = await sim_hub.goto_and_center(5.0, 10.0, rotation_deg=90.0)
+    result = await sim_hub.goto_and_center(*TARGET, rotation_deg=90.0)
     assert result["centered"] is True
     assert result["rotation"]["rotated"] is True
     truth = (rig.rotator_mech_deg + rig.rotator_pa_offset_deg) % 360.0
@@ -49,7 +52,7 @@ async def test_goto_and_center_rotates_before_centering(sim_hub):
 
 @pytest.mark.asyncio
 async def test_goto_without_rotation_unchanged(sim_hub, _real_solve_dwell):
-    result = await sim_hub.goto_and_center(5.0, 10.0)
+    result = await sim_hub.goto_and_center(*TARGET)
     assert result["centered"] is True
     assert result.get("rotation") is None
     assert "rotation_skipped" not in result
@@ -61,7 +64,7 @@ async def test_rotation_failure_degrades_not_aborts(sim_hub, monkeypatch):
         from astrodeck.devices.base import DeviceError
         raise DeviceError("clouds over the rotate solve")
     monkeypatch.setattr(type(sim_hub), "rotate_to_pa", boom)
-    result = await sim_hub.goto_and_center(5.0, 10.0, rotation_deg=90.0)
+    result = await sim_hub.goto_and_center(*TARGET, rotation_deg=90.0)
     assert result["centered"] is True          # centering still ran
     assert result["rotation_skipped"] is True
 
@@ -74,7 +77,7 @@ async def test_no_rotator_means_advisory_only(sim_hub):
     pinned, with its mutants, in test_rotation_unavailable.py; this test keeps
     only the part that did not change."""
     sim_hub.devices.pop("rotator", None)
-    result = await sim_hub.goto_and_center(5.0, 10.0, rotation_deg=90.0)
+    result = await sim_hub.goto_and_center(*TARGET, rotation_deg=90.0)
     assert result["centered"] is True
     assert result.get("rotation") is None      # advisory: nothing turned
 

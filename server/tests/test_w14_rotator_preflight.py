@@ -76,6 +76,7 @@ from pathlib import Path
 
 import pytest
 
+import _sky
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 from astrodeck import rotation as _rotation
@@ -86,7 +87,7 @@ from astrodeck.solve.simsolver import SimSolver
 
 #: The goto target the rotation cases use (the field test_goto_rotation.py and
 #: test_rotate_shortcut.py use).
-RA, DEC = 5.0, 10.0
+RA, DEC = _sky.target()
 
 #: A solve frame's name since #532: ``<kind>-<12 hex digits>.fits``.
 _UNIQUE = re.compile(r"^(?P<kind>.+)-[0-9a-f]{12}\.fits$")

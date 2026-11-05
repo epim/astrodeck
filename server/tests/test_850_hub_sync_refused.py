@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import pytest
 
+import _sky
 from _humanizer_mirror import CLIP_AT, shown_whole
 from _humanizer_mirror import humanizer_rewrites as _humanizer_rewrites
 from _simhub import sim_hub  # noqa: F401 (fixture import)
@@ -52,14 +53,16 @@ from astrodeck.hub import (SOLVE_REASON_SYNC_REFUSED,
                            SOLVE_REASON_SYNC_UNVERIFIED)
 from astrodeck.solve.base import SolveResult
 
-#: The target every case centres on. Fictional, non-round.
-RA, DEC = 5.4321, 10.3765
+#: The target every case centres on: a sky position clear of the Sun on
+#: every day (_sky.py), nudged off the round figures. Fictional, non-round.
+_SKY_RA, _SKY_DEC = _sky.target()
+RA, DEC = round(_SKY_RA + 0.4321, 4), round(_SKY_DEC + 0.3765, 4)
 #: Where the fake solver says the field is: 2.5 degrees north of the target,
 #: the size of the 2026-10-07 syncs, so 150.0 arcmin (three digits).
 #: Fictional, non-round.
-FAR_RA, FAR_DEC = 5.4321, 12.8765
+FAR_RA, FAR_DEC = RA, round(DEC + 2.5, 4)
 #: A solve inside the default 0.02 degree tolerance (0.6 arcmin). Fictional.
-NEAR_RA, NEAR_DEC = 5.4321, 10.3865
+NEAR_RA, NEAR_DEC = RA, round(DEC + 0.01, 4)
 
 #: Driver-shaped words in the safe order (#850 round 5): Trust position
 #: before any sync away from the pole, and no slew while the position is

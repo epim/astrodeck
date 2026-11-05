@@ -22,6 +22,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+import _sky
 import astrodeck.api.app as app_module
 from astrodeck.auth import CAP_CONTROL_MOUNT, require
 from astrodeck.auth.rbac import assert_route_capabilities, declare
@@ -103,7 +104,7 @@ class _Tel:
             self.max_rate_deg_s = ceiling
 
     async def get_position(self):
-        return 6.0, 40.0
+        return _sky.target()
 
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
         self.moves.append((axis, rate_deg_s))
