@@ -134,6 +134,19 @@ class Target(BaseModel):
     autofocus_first: bool = True
     calibration: bool = False          # darks/bias/flats — skip slew/center/AF/guide
     steps: list[ExposureStep] = []
+    # --- maximum time on the target (#1094, owner ruling D-D; additive) ---
+    #
+    # Minutes from the target's first attempt in a run after which it is DONE
+    # whatever it still owes: a target is done when either its frame count
+    # (every step's `count`) or this is met, whichever comes first, and the
+    # run goes on to the next target of the series. 0 is none, which every
+    # saved plan has always meant. The ledger still owes the frames, so a
+    # later night takes them up; "this for an hour, then that" is the only
+    # thing the bound is for. Counted from the first attempt exactly as
+    # `Schedule.max_run_min` is (#164), setup included. ABSENT FROM THE DUMP
+    # while 0, like ``SequencePlan.skipped_ids``, so every plan without a bound
+    # dumps byte for byte as before the field existed.
+    max_time_min: int = Field(0, ge=0, le=1440)
     # --- acquisition order (additive; "blocks" is what every existing plan does)
     #
     # "blocks" runs each step to completion before the next: 45 L, then 45 R,
@@ -212,6 +225,17 @@ class Target(BaseModel):
     after_group: str | None = None
     # --- autorun scheduling (Batch 4b; additive — default = run-now) ---
     schedule: Schedule = Field(default_factory=Schedule)
+
+    @model_serializer(mode="wrap")
+    def _omit_no_time_bound(self, handler: SerializerFunctionWrapHandler):
+        """The dump without ``max_time_min`` when it is 0, whatever the mode,
+        and nested in a ``SequencePlan`` or a ``Session`` too. A wrap
+        serializer, so every other field, and the JSON schema, are pydantic's
+        own."""
+        out = handler(self)
+        if isinstance(out, dict) and not out.get("max_time_min"):
+            out.pop("max_time_min", None)
+        return out
 
 
 class TargetGroup(BaseModel):
@@ -676,7 +700,9 @@ def quota_unbounded(plan: SequencePlan, policy: "RunPolicy") -> bool:
     ``max_consecutive_rejects`` guard, the per-night
     ``max_consecutive_rejects_night`` guard (``NightQualityStop``), or a frozen
     stop boundary (``_enforce_stop_boundary`` -> ``StopTarget``, from
-    ``schedule.stop_mode``/``max_run_min``). The no-progress watchdog only
+    ``schedule.stop_mode``/``max_run_min``), or the target's own maximum time
+    (``Target.max_time_min``, #1094, ``_enforce_time_bound``). The no-progress
+    watchdog only
     WARNs — it never raises. So when BOTH reject guards are disabled (0) AND
     ANY non-calibration target carries no stop boundary (fix round 2: one
     bounded target does not save a plan whose other target's step loop is
@@ -705,11 +731,12 @@ def quota_unbounded(plan: SequencePlan, policy: "RunPolicy") -> bool:
         return False
     if policy.max_consecutive_rejects or policy.max_consecutive_rejects_night:
         return False
-    def unbounded(sched) -> bool:
+    def unbounded(t: Target) -> bool:
+        sched = t.schedule
         return ((sched.stop_mode == "none"
                 or (sched.stop_mode == "time" and not sched.stop_time))
-                and not sched.max_run_min)
-    return any(unbounded(t.schedule) for t in plan.targets if not t.calibration)
+                and not sched.max_run_min and not t.max_time_min)
+    return any(unbounded(t) for t in plan.targets if not t.calibration)
 
 
 def _names_rules_resolve(plan: SequencePlan) -> set[str]:

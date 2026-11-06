@@ -221,8 +221,15 @@ class _Wheel:
 #: with ``repeat: "Single night"`` put back on each generated DUSK node (the
 #: key absent on every one first) the digest is the previous pin,
 #: 92aa6664..., byte for byte. Regenerated from the SAME code path.
+#:
+#: RE-PINNED IN WP 3.10 (#1094, owner ruling D-D): NODE_DEFS gained TARGET's
+#: ``maxTime`` param at 0 (no bound), so every generated TARGET node carries
+#: it and every one of the 768 blobs moves by that one param and nothing
+#: else. PROVEN, not assumed: with ``maxTime`` popped from each generated
+#: TARGET node (asserting it is 0 on every one) the digest is the previous
+#: pin, fc691c0b..., byte for byte. Regenerated from the SAME code path.
 TODAYS_ANSWERS_SHA256 = \
-    "fc691c0b0e31789c330e9f67f9968b99c042d10cb718ff6d91f0386734757af3"
+    "a61479fb1a469bc823d7c7191be1d6819ed9d0c5477a86d82f30f21c0fee75d9"
 
 #: The chip subsets the route is asked, one of each shape a new answer's
 #: default could move: none, the Guiding chip alone, every chip but it, and
@@ -998,6 +1005,10 @@ class TestTheRecordedAnswer:
         through the compile route; ``test_w16_stamping_note_in_compile.py``).
         The byte diff of the file is that one entry; the recorded session
         leaves the setting at its default, off.
+
+        RE-RECORDED IN WP 3.10 (``ASTRODECK_REWRITE_WIZARD_FIXTURE=1``, #1094):
+        the recorded TARGET node gained ``"maxTime": 0`` (the bound, none),
+        and nothing else moved (the byte diff of the file is that one line).
         """
         text = _recording(client, monkeypatch)
         if REWRITE:

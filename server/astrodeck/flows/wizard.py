@@ -238,6 +238,9 @@ AUTO_RESUME_CHOICES: tuple[str, ...] = ("On", "Off")
 #: answers.
 MIN_ALT_MIN_DEG = 0
 MIN_ALT_MAX_DEG = 90
+#: The longest ``max_time_min`` a target holds, minutes (a day): mirrors
+#: ``to_plan.TIME_BOUND_MAX_MIN`` and ``Target.max_time_min``'s own bound.
+MAX_TIME_MAX_MIN = 1440
 
 
 class _Canvas:
@@ -809,6 +812,40 @@ def checked_min_alt(min_alt) -> int | float | None:
     return int(min_alt) if float(min_alt).is_integer() else float(min_alt)
 
 
+def checked_max_time(max_time_min) -> int | None:
+    """``max_time_min`` as the whole number of minutes TARGET's ``maxTime``
+    holds, or None when it is not given or is 0 (no bound, which writes
+    nothing), or a refusal.
+
+    A bool is not a number here (``true`` would be a bound of one minute
+    nobody asked for), nor is a string, a fraction or a list: the target
+    ends at the minute, and a half minute is an answer the engine cannot
+    keep. PUBLIC for the route's door."""
+    if max_time_min is None:
+        return None
+    ok = (not isinstance(max_time_min, bool)
+          and isinstance(max_time_min, int)
+          and 0 <= max_time_min <= MAX_TIME_MAX_MIN)
+    if not ok:
+        raise ValueError(f"max_time_min is the most minutes to spend on the "
+                         f"target before the run moves on: a whole number "
+                         f"from 0 (no bound) to {MAX_TIME_MAX_MIN}, not "
+                         f"{max_time_min!r}")
+    return max_time_min or None
+
+
+def _door_max_time(kind: str, max_time_min) -> int | None:
+    """``checked_max_time``'s answer, refused with the kinds it does not
+    belong to: the bound is ONE TARGET's, and a pool picks its member at
+    dusk while a mosaic's panels are bounded by their own passes and
+    minimum visit. Refused rather than dropped, for ``_checked``'s reason."""
+    minutes = checked_max_time(max_time_min)
+    if minutes is not None and kind in (KIND_POOL, KIND_MOSAIC):
+        raise ValueError(f"max_time_min bounds a single target; this is "
+                         f"{kind!r}")
+    return minutes
+
+
 def _clock_pair(what: str, choice: str | None, clock: str | None) -> None:
     """Refuse a Start or a Stop and its clock when they disagree.
 
@@ -1087,12 +1124,15 @@ def generate(kind: str = KIND_DEEP_SKY,
 def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
               cycles, coords, safety_abort, rows, cols, overlap_pct,
               angle_mode, pa_deg, use_measured, skip, rig, measured_pa_deg,
-              dusk_answers=None) -> tuple[FlowGraph, list[str]]:
+              dusk_answers=None, max_time_min=None
+              ) -> tuple[FlowGraph, list[str]]:
     """``generate``'s graph and the notes that go with it: why a mosaic was
     answered as one target, why a TARGET has no coordinates. ``generate``
     documents every argument but ``dusk_answers``: the DUSK WINDOW params the
     NIGHT and RESUME answers write (``_door_dusk``), already checked, only
-    the keys given; None or empty writes nothing."""
+    the keys given; None or empty writes nothing. ``max_time_min`` is the
+    TARGET's maximum time in minutes, already checked (``_door_max_time``);
+    None writes nothing."""
     kind, opts = _checked(kind, options)
     if isinstance(skip, str) and not skip.strip():
         skip = None             # a blank skip is no skip, with any kind
@@ -1166,6 +1206,8 @@ def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
                 node.params["ra"], node.params["dec"] = where
             if layout is not None:
                 node.params.update(layout)
+            if max_time_min is not None:
+                node.params["maxTime"] = max_time_min
         elif node.type == "pool" and tname.find(",") > 0:
             # A LIST replaces the pool's candidates; a single name does not.
             # Transcribed — one name is not a pool, and overwriting four
@@ -1323,6 +1365,7 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
                     start_clock: str | None = None,
                     min_alt: float | None = None,
                     auto_resume: str | None = None,
+                    max_time_min: int | None = None,
                     rig: RigFacts | None = None,
                     measured_pa_deg: float | None = None,
                     wheel: Iterable[str] | None = None) -> WizardAnswer:
@@ -1361,6 +1404,12 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
     * ``min_alt``: the lowest altitude a target is shot at, 0 to 90;
     * ``auto_resume``: "On" or "Off", DUSK's ``autoResume``.
 
+    THE TARGET'S TIME BOUND (#1094, owner ruling D-D), None when not given
+    and writing nothing then: ``max_time_min``, a whole number of minutes
+    from 0 (no bound) to 1440, written to the TARGET's ``maxTime``: the run
+    moves on from the target after that long, frames owed or not. Refused
+    with the Best of several and Mosaic kinds (``_door_max_time``).
+
     Each refusal names the answer it refuses.
 
     A mosaic answered as one target says so on its card too: the tagline is
@@ -1374,6 +1423,7 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
         _within_the_unguided_cap(table[2], unguided_exposure_s)
     dusk_answers = _door_dusk(stop, stop_clock, start, start_clock, min_alt,
                               auto_resume)
+    max_time = _door_max_time(kind, max_time_min)
     # No door answer, no change: "" and 1 are what ``generate`` defaults
     # the rows to, the inert values the three original answers always met.
     plan, passes = (table[0], table[1]) if table is not None else ("", 1)
@@ -1382,7 +1432,8 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
         cycles=passes, coords=coords, safety_abort=False, rows=rows,
         cols=cols, overlap_pct=overlap_pct, angle_mode=angle_mode,
         pa_deg=pa_deg, use_measured=use_measured, skip=skip, rig=rig,
-        measured_pa_deg=measured_pa_deg, dusk_answers=dusk_answers)
+        measured_pa_deg=measured_pa_deg, dusk_answers=dusk_answers,
+        max_time_min=max_time)
     tagline = f"Generated by the wizard — {kind.lower()}"
     if NO_OPTICS_REASON in notes:
         tagline += f", planned as one target: {NO_OPTICS_REASON}"
@@ -1407,8 +1458,8 @@ def generate_record(kind: str = KIND_DEEP_SKY,
     ``cols``, ``overlap_pct``, ``angle_mode``, ``pa_deg``, ``use_measured``,
     the door's answers (``skip``, ``ra``, ``dec``, ``cycle_plan``,
     ``cycles``, ``guiding``), the night's (``stop``, ``stop_clock``,
-    ``start``, ``start_clock``, ``min_alt``, ``auto_resume``) and the rig
-    facts (``rig``, ``measured_pa_deg``,
+    ``start``, ``start_clock``, ``min_alt``, ``auto_resume``), the target's
+    ``max_time_min`` and the rig facts (``rig``, ``measured_pa_deg``,
     ``wheel``). A caller with only the three original answers gets exactly
     the graph those answers have always made, less SLEW + CENTER (spec 1.7)
     and with created params. A route that must say why a mosaic came back as

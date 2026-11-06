@@ -380,6 +380,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       rows: 1, cols: 1, overlap: DEFAULT_OVERLAP * 100, fovX: 0, fovY: 0, fovFrom: "", skip: "",
       passes: 1, minVisit: 0, order: "Least complete first", centerTol: 1.2,
       centerTries: 3, ifNotCentred: "Auto", counts: "Every sub taken", frameAnchor: "",
+      maxTime: 0,
     },
     createdAs: { name: "", ra: "", dec: "", rotation: -1, angle: "Any angle", counts: "Accepted subs" },
     // No row for `counts` (not offered, Revision 2 ruling 2) or `frameAnchor`
@@ -405,6 +406,9 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "centerTol", label: "Centre within", control: "text", unit: "′" },
       { key: "centerTries", label: "Centring tries", control: "text" },
       { key: "ifNotCentred", label: "If a panel will not centre or reach its angle", control: "select", options: ["Auto", "Skip it this pass", "Shoot anyway"] },
+      // A single target's bound (#1094): the run moves on after this long with
+      // frames owed. 0 is none, spelled in the label.
+      { key: "maxTime", label: "Most time on the target (0 = no limit)", control: "text", unit: "min" },
     ],
     desc: "One target, or a mosaic of panels at one camera angle: coordinates, grid, centring, and identity for the multi-night session log. The stages wired to 'each panel' run on every panel; wire the last stage's 'pass done' to 'next panel' to rotate panels every pass.",
     sum: (p) => txt(p.name),

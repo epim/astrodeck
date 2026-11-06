@@ -42,7 +42,8 @@
 
 import { AUTO_RESUME_CHOICES, NODE_DEFS, TARGET_ANGLES } from "../nodeDefs";
 import {
-  CLOCK_TIME, DUSK_STOPS, NEED_STOP_CLOCK, clockOf, type DuskStop,
+  CLOCK_TIME, DUSK_STOPS, MAX_TIME_MAX_MIN, NEED_MAX_TIME, NEED_STOP_CLOCK, clockOf, maxTimeOf,
+  maxTimeUnreadable, type DuskStop,
 } from "./nightAnswers";
 import { GRID_MAX, type RunReadouts } from "../framing/framingModel";
 import { compiledReadouts } from "../framing/framingApi";
@@ -84,7 +85,7 @@ export const CYCLES_MAX = 10_000;
 /** wizard.py `CLOCK_TIME`, `DUSK_STOPS` and the clock reader: in the leaf
  *  `nightAnswers.ts`, which the NEW FLOW sheets share without this module's
  *  framing imports. Re-exported so this module's importers do not change. */
-export { CLOCK_TIME, DUSK_STOPS, NEED_STOP_CLOCK, clockOf };
+export { CLOCK_TIME, DUSK_STOPS, MAX_TIME_MAX_MIN, NEED_MAX_TIME, NEED_STOP_CLOCK, clockOf, maxTimeOf };
 export type { DuskStop };
 /** wizard.py `DUSK_STARTS`: the Start choices the wizard offers, in the
  *  editor's order (nodeDefs.ts's DUSK `start` options). */
@@ -249,6 +250,12 @@ export interface WizardAnswers {
   stop: DuskStop;
   stopClock: string;
   minAlt: string;
+  /** The most minutes the run spends on the target before it moves on, with
+   *  frames still owed (#1094, owner ruling D-D): typed text, read by
+   *  `maxTimeOf`, blank for no bound. A single target's: asked on NIGHT only
+   *  when the flow is not a mosaic (`plansMosaic`), whose panels end by their
+   *  own passes. */
+  maxTime: string;
   /** RESUME: the owner's "automatic resume on subsequent nights until capture
    *  quota is fulfilled". On opens, as DUSK WINDOW's missing-key default is On
    *  (`dusk_auto_resume`); `wizardBody` writes "Off" only. */
@@ -284,6 +291,7 @@ export function initialAnswers(p: WizardPrefill): WizardAnswers {
     stop: DUSK_DEFAULTS.stop,
     stopClock: "",
     minAlt: String(DUSK_DEFAULTS.minAlt),
+    maxTime: "",
     autoResume: autoResumeOn(DUSK_DEFAULTS.autoResume),
   };
 }
@@ -382,6 +390,7 @@ export const NEED_START_CLOCK =
 export const NEED_MIN_ALT =
   `Type the lowest altitude to shoot at, in degrees: a number from ${MIN_ALT_MIN_DEG} to ${MIN_ALT_MAX_DEG}.`;
 
+
 /** Why FILTERS waits on an exposure box, naming the filter. */
 export function exposureReason(filter: string): string {
   return `Type ${filter}'s exposure in whole seconds, at least 1.`;
@@ -447,7 +456,8 @@ export function stepReason(
       // choice is not sent (`wizardBody`) and so is not a gap.
       if (a.start === CLOCK_TIME && clockOf(a.startClock) === null) return NEED_START_CLOCK;
       if (a.stop === CLOCK_TIME && clockOf(a.stopClock) === null) return NEED_STOP_CLOCK;
-      return minAltOf(a.minAlt) === null ? NEED_MIN_ALT : null;
+      if (minAltOf(a.minAlt) === null) return NEED_MIN_ALT;
+      return !plansMosaic(p, a) && maxTimeUnreadable(a.maxTime) ? NEED_MAX_TIME : null;
     }
     case "resume":
       // A choice between two answers that both stand: it has no gap.
@@ -538,6 +548,8 @@ export function wizardBody(p: WizardPrefill, a: WizardAnswers): FlowWizardAnswer
   if (a.autoResume !== autoResumeOn(DUSK_DEFAULTS.autoResume)) {
     body.auto_resume = a.autoResume ? AUTO_RESUME_CHOICES[0] : AUTO_RESUME_CHOICES[1];
   }
+  const minutes = maxTimeOf(a.maxTime);
+  if (!mosaic && minutes !== null) body.max_time_min = minutes;
   return body;
 }
 
@@ -719,12 +731,14 @@ export function reviewLines(r: RunReadouts): string[] {
  *  and the server's brief, after GENERATE, are where a night is judged). A
  *  clock shows as typed while it is not a valid time, so the line never
  *  invents one. */
-export function nightWords(a: WizardAnswers): string {
+export function nightWords(a: WizardAnswers, bounded: boolean = true): string {
   const at = (text: string) => clockOf(text) ?? (text.trim() || "no time");
   const start = a.start === CLOCK_TIME ? `${at(a.startClock)} (clock time)` : a.start.toLowerCase();
   const stop = a.stop === CLOCK_TIME ? `${at(a.stopClock)} (clock time)` : a.stop.toLowerCase();
   const alt = minAltOf(a.minAlt);
-  return `from ${start} to ${stop}, min altitude ${alt === null ? a.minAlt.trim() || "not set" : `${alt} deg`}`;
+  const minutes = bounded ? maxTimeOf(a.maxTime) : null;
+  return `from ${start} to ${stop}, min altitude ${alt === null ? a.minAlt.trim() || "not set" : `${alt} deg`}`
+    + (minutes === null ? "" : `, at most ${minutes} min on the target`);
 }
 
 /** The RESUME answer as the pre-generate review words it. */

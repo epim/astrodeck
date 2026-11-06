@@ -677,6 +677,11 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
       <Ask k="min-alt" label="MIN ALTITUDE (DEG)" value={answers.minAlt}
         onChange={(v) => set({ minAlt: v })} mode="decimal"
         placeholder={`${MIN_ALT_MIN_DEG} to ${MIN_ALT_MAX_DEG}`} />
+      {!plansMosaic(prefill, answers) && (
+        <Ask k="max-time" label="MAX MINUTES ON TARGET" value={answers.maxTime}
+          onChange={(v) => set({ maxTime: v })} mode="numeric"
+          placeholder="blank for no limit" />
+      )}
       <p className="swz-note" data-testid="wizard-night-note">
         {STOP_NONE_NOTE}
         {(answers.start === CLOCK_TIME || answers.stop === CLOCK_TIME) ? ` ${CLOCK_NOTE}` : ""}
@@ -746,7 +751,7 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
       </div>
       <div className="swz-row" data-testid="wizard-summary-night">
         <span className="swz-label">NIGHT</span>
-        <span className="swz-value">{nightWords(answers)}</span>
+        <span className="swz-value">{nightWords(answers, !plansMosaic(prefill, answers))}</span>
       </div>
       <div className="swz-row" data-testid="wizard-summary-resume">
         <span className="swz-label">RESUME</span>

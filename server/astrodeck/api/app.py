@@ -2612,6 +2612,17 @@ class FlowWizardBody(BaseModel):
     start_clock: str | None = None
     min_alt: float | None = None
     auto_resume: str | None = None
+    #: The TARGET's maximum time in minutes (#1094, owner ruling D-D): the run
+    #: moves on from it after that long, frames owed or not. None writes
+    #: nothing, for the reason the night's answers above do.
+    max_time_min: int | None = None
+
+    @field_validator("max_time_min", mode="before")
+    @classmethod
+    def _max_time_min(cls, v):
+        # Before pydantic's int coercion, which would read True as 1 minute
+        # and "60" as 60.
+        return flow_wizard.checked_max_time(v)
 
     @field_validator("stop", mode="before")
     @classmethod
@@ -7183,8 +7194,9 @@ def create_app(*, bind_host: str | None = None,
                 guiding=body.guiding, stop=body.stop,
                 stop_clock=body.stop_clock, start=body.start,
                 start_clock=body.start_clock, min_alt=body.min_alt,
-                auto_resume=body.auto_resume, rig=_rig_facts(),
-                measured_pa_deg=measured, wheel=_rig_wheel())
+                auto_resume=body.auto_resume, max_time_min=body.max_time_min,
+                rig=_rig_facts(), measured_pa_deg=measured,
+                wheel=_rig_wheel())
         except ValueError as e:
             raise HTTPException(422, detail={"detail": str(e),
                                              "code": "invalid_wizard_answer"})

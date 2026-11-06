@@ -1520,6 +1520,14 @@ class WindowClosed(StopTarget):
     deferred, the panel would be promised a retry the night cannot give."""
 
 
+class TargetTimeUp(StopTarget):
+    """The target's own maximum time is spent (``Target.max_time_min``, #1094,
+    `_enforce_time_bound`). The target is DONE, not skipped: the scheduler's
+    ordinary arm for a target that ran its steps takes it from here, and the
+    series goes on to the next one. Every other catcher of
+    :class:`StopTarget` still catches it."""
+
+
 class FloorStop(StopTarget):
     """The target sank below its OWN altitude floor (``on_floor = advance``,
     `_enforce_altitude_floor`). Every catcher of :class:`StopTarget` still
@@ -2318,6 +2326,10 @@ class SequenceEngine:
         # its window closes under the frame loop, the target is dropped, the
         # queue empties, and the run used to call that "all targets complete".
         self._window_closed = False
+        # The ids of the targets whose own maximum time (`Target.max_time_min`)
+        # ran out this run (#1094): what tells a run that ended owing frames
+        # because a bound it was given was reached from one a guard cut short.
+        self._time_bounded: set[str] = set()
         # A teardown is in flight (``abort()`` between its first publish and the
         # terminal one). NOT the same question as ``self.running``, which stays
         # True for the whole wind-down and so cannot tell a live run from one
@@ -2736,6 +2748,7 @@ class SequenceEngine:
         self._completion_fired = set()
         self._dawn_cutoff = False
         self._window_closed = False
+        self._time_bounded = set()
         # Drop the prior run synchronously: Stop can arrive before the task's
         # first turn. _run publishes running once execution actually begins.
         #
@@ -4360,19 +4373,22 @@ class SequenceEngine:
                 saved = True
             except Exception as e:
                 bus.log("warning", f"session save failed: {e}", "sequence")
-            # THE QUEUE'S ONE EVENT (#598, backlog ruling D-04, owner-approved
-            # 2026-09-30): the session this one was waiting behind COMPLETED.
-            # Asked of the status the decision above wrote, never of `reason`:
-            # 'complete' with frames still owed is dormant, and a dawn
-            # cut-off, an incomplete night, an unsafe stop, an abort, an
-            # error, a quality stop and a cooling skip all leave THIS session
-            # owing frames and armed (or disarmed on purpose), so the session
-            # behind it stays queued and unarmed. And only once the store
-            # holds it as complete: a save that failed leaves a dormant file
-            # that ResumeArm would resume, and arming a second session beside
-            # it is the singleton broken.
-            if saved and self._session.status == "complete":
-                self._promote_queued(self._session)
+            # THE QUEUE'S EVENT (#598, backlog ruling D-04; widened to every
+            # PLANNED ending by ruling D-D on #1094, 2026-10-22): the session
+            # this one was waiting behind ended the way its plan said it
+            # would (`_planned_ending`). An abort, an unsafe stop, an error, a
+            # quality stop, a cooling skip, a shutdown and a target a guard
+            # set aside are somebody or something saying STOP, not NEXT: the
+            # session behind stays queued and unarmed, and the log says so.
+            # Only once the store holds this session: a save that failed
+            # leaves a dormant file that ResumeArm would resume, and arming a
+            # second session beside it is the singleton broken.
+            if saved:
+                planned = self._planned_ending(reason)
+                if planned is not None:
+                    self._promote_queued(self._session, planned)
+                else:
+                    self._say_queue_held(self._session, reason)
             self._record_flow_result(self._session, reason)
             self._session = None
             # The memo is the finished session's: let it go with it, so the
@@ -4525,11 +4541,57 @@ class SequenceEngine:
             logging.getLogger(__name__).warning(line)
         return done
 
-    def _promote_queued(self, done: Session) -> None:
-        """Arm the session waiting behind ``done``, which has just COMPLETED
-        (#598, backlog ruling D-04, owner-approved 2026-09-30).
+    def _planned_ending(self, reason: str) -> str | None:
+        """What to call the ending, in words that follow the session's name,
+        when it is one the plan itself asked for, and None for every other
+        (#1094, owner ruling D-D). Only a planned ending promotes the session
+        queued behind this one.
 
-        The caller asks this only of a session the store holds as complete;
+        PLANNED: the plan finished (``status == "complete"``); the stop time,
+        ``max_run_min`` or the window closing, which all end a run as
+        ``dawn_cutoff``; and a target's own maximum time
+        (``Target.max_time_min``), which leaves the run owing frames and
+        ending ``incomplete``, a reason a guard produces too, so it is
+        planned only when a bound is what was reached
+        (``_time_bounded``). NOT PLANNED: an abort, an unsafe stop, an
+        error, a quality stop, a cooling skip, a shutdown, and an
+        ``incomplete`` night that reached no bound."""
+        if self._session is not None and self._session.status == "complete":
+            return "is complete"
+        if reason == "dawn_cutoff":
+            return "stopped at its planned end"
+        if reason == "incomplete" and self._time_bounded:
+            return "reached its time bound"
+        return None
+
+    def _say_queue_held(self, done: Session, reason: str) -> None:
+        """Say, for each session waiting behind ``done``, that it will not
+        start because ``done`` ended unplanned (#1094): the queued session
+        stays dormant behind a session that is, as things stand, not coming
+        back, and nothing else in the log would name it. Never raises."""
+        try:
+            waiting = [s for s in session_store.load_all()
+                       if s.queued_behind == done.id and s.status == "dormant"]
+        except Exception as e:  # noqa: BLE001 - a terminal path never raises
+            bus.log("warning", f"the session queue could not be read ({e}), "
+                               f"so a session waiting behind this one is not "
+                               f"named", "sequence")
+            return
+        for nxt in waiting:
+            bus.log("warning",
+                    f"'{nxt.name or nxt.plan.name}' is queued behind this "
+                    f"session and will not start: the run ended '{reason}', "
+                    f"not on a time bound, the stop time or its window. Start "
+                    f"it from the session list, or re-queue it", "sequence")
+
+    def _promote_queued(self, done: Session, ending: str = "is complete"
+                        ) -> None:
+        """Arm the session waiting behind ``done``, which has just ended the
+        way its plan said it would (#598, backlog ruling D-04, owner-approved
+        2026-09-30; every planned ending since #1094, ruling D-D).
+
+        The caller asks this only of a session the store holds, and only for
+        a planned ending (`_planned_ending`, whose words are ``ending``);
         nothing else promotes, because every other ending leaves ``done``
         owing frames and armed (or disarmed on purpose), and the session
         behind it must not take its place. ResumeArm then starts the promoted
@@ -4562,7 +4624,7 @@ class SequenceEngine:
                 nxt.queued_behind = None
                 self._arm_exclusively(nxt)
                 session_store.save(nxt)
-                line = (f"'{label}' is complete, so "
+                line = (f"'{label}' {ending}, so "
                         f"'{nxt.name or nxt.plan.name}' is armed and starts "
                         f"when its window opens")
                 if rest:
@@ -4572,7 +4634,7 @@ class SequenceEngine:
                 bus.log("info", line, "sequence")
         except Exception as e:  # noqa: BLE001 - a terminal path never raises
             bus.log("warning",
-                    f"'{label}' is complete but the session waiting behind "
+                    f"'{label}' {ending} but the session waiting behind "
                     f"it could not be armed ({e}); it stays queued and "
                     f"unarmed, so arm it from the session list",
                     "sequence")
@@ -5087,7 +5149,15 @@ class SequenceEngine:
                             continue
                     else:
                         await self._hop(ti, ready)
-                        await self._run_steps(ti, ready)
+                        try:
+                            await self._run_steps(ti, ready)
+                        except TargetTimeUp:
+                            # DONE, NOT SKIPPED (#1094): its maximum time is
+                            # spent, `_enforce_time_bound` has said so and
+                            # set it aside for tonight, and it falls into the
+                            # completion rules just below like any target
+                            # `_target_complete` calls done.
+                            pass
                         # PRO-3: on_target_complete, GATED ON REAL COMPLETION
                         # (#157). `_run_steps` returns short too: a pass that
                         # shot nothing, every owed step set aside by its
@@ -8484,9 +8554,46 @@ class SequenceEngine:
         every selection), so the ledger is not walked again for every step.
         """
         total = sum(s.count for s in target.steps)
-        return total > 0 and all(self._step_complete(target, s,
-                                                     accepted=accepted)
-                                 for s in target.steps)
+        return total > 0 and (self._time_bound_met(target) or all(
+            self._step_complete(target, s, accepted=accepted)
+            for s in target.steps))
+
+    def _time_bound_met(self, target: Target) -> bool:
+        """Has the target's own maximum time (``Target.max_time_min``, #1094)
+        run out? Counted from its first attempt in this run, as
+        ``Schedule.max_run_min`` is (#164), so a target nobody has selected
+        yet has spent none of it. 0 is no bound.
+
+        The OTHER half of `_target_complete`: a target is done when either
+        its frame count or its maximum time is met, whichever comes first."""
+        if not target.max_time_min:
+            return False
+        began = self._first_attempt.get(id(target))
+        return (began is not None
+                and time.time() - began >= target.max_time_min * 60.0)
+
+    def _enforce_time_bound(self, target: Target) -> None:
+        """Raise :class:`TargetTimeUp` when the target's maximum time has run
+        out, at a frame boundary (the in-flight exposure finishes, no new one
+        starts), as `_enforce_stop_boundary` ends a closing window.
+
+        The first time it fires for a target it says so and sets the target
+        aside for TONIGHT (`_persist_set_aside`, kind ``time_bound``): the
+        session ends dormant with frames owed, and without the record the
+        same night's ResumeArm tick would resume it and start the bound again
+        from zero, hour after hour. The next night reads none of tonight's
+        records and shoots the rest."""
+        if not self._time_bound_met(target):
+            return
+        if target.id not in self._time_bounded:
+            self._time_bounded.add(target.id)
+            bus.log("info", f"{target.name}: its time bound of "
+                            f"{target.max_time_min} min is reached, so it is "
+                            f"done for tonight with the rest left owed",
+                    "sequence")
+            self._persist_set_aside(target.id, "its time bound was reached",
+                                    kind="time_bound")
+        raise TargetTimeUp("maximum time on the target reached")
 
     def _enforce_stop_boundary(self, target: Target) -> None:
         """Raise :class:`WindowClosed`, a :class:`StopTarget`, when the
@@ -8500,6 +8607,7 @@ class SequenceEngine:
         through dawn into daylight. Re-checking it here, at each frame boundary,
         stops the target the moment its window closes (the in-flight exposure is
         allowed to finish; no new one starts)."""
+        self._enforce_time_bound(target)
         win = self._frozen.get(id(target))
         if not win:
             return

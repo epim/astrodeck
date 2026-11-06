@@ -47,8 +47,8 @@ import { AUTO_RESUME_LABEL } from "../../../../../components/flows/nodeDefs";
 import {
   AUTOMATIONS, AUTOMATION_DEFAULTS, AUTO_RESUME_CHOICES, BLANK_FAILED, BLANK_NAME,
   BLANK_TAGLINE, BUSY_REASON, CLOCK_TIME, DUSK_STOPS, GENERATE_FAILED, KIND_SUB, KINDS,
-  NIGHT_DEFAULTS, RESUME_SUB, STOP_SUB, TARGET_PLACEHOLDER, WIZARD_NOTE, blankNodes, nightGap,
-  wizardBody, type DuskStop, type NightAnswers, type WizardKind,
+  NIGHT_DEFAULTS, RESUME_SUB, STOP_SUB, TARGET_PLACEHOLDER, WIZARD_NOTE, asksMaxTime, blankNodes,
+  nightGap, wizardBody, type DuskStop, type NightAnswers, type WizardKind,
 } from "./wizardModel";
 import "./create.css";
 
@@ -97,7 +97,7 @@ export function FlowNewSheet(): JSX.Element {
     : busy ? BUSY_REASON : null;
   const generateReason = !canCreate
     ? `Generating a flow needs ${accessPhrase("control.capture")}.`
-    : busy ? BUSY_REASON : nightGap(night);
+    : busy ? BUSY_REASON : nightGap(night, kind);
 
   /** The server generates AND saves, so there is one call and the id it returns
    *  is openable. */
@@ -283,6 +283,19 @@ export function FlowNewSheet(): JSX.Element {
                 placeholder="03:30"
                 mono
                 ariaLabel="Stop time, HH:MM on the 24-hour clock"
+              />
+            </Field>
+          )}
+          {asksMaxTime(kind) && (
+            <Field label="MOST MINUTES ON THE TARGET (BLANK FOR NO LIMIT)" htmlFor="flow-wizard-max-time">
+              <TextInput
+                id="flow-wizard-max-time"
+                data-testid="flow-wizard-max-time"
+                value={night.maxTime}
+                onChange={(maxTime) => setNight((n) => ({ ...n, maxTime }))}
+                placeholder="60"
+                mono
+                ariaLabel="Most minutes on the target, blank for no limit"
               />
             </Field>
           )}

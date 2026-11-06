@@ -112,6 +112,16 @@ def _num(value, default: float = 0.0) -> float:
         return default
 
 
+def _time_bounded(n) -> bool:
+    """Does this TARGET end by its own maximum time (``maxTime``, #1094)? Only
+    a single target's does: a pool picks its member at dusk and a mosaic's
+    panels end by their own passes and minimum visit, so the compile carries
+    the bound for neither (``to_plan._time_bound``)."""
+    minutes = _num(n.params.get("maxTime"))
+    return (n.type == "target" and not is_multi_panel(n)
+            and math.isfinite(minutes) and minutes >= 1)
+
+
 #: The two capture stages. Every "what does a loop need upstream of it" rule
 #: applies to both — a FILTER CYCLE that shoots 180s subs needs a guider for
 #: exactly the reason a CAPTURE LOOP does, and exempting it would make the safer
@@ -664,7 +674,10 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     # the card left blank (backlog WP-09, #191) is unbounded the same way:
     # a `stop_mode` of "time" with no `stop_time` is a boundary that never
     # arrives, not a real one, the same gap a blank `startClock` used to
-    # leave silent on the Start side before #191 closed it there. A graph
+    # leave silent on the Start side before #191 closed it there. A TARGET's
+    # maximum time is a boundary too (#1094): the run moves on from it at the
+    # bound, so a plan whose every target has one is not unbounded, and a
+    # single target with neither it nor a stop is what the note is for. A graph
     # compile_plan cannot compile raises here as it does in the route, which
     # compiles first (#328).
     if rig is not None and rig.reject_guards_off is True and askers:
@@ -673,13 +686,25 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
         unbounded_stop = (stop_mode == "none"
                           or (stop_mode == "time"
                               and not sched.get("stop_time")))
-        if unbounded_stop and not sched.get("max_run_min"):
+        if (unbounded_stop and not sched.get("max_run_min")
+                and not all(_time_bounded(n) for n in counted)):
             out.append(Issue(
                 "▸ this plan counts accepted subs with no stop time and both "
                 "reject guards off, so Run will refuse it: a sub the grader "
                 "never accepts would be retried without end. Stop the night "
                 "at Dawn (DUSK WINDOW), or set Settings > Standards > 'Give up "
                 "on a step after'.", "warn"))
+
+    # A maximum time on a MOSAIC block (#1094) is read by nothing: the grid's
+    # panels are visited in passes, each at least `minVisit` long, and no
+    # panel's frame loop asks the bound. Said, rather than left as a control
+    # that does nothing.
+    for b in blocks:
+        if _num(b.params.get("maxTime")) >= 1:
+            out.append(Issue(
+                f"▸ {_block_name(b)} - a maximum time bounds a single target; "
+                f"this block is a mosaic, whose panels end by their Passes "
+                f"and Min visit, so the time is not used. Clear it.", "warn"))
 
     # DUSK WINDOW's Stop is a Clock time that is not after its Start (#719,
     # WP-144). Both clock cards resolve to the occurrence nearest now, so a

@@ -120,7 +120,11 @@ export interface FlowCompileResult {
  *    `start_clock`, each clock strict "HH:MM" and sent only beside its
  *    "Clock time"; `min_alt` (degrees, 0 to 90); and `auto_resume` ("On" or
  *    "Off"). A key the sheet's answer leaves at DUSK WINDOW's own default is
- *    left out.
+ *    left out;
+ *  - the TARGET's time bound (#1094, owner ruling D-D): `max_time_min`, a whole
+ *    number of minutes from 1 to 1440 the run may spend on one target before
+ *    it moves on with frames owed. Sent only when typed, and refused by the
+ *    route with the Best of several and Mosaic kinds.
  *
  *  The camera field, the rotator, the measured angle and the wheel are RIG
  *  FACTS the route injects; there is no key for any of them. The kind and
@@ -151,6 +155,7 @@ export interface FlowWizardAnswers {
   start_clock?: string;
   min_alt?: number;
   auto_resume?: string;
+  max_time_min?: number;
 }
 
 /** The quick sheet's payload. `target` carries the three strings the TARGET

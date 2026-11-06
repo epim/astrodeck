@@ -624,6 +624,11 @@ _ALLOWED_SILENT_PASS = {
         2, "control flow: a first expiry of a shielded wait is expected, and "
            "the code after it decides (and raises _timeout_abort when it "
            "must)"),
+    ("_schedule_loop", "TargetTimeUp"): (
+        1, "control flow (#1094): the target's maximum time is spent; "
+           "_enforce_time_bound has already said so and set it aside for "
+           "tonight, and the completion rules after the handler take it as "
+           "done"),
 }
 
 
