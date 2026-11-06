@@ -43,8 +43,8 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -58,7 +58,11 @@ jobs:
       # box): hosted runners have 2-4 cores, and 12 workers oversubscribes them
       # enough to consistently trip wall-clock perf gates (test_render_perf_768).
       # --durations names the slowest tests in every run's log (#1162).
-      - run: pytest -q -n auto --durations=30
+      # faulthandler_timeout: some #1162 cancellations are a hang at 99%, with
+      # no test finishing for 16-22 minutes. A test still running after 300 s
+      # dumps every thread's stack into this log, so the next hang names its
+      # test and the line it is stuck on. It only dumps; it fails nothing.
+      - run: pytest -q -n auto --durations=30 -o faulthandler_timeout=300
       # Dependency vulnerability gate (OPEN-006). pip-audit fails the build on a
       # known-vulnerable installed dependency; local editable packages
       # (astrodeck, astrodeck-native) are skipped, not failed. Runs AFTER the
@@ -77,8 +81,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -103,8 +107,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: pip install 'pytest>=8.0'
@@ -122,8 +126,8 @@ jobs:
       run:
         working-directory: relay
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -164,8 +168,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install contract-test dependencies
@@ -189,7 +193,7 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pinned to Node 22.15+ (see issue #61): `npm test` spawns test files that
       # call `node:module`'s `registerHooks()` (added in v22.15.0/v23.5.0) to
       # stub out `.css` imports for jsdom, both the ~53 per-file inline stubs
@@ -200,7 +204,7 @@ jobs:
       # test-css-stub.mjs's header comment), so CI and dev now share one
       # tested code path instead of a fix being verified only on a developer's
       # machine and never on the Node CI actually runs.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -226,7 +230,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -256,7 +260,7 @@ jobs:
       # took whatever python3 the image ships. ubuntu-26 ships one whose
       # libpython3.12 is not on the linker path, so the job broke with the tree
       # unchanged. Link and run against the interpreter this job chose.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         id: py
         with:
           python-version: '3.12'
@@ -314,8 +318,8 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -384,13 +388,13 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       # No artefact upload: the question this job answers is whether the smoke

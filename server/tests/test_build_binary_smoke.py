@@ -498,11 +498,12 @@ def _ci_text() -> str:
     return CI.read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
-def _job_block(name: str) -> str:
+def _job_block(name: str, workflow: Path | None = None) -> str:
     """A job's own YAML, from its key to the next top-level job key."""
-    text = _ci_text()
+    path = CI if workflow is None else workflow
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
     start = text.find(f"\n  {name}:\n")
-    assert start != -1, f"ci.yml declares no {name} job"
+    assert start != -1, f"{path.name} declares no {name} job"
     rest = text[start + 1:]
     following = re.search(r"^  [A-Za-z_][\w-]*:\s*$", rest[1:], re.M)
     return rest if following is None else rest[:following.start() + 1]
@@ -529,13 +530,21 @@ def test_the_binary_smoke_job_is_dispatch_only_and_builds_on_windows():
     assert "upload-artifact" not in block
 
 
+_TOOLCHAIN = re.compile(
+    r"actions/(?:checkout|setup-node|setup-python)@\S+"
+    r"|node-version: '[\d.]+'|python-version: '[\d.]+'|cache-dependency-path: \S+")
+
+
 def test_the_binary_smoke_job_mirrors_the_release_build_environment():
     """A proof run that builds differently from the release leg proves nothing
-    about the release leg."""
-    block = _job_block("binary-smoke-windows")
-    assert "actions/checkout@v4" in block
-    assert "actions/setup-node@v4" in block
-    assert "node-version: '20'" in block
-    assert "cache-dependency-path: ui/package-lock.json" in block
-    assert "actions/setup-python@v5" in block
-    assert "python-version: '3.12'" in block
+    about the release leg. The toolchain is read from the release binaries job
+    rather than pinned here: a pin here once held Node 20 while the release
+    built with Node 24."""
+    smoke = set(_TOOLCHAIN.findall(_job_block("binary-smoke-windows")))
+    release = set(_TOOLCHAIN.findall(
+        _job_block("binaries", REPO / ".github" / "workflows" / "release.yml")))
+    kinds = {re.split(r"[@:]", item)[0] for item in release}
+    assert kinds == {"actions/checkout", "actions/setup-node", "actions/setup-python",
+                     "node-version", "python-version", "cache-dependency-path"}, kinds
+    assert smoke == release, (
+        f"smoke job only: {sorted(smoke - release)}; release only: {sorted(release - smoke)}")
