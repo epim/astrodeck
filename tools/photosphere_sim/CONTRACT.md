@@ -1226,7 +1226,7 @@ Definitions the gates share:
 | `unknown_where_unobservable` | at most 5 % of the not-visible bins are Measured | every case with `visibility.json` |
 | `no_unresolved_boundary` | zero Low, Unknown or Tall bins; the legacy rule (zero unresolved solid angle) for a version 1 horizon | `fully_observable` for version 2; every case for version 1 |
 | landmark gates | the legacy gates; a landmark is expected if the legacy `observable` flag says so AND its disc, grown by 1.5 degrees, lies inside the footprint region. The region comes from the route's frusta and the truth poses, never from the scanner's alpha. `per_landmark` rows gain `in_footprint` | every case; footprint rule on pan routes |
-| `overlay_moving_p95_lt_1` | after removing one global yaw (the circular mean of reported-minus-truth forward heading over every frame with a basis), the p95 of the largest of the `forward`, `right` and `up` angular errors over moving frames is below 1.0 | pan routes |
+| `overlay_moving_p95_lt_1` | after removing one global yaw (the circular mean of reported-minus-truth forward heading over every frame with a basis) and, when the ring closed by image, the closure's own measured scale (`overlay.after_ring_scale`, below), the p95 of the largest of the `forward`, `right` and `up` angular errors over moving frames is below 1.0 | pan routes |
 | `overlay_complete` | frames in the window with a non-null basis are at least 95 % of the frames in the window (#898) | pan routes |
 | `overlay_settled_p95_lt_0_5`, `overlay_max_lt_10` | retired: absent from `gates`, still reported in `overlay` | pan routes |
 | `loop_residual_lt_0_25` | the angle of the rotation carrying `qinv(q_early) q_late` onto the same relative rotation of the truth poses, for the `loop.match` keyframes (through their `frame_id`), is below 0.25 degrees. Fails when `loop.closed` is false, the method is not `image`, or there is no match | pan, `expect_closure` |
@@ -1253,7 +1253,10 @@ gates is exactly what graded the case. Cost is reported (`cost_ms`, from
   `signed_error_deg`; the legacy keys keep their meaning, computed over Measured
   bins at the truth's own azimuths, and `measured_bins` is 720;
 - in `overlay` on a pan route: `yaw_removed_deg`, `frames_in_window`,
-  `frames_with_basis`, `complete_fraction`;
+  `frames_with_basis`, `complete_fraction`, and, when the ring closed by image
+  with a measured residual and a closing keyframe that carries a basis,
+  `after_ring_scale` `{residual_deg, turned_deg, closing_frame_id, moving}`
+  (#1060; below). `overlay.moving` stays the raw figure;
 - in `coverage` on a pan route: `footprint_fraction_covered`, beside the
   frustum figure `observable_fraction_covered`. A perfect slit painter on a
   41.14 lens at a pitch of 22.98 degrees scores 0.9397 of the frustum, which is
@@ -1267,6 +1270,51 @@ gates is exactly what graded the case. Cost is reported (`cost_ms`, from
   `graded_against` names which; S49), `north`
   `{error_deg, keyframes, reported, sigma_deg}` and `live_fill`
   `{cells, never, p95_ms, median_ms, max_ms, note}`.
+
+### The overlay after the ring's own scale (#1060)
+
+A chain whose scale is a little wrong (a gyro scale error, absorbed in part by
+the focal lock) draws a yaw error that grows with the turn until its ring
+closes, and nothing before the closure can observe it: applying the gyro scale
+to the predictor, even the exact one, does not remove it (measured on
+`chartyard-pan1-41` at a 2 percent scale error: p95 1.198 with none applied,
+1.865 with the exact 0.02, 0.898 at 0.008). The closure measures it:
+`loop.pre_deg[2]` is the yaw the closing keyframe had to be turned. So
+`overlay_moving_p95_lt_1` reads the moving overlay with that residual taken out:
+each basis up to and including the closing keyframe's (`loop.match.late_kf`,
+through `keyframes[].frame_id`) is turned back by `pre_deg[2]` in proportion to
+the heading turned since the first frame (unwrapped from the REPORTED headings,
+never from truth), bases after it are untouched, and the one global yaw is then
+removed as before. The gate reads the corrected figure only for a ring closed
+by image (`loop.closed`, `loop.method` `image`, a measured `pre_deg`); a gyro
+closure measures no scale and the raw overlay is graded. An error the ring did
+not measure is not excused: a result whose closure measured 0 degrees still
+fails on a ramp. `yaw-ramp` still fails the gate on an ideal result (residual 0).
+
+### Case rulings (#1059)
+
+A case file may carry a `rulings` block, copied into `manifest.json`: one row per
+gate it rules on, each with a mandatory `why`. A row holds exactly one of
+`limit_deg` (a percentile gate, `horizon_p95_lt_1` or `measured_is_honest`,
+passes at that limit instead of its own; with `tau_max_deg` the published
+line's `tau` must also be at most that, so a coarser line is not covered),
+`max_bins` (`no_unresolved_boundary` allows that many unresolved bins), or
+`known_failure: true` with the `issue` that owns the failure (the gate must
+still FAIL under its standard rule, and the case passes it for failing). A gate
+that has begun to pass makes its ruling `stale` and fails the case: the ruling
+names a defect that is gone, and must be removed. A ruling on a gate the case
+does not have, one with no reason and one with more or fewer than one kind is an
+error, not an ignored row. Rulings apply to a version 2 horizon only; a legacy
+scanner's version 1 horizon is graded by the standard gates.
+
+`scores.json` then carries `rulings` `{gate: {kind, standard_gate, why, ...}}`
+(`limit` and `observed`, `tau` and `tau_max`, `issue`, `stale`), and the value
+of a ruled gate in `gates` is the ruled verdict; `standard_gate` is what the
+unruled rule said. The HTML report lists the rulings beside the gates table.
+`treeline-pan1-41` rules three gates: `horizon_p95_lt_1` at 2.5 with `tau_max_deg`
+1.5 (the gate's 1.0 plus the 1.5 rung the 180 vertex cap forces on a canopy edge),
+`no_unresolved_boundary` at 36 bins (5 percent), and `measured_is_honest` a known
+failure of #1058 (false-open Measured bins).
 
 ### Version 2 corruptions
 

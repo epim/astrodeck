@@ -518,6 +518,9 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const stopAndTrace = () => {
     const sweep = sweepRef.current;
     if (!sweep || !sweep.frameCount) return;
+    // North is finished before the picture and the line are read (#905): the mean of the scan's compass pairs, and the
+    // declination only for a role that may see precise site coordinates, as for the panorama scanner.
+    sweep.finishNorth(canSeePrecise ? trueNorthFor(sitePos.current, new Date()) : null);
     let image: string;
     try { image = sweep.panoramaImage(); }
     catch (error) { setCaptureError(error instanceof Error ? error.message : 'Could not prepare the panorama. Try again.'); return; }

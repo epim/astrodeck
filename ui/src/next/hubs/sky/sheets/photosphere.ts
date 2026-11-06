@@ -165,6 +165,8 @@ export interface CaptureRecord {
   /** `accepted` only (#904): the overlap test could not decide, so the frame
    *  is held and counts toward nothing until a later frame's overlap agrees. */
   pending?: boolean;
+  /** `accepted` only (#1179): the overlap test could not decide, and the frame was measured on its pose alone. */
+  poseVouched?: boolean;
 }
 
 /** A frame whose overlap test could not decide (#904): every scan's first frame
@@ -194,6 +196,25 @@ const PENDING_MIN_DEG = 3;
 /** Held frames kept per scan. The oldest is dropped, and a dropped frame can no
  *  longer be vouched for: it simply never becomes measured. */
 const PENDING_LIMIT = 32;
+
+/** A frame the overlap cannot decide on (a clear patch of sky has no texture) is measured on its pose alone (#1179) only
+ *  while the pose is still the one a frame the images confirmed was placed by. The gyro-relative stream drifts about
+ *  2 degrees a minute (the simulator's cases), so a minute is 2 degrees: far inside the 12 degree bins the saved horizon
+ *  is read in. The confirmed frame must be within one view angle of the blank one, so that the two fields adjoin: the
+ *  overlap is not what decides here, the drift is what the distance and the time bound. */
+const POSE_VOUCH_MAX_AGE_MS = 60_000;
+const POSE_VOUCH_REACH = 1;
+
+/** The sky a blank frame must match is measured, not assumed: the rows from 1 to this many degrees below its lower edge,
+ *  in the bearings it spans, are painted, blue, and as bright as the frame, in at least this share of the columns. A grey
+ *  sky reads like a grey wall and is held. */
+const SKY_BELOW_DEG = 6;
+const SKY_COLUMNS_SHARE = .9;
+const SKY_BLUE_MIN = 15;
+
+/** A frame the images confirmed (or one vouched by pose, carrying the confirmation it descends from): where the phone
+ *  pointed and when the images last vouched for that pose. */
+interface PoseAnchor { basis: CameraBasis; confirmedAt: number }
 
 /** Do two frames hold the same tile of the sweep? A tile is a bin, a band and,
  *  below the overhead, an altitude rounded to 5 degrees. */
@@ -1539,6 +1560,12 @@ export class PhotosphereSweep {
   private lastCaptureAt: number | null = null;
   private poses = new CameraPoseHistory();
   private poseSource=new ScanPoseSource();
+  private anchors: PoseAnchor[] = [];
+  /** How far the saved azimuths were moved when the scan finished (#905): the mean north less the live anchor, and the
+   *  declination for a role that may see the site. Never reported: it holds the declination. */
+  private trueShiftDeg=0;
+  private northFinished=false;
+  private declinationApplied=false;
   private visualAnchor:{raw:CameraBasis;aligned:CameraBasis}|null=null;
   private lastRegistrationAt=-Infinity;
   private tilts = new CameraPoseHistory();
@@ -1678,7 +1705,37 @@ export class PhotosphereSweep {
   }
 
   get currentHeading(): number {
-    return this.heading;
+    return ((this.heading + this.trueShiftDeg) % 360 + 360) % 360;
+  }
+
+  /** Finish the scan's north (#905), once. The live view was anchored on the first absolute-minus-relative pair; the
+   *  panorama the trace and the picture read is turned by the robust mean of all of them, less that anchor, so the saved
+   *  azimuths no longer carry one noisy sample. `toTrue` maps a magnetic azimuth to a true one (the declination, held by
+   *  the caller's closure and never stored or reported here) and is passed only for a role that may see the site; one that
+   *  gives no finite answer leaves the scan magnetic. */
+  finishNorth(toTrue: ((azMagneticDeg: number) => number) | null): void {
+    if (this.northFinished || !this.panorama) return;
+    this.northFinished = true;
+    let shift = this.poseSource.north().shiftDeg;
+    const composed = toTrue ? toTrue(shift) : NaN;
+    if (Number.isFinite(composed)) { shift = composed; this.declinationApplied = true; }
+    const width = this.panorama.width, columns = Math.round(shift / 360 * width);
+    if (columns % width !== 0) {
+      const pixels = this.panorama.pixels, turned = new Uint8ClampedArray(pixels.length);
+      for (let y = 0; y < this.panorama.height; y++) for (let x = 0; x < width; x++) {
+        const to = ((x + columns) % width + width) % width;
+        turned.set(pixels.subarray((y * width + x) * 4, (y * width + x) * 4 + 4), (y * width + to) * 4);
+      }
+      pixels.set(turned);
+    }
+    this.trueShiftDeg = shift;
+  }
+
+  /** How north was established, for the report: the source, how many offsets were averaged and their spread, and whether
+   *  the declination was added. Never the declination, nor the shift that contains it. */
+  private northReport() {
+    const { source, samples, spreadDeg } = this.poseSource.north();
+    return { source, samples, spreadDeg, declinationApplied: this.declinationApplied };
   }
 
   /** Whether an absolute camera pose has arrived during this scan. */
@@ -2250,7 +2307,7 @@ export class PhotosphereSweep {
     // anchor the first scan's own refusals had already argued against. The
     // mosaic it was derived against is replaced on the next line.
     this.visualAnchor = null;
-    this.frames = []; this.panorama = new SkyPanorama(); this.provisional = new SkyPanorama(); this.pending = []; this.lastHeldAt=null; this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
+    this.frames = []; this.panorama = new SkyPanorama(); this.provisional = new SkyPanorama(); this.pending = []; this.anchors = []; this.lastHeldAt=null; this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
   /** The user explicitly aims the rear camera up. This still reads an actual
@@ -2265,11 +2322,11 @@ export class PhotosphereSweep {
     const generation = this.generation;
     this.video = video;
     this.canvas = canvas;
-    this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.provisional = null; this.pending = []; this.lastHeldAt=null; this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null;
+    this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.provisional = null; this.pending = []; this.anchors = []; this.lastHeldAt=null; this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null;
     // A new scan: the diagnostic log from any earlier session is no longer
     // about this camera session, so it starts over. `stop()` never does this.
     this.captureRecords = []; this.hasCapturedFrame = false;
-    this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.carryTooLarge=false;this.lastSensorReading=null;
+    this.poses.clear();this.tilts.clear();this.poseSource.clear();this.trueShiftDeg=0;this.northFinished=false;this.declinationApplied=false;this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.carryTooLarge=false;this.lastSensorReading=null;
     this.stability.clear();this.motion.clear();this.trackEnded=false;
     this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
@@ -2615,7 +2672,7 @@ export class PhotosphereSweep {
    *  anything - every gate below still returns its own `false` on its own
    *  terms, this just names which one fired. */
   private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number; gap?: PoseGap;
-    overlapTerm?: 'brightness'|'edges'|'both'; correlation?: number | null; featureCorrelation?: number | null; samples?: number; searched?: boolean; pending?: boolean }): void {
+    overlapTerm?: 'brightness'|'edges'|'both'; correlation?: number | null; featureCorrelation?: number | null; samples?: number; searched?: boolean; pending?: boolean; poseVouched?: boolean }): void {
     // The exception to "records, never decides", and here deliberately: this is
     // the single point every outcome passes through, so the run of overlap
     // refusals the cue reads cannot miss one. Counting it at the two
@@ -2825,6 +2882,8 @@ export class PhotosphereSweep {
     let capturedLens: ReturnType<typeof cameraLens> | undefined;
     // The held frames this one agrees with, which it vouches for in turn.
     let supporters: PendingFrame[] = [];
+    // The confirmation a pose-vouched frame descends from (#1179), or null when the images vouched for it or it is held.
+    let poseParentAt: number | null = null;
     try {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -2878,6 +2937,10 @@ export class PhotosphereSweep {
         if(overlap.result==='agree'){
           supporters=this.heldAgreeing(data,canvas.width,canvas.height,basis!,lens);
           vouched=supporters.length>0 || this.panorama.checkOverlap(data,canvas.width,canvas.height,basis!,lens).result==='agree';
+        }
+        else if(overlap.result==='unknown'){
+          poseParentAt=this.poseVouch(data,lens,basis!,measured!,now);
+          vouched=poseParentAt!==null;
         }
         else vouched=false;
         if(vouched)this.panorama.add(data,canvas.width,canvas.height,basis,lens);
@@ -2944,6 +3007,8 @@ export class PhotosphereSweep {
     }
     this.admit(record);
     this.promote(supporters);
+    if (capturedBasis && !manualOverhead) this.noteAnchor(capturedBasis, poseParentAt ?? now);
+    for (const held of supporters) this.noteAnchor(held.basis, now);
     this.refreshCoverage();
     this.hasCapturedFrame = true;
     // This capture is now associated with the frame it was taken from, so the
@@ -2956,8 +3021,58 @@ export class PhotosphereSweep {
     // artefact is one duplicate zenith the user asked for by pressing, and the
     // alternative is refusing a deliberate press for a reason it cannot see.
     this.lastCapturedFrameId = frameId;
-    this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted, ...capturedOverlap });
+    this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted, ...capturedOverlap,
+      ...(poseParentAt !== null ? { poseVouched: true } : {}) });
     return true;
+  }
+
+  private noteAnchor(basis: CameraBasis, confirmedAt: number): void {
+    this.anchors.push({ basis, confirmedAt });
+    if (this.anchors.length > 64) this.anchors.shift();
+  }
+
+  /** (#1179) The time of the image confirmation a frame the overlap cannot decide on descends from, when its pose may
+   *  stand in for the overlap, else null: the pose is the gyro-relative stream's (drift bounded); a frame the images
+   *  confirmed lies within `POSE_VOUCH_REACH` view angles of it and was confirmed under `POSE_VOUCH_MAX_AGE_MS` ago; and the frame is
+   *  sky continuing the sky measured below it (`consistentWithSky`). A pose-vouched frame inherits the time it descends from and does not refresh it, so a
+   *  chain of them ends when the last image confirmation is that old. */
+  private poseVouch(data: Uint8ClampedArray, lens: ReturnType<typeof cameraLens>, basis: CameraBasis, measured: { az: number; alt: number }, now: number): number | null {
+    if (!this.poseSource.usesRelative) return null;
+    const reach = POSE_VOUCH_REACH * this.shortAxisFov;
+    let parentAt: number | null = null;
+    for (const anchor of this.anchors) {
+      if (now - anchor.confirmedAt > POSE_VOUCH_MAX_AGE_MS || poseSeparation(anchor.basis, basis) > reach) continue;
+      if (parentAt === null || anchor.confirmedAt > parentAt) parentAt = anchor.confirmedAt;
+    }
+    return parentAt !== null && this.consistentWithSky(data, lens, measured) ? parentAt : null;
+  }
+
+  /** The wall check of #1179. The sky measured just below the frame's lower edge, over the bearings the frame spans, is
+   *  blue and as bright as the frame, so the frame is more of the same sky above a horizon the images have confirmed; and
+   *  the frame itself is blue. A blank frame facing a uniform wall is not, however well its pose is placed: what lies
+   *  below it is the wall's own colour, or nothing measured at all. */
+  private consistentWithSky(data: Uint8ClampedArray, lens: ReturnType<typeof cameraLens>, measured: { az: number; alt: number }): boolean {
+    const bottom = measured.alt - Math.atan(lens.tanY) * 180 / Math.PI;
+    if (bottom - SKY_BELOW_DEG < -10) return false;
+    let frameLum = 0, frameBlue = 0, n = 0;
+    for (let i = 0; i < data.length; i += 28) { frameLum += pixelLuminance(data[i], data[i + 1], data[i + 2]); frameBlue += pixelBlueness(data[i], data[i + 1], data[i + 2]); n++; }
+    frameLum /= n; frameBlue /= n;
+    if (frameBlue < SKY_BLUE_MIN) return false;
+    const halfAz = measured.alt >= 80 ? 180 : Math.min(180, Math.atan(lens.tanX / Math.cos(measured.alt * Math.PI / 180)) * 180 / Math.PI);
+    const width = 360 / this.bins, columns = this.columns();
+    // Rows are one degree of altitude each from the zenith: row r is altitude 90 - r.
+    const from = Math.max(0, Math.ceil(91 - bottom)), to = Math.min(100, Math.floor(90 - (bottom - SKY_BELOW_DEG)));
+    let spanned = 0, sky = 0;
+    for (let i = 0; i < this.bins; i++) {
+      if (Math.abs(((i + .5) * width - measured.az + 540) % 360 - 180) > halfAz + width / 2) continue;
+      for (const column of asSkyBin(columns[i])) {
+        spanned++;
+        const lum: number[] = [], blue: number[] = [];
+        for (let row = from; row <= to; row++) if (Number.isFinite(column.lum[row]) && Number.isFinite(column.blue[row])) { lum.push(column.lum[row]); blue.push(column.blue[row]); }
+        if (lum.length >= 3 && percentile(blue, .5) >= SKY_BLUE_MIN && Math.abs(percentile(lum, .5) - frameLum) <= EXPOSURE_TOLERANCE * frameLum) sky++;
+      }
+    }
+    return spanned > 0 && sky >= SKY_COLUMNS_SHARE * spanned;
   }
 
   /** The cells the measured mosaic now covers turn green, and a capture that
@@ -3067,6 +3182,7 @@ export class PhotosphereSweep {
       readback:readbackSummary(this.readbackMs),
       lensViewAngle:{degrees:this.shortAxisFov,source:this.lensSource},
       captureLog:captureLogReport(this.captureRecords),
+      north:this.northReport(),
       samples:this.scanSamples},null,2);
   }
 
