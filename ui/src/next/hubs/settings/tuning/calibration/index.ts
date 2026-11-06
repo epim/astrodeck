@@ -25,5 +25,6 @@ export {
   libraryLockSentence, surveyLockSentence, toleranceLockSentence, toleranceSummary,
   BUILD_LABEL, LIB_EMPTY_TITLE, LIB_TITLE, PACK_ATTRIBUTION, PACK_DELETE_TITLE,
   PACK_FETCHING_REASON, PACK_RETRY_HINT, TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON,
-  TOL_CLEAN_REASON, TOL_DEFAULTS, TOL_TITLE, TOLERANCE_FIELDS, type ToleranceField,
+  TOL_CLEAN_REASON, TOL_DEFAULTS, TOL_ROTATOR_REASON, TOL_TITLE, TOLERANCE_FIELDS,
+  rotatorBinTooNarrow, rotatorBinWarning, type ToleranceField,
 } from "./calibrationModel";

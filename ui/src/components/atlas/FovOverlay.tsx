@@ -44,6 +44,11 @@ export interface FovOverlayProps {
   /** Optional catalog-size ellipse ("Object size"), semi-axes in degrees. */
   objectSemiMajorDeg?: number | null;
   objectSemiMinorDeg?: number | null;
+  /** The ellipse's major axis, degrees EAST of north (#181). The Atlas puts
+   *  east on the left, so the axis is turned counter-clockwise by this from
+   *  vertical. Null or absent draws the axes as given, unturned (a circle when
+   *  the two semi-axes are equal). */
+  objectPaDeg?: number | null;
   /** Whether optics are usable; false => dashed placeholder frame. */
   haveOptics: boolean;
 }
@@ -57,7 +62,7 @@ export const FovOverlay = memo(function FovOverlay(props: FovOverlayProps): JSX.
   const {
     view, cx, cy, pxPerDeg, fovXDeg, fovYDeg, rotationDeg,
     rows, cols, overlap,
-    objectSemiMajorDeg, objectSemiMinorDeg, haveOptics,
+    objectSemiMajorDeg, objectSemiMinorDeg, objectPaDeg, haveOptics,
   } = props;
 
   const frameW = fovXDeg * pxPerDeg;
@@ -68,13 +73,21 @@ export const FovOverlay = memo(function FovOverlay(props: FovOverlayProps): JSX.
   const stepY = frameH * (1 - overlap);
 
   // Object-size ellipse (suppressed when size unknown — stars/doubles, C3-A11).
+  // With a position angle the MAJOR axis is the vertical one (`ry`) before the
+  // turn, so a rotation of -PA about the centre lays it PA degrees east of
+  // north; without one the axes are drawn as given, and a row with no minor
+  // axis is a circle.
+  const turned = objectPaDeg != null && Number.isFinite(objectPaDeg)
+    && objectSemiMinorDeg != null && objectSemiMajorDeg != null;
   const ellipse =
     objectSemiMajorDeg && objectSemiMajorDeg > 0 ? (
       <ellipse
+        data-testid="object-ellipse"
         cx={cx}
         cy={cy}
-        rx={objectSemiMajorDeg * pxPerDeg}
-        ry={(objectSemiMinorDeg ?? objectSemiMajorDeg) * pxPerDeg}
+        rx={(turned ? objectSemiMinorDeg : objectSemiMajorDeg) * pxPerDeg}
+        ry={(turned ? objectSemiMajorDeg : (objectSemiMinorDeg ?? objectSemiMajorDeg)) * pxPerDeg}
+        transform={turned ? `rotate(${-(objectPaDeg as number)} ${cx} ${cy})` : undefined}
         className="svg-halo"
         fill="none"
         stroke="var(--accent)"

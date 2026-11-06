@@ -22,8 +22,8 @@ import { useConfig, useProviders, useStore } from "../../store";
 import { accessPhrase, useCan } from "../../lib/caps";
 import { Panel, Field, LockedNote, SegmentedControl, Toggle, lockedProps } from "../ui";
 import {
-  DOWNSAMPLE_CHOICES, downsampleLabel, wcsStampAdvisory, wcsStampOrDefault,
-  wcsStampSummary,
+  DOWNSAMPLE_CHOICES, downsampleLabel, wcsChosenByHand, wcsStampAdvisory,
+  wcsStampOrDefault, wcsStampSummary, WCS_FOLLOWS_SOLVER, WCS_FOLLOW_AGAIN,
 } from "../../lib/wcsStamp";
 import type { WcsStampConfig } from "../../types";
 
@@ -32,6 +32,7 @@ export default function WcsStampPanel(): JSX.Element {
   const providers = useProviders();
   const canEdit = useCan("config.site_optics");
   const enabled = config?.solve_saved_lights ?? false;
+  const byHand = wcsChosenByHand(config);
   const stamp = wcsStampOrDefault(config?.wcs_stamp);
 
   // Named at RENDER time (accessPhrase reads the live role table) and phrased
@@ -49,11 +50,14 @@ export default function WcsStampPanel(): JSX.Element {
 
   const advisory = wcsStampAdvisory(providers?.solve);
 
-  const save = async (nextEnabled: boolean, next: WcsStampConfig) => {
+  const save = async (nextEnabled: boolean, next: WcsStampConfig, followSolver = false) => {
     if (busy || !canEdit) return;
     setBusy(true); setErr(null);
     try {
-      await setWcsStampConfig({ solve_saved_lights: nextEnabled, wcs_stamp: next });
+      await setWcsStampConfig({
+        solve_saved_lights: nextEnabled, wcs_stamp: next,
+        ...(followSolver ? { follow_solver: true } : {}),
+      });
       await useStore.getState().loadConfig();
     } catch (e) {
       setErr(e instanceof ApiError
@@ -101,8 +105,23 @@ export default function WcsStampPanel(): JSX.Element {
               After each photo is saved, AstroDeck works out exactly where the
               scope was pointing and stores it inside the file. Stacking
               software can then line your photos up without figuring it out
-              again. Costs a little time per photo, so it is off by default.
+              again. Costs a little time per photo.
             </p>
+            <p className="text-[11px] text-dim leading-snug mt-1" data-testid="wcs-follows-solver">
+              {WCS_FOLLOWS_SOLVER}
+            </p>
+            {byHand && (
+              <span {...lockWrap("inline-block mt-1")}>
+                <button
+                  type="button"
+                  className="btn !px-2 !py-1 text-[11px]"
+                  data-testid="wcs-follow-again"
+                  aria-disabled={!canEdit || busy || undefined}
+                  onClick={canEdit ? () => void save(enabled, stamp, true) : undefined}>
+                  {WCS_FOLLOW_AGAIN}
+                </button>
+              </span>
+            )}
           </div>
         </div>
 

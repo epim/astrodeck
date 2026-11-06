@@ -156,6 +156,7 @@ const { namingPreview, syncSummary, formatBytes, pushBlockedReason, tokenText } 
   await import("../tuning/files");
 const { DEFAULT_TEMPLATE, NAMING_TOKENS } = await import("../../../../lib/naming");
 const { STANDARDS_NUMBER_FIELDS } = await import("../../../../lib/standards");
+const { WCS_FOLLOWS_SOLVER, WCS_FOLLOW_AGAIN } = await import("../../../../lib/wcsStamp");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -441,6 +442,59 @@ await test("wcs: the star floor commits on blur and REJECTS a blank", async () =
     `a blank star floor was committed: ${JSON.stringify(writes(before))}`);
   eq(byId(m.host, "wcs-minstars").value, "30",
     "a rejected blank did not restore the last committed value");
+  await unmount(m);
+});
+
+// ====================================== 3b. THE OPTION FOLLOWS THE SOLVER
+// #826, owner ruling D-I (consolidation WP 3.9): the master option is on while a
+// plate solver is installed until the operator changes it, and the sheet says so
+// in one sentence and, once it has been changed by hand, offers the way back.
+// NAMED MUTANTS (from a byte backup of WcsStampEditor.tsx, restored and
+// sha256-compared): "no sentence" (the paragraph removed): x ... does not say it
+// follows the plate solver; "control always shown" (`byHand &&` dropped): x ...
+// offers FOLLOW AGAIN before anything was changed by hand; "no follow flag" (the
+// press posts without `follow_solver`): x ... posted no follow_solver.
+
+await test("wcs: the sheet says in one sentence that the option follows the plate solver", async () => {
+  seed("admin");
+  const m = mount(WcsSheet);
+  await settle();
+  const note = byId(m.host, "wcs-follows-solver");
+  assert(note != null, "the sheet does not say it follows the plate solver");
+  eq(note.textContent, WCS_FOLLOWS_SOLVER, "the sentence is not the shared one");
+  assert(byId(m.host, "wcs-follow-again") == null,
+    "the sheet offers FOLLOW AGAIN before anything was changed by hand");
+  await unmount(m);
+});
+
+await test("wcs: once changed by hand, FOLLOW AGAIN hands the option back to the solver", async () => {
+  seed("admin", { config: { ...BASE_CONFIG, solve_saved_lights: false, solve_saved_lights_by_hand: true } });
+  const m = mount(WcsSheet);
+  await settle();
+  const again = byId(m.host, "wcs-follow-again");
+  assert(again != null, "a by-hand option has no way back to following");
+  eq(again.textContent.trim(), WCS_FOLLOW_AGAIN.toUpperCase(), "the control's label");
+  const before = posts.length;
+  click(again);
+  await settle();
+  const wrote = writes(before).filter((p) => p.url.includes("/api/config/wcs"));
+  eq(wrote.length, 1, `FOLLOW AGAIN did not post exactly once: ${JSON.stringify(writes(before))}`);
+  eq(wrote[0].body.follow_solver, true, "the press posted no follow_solver");
+  eq(wrote[0].body.wcs_stamp.min_stars, 30, "the advanced block was not carried with it");
+  await unmount(m);
+});
+
+await test("wcs: a viewer cannot hand the option back, and nothing is written", async () => {
+  seed("viewer", { config: { ...BASE_CONFIG, solve_saved_lights: false, solve_saved_lights_by_hand: true } });
+  const before = posts.length;
+  const m = mount(WcsSheet);
+  await settle();
+  const again = byId(m.host, "wcs-follow-again");
+  assert(again != null, "a viewer is not shown the control, locked");
+  eq(again.getAttribute("aria-disabled"), "true", "FOLLOW AGAIN is live for a viewer");
+  click(again);
+  await settle();
+  eq(writes(before).length, 0, `a viewer's press wrote ${JSON.stringify(writes(before))}`);
   await unmount(m);
 });
 

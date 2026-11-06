@@ -101,10 +101,11 @@ import {
   loadViewPrefs, matchCamera, matchCameraLock, mergeImportedPanels, moveLine, mosaicRequest,
   panelCsvExportLock, panelCsvRequest, panelDrawState, parseSkip,
   readoutStrip, reframeDecision, requestKey, runLines, runPanelsOf, saveViewPrefs, setAngleMode,
-  stripAngle, suggestGrid, takeOffer, toggleSkip, toleranceLine, useMeasured, useMeasuredLine,
+  stripAngle, suggestGridFor, takeOffer, toggleSkip, toleranceLine, useMeasured, useMeasuredLine,
   ZOOM_MAX_DEG, ZOOM_MIN_DEG,
   type FramingDraft, type PanelAnswer, type ServerView, type TargetAngle,
 } from "./framingModel";
+import { fitSizeArcmin } from "../../../lib/objectShape";
 import {
   campaignLine, compiledReadouts, compiledRig, framedGraph, framingApi, framingTiming, liveRig,
 } from "./framingApi";
@@ -642,14 +643,14 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   // lock asks for and the offer can pay; S4 set it to ROTATE TO here, whose
   // "none" is 0, an angle nobody chose (S5 orchestrator ruling 1, #411).
   const setGrid = (over: Partial<FramingDraft>) => setDraft((d) => ({ ...d, ...over }));
-  const suggestion = sky.target ? suggestGrid(sky.target.size_arcmin ?? 0, draft) : null;
+  const suggestion = sky.target ? suggestGridFor(sky.target, draft) : null;
   const suggestLock = !sky.target ? NO_OBJECT
     : !(sky.target.size_arcmin && sky.target.size_arcmin > 0) ? NO_SIZE
       : suggestion === null ? gridLock(draft, rig) ?? "no camera field to size the grid by"
         : gridLock(draft, rig);
   const fitLock = sky.target || (layout.fov_x > 0 && layout.fov_y > 0) ? null : NO_OBJECT;
   const onFit = () => {
-    const size = (sky.target?.size_arcmin ?? 0) / 60;
+    const size = (sky.target ? fitSizeArcmin(sky.target) : 0) / 60;
     onZoom(size > 0 ? 1.6 * size : fitZoom(draft));
   };
   const rotationNum = Number.isFinite(layout.rotation_deg) ? (layout.rotation_deg as number) : 0;

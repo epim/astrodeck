@@ -180,7 +180,9 @@ export const WCS_BLURB =
   "After each photo is saved, AstroDeck works out exactly where the scope was "
   + "pointing and stores it inside the file. Stacking software can then line "
   + "your photos up without figuring it out again. Costs a little time per "
-  + "photo, so it is off by default.";
+  + "photo.";
+/** The follows-the-solver sentence and its control are the lib's, shared with
+ *  the classic panel: one wording for one setting. */
 export const WCS_SOLVER_NOTE = "Auto picks the best installed solver.";
 export const WCS_DOWNSAMPLE_NOTE =
   "Higher = faster, less precise. 2x is a good speed/accuracy trade on a Pi.";

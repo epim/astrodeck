@@ -12,7 +12,7 @@
 //
 //   1. The sheets render the REBUILT editors, not a header. A marker test that
 //      names one element passes on a page that drew a title and nothing else,
-//      so each sheet is asked for its own controls by name - including all five
+//      so each sheet is asked for its own controls by name - including all six
 //      tolerance fields, because losing one silently is exactly the failure
 //      mode a 77-component restyle has.
 //   2. REBUILD posts ONCE and the three numbers it answers with stay on screen.
@@ -170,7 +170,8 @@ const { CalibrationSheet } = await import("../sheets/CalibrationSheet");
 const { SkyPackSheet } = await import("../sheets/SkyPackSheet");
 const {
   buildReportLine, binWarning, groupHeading, libraryLoadError, PACK_RETRY_HINT,
-  TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON, TOL_CLEAN_REASON, TOLERANCE_FIELDS,
+  TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON, TOL_CLEAN_REASON, TOL_ROTATOR_REASON,
+  TOLERANCE_FIELDS, rotatorBinWarning,
 } = await import("../tuning/calibration");
 
 // ------------------------------------------------------------------- harness
@@ -286,7 +287,7 @@ const count = (needle: string): number => asked.filter((a) => a.includes(needle)
 // name. Sabotage: unmount either editor from its sheet and the corresponding
 // half goes red rather than a title-only page passing.
 
-await test("CalibrationSheet: marker, both rebuilt editors, and all five tolerance fields", async () => {
+await test("CalibrationSheet: marker, both rebuilt editors, and all six tolerance fields", async () => {
   seedAdmin();
   reset();
   const m = mount(CalibrationSheet);
@@ -299,7 +300,7 @@ await test("CalibrationSheet: marker, both rebuilt editors, and all five toleran
     assert(tid(m.host, `cal-tolerance-${f.key}`) != null,
       `tolerance field ${f.key} is missing from the rebuild`);
   }
-  eq(TOLERANCE_FIELDS.length, 5, "the parity table lost a tolerance field");
+  eq(TOLERANCE_FIELDS.length, 6, "the parity table lost a tolerance field");
   // The legacy panels are NOT mounted any more: their `Panel` chrome would
   // bring `.panel-title` with it.
   eq(qa(m.host, ".panel-title").length, 0, "a legacy Panel is still mounted inside the sheet");
@@ -547,50 +548,49 @@ await test("SAVE is locked with a reason until something changes, and refuses a 
 // assertion goes red - which matters, because "no masters yet" is an
 // instruction to spend a night shooting frames you may already have.
 
-// A stored block carries `rotator_bin_deg` (#176, WP-122), which neither editor
-// has a control for. WAVE 16 INTEGRATION. Two named mutants, each from a byte
-// backup restored and sha256-compared, 15/16 passed:
-//   "atDefaults over the whole object" (the editor's `atDefaults` read as
-//   `JSON.stringify(draft) === JSON.stringify(TOL_DEFAULTS)`, the line as it
-//   was): x ... RESET is live on a screen showing the defaults, because the
-//   block carries a key the editor has no control for (expected these are
-//   already the defaults, got null)
-//   "the draft drops the key" (the draft rebuilt from the five fields): x ...
-//   SAVE dropped the stored rotator bin, so the server would reset it to its
-//   default (expected 7, got undefined)
-await test("a stored rotator bin is carried through, and does not make the defaults read as changed", async () => {
-  seedAdmin({ config: { calibration: { ...CALIBRATION, rotator_bin_deg: 2 } } });
+// THE ROTATOR BIN HAS A CONTROL (#826, owner ruling D-I, consolidation WP 3.9).
+// WP-122 added `calibration.rotator_bin_deg` to the stored block and both
+// editors carried it through a SAVE unseen; it is now a sixth field, with the
+// same relational rule the server enforces in `set_calibration`. Four cases:
+// the stored value is on screen, an edit is what SAVE posts, RESET puts it back
+// with the other five, and a bin narrower than the matcher's 1 degree refuses
+// SAVE with its reason. NAMED MUTANTS (each from a byte backup of the editor or
+// the model, restored and sha256-compared):
+//   "no control" (TOLERANCE_FIELDS without the rotator entry): x ... no
+//   tolerance field rotator_bin_deg on the sheet
+//   "reset keeps the stored bin" (resetTolerances read as `{ ...TOL_DEFAULTS,
+//   rotator_bin_deg: stored }`): x RESET ... (expected 2, got 7)
+//   "rotator rule dropped" (rotatorBinTooNarrow always false): x ... SAVE is
+//   live with a rotator bin narrower than the matcher's tolerance
+await test("the stored rotator bin is on screen, and an edit to it is what SAVE posts", async () => {
+  seedAdmin({ config: { calibration: { ...CALIBRATION, rotator_bin_deg: 7 } } });
   reset();
   const m = mount(CalibrationSheet);
   await settle();
-  eq(tid(m.host, "cal-reset").getAttribute("title"), TOL_ALREADY_DEFAULT_REASON,
-    "RESET is live on a screen showing the defaults, because the block carries a key the editor has no control for");
-  unmount(m);
-
-  seedAdmin({ config: { calibration: { ...CALIBRATION, rotator_bin_deg: 7 } } });
-  reset();
-  const m2 = mount(CalibrationSheet);
-  await settle();
-  const box = tid(m2.host, "cal-tolerance-temp_tol_c");
-  await typeInto(box, "3");
+  const box = tid(m.host, "cal-tolerance-rotator_bin_deg");
+  assert(box != null, "no tolerance field rotator_bin_deg on the sheet");
+  eq(box.value, "7", "the stored rotator bin is not the number on screen");
+  await typeInto(box, "4");
   await blur(box);
-  await click(tid(m2.host, "cal-save"));
+  await click(tid(m.host, "cal-save"));
   const body = posts.find((p) => p.url.includes("/api/config/calibration"))?.body as any;
-  eq(body?.temp_tol_c, 3, "SAVE sent a different tolerance from the one on screen");
-  eq(body?.rotator_bin_deg, 7, "SAVE dropped the stored rotator bin, so the server would reset it to its default");
-  unmount(m2);
+  eq(body?.rotator_bin_deg, 4, "SAVE sent a different rotator bin from the one on screen");
+  eq(body?.temp_tol_c, 2, "SAVE dropped a field the editor did not change");
+  unmount(m);
 });
 
-// RESET MUST NOT UNDO A HIDDEN SETTING (wave 16 integration, verifier). The
-// editor has no control for `rotator_bin_deg`, so a RESET that wrote the
-// defaults over the draft dropped it, and the SAVE after it reset it to the
-// server's default. NAMED MUTANT "RESET writes the bare defaults"
-// (`resetTolerances` made `{ ...TOL_DEFAULTS }`, from a byte backup restored
-// and sha256-compared), RED, 16/17 passed:
-//   x RESET puts the five tolerances back and keeps the stored rotator bin:
-//     SAVE after RESET dropped the stored rotator bin, so the server would
-//     reset it to its default (expected 7, got undefined)
-await test("RESET puts the five tolerances back and keeps the stored rotator bin", async () => {
+await test("a block with no rotator bin shows the default, and the defaults read as defaults", async () => {
+  seedAdmin();
+  reset();
+  const m = mount(CalibrationSheet);
+  await settle();
+  eq(tid(m.host, "cal-tolerance-rotator_bin_deg").value, "2", "a block with no rotator bin shows no default");
+  eq(tid(m.host, "cal-reset").getAttribute("title"), TOL_ALREADY_DEFAULT_REASON,
+    "RESET is live on a screen showing the defaults");
+  unmount(m);
+});
+
+await test("RESET puts all six tolerances back, the rotator bin with them", async () => {
   seedAdmin({ config: { calibration: { ...CALIBRATION, temp_tol_c: 4, rotator_bin_deg: 7 } } });
   reset();
   const m = mount(CalibrationSheet);
@@ -599,8 +599,30 @@ await test("RESET puts the five tolerances back and keeps the stored rotator bin
   await click(tid(m.host, "cal-save"));
   const body = posts.find((p) => p.url.includes("/api/config/calibration"))?.body as any;
   eq(body?.temp_tol_c, 2, "RESET did not put the tolerance back to its default");
-  eq(body?.rotator_bin_deg, 7,
-    "SAVE after RESET dropped the stored rotator bin, so the server would reset it to its default");
+  eq(body?.rotator_bin_deg, 2, "RESET left the rotator bin it shows at the stored number");
+  unmount(m);
+});
+
+await test("a rotator bin narrower than the matcher's tolerance warns and refuses SAVE with its reason", async () => {
+  seedAdmin();
+  reset();
+  const m = mount(CalibrationSheet);
+  await settle();
+  const box = tid(m.host, "cal-tolerance-rotator_bin_deg");
+  await typeInto(box, "0.5");
+  await blur(box);
+  const warn = tid(m.host, "cal-rotator-warning");
+  assert(warn != null, "a rotator bin of 0.5 raised no warning");
+  eq(warn.textContent, rotatorBinWarning({ ...CALIBRATION, rotator_bin_deg: 0.5 } as never),
+    "the warning does not state the bin and the matcher's tolerance");
+  const save = tid(m.host, "cal-save");
+  eq(save.getAttribute("aria-disabled"), "true", "SAVE is live with a rotator bin narrower than the matcher's tolerance");
+  eq(save.getAttribute("title"), TOL_ROTATOR_REASON, "SAVE does not name the rotator bin as the blocker");
+  await click(save);
+  eq(count("POST /api/config/calibration"), 0, "a locked SAVE still wrote the narrow bin");
+  await typeInto(box, "0");
+  await blur(box);
+  assert(tid(m.host, "cal-rotator-warning") == null, "a bin of 0 (no binning) raised the warning");
   unmount(m);
 });
 

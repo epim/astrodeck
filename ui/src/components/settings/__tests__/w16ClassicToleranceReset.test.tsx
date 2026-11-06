@@ -1,30 +1,36 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
-// w16ClassicToleranceReset.test.tsx - "Reset to defaults" on the CLASSIC
-// Matching and stacking panel keeps the stored rotator bin (#176; wave 16
-// integration, verifier). Mounted: the real CalibrationTolerancesPanel.
+// w16ClassicToleranceReset.test.tsx - the rotator bin on the CLASSIC Matching
+// and stacking panel (#176 wave 16 integration; #826, owner ruling D-I,
+// consolidation WP 3.9). Mounted: the real CalibrationTolerancesPanel.
 //
 //   Run:  node --import ./test-css-stub.mjs --import tsx src/components/settings/__tests__/w16ClassicToleranceReset.test.tsx   (from ui/)
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
 //
-// THE GAP. WP-122 added `calibration.rotator_bin_deg` to the stored block and
-// the integration made both editors carry it through a SAVE unseen (neither
-// has a control for it). RESET wrote the five-field `DEFAULTS` over the
-// draft, which dropped the key, so the SAVE after a RESET sent none and the
-// server put the rotator bin back to its own default: a hidden setting
-// changed by a button that names five others.
+// HISTORY. WP-122 added `calibration.rotator_bin_deg` to the stored block and
+// the panel carried it through a SAVE unseen, so RESET had to keep it (a RESET
+// that wrote the five-field defaults dropped the key and the server put the
+// bin back to its default). It now has a control, the sixth number on the
+// panel, so RESET puts it back with the other five and the panel shows what it
+// posts.
 //
 // WHAT IS GUARDED
 //
-//   1. RESET puts the five tolerances back to their defaults.
-//   2. The SAVE after it posts the stored `rotator_bin_deg` unchanged.
+//   1. The stored rotator bin is on screen, and an edit to it is what SAVE
+//      posts.
+//   2. RESET puts all six back, the rotator bin included.
+//   3. A block from a server that sends no rotator bin shows the default (2).
+//   4. A bin narrower than the matcher's 1 degree warns and disables SAVE; 0
+//      (no binning) does neither.
 //
-// NAMED MUTANT (from a byte backup of CalibrationTolerancesPanel.tsx,
-// restored and sha256-compared): "RESET writes the bare defaults" (the
-// `onClick` made `setDraft({ ...DEFAULTS })`). RED, 1/2 passed:
-//   x RESET puts the five tolerances back and keeps the stored rotator bin:
-//     SAVE after RESET dropped the stored rotator bin, so the server would
-//     reset it to its default (expected 7, got undefined)
+// NAMED MUTANTS (from a byte backup of CalibrationTolerancesPanel.tsx,
+// restored and sha256-compared):
+//   "RESET keeps the stored bin" (the `onClick` made `setDraft((d) => ({
+//   ...DEFAULTS, rotator_bin_deg: d.rotator_bin_deg }))`): x RESET puts all six
+//   tolerances back, the rotator bin with them: RESET left the rotator bin it
+//   shows at the stored number (expected 2, got 7)
+//   "rotator rule dropped" (`rotatorBinTooNarrow` made false): x a rotator bin
+//   narrower than the matcher's 1 degree warns and disables SAVE: no warning
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -97,46 +103,79 @@ const press = async (label: string) => {
   });
 };
 
-await test("RESET puts the five tolerances back and keeps the stored rotator bin", async () => {
-  posts.length = 0;
-  await act(async () => {
-    useStore.setState({
-      principal: { role: "admin", email: "admin@example.test", caps: ["config.site_optics"] },
-      authGate: "open",
-      config: { calibration: {
-        exposure_tol_pct: 5, temp_tol_c: 4, temp_bin_c: 5, rotator_bin_deg: 7,
-        stack_sigma: 3, max_stack_frames: 100,
-      } } as never,
-    } as never);
-  });
+const stateOf = (calibration: Record<string, number>) => act(async () => {
+  useStore.setState({
+    principal: { role: "admin", email: "admin@example.test", caps: ["config.site_optics"] },
+    authGate: "open",
+    config: { calibration } as never,
+  } as never);
+});
+const BLOCK = { exposure_tol_pct: 5, temp_tol_c: 2, temp_bin_c: 5, stack_sigma: 3, max_stack_frames: 100 };
+const mountPanel = async () => {
   await act(async () => { root.render(createElement(CalibrationTolerancesPanel)); });
   await settle();
-  await press("Reset to defaults");
+};
+const rotatorBox = (): any => {
+  const label = (Array.from(container.querySelectorAll("label")) as any[])
+    .find((l) => (l.textContent ?? "").includes("Rotator angle bin"));
+  if (!label) throw new Error("no Rotator angle bin field on the classic panel");
+  return label.querySelector("input");
+};
+const typeInto = async (el: any, text: string) => {
+  const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => {
+    setter.call(el, text);
+    el.dispatchEvent(new win.Event("input", { bubbles: true }));
+    for (let i = 0; i < 3; i++) await tick();
+  });
+};
+const savePosted = () => posts.find((p) => p.url.includes("/api/config/calibration"))?.body;
+
+await test("the stored rotator bin is on screen, and an edit to it is what SAVE posts", async () => {
+  posts.length = 0;
+  await stateOf({ ...BLOCK, rotator_bin_deg: 7 });
+  await mountPanel();
+  eq(rotatorBox().value, "7", "the stored rotator bin is not the number on screen");
+  await typeInto(rotatorBox(), "4");
   await press("Save");
-  const body = posts.find((p) => p.url.includes("/api/config/calibration"))?.body;
+  const body = savePosted();
   if (!body) throw new Error("SAVE posted nothing to /api/config/calibration");
-  eq(body.temp_tol_c, 2, "RESET did not put the tolerance back to its default");
-  eq(body.rotator_bin_deg, 7,
-    "SAVE after RESET dropped the stored rotator bin, so the server would reset it to its default");
+  eq(body.rotator_bin_deg, 4, "SAVE sent a different rotator bin from the one on screen");
+  eq(body.temp_tol_c, 2, "SAVE dropped a field the panel did not change");
 });
 
-await test("RESET on a block that carries no rotator bin posts none either", async () => {
-  // CONTROL: an older server sends no `rotator_bin_deg`; the panel invents none.
+await test("RESET puts all six tolerances back, the rotator bin with them", async () => {
   posts.length = 0;
-  await act(async () => {
-    useStore.setState({
-      config: { calibration: {
-        exposure_tol_pct: 5, temp_tol_c: 4, temp_bin_c: 5, stack_sigma: 3, max_stack_frames: 100,
-      } } as never,
-    } as never);
-  });
-  await settle();
+  await stateOf({ ...BLOCK, temp_tol_c: 4, rotator_bin_deg: 7 });
+  await mountPanel();
   await press("Reset to defaults");
   await press("Save");
-  const body = posts.find((p) => p.url.includes("/api/config/calibration"))?.body;
+  const body = savePosted();
   if (!body) throw new Error("SAVE posted nothing to /api/config/calibration");
   eq(body.temp_tol_c, 2, "RESET did not put the tolerance back to its default");
-  eq("rotator_bin_deg" in body, false, "the panel invented a rotator bin the server never sent");
+  eq(body.rotator_bin_deg, 2, "RESET left the rotator bin it shows at the stored number");
+});
+
+await test("a block with no rotator bin shows the default", async () => {
+  posts.length = 0;
+  await stateOf({ ...BLOCK, temp_tol_c: 4 });
+  await mountPanel();
+  eq(rotatorBox().value, "2", "a block with no rotator bin shows no default");
+});
+
+await test("a rotator bin narrower than the matcher's 1 degree warns and disables SAVE, and 0 does neither", async () => {
+  posts.length = 0;
+  await stateOf({ ...BLOCK, rotator_bin_deg: 2 });
+  await mountPanel();
+  await typeInto(rotatorBox(), "0.5");
+  if (!String(container.textContent).includes("narrower than the match angle tolerance")) {
+    throw new Error("a rotator bin of 0.5 raised no warning");
+  }
+  eq(button("Save").disabled, true, "SAVE is live with a rotator bin narrower than the matcher's tolerance");
+  await typeInto(rotatorBox(), "0");
+  eq(String(container.textContent).includes("narrower than the match angle tolerance"), false,
+    "a bin of 0 (no binning) raised the warning");
+  eq(button("Save").disabled, false, "SAVE is locked for a bin of 0");
 });
 
 await act(async () => { root.unmount(); });

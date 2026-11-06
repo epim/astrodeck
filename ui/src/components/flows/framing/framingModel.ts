@@ -33,7 +33,8 @@ import { NODE_DEFS, TARGET_ANGLES, targetAngle } from "../nodeDefs";
 import { DEFAULT_OVERLAP, mosaicTotalFov, wrapRaHours } from "../../../lib/framing";
 import { panelStateOf, type PanelRunSource, type PanelRunState } from "../flowRunState";
 import type { PanelState } from "../../atlas/PanelLayer";
-import type { SequenceGroupState, SkyAngleRecord } from "../../../types";
+import type { CatalogEntry, SequenceGroupState, SkyAngleRecord } from "../../../types";
+import { ellipseExtents, objectShape } from "../../../lib/objectShape";
 
 // ------------------------------------------------------------------ types
 
@@ -475,6 +476,30 @@ export function suggestGrid(sizeArcmin: number, draft: FramingDraft): { cols: nu
   const cols = suggestAxis(sizeArcmin / 60, l.fov_x, l.overlap);
   const rows = suggestAxis(sizeArcmin / 60, l.fov_y, l.overlap);
   return cols === null || rows === null ? null : { cols, rows };
+}
+
+// ------------------------------------------------------ the object's ellipse
+
+/** SUGGEST GRID for a catalogue row (#181): the ellipse's reach along the
+ *  grid's own axes when the row has an ellipse with an angle and the draft has
+ *  a camera angle, else the long axis both ways (`suggestGrid`), the circle
+ *  that always covers it. The grid's rows run along the frame's up axis, which
+ *  lies at `-rotation` degrees east of north (the rig's CROTA2 sense, as
+ *  `panel_csv` states it), so the major axis at `pa_deg` lies `pa_deg +
+ *  rotation` from it. `ellipse` says which rule gave the answer. */
+export function suggestGridFor(
+  target: CatalogEntry, draft: FramingDraft,
+): { cols: number; rows: number; ellipse: boolean } | null {
+  const shape = objectShape(target);
+  const l = layoutOf(draft);
+  if (!shape || shape.pa_deg === null || l.rotation_deg === null) {
+    const circle = suggestGrid(target.size_arcmin ?? 0, draft);
+    return circle && { ...circle, ellipse: false };
+  }
+  const reach = ellipseExtents(shape, shape.pa_deg + l.rotation_deg);
+  const cols = suggestAxis(reach.across / 60, l.fov_x, l.overlap);
+  const rows = suggestAxis(reach.along / 60, l.fov_y, l.overlap);
+  return cols === null || rows === null ? null : { cols, rows, ellipse: true };
 }
 
 // ------------------------------------------------------------------ locks

@@ -1121,6 +1121,14 @@ export interface CatalogEntry {
   difficulty?: DifficultyTier;
   surface_brightness?: number | null;       // mag/arcmin^2; null alongside a null mag
   difficulty_source?: "heuristic" | "curated";
+  // #181 (additive): the object's ellipse, from `objects.shape_fields`. The
+  // minor axis in arcminutes and the position angle of the major axis
+  // (`size_arcmin`) in degrees east of north. Both are null when OpenNGC
+  // publishes none, and the angle alone is null for an object with a minor
+  // axis and no angle; a client draws a circle then. Absent on a payload that
+  // predates them. Nothing here is derived from the site.
+  minor_arcmin?: number | null;
+  pa_deg?: number | null;
 }
 
 export interface SwitchPort {
@@ -1542,6 +1550,10 @@ export interface AppConfig {
   //     additive advanced block. Both optional: an old WS `hello` bootstrap
   //     predates them. ---
   solve_saved_lights?: boolean;
+  /** #826: true once the operator has chosen `solve_saved_lights`, so the
+   *  server stops setting it. Until then it follows the plate solver (on while
+   *  one is installed). Absent on a server that predates it. */
+  solve_saved_lights_by_hand?: boolean;
   wcs_stamp?: WcsStampConfig;
   //     The rig's imaging standards (#239 stage A). Optional because a config
   //     written before the block existed simply has no key; the server fills

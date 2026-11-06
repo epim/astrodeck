@@ -223,10 +223,19 @@ export interface PanelShapesProps {
   /** The framed object's size ellipse radius, viewBox px, drawn at the grid
    *  centre as FovOverlay draws it (this layer replaces FovOverlay). */
   objectRPx?: number | null;
+  /** The ellipse's semi-minor radius and the major axis's position angle,
+   *  degrees EAST of north (#181). Both together draw the true ellipse: the
+   *  major axis (`objectRPx`) vertical before a turn of -PA about the grid
+   *  centre, which with east on the left lays it PA degrees east of north.
+   *  Either absent draws the circle `objectRPx` says. */
+  objectMinorRPx?: number | null;
+  objectPaDeg?: number | null;
 }
 
 export const PanelShapes = memo(function PanelShapes(props: PanelShapesProps): JSX.Element {
-  const { placed, view, hatchId, frameCenter, objectRPx } = props;
+  const { placed, view, hatchId, frameCenter, objectRPx, objectMinorRPx, objectPaDeg } = props;
+  const turned = objectMinorRPx != null && objectMinorRPx > 0
+    && objectPaDeg != null && Number.isFinite(objectPaDeg);
   const crossLen = view * 0.018;
   return (
     <g aria-hidden data-role="panel-layer">
@@ -246,10 +255,12 @@ export const PanelShapes = memo(function PanelShapes(props: PanelShapesProps): J
       </defs>
       {objectRPx != null && objectRPx > 0 && frameCenter && (
         <ellipse
+          data-testid="object-ellipse"
           cx={frameCenter.x}
           cy={frameCenter.y}
-          rx={objectRPx}
+          rx={turned ? objectMinorRPx : objectRPx}
           ry={objectRPx}
+          transform={turned ? `rotate(${-(objectPaDeg as number)} ${frameCenter.x} ${frameCenter.y})` : undefined}
           className="svg-halo"
           fill="none"
           stroke={INK}

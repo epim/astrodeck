@@ -27,13 +27,20 @@ const DEFAULTS: CalibrationConfig = {
   temp_bin_c: 5,
   stack_sigma: 3,
   max_stack_frames: 100,
+  rotator_bin_deg: 2,
 };
+
+/** The matcher's own angle tolerance (`calibration.matcher.ROTATION_TOL_DEG`):
+ *  a rotator bin narrower than this splits flats the matcher would accept for
+ *  one light into two masters. 0 is "no binning", not a narrow bin. */
+const ROTATOR_MATCH_TOL_DEG = 1;
 
 export default function CalibrationTolerancesPanel(): JSX.Element {
   const config = useConfig();
   // Absent on the WS bootstrap payload — fall back to the same defaults the
-  // server model declares, so the panel is never blank on a cold open.
-  const stored = config?.calibration ?? DEFAULTS;
+  // server model declares, so the panel is never blank on a cold open. A block
+  // from a server that predates a field is filled from them too.
+  const stored: CalibrationConfig = { ...DEFAULTS, ...config?.calibration };
   const canEdit = useCan("config.site_optics");
 
   const [draft, setDraft] = useState<CalibrationConfig>(stored);
@@ -56,13 +63,15 @@ export default function CalibrationTolerancesPanel(): JSX.Element {
   // The one rule pydantic can't express: a bin narrower than the match tolerance
   // means two frames can match each other and still land in different stacks.
   const binTooNarrow = draft.temp_bin_c < draft.temp_tol_c;
-  // The five fields on screen only: the stored block also carries
-  // `rotator_bin_deg` (#176), which this panel passes through unseen.
+  // The same rule for the rotator bin (#176), checked server-side as well.
+  const rotatorBinTooNarrow = draft.rotator_bin_deg !== undefined
+    && draft.rotator_bin_deg > 0 && draft.rotator_bin_deg < ROTATOR_MATCH_TOL_DEG;
+  const invalid = binTooNarrow || rotatorBinTooNarrow;
   const atDefaults = (Object.keys(DEFAULTS) as (keyof CalibrationConfig)[])
     .every((k) => draft[k] === DEFAULTS[k]);
 
   const save = async () => {
-    if (busy || !dirty || binTooNarrow) return;
+    if (busy || !dirty || invalid) return;
     setErr(null);
     setBusy(true);
     try {
@@ -146,6 +155,11 @@ export default function CalibrationTolerancesPanel(): JSX.Element {
           "Cap on how many frames go into one master. Past a point more frames buy almost no noise reduction and cost real memory.",
           "max_stack_frames", 1, 1000, 10,
         )}
+        {num(
+          "Rotator angle bin (deg)",
+          "Width of one rotator-angle bin a flat's master is keyed by. Flats shot within one bin are one master, flats in two bins are two, because a dust shadow follows the metal. 0 turns binning off; otherwise at least 1 degree, the matcher's own angle tolerance.",
+          "rotator_bin_deg", 0, 30, 0.5,
+        )}
       </div>
 
       {binTooNarrow && (
@@ -158,13 +172,23 @@ export default function CalibrationTolerancesPanel(): JSX.Element {
         </p>
       )}
 
+      {rotatorBinTooNarrow && (
+        <p className="text-[11px] text-bad inline-flex items-start gap-1.5 mt-3 max-w-xl">
+          <Icon name="alert" size={13} className="shrink-0 mt-0.5" />
+          The rotator bin ({draft.rotator_bin_deg} deg) is narrower than the match
+          angle tolerance ({ROTATOR_MATCH_TOL_DEG} deg). Flats that matched would be
+          split into separate masters. Use 0 for no binning, or at least{" "}
+          {ROTATOR_MATCH_TOL_DEG} deg.
+        </p>
+      )}
+
       {canEdit && (
         <div className="flex items-center gap-3 pt-4 border-t border-line mt-4">
           <button
             type="button"
             className="btn btn-accent min-h-[44px] sm:min-h-0 inline-flex items-center gap-2"
             onClick={save}
-            disabled={busy || !dirty || binTooNarrow}
+            disabled={busy || !dirty || invalid}
           >
             <Icon name="check" size={15} />
             {busy ? "Saving…" : "Save"}
@@ -172,16 +196,12 @@ export default function CalibrationTolerancesPanel(): JSX.Element {
           <button
             type="button"
             className="btn min-h-[44px] sm:min-h-0"
-            // Keeps the stored block's rotator bin (#176): it has no control
-            // here, and a draft without it would SAVE as "back to the default".
-            onClick={() => setDraft((d) => (d.rotator_bin_deg === undefined
-              ? { ...DEFAULTS }
-              : { ...DEFAULTS, rotator_bin_deg: d.rotator_bin_deg }))}
+            onClick={() => setDraft({ ...DEFAULTS })}
             disabled={busy || atDefaults}
           >
             Reset to defaults
           </button>
-          {dirty && !busy && !binTooNarrow && (
+          {dirty && !busy && !invalid && (
             <span className="text-[11px] text-warn">Unsaved changes</span>
           )}
           {savedAt && !dirty && !busy && !err && (

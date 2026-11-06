@@ -11,10 +11,10 @@
 // an operator can check at a glance.
 //
 // FIT OBJECT zooms the sky to the object; SUGGEST GRID proposes columns and
-// rows from its catalogued size (framingModel `suggestGrid`, ATL-05). The
-// suggestion is only a hint, and the row says why once: the catalogue holds
-// one size and no axes or position angle, so an elongated galaxy gets a grid
-// sized for its long axis both ways.
+// rows from its catalogued size (framingModel `suggestGridFor`, ATL-05, #181).
+// The suggestion is only a hint, and the row says which rule gave it: the
+// object's ellipse at the camera angle, or, with no axes, position angle or
+// camera angle to go by, its long axis both ways.
 
 import type { JSX } from "react";
 import { HonestButton } from "../../../ui";
@@ -22,7 +22,9 @@ import { CatalogSearch } from "../../../atlas/CatalogSearch";
 import type { CatalogEntry } from "../../../../types";
 
 export const SUGGEST_IS_A_HINT =
-  "a hint: the catalogue holds one size and no axes or angle, so the grid is sized for the long axis both ways";
+  "a hint: no axes, angle or camera angle to go by, so the grid is sized for the long axis both ways";
+export const SUGGEST_FROM_ELLIPSE_HINT =
+  "a hint: sized for the object's ellipse at the camera angle, not for a circle across its long axis";
 export const NO_SIZE = "the catalogue gives no size for this object";
 export const NO_OBJECT = "pick an object from the catalogue first";
 
@@ -31,7 +33,7 @@ export interface WhereSectionProps {
   ra: string;
   dec: string;
   /** SUGGEST GRID's proposal for the picked object, or null. */
-  suggestion: { cols: number; rows: number } | null;
+  suggestion: { cols: number; rows: number; ellipse?: boolean } | null;
   /** Why SUGGEST GRID cannot act, or null. */
   suggestLock: string | null;
   /** Why FIT OBJECT cannot act, or null. */
@@ -77,7 +79,11 @@ export function WhereSection(p: WhereSectionProps): JSX.Element {
           {p.suggestion ? `SUGGEST GRID ${p.suggestion.cols}x${p.suggestion.rows}` : "SUGGEST GRID"}
         </HonestButton>
       </div>
-      {p.suggestion && <div className="tfs-row tfs-note">{SUGGEST_IS_A_HINT}</div>}
+      {p.suggestion && (
+        <div className="tfs-row tfs-note">
+          {p.suggestion.ellipse ? SUGGEST_FROM_ELLIPSE_HINT : SUGGEST_IS_A_HINT}
+        </div>
+      )}
     </section>
   );
 }

@@ -3083,6 +3083,9 @@ class WcsStampBody(BaseModel):
     IgnoreTonightBody below)."""
     solve_saved_lights: bool = False
     wcs_stamp: WcsStampConfig = Field(default_factory=WcsStampConfig)
+    #: Hand the master option back to the plate solver (#826): the stored
+    #: choice is cleared and ``solve_saved_lights`` is not read.
+    follow_solver: bool = False
 
 
 class SyncPushBody(BaseModel):
@@ -4087,7 +4090,8 @@ def create_app(*, bind_host: str | None = None,
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         try:
             cfg = await asyncio.to_thread(
-                config_store.set_wcs_stamp, body.solve_saved_lights, body.wcs_stamp)
+                config_store.set_wcs_stamp, body.solve_saved_lights, body.wcs_stamp,
+                body.follow_solver)
         except ValueError as e:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))

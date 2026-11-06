@@ -93,18 +93,29 @@ export const TOL_INTRO =
 /** The server's own defaults (`config.CalibrationConfig`), repeated here so the
  *  panel is never blank on a cold open - the WS bootstrap payload omits the
  *  block until it has been written once. */
-export const TOL_DEFAULTS: CalibrationConfig = {
+export const TOL_DEFAULTS: Required<CalibrationConfig> = {
   exposure_tol_pct: 5,
   temp_tol_c: 2,
   temp_bin_c: 5,
   stack_sigma: 3,
   max_stack_frames: 100,
+  rotator_bin_deg: 2,
 };
 
+/** The matcher's own angle tolerance (`calibration.matcher.ROTATION_TOL_DEG`):
+ *  a rotator bin narrower than this splits flats the matcher would accept for
+ *  one light into two masters. 0 is "no binning", not a narrow bin. */
+export const ROTATOR_MATCH_TOL_DEG = 1;
+
+/** The stored block with every field the editor shows: a server that predates
+ *  one (or the WS bootstrap, which omits the block until it is written once)
+ *  is filled from the defaults. */
+export function withDefaults(stored: CalibrationConfig | undefined): Required<CalibrationConfig> {
+  return { ...TOL_DEFAULTS, ...stored };
+}
+
 export interface ToleranceField {
-  /** The five tolerances the editor has a control for; `rotator_bin_deg`
-   *  (#176) is carried through a SAVE unseen. */
-  key: Exclude<keyof CalibrationConfig, "rotator_bin_deg">;
+  key: keyof CalibrationConfig;
   label: string;
   unit?: string;
   hint: string;
@@ -161,6 +172,16 @@ export const TOLERANCE_FIELDS: readonly ToleranceField[] = [
     hint: "Cap on how many frames go into one master. Past a point more frames buy almost no "
       + "noise reduction and cost real memory.",
   },
+  {
+    key: "rotator_bin_deg",
+    label: "Rotator angle bin",
+    unit: "deg",
+    aria: "Rotator angle bin width, degrees",
+    min: 0, max: 30, step: 0.5,
+    hint: "Width of one rotator-angle bin a flat's master is keyed by. Flats shot within one bin "
+      + "are one master, flats in two bins are two, because a dust shadow follows the metal. 0 "
+      + "turns binning off; otherwise at least 1 degree, the matcher's own angle tolerance.",
+  },
 ];
 
 /** The one rule pydantic cannot express, checked here for a live warning AND
@@ -170,26 +191,29 @@ export function binTooNarrow(d: CalibrationConfig): boolean {
   return d.temp_bin_c < d.temp_tol_c;
 }
 
-/** Whether the five tolerances on screen are the defaults. Compared field by
- *  field over the fields the editor SHOWS, never as the whole object: the
- *  stored block also carries `rotator_bin_deg` (#176), which the editor passes
- *  through unseen, and a block that differs from `TOL_DEFAULTS` only by a key
- *  the editor has no control for would otherwise read as "not the defaults"
- *  and leave RESET live on a screen that already shows them. */
+/** The same rule for the rotator bin (#176), checked server-side in
+ *  `set_calibration` as well: narrower than the matcher's angle tolerance and
+ *  not 0. */
+export function rotatorBinTooNarrow(d: CalibrationConfig): boolean {
+  const bin = d.rotator_bin_deg;
+  return bin !== undefined && bin > 0 && bin < ROTATOR_MATCH_TOL_DEG;
+}
+
+/** Whether the six numbers on screen are the defaults, field by field over the
+ *  fields the editor shows. */
 export function atTolDefaults(d: CalibrationConfig): boolean {
   return TOLERANCE_FIELDS.every((f) => d[f.key] === TOL_DEFAULTS[f.key]);
 }
 
-/** The draft RESET puts on screen: the defaults for the five tolerances the
- *  editor shows, and every other key of the stored block as it was.
- *  `rotator_bin_deg` (#176) has no control, so a RESET that wrote
- *  `TOL_DEFAULTS` over the draft would drop it, the SAVE after it would send
- *  none, and the server would put it back to ITS default: a hidden setting
- *  changed by a button that names five others (wave 16 integration). */
-export function resetTolerances(d: CalibrationConfig): CalibrationConfig {
-  return d.rotator_bin_deg === undefined
-    ? { ...TOL_DEFAULTS }
-    : { ...TOL_DEFAULTS, rotator_bin_deg: d.rotator_bin_deg };
+/** The draft RESET puts on screen: every tolerance at its default. */
+export function resetTolerances(): Required<CalibrationConfig> {
+  return { ...TOL_DEFAULTS };
+}
+
+export function rotatorBinWarning(d: CalibrationConfig): string {
+  return `The rotator bin (${d.rotator_bin_deg} deg) is narrower than the match angle tolerance `
+    + `(${ROTATOR_MATCH_TOL_DEG} deg). Flats that matched would be split into separate masters. `
+    + `Use 0 for no binning, or at least ${ROTATOR_MATCH_TOL_DEG} deg.`;
 }
 
 export function binWarning(d: CalibrationConfig): string {
@@ -215,6 +239,8 @@ export const TOL_BUSY_REASON = "the last save is still in flight";
 export const TOL_ALREADY_DEFAULT_REASON = "these are already the defaults";
 export const TOL_BIN_REASON =
   "the temperature bin is narrower than the match tolerance - raise the bin first";
+export const TOL_ROTATOR_REASON =
+  "the rotator bin is narrower than the match angle tolerance - widen it or set it to 0 first";
 
 export function toleranceLockSentence(reason: string): string {
   return reason === `needs ${accessPhrase("config.site_optics")}`

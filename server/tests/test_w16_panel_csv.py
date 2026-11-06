@@ -11,7 +11,7 @@ angle cannot be wrong in two places; the modal only moves text.
 
 WHAT IS GRADED
   * the angle both ways, and the 330 the export writes for a layout at 30;
-  * a 2x2 at 30 round-trips, panel centres to 1e-6 degree and the angle to
+  * a 2x2 at 30 round-trips, panel centres to ROUND_TRIP_DEG and the angle to
     exactly 30, also across RA 0h and at a high declination;
   * a file in the documented Telescopius shape (a SYNTHESISED fixture, laid
     out by an independent first-principles script, not by AstroDeck's own
@@ -27,10 +27,11 @@ WHAT IS GRADED
   * the two routes: the same answers, the gate (view.status, nothing here is
     derived from the site) and a 422 that names what is wrong.
 
-OPEN QUESTIONS, for the issue (it stays open until a REAL Telescopius export
-is checked): the RA/DEC text format, the width/height unit, whether Row and
-Column are 1-based and where row 1 sits, and whether Overlap is a percent or
-a fraction. The fixture is built to the documented nine columns.
+THE EXPORT IS THE REAL SHAPE since consolidation WP 3.9 (fix round 1): the
+header ``Pane width (arcmins)``, a ``Center`` row, ``05hr 05'`` marks, no
+comment lines. ``test_w3_9_panel_csv_real_sample.py`` holds it to the one real
+export that is known; the cases here feed the importer in every other shape.
+The synthesised fixture below is still built to the documented nine columns.
 
 MUTANTS, each run from a byte backup of ``catalog/panel_csv.py`` inside this
 worktree, sha256 compared on restore and the mutant text grepped out, with
@@ -103,8 +104,18 @@ FIXTURE = Path(__file__).parent / "fixtures" / "telescopius_2x2_pa30.csv"
 SPEC = dict(ra_hours=0.7122, dec_deg=41.0, rows=2, cols=2, overlap=0.25,
             rotation_deg=30.0, fov_x_deg=2.0, fov_y_deg=1.33)
 
+#: The nine columns of a hand-made INPUT file: bare ``width`` and ``height``,
+#: which carry no unit and so read as degrees. The export writes the real
+#: Telescopius header instead (``panel_csv.COLUMNS``); ``_exported_rows`` turns
+#: its rows into this shape so the tests below can edit and re-feed them.
 COLUMNS = ["Pane", "RA", "DEC", "Position Angle (East)", "width", "height",
            "Overlap", "Row", "Column"]
+
+#: A file written in whole seconds holds a centre to 7.5 arcseconds of RA and
+#: half an arcsecond of Dec, so a round trip returns a panel centre to this
+#: (10 arcseconds, 0.0028 degree), against 1e-6 degree when the file carried
+#: five decimals of a second. Far inside a panel (arcminutes of field).
+ROUND_TRIP_DEG = 10.0 / 3600.0
 
 
 # ------------------------------------------------------------------ helpers
@@ -113,7 +124,7 @@ def _read(text: str) -> tuple[list[str], list[dict]]:
     """The header and the data rows of a file, comment lines skipped."""
     lines = [ln for ln in text.splitlines()
              if ln.strip() and not ln.lstrip().startswith("#")]
-    rows = list(csv.reader(lines))
+    rows = list(csv.reader(lines, skipinitialspace=True))
     return rows[0], [dict(zip(rows[0], r)) for r in rows[1:]]
 
 
@@ -149,9 +160,30 @@ def _centres(panels: list[dict]) -> dict:
     return {(p["row"], p["col"]): (p["ra_hours"], p["dec_deg"]) for p in panels}
 
 
+def _ra(text: str) -> float:
+    """RA hours of a file's RA cell, in any form the importer reads."""
+    return parse_ra(panel_csv._ra_text(text))
+
+
+def _dec(text: str) -> float:
+    return parse_dec(panel_csv._dec_text(text))
+
+
+def _input_row(row: dict) -> dict:
+    """An exported pane row in the shape of a hand-made input file: width and
+    height in degrees under the bare names (``COLUMNS``)."""
+    out = {k: v for k, v in row.items() if not k.startswith("Pane width")
+           and not k.startswith("Pane height")}
+    out["width"] = repr(float(row["Pane width (arcmins)"]) / 60.0)
+    out["height"] = repr(float(row["Pane height (arcmins)"]) / 60.0)
+    return out
+
+
 def _exported_rows(spec: dict, skip: str = "") -> tuple[str, list[dict]]:
+    """The export's text and its PANE rows (the ``Center`` row left out) in
+    the input shape."""
     text = panel_csv.export_csv(MosaicSpecIn(**spec), skip)
-    return text, _read(text)[1]
+    return text, [_input_row(r) for r in _read(text)[1] if r["Row"] != "-"]
 
 
 def _warned(answer: dict, needle: str) -> bool:
@@ -177,22 +209,31 @@ def test_the_angle_runs_the_opposite_way_in_the_file():
 
 # ------------------------------------------------------------- the export
 
-def test_the_export_is_the_nine_columns_and_states_the_convention():
-    text, rows = _exported_rows(SPEC)
-    header, _ = _read(text)
-    assert header == COLUMNS
-    comments = [ln for ln in text.splitlines() if ln.startswith("#")]
-    assert comments, "the file states its convention in leading # lines"
-    assert panel_csv.CONVENTION in "\n".join(comments)
+def test_the_export_is_the_real_telescopius_shape():
+    """The header, the ``Center`` row, the marks and the units of the one real
+    export that is known (``test_w3_9_panel_csv_real_sample.py``), and no
+    comment lines: an importer of theirs may not skip them. The convention
+    travels in the route's header, not in the file."""
+    text = panel_csv.export_csv(MosaicSpecIn(**SPEC))
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+    header, rows = _read(text)
+    assert header == list(panel_csv.COLUMNS)
+    assert header == ["Pane", "RA", "DEC", "Position Angle (East)",
+                      "Pane width (arcmins)", "Pane height (arcmins)",
+                      "Overlap", "Row", "Column"]
+    centre, panes = rows[0], rows[1:]
+    assert (centre["Pane"], centre["Row"], centre["Column"]) == ("Center", "-", "-")
     # Row-major, the file's own order, not compute_mosaic's snake.
-    assert [(r["Row"], r["Column"]) for r in rows] == [
+    assert [(r["Row"], r["Column"]) for r in panes] == [
         ("1", "1"), ("1", "2"), ("2", "1"), ("2", "2")]
-    assert [r["Pane"] for r in rows] == ["1", "2", "3", "4"]
+    assert [r["Pane"] for r in panes] == ["Pane 1", "Pane 2", "Pane 3", "Pane 4"]
+    assert {(r["Pane width (arcmins)"], r["Pane height (arcmins)"], r["Overlap"])
+            for r in rows} == {("120.00", "79.80", "25%")}
 
 
 def test_a_2x2_at_layout_angle_30_writes_330_and_round_trips():
-    """The golden round trip: export, import, every panel centre to 1e-6
-    degree and the angle to exactly 30.
+    """The golden round trip: export, import, every panel centre to
+    ROUND_TRIP_DEG (whole seconds) and the angle to exactly 30.
 
     Mutant "export unconverted" (``export_csv`` writes ``spec.rotation_deg``
     where ``pa_east_from_rotation(spec.rotation_deg)`` stood) failed here:
@@ -217,7 +258,7 @@ def test_a_2x2_at_layout_angle_30_writes_330_and_round_trips():
     got = _centres(_panels_of(draft))
     assert sorted(want) == sorted(got)
     for cell in want:
-        assert _sep_deg(got[cell], want[cell]) < 1e-6, cell
+        assert _sep_deg(got[cell], want[cell]) < ROUND_TRIP_DEG, cell
 
 
 @pytest.mark.parametrize("ra_hours, dec_deg", [
@@ -244,7 +285,7 @@ def test_the_round_trip_holds_across_ra_zero_and_near_the_pole(ra_hours, dec_deg
     want = _centres(compute_mosaic(MosaicSpecIn(**spec))["panels"])
     got = _centres(_panels_of(answer["draft"]))
     for cell in want:
-        assert _sep_deg(got[cell], want[cell]) < 1e-6, (cell, ra_hours, dec_deg)
+        assert _sep_deg(got[cell], want[cell]) < ROUND_TRIP_DEG, (cell, ra_hours, dec_deg)
 
 
 def test_a_1x1_and_the_angles_0_and_180():
@@ -256,7 +297,7 @@ def test_a_1x1_and_the_angles_0_and_180():
         assert draft["rotation"] == rotation
         assert (draft["rows"], draft["cols"], draft["skip"]) == (1, 1, "")
         assert _sep_deg(_centres(_panels_of(draft))[(0, 0)],
-                        (SPEC["ra_hours"], SPEC["dec_deg"])) < 1e-6
+                        (SPEC["ra_hours"], SPEC["dec_deg"])) < ROUND_TRIP_DEG
 
 
 def test_skipped_panels_are_left_out_and_come_back_as_skip():
@@ -277,7 +318,7 @@ def test_skipped_panels_are_left_out_and_come_back_as_skip():
     assert not _warned(answer, "rigid"), answer["warnings"]
     want = _centres(compute_mosaic(MosaicSpecIn(**spec))["panels"])
     for cell, got in _centres(_panels_of(answer["draft"])).items():
-        assert _sep_deg(got, want[cell]) < 1e-6, cell
+        assert _sep_deg(got, want[cell]) < ROUND_TRIP_DEG, cell
 
 
 def test_the_export_refuses_a_layout_with_no_angle_or_no_panel():
@@ -333,7 +374,7 @@ def test_a_pane_moved_ten_percent_of_the_field_is_not_a_rigid_grid():
     _, rows = _exported_rows(SPEC)
     moved = [dict(r) for r in rows]
     # 10 percent of the 1.33 degree height, north, on one pane.
-    moved[0]["DEC"] = f"{parse_dec(moved[0]['DEC']) + 0.133:.9f}"
+    moved[0]["DEC"] = f"{_dec(moved[0]['DEC']) + 0.133:.9f}"
     answer = panel_csv.parse_csv(_write(moved))
     assert _warned(answer, "not a rigid grid"), answer["warnings"]
     warning = next(w for w in answer["warnings"] if "rigid" in w)
@@ -346,7 +387,7 @@ def test_a_pane_moved_ten_percent_of_the_field_is_not_a_rigid_grid():
 def test_a_pane_moved_one_percent_is_still_a_grid():
     _, rows = _exported_rows(SPEC)
     moved = [dict(r) for r in rows]
-    moved[0]["DEC"] = f"{parse_dec(moved[0]['DEC']) + 0.0133:.9f}"
+    moved[0]["DEC"] = f"{_dec(moved[0]['DEC']) + 0.0133:.9f}"
     answer = panel_csv.parse_csv(_write(moved))
     assert not _warned(answer, "rigid"), answer["warnings"]
 
@@ -369,7 +410,7 @@ def test_a_missing_cell_becomes_skip_and_the_grid_is_still_rigid():
     assert _warned(answer, "2-2"), answer["warnings"]
     want = _centres(compute_mosaic(MosaicSpecIn(**SPEC))["panels"])
     for cell, got in _centres(_panels_of(answer["draft"])).items():
-        assert _sep_deg(got, want[cell]) < 1e-6, cell
+        assert _sep_deg(got, want[cell]) < ROUND_TRIP_DEG, cell
 
 
 def test_a_bom_crlf_comments_and_a_shuffled_order_are_read():
@@ -401,21 +442,22 @@ def test_the_unit_of_width_and_height_is_read_from_the_header():
     assert not _warned(answer, "degrees"), answer["warnings"]
 
 
-def test_the_units_line_of_our_own_export_is_read_back():
-    """The export's ``# units:`` comment is the one place a unit is written
-    for a file whose columns are the bare nine names."""
-    text, rows = _exported_rows(SPEC)
-    assert "units:" in text
-    in_arcmin = text.replace("width=degrees", "width=arcmin").replace(
-        "height=degrees", "height=arcmin")
-    answer = panel_csv.parse_csv(in_arcmin)
-    assert answer["draft"]["fovX"] == pytest.approx(2.0 / 60.0)
+def test_a_units_line_names_the_unit_of_a_file_whose_headers_do_not():
+    """An older panel file, or one made by hand, may carry its units in a
+    ``# units:`` comment over the bare nine names; the importer still reads it."""
+    _, rows = _exported_rows(SPEC)
+    arcmin = [{**r, "width": "120", "height": "79.8"} for r in rows]
+    text = _write(arcmin, comments=("# units: ra=hms width=arcmin height=arcmin",))
+    answer = panel_csv.parse_csv(text)
+    assert answer["draft"]["fovX"] == pytest.approx(2.0)
+    assert answer["draft"]["fovY"] == pytest.approx(1.33)
+    assert not _warned(answer, "degrees"), answer["warnings"]
 
 
 def test_ra_may_be_hms_decimal_hours_or_degrees():
     _, rows = _exported_rows({**SPEC, "rows": 1, "cols": 1})
     one = rows[0]
-    want_h = parse_ra(one["RA"])
+    want_h = _ra(one["RA"])
 
     def ra_of(cell: str, header: str = "RA") -> float:
         row = {**one, header: cell}
@@ -661,7 +703,8 @@ def test_the_export_route_answers_the_file_with_a_download_name(client):
     assert 'attachment; filename="' in r.headers["content-disposition"]
     assert r.headers["x-panel-csv-convention"] == panel_csv.CONVENTION
     _, rows = _read(r.text)
-    assert len(rows) == 3
+    assert len(rows) == 4          # the Center row and three panes
+    assert [x["Pane"] for x in rows] == ["Center", "Pane 1", "Pane 2", "Pane 3"]
     assert {x["Position Angle (East)"] for x in rows} == {"330.0"}
 
 

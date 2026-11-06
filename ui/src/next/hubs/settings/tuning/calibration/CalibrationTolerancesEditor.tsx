@@ -45,9 +45,10 @@ import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { ActionButton, Card, Label, LockNote, Mono, NumberField } from "../../../../ui";
 import {
   atTolDefaults, binTooNarrow, binWarning, TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON, TOL_BUSY_REASON,
-  TOL_CLEAN_REASON, TOL_DEFAULTS, TOL_DIRTY_NOTE, TOL_INTRO, TOL_RESET_LABEL, TOL_SAVE_FAILED,
-  resetTolerances, TOL_SAVE_LABEL, TOL_SAVED_NOTE, TOL_TITLE, toleranceForbidden,
-  toleranceLockSentence, TOLERANCE_FIELDS, toleranceSummary,
+  TOL_CLEAN_REASON, TOL_DEFAULTS, TOL_DIRTY_NOTE, TOL_INTRO, TOL_RESET_LABEL, TOL_ROTATOR_REASON,
+  TOL_SAVE_FAILED, resetTolerances, rotatorBinTooNarrow, rotatorBinWarning, TOL_SAVE_LABEL,
+  TOL_SAVED_NOTE, TOL_TITLE, toleranceForbidden, toleranceLockSentence, TOLERANCE_FIELDS,
+  toleranceSummary, withDefaults,
 } from "./calibrationModel";
 
 export function CalibrationTolerancesEditor(): JSX.Element {
@@ -55,7 +56,7 @@ export function CalibrationTolerancesEditor(): JSX.Element {
   // Absent on the WS bootstrap payload until the block has been written once -
   // fall back to the same defaults the server model declares, so the editor is
   // never blank on a cold open.
-  const stored = config?.calibration ?? TOL_DEFAULTS;
+  const stored = withDefaults(config?.calibration);
   // `needsLan`: SAVE and RESET write `POST /api/config/calibration`, on the rig's
   // LAN-only fence (`app.py` `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`, /api/config).
   const lock = useLock({ cap: "config.site_optics", needsLan: true });
@@ -75,12 +76,13 @@ export function CalibrationTolerancesEditor(): JSX.Element {
   const dirty = JSON.stringify(draft) !== seed;
   const atDefaults = atTolDefaults(draft);
   const narrow = binTooNarrow(draft);
+  const rotatorNarrow = rotatorBinTooNarrow(draft);
 
   const patch = (p: Partial<CalibrationConfig>): void =>
     setDraft((d) => ({ ...d, ...p }));
 
   const save = async (): Promise<void> => {
-    if (busy || !dirty || narrow) return;
+    if (busy || !dirty || narrow || rotatorNarrow) return;
     setErr(null);
     setBusy(true);
     try {
@@ -102,7 +104,8 @@ export function CalibrationTolerancesEditor(): JSX.Element {
 
   const busyReason = busy ? TOL_BUSY_REASON : null;
   const fieldLock = lock.lockedReason ?? busyReason;
-  const saveLock = fieldLock ?? (narrow ? TOL_BIN_REASON : null) ?? (dirty ? null : TOL_CLEAN_REASON);
+  const saveLock = fieldLock ?? (narrow ? TOL_BIN_REASON : null)
+    ?? (rotatorNarrow ? TOL_ROTATOR_REASON : null) ?? (dirty ? null : TOL_CLEAN_REASON);
   const resetLock = fieldLock ?? (atDefaults ? TOL_ALREADY_DEFAULT_REASON : null);
   const noteReason = lock.lockedReason ? toleranceLockSentence(lock.lockedReason) : null;
 
@@ -125,7 +128,7 @@ export function CalibrationTolerancesEditor(): JSX.Element {
               unit={f.unit}
               hint={f.hint}
               ariaLabel={f.aria}
-              value={draft[f.key]}
+              value={draft[f.key] ?? TOL_DEFAULTS[f.key]}
               min={f.min}
               max={f.max}
               step={f.step}
@@ -141,6 +144,13 @@ export function CalibrationTolerancesEditor(): JSX.Element {
           <p className="nx-cal-warn" data-testid="cal-bin-warning">
             <NxIcon name="info" size={12} />
             {binWarning(draft)}
+          </p>
+        )}
+
+        {rotatorNarrow && (
+          <p className="nx-cal-warn" data-testid="cal-rotator-warning">
+            <NxIcon name="info" size={12} />
+            {rotatorBinWarning(draft)}
           </p>
         )}
 
@@ -160,7 +170,7 @@ export function CalibrationTolerancesEditor(): JSX.Element {
             data-testid="cal-reset"
             lockedReason={resetLock}
             onExplain={lock.onExplain}
-            onPress={() => { setDraft((d) => resetTolerances(d)); }}
+            onPress={() => { setDraft(resetTolerances()); }}
           >
             {TOL_RESET_LABEL}
           </ActionButton>
