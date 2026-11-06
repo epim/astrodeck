@@ -5866,6 +5866,61 @@ def create_app(*, bind_host: str | None = None,
             bus.publish("config", version=cfg.version)
         return {"ok": True}
 
+    # ------------------------------------------------ learned horizon (#599)
+    # The obstructed solve frames of past nights, as a horizon the operator may
+    # accept. Under /api/locations on purpose: accept writes the line every slew
+    # is judged against, so it rides the relay fence that prefix already has.
+    # Both routes need view.site_derived (admin and operator, never a viewer):
+    # a horizon region with the nights it was learned on is computed from the
+    # site. Reading changes nothing; only accept writes (ruling D-07).
+
+    @app.get("/api/locations/horizon-suggestion")
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def horizon_suggestion(
+            principal: Principal = Depends(require(CAP_VIEW_SITE_DERIVED))):
+        """``{drawn, suggestion}``: whether the active site has a horizon, and
+        the learned line on offer (None when no region has formed)."""
+        from .. import site_horizon
+        drawn = _active_horizon_points(config_store.cfg())
+        found = site_horizon.LEARNER.suggestion(drawn)
+        return {"drawn": drawn is not None,
+                "suggestion": found.as_dict() if found else None}
+
+    @app.post("/api/locations/horizon-suggestion/accept")
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def accept_horizon_suggestion(
+            suggestion_id: str,
+            principal: Principal = Depends(require(CAP_VIEW_SITE_DERIVED))):
+        """Store the suggestion the operator was shown as the active site's
+        horizon: ``config.safety.horizon``, and the saved location that is the
+        active site so a later apply does not bring the old line back. The merge
+        only raises the drawn line. 409 when no suggestion stands
+        (``no_suggestion``) or the one standing is not ``suggestion_id``
+        (``suggestion_changed``); nothing is written then."""
+        from .. import site_horizon
+        cfg = config_store.cfg()
+        found = site_horizon.LEARNER.suggestion(_active_horizon_points(cfg))
+        if found is None:
+            raise HTTPException(409, detail={"code": "no_suggestion"})
+        if found.id != suggestion_id:
+            raise HTTPException(409, detail={"code": "suggestion_changed"})
+        row = next((r for r in location_store.list()
+                    if _location_is_active_site(r, cfg.site)), None)
+
+        def _store():
+            _write_active_horizon(found.points, None)
+            if row is not None:
+                location_store.update(
+                    row.id, row.name, row.latitude, row.longitude,
+                    row.elevation_m, UNCHANGED, found.points, None)
+            return config_store.cfg().version
+
+        version = await asyncio.to_thread(_store)
+        bus.log("info", f"horizon suggestion accepted: {found.bins} bins from "
+                f"{found.frames} obstructed frames", "site")
+        bus.publish("config", version=version)
+        return {"accepted": found.id, "version": version}
+
     @app.put("/api/optics")
     @declare(CAP_CONFIG_SITE_OPTICS)
     async def put_optics(

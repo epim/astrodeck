@@ -43,7 +43,7 @@ from ..aio import reap
 from ..alerting import STAGE_FRAME_DEADMAN, STAGE_FRAME_HEARTBEAT
 from ..catalog.coords import angular_sep_deg
 from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
-from .. import capture_geometry, naming, tracking_probe
+from .. import capture_geometry, naming, site_horizon, tracking_probe
 from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
                             PierSide, SyncRefused, SyncUnverified,
                             is_present, position_known_for_motion,
@@ -10011,6 +10011,7 @@ class SequenceEngine:
         good = bool(result.get("centered")) or (
             err is not None and self._centring_miss(result, target) is None)
         if good:
+            self._note_horizon_frame(FrameClass.STARS, target)
             if getattr(self, "_pointing_unverified_for", None) == getattr(
                     target, "id", None):
                 self._pointing_unverified_for = None
@@ -10332,11 +10333,37 @@ class SequenceEngine:
             return FrameClass.NO_LIGHT
         return cls
 
+    def _note_horizon_frame(self, cls: FrameClass | None, target) -> None:
+        """File a classified centring frame with the horizon learner (#599):
+        an obstruction is a refusal in the direction the target stood, a frame
+        with stars is evidence the other way. The default site has no sky to
+        file it under. The learner logs counts and no angle."""
+        site = getattr(self.hub, "site", None)
+        if cls is None or not isinstance(site, dict) or site.get("is_default"):
+            return
+        try:
+            site_horizon.note_solve_frame(
+                cls, target.ra_hours, target.dec_deg,
+                latitude=site["latitude"], longitude=site["longitude"],
+                now=time.time())
+        except Exception:      # noqa: BLE001
+            # Best effort: the learner is an aid, and a frame it cannot file
+            # must never break a hold or a centring.
+            pass
+
+    def _horizon_hint(self) -> str:
+        """What a centring hold adds about the horizon (#1093): a space and the
+        sentence from `site_horizon.hold_hint`, or nothing."""
+        cfg = self._cfg or config_store.cfg()
+        hint = site_horizon.hold_hint(cfg.safety.horizon)
+        return f" ({hint})" if hint else ""
+
     async def _note_pass_frame_class(self, group: TargetGroup,
-                                     result) -> None:
+                                     result, target) -> None:
         """Keep what a panel's failed centring solve showed, for the pass
         boundary to say (`_close_group_pass`)."""
         cls = await self._classify_failed_solve(result)
+        self._note_horizon_frame(cls, target)
         if cls in self._FRAME_WORDS:
             self._pass_frame_classes.setdefault(group.id, []).append(cls)
 
@@ -10430,6 +10457,7 @@ class SequenceEngine:
             # WHAT THE FRAME SHOWED (#1108): asked of the classifier on every
             # pass of the loop, since a retry can meet a different sky.
             cls = await self._classify_failed_solve(hop_centring)
+            self._note_horizon_frame(cls, target)
             if cls is FrameClass.SOLVER_MISSING:
                 # A configuration fault waits for nobody (#721): no goto, no
                 # sleep. The caller reads the result's ``solve_reason`` and
@@ -10446,7 +10474,7 @@ class SequenceEngine:
                         f"retrying every "
                         f"{CENTRING_HOLD_RETRY_S / 60:.0f} min, before "
                         f"autofocus and guider calibration spend themselves "
-                        f"on it (#596)", "sequence")
+                        f"on it (#596){self._horizon_hint()}", "sequence")
                 said_class, said = cls, True
             elif not said:
                 bus.log("warning",
@@ -10454,7 +10482,8 @@ class SequenceEngine:
                         f"holding for light before autofocus and guider "
                         f"calibration spend themselves on an empty field "
                         f"(#596); retrying every "
-                        f"{CENTRING_HOLD_RETRY_S / 60:.0f} min", "sequence")
+                        f"{CENTRING_HOLD_RETRY_S / 60:.0f} min"
+                        f"{self._horizon_hint()}", "sequence")
                 said = True
             await self._safety_gate(context="slew", target=target)
             # PACING ONLY (devices.sim._sim_delay's own convention): the
@@ -10806,7 +10835,7 @@ class SequenceEngine:
                         # deferred (`_group_hop_checks`), never shot off its
                         # tile (spec 5.6 step 4).
                         hop_miss = detail
-                        await self._note_pass_frame_class(member, result)
+                        await self._note_pass_frame_class(member, result, target)
                     elif self._centring_miss(result, target) is not None:
                         # A MISS IS NOT IMAGED ON (#852): on 2026-10-07 a lone
                         # target logged "centering converged to 255.0' —
