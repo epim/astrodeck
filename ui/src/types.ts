@@ -1190,6 +1190,10 @@ export interface Target {
   center_tolerance_arcmin?: number | null;
   center_attempts?: number | null;
   autofocus_skip_if_fresh?: boolean;
+  // --- the target's own maximum time (#1094, owner ruling D-D; additive):
+  //     minutes from its first attempt after which the run moves on with
+  //     frames owed. Absent from the server's dump while 0, which is none.
+  max_time_min?: number;
   // --- mosaic panels (S2: #189, spec 3.4; additive). The panel's 0-based
   //     place in its block's grid (row 0 col 0 is panel "1-1"), null on a
   //     target that is not a panel. `after_group` is the id of a TargetGroup

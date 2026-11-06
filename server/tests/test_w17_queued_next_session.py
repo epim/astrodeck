@@ -14,11 +14,14 @@ that is live, else the session that is armed (``PATCH {queue_next: true}``):
 * the marker (``Session.queued_behind``) is NOT arming, and touches no
   ``auto_resume``: A keeps its restart protection, B is unarmed until
   promoted;
-* B is armed by exactly one event, A COMPLETING (``SequenceEngine.
-  _promote_queued``, called from ``_finalize_report``), and ResumeArm then
-  starts it on its next tick the ordinary way. Never after a safety stop, an
-  operator stop, a dawn cut-off or an error: those leave A owing frames and
-  armed (or disarmed on purpose), and B stays queued;
+* B is armed by one event, A ending the way its plan said it would: A
+  COMPLETING, or, since #1094 (owner ruling D-D, ``test_w3_target_time_
+  bound.py``), a planned ending (the stop time, ``max_run_min``, the window
+  closing, a target's own time bound) (``SequenceEngine._promote_queued``,
+  called from ``_finalize_report``), and ResumeArm then starts it on its next
+  tick the ordinary way. Never after a safety stop, an operator stop or an
+  error: those leave A owing frames and armed (or disarmed on purpose), and
+  B stays queued;
 * a queue of one per session: a second session queued behind the same one
   replaces the first, and says so; abandoning, starting or un-queueing B
   clears it;
@@ -452,16 +455,17 @@ async def test_a_completion_arms_the_session_queued_behind_it(rig):
 
 @pytest.mark.parametrize("reason, done", [
     ("complete", 1),            # the run finished its pass but frames are owed
-    ("dawn_cutoff", 1), ("incomplete", 1), ("unsafe", 1), ("aborted", 1),
+    ("incomplete", 1), ("unsafe", 1), ("aborted", 1),
     ("error", 1), ("quality", 1), ("cooling_skip", 1), ("shutdown", 1),
     # Nothing owed, but the run did not END 'complete': it is dormant by the
-    # engine's own rule, and the queue follows the status, not the reason.
-    ("dawn_cutoff", 3),
+    # engine's own rule, and the queue follows the ending, not the frames.
+    ("incomplete", 3),
 ])
 async def test_no_other_ending_arms_it(rig, reason, done):
-    """A safety stop, an operator stop, a dawn cut-off, an error and the rest
-    leave A owing frames and armed (or disarmed on purpose): B stays queued
-    and UNARMED, and ``armed()`` is still A.
+    """A safety stop, an operator stop, an error and the rest (a dawn cut-off
+    is a PLANNED ending since #1094 and promotes: ``test_w3_target_time_
+    bound.py``) leave A owing frames and armed (or disarmed on purpose): B
+    stays queued and UNARMED, and ``armed()`` is still A.
 
     MUTANT "promote on any end reason" (`_finalize_report` dropping its
     ``status == "complete"`` guard) turned all ten cases red (and left the

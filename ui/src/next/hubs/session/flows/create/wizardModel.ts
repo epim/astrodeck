@@ -15,7 +15,8 @@
 import { AUTO_RESUME_CHOICES, NODE_DEFS, createParams } from "../../../../../components/flows/nodeDefs";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 import {
-  CLOCK_TIME, DUSK_STOPS, NEED_STOP_CLOCK, clockOf, type DuskStop,
+  CLOCK_TIME, DUSK_STOPS, NEED_MAX_TIME, NEED_STOP_CLOCK, clockOf, maxTimeOf, maxTimeUnreadable,
+  type DuskStop,
 } from "../../../../../components/flows/wizard/nightAnswers";
 import type { FlowWizardAnswers } from "../../../../../lib/flowsApi";
 
@@ -43,8 +44,8 @@ export const AUTOMATION_DEFAULTS: readonly string[] = ["Guiding", "HFR watchdog"
  *  the single-target example from the comma-list one without a second field. */
 export const TARGET_PLACEHOLDER = "M16    ·    or: M16, M17, M8, NGC 6946";
 
-/** Questions 4 and 5 (#718): how the night ends and whether the flow resumes on
- *  later nights. The choices are the stepped Send to Flow Wizard sheet's own
+/** Questions 4 to 6 (#718, #1094): how the night ends, how long the run may stay
+ *  on the target and whether the flow resumes on later nights. The choices are the stepped Send to Flow Wizard sheet's own
  *  (`DUSK_STOPS`, `AUTO_RESUME_CHOICES`), imported and never copied. */
 export { AUTO_RESUME_CHOICES, CLOCK_TIME, DUSK_STOPS };
 export type { DuskStop };
@@ -67,8 +68,17 @@ export interface NightAnswers {
   stop: DuskStop;
   /** Typed text; read by `clockOf` and asked only beside "Clock time". */
   stopClock: string;
+  /** The most minutes the run spends on the target before it moves on, with
+   *  frames still owed (#1094, owner ruling D-D): typed text, read by
+   *  `maxTimeOf`, blank for no bound. Asked of a single target only
+   *  (`asksMaxTime`). */
+  maxTime: string;
   autoResume: boolean;
 }
+
+/** Whether the kind has ONE target to bound: a pool picks its member at dusk,
+ *  and the server refuses the bound with it. */
+export const asksMaxTime = (kind: string): boolean => kind !== KINDS[1];
 
 const DUSK_DEFAULTS = NODE_DEFS.dusk.params as { stop: string; autoResume: string };
 
@@ -77,13 +87,16 @@ const DUSK_DEFAULTS = NODE_DEFS.dusk.params as { stop: string; autoResume: strin
 export const NIGHT_DEFAULTS: NightAnswers = {
   stop: DUSK_DEFAULTS.stop as DuskStop,
   stopClock: "",
+  maxTime: "",
   autoResume: DUSK_DEFAULTS.autoResume !== AUTO_RESUME_CHOICES[1],
 };
 
 /** Why GENERATE cannot go: a "Clock time" stop with no valid time is a boundary
- *  that never arrives, and the server refuses it. Null when nothing is missing. */
-export function nightGap(n: NightAnswers): string | null {
-  return n.stop === CLOCK_TIME && clockOf(n.stopClock) === null ? NEED_STOP_CLOCK : null;
+ *  that never arrives, and the server refuses it; so does a time bound that is
+ *  not whole minutes. Null when nothing is missing. */
+export function nightGap(n: NightAnswers, kind: string = KINDS[0]): string | null {
+  if (n.stop === CLOCK_TIME && clockOf(n.stopClock) === null) return NEED_STOP_CLOCK;
+  return asksMaxTime(kind) && maxTimeUnreadable(n.maxTime) ? NEED_MAX_TIME : null;
 }
 
 /** The one body GENERATE posts. The night's two answers go up ONLY when they
@@ -103,6 +116,8 @@ export function wizardBody(
   if (night.autoResume !== NIGHT_DEFAULTS.autoResume) {
     body.auto_resume = night.autoResume ? AUTO_RESUME_CHOICES[0] : AUTO_RESUME_CHOICES[1];
   }
+  const minutes = maxTimeOf(night.maxTime);
+  if (asksMaxTime(kind) && minutes !== null) body.max_time_min = minutes;
   return body;
 }
 

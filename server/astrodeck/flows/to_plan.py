@@ -1394,6 +1394,9 @@ WAIT_FOR_THE_MOSAIC = "Wait for the mosaic"
 CENTRE_TOL_MAX_ARCMIN = 30.0
 CENTRE_ATTEMPTS_MAX = 10
 
+#: ``Target.max_time_min``'s ceiling (#1094): a day.
+TIME_BOUND_MAX_MIN = 1440
+
 #: ``TargetGroup``'s and ``MosaicSpecIn``'s bounds on what a block's grid
 #: holds (spec 3.1): 1 to 10 panels a side, overlap 0 to 50 percent, 1 to 20
 #: passes per visit, 0 to 180 minutes a visit.
@@ -1545,6 +1548,24 @@ def _centring(entry: dict) -> dict:
                 f"be a whole number from 1 to {CENTRE_ATTEMPTS_MAX}")
         out["center_attempts"] = whole
     return out
+
+
+def _time_bound(entry: dict) -> dict:
+    """The ``Target`` field a block's maximum time sets (#1094), or ``{}``.
+
+    0 and a missing value are no bound, as for every flow saved before the
+    field. A number the target cannot hold is refused, naming the block,
+    rather than raising a ValidationError out of the run."""
+    raw = entry.get("max_time_min")
+    if raw is None:
+        return {}
+    minutes = _whole(raw)
+    if minutes is None or not 0 <= minutes <= TIME_BOUND_MAX_MIN:
+        raise GraphNotRunnable(
+            f"{_block_label(entry)}: a maximum time of {raw!r} minutes cannot "
+            f"be used - it must be a whole number of minutes from 0 (no "
+            f"bound) to {TIME_BOUND_MAX_MIN}")
+    return {"max_time_min": minutes} if minutes else {}
 
 
 def _mosaic_refusals(compiled: dict, graph: FlowGraph | None) -> list[str]:
@@ -2013,6 +2034,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             # #170: the TARGET's own centring reaches the run. A legacy SLEW's
             # tolerance does not (spec 1.7; `NODE_SETTINGS["slew"]`).
             target.update(_centring(entry))
+            target.update(_time_bound(entry))
         if any((s or {}).get("strategy") == "cycle"
                for s in (entry.get("steps") or [])):
             # The FILTER CYCLE reaches the engine. `_cycle_steps` put `per_visit`

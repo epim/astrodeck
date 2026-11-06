@@ -64,6 +64,7 @@
       "ifNotCentred": "Auto",
       "counts": "Accepted subs",
       "frameAnchor": "{\"cols\":3,\"dec_deg\":\"41.500000\",\"fov_x\":\"1.34600\",\"fov_y\":\"0.90000\",\"overlap\":\"0.2500\",\"ra_hours\":\"0.720833\",\"rotation_deg\":\"30.000\",\"rows\":2}",
+      "maxTime": 0,
       "angle": "Rotate to PA"
      }
     },

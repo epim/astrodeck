@@ -646,8 +646,15 @@ _S3_POOL_KEYS = {"counts"}
 #: assumed: with ``repeat: "Single night"`` put back on every dusk node (the
 #: key absent on every one first) the same dump hashes to the PREVIOUS pin,
 #: ``78de26ba0b8e...``, byte for byte.
+#:
+#: RE-PINNED IN WP 3.10 (#1094, owner ruling D-D), deliberately, for one
+#: change and nothing else: TARGET gained its ``maxTime`` param at 0 (no
+#: bound), which ``generate()`` writes onto every TARGET node it creates, so
+#: every one of the 576 dumped graphs carries it. Checked, not assumed: with
+#: ``maxTime`` popped from each TARGET (asserting it is 0 on every one) the
+#: same dump hashes to the PREVIOUS pin, ``0443f1c77294...``, byte for byte.
 THREE_ANSWER_GRAPHS_SHA256 = \
-    "0443f1c77294e2f2a4fcec722ebfd3f28aefe6fbec2c0b778124480d685f38e7"
+    "3ada16aad2f9cdb7d2e1dba0207e8e8e9f4040ce851da1cb0345607daacfb61d"
 
 #: The pre-S3 generator's PLAN for every three-answer body with target "M31"
 #: (THREE_KINDS x all 64 chip subsets), ids blanked, hashed the same way.

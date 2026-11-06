@@ -258,7 +258,12 @@ NODE_DEFS: dict[str, NodeDef] = {
                 "fovFrom": "", "skip": "", "passes": 1, "minVisit": 0,
                 "order": "Least complete first", "centerTol": 1.2,
                 "centerTries": 3, "ifNotCentred": "Auto",
-                "counts": "Every sub taken", "frameAnchor": ""},
+                "counts": "Every sub taken", "frameAnchor": "",
+                # Minutes on this target before the run moves on, with
+                # frames still owed (#1094, owner ruling D-D); 0 is none.
+                # A single target's: a mosaic's visits are bounded by its
+                # own passes and minVisit.
+                "maxTime": 0},
         # Rulings 2 and 9: a new block counts accepted subs only and carries no
         # angle nobody chose.
         created_as={"name": "", "ra": "", "dec": "", "rotation": -1,

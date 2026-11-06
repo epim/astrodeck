@@ -1027,6 +1027,12 @@ def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
                    "attempts": _finite(params.get("centerTries"), None)},
         "count_mode": count_mode_of(params),
     }
+    # Minutes on the target before the run moves on (#1094). Written only when
+    # the block holds one, so every flow that has none compiles exactly as it
+    # did before the field existed.
+    time_bound = _finite(params.get("maxTime"), 0)
+    if time_bound:
+        entry["max_time_min"] = time_bound
     if rows * cols > 1:
         skip, unread = parse_skip(params.get("skip"), rows, cols)
         if unread:

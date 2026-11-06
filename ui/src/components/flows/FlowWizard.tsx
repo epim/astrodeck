@@ -29,8 +29,8 @@ import type { FlowNodeRec } from "./flowsTypes";
 // The night's two answers (#718) are the #/next sheet's own model, imported so
 // the body, the defaults and the gap on a Clock time stop exist once.
 import {
-  AUTO_RESUME_CHOICES, CLOCK_TIME, DUSK_STOPS, NIGHT_DEFAULTS, nightGap, wizardBody,
-  type NightAnswers,
+  AUTO_RESUME_CHOICES, CLOCK_TIME, DUSK_STOPS, NIGHT_DEFAULTS, asksMaxTime, nightGap,
+  wizardBody, type NightAnswers,
 } from "../../next/hubs/session/flows/create/wizardModel";
 
 /** Question 1. Order and labels from §C.14; `Deep-sky target` is the default. */
@@ -115,7 +115,7 @@ export default function FlowWizard() {
     : busy ? "Already creating a flow — one moment." : null;
   const generateReason = !canCreate
     ? `Generating a flow needs ${accessPhrase("control.capture")}.`
-    : busy ? "Already creating a flow — one moment." : nightGap(night);
+    : busy ? "Already creating a flow — one moment." : nightGap(night, kind);
 
   /** The server generates AND saves, so there is one call and the id it returns
    *  is openable. The three answers go up exactly as the sheet holds them: the
@@ -364,7 +364,27 @@ export default function FlowWizard() {
         )}
       </div>
 
-      {/* ── 5. whether the flow resumes on later nights: the owner's question,
+      {/* ── 5. how long to stay on the target (#1094, owner ruling D-D): one
+          target's own bound, so a pool, which picks its member at dusk, is
+          not asked. */}
+      {asksMaxTime(kind) && (
+        <label className="flex flex-col gap-[5px]">
+          <span className="font-display font-semibold text-[9.5px] tracking-[0.18em] text-dim">
+            MOST MINUTES ON THE TARGET (BLANK FOR NO LIMIT)
+          </span>
+          <input
+            value={night.maxTime}
+            onChange={(e) => setNight((n) => ({ ...n, maxTime: e.target.value }))}
+            inputMode="numeric"
+            placeholder="60"
+            aria-label="Most minutes on the target, blank for no limit"
+            data-testid="flows-wiz-max-time"
+            className="field !text-[13px] !p-2.5 min-h-[44px]"
+          />
+        </label>
+      )}
+
+      {/* ── 6. whether the flow resumes on later nights: the owner's question,
           in the owner's words. */}
       <div className="flex flex-col gap-1.5">
         <span
