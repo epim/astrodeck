@@ -31,7 +31,9 @@ import { listReports } from "../../../../api/reports";
 import {
   isUnreadableRow, listSessionRows, type QueuedSession, type UnreadableListRow,
 } from "../../../../api/sessions";
-import type { SessionListRow, SessionReportSummary, SessionRow } from "../../../../types";
+import type {
+  SessionListRow, SessionMosaic, SessionReportSummary, SessionRow,
+} from "../../../../types";
 
 // ------------------------------------------------------------- what a card is
 //
@@ -63,6 +65,9 @@ export interface SessionCardData {
    *  or null/absent when it waits for nothing. Optional so a card built by a
    *  caller that predates the field still type-checks; absent reads as null. */
   queuedBehind?: string | null;
+  /** The mosaics the night shot (#188), straight off the list row; absent for
+   *  a night with none and for a report-only card. */
+  mosaics?: SessionMosaic[];
 }
 
 /** The id a row's session waits behind, or null. `SessionRow.queued_behind` is
@@ -159,6 +164,7 @@ export function buildCards(
         integrationS: hit ? hit.integration_s : null,
         reportId: hit?.id ?? null,
         queuedBehind: rowQueuedBehind(row),
+        ...(row.mosaics?.length ? { mosaics: row.mosaics } : {}),
       };
     });
 

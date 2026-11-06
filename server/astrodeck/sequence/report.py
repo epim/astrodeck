@@ -299,6 +299,17 @@ class FrameRecord(BaseModel):
     #: written before the fields. Additive, like the PRO-10 fields above.
     mosaic: str | None = None
     panel: str | None = None
+    #: WHICH MOSAIC AND WHICH PANEL, BY IDENTITY (#796): ``mosaic_id`` is the
+    #: group's compiled id (``TargetGroup.id``, unique per group instance) and
+    #: ``panel_id`` is the panel target's id. The labels above are display
+    #: text, and two groups can share a name and name their panels alike, so
+    #: the report's rows and the bundle's stacks are keyed on these. Unlike the
+    #: labels they are set on EVERY frame a group member shoots, a hold's dark
+    #: included, so a dark joins its own panel's row and not a namesake's. None
+    #: for a non-member and for every report written before the fields, which
+    #: is keyed by the labels and the target name as it always was.
+    mosaic_id: str | None = None
+    panel_id: str | None = None
     #: A LIGHT SHOT WHILE THE TARGET'S POINTING WAS NOT CONFIRMED BY A SOLVE
     #: (#852, ruling R4): the no-light hold that ran out, a re-centre that
     #: raised, or an in-place re-check that did not solve. Accepted and
@@ -333,6 +344,20 @@ class TargetBreakdown(BaseModel):
     #: :meth:`_Totals.add`), so a row whose only frames are darks has none.
     mosaic: str | None = None
     panel: str | None = None
+    #: The ids behind the two labels (#796); see ``FrameRecord``. A row is one
+    #: panel: its key is ``(name, panel_id)``, so two panels that share a name
+    #: are two rows.
+    mosaic_id: str | None = None
+    panel_id: str | None = None
+
+
+def mosaic_key(label: str | None, mosaic_id: str | None) -> str | None:
+    """What makes two frames, rows or groups the SAME mosaic: the id, and only
+    for a record written before the ids, the label. None for no mosaic.
+
+    The one definition, used by the report's rows and the bundle's stacks, so
+    the two cannot disagree about which frames belong together (#796)."""
+    return mosaic_id or label or None
 
 
 #: Every key a ``sky_angles`` row carries, and the only ones
@@ -426,7 +451,10 @@ class _Totals:
         # plan-wide per-filter
         self.pf: dict[str, dict[str, Any]] = {}
         # per-target -> per-filter
-        self.pt: dict[str, dict[str, Any]] = {}
+        #: keyed ``(target name, panel_id)``: a panel is its id, so two
+        #: panels that share a name are two rows (#796). ``panel_id`` is None
+        #: for a target that is no panel's and for a pre-id report.
+        self.pt: dict[tuple[str, str | None], dict[str, Any]] = {}
         self.captured = 0
         self.rejected = 0
         self.integ = 0.0
@@ -455,15 +483,19 @@ class _Totals:
         pe = self.pf.setdefault(fk, {"frames": 0, "rejected": 0,
                                      "integration_s": 0.0, "hfrs": [],
                                      "seed_median": None})
-        te = self.pt.setdefault(fr.target, {"frames": 0, "rejected": 0,
-                                            "integration_s": 0.0, "filters": {},
-                                            "mosaic": None, "panel": None})
+        te = self.pt.setdefault((fr.target, fr.panel_id),
+                                {"frames": 0, "rejected": 0,
+                                 "integration_s": 0.0, "filters": {},
+                                 "mosaic": None, "panel": None,
+                                 "mosaic_id": None, "panel_id": fr.panel_id})
         if fr.mosaic:
             # A frame that carries no label (a dark a hold shot on the panel,
             # which can come before or after its first light) says nothing
             # about the row, so it neither sets the label nor clears it.
             te["mosaic"] = fr.mosaic
             te["panel"] = fr.panel or None
+        if fr.mosaic_id:
+            te["mosaic_id"] = fr.mosaic_id
         tfe = te["filters"].setdefault(fk, {"frames": 0, "rejected": 0,
                                             "integration_s": 0.0, "hfrs": [],
                                             "seed_median": None})
@@ -500,7 +532,7 @@ class _Totals:
             for k, v in sorted(self.pf.items())
         ]
         targets = []
-        for tname, tv in self.pt.items():
+        for (tname, _panel_id), tv in self.pt.items():
             tf = [
                 FilterBreakdown(filter=k, frames=fv["frames"],
                                 rejected=fv["rejected"],
@@ -513,7 +545,9 @@ class _Totals:
                                            integration_s=tv["integration_s"],
                                            by_filter=tf,
                                            mosaic=tv.get("mosaic"),
-                                           panel=tv.get("panel")))
+                                           panel=tv.get("panel"),
+                                           mosaic_id=tv.get("mosaic_id"),
+                                           panel_id=tv.get("panel_id")))
         return by_filter, targets, self.captured, self.rejected, self.integ
 
     @classmethod
@@ -541,9 +575,11 @@ class _Totals:
             # the report again from these totals, and a panel that gets no
             # frame on the second pass would otherwise be written out
             # ungrouped (#188).
-            t.pt[tb.name] = {"frames": tb.frames, "rejected": tb.rejected,
-                             "integration_s": tb.integration_s, "filters": filters,
-                             "mosaic": tb.mosaic, "panel": tb.panel}
+            t.pt[(tb.name, tb.panel_id)] = {
+                "frames": tb.frames, "rejected": tb.rejected,
+                "integration_s": tb.integration_s, "filters": filters,
+                "mosaic": tb.mosaic, "panel": tb.panel,
+                "mosaic_id": tb.mosaic_id, "panel_id": tb.panel_id}
         return t
 
 

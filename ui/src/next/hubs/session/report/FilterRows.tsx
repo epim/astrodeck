@@ -83,12 +83,14 @@ export function ByFilterCard({ rows }: { rows: FilterBreakdown[] }): JSX.Element
 }
 
 /** A target's row as the server writes it. A mosaic's panel also carries the
- *  mosaic's name and its own `r-c` label (#188), which `mosaic` and `panel`
- *  name here; both are null for a target that is no panel, and absent from a
- *  report written before they existed. */
-export type MosaicTarget = TargetBreakdown & {
+ *  mosaic's name and its own `r-c` label (#188), and the ids behind both
+ *  (#796); all four are null for a target that is no panel, and absent from a
+ *  report written before they existed, so this reads them as optional. */
+export type MosaicTarget = Omit<TargetBreakdown, "mosaic" | "panel" | "mosaic_id" | "panel_id"> & {
   mosaic?: string | null;
   panel?: string | null;
+  mosaic_id?: string | null;
+  panel_id?: string | null;
 };
 
 export interface PanelRef {
@@ -102,6 +104,7 @@ export type TargetRow =
   | { kind: "target"; target: MosaicTarget; index: number }
   | {
     kind: "mosaic";
+    /** The mosaic's name, for display; two mosaics can share one. */
     mosaic: string;
     panels: PanelRef[];
     /** The panels' accepted frames, rejects and accepted integration, summed. */
@@ -130,8 +133,10 @@ function byGrid(a: PanelRef, b: PanelRef): number {
 }
 
 /** The report's targets as rows: a target that is no panel stays a row of its
- *  own, and every target that shares a `mosaic` becomes one group with a
- *  summed roll-up. A group sits where its first panel was, so the card still
+ *  own, and every target that shares a mosaic becomes one group with a
+ *  summed roll-up. THE MOSAIC IS ITS ID (#796): two groups can share a name
+ *  and name their panels alike, so the key is `mosaic_id`, and only a report
+ *  written before the ids falls back to the label. A group sits where its first panel was, so the card still
  *  reads in the order the night ran; its panels are in grid order. Pure, and
  *  shared by the classic report. */
 export function groupTargetsByMosaic(targets: MosaicTarget[]): TargetRow[] {
@@ -142,10 +147,11 @@ export function groupTargetsByMosaic(targets: MosaicTarget[]): TargetRow[] {
       rows.push({ kind: "target", target: t, index });
       return;
     }
-    let group = open.get(t.mosaic);
+    const key = t.mosaic_id || t.mosaic;
+    let group = open.get(key);
     if (!group) {
       group = { kind: "mosaic", mosaic: t.mosaic, panels: [], frames: 0, rejected: 0, integration_s: 0 };
-      open.set(t.mosaic, group);
+      open.set(key, group);
       rows.push(group);
     }
     group.panels.push({ target: t, index });
@@ -160,7 +166,7 @@ export function groupTargetsByMosaic(targets: MosaicTarget[]): TargetRow[] {
 /** One target's block: its heading and totals, then its filters. A panel uses
  *  the same block under its mosaic's header, headed by its label. */
 function TargetBlock({ t, index, heading }: {
-  t: TargetBreakdown;
+  t: MosaicTarget;
   index: number;
   heading: string;
 }): JSX.Element {

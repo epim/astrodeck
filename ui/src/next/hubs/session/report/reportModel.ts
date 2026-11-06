@@ -79,11 +79,14 @@ export function rejectedLine(rejected: number): string | null {
 }
 
 /** `M42 · Ha · 300s · g100 · bin1` - the group's identity, in the order the
- *  server's own directory name uses. */
+ *  server's own directory name uses; a mosaic's panel then names its mosaic
+ *  and its `r-c` place (`mosaic Veil panel 1-2` after a separator), because its stack is one
+ *  panel of several that are stitched, never co-added (#188, #830). */
 export function groupLine(g: BundleGroupSummary): string {
   const parts = [g.target, g.filter ?? "NoFilter", `${g.exposure_s}s`];
   if (g.gain != null) parts.push(`g${g.gain}`);
   if (g.binning != null) parts.push(`bin${g.binning}`);
+  if (g.mosaic) parts.push(g.panel ? `mosaic ${g.mosaic} panel ${g.panel}` : `mosaic ${g.mosaic}`);
   return parts.join(" · ");
 }
 

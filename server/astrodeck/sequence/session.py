@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field, ValidationError, model_serializer
 
 from .. import hub as _hubmod
 from ..events import night_key
+from ..naming import panel_label
 from ..persist import (harden_private_file, list_json, read_json,
                        read_json_or, safe_id_path, write_private_text_atomic)
 from .models import SequencePlan
@@ -1122,6 +1123,40 @@ def _file_stamp(path: Path) -> tuple[int, int, int] | None:
     return (st.st_ino, st.st_mtime_ns, st.st_size)
 
 
+def mosaics_of(plan: SequencePlan) -> list[dict]:
+    """The mosaics in ``plan``, for a session's list row (#188): one per
+    ``plan.groups`` entry that has member targets, then one per Plan-UI
+    ``mosaic_group`` string no entry covers and more than one target shares
+    (a string on a single target is no mosaic, the Plan's own rule). Each is
+    ``{"id", "name", "panels"}``: the group's id (the key, and what makes two
+    groups that share a name two mosaics), its name, and its panels' ``r-c``
+    labels in grid order, a panel with no grid place after them under its
+    target's name. The same grouping the review drawer draws
+    (``ui/src/lib/sessionReview.ts`` ``mosaicGroupsOf``)."""
+    written = {g.id: (g.name or "").strip() or g.id for g in plan.groups}
+    members: dict[str, list] = {gid: [] for gid in written}
+    legacy: dict[str, list] = {}
+    for t in plan.targets:
+        gid = t.mosaic_group
+        if not gid or not t.id:
+            continue
+        (members if gid in written else legacy).setdefault(gid, []).append(t)
+
+    def labelled(targets: list) -> list[str]:
+        placed = [t for t in targets
+                  if t.panel_row is not None and t.panel_col is not None]
+        placed.sort(key=lambda t: (t.panel_row, t.panel_col))
+        loose = [t for t in targets if t not in placed]
+        return ([panel_label(t.panel_row, t.panel_col) for t in placed]
+                + [t.name for t in loose])
+
+    out = [{"id": gid, "name": written[gid], "panels": labelled(ts)}
+           for gid, ts in members.items() if ts]
+    out += [{"id": gid, "name": gid, "panels": labelled(ts)}
+            for gid, ts in legacy.items() if len(ts) > 1]
+    return out
+
+
 class SessionStore:
     """uuid-keyed session store; one ``sessions/<id>.json`` per session
     (mirrors plans.PlanLibrary)."""
@@ -1613,7 +1648,7 @@ class SessionStore:
                 if row is not None:
                     rows.append(row)
                 continue
-            rows.append({
+            row = {
                 "id": s.id, "name": s.name, "status": s.status,
                 "created_ts": s.created_ts, "updated_ts": s.updated_ts,
                 "nights": len(s.observing_nights()),
@@ -1624,7 +1659,13 @@ class SessionStore:
                 # panel's "next: ..." line reads it, and a viewer cannot tell
                 # a queued session from an unarmed one without it.
                 "queued_behind": s.queued_behind,
-            })
+            }
+            # The mosaics the night shot (#188), for the shelf card's chip; a
+            # night with none adds nothing to its row.
+            mosaics = mosaics_of(s.plan)
+            if mosaics:
+                row["mosaics"] = mosaics
+            rows.append(row)
         # An id that already has a row is not an orphan: a DELETE of its
         # unreadable file can land between the walk above and the scan here,
         # and the backup it kept would then be listed twice in one answer.
