@@ -64,6 +64,8 @@ TREND_CYCLES = 10
 _CYCLE_GAP_S = 30.0
 #: Calibration-walk steps kept.
 _WALK_MAX = 400
+#: How long ``flush`` waits for writes in flight before it says so.
+FLUSH_TIMEOUT_S = 10.0
 #: The only calibration fields copied into a file. None is a position.
 _CAL_KEYS = ("x_rate", "y_rate", "x_angle", "y_angle", "y_angle_error",
              "is_valid")
@@ -392,8 +394,23 @@ class FlightRecorder:
         tmp.write_text(json.dumps(payload, indent=1), encoding="utf-8")
         os.replace(tmp, path)
 
-    async def flush(self) -> None:
-        """Wait for every write in flight (tests, shutdown)."""
+    async def flush(self, timeout: float = FLUSH_TIMEOUT_S) -> None:
+        """Wait for every write in flight (tests, shutdown). Raises
+        ``TimeoutError`` naming how many writes were still running after
+        ``timeout`` seconds.
+
+        The writes it waited for are dropped from ``_pending`` here, not left
+        to their done callbacks: a write that has finished while its callback
+        is still queued would otherwise keep the loop condition true, and
+        ``asyncio.gather`` over done futures does not yield, so the callback
+        could never run (#1162)."""
+        deadline = time.monotonic() + timeout
         while self._pending:
-            await asyncio.gather(*list(self._pending),
-                                 return_exceptions=True)
+            waiting = set(self._pending)
+            done, running = await asyncio.wait(
+                waiting, timeout=max(0.0, deadline - time.monotonic()))
+            self._pending.difference_update(done)
+            if running:
+                raise TimeoutError(
+                    f"flight recorder: {len(running)} write(s) still "
+                    f"running after {timeout:g} s")
