@@ -58,7 +58,11 @@ jobs:
       # box): hosted runners have 2-4 cores, and 12 workers oversubscribes them
       # enough to consistently trip wall-clock perf gates (test_render_perf_768).
       # --durations names the slowest tests in every run's log (#1162).
-      - run: pytest -q -n auto --durations=30
+      # faulthandler_timeout: some #1162 cancellations are a hang at 99%, with
+      # no test finishing for 16-22 minutes. A test still running after 300 s
+      # dumps every thread's stack into this log, so the next hang names its
+      # test and the line it is stuck on. It only dumps; it fails nothing.
+      - run: pytest -q -n auto --durations=30 -o faulthandler_timeout=300
       # Dependency vulnerability gate (OPEN-006). pip-audit fails the build on a
       # known-vulnerable installed dependency; local editable packages
       # (astrodeck, astrodeck-native) are skipped, not failed. Runs AFTER the
