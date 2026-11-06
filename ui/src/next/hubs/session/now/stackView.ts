@@ -139,7 +139,9 @@ export function useStackView(): StackView {
       // The status on screen describes the panel that WAS pinned. Waiting for
       // the next ten-second tick would show the wrong counts under the new
       // picture for ten seconds, so ask now.
-      void refresh().then(schedule);
+      // Only when the shared poller is mounted: with none, nothing reads this
+      // state, and the surfaces that pin through here poll for themselves.
+      if (mounted > 0) void refresh().then(schedule);
     },
   };
 }

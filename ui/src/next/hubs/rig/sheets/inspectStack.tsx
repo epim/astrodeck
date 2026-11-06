@@ -23,6 +23,7 @@ import {
   sessionStackImageUrl,
   type SessionStackStatus,
 } from "../../../../api/sessionStack";
+import { PanelPicker, usePanelPin } from "../../../../components/PanelPicker";
 import { BACKFILL_POLL_MS, modeLabel, POLL_MS } from "../../../../components/preview/SessionStack";
 import { usePreviewGestures } from "../../../../components/preview/usePreviewGestures";
 import type { Viewport } from "../../../../types";
@@ -57,11 +58,18 @@ export function StackInspect({ onLastSub }: { onLastSub: () => void }): JSX.Elem
   const [status, setStatus] = useState<SessionStackStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
+  // The panel the composite is of: pinned with the chips (shared with the other
+  // stack surfaces), or the latest while following.
+  const { panel, setPanel } = usePanelPin(status?.panels);
+  const asked = useRef<string | null>(panel);
+  asked.current = panel;
 
   const refresh = useCallback(async () => {
+    const want = panel;
     try {
-      const s = await getSessionStack();
-      if (!alive.current) return;
+      const s = await getSessionStack(want);
+      // The pin moved while this was in flight: a newer request is on its way.
+      if (!alive.current || asked.current !== want) return;
       setStatus(s);
       setError(null);
     } catch (e) {
@@ -70,7 +78,7 @@ export function StackInspect({ onLastSub }: { onLastSub: () => void }): JSX.Elem
       // stacked nothing", which is a different and much worse claim.
       setError((e as Error)?.message || "the stack status could not be read");
     }
-  }, []);
+  }, [panel]);
 
   useEffect(() => {
     alive.current = true;
@@ -120,7 +128,8 @@ export function StackInspect({ onLastSub }: { onLastSub: () => void }): JSX.Elem
   }, [fitScale, viewport.fit, viewport.scale, viewport.x, viewport.y, setViewport]);
 
   const hasImage = !!status?.has_image;
-  const imgUrl = status && hasImage ? sessionStackImageUrl(status.seq, 1200) : null;
+  const imgUrl = status && hasImage
+    ? sessionStackImageUrl(status.seq, 1200, undefined, panel ?? undefined) : null;
   const backfill = backfillLabel(status?.backfill);
 
   const lastSubButton = (
@@ -139,6 +148,13 @@ export function StackInspect({ onLastSub }: { onLastSub: () => void }): JSX.Elem
           <Mono size={11} tone="warn">{error}</Mono>
         </Card>
       )}
+
+      <PanelPicker
+        panels={status?.panels ?? []}
+        panel={panel}
+        onPick={setPanel}
+        testId="inspect-stack-panels"
+      />
 
       {imgUrl ? (
         <div

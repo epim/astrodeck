@@ -252,14 +252,14 @@ await testAsync("following the latest asks for exactly the URLs this app has alw
 
 await testAsync("each chip carries its panel's name and sub count; the latest is lit", () => {
   const part = (id: string, cls: string): string =>
-    (byId(id).querySelector(`.${cls}`)?.textContent as string) ?? "";
-  eq(part("panel-chip-t-a", "nx-chip-text"), "Alpha", "the Alpha chip's name:");
-  eq(part("panel-chip-t-a", "nx-chip-count"), "4", "the Alpha chip's sub count:");
-  eq(part("panel-chip-t-b", "nx-chip-text"), "Beta", "the Beta chip's name:");
-  eq(part("panel-chip-t-b", "nx-chip-count"), "2", "the Beta chip's sub count:");
-  eq(byId("panel-chip-t-b").getAttribute("data-active"), "true",
+    (byId(id).querySelector(`[data-part="${cls}"]`)?.textContent as string) ?? "";
+  eq(part("panel-chip-t-a", "name"), "Alpha", "the Alpha chip's name:");
+  eq(part("panel-chip-t-a", "count"), "4", "the Alpha chip's sub count:");
+  eq(part("panel-chip-t-b", "name"), "Beta", "the Beta chip's name:");
+  eq(part("panel-chip-t-b", "count"), "2", "the Beta chip's sub count:");
+  eq(byId("panel-chip-t-b").getAttribute("aria-pressed"), "true",
     "the chip of the panel the latest frame fed is not the lit one:");
-  eq(byId("panel-chip-t-a").getAttribute("data-active"), "false",
+  eq(byId("panel-chip-t-a").getAttribute("aria-pressed"), "false",
     "two chips are lit at once:");
   assert(/2 subs/.test(badge()), `the badge does not count the panel on screen: "${badge()}"`);
 });
@@ -277,8 +277,8 @@ await testAsync("pinning Alpha changes the picture's URL and the status the badg
     `the status was not asked for Alpha: ${asks.join(" | ")}`);
   assert(/4 subs/.test(badge()),
     `the badge still counts the other panel: "${badge()}"`);
-  eq(byId("panel-chip-t-a").getAttribute("data-active"), "true", "the pinned chip is not lit:");
-  eq(byId("panel-chip-t-b").getAttribute("data-active"), "false", "the latest chip stayed lit under a pin:");
+  eq(byId("panel-chip-t-a").getAttribute("aria-pressed"), "true", "the pinned chip is not lit:");
+  eq(byId("panel-chip-t-b").getAttribute("aria-pressed"), "false", "the latest chip stayed lit under a pin:");
 });
 
 await testAsync("pressing the pinned chip again follows the latest once more", async () => {
