@@ -6505,6 +6505,19 @@ class SequenceEngine:
         at = max(k for k, t in enumerate(remaining) if self._group_of(t) is group)
         remaining[at + 1:at + 1] = ahead
 
+    def _next_night_does(self) -> str:
+        """What a later night does with a panel or step set aside tonight, as
+        the plan has it (#830, #1112): the next night takes it up, and by
+        itself only where the plan resumes across nights. An explicit Off
+        (``resume_across_nights``, read off the session's frozen plan as
+        `_finalize_report` reads it) starts no later night on its own, so the
+        set-aside lines say CONTINUE is what takes it up, as the Tonight note
+        does."""
+        plan = getattr(self._session, "plan", None) or self.plan
+        if plan is not None and not plan.resume_across_nights:
+            return "the next night does only when CONTINUE is pressed by hand"
+        return "the next night does"
+
     def _skip_what_tonight_set_aside(self, remaining: list[Target]) -> None:
         """Drop from the rotation what a record says was set aside tonight:
         a whole target (a panel, or a target below its own floor), or a
@@ -6519,7 +6532,14 @@ class SequenceEngine:
         once nor forget it for the night. It stays in the rotation as a
         waiter
         (`_expire_or_wait`), and the line says so instead of "a restart
-        tonight does not retry it"."""
+        tonight does not retry it".
+
+        A PANEL THE OPERATOR ALREADY ASKED BACK STAYS TOO (#730, #830): a
+        retry asked before the scheduler built its groups is in
+        ``_pending_retries``, and the first selection drains it and judges the
+        panel. The line says that, and the report is not told the panel was
+        skipped, where "does not retry it" and a skip were both said and then
+        the panel was shot."""
         for t in list(remaining):
             reason = self._set_aside_targets.get(t.id)
             if reason is None and not t.calibration and \
@@ -6531,6 +6551,12 @@ class SequenceEngine:
             run = self._group_runs.get(g.id) if g is not None else None
             if run is not None and run.is_live(t.id):
                 run.set_aside_panel(t.id, reason)
+            if t.id in self._pending_retries:
+                bus.log("info", f"{t.name}: set aside earlier tonight "
+                                f"({reason}); the operator asked for it "
+                                f"back, so the first selection takes it up "
+                                f"and judges it", "sequence")
+                continue
             if run is not None and t.id in run.set_aside \
                     and self._may_expire(t.id):
                 bus.log("info", f"{t.name}: set aside earlier tonight "
@@ -6538,8 +6564,8 @@ class SequenceEngine:
                                 f"when its set-aside expires", "sequence")
                 continue
             bus.log("info", f"{t.name}: set aside earlier tonight ({reason}); "
-                            f"a restart tonight does not retry it, the next "
-                            f"night does", "sequence")
+                            f"a restart tonight does not retry it, "
+                            f"{self._next_night_does()}", "sequence")
             if self.reporter:
                 self.reporter.mark_skipped(t, reason)
             self._drop_from(remaining, t)
@@ -6866,7 +6892,7 @@ class SequenceEngine:
         elif say:
             bus.log("warning", f"{group.name or group.id}: {reason}; set aside "
                                f"for tonight: a restart tonight does not retry "
-                               f"it, the next night does", "sequence")
+                               f"it, {self._next_night_does()}", "sequence")
         # SKIPPED IS FOR THE NIGHT. A panel set aside for now may still be
         # shot tonight, so the report marks it skipped only once it is set
         # aside for the night: its second set-aside, the whole group's, or
@@ -7276,8 +7302,8 @@ class SequenceEngine:
                 self._drop_from(remaining, t)
         self._end_pending_expiries(group, remaining, reason, kind="angle")
         bus.log("warning", f"{mosaic}: {reason}; the mosaic is set aside for "
-                           f"tonight: a restart tonight does not retry it, the "
-                           f"next night does", "sequence")
+                           f"tonight: a restart tonight does not retry it, "
+                           f"{self._next_night_does()}", "sequence")
         self._set_state(state="running", hold=None,
                         detail=f"{mosaic}: set aside for tonight")
 
@@ -7695,7 +7721,8 @@ class SequenceEngine:
         if end.boundary == "set_aside_all":
             self._end_pending_expiries(group, remaining, end.reason)
             bus.log("warning", f"{mosaic}: {end.reason}: a restart tonight does "
-                               f"not retry it, the next night does", "sequence")
+                               f"not retry it, {self._next_night_does()}",
+                    "sequence")
             return
         if end.boundary == "none_live":
             return
@@ -7719,7 +7746,7 @@ class SequenceEngine:
                 self._end_pending_expiries(group, remaining, reason)
                 bus.log("warning", f"{mosaic}: {reason}; the mosaic is set "
                                    f"aside for tonight: a restart tonight does "
-                                   f"not retry it, the next night does",
+                                   f"not retry it, {self._next_night_does()}",
                         "sequence")
                 return
             self._group_unguided.add(group.id)
@@ -8494,8 +8521,8 @@ class SequenceEngine:
                 f"{target.name}: sank below its own altitude floor — setting "
                 f"it aside for the rest of this run and the rest of tonight "
                 f"(its remaining frames stay pending in the session log; a restart tonight does "
-                f"not retry it; the next night does, once it is back above its "
-                f"floor)", "sequence")
+                f"not retry it; {self._next_night_does()}, once it is back "
+                f"above its floor)", "sequence")
         if self.plan and self.plan.instructions:
             await self._run_instructions(
                 TriggerContext(now_ts=now,
@@ -11482,7 +11509,8 @@ class SequenceEngine:
         bus.log("warning",
                 f"{target.name}: every step with remaining frames is set aside for tonight "
                 f"({names}) — moving on; their frames remain pending; a restart "
-                f"tonight does not retry them; the next night does", "sequence")
+                f"tonight does not retry them; {self._next_night_does()}",
+                "sequence")
 
     async def _run_visit(self, ti: int, target: Target, visit: VisitBound) -> None:
         """ONE VISIT to a group member (#189 S2, spec 5.3), in rounds of the
@@ -12039,7 +12067,7 @@ class SequenceEngine:
         line = (f"{target.name}: {step.filter or 'no filter'} set aside for "
                 f"tonight after {rejects} consecutive rejects — its {owed} "
                 f"frame(s) remain pending in the session log; a restart tonight does not "
-                f"retry it; the next night does")
+                f"retry it; {self._next_night_does()}")
         self._set_aside[key] = line
         self._persist_set_aside(target.id, line, step_id=step.id,
                                 kind="rejects")

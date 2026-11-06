@@ -7308,6 +7308,23 @@ def create_app(*, bind_host: str | None = None,
         that absence is how the next route added here breaks this one."""
         return await _compile_payload(body.graph or FlowGraph(), body.name or "")
 
+    def _card_plan(rec: FlowRecord, flow_id: str, camera_can_cool: bool,
+                   rig: RigFacts) -> tuple[dict, SequencePlan]:
+        """``(compiled, plan)`` for the stored flow, compiled the way
+        ``run_flow`` compiles it: the one compile the progress card and the
+        dormant retry (``POST /api/sequence/retry-set-aside``, #809) both read,
+        so a group id or a panel the card names is one the retry knows. The
+        arguments are the run's (see ``_flow_progress_payload``)."""
+        compiled = compile_plan(rec.graph, rec.name)
+        plan, _unmapped = to_sequence_plan(
+            compiled, rec.graph, flow_id=flow_id,
+            cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
+            camera_can_cool=camera_can_cool,
+            closes_on_unsafe=bool(
+                config_store.cfg().safety.close_dome_on_unsafe),
+            rig=rig)
+        return compiled, plan
+
     def _flow_progress_payload(rec: FlowRecord, flow_id: str,
                                camera_can_cool: bool, rig: RigFacts,
                                now: float) -> dict:
@@ -7367,14 +7384,7 @@ def create_app(*, bind_host: str | None = None,
         only a dormant session is continued, and any other answers without
         the key.
         """
-        compiled = compile_plan(rec.graph, rec.name)
-        plan, _unmapped = to_sequence_plan(
-            compiled, rec.graph, flow_id=flow_id,
-            cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
-            camera_can_cool=camera_can_cool,
-            closes_on_unsafe=bool(
-                config_store.cfg().safety.close_dome_on_unsafe),
-            rig=rig)
+        compiled, plan = _card_plan(rec, flow_id, camera_can_cool, rig)
         session = session_store.current_for_flow(flow_id)
         # ``now`` is handed on so a dormant session's set-aside panels are
         # listed against the clock this request read (#727, WP-141); the
@@ -11105,6 +11115,22 @@ def create_app(*, bind_host: str | None = None,
         await engine.abort()
         return {"aborted": True}
 
+    def _plan_the_card_shows(s: Session, camera_can_cool: bool,
+                             rig: RigFacts) -> SequencePlan:
+        """The plan the progress card reads ``s`` against: the session's flow
+        as it stands now (``_card_plan``), so the group ids and the owed
+        frames the dormant retry resolves are the card's own (#809). A
+        session no flow made, one whose flow is gone, and one whose flow no
+        longer compiles keep their frozen plan: their records still stand
+        under it, and a half-built graph must not refuse the retry."""
+        if s.origin != "flow" or not s.origin_id:
+            return s.plan
+        try:
+            return _card_plan(flow_store.get(s.origin_id), s.origin_id,
+                              camera_can_cool, rig)[1]
+        except (KeyError, GraphNotRunnable):
+            return s.plan
+
     @app.post("/api/sequence/retry-set-aside",
               dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)
@@ -11127,7 +11153,11 @@ def create_app(*, bind_host: str | None = None,
         judged by the selection, never force-slewed.
 
         DORMANT (no run, one that has ended, or a stored session named by
-        ``session_id`` that is not the live run's): the stored session's
+        ``session_id`` that is not the live run's): the group and the frames
+        owed are resolved against the plan the progress card shows (the
+        session's flow compiled as it stands now, so a group id the card
+        names is one this knows, #809; a session with no flow keeps its
+        frozen plan), and the stored session's
         records for tonight are marked cleared and saved, in one locked
         section on a worker thread (as PATCH /api/sessions/{id} does,
         #167), so the same night's CONTINUE, restart or auto-resume takes
@@ -11155,6 +11185,8 @@ def create_app(*, bind_host: str | None = None,
             if not out["queued"]:
                 raise HTTPException(409, "nothing is set aside")
             return {"queued": out["queued"], "live": True}
+        # Asked here, on the event loop, as the progress route asks them.
+        can_cool, rig = _camera_can_cool(), _rig_facts()
 
         def _locked() -> tuple[list[str], list[str]]:
             with session_store.write_locked():
@@ -11174,14 +11206,16 @@ def create_app(*, bind_host: str | None = None,
                 if s.status != "dormant":
                     raise HTTPException(
                         409, f"session is {s.status}, not dormant")
-                groups = {g.id: g for g in s.plan.groups}
+                plan = _plan_the_card_shows(s, can_cool, rig)
+                groups = {g.id: g for g in plan.groups}
                 if group is not None and group not in groups:
                     raise HTTPException(404, "no such group")
                 # What a complete panel still owes is nothing: its record, if
-                # it has one, is left alone.
-                owed = s.remaining()
+                # it has one, is left alone. Counted by the card's plan, on
+                # the session's own ledger, as the card counts it.
+                owed = s.model_copy(update={"plan": plan}).remaining()
                 members: dict[str, list] = {}
-                for t in s.plan.targets:
+                for t in plan.targets:
                     if (t.mosaic_group in groups and not t.calibration
                             and (group is None or t.mosaic_group == group)
                             and (sum(x.count for x in t.steps) == 0
