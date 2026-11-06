@@ -333,6 +333,19 @@ _JNOW_REPROBE_HOLDOFF_S = 60.0
 TOUCH_MAX_RATE_DEG_S = 0.6
 MOVE_DEADMAN_MS = 1200
 
+#: WHY THE MOTION FENCE MOVED (``Hub.bump_motion_epoch``'s ``cause``, WP 3.1,
+#: #880, ruling D-A). The fence moves for an operator's STOP, the manual-move
+#: deadman, a park, a home, a roof close, a safety halt and a dawn park alike,
+#: and a run that was moving the mount can tell only the first two from the
+#: rest by the cause: those pause the run until the operator resumes it, and
+#: every other halt keeps the handling it always had (a safety park must not
+#: read as the operator's pause). A caller that names no cause is not the
+#: operator's.
+HALT_OPERATOR_STOP = "operator_stop"
+HALT_DEADMAN = "deadman"
+HALT_OTHER = "other"
+OPERATOR_HALT_CAUSES = frozenset({HALT_OPERATOR_STOP, HALT_DEADMAN})
+
 #: Centering "the mount did not move" guard (2026-08-06, on the sky: attempt 1
 #: 33.7' off, attempt 2 33.7' off — bit-identical, because the correction slew
 #: was not being executed, and the loop burned its remaining attempts saying
@@ -1520,6 +1533,9 @@ class Hub:
         # deadman state above.
         self._motion_lock: asyncio.Lock = asyncio.Lock()
         self._motion_epoch: int = 0
+        #: The newest fence value an operator halt (``OPERATOR_HALT_CAUSES``)
+        #: made, 0 when none has.
+        self._operator_halt_epoch: int = 0
         self.polar = PolarAlignSession(self)
         # cache of the active Profile, keyed by its id, so the 2s status poll's
         # effective_optics() never does a blocking disk read on the event loop.
@@ -3323,7 +3339,7 @@ class Hub:
 
     # ----------------------------------------------------- motion serialization
 
-    def bump_motion_epoch(self) -> int:
+    def bump_motion_epoch(self, cause: str = HALT_OTHER) -> int:
         """Advance the motion fence (W3.7). EVERY abort path -- explicit STOP, a
         safety/on_unsafe halt, park, or the deadman -- calls this FIRST (before it
         cancels the ``goto`` task / calls ``tel.stop()``), so a motion-committing
@@ -3332,9 +3348,20 @@ class Hub:
         (``_motion_committed_clean``). Returns the new epoch (the value the next
         commit will read at entry). Synchronous + lock-free: a single ``int +=``
         on the event loop, so an abort can fence even while ``_motion_lock`` is
-        held by the slew it is racing."""
+        held by the slew it is racing.
+
+        ``cause`` says why (``HALT_*``): an operator STOP or the deadman is
+        remembered (`operator_halted_since`), anything else is not."""
         self._motion_epoch += 1
+        if cause in OPERATOR_HALT_CAUSES:
+            self._operator_halt_epoch = self._motion_epoch
         return self._motion_epoch
+
+    def operator_halted_since(self, epoch: int) -> bool:
+        """True iff an operator STOP or the manual-move deadman moved the
+        fence after ``epoch`` was read. A park, a home, a roof close or a
+        safety or dawn halt after it does not count."""
+        return self._operator_halt_epoch > epoch
 
     def _motion_committed_clean(self, epoch_at_entry: int) -> bool:
         """True iff no abort has bumped the fence since ``epoch_at_entry`` was read.
@@ -3409,7 +3436,7 @@ class Hub:
             # Motion fence (W3.7): a deadman halt is an abort -- bump the epoch
             # FIRST so any motion path racing this auto-halt is fenced out before
             # the stop, exactly like an explicit STOP.
-            self.bump_motion_epoch()
+            self.bump_motion_epoch(HALT_DEADMAN)
             try:
                 await tel.stop()              # zeroes both axes (alpaca/base)
             except Exception as e:

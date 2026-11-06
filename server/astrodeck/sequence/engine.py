@@ -90,6 +90,7 @@ from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
                           no_guider_defers, set_aside_expiry)
 from .models import ExposureStep, SequencePlan, Target, TargetGroup
 from .panel_order import OrderSnapshot, order_panels
+from .recovery import Action, RecoveryLadder
 from .report import FrameRecord, SessionReporter
 from .policy import (MIN_GUIDE_SCALE_ARCSEC_PX, guide_rms_floor_arcsec,
                      resolve_policy)
@@ -978,6 +979,43 @@ RECOVERY_RECENTRES_SPENT = ("the guide star kept going missing; tonight's "
 POSITION_UNKNOWN_STOP = ("the mount's position is unknown, so the run "
                          "stopped without moving it")
 
+#: THE RECOVERY LADDER'S WORDS (#1109, `sequence/recovery.py`). Fixed words,
+#: no figure and no coordinate: a viewer reads these. The action comes first,
+#: and none holds "plate" beside "solve".
+#:
+#: The home leg says what home buys and what it cannot (#1098, #857): on the
+#: AM5 ``find_home`` is a goto to the MODEL's home, so it re-establishes the
+#: slew path, cable wrap and pier side and does not correct a model that is
+#: wrong. What does: the safe order, which is the one proven recovery.
+LADDER_RETRY_WORDS = ("off target; centring once more from where the mount "
+                      "stands")
+LADDER_HOME_WORDS = ("still off target after the retry; slewing home, then to "
+                     "the target. Home re-establishes the slew path, cable "
+                     "wrap and pier side; it does not correct the mount's "
+                     "pointing model")
+LADDER_NO_HOME_WORDS = ("still off target, and this mount has no home position "
+                        "to slew to")
+LADDER_HOME_FAILED_WORDS = "the home leg failed, so the ladder goes no further"
+LADDER_MODEL_OFF_WORDS = (
+    "the mount would not take the sync, so its pointing model is off by more "
+    "than a sync corrects, and homing does not reset a model. Needs someone "
+    "at the scope: " + POSITION_UNKNOWN_SAFE_ORDER)
+LADDER_HOME_DID_NOT_REPAIR_WORDS = (
+    "still off target after the home leg, so the pointing model is wrong, and "
+    "homing does not reset a model. Needs someone at the scope: "
+    + POSITION_UNKNOWN_SAFE_ORDER)
+#: D-A (#880): a STOP, a manual move or the manual-move deadman halted the
+#: mount while the run was moving it. The run pauses and waits for the
+#: operator; nothing automatic moves the mount, picks the next target or
+#: restarts the run until they resume it. "A safety park" is in the cause
+#: list because the fence moves for it too and the run cannot tell them apart.
+L_HALTED_BY_OPERATOR = ("the mount was halted while the run was moving it "
+                        "(a STOP, a manual move, the manual-move deadman or a "
+                        "safety park); the run is paused and does nothing "
+                        "until you resume it")
+HALTED_BY_OPERATOR_DETAIL = ("paused: the mount was halted; it waits here "
+                             "until you resume it")
+
 #: #873: NO FRAME IS SHOT THAT THE GUIDE-RMS REJECT WILL REFUSE. With
 #: `max_guide_rms` armed (it is by default, #854) a frame shot with the guider
 #: stopped is rejected (#142 / D-06), so "continuing unguided" after the #72
@@ -1580,6 +1618,16 @@ class SequenceEngine:
         self._task: asyncio.Task | None = None
         self._paused = asyncio.Event()
         self._paused.set()  # set = not paused
+        #: The recovery ladder (#1109): trusted, suspect, lost, or
+        #: paused_by_operator. A new one at every start.
+        self._ladder = RecoveryLadder()
+        #: The hub's motion fence as the newest centring began: an aborted
+        #: answer is the operator's halt only if an operator STOP or the
+        #: deadman moved the fence after it (`_operator_halt_since`).
+        self._centring_fence: int | None = None
+        #: The tracking recovery's outer time bound while it runs, so an
+        #: operator's pause inside it does not use the bound up.
+        self._recovery_bound: asyncio.Timeout | None = None
         self.state: dict[str, Any] = {"state": "idle"}
         self._frames_done = 0
         #: Frames of the calibration targets the engine builds for itself (day
@@ -2616,6 +2664,7 @@ class SequenceEngine:
             self._idle_since = time.time()
             self._idle_hold_open = True
         self._paused.set()
+        self._ladder = RecoveryLadder()
         self._started_at = time.time()
         self._paused_accum_s = 0.0
         self._pause_started_at = None
@@ -2743,12 +2792,18 @@ class SequenceEngine:
         if self._pause_started_at is not None:
             self._paused_accum_s += time.time() - self._pause_started_at
             self._pause_started_at = None
+        # THE ONLY EXIT FROM paused_by_operator (D-A, #880): the ladder is
+        # told here, and the arming a halt took away is put back.
+        was_halted = self._ladder.resumed()
+        if was_halted:
+            self._set_operator_arming(True)
         self._paused.set()
         # And clear it on the way out: a reason must not outlive the pause it
         # explains, or a running rig carries "paused by you" until the next
         # frame boundary overwrites it. Same discipline `schedule=None` already
         # has — an explicit clear, not a hope that something else will.
-        self._set_state(state="running", detail="")
+        self._set_state(state="running", detail="",
+                        **({"recovery": None} if was_halted else {}))
 
     # ------------------------------------------------------- elapsed / ETA math
 
@@ -9065,6 +9120,7 @@ class SequenceEngine:
         try:
             # ``max_attempts`` is the target's own when it sets one
             # (`_centring_kwargs`), and passing both is a TypeError.
+            self._note_centring_begins()
             placed = await _bounded(
                 self.hub.goto_and_center(
                     target.ra_hours, target.dec_deg, rotation_deg=None,
@@ -9075,6 +9131,13 @@ class SequenceEngine:
             # the ``except SafetyAbort`` below.
             await self._stop_if_centring_refused_unknown(
                 placed, target, "the rotator self-test")
+            # AN OPERATOR'S HALT UNDER THE SELF-TEST'S GOTO (#880, D-A): the
+            # field on the sensor is not the target's, so the test must not
+            # run on it. Held for the operator; then the test is left for a
+            # later hop (``_rotator_tested_night`` stays unset).
+            if self._operator_halted(placed):
+                await self._hold_for_operator(target, "the rotator self-test")
+                return
             await _bounded(self_test(), ROTATOR_SELF_TEST_TIMEOUT_S,
                            "rotator self-test")
         except (SafetyAbort, asyncio.CancelledError):
@@ -9975,6 +10038,7 @@ class SequenceEngine:
         tracking refusal the same way, and returns the raw
         ``goto_and_center`` result (or the recovery's) for the caller to
         read ``["centered"]`` / ``.get("error_arcmin")`` from."""
+        self._note_centring_begins()
         try:
             result = await _bounded(
                 self.hub.goto_and_center(
@@ -10000,6 +10064,223 @@ class SequenceEngine:
         await self._stop_if_centring_refused_unknown(result, target,
                                                      "centring")
         return result
+
+    # ------------------------------------------- the recovery ladder (#1109)
+
+    def _operator_halted(self, result) -> bool:
+        """Whether a centring result is the hub's aborted shape for a mount
+        that the OPERATOR halted under the goto: an operator STOP or the
+        manual-move deadman moved the motion fence since the centring began
+        (#880, D-A). A safety, dawn or other halt moves the fence too and is
+        not the operator's, so it keeps the handling it always had. Not the
+        aborted shape for an unknown position, which
+        `_stop_if_centring_refused_unknown` owns."""
+        return (isinstance(result, dict) and bool(result.get("aborted"))
+                and not result.get("position_unknown")
+                and self._operator_halt_since(self._centring_fence))
+
+    def _motion_epoch(self) -> int | None:
+        """The hub's motion fence now, or None for a hub that keeps none."""
+        epoch = getattr(self.hub, "_motion_epoch", None)
+        return epoch if isinstance(epoch, int) else None
+
+    def _note_centring_begins(self) -> None:
+        """Read the motion fence just before a centring goto, for
+        `_operator_halted`."""
+        self._centring_fence = self._motion_epoch()
+
+    def _operator_halt_since(self, epoch: int | None) -> bool:
+        """Whether an operator STOP or the manual-move deadman moved the
+        motion fence after ``epoch`` was read (``Hub.operator_halted_since``).
+        False for a hub that keeps no causes."""
+        asks = getattr(self.hub, "operator_halted_since", None)
+        return epoch is not None and callable(asks) and bool(asks(epoch))
+
+    def _set_operator_arming(self, on: bool) -> None:
+        """Take auto-resume away from the live session while the operator's
+        halt stands, and give it back at their resume (D-A, #880).
+
+        A run paused by a halt is alive, so ResumeArm leaves it alone; but a
+        crash or a restart while it waits would make the next tick resume a
+        run the operator halted. Disarmed in the store, as an operator's
+        Abort disarms (`_finalize_report`). Put back only when no OTHER
+        session is armed meanwhile: arming one disarms the live one, and the
+        resume must not take that back. Best-effort and said once."""
+        session = self._session
+        if session is None:
+            return
+        try:
+            with session_store.write_locked():
+                fresh = session_store.load(session.id)
+                fresh.auto_resume = on and not any(
+                    o.auto_resume for o in session_store.load_all()
+                    if o.id != fresh.id)
+                session_store.save(fresh)
+            session.auto_resume = fresh.auto_resume
+        except Exception as e:      # noqa: BLE001 - never ends the hold
+            self._say_swallowed(
+                "auto-resume could not be switched for the operator's halt",
+                e)
+
+    async def _hold_for_operator(self, target, where: str) -> None:
+        """PAUSED BY THE OPERATOR (D-A, #880): the mount was halted while the
+        run was moving it, so the run waits, here, until the operator resumes
+        it (`resume`). Nothing automatic happens meanwhile: no re-centre, no
+        goto to the next target, no restart by auto-resume (the session is
+        disarmed for the wait, `_set_operator_arming`).
+
+        Published as a paused run, which every client already shows with a
+        Resume control, with the ladder state beside it. The wait is the
+        frame boundary's (`_checkpoint`), so a guider that is running is
+        stood down as a pause stands it down (#849). An Abort ends the wait
+        by cancelling the run."""
+        self._ladder.halted()
+        self._set_operator_arming(False)
+        self.pause()
+        self._set_state(detail=HALTED_BY_OPERATOR_DETAIL,
+                        recovery=self._ladder.state.value)
+        bus.log("warning",
+                f"{getattr(target, 'name', 'this target')}: {where}: "
+                f"{L_HALTED_BY_OPERATOR}", "sequence")
+        # A pause inside the tracking recovery stops its outer clock and
+        # puts it back, later by as long as the pause lasted.
+        loop = asyncio.get_running_loop()
+        held_from = loop.time()
+        bound = self._recovery_bound
+        due = (bound.when()
+               if bound is not None and not bound.expired() else None)
+        if due is not None:
+            bound.reschedule(None)
+        try:
+            await self._checkpoint()
+        finally:
+            if due is not None and not bound.expired():
+                bound.reschedule(due + loop.time() - held_from)
+
+    async def _centre_until_not_halted(self, target: Target,
+                                       rotation: float | None, where: str,
+                                       result) -> dict:
+        """``result``, a centring the caller made, held for the operator for
+        as long as the mount keeps being halted under it, and made again
+        (`_centre_once`) after each resume. A result that is not a halt, and
+        any non-dict answer a double gives, comes straight back."""
+        while self._operator_halted(result):
+            await self._hold_for_operator(target, where)
+            await self._gate_position_known(target, where)
+            result = await self._centre_once(target, rotation)
+        return result
+
+    async def _centre_once_unhalted(self, target: Target,
+                                    rotation: float | None,
+                                    where: str) -> dict:
+        """One centring (`_centre_once`) that waits out an operator's halt."""
+        return await self._centre_until_not_halted(
+            target, rotation, where, await self._centre_once(target, rotation))
+
+    async def _recover_centring(self, target: Target,
+                                rotation: float | None, result: dict,
+                                where: str) -> dict:
+        """THE RECOVERY LADDER at a centring (#1109, `sequence/recovery.py`),
+        returning the centring the caller goes on with.
+
+        An operator's halt is held for first (`_centre_until_not_halted`).
+        Then a centring that missed (`_centring_miss`: the solve landed
+        off-field, or the mount did not carry out the correction) is tried
+        once more from where the mount stands, and if that misses too the
+        mount goes HOME and then to the target (#1098, the owner's ruling of
+        2026-10-19), once per target per night. A solve failure with no
+        figure is the sky's and keeps its hold for light, and a sync the
+        mount would not take gets no home leg (#857).
+
+        NO SOLVE AT HOME. The home leg is a slew and the goto that follows
+        it solves at the target: nothing is gated on a field the park view
+        may not show. A position the driver calls unknown ends the run
+        before either goto (`_gate_position_known`, the #850 class).
+
+        The caller's own stop or deferral takes whatever this returns, so a
+        home leg that ends in a miss counts toward the holds that exist."""
+        ladder = self._ladder
+        name = getattr(target, "name", "this target")
+        result = await self._centre_until_not_halted(target, rotation, where,
+                                                     result)
+        ladder.begin()
+        key = self._budget_key(target)
+        homed = False
+        while True:
+            if self._sync_not_taken(result) is not None:
+                ladder.sync_not_taken()
+                bus.log("warning",
+                        f"{name}: {where}: {LADDER_MODEL_OFF_WORDS}",
+                        "sequence")
+                return result
+            if self._centring_miss(result, target) is None:
+                if isinstance(result, dict) and result.get("centered"):
+                    ladder.centred()
+                return result
+            action = ladder.missed(key)
+            if action is Action.RETRY_IN_PLACE:
+                bus.log("warning", f"{name}: {where}: {LADDER_RETRY_WORDS}",
+                        "sequence")
+                await self._gate_position_known(target, where)
+                result = await self._centre_once_unhalted(
+                    target, rotation, where)
+            elif (action is Action.HOME_THEN_TARGET
+                    and await self._home_for_recovery(target, where)):
+                homed = True
+                result = await self._centre_once_unhalted(
+                    target, rotation, where)
+            else:
+                if homed:
+                    bus.log("warning",
+                            f"{name}: {where}: "
+                            f"{LADDER_HOME_DID_NOT_REPAIR_WORDS}", "sequence")
+                return result
+
+    async def _home_for_recovery(self, target: Target, where: str) -> bool:
+        """The home leg of the ladder: send the mount home, under the hub's
+        motion lock, and say whether it went. False when this mount has no
+        home position or the leg failed (said, and the ladder goes no
+        further). The goto that follows is the caller's.
+
+        On the AM5 this is ``:hP#``, a goto to the MODEL's home, so the line
+        it logs says what home does and does not repair (#857). A halt that
+        lands during it is held for like any other. Never aimed from a
+        position the driver calls unknown (`_gate_position_known`)."""
+        name = getattr(target, "name", "this target")
+        tel = self.hub.devices.get("telescope")
+        if tel is None or not getattr(tel, "can_find_home", False):
+            bus.log("warning", f"{name}: {where}: {LADDER_NO_HOME_WORDS}",
+                    "sequence")
+            return False
+        await self._gate_position_known(target, where)
+        bus.log("warning", f"{name}: {where}: {LADDER_HOME_WORDS}",
+                "sequence")
+        self._set_state(detail=f"slewing home, then to {name}")
+        getattr(self.hub, "invalidate_field_solve",
+                lambda _r: None)("the mount is homing")
+        getattr(self.hub, "note_pointing_moved", lambda: None)()
+        epoch = self._motion_epoch()
+        lock = getattr(self.hub, "_motion_lock", None)
+        try:
+            if lock is not None:
+                async with lock:
+                    await _bounded(tel.find_home(), PARK_TIMEOUT_S,
+                                   "mount find_home")
+            else:
+                await _bounded(tel.find_home(), PARK_TIMEOUT_S,
+                               "mount find_home")
+        except SafetyAbort:
+            raise
+        except DeviceError as e:
+            if not self._operator_halt_since(epoch):
+                bus.log("warning",
+                        f"{name}: {where}: {LADDER_HOME_FAILED_WORDS} "
+                        f"({type(e).__name__})", "sequence")
+                return False
+        if self._operator_halt_since(epoch):
+            await self._hold_for_operator(target, where)
+            await self._gate_position_known(target, where)
+        return True
 
     #: #596 shape b: the attempt cap for `_hold_for_light` when the target's
     #: own window cannot be resolved (no site) and so cannot bound the wait
@@ -10198,7 +10479,8 @@ class SequenceEngine:
             # False during a ten-minute sleep.
             if position_gate is not None and self._position_unknown():
                 await self._stop_run_position_unknown(target, position_gate)
-            hop_centring = await self._centre_once(target, rotation)
+            hop_centring = await self._centre_once_unhalted(
+                target, rotation, "holding for light")
         return hop_centring
 
     async def _setup_target(self, ti: int, target: Target) -> None:
@@ -10351,6 +10633,11 @@ class SequenceEngine:
         # The sky angle as it stood when the goto returned (ruling 9, spec
         # 5.6 step 4), or None.
         hop_angle: dict | None = None
+        # The tracking recovery's own re-centre, when this target is NOT
+        # centred and its refused track was recovered: the recovery re-centres
+        # whatever the target says, at its commanded angle, so it is the hop's
+        # solve and the rotator may have turned for it (#806).
+        recovery_centring: dict | None = None
         # THE ANGLE THIS ACQUISITION COMMANDS: the planned one, or the one an
         # unframed target locked on its first shot (ruling 9). None when
         # there is neither, which is exactly the call every earlier plan made.
@@ -10438,6 +10725,7 @@ class SequenceEngine:
                 # much rarer path than a first-attempt solve failure, so
                 # narrowing the hold to the common case costs little.
                 via_recovery = False
+                self._note_centring_begins()
                 try:
                     result = await _bounded(
                         self.hub.goto_and_center(
@@ -10475,6 +10763,8 @@ class SequenceEngine:
                 # a failed solve for the no-light hold.
                 await self._stop_if_centring_refused_unknown(
                     result, target, "acquiring the target")
+                result = await self._recover_centring(
+                    target, rotation, result, "centring at acquisition")
                 hop_centring = result
                 # THE MOUNT DID NOT TAKE THE SYNC (#850: refused, or nobody
                 # could confirm it, `_sync_not_taken`), asked BEFORE every
@@ -10651,27 +10941,45 @@ class SequenceEngine:
                 # await the mount, and on the AM5 any of them can relink and
                 # latch the position unknown.
                 await self._gate_position_known(target, "acquiring the target")
-                try:
-                    await _bounded(slew_in_mount_frame(self.hub, tel,
-                                                       target.ra_hours,
-                                                       target.dec_deg),
-                                   SLEW_TIMEOUT_S, f"slew to {target.name}")
-                except GotoNotArrived as e:
-                    # THE GOTO DID NOT ARRIVE (#860). The field is not what an
-                    # uncentred slew gives, so this is not "imaging goes on":
-                    # skip the target in fixed words (D-03), with the figure in
-                    # the one warning before it. Not a run error: the driver
-                    # raises this for a stall or a stop it can name.
-                    r = e.residual_deg
-                    fig = (f", {r:.2f} deg off"
-                           if isinstance(r, (int, float))
-                           and not isinstance(r, bool) and math.isfinite(r)
-                           else "")
-                    bus.log("warning",
-                            f"{target.name}: slew at acquisition: the goto did "
-                            f"not arrive ({e.reason}{fig})", "sequence")
-                    raise StopTarget(
-                        f"slew at acquisition: {GOTO_NOT_ARRIVED_REASON}") from None
+                while True:
+                    epoch = self._motion_epoch()
+                    try:
+                        await _bounded(slew_in_mount_frame(self.hub, tel,
+                                                           target.ra_hours,
+                                                           target.dec_deg),
+                                       SLEW_TIMEOUT_S,
+                                       f"slew to {target.name}")
+                    except GotoNotArrived as e:
+                        # A STOP OR THE DEADMAN LANDED DURING THE GOTO (#880,
+                        # D-A): the driver's stop reason, with the fence
+                        # moved. The operator's halt, not a goto that stalled:
+                        # the run pauses, and after the resume the slew is
+                        # sent again.
+                        if self._operator_halt_since(epoch):
+                            await self._hold_for_operator(
+                                target, "slew at acquisition")
+                            await self._gate_position_known(
+                                target, "slew at acquisition")
+                            continue
+                        # THE GOTO DID NOT ARRIVE (#860). The field is not
+                        # what an uncentred slew gives, so this is not
+                        # "imaging goes on": skip the target in fixed words
+                        # (D-03), with the figure in the one warning before
+                        # it. Not a run error: the driver raises this for a
+                        # stall or a stop it can name.
+                        r = e.residual_deg
+                        fig = (f", {r:.2f} deg off"
+                               if isinstance(r, (int, float))
+                               and not isinstance(r, bool) and math.isfinite(r)
+                               else "")
+                        bus.log("warning",
+                                f"{target.name}: slew at acquisition: the goto "
+                                f"did not arrive ({e.reason}{fig})",
+                                "sequence")
+                        raise StopTarget(
+                            f"slew at acquisition: {GOTO_NOT_ARRIVED_REASON}"
+                        ) from None
+                    break
                 try:
                     await _bounded(tel.set_tracking(True),
                                    MOUNT_QUERY_TIMEOUT_S, "mount set_tracking")
@@ -10698,8 +11006,9 @@ class SequenceEngine:
                         # The result itself is not read here (this target
                         # asked for no centring; the recovery's own line
                         # says whether its re-centre converged).
+                        recovery_centring = {}
                         if not await self._recover_from_tracking_refusal(
-                                target, centring={}):
+                                target, centring=recovery_centring):
                             raise
                     else:
                         raise
@@ -10729,9 +11038,19 @@ class SequenceEngine:
             # included. An uncentred slew never asks the rotator, whatever
             # angle the target carries, and solves nothing, so its record is
             # the last slew's and adds no row.
-            self._record_sky_angle(target, since=hop_wall0,
-                                   commanded=rotation if target.center else None,
-                                   result=hop_centring, rec=hop_angle)
+            #
+            # A RECOVERED REFUSED TRACK ON AN UNCENTRED TARGET IS A CENTRED
+            # SLEW (#806): the recovery's goto commanded the target's angle,
+            # so the row is graded against that angle and the recovery's own
+            # answer, not recorded as a slew that left the rotator alone.
+            self._record_sky_angle(
+                target, since=hop_wall0,
+                commanded=(rotation if (target.center
+                                        or recovery_centring is not None)
+                           else None),
+                result=(recovery_centring if recovery_centring is not None
+                        else hop_centring),
+                rec=hop_angle)
             # THE SYNC NOT TAKEN STOPS THE TARGET HERE (#850), after the idle
             # clock has learned what the mount is tracking and the solve has
             # its row, before the focus sweep and the guider start that a
@@ -17156,6 +17475,7 @@ class SequenceEngine:
         # flip the recovery re-acquired, a target acquired just past its
         # crossing. What that teaches is read below.
         before_transit_s = point.transit_at - time.time()
+        self._note_centring_begins()
         try:
             # A re-centre that commands an angle may run the rotate loop, as
             # a setup's may, so its bound gets the setup's allowance: the
@@ -17205,6 +17525,13 @@ class SequenceEngine:
         # latch was set after the gate above, nothing moved, and the run ends.
         await self._stop_if_centring_refused_unknown(
             flip_result, target, "the meridian flip")
+        # AN OPERATOR'S HALT UNDER THE FLIP'S GOTO (#880, D-A): the run
+        # pauses, and after the resume the flip is asked for again from the
+        # top (the latch is still armed: nothing below has spent it).
+        if self._operator_halted(flip_result):
+            await self._hold_for_operator(target, "the meridian flip")
+            await self._gate_position_known(target, "the meridian flip")
+            return await self._maybe_meridian_flip(target, next_exposure_s)
         # THE FLIP'S GOTO IS A FRESH POINTING (#248, H3 orchestrator ruling
         # 6), whichever side it landed on: the mount is on this target and
         # tracking, so no stop the engine made before it still stands.
@@ -17922,6 +18249,7 @@ class SequenceEngine:
         try:
             self._set_state(detail="re-centring after the unguided sweep")
             commanded = self._commanded_rotation(target)
+            self._note_centring_begins()
             # The target's own tolerance and attempts: this is the centring
             # the first frame is shot at (`_centring_kwargs`, #170).
             res = await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
@@ -17941,6 +18269,9 @@ class SequenceEngine:
             # past the broad `except` above, as the sync stop below is.
             await self._stop_if_centring_refused_unknown(
                 res, target, "re-centring after the unguided sweep")
+            res = await self._centre_until_not_halted(
+                target, commanded, "re-centring after the unguided sweep",
+                res)
             # THE SKY ANGLE THIS RE-CENTRE'S SOLVE MEASURED (#526 part a),
             # recorded when it left the rotator untouched. In the `else`, not
             # the `try`: a recording error is not a failed re-centre and must
@@ -18740,6 +19071,7 @@ class SequenceEngine:
             t0 = time.time()
             try:
                 commanded = self._commanded_rotation(target)
+                self._note_centring_begins()
                 res = await self.hub.goto_and_center(
                     target.ra_hours, target.dec_deg, rotation_deg=commanded,
                     **self._centring_kwargs(target))
@@ -18766,6 +19098,8 @@ class SequenceEngine:
             # Refused under the hub's motion lock for an unknown position
             # (#888): the latch was set after the gate above.
             await self._stop_if_centring_refused_unknown(res, target, where)
+            res = await self._centre_until_not_halted(target, commanded, where,
+                                                      res)
             # The sky angle this re-centre's solve measured (#526 part a),
             # outside the `try` so a recording error is not logged as a
             # failed re-centre.
@@ -19997,10 +20331,10 @@ class SequenceEngine:
         self._set_state(detail="recovering the mount from its limit")
         _t0 = time.time()
         try:
-            found = await asyncio.wait_for(
-                self._do_tracking_recovery(
-                    tel, target, report_centring=centring is None),
-                TRACKING_RECOVERY_TIMEOUT_S)
+            async with asyncio.timeout(TRACKING_RECOVERY_TIMEOUT_S) as bound:
+                self._recovery_bound = bound
+                found = await self._do_tracking_recovery(
+                    tel, target, report_centring=centring is None)
         except asyncio.CancelledError:
             raise
         except SafetyAbort:
@@ -20016,6 +20350,8 @@ class SequenceEngine:
                     f"{target.name}: the park/unpark recovery failed ({e}) — "
                     f"setting the target aside", "sequence")
             return False
+        finally:
+            self._recovery_bound = None
         if found is None:
             return False
         if centring is not None:
@@ -20139,6 +20475,7 @@ class SequenceEngine:
         # the unpark took minutes, long enough for a link reopen to latch it.
         await self._gate_position_known(target, where)
         t0 = time.time()
+        self._note_centring_begins()
         result = await _bounded(
             self.hub.goto_and_center(target.ra_hours, target.dec_deg,
                                      rotation_deg=rotation,
@@ -20149,6 +20486,11 @@ class SequenceEngine:
         # Refused under the hub's motion lock for an unknown position (#888):
         # nothing moved, so no fresh pointing either. The run ends.
         await self._stop_if_centring_refused_unknown(result, target, where)
+        # AN OPERATOR'S HALT UNDER THIS GOTO (#880, D-A): held for, and the
+        # re-centre made again after the resume. The pause does not count
+        # against the recovery's outer bound (`_hold_for_operator`).
+        result = await self._centre_until_not_halted(target, rotation, where,
+                                                     result)
         # THE RE-SLEW IS A FRESH POINTING (#248), centred or not: the goto
         # has put the mount on this target and tracking.
         self._mount_stopped_since = None

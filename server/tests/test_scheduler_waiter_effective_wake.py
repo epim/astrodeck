@@ -89,11 +89,36 @@ def _plan(second: str) -> SequencePlan:
     return plan
 
 
+#: How many gotos 1-1's first visit makes before the engine gives up on its
+#: centring: the first, the recovery ladder's one retry from where the mount
+#: stands, and the goto after its one home leg (WP 3.1, #1109). All three
+#: land 30 arcmin off, so the miss is still the pass's miss.
+FIRST_VISIT_GOTOS = 3
+
+
 def _miss_once(who: str, n: int, result: dict) -> dict:
-    """1-1's first centring misses by 30 arcmin; every other goto centres."""
-    if who == _name("1-1") and n == 1:
+    """1-1's first visit misses by 30 arcmin, through the ladder's retry and
+    home leg; every other goto centres."""
+    if who == _name("1-1") and n <= FIRST_VISIT_GOTOS:
         return dict(result, centered=False, error_arcmin=30.0)
     return result
+
+
+def _hops(night: Night) -> list[tuple[float, str]]:
+    """``(seconds into the night, panel)`` for each visit in the order the
+    run made them, a visit's ladder gotos counted once."""
+    hops: list[tuple[float, str]] = []
+    for t, who in night.gotos:
+        if (night.rel(t), who) not in hops:
+            hops.append((night.rel(t), who))
+    return hops
+
+
+def _visits(night: Night, who: str) -> list[float]:
+    """When ``who`` was visited, seconds into the night: one entry per VISIT,
+    though a visit's recovery ladder makes several gotos at the same instant
+    on the harness's clock."""
+    return sorted({night.rel(t) for t, name in night.gotos if name == who})
 
 
 async def _night(hub, monkeypatch, plan: SequencePlan) -> Night:
@@ -141,7 +166,7 @@ async def test_a_deferral_wait_is_not_slept_through_to_another_panels_rise(
         f"premise: 1-1's first centring missed: {night.lines[:6]}")
     assert night.said("pass 1 took no exposures and deferred 1 visits"), (
         f"premise: pass 1 deferred and waited: {night.said('pass 1')}")
-    visits = [night.rel(t) for t, who in night.gotos if who == _name("1-1")]
+    visits = _visits(night, _name("1-1"))
     assert len(visits) >= 2, f"premise: 1-1 was visited again: {visits}"
     assert visits[1] == DEFER_WAIT_S, (
         f"1-1's visits at {visits}: its second must start at the end of the "
@@ -203,7 +228,7 @@ async def test_a_waiter_whose_window_opens_later_still_sorts_by_its_opening(
     assert sched["eta_s"] == round(OPENS_SOON - T0), sched
     woke = sorted({t for t, _v in published if 0.0 < t < DEFER_WAIT_S})
     assert woke and woke[0] == OPENS_SOON - T0, woke
-    hops = [(night.rel(t), who) for t, who in night.gotos]
+    hops = _hops(night)
     assert hops[:3] == [(0.0, _name("1-1")), (DEFER_WAIT_S, _name("1-2")),
                         (DEFER_WAIT_S + 30.0, _name("1-1"))], hops[:4]
     assert night.stored.status == "complete", night.stored.status
