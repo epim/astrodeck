@@ -12106,6 +12106,18 @@ class SequenceEngine:
                 "panel": naming.panel_label(target.panel_row,
                                             target.panel_col)}
 
+    def _panel_identity(self, target: Target | None) -> dict:
+        """``{"mosaic_id": ..., "panel_id": ...}`` for EVERY frame a group
+        member shoots, a hold's dark included, else ``{}`` (#796). The labels
+        above are display text and two groups can share one; these are the
+        group's compiled id and the panel target's own, which the report's
+        rows and the bundle's stacks are keyed on. A dark carries them so it
+        joins its own panel's row and not a namesake's."""
+        group = self._group_of(target) if target is not None else None
+        if group is None:
+            return {}
+        return {"mosaic_id": group.id, "panel_id": target.id}
+
     def _reporter_record(self, target: Target, step, info: dict, *, accepted: bool) -> None:
         """Record one frame to the session report (every frame, with its accepted
         flag). Best-effort; never lets a report-write hiccup break the run.
@@ -12154,6 +12166,7 @@ class SequenceEngine:
             # other frame records neither. Inside the try, so a panel with no
             # grid position logs "report record failed" and not a crash.
             labels = self._panel_labels(target, step)
+            identity = self._panel_identity(target)
             self.reporter.record_frame(FrameRecord(
                 ts=time.time(), target=target.name,
                 filter=self._effective_filter(step, info),
@@ -12165,6 +12178,8 @@ class SequenceEngine:
                 altitude_deg=_frame_altitude(target, self.hub.site, time.time()),
                 mosaic=labels.get("mosaic") or None,
                 panel=labels.get("panel") or None,
+                mosaic_id=identity.get("mosaic_id"),
+                panel_id=identity.get("panel_id"),
                 pointing_unverified=unverified,
                 guide_capped=capped))
         except Exception as e:

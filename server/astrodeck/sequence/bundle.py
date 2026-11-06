@@ -24,7 +24,7 @@ from pathlib import Path
 from statistics import median
 from typing import Callable, Protocol, runtime_checkable
 
-from .report import FrameRecord, SessionReport, _is_light
+from .report import FrameRecord, SessionReport, _is_light, mosaic_key
 from ..calibration.keys import (ROTATOR_BIN_DEG, circular_mean_angle,
                                 mech_angle, rotator_bin)
 from ..calibration.matcher import (LightNeed, MatchTolerance, best_master,
@@ -129,6 +129,11 @@ class Group:
     #: co-added, so ``mosaic`` is part of what makes a group (``build_bundle``).
     mosaic: str | None = None
     panel: str | None = None
+    #: The ids behind the two labels (#796): the group's compiled id and the
+    #: panel target's id, from the group's frames; None for a pre-id report.
+    #: ``mosaic_id`` is what makes two same-named mosaics two groups.
+    mosaic_id: str | None = None
+    panel_id: str | None = None
     #: The mean of the lights' rotator mechanical angles (their ROTMECH cards);
     #: None when none is recorded. A group is one stack and a stack is one
     #: flat, so the lights of a group are within one angle bin of each other
@@ -310,29 +315,53 @@ def _group_dir(target: str, filt: str | None, exp: float,
     return f"{t}/{f}/{leaf}"
 
 
-def _group_dirs(order: list[tuple]) -> dict[tuple, str]:
+def _mosaic_folders(keys: list[str], labels: dict[str, str]) -> dict[str, str]:
+    """A folder name for each mosaic key, in the order given: its label made
+    path-safe, and ``_2``, ``_3`` after the first mosaic of a label that
+    another mosaic already took. Two mosaics can share a label (#796), and a
+    folder is one stack to the stacker, so the label alone cannot name them."""
+    taken: set[str] = set()
+    out: dict[str, str] = {}
+    for mk in keys:
+        base = sanitize_component(labels[mk], "loose") or "Mosaic"
+        name, n = base, 1
+        while name in taken:
+            n += 1
+            name = f"{base}_{n}"
+        taken.add(name)
+        out[mk] = name
+    return out
+
+
+def _group_dirs(order: list[tuple], labels: dict[str, str]) -> dict[tuple, str]:
     """Each group key's bundle-relative folder.
 
     A distinct key is not a distinct STACK while two groups share a folder:
     the build script copies a group's lights into its ``lights/`` and the
     stacker opens that folder as one stack. So a folder that more than one
     mosaic's group would land in is put under each such group's mosaic (#188),
-    and a folder that groups of one target at different rotator angles would
-    share takes the angle's bin as a suffix (``_r5``, the library's own
-    spelling of a flat's angle). Every other folder is what it has always
-    been, and a group with no recorded angle never gets a suffix.
+    named by the mosaic's label and told apart by a number when two mosaics
+    share it (#796), and a folder that groups of one target at different
+    rotator angles would share takes the angle's bin as a suffix (``_r5``,
+    the library's own spelling of a flat's angle). Every other folder is what
+    it has always been, and a group with no recorded angle never gets a
+    suffix.
 
-    A key is ``(target, filter, exposure, gain, binning, mosaic, angle_bin)``."""
+    A key is ``(target, filter, exposure, gain, binning, mosaic_key,
+    angle_bin)``; ``labels`` maps each ``mosaic_key`` to its display label."""
     bases = {k: _group_dir(k[0], k[1], k[2], k[3], k[4]) for k in order}
     mosaics_in: dict[str, set] = {}
     for k in order:
         mosaics_in.setdefault(bases[k], set()).add(k[5])
     shared = {d for d, ms in mosaics_in.items() if len(ms) > 1}
+    prefixed = [mk for mk in dict.fromkeys(k[5] for k in order)
+                if mk and any(k[5] == mk and bases[k] in shared for k in order)]
+    folders = _mosaic_folders(prefixed, labels)
     dirs: dict[tuple, str] = {}
     for k in order:
         gdir = bases[k]
         if k[5] and gdir in shared:
-            gdir = f"{sanitize_component(k[5], 'loose') or 'Mosaic'}/{gdir}"
+            gdir = f"{folders[k[5]]}/{gdir}"
         dirs[k] = gdir
     taken = Counter(dirs.values())
     return {k: (f"{d}_r{k[6]}" if taken[d] > 1 and k[6] is not None else d)
@@ -506,7 +535,8 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
     1. Select light subs with a truthy, ``is_local`` ``saved_path``.
     2. Group by (target, filter, exposure, gain, binning, mosaic, rotator
        angle bin): a mosaic's panel is a separate stack and is never co-added
-       with another mosaic's (#188), and lights shot at two rotator angles
+       with another mosaic's (#188), the mosaic being its id and, for a
+       report written before the ids, its label (#796), and lights shot at two rotator angles
        are two stacks because a flat serves one (#784, #825). ``light_angle``
        maps a saved path to the light's rotator mechanical angle (its ROTMECH
        card; the route reads the file), None when unknown; without it no
@@ -546,12 +576,14 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
 
     # 1 + 2: select locals, group in first-seen order. THE MOSAIC IS PART OF
     # THE KEY (#188): two mosaics whose panels carry the same target name are
-    # different stacks, and a panel is never co-added with anything else. SO
+    # different stacks, and a panel is never co-added with anything else. THE
+    # MOSAIC IS ITS ID, NOT ITS LABEL (#796): two groups can share a name. SO
     # IS THE ROTATOR ANGLE'S BIN (#784, #825): a stack gets one flat, and a
     # flat is only the flat of the angle it was shot at.
     grouped: dict[tuple, list[FrameRecord]] = {}
     angles_of: dict[tuple, list[float | None]] = {}
     order: list[tuple] = []
+    labels: dict[str, str] = {}      # mosaic key -> the label to show for it
     for fr in report.frames:
         if not _is_light(fr.frame_type):
             continue
@@ -559,7 +591,10 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
             continue
         angle = _read_angle(light_angle, fr.saved_path)
         key = (fr.target, fr.filter, fr.exposure_s, fr.gain, fr.binning,
-               fr.mosaic or None, rotator_bin(angle, ROTATOR_BIN_DEG))
+               mosaic_key(fr.mosaic, fr.mosaic_id),
+               rotator_bin(angle, ROTATOR_BIN_DEG))
+        if key[5] and not labels.get(key[5]):
+            labels[key[5]] = fr.mosaic or key[5]
         if key not in grouped:
             grouped[key] = []
             angles_of[key] = []
@@ -567,7 +602,7 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
         grouped[key].append(fr)
         angles_of[key].append(angle)
 
-    dirs = _group_dirs(order)
+    dirs = _group_dirs(order, labels)
     groups: list[Group] = []
     withheld: list[str] = []         # why a group's flat was held back
     for key in order:
@@ -575,9 +610,11 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
         frames = grouped[key]
         angles = [a for a in angles_of[key] if a is not None]
         group_angle = circular_mean_angle(angles)
-        # From the group's first frame, as the panel is: every frame of a
-        # group carries the mosaic its key names.
-        mosaic = frames[0].mosaic or None
+        # From the group's frames, as the panel is: every frame of a group
+        # carries the mosaic its key names.
+        mosaic = next((f.mosaic for f in frames if f.mosaic), None)
+        mosaic_id = next((f.mosaic_id for f in frames if f.mosaic_id), None)
+        panel_id = next((f.panel_id for f in frames if f.panel_id), None)
 
         hfrs = [f.hfr for f in frames if f.hfr is not None and f.hfr > 0]
         rmss = [f.guide_rms_total for f in frames
@@ -639,7 +676,8 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
             dir=gdir, target=target, filter=filt, exposure_s=exp, gain=gain,
             binning=binning, lights=tuple(lights), masters=masters,
             master_sources=master_sources, missing_masters=tuple(missing),
-            mosaic=mosaic, panel=panel, rotator_mech_deg=group_angle))
+            mosaic=mosaic, panel=panel, mosaic_id=mosaic_id, panel_id=panel_id,
+            rotator_mech_deg=group_angle))
 
     # 5. Warn about what this bundle does NOT contain. `warnings: []` is read as
     #    "nothing to report", so it must never be empty while the bundle is
@@ -721,6 +759,7 @@ def externalize_bundle(bundle: Bundle,
               masters=dict(g.masters), master_sources=_sources(g),
               missing_masters=tuple(g.missing_masters),
               mosaic=g.mosaic, panel=g.panel,
+              mosaic_id=g.mosaic_id, panel_id=g.panel_id,
               rotator_mech_deg=g.rotator_mech_deg)
         for g in bundle.groups)
     return Bundle(report_id=bundle.report_id, plan_name=bundle.plan_name,
@@ -771,6 +810,8 @@ def manifest_json(bundle: Bundle) -> dict:
                 "target": g.target,
                 "mosaic": g.mosaic,
                 "panel": g.panel,
+                "mosaic_id": g.mosaic_id,
+                "panel_id": g.panel_id,
                 "rotator_mech_deg": g.rotator_mech_deg,
                 "filter": g.filter,
                 "exposure_s": g.exposure_s,
@@ -820,6 +861,8 @@ def bundle_summary(bundle: Bundle) -> dict:
                 "target": g.target,
                 "mosaic": g.mosaic,
                 "panel": g.panel,
+                "mosaic_id": g.mosaic_id,
+                "panel_id": g.panel_id,
                 "rotator_mech_deg": g.rotator_mech_deg,
                 "filter": g.filter,
                 "exposure_s": g.exposure_s,
@@ -842,7 +885,9 @@ def bundle_summary(bundle: Bundle) -> dict:
 
 
 #: ``mosaic`` and ``panel`` are APPENDED, after ``src``: a consumer that reads
-#: this file by column position keeps reading what it read before #188.
+#: this file by column position keeps reading what it read before #188. The
+#: ids are not columns: a stacker reads ``dest``, which already tells two
+#: same-named mosaics apart (#796), and the manifest carries the ids.
 _CSV_COLS = ["target", "filter", "exposure_s", "gain", "binning", "accepted",
              "keep", "hfr", "fwhm_est", "ecc", "guide_rms", "sensor_temp_c",
              "altitude_deg", "weight", "dest", "src", "mosaic", "panel"]

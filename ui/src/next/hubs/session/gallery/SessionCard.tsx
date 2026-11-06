@@ -36,7 +36,7 @@ import {
 } from "./cardActions";
 import { queueTargetFor, queueViewOf, useShelfCards } from "./sessionsIndex";
 import type { SessionCardData } from "./useSessionCards";
-import type { SequencePlan } from "../../../../types";
+import type { SequencePlan, SessionMosaic } from "../../../../types";
 
 /** `SessionsPanel.tsx:24`'s mapping, transcribed. */
 export function statusChip(status: SessionCardData["status"]): { word: string; tone: Tone } {
@@ -47,6 +47,32 @@ export function statusChip(status: SessionCardData["status"]): { word: string; t
     case "abandoned": return { word: "ABANDONED", tone: "dim" };
     default: return { word: "REPORT ONLY", tone: "dim" };
   }
+}
+
+// ---------------------------------------------------------- the mosaic chip
+//
+// WHICH MOSAICS A NIGHT SHOT (#188), read off the session's list row
+// (`SessionRow.mosaics`, server `session.mosaics_of`): no read of the session
+// of its own. A mosaic is a group, keyed by its id: two groups that share a
+// name are two mosaics, and the chip counts them as two.
+
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+/** The chip's word and its hover line for a session's mosaics, or null for a
+ *  night with none. The word counts mosaics and panels, so it says what the
+ *  card's title does not; the hover line names each mosaic with its panels. */
+export function mosaicChipOf(
+  mosaics: readonly SessionMosaic[] | undefined,
+): { word: string; title: string } | null {
+  if (!mosaics || mosaics.length === 0) return null;
+  const panels = mosaics.reduce((n, m) => n + m.panels.length, 0);
+  const word = mosaics.length === 1
+    ? `MOSAIC: ${plural(panels, "PANEL", "PANELS")}`
+    : `${mosaics.length} MOSAICS: ${plural(panels, "PANEL", "PANELS")}`;
+  const title = mosaics
+    .map((m) => `${m.name}: ${plural(m.panels.length, "panel", "panels")} (${m.panels.join(", ")})`)
+    .join("\n");
+  return { word, title };
 }
 
 export function SessionCard({
@@ -73,6 +99,7 @@ export function SessionCard({
   const shelf = useShelfCards();
   const queueTarget = queueTargetFor(shelf, card);
   const queueView = queueViewOf(shelf, card);
+  const mosaicChip = mosaicChipOf(card.mosaics);
 
   const url = live && stackUrl ? stackUrl : thumb ? u(thumb) : null;
 
@@ -224,6 +251,11 @@ export function SessionCard({
               and a live one has already started. */}
           {card.autoResume && card.status === "dormant" && !monitorConnected && (
             <Pill tone="warn">{ARMED_WITHOUT_MONITOR_CHIP}</Pill>
+          )}
+          {mosaicChip && (
+            <span title={mosaicChip.title} data-testid={`session-mosaic-${card.key}`}>
+              <Pill tone="dim">{mosaicChip.word}</Pill>
+            </span>
           )}
         </div>
         {queueView && card.id && (

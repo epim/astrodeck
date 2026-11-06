@@ -2131,26 +2131,11 @@ export interface SiteConfig {
 }
 
 // ----------------------------------------------------------------- session report
-export interface FilterBreakdown {
-  filter: string;
-  frames: number;
-  rejected: number;
-  integration_s: number;
-  hfr_median: number | null;
-}
-
-export interface TargetBreakdown {
-  name: string;
-  frames: number;
-  rejected: number;
-  integration_s: number;
-  by_filter: FilterBreakdown[];
-  /** The mosaic this row is a panel of and the panel's "r-c" label (#188),
-   *  null or absent for a target that is no panel and for a report written
-   *  before the labels existed. */
-  mosaic?: string | null;
-  panel?: string | null;
-}
+// The server's own models, generated (tools/gen_report_types.py): a field added
+// to `FilterBreakdown` or `TargetBreakdown` in sequence/report.py reaches these
+// names by construction, and a test fails when the generated file lags (#797).
+import type { FilterBreakdown, TargetBreakdown } from "./types.report.generated";
+export type { FilterBreakdown, TargetBreakdown };
 
 // ----------------------------------------------------- PRO-10 stacking bundle
 // Slim per-group preview (GET /api/reports/{id}/bundle) — no per-light rows, so
@@ -2171,6 +2156,11 @@ export interface BundleGroupSummary {
    *  group that is no panel. */
   mosaic?: string | null;
   panel?: string | null;
+  /** The ids behind the two labels (#796): two mosaics can share a name, and
+   *  these are what tell their groups apart. Null or absent for a report
+   *  written before them. */
+  mosaic_id?: string | null;
+  panel_id?: string | null;
 }
 export interface BundlePreview {
   report_id: string;
@@ -2758,6 +2748,17 @@ export interface SessionRow {
    *  wait. The shelf reads it through `rowQueuedBehind`, which accepts only a
    *  non-empty string. */
   queued_behind?: string | null;
+  /** The mosaics the night shot (#188), one per group, keyed by the group's id
+   *  and with its panels' "r-c" labels in grid order. Absent when the plan
+   *  holds none, and from a server that predates it. */
+  mosaics?: SessionMosaic[];
+}
+
+/** One mosaic in a session's list row (server `session.mosaics_of`). */
+export interface SessionMosaic {
+  id: string;
+  name: string;
+  panels: string[];
 }
 
 /** A session file the store cannot read (#242): corrupt JSON, a file that is

@@ -202,7 +202,8 @@ from ..sequence.models import (FrameType, TargetGroup,
                                duplicate_name_warning, plan_identity_errors,
                                quota_unbounded, replan_cooling)
 from ..sequence.policy import resolve_policy
-from ..sequence.report import SessionReport, SessionReporter, _slug
+from ..sequence.report import (FrameRecord, SessionReport, SessionReporter,
+                               _slug)
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                build_bundle, bundle_materialize_plan,
                                bundle_summary, build_script, externalize_bundle,
@@ -1834,6 +1835,28 @@ def _iso_utc(ts) -> str:
             "%Y-%m-%dT%H:%M:%SZ")
     except (TypeError, ValueError, OSError, OverflowError):
         return ""
+
+
+#: The frames CSV's leading columns, in the order every export has had them.
+#: A reader that takes the columns by position keeps reading what it read, so
+#: this order is not the model's. It names no field the record lacks (a test
+#: holds it to ``FrameRecord.model_fields``) and it need not name every field:
+#: ``_frame_csv_columns`` appends the rest.
+_FRAME_CSV_LEAD = [
+    "ts", "ts_utc", "target", "filter", "frame_type", "exposure_s",
+    "gain", "offset", "binning", "accepted", "hfr", "ecc",
+    "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path",
+    "mosaic", "panel", "pointing_unverified", "guide_capped"]
+
+
+def _frame_csv_columns() -> list[str]:
+    """The frames CSV's columns: the leading ones above, then every other
+    ``FrameRecord`` field in the model's order, so a field added to the record
+    reaches the export without anyone remembering this function (#795). The
+    one column the record does not have is ``ts_utc``, written from ``ts``."""
+    fields = list(FrameRecord.model_fields)
+    lead = [c for c in _FRAME_CSV_LEAD if c == "ts_utc" or c in fields]
+    return lead + [f for f in fields if f not in lead]
 
 
 def _export_root(report_id: str) -> Path:
@@ -6105,9 +6128,9 @@ def create_app(*, bind_host: str | None = None,
 
         Carries EVERY field the JSON record carries (UX #49: gain / offset /
         binning / ecc / altitude were silently dropped, so the CSV could not be
-        used to sort subs the report viewer could already rank; ``mosaic`` and
-        ``panel`` joined at #188, and the columns are held to ``FrameRecord.
-        model_fields`` by test_w1_report_bundle_site_redaction), and pairs the
+        used to sort subs the report viewer could already rank): the columns
+        come from ``FrameRecord.model_fields`` (``_frame_csv_columns``, #795),
+        so a field added to the record is a column without an edit here. Pairs the
         raw epoch ``ts`` with a readable UTC stamp instead of shipping
         ``1785084747.5023835`` alone -- EXCEPT ``altitude_deg``, which
         ``report_csv_columns`` drops for a principal lacking
@@ -6123,20 +6146,7 @@ def create_app(*, bind_host: str | None = None,
         # value it is there. Two hand-written implementations of one disclosure
         # rule is exactly how the report route ended up shipping absolute paths
         # while the session route stripped them.
-        cols = report_csv_columns(
-            ["ts", "ts_utc", "target", "filter", "frame_type", "exposure_s",
-             "gain", "offset", "binning", "accepted", "hfr", "ecc",
-             "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path",
-             # A mosaic's panel labels (#188, WP-127), appended so a reader
-             # of the columns by position reads what it always read.
-             "mosaic", "panel",
-             # A light shot at a pointing no solve confirmed (#852), appended
-             # for the same reason.
-             "pointing_unverified",
-             # #856: guide corrections at the limit during the exposure, by
-             # direction ("east:57 north:2"), appended the same way.
-             "guide_capped"],
-            principal)
+        cols = report_csv_columns(_frame_csv_columns(), principal)
         import csv
         w = csv.writer(buf)
         w.writerow(cols)
@@ -6146,6 +6156,8 @@ def create_app(*, bind_host: str | None = None,
         for d in rows:
             d = dict(d)
             d["ts_utc"] = _iso_utc(d.get("ts"))
+            # #856: guide corrections at the limit during the exposure, by
+            # direction ("east:57 north:2").
             if isinstance(d.get("guide_capped"), dict):
                 d["guide_capped"] = " ".join(
                     f"{k}:{v}" for k, v in sorted(d["guide_capped"].items()))
