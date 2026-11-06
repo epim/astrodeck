@@ -122,7 +122,13 @@ _CLOCK_KEYS = ("started_at", "seconds", "resolution_arcsec_s",
 
 
 def _find(forms: list[str], text: str) -> list[str]:
-    return [f for f in forms if f in text]
+    """The forms that START a number in ``text``. A form preceded by a digit is
+    the tail of another figure, not a reading: the probe file's
+    ``round(time.time(), 3)`` epoch ends ``...0.215`` one run in thousands,
+    and a bare substring test called that the declination's radians (#1212).
+    Trailing digits are allowed, so a full-precision float that starts with a
+    form is still found."""
+    return [f for f in forms if re.search(r"(?<!\d)" + re.escape(f), text)]
 
 
 def _collect(lines: list[str]):
