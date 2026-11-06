@@ -456,6 +456,15 @@ const KEEP_AS_IS: Record<string, { names: string[]; why: string }> = {
     why: "app-level, not a hub panel: the pointer-type guard NextApp wraps the whole " +
       "app in, shared with #/classic so both UIs agree what a touch is.",
   },
+  // WP 3.3 #781 (#1113): the panel chips and the pinned-panel hook are ONE shared
+  // component for the classic Monitor panel, the Gallery panel and the Rig inspect
+  // sheet, so a panel pinned on one surface is the panel the others show.
+  "components/PanelPicker": {
+    names: ["PanelPicker", "usePanelPin"],
+    why: "#781 - one chip row and one pin for every session-stack surface in both UIs; " +
+      "a copy per UI would be two selections of the same stack that disagree about " +
+      "which panel the operator is looking at.",
+  },
   "views/Login": {
     names: ["Login"],
     why: "app-level: there is ONE sign-in form in the product and NextApp mounts it. " +

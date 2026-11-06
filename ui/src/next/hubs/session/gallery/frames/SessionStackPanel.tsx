@@ -39,6 +39,7 @@ import {
 import {
   BACKFILL_POLL_MS, POLL_MS, modeLabel,
 } from "../../../../../components/preview/SessionStack";
+import { PanelPicker, usePanelPin } from "../../../../../components/PanelPicker";
 import { useCanControlCapture } from "../../../../../lib/caps";
 import { explainLock } from "../../../../shell/explain";
 import {
@@ -56,11 +57,18 @@ export function SessionStackPanel(): JSX.Element {
   // carries the number of subs so the cost is on screen before the press.
   const [withEarlier, setWithEarlier] = useState(true);
   const alive = useRef(true);
+  // The panel the picture is of: pinned with the chips (shared with the other
+  // stack surfaces), or the latest while following.
+  const { panel, setPanel } = usePanelPin(status?.panels);
+  const asked = useRef<string | null>(panel);
+  asked.current = panel;
 
   const refresh = useCallback(async () => {
+    const want = panel;
     try {
-      const s = await getSessionStack();
-      if (alive.current) { setStatus(s); setError(null); }
+      const s = await getSessionStack(want);
+      // The pin moved while this was in flight: a newer request is on its way.
+      if (alive.current && asked.current === want) { setStatus(s); setError(null); }
     } catch (e) {
       // A failed poll is not worth a red panel: the run is unaffected and the
       // next tick is ten seconds away. Only say so when there is nothing at all
@@ -68,7 +76,7 @@ export function SessionStackPanel(): JSX.Element {
       // live.
       if (alive.current) setError((e as Error).message);
     }
-  }, []);
+  }, [panel]);
 
   useEffect(() => {
     alive.current = true;
@@ -89,13 +97,16 @@ export function SessionStackPanel(): JSX.Element {
     setBusy(true);
     try {
       const s = await fn();
-      if (alive.current) { setStatus(s); setError(null); }
+      // These routes answer with the LATEST panel: under a pin that would put
+      // another panel's counts beside the pinned panel's picture.
+      if (asked.current !== null) await refresh();
+      else if (alive.current) { setStatus(s); setError(null); }
     } catch (e) {
       if (alive.current) setError((e as Error).message);
     } finally {
       if (alive.current) setBusy(false);
     }
-  }, []);
+  }, [refresh]);
 
   const toggle = useCallback((on: boolean) => {
     void act(on ? () => startSessionStack(withEarlier) : stopSessionStack);
@@ -164,6 +175,15 @@ export function SessionStackPanel(): JSX.Element {
           />
         )}
 
+        {enabled && (
+          <PanelPicker
+            panels={status?.panels ?? []}
+            panel={panel}
+            onPick={setPanel}
+            testId="gallery-stack-panels"
+          />
+        )}
+
         {enabled && hasImage && status && (
           <>
             <img
@@ -172,7 +192,7 @@ export function SessionStackPanel(): JSX.Element {
               // `seq` in the URL is the only thing that makes the browser
               // refetch: the route is no-store, but an unchanged src is never
               // requested again at all.
-              src={sessionStackImageUrl(status.seq)}
+              src={sessionStackImageUrl(status.seq, 1200, undefined, panel ?? undefined)}
               alt={`Stacked composite of ${status.target || "the current target"}, ${frames} frames, ${fmtIntegration(status.integrated_s)} total`}
             />
             <Mono size={10.5} tone="dim">

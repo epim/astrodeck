@@ -73,9 +73,13 @@ its name, and only the RUN is shared: a second run is a new picture for every
 panel. Reads default to the FOREGROUND panel, the one the latest accepted frame
 fed, so a one-target night is a one-slot stacker that answers exactly as the old
 single stack did. Memory is the price of keeping panels, so there is a budget
-(``max_bytes``): when an add takes the accumulators of every panel past it, the
-panel least recently ADDED to (never the one being fed) is released, named in
-``evicted``, and starts again if the run returns to it.
+(``max_bytes``), shared per panel: when an add takes the accumulators of every
+panel past it, a panel is released (never the one being fed), named in
+``evicted``, and starts again if the run returns to it -- on a COARSER grid,
+sized to its share of the budget, so a mosaic with more panels than the budget
+holds at full size settles with every panel stacked instead of releasing the
+next panel on every visit. Panels holding more than their share go first, the
+least recently VISITED (fed, or asked for by name) before the rest.
 
 **Backfill and the live path share one lock.** ``add`` is called from the
 sequence engine's frame loop (on the event loop thread) and, while a backfill
@@ -109,6 +113,9 @@ MAX_STACK_SIDE = 2048
 #: ...and never accumulate at full resolution even on a small sensor. A 2x2 mean
 #: also halves the read noise before the stacker's own clipping looks at it.
 MIN_DOWNSAMPLE = 2
+#: The budget may coarsen a panel's grid, but never below this long edge in
+#: pixels: past it the picture is no longer a preview of the field.
+MIN_STACK_SIDE = 512
 #: Re-render no more often than this, however hard the UI polls. The render is
 #: a percentile plus an asinh over a few megapixels per channel; at one frame
 #: every few minutes there is nothing new to see in between anyway.
@@ -123,8 +130,8 @@ ASINH_A = 30.0
 #: MB, the unit the arithmetic in the module docstring uses). One panel costs
 #: 19.6 MB per filter at the rig's 1563x1044 grid, so an LRGB panel is 78 MB and
 #: this holds seven of them; a 3x3 mosaic would ask for about 705 MB on a box
-#: with 4 GB, and the stack gives up its least recently fed panel before it
-#: takes the rest of the box.
+#: with 4 GB, and the stack restarts a panel on a coarser grid before it takes
+#: the rest of the box.
 DEFAULT_MAX_BYTES = 600_000_000
 
 #: Every filter name this rig has ever written into a FITS header, folded onto
@@ -416,9 +423,16 @@ class _Slot:
     seen: set[str] = field(default_factory=set)
     factor: int = 0
     #: The stacker's change counter as it stood at this panel's last accepted
-    #: add. Monotonic across panels, so it doubles as the "least recently
-    #: added" clock the budget evicts by.
+    #: add. Monotonic across panels; it is the panel's "latest" order and what
+    #: a client keys the picture's cache on.
     seq: int = 0
+    #: The stacker's visit clock as it stood when this panel was last fed OR
+    #: asked for by name. The budget releases the smallest first.
+    visit: int = 0
+    #: Frames refused in a channel that has no stacker yet, by channel. A
+    #: channel appears in ``stacks`` only once a frame has landed in it, so a
+    #: refusal ahead of that has nowhere else to be counted.
+    refused: dict[str, int] = field(default_factory=dict)
     #: Rendered JPEGs by CHANNEL, with ``None`` for the composite. One entry per
     #: view the UI can ask for, because a client watching the Ha channel and a
     #: client watching the composite are polling the same panel and a
@@ -471,8 +485,10 @@ class SessionStacker:
     def __init__(self, *, max_side: int = MAX_STACK_SIDE,
                  clip_sigma: float = 4.0,
                  min_render_interval_s: float = MIN_RENDER_INTERVAL_S,
-                 max_bytes: int = DEFAULT_MAX_BYTES) -> None:
+                 max_bytes: int = DEFAULT_MAX_BYTES,
+                 min_side: int = MIN_STACK_SIDE) -> None:
         self.max_side = int(max_side)
+        self.min_side = int(min_side)
         self.clip_sigma = float(clip_sigma)
         self.min_render_interval_s = float(min_render_interval_s)
         #: The most the accumulators of ALL panels may hold together. Checked
@@ -494,6 +510,13 @@ class SessionStacker:
         #: did so, each once. A panel that has since come back and restarted is
         #: still listed: the point is that its count is not the night's.
         self._evicted: list[str] = []
+        #: The grid factor a released panel restarts on, by panel key: the
+        #: budget coarsens a panel when it releases it, so the panel comes back
+        #: at a size that fits and the rotation stops releasing it.
+        self._factors: dict[str, int] = {}
+        #: The visit clock: one tick per accepted add and per read of a panel by
+        #: name. See :attr:`_Slot.visit`.
+        self._visits = 0
         #: Bumped by ``reset``/``stop``. A backfill worker carries the value it
         #: started with and gives up when it changes, so switching the stack off
         #: or pressing Reset stops the disk reads instead of filling a stack the
@@ -562,6 +585,7 @@ class SessionStacker:
         """
         self._slots.clear()
         self._evicted.clear()
+        self._factors.clear()
         self._fg = None
         self._target = ""
         self._session = session
@@ -613,7 +637,7 @@ class SessionStacker:
         if arr.ndim != 2 or arr.size == 0:
             return None
         ident = frame_key(key)
-        released: list[str] = []
+        released: list[tuple[str, int, int]] = []
         with self._lock:
             if ident and self._holds(ident):
                 return None
@@ -636,20 +660,27 @@ class SessionStacker:
             if fresh:
                 slot = _Slot(key=pkey, target=name)
             if not slot.factor:
-                slot.factor = downsample_factor(arr.shape,
-                                                max_side=self.max_side)
+                slot.factor = max(
+                    downsample_factor(arr.shape, max_side=self.max_side),
+                    self._factors.get(pkey, 0))
             planes, shared = self._planes(arr, filter_name, bayer_pattern,
                                           slot.factor)
             landed: list[str] = []
             for ch, small in planes.items():
                 stack = slot.stacks.get(ch)
+                known = stack is not None
                 if stack is None:
                     stack = LiveStacker(clip_sigma=self.clip_sigma)
-                    slot.stacks[ch] = stack
                 outcome = stack.add(small, float(exposure_s or 0.0),
                                     stars=shared)
                 if outcome.accepted:
                     landed.append(ch)
+                    slot.stacks[ch] = stack
+                elif not known:
+                    # A channel is a channel once a frame has landed in it: a
+                    # refused first frame leaves no empty chip behind, only the
+                    # count of the refusal.
+                    slot.refused[ch] = slot.refused.get(ch, 0) + 1
             if not landed:
                 # A fresh slot built for this frame is simply never inserted.
                 return None
@@ -665,6 +696,7 @@ class SessionStacker:
                 self._seq += 1
             self._seq += 1
             slot.seq = self._seq
+            self._visit(slot)
             if fresh:
                 self._slots[pkey] = slot
             self._fg = pkey
@@ -673,11 +705,13 @@ class SessionStacker:
             released = self._enforce_budget(pkey)
         # Said outside the lock: the bus is not ours and a subscriber must never
         # be able to hold up the frame loop while the accumulators are locked.
-        for name in released:
+        for name, was, now in released:
+            grid = (f" on a coarser grid ({now // was}x fewer pixels per side)"
+                    if now > was else "")
             bus.log("warning",
                     f"Session stack: released the {name} panel to stay under "
                     f"the {self.max_bytes // 1_000_000} MB memory budget; it "
-                    "restarts when the run returns to it", "capture")
+                    f"restarts{grid} when the run returns to it", "capture")
         return result
 
     def _holds(self, ident: str) -> bool:
@@ -698,10 +732,28 @@ class SessionStacker:
         with self._lock:
             return self._held()
 
-    def _enforce_budget(self, fed: str) -> list[str]:
-        """Release panels, least recently ADDED first, until the accumulators fit
-        :attr:`max_bytes`. Returns the names newly recorded as evicted, for the
-        caller to log once the lock is released. Call under the lock.
+    def _visit(self, slot: _Slot) -> None:
+        """Mark ``slot`` visited now. Call under the lock."""
+        self._visits += 1
+        slot.visit = self._visits
+
+    def _enforce_budget(self, fed: str) -> list[tuple[str, int, int]]:
+        """Release panels until the accumulators fit :attr:`max_bytes`, each
+        released panel set to restart on a grid sized to its share. Returns
+        ``(name, old factor, new factor)`` for each name newly recorded as
+        evicted, for the caller to log once the lock is released. Call under
+        the lock.
+
+        The budget is per panel: ``max_bytes / panels``. A panel holding more
+        than that is the one to release, and the least recently VISITED of those
+        goes first (every panel is a candidate only when none holds more than its
+        share). A visit is a frame fed or a read of the panel by name, so the
+        panel an operator has pinned is not released for being fed long ago. A
+        released panel comes back on the finest grid whose cost fits its share,
+        so a rotation that does not fit at full size settles with every panel
+        stacked at the size it can afford. Releasing the panel LEAST RECENTLY
+        ADDED, as this once did, released the panel a round-robin was about to
+        return to, on every visit: no panel ever built.
 
         Never the panel just fed: it is the picture being built, and a budget
         smaller than one panel would otherwise release the only thing there is.
@@ -711,23 +763,34 @@ class SessionStacker:
         figure is measured and cannot drift from what the frame really cost. The
         price is that the peak is the budget plus one panel's worth for the
         length of one add, which is a transient and not a leak.
-
-        The evicted panel reseeds on its next visit: today's behaviour, for
-        that panel only. A mosaic with more panels than the budget holds will
-        reseed at every visit under a round-robin, because the panel least
-        recently added is always the one the rotation is about to come back to.
         """
-        newly: list[str] = []
+        newly: list[tuple[str, int, int]] = []
+        share = self.max_bytes // max(1, len(self._slots))
         while self._held() > self.max_bytes:
             victims = [s for k, s in self._slots.items() if k != fed]
             if not victims:
                 break
-            victim = min(victims, key=lambda s: s.seq)
+            over = [s for s in victims if s.nbytes() > share]
+            victim = min(over or victims, key=lambda s: s.visit)
+            was = victim.factor
+            self._factors[victim.key] = now = self._restart_factor(victim, share)
             del self._slots[victim.key]
             if victim.target not in self._evicted:
                 self._evicted.append(victim.target)
-                newly.append(victim.target)
+                newly.append((victim.target, was, now))
         return newly
+
+    def _restart_factor(self, slot: _Slot, share: int) -> int:
+        """The grid factor ``slot`` restarts on after a release: its own, doubled
+        until the measured cost fits ``share`` or the grid reaches
+        :attr:`min_side`. Each doubling quarters the cost. Call under the lock."""
+        long_edge = max((max(s._shape) for s in slot.stacks.values()
+                         if s._shape), default=0)
+        factor, cost = slot.factor, slot.nbytes()
+        while cost > share and long_edge * slot.factor // (factor * 2) >= self.min_side:
+            factor *= 2
+            cost //= 4
+        return factor
 
     def _planes(self, arr: np.ndarray, filter_name: str | None,
                 bayer_pattern: str | None, factor: int
@@ -844,16 +907,20 @@ class SessionStacker:
         wins, so an id always means the panel it names; failing that a target
         NAME, which is what a hand-typed URL will carry. Where several panels
         share the name the most recently added answers, because that is the one
-        the run is shooting.
+        the run is shooting. Asking for a panel by name is a VISIT to it (see
+        :meth:`_enforce_budget`): the foreground is not, being the panel the
+        last frame fed.
         """
         if panel is None or panel == "":
             return self._slots.get(self._fg) if self._fg is not None else None
         want = str(panel)
         hit = self._slots.get(want)
+        if hit is None:
+            named = [s for s in self._slots.values() if s.target == want]
+            hit = max(named, key=lambda s: s.seq) if named else None
         if hit is not None:
-            return hit
-        named = [s for s in self._slots.values() if s.target == want]
-        return max(named, key=lambda s: s.seq) if named else None
+            self._visit(hit)
+        return hit
 
     def has_panel(self, panel: str | None) -> bool:
         """Whether ``panel`` names something stacked (None = the foreground)."""
@@ -863,7 +930,8 @@ class SessionStacker:
     def _channels_of(self, slot: _Slot | None) -> list[ChannelStatus]:
         if slot is None:
             return []
-        out = [ChannelStatus(ch, s.frames, s.integrated_s, s.rejected)
+        out = [ChannelStatus(ch, s.frames, s.integrated_s,
+                             s.rejected + slot.refused.get(ch, 0))
                for ch, s in slot.stacks.items()]
         out.sort(key=lambda c: CHANNEL_ORDER.index(c.channel)
                  if c.channel in CHANNEL_ORDER else 99)
@@ -915,7 +983,9 @@ class SessionStacker:
             "channels": [c.to_dict() for c in chans],
             "frames": sum(c.frames for c in chans),
             "integrated_s": round(sum(c.integrated_s for c in chans), 1),
-            "rejected": sum(c.rejected for c in chans),
+            "rejected": sum(c.rejected for c in chans) + (
+                sum(n for ch, n in slot.refused.items()
+                    if ch not in slot.stacks) if slot is not None else 0),
             "mode": self._mode_of(chans),
             "downsample": slot.factor if slot is not None else 0,
             "has_image": bool(chans),

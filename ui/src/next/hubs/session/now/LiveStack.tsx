@@ -60,14 +60,15 @@ import { useState, type CSSProperties, type JSX } from "react";
 
 import { backfillLabel, fmtIntegration, sessionStackImageUrl } from "../../../../api/sessionStack";
 import { modeLabel } from "../../../../components/preview/SessionStack";
+import { PanelPicker } from "../../../../components/PanelPicker";
 import { accessPhrase, useCanControlCapture } from "../../../../lib/caps";
 import { fmtClock } from "../../../../lib/eta";
 import { fmtCount } from "../../../../lib/gallery";
 import { usePreview, useSeq, useStore, useTelemetryStale, useWsPhase } from "../../../../store";
-import { ActionButton, Bar, Chip, EmptyCard, Mono } from "../../../ui";
+import { ActionButton, Bar, EmptyCard, Mono } from "../../../ui";
 import { explainLock } from "../../../shell/explain";
 import { phaseOf, phaseWord } from "./phase";
-import { latestPanel, panelLabels, useStackView, useSessionStackStatus } from "./stackView";
+import { useStackView, useSessionStackStatus } from "./stackView";
 import { useSubFrame } from "./useSubFrame";
 import { useNowIncidents } from "./useNowIncidents";
 
@@ -164,10 +165,6 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
   // rest of the status describes; absent from an older server, which reads as
   // one panel and so no row.
   const panels = status?.panels ?? [];
-  const labels = panelLabels(panels);
-  const showPanelChips = panels.length > 1;
-  // Following the latest, the chip lit is the one the latest frame fed.
-  const litPanel = panel ?? latestPanel(panels)?.key ?? null;
   const panelWord = (status?.target ?? "") || "tonight's target";
   const evicted = evictedNote(status?.evicted);
 
@@ -246,26 +243,7 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
 
   return (
     <div data-testid="now-live-stack" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      {showPanelChips && (
-        <div
-          data-testid="live-stack-panels"
-          role="group"
-          aria-label="Mosaic panels"
-          style={{ display: "flex", gap: 5, overflowX: "auto", minWidth: 0 }}
-        >
-          {panels.map((p, i) => (
-            <Chip
-              key={p.key}
-              active={litPanel === p.key}
-              count={p.frames}
-              onClick={() => setPanel(panel === p.key ? null : p.key)}
-              data-testid={`panel-chip-${p.key}`}
-            >
-              {labels[i]}
-            </Chip>
-          ))}
-        </div>
-      )}
+      <PanelPicker panels={panels} panel={panel} onPick={setPanel} testId="live-stack-panels" />
       {hasImage && status ? (
         <div data-testid="live-stack-frame" style={{ ...frameStyle, height }}>
           <img
