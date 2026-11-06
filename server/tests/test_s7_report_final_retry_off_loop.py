@@ -181,6 +181,11 @@ async def test_a_failed_final_write_retries_while_the_loop_runs(monkeypatch):
     got = await _landed("retry-off-loop")
     assert got.report is not None, (got.reason, writes)
     assert got.report.end_reason == "unsafe"
+    # The file lands inside the fake write, which counts itself done only
+    # after `real` returns, on the reporter's thread: wait for the count, not
+    # the file (#1215).
+    await wait_until(lambda: writes["done"] >= 1, timeout_s=6.0,
+                     interval_s=0.01)
     assert writes == {"calls": 2, "done": 1}
     assert clock.sleeps, "premise: the retry waited _FINAL_RETRY_S"
     assert [s for s in clock.sleeps if s[1]] == [], (
