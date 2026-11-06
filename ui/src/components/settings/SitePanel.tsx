@@ -41,6 +41,7 @@ import { Segmented } from "../Segmented";
 import { Field, Panel } from "../ui";
 import { Icon } from "../icons";
 import { ClassicSkyTools } from "../sky/ClassicSkyTools";
+import { HorizonSuggestionOffer } from "../../next/hubs/sky/sheets/HorizonSuggestionOffer";
 
 // Number("") is 0, which is Number.isFinite and would silently pass the lib
 // validators as coordinate 0 — a blank field must never be read as "0", it
@@ -753,6 +754,7 @@ export default function SitePanel(): JSX.Element {
             </div>
           </section>
         )}
+        <HorizonSuggestionOffer onAccepted={() => void loadConfig()} />
         {horizonOpen && <ClassicSkyTools initialTool="horizon" onClose={() => setHorizonOpen(false)} />}
 
         {/* --------------------------------------------- saved locations row */}

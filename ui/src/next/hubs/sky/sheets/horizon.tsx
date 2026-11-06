@@ -52,6 +52,7 @@ import { ERROR_TEXT } from './pano/copy';
 import { checkPanoSupport, requestIosMotionPermission } from './pano/support';
 import { declinationDeg, decimalYear } from './pano/wmm';
 import type { HorizonDraft, ScanResult } from './pano/types';
+import { HorizonSuggestionOffer } from './HorizonSuggestionOffer';
 import { acceptSuggested, draftFromPoints, draftToPoints, editDraft, shiftDraft } from './horizonDraft';
 import { binsDescribe, parseSavedBins, type HorizonBin } from './horizonBins';
 import { BandPanorama, shiftRaster } from './pano/bandPanorama';
@@ -128,6 +129,8 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const { lockedReason: opticsLocked, onExplain: explainOptics } = useLock({ cap: "config.site_optics" });
 
   const [loading, setLoading] = useState(true);
+  // Bumped when the learned-horizon offer is accepted: the line the sheet shows is then the stored one, so it loads again.
+  const [reloadTick, setReloadTick] = useState(0);
   const [loadFailed,setLoadFailed]=useState(false);
   const [siteName, setSiteName] = useState("the active site");
   const [source, setSource] = useState<Source>("active");
@@ -215,7 +218,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     })();
     return () => { dead = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.site]);
+  }, [params.site, reloadTick]);
 
   useEffect(()=>{
     if(!photoKey)return;
@@ -636,6 +639,8 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
           One horizon, shared by every site - per-site horizons arrive with the next rig update.
         </Mono>
       )}
+
+      {source === "active" && !loading && !dirty && !capturing && <HorizonSuggestionOffer onAccepted={() => setReloadTick((t) => t + 1)} />}
 
       <div hidden={capturing}>
       {panorama && <div className="photosphere-review-heading">
