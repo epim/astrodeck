@@ -1974,6 +1974,21 @@ class ResumeArm:
             self._retry_at = now + RETRY_INTERVAL_S
             self._set_hold(armed, veto, self._retry_at)
             return
+        # A PENDING WINDOWS RESTART HOLDS AUTO-RESUME TOO (#1076). The four
+        # HTTP start routes ask `Hub.arm_refusal`; an armed session started
+        # from here would walk straight into the restart they refuse. The
+        # operator's stored acknowledgement (Rig > Safety, ACKNOWLEDGE) is
+        # honoured inside `arm_refusal`, so an acknowledged restart resumes.
+        # Asked before any device moves, as the weather veto is; the sentence
+        # names no time of the night (its own tests pin that).
+        arm_refusal = getattr(self.hub, "arm_refusal", None)
+        restart = arm_refusal() if callable(arm_refusal) else None
+        if restart:
+            bus.log("warning", f"auto-resume held: {restart} - retrying in "
+                               f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
+            self._retry_at = now + RETRY_INTERVAL_S
+            self._set_hold(armed, restart, self._retry_at)
+            return
         # STILL BOOTING IS NOT A REFUSAL.
         #
         # The boot sequence connects devices asynchronously, and this service's
