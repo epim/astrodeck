@@ -10346,10 +10346,12 @@ class SequenceEngine:
                 cls, target.ra_hours, target.dec_deg,
                 latitude=site["latitude"], longitude=site["longitude"],
                 now=time.time())
-        except Exception:      # noqa: BLE001
+        except Exception as e:      # noqa: BLE001
             # Best effort: the learner is an aid, and a frame it cannot file
-            # must never break a hold or a centring.
-            pass
+            # must never break a hold or a centring. Said by type only, never
+            # the text, which could quote the position it was given (#964).
+            self._say_swallowed("filing a centring frame with the horizon "
+                                "learner", e)
 
     def _horizon_hint(self) -> str:
         """What a centring hold adds about the horizon (#1093): a space and the
