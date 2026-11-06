@@ -384,6 +384,15 @@ RESUME_SOLVE_FAILED_WORDS = "the resume's plate solve failed"
 RESUME_SOLVE_FAILED_TAIL = (
     "; not slewing until a solve can say where the mount points")
 
+#: The re-centre was halted: a STOP, a manual move or the manual-move deadman
+#: stopped the mount during the ladder's goto (#880, D-A). The ladder holds
+#: and disarms the session (`_disarm_halted`): nothing here moves the mount
+#: again or starts the run until the operator arms it. Fixed words, the
+#: action first, and no re-park, since the mount is the operator's now.
+HALTED_BY_OPERATOR_WORDS = (
+    "the run is not starting: the mount was halted during the resume's "
+    "re-centering, and auto-resume is disarmed until you arm it again")
+
 #: The re-centre's own solve (at the target) found no light (#251, #1097).
 #: Words only: the verdict's numbers do not go in a hold a viewer reads.
 RECENTRE_NO_LIGHT_WORDS = (
@@ -1462,11 +1471,20 @@ class ResumeArm:
         done, _ = await asyncio.wait({left}, timeout=LADDER_STOP_WAIT_S)
         return left in done
 
-    def _disarm_stopped(self, session: Session) -> None:
-        """Disarm the session whose ladder Abort stopped, and say so in the
-        words the engine uses when Abort disarms a run. Best-effort: a store
-        that cannot be written must not fail the abort, but it is said
-        loudly, because an unsaved disarm lets the next tick try again."""
+    def _operator_halted_since(self, fence) -> bool:
+        """Whether an operator STOP or the manual-move deadman moved the
+        hub's motion fence after ``fence`` was read. False for a hub that
+        keeps no causes."""
+        asks = getattr(self.hub, "operator_halted_since", None)
+        return isinstance(fence, int) and callable(asks) and bool(asks(fence))
+
+    def _write_disarm(self, session: Session, after: str) -> Session | None:
+        """Write ``session`` disarmed, write-locked and re-read before the
+        write so a concurrent PATCH is not overwritten by a stale copy, and
+        return the copy written, or None when there was nothing to write or
+        the store could not take it. ``after`` completes "could not disarm
+        '<name>' after ...": the failure is said loudly, because an unsaved
+        disarm lets the next tick try again."""
         try:
             with session_store.write_locked():
                 fresh = session_store.load(session.id)
@@ -1474,17 +1492,39 @@ class ResumeArm:
                     fresh.auto_resume = False
                     session_store.save(fresh)
         except (KeyError, SessionUnreadable):
-            return                          # nothing left to disarm
-        except Exception as e:              # noqa: BLE001 - never fail an abort
-            bus.log("error", f"could not disarm '{session.name}' after the "
-                             f"abort - auto-resume may start it again on its "
-                             f"next tick: {e}", "sequence")
+            return None                     # nothing left to disarm
+        except Exception as e:              # noqa: BLE001 - never fail the caller
+            bus.log("error", f"could not disarm '{session.name}' after "
+                             f"{after} - auto-resume may start it again on "
+                             f"its next tick: {e}", "sequence")
+            return None
+        return fresh
+
+    def _disarm_stopped(self, session: Session) -> None:
+        """Disarm the session whose ladder Abort stopped, and say so in the
+        words the engine uses when Abort disarms a run. Best-effort: a store
+        that cannot be written must not fail the abort."""
+        fresh = self._write_disarm(session, "the abort")
+        if fresh is None:
             return
         bus.log("info",
                 f"'{fresh.name}': stopped by hand while auto-resume was "
                 f"re-centring the mount, so auto-resume is disarmed for it. "
                 f"Arm it from the session list to pick it up again.",
                 "sequence")
+
+    def _disarm_halted(self, session: Session) -> None:
+        """Disarm the session whose re-centre the operator halted (a STOP, a
+        manual move or the deadman, #880, D-A): the next tick would
+        otherwise slew the mount the operator just stopped, ten minutes
+        later, and start the run. Best-effort, as `_disarm_stopped`."""
+        fresh = self._write_disarm(session, "the halt")
+        if fresh is None:
+            return
+        bus.log("info",
+                f"'{fresh.name}': the mount was halted while auto-resume was "
+                f"re-centring it, so auto-resume is disarmed for it. Arm it "
+                f"from the session list to pick it up again.", "sequence")
 
     def _disarm_single_night(self, session: Session, first_night: str,
                              tonight: str) -> None:
@@ -1933,6 +1973,21 @@ class ResumeArm:
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
             self._retry_at = now + RETRY_INTERVAL_S
             self._set_hold(armed, veto, self._retry_at)
+            return
+        # A PENDING WINDOWS RESTART HOLDS AUTO-RESUME TOO (#1076). The four
+        # HTTP start routes ask `Hub.arm_refusal`; an armed session started
+        # from here would walk straight into the restart they refuse. The
+        # operator's stored acknowledgement (Rig > Safety, ACKNOWLEDGE) is
+        # honoured inside `arm_refusal`, so an acknowledged restart resumes.
+        # Asked before any device moves, as the weather veto is; the sentence
+        # names no time of the night (its own tests pin that).
+        arm_refusal = getattr(self.hub, "arm_refusal", None)
+        restart = arm_refusal() if callable(arm_refusal) else None
+        if restart:
+            bus.log("warning", f"auto-resume held: {restart} - retrying in "
+                               f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
+            self._retry_at = now + RETRY_INTERVAL_S
+            self._set_hold(armed, restart, self._retry_at)
             return
         # STILL BOOTING IS NOT A REFUSAL.
         #
@@ -2969,6 +3024,9 @@ class ResumeArm:
             # with no angle (or a lock it cannot turn to) see nothing new.
             rotation = commanded_rotation(session, tgt, self.hub)
             mark = self._solve_mark()
+            # The hub's motion fence as the goto begins, to tell an operator's
+            # halt under it from any other (#880, D-A).
+            fence = getattr(self.hub, "_motion_epoch", None)
             centring = None
             try:
                 try:
@@ -3021,6 +3079,19 @@ class ResumeArm:
             # above. Nothing moved, so ``_recentred`` stays unset.
             if isinstance(centring, dict) and centring.get("position_unknown"):
                 return POSITION_UNKNOWN_RECENTRE_WORDS
+            # THE OPERATOR HALTED THE MOUNT UNDER THIS GOTO (#880, D-A): the
+            # hub's aborted shape, the motion fence moved by an operator STOP
+            # or the manual-move deadman (``Hub.operator_halted_since``; a
+            # safety or dawn halt is not the operator's and keeps its old
+            # handling). Not a re-centre that missed, and no hold
+            # that retries: a retry in ten minutes is a slew of a mount the
+            # operator stopped, and the run it ends in is a restart nobody
+            # asked for. Disarmed, held in fixed words, and not parked again
+            # (`_recentre_hold`): the mount is the operator's now.
+            if (isinstance(centring, dict) and centring.get("aborted")
+                    and self._operator_halted_since(fence)):
+                self._disarm_halted(session)
+                return HALTED_BY_OPERATOR_WORDS
             if (unsolved_sky and isinstance(centring, dict)
                     and centring.get("solve_failed")):
                 # THE FIRST SOLVE OF THIS RESUME FAILED (#1097): step 2 did

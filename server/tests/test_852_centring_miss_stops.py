@@ -229,7 +229,10 @@ async def test_a_goto_that_did_not_arrive_stops_and_never_holds_for_light(
         bus_lines):
     """P4's ``goto_not_arrived`` with no figure and no failed solve: read
     before the no-light arm, so it stops rather than holding for light
-    (seam S4).
+    (seam S4). Since WP 3.1 (#1109) the recovery ladder first centres once
+    more from where the mount stands, and this hub has no home position, so
+    the ladder then gives up and the target stops: two gotos, where a hold
+    for light would have made seven.
 
     MUTANT "the key unread" (the ``goto_not_arrived`` branch of `_unmoved`
     removed): RED -
@@ -243,7 +246,9 @@ async def test_a_goto_that_did_not_arrive_stops_and_never_holds_for_light(
     with pytest.raises(StopTarget) as ei:
         await e._setup_target(0, t)
     assert str(ei.value) == f"centring at acquisition: {CENTRING_NOT_ARRIVED}"
-    assert len(hub.gotos) == 1, f"a goto that did not arrive held for light: {hub.gotos}"
+    assert len(hub.gotos) == 2, (
+        f"one retry from the ladder and nothing more; a goto that did not "
+        f"arrive held for light: {hub.gotos}")
 
 
 # ============================================ ruling R3 (orchestrator override)

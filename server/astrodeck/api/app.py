@@ -136,7 +136,8 @@ from .. import rig_beacon
 from .. import pulse_probe
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
-from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
+from ..hub import (CAPTURE_DIR, HALT_OPERATOR_STOP, TOUCH_MAX_RATE_DEG_S,
+                   PromoteRefused, hub)
 from ..site_gate import site_is_set
 from ..calibration import CalibrationLibrary, MatchTolerance
 from ..calibration.keys import mech_angle_from_header
@@ -9719,7 +9720,7 @@ def create_app(*, bind_host: str | None = None,
             # and is always allowed; a non-zero jog re-checks the fence at the
             # pre-dispatch point so a STOP that landed mid-call wins.
             if rate == 0.0:
-                hub.bump_motion_epoch()
+                hub.bump_motion_epoch(HALT_OPERATOR_STOP)
                 async with hub._motion_lock:
                     await tel.move_axis(body.axis, rate)
             else:
@@ -9751,7 +9752,7 @@ def create_app(*, bind_host: str | None = None,
         # stale REMOTE goto cannot fire AFTER this LOCAL abort -- even if its task
         # was already past the cancel point and sitting in ``tel.slew``'s await,
         # its pre-dispatch re-check sees the advanced epoch and abandons.
-        hub.bump_motion_epoch()
+        hub.bump_motion_epoch(HALT_OPERATOR_STOP)
         # "pulse_probe" (#1071) is a lane of timed guide pulses: its cancel
         # runs pulse_guide's own stop, and the tel.stop() below backs it up.
         for name in ("goto", "solve", "pulse_probe"):
@@ -9896,7 +9897,7 @@ def create_app(*, bind_host: str | None = None,
         # is taken BEFORE the bump for that same reason — see
         # _refuse_if_lane_blocked.
         _refuse_if_lane_blocked("goto")
-        hub.bump_motion_epoch()
+        hub.bump_motion_epoch("operator_park")
 
         async def _park():
             tel = hub.require("telescope")
@@ -9950,7 +9951,7 @@ def create_app(*, bind_host: str | None = None,
         # detail gives the safe order. Before the bump, as the lane refusal.
         _refuse_if_position_unknown(tel)
         _refuse_if_lane_blocked("goto")     # before the bump; see park
-        hub.bump_motion_epoch()
+        hub.bump_motion_epoch("operator_home")
 
         async def _home():
             t = hub.require("telescope")
@@ -10033,7 +10034,7 @@ def create_app(*, bind_host: str | None = None,
         # 'no dome connected' would leave it open in the rain (#989).
         if dome is None or not is_present(dome):
             raise _err(DeviceError("no dome connected"))
-        hub.bump_motion_epoch()
+        hub.bump_motion_epoch("dome_close")
 
         async def _run():
             tel = hub.devices.get("telescope")
