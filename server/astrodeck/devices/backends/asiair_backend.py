@@ -64,7 +64,11 @@ independent Alpaca endpoints:
    context lives on the BOX). So ``_Link`` funnels every RPC through one
    ``asyncio.Lock``. The lock is held PER RPC and never across a wait -- a
    five-minute exposure polls with the lock released, so mount and focuser
-   reads stay live throughout.
+   reads stay live throughout. A cancelled RPC keeps the lock until its
+   libasi thread returns (``_Link.call``). The one exception to the lock is
+   the FITS download: libasi fetches a file over its own connection on port
+   4801, so ``_Link.download`` runs it without the lock and an abort never
+   waits behind a transfer.
 
 3. The box can be busy, and the ASIAIR app may be the one driving it. Before
    any state-changing command ``_Link.require_idle`` calls libasi's
@@ -73,6 +77,9 @@ independent Alpaca endpoints:
    success return. Reads are never gated, and ABORT paths (``stop``,
    ``abort_exposure``, ``halt``) are never gated either -- an emergency stop
    that refused because the box was busy would be the worst possible failure.
+   An abort still takes the link lock, so it can wait behind a cancelled RPC
+   until that RPC's thread returns; ``abort_exposure`` cancels a download in
+   flight first so it never waits behind one.
 """
 from __future__ import annotations
 
@@ -319,12 +326,15 @@ class _Link:
 
     Owns ONE ``asyncio.Lock``. Every RPC in this module goes through ``call``
     (or ``require_idle``), so no two coroutines are ever inside libasi's
-    transport at once -- which matters because libasi guards only its request-id
-    counter, and because ``images.list_dir`` sets a directory context ON THE BOX
-    that a concurrent listing would clobber.
+    command transport at once -- which matters because libasi guards only its
+    request-id counter, and because ``images.list_dir`` sets a directory context
+    ON THE BOX that a concurrent listing would clobber. File downloads go
+    through ``download`` instead: they use their own connection, so they take
+    no lock.
 
     The lock is per-RPC. Long waits (exposure, slew settle, focus settle) sleep
-    with it RELEASED so a capture never blocks the mount status poll."""
+    with it RELEASED so a capture never blocks the mount status poll. A
+    cancelled RPC keeps the lock until its thread returns (see ``call``)."""
 
     def __init__(self, client: Any, host: str) -> None:
         self.client = client
@@ -383,8 +393,11 @@ class _Link:
         lock at the cancel let the next RPC run beside that thread, where
         either could take the other's reply (#862 fix round 1). So the cancel
         propagates at once, and the lock is released only when the abandoned
-        call returns, which libasi's own socket timeout bounds
-        (``DEFAULT_TIMEOUT_S``)."""
+        call returns. How long that takes is libasi's socket timeout
+        (``DEFAULT_TIMEOUT_S``) for each read that stalls; a call that keeps
+        making progress holds the lock until it is done, and the next RPC,
+        an abort included, waits for it. A FITS download is the one call that
+        can run that long, so it does not go through here: see ``download``."""
         await self._lock.acquire()
         orphaned = False
         failure: AsiairCallError | None = None
@@ -397,14 +410,7 @@ class _Link:
                 rpc.add_done_callback(self._release_after_orphan)
                 raise
             except Exception as exc:  # noqa: BLE001 — one honest DeviceError out
-                if _is_busy(exc):
-                    failure = AsiairCallError(self._busy_message(exc, what), exc)
-                else:
-                    shown = _shown_failure(exc)
-                    self.last_error = f"{what}: {shown}"[:200]
-                    failure = AsiairCallError(
-                        f"ASIAIR {self.host}: {what} failed — {shown} "
-                        f"({_NOT_QUOTED})", exc)
+                failure = self._failure(exc, what)
         finally:
             if not orphaned:
                 self._lock.release()
@@ -414,6 +420,38 @@ class _Link:
             raise failure from None
         self.last_ok = time.time()
         return value
+
+    async def download(self, fn, *args, what: str):
+        """Run ONE blocking libasi file download off the event loop, WITHOUT
+        the link lock.
+
+        libasi fetches a file over its own one-shot connection (port 4801), not
+        over the command socket and directory context the lock protects, so
+        the lock has nothing to guard here. Holding it would be harmful: a
+        full-frame FITS over Wi-Fi can take a minute, and a cancelled download
+        keeps whatever it holds until its thread returns (see ``call``), so an
+        abort's ``stop_exposure`` would queue behind the whole transfer. A
+        cancel propagates at once and leaves the abandoned thread to finish
+        and be discarded. Failures map exactly as ``call`` maps them."""
+        failure: AsiairCallError | None = None
+        try:
+            value = await asyncio.to_thread(fn, *args)
+        except Exception as exc:  # noqa: BLE001 - one honest DeviceError out
+            failure = self._failure(exc, what)
+        if failure is not None:
+            # Outside the handler and ``from None``, as in ``call`` (#955).
+            raise failure from None
+        self.last_ok = time.time()
+        return value
+
+    def _failure(self, exc: Exception, what: str) -> AsiairCallError:
+        """The one ``DeviceError`` a failed libasi call becomes."""
+        if _is_busy(exc):
+            return AsiairCallError(self._busy_message(exc, what), exc)
+        shown = _shown_failure(exc)
+        self.last_error = f"{what}: {shown}"[:200]
+        return AsiairCallError(
+            f"ASIAIR {self.host}: {what} failed — {shown} ({_NOT_QUOTED})", exc)
 
     def _release_after_orphan(self, rpc: asyncio.Future) -> None:
         """Done-callback of a call whose caller was cancelled: retrieve its
@@ -1166,7 +1204,8 @@ class AsiairCamera(_AsiairDevice, Camera):
          RPC lock released, polling until the box reports capture idle;
       5. ``save_image`` to put the frame on the ASIAIR's storage;
       6. diff the directory listing to identify OUR file, and download it as
-         real FITS over port 4801.
+         real FITS over port 4801, outside the link lock and as a task an
+         abort cancels (``_Link.download``).
 
     Step 6 is where honesty matters: if zero new files appear, or if MORE than
     one does (another client saving into the same folder), this raises a
@@ -1197,6 +1236,7 @@ class AsiairCamera(_AsiairDevice, Camera):
         self._cleanup_previews = True
         self._controls: set[str] = set()
         self._target_c: float | None = None
+        self._download: asyncio.Future | None = None
         self.can_report_cooler_power = False
 
     def configure(self, extra: dict | None) -> None:
@@ -1371,8 +1411,7 @@ class AsiairCamera(_AsiairDevice, Camera):
                 raise
             await self._link.call(images.save_current, what="save frame")
             path = await self._find_new_file(before)
-            raw = await self._link.call(images.fetch_fits, path,
-                                        what="download FITS")
+            raw = await self._download_fits(path)
         except asyncio.CancelledError:
             await self.abort_exposure()
             raise
@@ -1404,8 +1443,34 @@ class AsiairCamera(_AsiairDevice, Camera):
             egain_e_per_adu=_maybe_float(hdr.get("EGAIN")),
         )
 
+    async def _download_fits(self, path: str) -> bytes:
+        """Download our frame as a task ``abort_exposure`` can cancel. An abort
+        that ends it is a stated-reason ``DeviceError``, not a bare cancel: the
+        caller's own task was not cancelled."""
+        download = asyncio.ensure_future(self._link.download(
+            self._link.client.images.fetch_fits, path, what="download FITS"))
+        self._download = download
+        try:
+            await asyncio.wait({download})
+        finally:
+            self._download = None
+            download.cancel()
+        if download.cancelled():
+            raise DeviceError(f"{self.name}: the exposure was aborted while "
+                              "its frame was downloading")
+        return download.result()
+
     async def abort_exposure(self) -> None:
-        """Stop the exposure and drop the frame. NEVER gated on idleness."""
+        """Stop the exposure and drop the frame. NEVER gated on idleness.
+
+        A FITS download in flight is cancelled FIRST, so the abort does not
+        wait for it: the download runs outside the link lock (``_Link.download``)
+        and its cancel returns at once, leaving the abandoned libasi thread to
+        finish and be discarded. ``stop_exposure`` then takes the lock as any
+        RPC does, and waits only behind a cancelled command RPC, which libasi's
+        socket timeout bounds."""
+        if self._download is not None:
+            self._download.cancel()
         try:
             await self._link.call(self._link.client.camera.stop_exposure, False,
                                   what="abort exposure")
