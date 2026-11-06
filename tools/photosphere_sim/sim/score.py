@@ -166,6 +166,10 @@ LANDMARK_FOOTPRINT_MARGIN_DEG = 1.5
 #: The scene's own flags, read from ``manifest.grading``.
 GRADING_FLAGS = ("still_pivot", "fully_observable", "daylight",
                  "north_graded", "expect_closure")
+#: The gates a ruling may give a limit: the boundary percentile each one reads.
+RULED_PERCENTILE = {"horizon_p95_lt_1": "p95", "measured_is_honest": "p99"}
+#: The ring correction needs at least this much turn to the closing keyframe.
+RING_MIN_TURN_DEG = 1.0
 
 
 # --------------------------------------------------------------------------
@@ -1690,6 +1694,22 @@ def _gates(landmarks: dict, horizon: dict, overlay: dict, capture: dict,
     return gates
 
 
+def _error_below(horizon: dict, key: str, limit: float) -> bool:
+    """The percentile rule of the boundary gates: ``key`` of the error is below ``limit``.
+
+    An empty Measured set passes only where nothing was asked for (fewer than
+    EMPTY_MEASURED_VISIBLE_BINS visible bins). Without a visibility file every
+    bin is taken as visible: a missing file is no reason to excuse a result
+    that measured nothing.
+    """
+    visible = horizon["visible_bins"]
+    asked_for_something = (PROFILE_BINS if visible is None else visible) >= EMPTY_MEASURED_VISIBLE_BINS
+    errors = horizon["signed_error_deg"]
+    if horizon["empty_measured"]:
+        return not asked_for_something
+    return errors[key] is not None and errors[key] < limit - GATE_EPSILON
+
+
 def _gates_v2(gates: dict, *, pan: bool, horizon: dict, overlay: dict,
               coverage: dict, flags: dict, compass_bias: bool, has_diagnostics: bool,
               loop: dict | None, focal: dict | None, north: dict | None,
@@ -1716,22 +1736,18 @@ def _gates_v2(gates: dict, *, pan: bool, horizon: dict, overlay: dict,
         gates["coverage_ge_0_95"] = footprint is not None and footprint >= GATE_COVERAGE
         complete = overlay.get("complete_fraction")
         gates["overlay_complete"] = complete is not None and complete >= GATE_OVERLAY_COMPLETE
+        # #1060: before its ring closes a chain carries a scale error nothing
+        # can observe; the closure measures it, and the gate reads the moving
+        # overlay after that measurement is taken out (see _ring_scaled_events).
+        moving = (overlay.get("after_ring_scale") or overlay)["moving"]
+        gates["overlay_moving_p95_lt_1"] = (
+            overlay["samples"] > 0
+            and (moving["p95_deg"] is None or moving["p95_deg"] < GATE_OVERLAY_MOVING_P95))
 
     if horizon.get("version") == 2:
-        visible = horizon["visible_bins"]
-        # Without a visibility file every bin is taken as visible: a missing
-        # file is no reason to excuse a result that measured nothing.
-        asked_for_something = (PROFILE_BINS if visible is None else visible) >= EMPTY_MEASURED_VISIBLE_BINS
-        errors = horizon["signed_error_deg"]
-
-        def within(key: str, limit: float) -> bool:
-            if horizon["empty_measured"]:
-                return not asked_for_something
-            return errors[key] is not None and errors[key] < limit - GATE_EPSILON
-
-        gates["horizon_p95_lt_1"] = within("p95", GATE_HORIZON_P95)
+        gates["horizon_p95_lt_1"] = _error_below(horizon, "p95", GATE_HORIZON_P95)
         gates["never_below_profile"] = horizon["below_profile_bins"] == 0
-        gates["measured_is_honest"] = within("p99", GATE_HORIZON_P99)
+        gates["measured_is_honest"] = _error_below(horizon, "p99", GATE_HORIZON_P99)
         if flags["daylight"] and flags["still_pivot"]:
             share = horizon["measured_share"]
             gates["measured_share"] = (
@@ -1776,6 +1792,125 @@ def _gates_v2(gates: dict, *, pan: bool, horizon: dict, overlay: dict,
 
 
 # --------------------------------------------------------------------------
+
+
+def _ruling_kind(name: str, row) -> str:
+    """The one kind of a ruling row (``limit_deg``, ``max_bins`` or ``known_failure``), or ValueError."""
+    if not isinstance(row, dict):
+        raise ValueError(f"ruling for {name} is not an object")
+    why = row.get("why")
+    if not isinstance(why, str) or not why.strip():
+        raise ValueError(f"ruling for {name} carries no reason")
+    kinds = [k for k in ("limit_deg", "max_bins", "known_failure") if k in row]
+    if len(kinds) != 1:
+        raise ValueError(f"ruling for {name} must hold exactly one of limit_deg, max_bins, known_failure")
+    kind = kinds[0]
+    if kind == "limit_deg" and name not in RULED_PERCENTILE:
+        raise ValueError(f"ruling for {name} gives a limit and the gate reads no percentile")
+    if kind == "max_bins" and name != "no_unresolved_boundary":
+        raise ValueError(f"ruling for {name} caps bins and the gate does not count them")
+    if kind == "known_failure" and (row["known_failure"] is not True or not isinstance(row.get("issue"), int)):
+        raise ValueError(f"ruling for {name} must be known_failure true and name its issue")
+    return kind
+
+
+def _apply_rulings(gates: dict, horizon: dict, rulings: dict | None) -> tuple[dict, dict]:
+    """The case's per-gate rulings applied to the standard gates (#1059).
+
+    ``gates`` holds the standard verdicts. A ruling replaces its gate's verdict
+    with the ruled one, and the second answer says what was ruled and what the
+    standard rule had said, so a reader sees both:
+
+    - ``limit_deg``: the gate passes at that limit instead of its own, and the
+      line's published ``tau`` must be at most ``tau_max_deg`` when the ruling
+      gives one (a coarser line is not covered by a limit ruled for a finer one);
+    - ``max_bins``: ``no_unresolved_boundary`` allows that many unresolved bins;
+    - ``known_failure``: the gate must still FAIL under the standard rule and
+      the case passes it for failing. A gate that has begun to pass makes its
+      ruling ``stale`` and fails the case: the ruling names a defect that is gone.
+
+    A ruling on a gate the case does not have, one with no reason and one that
+    holds more or less than one kind raise ValueError: a ruling that could not
+    apply must not read as a ruling that held.
+    """
+    gates = dict(gates)
+    ruled = {}
+    for name, row in (rulings or {}).items():
+        if name not in gates or name == "pass":
+            raise ValueError(f"ruling for {name}: the case has no such gate")
+        kind = _ruling_kind(name, row)
+        standard = bool(gates[name])
+        entry = {"kind": kind, "standard_gate": standard, "why": row["why"]}
+        if kind == "limit_deg":
+            key = RULED_PERCENTILE[name]
+            tau_max = row.get("tau_max_deg")
+            entry.update(limit=row["limit_deg"], observed=horizon["signed_error_deg"][key])
+            verdict = _error_below(horizon, key, row["limit_deg"])
+            if tau_max is not None:
+                entry.update(tau_max=tau_max, tau=horizon["tau"])
+                verdict = verdict and horizon["tau"] is not None and horizon["tau"] <= tau_max
+        elif kind == "max_bins":
+            entry.update(limit=row["max_bins"], observed=horizon["unresolved_bins"])
+            verdict = horizon["unresolved_bins"] <= row["max_bins"]
+        else:
+            entry.update(issue=row["issue"], observed=standard)
+            verdict = not standard
+            if standard:
+                entry["stale"] = True
+        gates[name] = verdict
+        ruled[name] = entry
+    return gates, ruled
+
+
+def _ring_scaled_events(events: list, diagnostics: dict | None) -> tuple[list, dict] | None:
+    """The events with the ring's own measurement of its chain's scale taken out (#1060), or None.
+
+    A chain whose scale is a little wrong draws a yaw error that grows with the
+    turn until its ring closes, and nothing before the closure can observe it
+    (applying the gyro scale to the predictor does not remove it: the focal lock
+    absorbs part of it). The closure measures it: ``loop.pre_deg[2]`` is the yaw
+    the closing keyframe had to be turned, and the closure turns it. So before
+    the closing keyframe each reported basis is turned back by that residual in
+    proportion to the heading turned since the first frame (unwrapped from the
+    reported headings, never from truth), and from the closing keyframe on the
+    bases are untouched. Only a ring closed by an image with a measured
+    residual, and a closing keyframe that carries a basis, is corrected; a gyro
+    closure measures no scale (tracker.ts) and anything else has nothing to
+    correct by.
+
+    Returns the corrected events and ``{"residual_deg", "turned_deg",
+    "closing_frame_id"}``.
+    """
+    diagnostics = diagnostics or {}
+    loop = diagnostics.get("loop") or {}
+    pre, match = loop.get("pre_deg"), loop.get("match")
+    if not (loop.get("closed") and loop.get("method") == "image" and pre and match):
+        return None
+    closing = next((k["frame_id"] for k in diagnostics.get("keyframes") or []
+                    if k["id"] == match["late_kf"]), None)
+    kept = first_line_per_frame(events)
+    turned, previous, total = {}, None, 0.0
+    for index, event in enumerate(kept):
+        basis = event.get("basis")
+        heading = None if basis is None else _heading_deg(basis["forward"])
+        if heading is None:
+            continue
+        if previous is not None:
+            total += (heading - previous + 180.0) % 360.0 - 180.0
+        previous = heading
+        turned[index] = total
+    at = next((i for i, e in enumerate(kept) if e.get("frame_id") == closing and i in turned), None)
+    if at is None or abs(turned[at]) < RING_MIN_TURN_DEG:
+        return None
+    residual = float(pre[2])
+    corrected = []
+    for index, event in enumerate(kept):
+        if index <= at and index in turned:
+            amount = residual * turned[index] / turned[at]
+            event = dict(event, basis={key: rotate_about_up(event["basis"][key], -amount)
+                                       for key in ("right", "up", "forward")})
+        corrected.append(event)
+    return corrected, {"residual_deg": residual, "turned_deg": turned[at], "closing_frame_id": closing}
 
 
 def score_case(case_dir, result_dir=None) -> dict:
@@ -1833,10 +1968,15 @@ def score_case(case_dir, result_dir=None) -> dict:
                                            _parse_visibility(visibility_raw))
     else:
         horizon_scores = _score_horizon(reference_horizon, horizon_raw)
+    diagnostics = _read_json(result_dir / "diagnostics.json")
     if pan:
-        overlay_scores = _score_overlay(
-            events, frames, remove_yaw=True,
-            window_ids={f["frame_id"] for f in window})
+        window_ids = {f["frame_id"] for f in window}
+        overlay_scores = _score_overlay(events, frames, remove_yaw=True, window_ids=window_ids)
+        ring = _ring_scaled_events(events, diagnostics)
+        if ring is not None:
+            scaled_events, ring_info = ring
+            scaled = _score_overlay(scaled_events, frames, remove_yaw=True, window_ids=window_ids)
+            overlay_scores["after_ring_scale"] = {**ring_info, "moving": scaled["moving"]}
     else:
         overlay_scores = _score_overlay(events, frames)
     capture_scores = _score_capture(holds, _read_jsonl(result_dir / "captures.jsonl"))
@@ -1880,7 +2020,6 @@ def score_case(case_dir, result_dir=None) -> dict:
     }
 
     if extended:
-        diagnostics = _read_json(result_dir / "diagnostics.json")
         truth_by_id = {f["frame_id"]: f for f in frames}
         loop = focal = north = live = None
         if pan:
@@ -1899,6 +2038,12 @@ def score_case(case_dir, result_dir=None) -> dict:
             coverage=coverage_scores, flags=flags, compass_bias=compass_bias,
             has_diagnostics=diagnostics is not None, loop=loop, focal=focal,
             north=north, live=live)
+        # Rulings are about the version 2 boundary; a legacy scanner's version 1
+        # horizon is graded by the standard gates.
+        if manifest.get("rulings") and horizon_scores.get("version") == 2:
+            scores["gates"], scores["rulings"] = _apply_rulings(
+                scores["gates"], horizon_scores, manifest["rulings"])
+            scores["gates"]["pass"] = all(v for k, v in scores["gates"].items() if k != "pass")
         scores["route"] = {"kind": route.get("kind") if isinstance(route, dict) else None}
         scores["flags"] = flags
         scores["visibility"] = {"present": visibility_raw is not None}

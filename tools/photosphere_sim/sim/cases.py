@@ -306,7 +306,8 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
     # What the case was graded and degraded against, carried like ``profile``
     # so a result can name it from the case directory alone. Only when the
     # definition has them: a legacy manifest keeps exactly its old keys.
-    for key in ("grading", "realism", "scanner_options"):
+    # ``rulings`` are the case's per-gate rulings, read by the scorer.
+    for key in ("grading", "realism", "scanner_options", "rulings"):
         if case_def.get(key) is not None:
             manifest[key] = case_def[key]
     _write_json(out_dir / "manifest.json", manifest)

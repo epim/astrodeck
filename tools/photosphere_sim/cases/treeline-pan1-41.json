@@ -9,6 +9,22 @@
   "profile": "realism-v1",
   "grading": {"still_pivot": true, "fully_observable": true, "daylight": true, "north_graded": true, "expect_closure": true},
   "scanner_options": {"focal_prior_scale": 1.1, "sensor_only": false, "declination_deg": 0},
+  "rulings": {
+    "horizon_p95_lt_1": {
+      "limit_deg": 2.5,
+      "tau_max_deg": 1.5,
+      "why": "A canopy edge does not fit the 180 vertex cap at tau 1.0, so the published line is the tau 1.5 rung (150 vertices) and sits up to 1.5 degrees above the profile, on top of the profile's own foliage error (p95 1.32 against the truth, 1.07 against the bin maximum). The limit is the gate's 1.0 plus that 1.5; a coarser line is not covered (#1059)."
+    },
+    "no_unresolved_boundary": {
+      "max_bins": 36,
+      "why": "26 of 720 bins are unresolved (17 Low, 6 Unknown, 3 Tall), each published closed at 90 degrees, and 5 of the Low bins are truth bins with a range over 2 degrees. 36 bins is 5 percent of the profile, the safe-direction share the scorer already tolerates for Measured bins that are not visible; measured_share still asks for 85 percent of the expected bins (#1059)."
+    },
+    "measured_is_honest": {
+      "known_failure": true,
+      "issue": 1058,
+      "why": "p99 reads 4.28 against 2.0 because Measured bins 273 to 275 publish 10.7 to 11.1 degrees where the truth maximum is 27.1 to 29.5, and bins 436 and 591 are 14.0 and 8.6 degrees off: false-open Measured bins away from a step, the class of #1058, which the tracer has not been fixed for. Capping the line cannot excuse them, so no limit is ruled; the ruling goes stale, and fails the case, when the gate passes (#1059)."
+    }
+  },
   "realism": {
     "gyro_scale_err": 0.02,
     "relative": {

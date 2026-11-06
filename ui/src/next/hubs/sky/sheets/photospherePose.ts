@@ -3,12 +3,43 @@
 import { dot, rotateBasis, type CameraBasis } from './photosphereGeometry';
 import { STALE_FRAME_MS, type ViewContinuity } from './photosphereStability';
 
+/** How the scan's north was established (#905). `shiftDeg` is what the saved azimuths move by, magnetic: the mean of
+ *  every absolute-minus-relative offset less the offset the live view was anchored on. */
+export interface ScanNorth {
+  source: 'compass-mean' | 'absolute-only' | 'none';
+  samples: number;
+  spreadDeg: number | null;
+  shiftDeg: number;
+}
+
+/** Offsets closer in time than this are one sample, so a fast stream does not outweigh a slow one; bounded at five
+ *  minutes of them. Inliers are within 8 degrees of the median, as the panorama scanner's NorthAnchor reads them. */
+const NORTH_MIN_GAP_MS = 50, NORTH_MAX_SAMPLES = 6000, NORTH_INLIER_DEG = 8;
+const wrap180 = (deg: number) => ((deg % 360) + 540) % 360 - 180;
+function circularMean(degs: readonly number[]): number {
+  let s = 0, c = 0;
+  for (const d of degs) { s += Math.sin(d * Math.PI / 180); c += Math.cos(d * Math.PI / 180); }
+  return Math.atan2(s, c) * 180 / Math.PI;
+}
+function circularSd(degs: readonly number[]): number {
+  let s = 0, c = 0;
+  for (const d of degs) { s += Math.sin(d * Math.PI / 180); c += Math.cos(d * Math.PI / 180); }
+  const r = Math.min(1, Math.hypot(s, c) / degs.length);
+  return r > 0 ? Math.sqrt(-2 * Math.log(r)) * 180 / Math.PI : 180;
+}
+
 /** Anchor the gyro-relative stream to one simultaneous north reading. Do not
- * keep injecting magnetometer corrections into the camera's local sky map. */
+ * keep injecting magnetometer corrections into the camera's local sky map.
+ *
+ * The anchor is the first pair, so the view does not jump under the user, but it is one noisy sample (and, beside a
+ * steel mount, one biased one). Every later simultaneous pair is kept as well, and `north()` is the robust circular mean
+ * of them all: the saved azimuths move by its difference from the anchor when the scan finishes. */
 export class ScanPoseSource {
   private absolute:{basis:CameraBasis;at:number}|null=null;
   private yaw:number|null=null;
-  clear(){this.absolute=null;this.yaw=null;}
+  private offsets:number[]=[];
+  private offsetAt=-Infinity;
+  clear(){this.absolute=null;this.yaw=null;this.offsets=[];this.offsetAt=-Infinity;}
   get usesRelative(){return this.yaw!==null;}
   accept(basis:CameraBasis,absolute:boolean,at:number):{basis:CameraBasis;changedSource:boolean}|null {
     if(absolute){
@@ -16,13 +47,30 @@ export class ScanPoseSource {
       return this.yaw===null?{basis,changedSource:false}:null;
     }
     let changedSource=false;
+    const paired=this.absolute!==null&&Math.abs(at-this.absolute.at)<=100;
+    if(paired&&at-this.offsetAt>=NORTH_MIN_GAP_MS&&this.offsets.length<NORTH_MAX_SAMPLES){
+      this.offsets.push(this.yawTo(this.absolute!.basis,basis));this.offsetAt=at;
+    }
     if(this.yaw===null){
-      if(!this.absolute||Math.abs(at-this.absolute.at)>100)return null;
-      let cross=0,cos=0;
-      for(const axis of ['right','up','forward'] as const){const a=this.absolute.basis[axis],r=basis[axis];cross+=a[0]*r[1]-a[1]*r[0];cos+=a[0]*r[0]+a[1]*r[1];}
-      this.yaw=Math.atan2(cross,cos)*180/Math.PI;changedSource=true;
+      if(!paired)return null;
+      this.yaw=this.yawTo(this.absolute!.basis,basis);changedSource=true;
     }
     return {basis:rotateBasis(basis,this.yaw),changedSource};
+  }
+  /** The yaw that turns `relative` onto `absolute`, degrees. */
+  private yawTo(absolute:CameraBasis,relative:CameraBasis):number {
+    let cross=0,cos=0;
+    for(const axis of ['right','up','forward'] as const){const a=absolute[axis],r=relative[axis];cross+=a[0]*r[1]-a[1]*r[0];cos+=a[0]*r[0]+a[1]*r[1];}
+    return Math.atan2(cross,cos)*180/Math.PI;
+  }
+  north():ScanNorth {
+    const n=this.offsets.length;
+    if(!n||this.yaw===null)return {source:this.absolute?'absolute-only':'none',samples:0,spreadDeg:null,shiftDeg:0};
+    const centre=circularMean(this.offsets);
+    const devs=this.offsets.map(o=>wrap180(o-centre)).sort((a,b)=>a-b);
+    const median=centre+devs[(n-1)>>1];
+    const inliers=this.offsets.filter(o=>Math.abs(wrap180(o-median))<=NORTH_INLIER_DEG);
+    return {source:'compass-mean',samples:n,spreadDeg:circularSd(inliers),shiftDeg:wrap180(circularMean(inliers)-this.yaw)};
   }
 }
 

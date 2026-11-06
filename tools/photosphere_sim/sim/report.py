@@ -522,6 +522,32 @@ def _gates_table(gates: dict) -> str:
     return _table(["gate", "verdict"], rows, "gates")
 
 
+def _ruling_text(row: dict) -> str:
+    """One ruling in words: what the case file ruled and what the scanner showed against it."""
+    kind = row["kind"]
+    if kind == "known_failure":
+        return f'known failure of #{row["issue"]}'
+    if kind == "max_bins":
+        return f'at most {row["limit"]} bins; observed {row["observed"]}'
+    text = f'limit {_num(row["limit"])}; observed {_num(row["observed"])}'
+    if "tau_max" in row:
+        text += f'; tau {_num(row["tau"])} of at most {_num(row["tau_max"])}'
+    return text
+
+
+def _rulings_table(rulings: dict, gates: dict) -> str:
+    """The case's rulings (#1059), so that a ruled PASS reads as ruled: the ruling, what the standard rule said, the
+    ruled verdict (STALE where a known failure has begun to pass) and the reason the case file gave."""
+    rows = []
+    for name, row in rulings.items():
+        ruled = "STALE" if row.get("stale") else _verdict(gates[name])
+        cls = "fail" if row.get("stale") or not gates[name] else "pass"
+        rows.append([(_escape(name), ""), (_escape(_ruling_text(row)), ""),
+                     (_verdict(row["standard_gate"]), _verdict(row["standard_gate"]).lower()),
+                     (ruled, cls), (_escape(row["why"]), "")])
+    return _table(["gate", "ruling", "standard rule", "ruled verdict", "reason"], rows, "rulings")
+
+
 def _obstacles_table(horizon: dict) -> str:
     rows = []
     for obstacle in horizon.get("obstacles", []):
@@ -797,6 +823,7 @@ def render(case_dir, scores: dict, out_path, result_dir=None, ideal_panorama=Non
         f'&middot; schema {_escape(scores["schema"])}</p>',
         "<h2>Gates</h2>",
         _gates_table(gates),
+        *(["<h2>Rulings</h2>", _rulings_table(scores["rulings"], gates)] if scores.get("rulings") else []),
         "<h2>Measurements</h2>",
         _summary_table(scores),
         "<h2>Test obstacles</h2>",
