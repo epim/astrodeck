@@ -39,6 +39,10 @@ the dead-man beacon (``rig_beacon``) to carry off the box. The night log lives
 on the machine that is down, so the word is the only part of this evidence an
 owner can see from outside. It is a closed three-word vocabulary and is NOT the
 line: the line names a process and a time, the word names neither.
+
+#1076: the forward-looking half sits at the bottom of this module. It reads
+whether Windows has a restart PENDING and Windows Update's ACTIVE HOURS, so the
+arm gate can refuse a night that Windows may restart the PC under.
 """
 from __future__ import annotations
 
@@ -47,10 +51,12 @@ import ntpath
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, tzinfo
+from typing import Any, NamedTuple
 
-__all__ = ["classify", "parse_events", "log_boot_cause", "BOOT_WORD"]
+__all__ = ["classify", "parse_events", "log_boot_cause", "BOOT_WORD",
+           "RestartState", "restart_state", "active_hours",
+           "night_outside_active_hours", "DEFAULT_ACTIVE_HOURS"]
 
 #: How the previous session ended, as one word for the dead-man beacon:
 #: "unexpected" (a crash, power loss or reset: Kernel-Power 41 / EventLog 6008),
@@ -220,3 +226,131 @@ async def log_boot_cause(log=None) -> None:
         log(level, message, "system")
     except Exception:                       # noqa: BLE001 - never the reason boot fails
         return
+
+
+# ---------------------------------------------------------------------------
+# The other half: can Windows restart this PC under a night? (#1076)
+#
+# Windows Update restarted the rig PC at 08:43 under TrustedInstaller. It does
+# that when a restart is PENDING (an update is staged) and the clock is outside
+# the ACTIVE HOURS (inside them it will not). Both live in the registry, and
+# both are read here, read-only, through ONE function, :func:`_registry_read`,
+# which tests replace with a fake. Nothing in this module writes the registry,
+# changes Windows Update, or changes a power or service setting. Moving the
+# active hours is the operator's act, documented in the refusal below and never
+# done by the server.
+# ---------------------------------------------------------------------------
+
+#: The two markers an update leaves behind when it wants a restart, each a key
+#: whose mere existence is the signal. The word is what the status, the beacon
+#: and the refusal say. ``PendingFileRenameOperations`` is left out on purpose:
+#: installers set it for their own files and it does not wake TrustedInstaller.
+_PENDING_MARKERS = (
+    ("windows_update", r"SOFTWARE\Microsoft\Windows\CurrentVersion"
+                       r"\WindowsUpdate\Auto Update\RebootRequired"),
+    ("component_servicing", r"SOFTWARE\Microsoft\Windows\CurrentVersion"
+                            r"\Component Based Servicing\RebootPending"),
+)
+_ACTIVE_HOURS_USER = r"SOFTWARE\Microsoft\WindowsUpdate\UX\Settings"
+_ACTIVE_HOURS_POLICY = r"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+#: Windows' own active hours when nothing has set any: 08:00 to 17:00.
+DEFAULT_ACTIVE_HOURS = (8, 17)
+#: How finely a night is sampled against the active hours.
+_SAMPLE_STEP_S = 15 * 60
+
+
+def _registry_read(key: str, value: str | None = None) -> Any:
+    """One read-only look at ``HKLM\\<key>``: the named value's data, or
+    ``True`` when ``value`` is None and the key exists; None when it is
+    absent, unreadable, or this is not Windows.
+
+    THE ONLY PLACE THIS MODULE TOUCHES THE REGISTRY, and it only opens a key
+    for reading (``KEY_READ``). The 64-bit view is asked for explicitly: a
+    32-bit Python would otherwise read ``WOW6432Node`` and find nothing."""
+    if sys.platform != "win32":
+        return None
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key, 0,
+                            winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as handle:
+            if value is None:
+                return True
+            return winreg.QueryValueEx(handle, value)[0]
+    except OSError:
+        return None
+
+
+def _hour(raw: Any) -> int | None:
+    """``raw`` as an hour of the day, or None. A bool is not an hour."""
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 23:
+        return None
+    return raw
+
+
+def _hours_pair(key: str) -> tuple[int, int] | None:
+    start, end = _hour(_registry_read(key, "ActiveHoursStart")), \
+        _hour(_registry_read(key, "ActiveHoursEnd"))
+    return (start, end) if start is not None and end is not None else None
+
+
+def active_hours() -> tuple[int, int]:
+    """``(start, end)`` hours of the day inside which Windows Update will not
+    restart the PC. A policy that sets them beats the user's setting; a pair
+    that cannot be read whole (one hour missing or out of range) is treated as
+    unset, because half a window says nothing. ``end`` may be before
+    ``start``: the window then wraps midnight."""
+    if _registry_read(_ACTIVE_HOURS_POLICY, "SetActiveHours") == 1:
+        policy = _hours_pair(_ACTIVE_HOURS_POLICY)
+        if policy is not None:
+            return policy
+    return _hours_pair(_ACTIVE_HOURS_USER) or DEFAULT_ACTIVE_HOURS
+
+
+class RestartState(NamedTuple):
+    """Whether a restart is pending, which markers say so, and the active
+    hours."""
+    pending: bool
+    sources: tuple[str, ...]
+    active_start: int
+    active_end: int
+
+    def as_status(self) -> dict[str, Any]:
+        """The block ``/api/status`` carries: words and hours, nothing else."""
+        return {"pending": self.pending, "sources": list(self.sources),
+                "active_hours": {"start": self.active_start,
+                                 "end": self.active_end}}
+
+
+def restart_state() -> RestartState:
+    """Read the pending-restart markers and the active hours. Never raises: a
+    registry that cannot be read is "nothing pending, default hours", the
+    same answer a PC that is not Windows gives."""
+    try:
+        sources = tuple(word for word, key in _PENDING_MARKERS
+                        if _registry_read(key) is True)
+        start, end = active_hours()
+    except Exception:                       # noqa: BLE001 - a status read never raises
+        return RestartState(False, (), *DEFAULT_ACTIVE_HOURS)
+    return RestartState(bool(sources), sources, start, end)
+
+
+def _inside(hour: float, start: int, end: int) -> bool:
+    if start <= end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def night_outside_active_hours(dusk: float, dawn: float, start: int, end: int,
+                               *, tz: tzinfo | None = None) -> bool:
+    """Does any part of ``[dusk, dawn]`` (epoch seconds) fall outside the
+    active hours ``start``..``end``? True means Windows may restart the PC
+    during it. ``tz`` is the PC's own zone by default: active hours are local
+    clock hours."""
+    t = dusk
+    while True:
+        local = datetime.fromtimestamp(t, tz)
+        if not _inside(local.hour + local.minute / 60.0, start, end):
+            return True
+        if t >= dawn:
+            return False
+        t = min(t + _SAMPLE_STEP_S, dawn)

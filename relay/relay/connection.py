@@ -98,6 +98,10 @@ class ScopeConnection:
         t = frame.type
         if t == FrameType.PONG:
             self.tunnel.mark_pong()
+            # The home's status beacon rides its PONG (#606): kept off the rig
+            # so an outage can be read after the rig has gone dark.
+            self.registry.record_ping(
+                self.reg.home_id, frame.header.get("beacon"), time.time())
             return None
         if t == FrameType.PING:
             # The home may also ping us; reply with a PONG on the control stream.

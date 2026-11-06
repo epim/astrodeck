@@ -541,7 +541,8 @@ async def _lifespan(app: "FastAPI"):
     try:
         from ..remote.relay_client import run_relay_client
         relay_client = await run_relay_client(
-            app, lambda: config_store.cfg().remote)
+            app, lambda: config_store.cfg().remote,
+            beacon_source=dispatcher.beacon_source)
     except Exception as e:  # noqa: BLE001 - degrade to local-only, never crash boot
         bus.log("error", f"relay client launch failed (local-only): {e}", "remote")
     # Self-update (Phase 3): surface the last apply outcome on boot, and start the
@@ -969,6 +970,22 @@ def _refuse_start_while_rig_is_held() -> None:
     (``_refuse_while_resume_recovers``); ResumeArm, the fifth start path,
     starts from its own loop and does not come through these routes."""
     _refuse_if_camera_owned()
+
+
+def _refuse_start_while_restart_pending(acknowledged: bool) -> None:
+    """Refuse a start that Windows may restart the PC under (#1076).
+
+    The sibling of ``_refuse_start_while_rig_is_held``, and a separate function
+    for one reason: that helper takes no argument so that nothing can waive the
+    camera-ownership guard, and this one is the guard an operator CAN waive,
+    with ``acknowledge_restart`` on the start body. ``Hub.arm_refusal`` decides
+    (a restart pending and some of tonight outside Windows Update's active
+    hours); this turns its sentence into a 409 ``restart_pending``. Called by
+    the same four start paths, straight after the held-rig guard. ResumeArm,
+    which starts from its own loop, does not come through here."""
+    why = hub.arm_refusal(acknowledged=acknowledged)
+    if why is not None:
+        raise HTTPException(409, detail={"detail": why, "code": "restart_pending"})
 
 
 def _refuse_plan_identity(plan: SequencePlan, status: int) -> None:
@@ -2867,6 +2884,7 @@ class FlowRunBody(BaseModel):
     accept_dropped: bool = False
     accept_recount: bool = False
     accept_reopen: bool = False
+    acknowledge_restart: bool = False       # #1076: arm despite a pending restart
 
 
 class ResumeBody(BaseModel):
@@ -2874,8 +2892,10 @@ class ResumeBody(BaseModel):
     /api/sequence/recover`` (#291). ``force`` is a start's ``force``: it
     waives the horizon pre-flight, never the Sun. The body is optional, so a
     caller that sends none resumes exactly as it did before the two routes
-    ran the pre-flight at all."""
+    ran the pre-flight at all. ``acknowledge_restart`` is the operator saying
+    they have seen that Windows has a restart pending and start anyway."""
     force: bool = False
+    acknowledge_restart: bool = False
 
 
 class SessionPatchBody(BaseModel):
@@ -2925,6 +2945,7 @@ class StartSequenceBody(SequencePlan):
     # keeps every plan field bindable while adding `force`; an old bare-plan body
     # (no force) still binds with force defaulting False.
     force: bool = False
+    acknowledge_restart: bool = False       # #1076: start despite a pending restart
 
 
 # ------------------------------------------------- automation request models (4b)
@@ -7735,6 +7756,7 @@ def create_app(*, bind_host: str | None = None,
         # is a slew, and one started under a .ser recording took the mount
         # off the planet while the file kept writing. Not waived by force.
         _refuse_start_while_rig_is_held()
+        _refuse_start_while_restart_pending(body.acknowledge_restart)
 
         structural = rec.graph.validation_errors()
         if structural:
@@ -8188,6 +8210,7 @@ def create_app(*, bind_host: str | None = None,
         # First, as every start path does it (#323): a resume slews to the
         # session's next target, whatever the camera is doing.
         _refuse_start_while_rig_is_held()
+        _refuse_start_while_restart_pending(bool(body and body.acknowledge_restart))
         if s.status != "dormant":
             raise HTTPException(409, f"session is {s.status}, not dormant")
         # 409, not 422: the stored session is what conflicts, and it stays
@@ -10953,6 +10976,23 @@ def create_app(*, bind_host: str | None = None,
 
     # ------------------------------------------------------------- sequence
 
+    @app.post("/api/rig/restart/acknowledge",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Hub.acknowledge_restart"})
+    async def rig_restart_acknowledge():
+        """Acknowledge the Windows restart that is pending (#1076): starting a
+        night, by any route and by auto-resume, is no longer refused for it
+        (``restart_pending``) until it clears. Stored in the hub's memory, tied
+        to that restart. The same capability the start routes require, since it
+        waves through exactly what they would refuse. 409 when nothing is
+        pending."""
+        if not hub.acknowledge_restart():
+            raise HTTPException(409, detail={
+                "detail": "No Windows restart is pending, so there is nothing to "
+                          "acknowledge.",
+                "code": "no_restart_pending"})
+        return {"acknowledged": True}
+
     @app.post("/api/sequence/start", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})
     async def sequence_start(body: StartSequenceBody):
@@ -10970,7 +11010,7 @@ def create_app(*, bind_host: str | None = None,
         # client's own OMISSION only survives on ``body`` itself, read
         # before the dump (`_accepted_count_mode_if_omitted`'s own
         # docstring explains why the value alone cannot say this).
-        dumped = body.model_dump(exclude={"force"})
+        dumped = body.model_dump(exclude={"force", "acknowledge_restart"})
         if "count_mode" not in body.model_fields_set:
             dumped["count_mode"] = "accepted"
         plan = SequencePlan.model_validate(dumped)
@@ -10984,6 +11024,7 @@ def create_app(*, bind_host: str | None = None,
         # it overrides the horizon pre-flight, not another lane's hardware.
         # The helper every start path calls (#323).
         _refuse_start_while_rig_is_held()
+        _refuse_start_while_restart_pending(body.acknowledge_restart)
         # Repeated ids, or a rule naming a repeated target (#156). Not bypassed
         # by `force` either: it is the plan's shape, not tonight's sky.
         _refuse_plan_identity(plan, 422)
@@ -11589,6 +11630,7 @@ def create_app(*, bind_host: str | None = None,
         # First, as every start path does it (#323): Recover is a resume by
         # another door, and a slew.
         _refuse_start_while_rig_is_held()
+        _refuse_start_while_restart_pending(bool(body and body.acknowledge_restart))
         _refuse_plan_identity(s.plan, 409)
         # Same unbounded accepted-quota guard as /api/sequence/start (Task 4
         # review, IMPORTANT) — resume starts the engine on this same loop, so a

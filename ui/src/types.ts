@@ -124,9 +124,27 @@ export interface TempCompStatus {
   last_reason: string | null;
 }
 
+/** Windows' pending-restart state, from the rig PC's registry (#1076). */
+export interface RestartStatus {
+  /** An update is staged and Windows wants a restart. */
+  pending: boolean;
+  /** Which markers say so: `windows_update`, `component_servicing`. */
+  sources: string[];
+  /** Windows Update's active hours, local clock hours; `end` may be before
+   *  `start` (the window wraps midnight). */
+  active_hours: { start: number; end: number };
+  /** The operator has acknowledged this restart (POST /api/rig/restart/acknowledge):
+   *  starts are no longer refused for it. Cleared when `pending` clears. */
+  acknowledged: boolean;
+  /** The arm gate's own sentence: why starting a night is refused right now,
+   *  or null when it would not be (nothing pending, or the night is covered). */
+  arm_refusal: string | null;
+}
+
 export interface RigStatus {
   connected: Record<string, DeviceInfo>;
   looping: boolean;
+  restart?: RestartStatus; // #1076: absent on a server older than this field
   live_stack_active?: boolean; // NOV-1: Live View armed
   bahtinov_active?: boolean; // NOV-12: Bahtinov focus aid armed
   mode?: "none" | "sim" | "alpaca" | "nina";

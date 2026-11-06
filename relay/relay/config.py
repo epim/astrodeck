@@ -44,6 +44,14 @@ mounts (NEVER baked into the image): see ``load_device_tokens`` and the README.
   RELAY_OIDC_SEED_FILE      32-byte Ed25519 seed for the OIDC principal key.
   RELAY_VIEWER_SEED_FILE    32-byte Ed25519 seed for the SEPARATE viewer key.
 
+  RELAY_RIG_PAGE_KEY        the password for ``GET /rig/{home_id}``, the page of
+                           the rig's last ten pings (#606). Optional and OFF
+                           by default: unset, the page does not exist. Set it
+                           to 32-256 printable ASCII characters
+                           (``new_device_token`` makes one); the page asks for
+                           it as an HTTP Basic password, any user name. Read
+                           once at startup from the environment (a Fly secret).
+
   RELAY_HOME_LABELS_FILE    path to a JSON object ``{home_id: label}``: the
                            OWNER-SET display label ``GET /`` shows for a
                            connected home (#686). Optional; a home with no
@@ -327,6 +335,19 @@ def reload_device_tokens(registry, path: str = "") -> dict:
         "tokens": len(tokens),
         "evicted": evicted,
     }
+
+
+def load_rig_page_key() -> str:
+    """The ``RELAY_RIG_PAGE_KEY`` password, or ``""`` when the rig page is off.
+
+    A key that is set but is not 32-256 printable ASCII characters raises
+    rather than quietly starting a page behind a weak or empty password."""
+    key = _env("RELAY_RIG_PAGE_KEY", "").strip()
+    if key and not valid_device_token(key):
+        raise ValueError(
+            "RELAY_RIG_PAGE_KEY must be 32-256 printable ASCII characters; "
+            "generate one with secrets.token_urlsafe(32)")
+    return key
 
 
 def load_home_labels(path: str = "") -> dict:

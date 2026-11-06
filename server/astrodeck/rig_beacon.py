@@ -10,20 +10,25 @@ a ping and a timestamp history, so one short line riding the ping the dead-man
 already sends puts "last seen, doing X" where the owner can read it with the PC
 dark, with no relay and no new service::
 
-    v=1 state=running frames=42 level=warning up=3600 boot=normal
+    v=1 state=running frames=42 level=warning up=3600 log=1800000000 pending=no boot=normal
 
-====== ===========================================================================
-key    value
-====== ===========================================================================
-v      the format version, always 1
-state  the engine's state word, from a fixed list, else ``unknown``
-frames the engine's accepted-frame count, an integer capped at 999999
-level  the highest of ``info`` / ``warning`` / ``error`` the log said in the last
-       15 minutes, else ``none``
-up     seconds since this process started, an integer
-boot   how the PC's previous session ended: ``unexpected`` / ``normal`` /
-       ``unread`` (``bootcause.BOOT_WORD``)
-====== ===========================================================================
+======= ==========================================================================
+key     value
+======= ==========================================================================
+v       the format version, always 1
+state   the engine's state word, from a fixed list, else ``unknown``
+frames  the engine's accepted-frame count, an integer capped at 999999
+level   the highest of ``info`` / ``warning`` / ``error`` the log said in the last
+        15 minutes, else ``none``
+up      seconds since this process started, an integer
+log     optional: epoch seconds of the newest night-log line that is not site
+        derived, 0 when there is none (#606: the bus gives a line no number of
+        its own, so its moment is its id)
+pending optional: ``yes`` when Windows holds a restart that could land mid-night,
+        else ``no`` (#1076, ``bootcause.restart_state``)
+boot    how the PC's previous session ended: ``unexpected`` / ``normal`` /
+        ``unread`` (``bootcause.BOOT_WORD``)
+======= ==========================================================================
 
 ``boot`` is about the PC's last BOOT, not this process: it holds until the PC
 next boots, while ``up`` restarts with the server (a deploy, a crash restart).
@@ -64,8 +69,8 @@ Uptime Kuma's push monitor wants its text in a ``?msg=`` query rather than a
 body. Not built: the plan names healthchecks.io, the dispatcher falls back to a
 plain GET on a monitor that will not take a POST (see ``alerting``), and a Kuma
 owner loses only this line. Add a ``?msg=`` form if the owner picks Kuma. The
-relay half of #606 (the beacon on PONG, the last N per home) and showing it to
-anyone are separate rulings and are not here.
+relay half of #606 (the beacon on PONG, the last ten per home, the rig page) is
+``relay/relay/rig_status.py``, which reads the same grammar.
 """
 from __future__ import annotations
 
@@ -77,7 +82,8 @@ from typing import Any
 from . import bootcause
 
 __all__ = ["BEACON_VERSION", "FRAMES_MAX", "LEVEL_WINDOW_S", "PROCESS_START",
-           "build_beacon", "render", "make_source", "is_closed_vocabulary"]
+           "build_beacon", "extend", "render", "make_source",
+           "is_closed_vocabulary"]
 
 BEACON_VERSION = 1
 #: How far back the ``level`` word looks. Long enough that a warning at the top
@@ -97,21 +103,28 @@ _STATE_DEFAULT = "unknown"
 _LEVEL_RANK = {"info": 1, "warning": 2, "error": 3}
 _LEVELS = ("none", "info", "warning", "error")
 _BOOT_WORDS = frozenset({"unexpected", "normal", "unread"})
+#: ``log`` is epoch seconds, so twelve digits is far more than it will ever need.
+_LOG_MAX = 999_999_999_999
 
 #: The wire order and names. ``up_s`` in the dict is ``up`` on the line.
 _FIELDS = (("v", "v"), ("state", "state"), ("frames", "frames"),
            ("level", "level"), ("up_s", "up"), ("boot", "boot"))
+#: The two keys of :func:`extend`, printed between ``up`` and ``boot`` and only
+#: when the dict has them. ``boot`` stays last, as it always was.
+_OPTIONAL_FIELDS = ("log", "pending")
 
 #: The one line the dispatcher will send, built from the vocabularies above so
 #: the grammar and the clamps cannot drift apart.
 _GRAMMAR = re.compile(
     "v={v} state=({states}) frames=[0-9]{{1,{fd}}} level=({levels}) "
-    "up=[0-9]{{1,{ud}}} boot=({boots})".format(
+    "up=[0-9]{{1,{ud}}}(?: log=[0-9]{{1,{ld}}})?(?: pending=(?:yes|no))? "
+    "boot=({boots})".format(
         v=BEACON_VERSION,
         states="|".join(sorted(_STATES | {_STATE_DEFAULT})),
         fd=len(str(FRAMES_MAX)),
         levels="|".join(_LEVELS),
         ud=len(str(_UP_MAX)),
+        ld=len(str(_LOG_MAX)),
         boots="|".join(sorted(_BOOT_WORDS))))
 
 #: When this module was imported. The app imports it while it builds, so this
@@ -192,6 +205,33 @@ def build_beacon(engine: Any, bus: Any, boot_word: Any, now: float, *,
     }
 
 
+def _log_ts(bus: Any) -> int:
+    """Epoch seconds of the newest unflagged log line, or 0 when there is none.
+    The bus gives a line no number of its own, so the moment it was written
+    stands in as its id: it only grows, and next to the ping's own arrival time
+    it says whether the night log was still being written when the PC went
+    quiet. Reads each line's ``type`` and ``ts`` and nothing of its message."""
+    try:
+        rows = list(bus.log_history_unflagged)
+    except Exception:                      # noqa: BLE001 - a beacon never raises
+        return 0
+    newest = 0
+    for row in rows:
+        try:
+            if row.get("type") == "log":
+                newest = max(newest, _count(row["ts"], _LOG_MAX))
+        except (AttributeError, KeyError, TypeError):
+            continue
+    return newest
+
+
+def extend(beacon: dict[str, Any], bus: Any, *, pending: bool) -> dict[str, Any]:
+    """``beacon`` plus its two optional keys: ``log`` (:func:`_log_ts`) and
+    ``pending`` (whether Windows holds a restart, #1076). A copy: the six keys
+    :func:`build_beacon` makes are left as they were."""
+    return {**beacon, "log": _log_ts(bus), "pending": pending is True}
+
+
 def _coerce(key: str, value: Any) -> str:
     """One field of a beacon, as the text that goes on the line. The last wall:
     whatever ``value`` is, what returns is a member of ``key``'s vocabulary or
@@ -206,15 +246,23 @@ def _coerce(key: str, value: Any) -> str:
         return _word(value, _LEVELS, "none")
     if key == "up_s":
         return str(_count(value, _UP_MAX))
+    if key == "log":
+        return str(_count(value, _LOG_MAX))
+    if key == "pending":
+        return "yes" if value is True else "no"
     return _word(value, _BOOT_WORDS, "unread")
 
 
 def render(beacon: dict[str, Any]) -> str:
-    """``v=1 state=running frames=42 level=warning up=3600 boot=normal``.
+    """``v=1 state=running frames=42 level=warning up=3600 boot=normal``, and
+    ``log=1800000000 pending=no`` before ``boot`` when the dict carries those
+    keys.
 
     One line, ``key=value`` pairs in a fixed order, lower-case letters, digits
-    and ``_=. -`` only. Keys the dict carries beyond the six are not printed."""
-    return " ".join(f"{wire}={_coerce(key, beacon.get(key))}" for key, wire in _FIELDS)
+    and ``_=. -`` only. Keys the dict carries beyond these are not printed."""
+    keys = (list(_FIELDS[:-1]) + [(k, k) for k in _OPTIONAL_FIELDS if k in beacon]
+            + [_FIELDS[-1]])
+    return " ".join(f"{wire}={_coerce(key, beacon.get(key))}" for key, wire in keys)
 
 
 def is_closed_vocabulary(text: Any) -> bool:
@@ -231,7 +279,10 @@ def make_source(engine: Any, bus: Any) -> Callable[[], str]:
 
     ``bootcause.BOOT_WORD`` is read as a module attribute at each call: the
     boot read finishes seconds after startup, so a value bound when this was
-    built would be ``unread`` for the life of the process."""
+    built would be ``unread`` for the life of the process. The pending-restart
+    flag is read at each call for the same reason: an update stages hours
+    after the server started."""
     def source() -> str:
-        return render(build_beacon(engine, bus, bootcause.BOOT_WORD, time.time()))
+        beacon = build_beacon(engine, bus, bootcause.BOOT_WORD, time.time())
+        return render(extend(beacon, bus, pending=bootcause.restart_state().pending))
     return source

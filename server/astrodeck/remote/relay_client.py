@@ -50,6 +50,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 from ..aio import reap
 from ..config import RemoteConfig
 from ..events import RELAY_GAP, Event, bus
+from ..rig_beacon import is_closed_vocabulary
 from .protocol import (DEFAULT_MAX_PAYLOAD, DEFAULT_MAX_WIRE_SIZE, PROTO_VERSION,
                        Frame, FrameType, ProtocolError, decode_frame,
                        encode_frame)
@@ -551,8 +552,12 @@ class RelayClient:
         *,
         connect: Callable[[str], Awaitable[Any]] | None = None,
         link_probes: LinkProbes | None = None,
+        beacon_source: Callable[[], str] | None = None,
     ):
         self._app = app
+        # The rig's status beacon (``rig_beacon``), sent on each PONG so the
+        # relay keeps the last ten pings off the box (#606). None sends none.
+        self._beacon_source = beacon_source
         self._config = config_provider
         # Injectable connect (tests pass a fake bidi channel); default lazy-imports
         # websockets so a LAN-only install never needs the dependency.
@@ -1046,6 +1051,23 @@ class RelayClient:
 
     # -- dispatch --------------------------------------------------------------
 
+    def _pong_header(self, ping_header: dict) -> dict:
+        """The PING's header echoed back, plus the status beacon when there is
+        one worth sending. The beacon leaves the box, so only text that is
+        exactly ``rig_beacon``'s closed vocabulary goes: a source that raises or
+        returns anything else sends a plain PONG. A ``beacon`` key in the
+        relay's own PING is not echoed."""
+        header = {k: v for k, v in ping_header.items() if k != "beacon"}
+        if self._beacon_source is None:
+            return header
+        try:
+            text = self._beacon_source()
+        except Exception:                  # noqa: BLE001 - a PONG is never lost to the beacon
+            return header
+        if is_closed_vocabulary(text):
+            header["beacon"] = text
+        return header
+
     async def _dispatch(self, frame: Frame) -> None:
         t = frame.type
         if t == FrameType.REQ_OPEN:
@@ -1062,7 +1084,8 @@ class RelayClient:
         elif t == FrameType.WS_CLOSE:
             await self._close_ws(frame)
         elif t == FrameType.PING:
-            await self._raw_send(encode_frame(FrameType.PONG, 0, frame.header))
+            await self._raw_send(encode_frame(
+                FrameType.PONG, 0, self._pong_header(frame.header)))
         elif t in (FrameType.PONG, FrameType.HELLO_ACK, FrameType.WINDOW,
                    FrameType.REVOKE):
             # Acked / flow-control / revoke handling is owned by the relay-pairing
@@ -1446,6 +1469,7 @@ def recent_drop_count(since: float) -> int:
 async def run_relay_client(
     app: Callable[..., Awaitable[None]],
     config_provider: Callable[[], RemoteConfig],
+    beacon_source: Callable[[], str] | None = None,
 ) -> RelayClient | None:
     """Lifespan entry point. Returns the live ``RelayClient`` (so the caller can
     ``stop()`` it on shutdown), or ``None`` if remote is disabled/unconfigured.
@@ -1463,7 +1487,8 @@ async def run_relay_client(
     # Read at call time also means a test that enables remote and enters the
     # app's lifespan gets them, so the suite's conftest swaps this name for
     # inert probes (test_h4_no_test_probes_the_real_network.py).
-    client = RelayClient(app, config_provider, link_probes=SYSTEM_LINK_PROBES)
+    client = RelayClient(app, config_provider, link_probes=SYSTEM_LINK_PROBES,
+                         beacon_source=beacon_source)
     _current_client = client
     asyncio.create_task(client.run())
     return client
