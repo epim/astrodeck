@@ -284,8 +284,15 @@ def run_backfill(stacker: SessionStacker, items: Iterable[BackfillItem], *,
             landed = stacker.add(data, filt, exposure, target=item.target,
                                  session=item.session, bayer_pattern=bayer,
                                  key=str(item.path),
-                                 target_id=item.target_id or None)
+                                 target_id=item.target_id or None,
+                                 generation=gen)
             del data
+            if not landed and (not stacker.enabled
+                               or stacker.generation != gen):
+                # Switched off or reset while this frame was being read: the
+                # stack refused it (#1213), and the pass ends here.
+                error = "stopped"
+                break
             if landed:
                 stacker.backfill_step(added=landed)
             elif stacker.has_frame(str(item.path)):

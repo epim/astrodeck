@@ -604,7 +604,8 @@ class SessionStacker:
             session: str | None = None,
             bayer_pattern: str | None = None,
             key: str | None = None,
-            target_id: str | None = None) -> str | None:
+            target_id: str | None = None,
+            generation: int | None = None) -> str | None:
         """Fold one accepted light into its panel's, and its filter's, stack.
 
         Returns the channels it landed on joined by ``+`` (``"L"``, ``"Ha"``,
@@ -630,6 +631,13 @@ class SessionStacker:
         worker and the frame loop can both pass the check for the same sub and
         both stack it. The caller does the expensive I/O (reading and decoding
         the FITS) before it gets here.
+
+        THE SWITCH IS READ AGAIN UNDER THE LOCK (#1213). A caller that passed the
+        ``enabled`` check above can then wait on the lock while ``stop`` or
+        ``reset`` holds it, and would otherwise put a frame back into the stack
+        the operator just emptied. ``generation`` is the backfill worker's: the
+        one it started under, so a Reset pressed while it was reading this
+        frame from disk refuses the frame here.
         """
         if not self.enabled:
             return None
@@ -639,6 +647,9 @@ class SessionStacker:
         ident = frame_key(key)
         released: list[tuple[str, int, int]] = []
         with self._lock:
+            if not self.enabled or (generation is not None
+                                    and generation != self._generation):
+                return None
             if ident and self._holds(ident):
                 return None
             # Which panel, decided BEFORE a run change can clear the foreground
