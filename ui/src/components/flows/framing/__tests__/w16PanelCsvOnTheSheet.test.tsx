@@ -113,6 +113,10 @@ function target(over: Record<string, string | number> = {}): FlowNodeRec {
     },
   };
 }
+/** A real-shaped export, marks and all (see w16PanelCsv.test.tsx). */
+const SAVED_TEXT =
+  "Pane, RA, DEC, Position Angle (East), Pane width (arcmins), Pane height (arcmins), Overlap, Row, Column\n"
+  + "Center, 00hr 42\u2019 44\", +41\u00ba 00\u2019 00\", 330.0, 120.00, 79.80, 25%, -, -\n";
 const COMPILED = { plan: {}, structural: [], issues: [], unmapped: [] };
 /** The server's reading of a file of a 3 x 4, in the node's own shape. */
 const IMPORTED = {
@@ -135,7 +139,7 @@ let saved: Array<[string, string]> = [];
 let importCalls: string[] = [];
 (panelCsvApi as any).exportCsv = async (req: any) => {
   exportCalls.push(req);
-  return { text: "Pane,RA\n1,2\n", convention: "THE SERVER'S SENTENCE about the angle." };
+  return { text: SAVED_TEXT, convention: "THE SERVER'S SENTENCE about the angle." };
 };
 (panelCsvApi as any).save = (name: string, text: string) => { saved.push([name, text]); };
 (panelCsvApi as any).importCsv = async (text: string) => { importCalls.push(text); return IMPORTED; };
@@ -214,7 +218,7 @@ await test("EXPORT PANELS on the sheet posts the draft's layout and saves what t
   const req = exportCalls[0];
   eq([req.rows, req.cols, req.overlap, req.rotation_deg, req.fov_x_deg, req.fov_y_deg, req.skip],
     [2, 3, 0.25, 30, 2, 1.33, "1-2"], "the request is the draft on screen");
-  eq(saved, [[PANEL_CSV_FILENAME, "Pane,RA\n1,2\n"]], "the file saved is the server's text");
+  eq(saved, [[PANEL_CSV_FILENAME, SAVED_TEXT]], "the file saved is the server's text");
   eq(q("framing-panel-csv-convention")?.textContent, "THE SERVER'S SENTENCE about the angle.",
     "the server's convention sentence is shown");
 });

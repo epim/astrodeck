@@ -14,7 +14,7 @@ THE ANGLE CONVENTION, STATED ONCE. AstroDeck's ``rotation_deg`` increases from
 north through west (the sense of FITS CROTA2); the file's ``Position Angle
 (East)`` is the position angle east of north, which increases from north
 through east. Each is 360 minus the other, mod 360, so ``pa_east_from_rotation``
-and ``rotation_from_pa_east`` are the same function (``_turn(-x)``) and a
+and ``rotation_from_pa_east`` are the same function (``_turn(PA_SIGN * x)``) and a
 layout at 30 is written 330 and read back as 30.
 
 NINA reports a third number again, 180 minus the rotation (#145), a half turn
@@ -27,24 +27,51 @@ The export keeps the angle mod 360 (30 -> 330 -> 30) and writes the BLOCK'S
 layout angle, not any per-panel angle a later change adds: this file describes
 one rigid grid at one angle.
 
-WHAT IS NOT KNOWN YET. No real Telescopius export has been checked, so four
-things are decided here by assumption and every one is said where it is made
-(a warning on import, a ``# units:`` line on export):
+THE FIVE CONVENTIONS (#830), each a named constant below. ONE real export is
+known, and only as the header and three rows a user pasted on the Telescopius
+forum (forum.telescopius.com/t/telescopius-csv-format-problem/1753): a centre
+row and two panes of a 1 x 2 grid, no second column, no file. It is the
+fixture of ``tests/test_w3_9_panel_csv_real_sample.py``, and the EXPORT is
+written in its shape (header, marks, units, a ``Center`` row, no comment
+lines) so that a Telescopius or ASIAIR import of our file has what it has of
+theirs. What the sample settles:
 
-  * RA and DEC text: sexagesimal (``00h 42m 44s``, ``00:42:44``) or decimal
-    are read; decimal RA is hours, or degrees when the header says so or a
-    value is past 24. We WRITE ``hh:mm:ss.sssss`` and ``+dd:mm:ss.ssss``.
-  * the unit of width and height: read from the header text (``width
-    (arcmins)``) or the ``# units:`` line, else degrees, said. We write degrees.
-  * Row and Column: 1-based, row 1 at the NORTH edge and column 1 at the WEST
-    edge of the grid at angle 0, which is AstroDeck's own labelling
-    (``naming.panel_label``). A file that counts from 0 is read as such; a
-    file that numbers from the other edges does not fit its own grid and says
-    so, as any mis-laid file does.
-  * Overlap: a percent on export; on import ``%``, the header or the
-    ``# units:`` line decide, else a column whose values are all at most 0.5 is
-    a fraction (no percent overlap is below one half of one percent in a
-    mosaic) and anything else a percent.
+  * RA and DEC text: CONFIRMED. RA reads ``05hr 05' 30"`` (hours, then
+    minutes and seconds of TIME marked with an apostrophe and a double
+    quote) and DEC ``-07<ordinal> 03' 20"``, the degree mark being the
+    ordinal indicator U+00BA and the apostrophe U+2019. We write exactly that
+    (``RA_*_MARK``, ``DEC_*_MARK``), in whole seconds as the sample does, so a
+    centre is held to 7.5 arcseconds of RA and half an arcsecond of Dec: far
+    inside a panel, and the price of the shape. Unverified: a positive DEC's
+    sign (we write ``+``), and whether a DOWNLOAD (as against the forum's
+    Copy) writes the same characters. ``_sky_text`` also reads plain
+    sexagesimal and decimal (decimal RA is ``DEFAULT_DECIMAL_RA_UNIT``, or
+    degrees when the header says so or a value is past 24).
+  * the unit of width and height: CONFIRMED as arcminutes, from the header
+    ``Pane width (arcmins)``, which ``_header_unit`` reads and which we write
+    (``EXPORT_SIZE_UNIT``). A header with no unit is read as
+    ``DEFAULT_SIZE_UNIT``, said.
+  * Row and Column: 1-based (``FILE_ORIGIN``), CONFIRMED, and row 1 is the TOP
+    of the frame: at a position angle of 189.3 pane 2 lies 68 arcminutes NORTH
+    of pane 1, that is toward the frame's bottom. That is AstroDeck's own
+    labelling (``naming.panel_label``: row 1 at the north edge of the grid at
+    angle 0). A file that counts from 0 is read as such. The centre row has
+    ``-`` for both and is not a pane (``_is_centre_row``); we write one.
+  * Overlap: a percent, ``20%``, CONFIRMED, written as such
+    (``EXPORT_OVERLAP_UNIT``). A file with no ``%`` and no unit is read by
+    ``FRACTION_CEILING``: a column whose values are all at most it is a
+    fraction (no mosaic overlaps by under one half of one percent) and
+    anything else a percent, said.
+  * the sign of the angle (``PA_SIGN``): CONSISTENT, not documented. Pane 1 to
+    pane 2 runs 9.3 degrees east of north, the frame's bottom, so the frame's
+    top is at 189.3 east of north, which is what ``Position Angle (East)`` says
+    in the convention above. That is three rows, not a tool's documentation.
+
+The convention sentence is not in the file: a Telescopius file has no comment
+lines and an importer may not skip them, so it travels in the export route's
+``X-Panel-Csv-Convention`` header and in the modal. The importer still skips
+``#`` lines, and reads a ``# units:`` line, in older files and files made by
+hand.
 
 THE GRID FROM THE PANES. AstroDeck holds a RIGID grid (rows x cols at one
 angle, one overlap) with skipped cells. The centre is fitted, not averaged:
@@ -62,7 +89,6 @@ imported as the nearest one and says by how much (``RIGID_TOLERANCE``).
 from __future__ import annotations
 
 import csv
-import io
 import math
 import re
 from collections import Counter
@@ -76,9 +102,57 @@ from . import coords
 from .framing import MosaicSpecIn, _wrap_ra_hours, compute_mosaic, deproject, project
 
 #: The columns, in the file's own order. The names are the contract: the
-#: importer reads a header by what it contains, and the exporter writes these.
-COLUMNS = ("Pane", "RA", "DEC", "Position Angle (East)", "width", "height",
-           "Overlap", "Row", "Column")
+#: importer reads a header by what it contains, and the exporter writes these
+#: (a real Telescopius file's).
+COLUMNS = ("Pane", "RA", "DEC", "Position Angle (East)", "Pane width (arcmins)",
+           "Pane height (arcmins)", "Overlap", "Row", "Column")
+
+#: THE FIVE CONVENTIONS as constants (the module docstring says what is known
+#: of each).
+#:
+#: The sign between AstroDeck's rotation and the file's angle: each is the
+#: other times this, mod 360. Its own inverse, so one function converts both
+#: ways.
+PA_SIGN = -1
+
+#: The first Row and Column a file counts from. Row 1 is the north edge and
+#: column 1 the west edge of the grid at angle 0.
+FILE_ORIGIN = 1
+
+#: The unit of width and height when a file names none, and the unit written
+#: (the header says it: ``Pane width (arcmins)``).
+DEFAULT_SIZE_UNIT = "degrees"
+EXPORT_SIZE_UNIT = "arcmin"
+
+#: The unit of a decimal RA when a file names none and no value is past 24.
+DEFAULT_DECIMAL_RA_UNIT = "hours"
+
+#: The unit Overlap is written in, and the largest value of a column with no
+#: unit that is still read as a fraction.
+EXPORT_OVERLAP_UNIT = "percent"
+FRACTION_CEILING = 0.5
+
+#: THE MARKS OF RA AND DEC, as the forum paste of a real Telescopius export
+#: shows them (``05hr 05<U+2019> 30"``, ``-07<U+00BA> 03<U+2019> 20"``): ``hr``
+#: after the hours, the right single quote (U+2019) for minutes, an ASCII
+#: double quote for seconds, and the ordinal indicator (U+00BA) where a degree
+#: sign would be. Only that paste is known, not a downloaded file, so these are
+#: the characters the one sample carries and no more.
+RA_HOUR_MARK = "hr"
+RA_MINUTE_MARK = "\u2019"
+RA_SECOND_MARK = '"'
+DEC_DEGREE_MARK = "\u00ba"
+DEC_MINUTE_MARK = "\u2019"
+DEC_SECOND_MARK = '"'
+
+#: The forms, for the docs and the tests.
+EXPORT_RA_FORM = f"hh{RA_HOUR_MARK} mm{RA_MINUTE_MARK} ss{RA_SECOND_MARK}"
+EXPORT_DEC_FORM = f"+dd{DEC_DEGREE_MARK} mm{DEC_MINUTE_MARK} ss{DEC_SECOND_MARK}"
+
+#: What the ordinal indicator turns into when a copy is decoded wrongly: its
+#: UTF-8 bytes C2 BA read as Windows-874 (the two Thai letters the forum paste
+#: shows) or as Latin-1. Fixed byte sequences, so they are read as the ordinal.
+ORDINAL_MOJIBAKE = ("\u0e22\u0e1a", "\u00c2\u00ba")
 
 #: The convention, as the sentence the file's leading ``#`` lines, the export
 #: route's header and the import answer all carry. The modal shows THIS text
@@ -166,12 +240,12 @@ def _turn(deg: float) -> float:
 
 def pa_east_from_rotation(rotation_deg: float) -> float:
     """The file's angle for an AstroDeck rotation: 30 -> 330."""
-    return _turn(-rotation_deg)
+    return _turn(PA_SIGN * rotation_deg)
 
 
 def rotation_from_pa_east(pa_east_deg: float) -> float:
     """AstroDeck's rotation for a file's angle: 330 -> 30."""
-    return _turn(-pa_east_deg)
+    return _turn(PA_SIGN * pa_east_deg)
 
 
 # --------------------------------------------------------------- text forms
@@ -197,13 +271,30 @@ def _dec_parts(deg: float) -> tuple[str, int, int, str]:
 
 
 def _file_ra(hours: float) -> str:
-    h, m, s = _ra_parts(hours)
-    return f"{h:02d}:{m:02d}:{s}"
+    """RA as the file writes it, in whole seconds: ``05hr 05' 30"``."""
+    secs = round((hours % 24.0) * 3600) % (24 * 3600)
+    h, rem = divmod(secs, 3600)
+    m, sec = divmod(rem, 60)
+    return (f"{h:02d}{RA_HOUR_MARK} {m:02d}{RA_MINUTE_MARK} "
+            f"{sec:02d}{RA_SECOND_MARK}")
 
 
 def _file_dec(deg: float) -> str:
-    sign, d, m, s = _dec_parts(deg)
-    return f"{sign}{d:02d}:{m:02d}:{s}"
+    """Dec as the file writes it, in whole arcseconds: ``-07<ordinal> 03' 20"``."""
+    secs = round(abs(deg) * 3600)
+    d, rem = divmod(secs, 3600)
+    m, sec = divmod(rem, 60)
+    sign = "-" if deg < 0 and secs else "+"
+    return (f"{sign}{d:02d}{DEC_DEGREE_MARK} {m:02d}{DEC_MINUTE_MARK} "
+            f"{sec:02d}{DEC_SECOND_MARK}")
+
+
+def _fixed(value: float, places: int, minimum: int) -> str:
+    """``value`` to at most ``places`` decimals and at least ``minimum``:
+    86.4 as ``86.40``, 79.98 as ``79.98``."""
+    text = f"{value:.{places}f}".rstrip("0")
+    whole, _, frac = text.partition(".")
+    return f"{whole}.{frac.ljust(minimum, '0')}"
 
 
 def _node_ra(hours: float) -> str:
@@ -223,9 +314,9 @@ def _node_dec(deg: float) -> str:
 # ------------------------------------------------------------------ export
 
 def export_csv(spec: MosaicSpecIn, skip: str | Iterable[tuple[int, int]] = "") -> str:
-    """The layout as a panel file: ``COLUMNS``, one row per SHOT panel in the
-    file's own row-major order, under ``#`` lines that state the convention
-    and the units (this importer skips them).
+    """The layout as a panel file in the shape of a real Telescopius export:
+    ``COLUMNS``, a ``Center`` row, then one row per SHOT panel in the file's
+    own row-major order. No comment lines (see the module docstring).
 
     The panels come from ``compute_mosaic``, the one projection; ``skip`` is
     the block's skip text (1-based ``r-c``, read by ``compile.parse_skip``) or
@@ -255,21 +346,18 @@ def export_csv(spec: MosaicSpecIn, skip: str | Iterable[tuple[int, int]] = "") -
         raise PanelCsvError("every panel is skipped, so there is nothing to write")
 
     pa = _trim(pa_east_from_rotation(rotation), ANGLE_PLACES)
-    out = io.StringIO()
-    out.write("# AstroDeck panel file in the Telescopius column shape (issue 178).\n")
-    out.write(f"# {CONVENTION}\n")
-    out.write("# RA and DEC are J2000, hh:mm:ss.sssss and +dd:mm:ss.ssss. Row and "
-              "Column count from 1: row 1 is the north edge and column 1 the "
-              "west edge of the grid at angle 0.\n")
-    out.write("# units: ra=hms width=degrees height=degrees overlap=percent\n")
-    w = csv.writer(out, lineterminator="\n")
-    w.writerow(COLUMNS)
+    width = _fixed(spec.fov_x_deg / _SIZE_FACTORS[EXPORT_SIZE_UNIT], 6, 2)
+    height = _fixed(spec.fov_y_deg / _SIZE_FACTORS[EXPORT_SIZE_UNIT], 6, 2)
+    percent = f"{round(overlap * 100.0, 9):g}%"
+    lines = [", ".join(COLUMNS),
+             ", ".join(["Center", _file_ra(spec.ra_hours), _file_dec(spec.dec_deg),
+                        pa, width, height, percent, "-", "-"])]
     for n, p in enumerate(panels, 1):
-        w.writerow([
-            n, _file_ra(p["ra_hours"]), _file_dec(p["dec_deg"]), pa,
-            _trim(spec.fov_x_deg, 9), _trim(spec.fov_y_deg, 9),
-            _trim(overlap * 100.0, 9), p["row"] + 1, p["col"] + 1])
-    return out.getvalue()
+        lines.append(", ".join([
+            f"Pane {n}", _file_ra(p["ra_hours"]), _file_dec(p["dec_deg"]), pa,
+            width, height, percent,
+            str(p["row"] + FILE_ORIGIN), str(p["col"] + FILE_ORIGIN)]))
+    return "\n".join(lines) + "\n"
 
 
 # ------------------------------------------------------------------ import
@@ -358,10 +446,60 @@ def _whole(text: str, what: str, where: str) -> int:
     return int(value)
 
 
+#: Typographic marks a spreadsheet or a web page puts where ``'`` and ``"``
+#: were: the right single quote and the prime, the right double quote and the
+#: double prime.
+_APOSTROPHES = "\u2019\u2032"
+_DOUBLE_QUOTES = "\u201d\u2033"
+
+
+def _unmangled(text: str) -> str:
+    """``text`` stripped, with the ordinal indicator put back where a wrongly
+    decoded copy has ``ORDINAL_MOJIBAKE`` in its place."""
+    t = text.strip()
+    for bad in ORDINAL_MOJIBAKE:
+        t = t.replace(bad, "\u00ba")
+    return t
+
+
+def _plain_marks(text: str) -> str:
+    """``text`` with its typographic apostrophes and double quotes as ASCII."""
+    return (text.translate({ord(c): "'" for c in _APOSTROPHES})
+            .translate({ord(c): '"' for c in _DOUBLE_QUOTES}))
+
+
+def _ra_text(text: str) -> str:
+    """An RA as Telescopius writes it, ``05hr 05' 30"``, in the form
+    ``coords.parse_ra`` reads, ``05h 05m 30s``: ``hr`` for ``h``, and the
+    apostrophe and double quote of a time written with ``h`` as minutes and
+    seconds of time."""
+    t = re.sub(r"(?i)(?<=\d)\s*hrs?\b", "h", _plain_marks(_unmangled(text)))
+    if "h" in t.lower() and ("'" in t or '"' in t):
+        t = t.replace("'", "m").replace('"', "s")
+    return t
+
+
+def _dec_text(text: str) -> str:
+    """A DEC as Telescopius writes it, ``-07<ordinal> 03' 20"``, in the form
+    ``coords.parse_dec`` reads: the ordinal indicator (U+00BA) for the degree
+    sign."""
+    return _plain_marks(_unmangled(text)).replace("\u00ba", "\u00b0")
+
+
+def _is_centre_row(fields: list[str], column: dict[str, int]) -> bool:
+    """The row Telescopius writes first, for the middle of the mosaic: ``-``
+    in both Row and Column. It is not a pane (the fit finds the centre from
+    the panes)."""
+    def dash(kind: str) -> bool:
+        j = column.get(kind)
+        return j is not None and j < len(fields) and fields[j].strip() == "-"
+    return dash("row") and dash("column")
+
+
 def _ra_cell(text: str, where: str) -> tuple[str, float]:
     """``("hms", hours)`` for a sexagesimal RA, ``("decimal", value)`` for a
     plain number whose unit is the file's to decide."""
-    t = text.strip()
+    t = _ra_text(text)
     if re.search(r"[hms:\s]", t):
         try:
             hours = coords.parse_ra(t)
@@ -375,7 +513,7 @@ def _ra_cell(text: str, where: str) -> tuple[str, float]:
 
 def _dec_cell(text: str, where: str) -> float:
     try:
-        deg = coords.parse_dec(text)
+        deg = coords.parse_dec(_dec_text(text))
     except ValueError:
         raise PanelCsvError(f"{where}: DEC {text!r} is not an angle or a number") from None
     if not math.isfinite(deg):
@@ -507,7 +645,7 @@ def parse_csv(text: str) -> dict:
     # ---- the panes, cell by cell
     panes: list[dict] = []
     for i, fields in enumerate(rows[1:], 1):
-        if not any(f.strip() for f in fields):
+        if not any(f.strip() for f in fields) or _is_centre_row(fields, column):
             continue
         where = f"line {numbered[i][0]}"
 
@@ -547,8 +685,9 @@ def parse_csv(text: str) -> dict:
                 warnings.append("RA has no unit and a value past 24, which can only "
                                 "be degrees: its decimals are read as degrees")
             else:
-                ra_unit = "hours"
-                warnings.append("RA has no unit: its decimals are read as hours")
+                ra_unit = DEFAULT_DECIMAL_RA_UNIT
+                warnings.append(f"RA has no unit: its decimals are read as "
+                                f"{DEFAULT_DECIMAL_RA_UNIT}")
     for p in panes:
         hours = p["ra"] / 15.0 if p["ra_kind"] == "decimal" and ra_unit == "degrees" \
             else p["ra"]
@@ -561,7 +700,7 @@ def parse_csv(text: str) -> dict:
     for kind in ("width", "height"):
         unit = unit_of(kind)
         if unit not in _SIZE_FACTORS:
-            unit = "degrees"
+            unit = DEFAULT_SIZE_UNIT
             assumed.append(kind)
         for p in panes:
             value = p[kind]
@@ -584,7 +723,7 @@ def parse_csv(text: str) -> dict:
     if assumed:
         warnings.append(
             f"{' and '.join(assumed)} carry{'s' if len(assumed) == 1 else ''} no unit, "
-            f"so {'it is' if len(assumed) == 1 else 'they are'} read as degrees "
+            f"so {'it is' if len(assumed) == 1 else 'they are'} read as {DEFAULT_SIZE_UNIT} "
             f"(a header such as 'width (arcmins)' or a '# units: width=arcmin "
             f"height=arcmin' line says otherwise)")
     (fov_x, fov_y), field_differs = _most_common(
@@ -616,10 +755,10 @@ def parse_csv(text: str) -> dict:
         if unit not in ("percent", "fraction"):
             if any(p["overlap_pct_sign"] for p in given_overlap):
                 unit = "percent"
-            elif 0.0 < max(values) <= 0.5:
+            elif 0.0 < max(values) <= FRACTION_CEILING:
                 unit = "fraction"
-                warnings.append("Overlap has no unit and no value above 0.5: it is read "
-                                "as a fraction (0.25 is 25 percent)")
+                warnings.append(f"Overlap has no unit and no value above {FRACTION_CEILING:g}: "
+                                f"it is read as a fraction (0.25 is 25 percent)")
             else:
                 unit = "percent"
         pct_values = [round(v * 100.0 if unit == "fraction" else v, 9) for v in values]
@@ -638,10 +777,11 @@ def parse_csv(text: str) -> dict:
         warnings.append("the file has no Overlap values: the overlap is taken as 0 percent")
 
     # ---- the grid: cells, counting from 0 or 1, one pane each
-    base_row = 0 if min(p["row"] for p in panes) == 0 else 1
-    base_col = 0 if min(p["col"] for p in panes) == 0 else 1
+    base_row = 0 if min(p["row"] for p in panes) == 0 else FILE_ORIGIN
+    base_col = 0 if min(p["col"] for p in panes) == 0 else FILE_ORIGIN
     if base_row == 0 or base_col == 0:
-        warnings.append("Row and Column count from 0 in this file: they are read from 1 here")
+        warnings.append(f"Row and Column count from 0 in this file: they are read "
+                        f"from {FILE_ORIGIN} here")
     n_rows = max(p["row"] for p in panes) - base_row + 1
     n_cols = max(p["col"] for p in panes) - base_col + 1
     if n_rows > GRID_MAX or n_cols > GRID_MAX:

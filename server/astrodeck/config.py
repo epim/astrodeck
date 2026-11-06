@@ -1524,6 +1524,26 @@ class AppConfig(BaseModel):
     # --- opt-in re-solve-free astrometry (PRO-2 F-B, supervisor ruling 4;
     #     appended — old configs load fine) ---
     solve_saved_lights: bool = False   # ON => solve each saved light in place, stamp WCS
+    #: True once the operator has chosen ``solve_saved_lights`` either way, so
+    #: the load stops setting it (#826, owner ruling D-I). Until then it follows
+    #: the plate solver: on whenever one is configured (``_solver_configured``),
+    #: because a mosaic with stamping off carries a note on every compile. A
+    #: config written before this field has no key for it, and its stored value
+    #: is the evidence: True was a choice, False was the old default written
+    #: out (``_chose_stamping``).
+    solve_saved_lights_by_hand: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _chose_stamping(cls, data):
+        """A config with no ``solve_saved_lights_by_hand`` key predates it, and
+        its ``solve_saved_lights`` says which kind it is: True was somebody's
+        choice, False was the default written out (``_save`` dumps every
+        field). Read here, per file, so no schema bump is owed."""
+        if (isinstance(data, dict) and "solve_saved_lights_by_hand" not in data
+                and data.get("solve_saved_lights") is True):
+            return {**data, "solve_saved_lights_by_hand": True}
+        return data
     # --- per-frame-WCS advanced knobs (per-frame-wcs spec §3; appended — old
     #     configs load fine, and every field defaults to today's behaviour) ---
     wcs_stamp: WcsStampConfig = Field(default_factory=WcsStampConfig)
@@ -2372,6 +2392,28 @@ def _apply_migrations(cfg: AppConfig, stored: int) -> None:
                 "config")
 
 
+def _solver_configured() -> bool:
+    """Whether this machine has a plate solver to stamp frames with: the one
+    ``providers.pick_solver`` builds on a real rig is ASTAP, found the way
+    ``solve_saved_lights`` finds it. Lazy import: it pulls in astropy."""
+    from .solve.astap import find_astap
+    return find_astap() is not None
+
+
+def _follow_the_solver(cfg: AppConfig) -> None:
+    """Stamping defaults ON whenever a plate solver is configured (#826, owner
+    ruling D-I), so the note a mosaic's compile carries for a run with stamping
+    off appears only with no solver, or with the option turned off by hand.
+
+    Done on every load path, and only while the operator has not chosen
+    (``solve_saved_lights_by_hand``): the value then tracks the machine, so
+    installing ASTAP takes effect at the next start and removing it takes the
+    default back off. A load, not a save: a test or a route that sets the
+    option directly is not undone by a later save."""
+    if not cfg.solve_saved_lights_by_hand:
+        cfg.solve_saved_lights = _solver_configured()
+
+
 def _say_unusable_deadman(url: str) -> None:
     """Say, once per load, that the stored dead-man's-switch url is one the ping
     can never be sent to (#831). ``set_deadman`` refuses such a url at save
@@ -2478,6 +2520,7 @@ class ConfigStore:
         # current is what stops the next boot owing them again. A newer
         # file's stamp is never lowered (the `<` below).
         _apply_migrations(cfg, stored)
+        _follow_the_solver(cfg)
         if cfg.schema_version < CONFIG_SCHEMA:
             cfg.schema_version = CONFIG_SCHEMA
         self._cfg = cfg
@@ -2505,6 +2548,7 @@ class ConfigStore:
             if recovered is not None:
                 return recovered
             cfg = AppConfig()
+            _follow_the_solver(cfg)
             self._cfg = cfg
             self._save()
             return cfg
@@ -2568,6 +2612,7 @@ class ConfigStore:
         # MIGRATIONS: one function, shared with `_restore_from_bak` -- see
         # `_apply_migrations` for each step and for why it is not inline here.
         _apply_migrations(cfg, stored)
+        _follow_the_solver(cfg)
 
         if cfg.schema_version < CONFIG_SCHEMA:
             cfg.schema_version = CONFIG_SCHEMA
@@ -3127,21 +3172,35 @@ class ConfigStore:
     # -- per-frame WCS stamping mutation (per-frame-wcs spec §3) ----------------
 
     def set_wcs_stamp(self, solve_saved_lights: bool,
-                      wcs_stamp: "WcsStampConfig") -> AppConfig:
+                      wcs_stamp: "WcsStampConfig",
+                      follow_solver: bool = False) -> AppConfig:
         """Persist the per-frame-WCS master enable + its advanced block in ONE
         atomic bump (they are edited by a single panel, so splitting them across
         two routes would let a half-applied state be broadcast).
 
         Write-time validated so an unusable downsample never reaches ASTAP's
         ``-z`` flag (route maps ValueError -> 422). ``solver`` is already
-        Literal-validated by pydantic."""
+        Literal-validated by pydantic.
+
+        ``follow_solver`` hands the option back to the plate solver (#826): the
+        operator's choice is cleared and the option is set as a load would, so
+        ``solve_saved_lights`` is not read."""
         if wcs_stamp.downsample not in WCS_DOWNSAMPLE_CHOICES:
             raise ValueError(
                 f"downsample must be one of "
                 f"{', '.join(str(d) for d in WCS_DOWNSAMPLE_CHOICES)} "
                 f"(0 = automatic)")
         cfg = self.cfg()
-        cfg.solve_saved_lights = bool(solve_saved_lights)
+        if follow_solver:
+            cfg.solve_saved_lights_by_hand = False
+            _follow_the_solver(cfg)
+        else:
+            # Setting it to what it already is leaves it following the solver:
+            # the panel posts the option with every other knob it saves, and
+            # that is not a choice. Only a change is.
+            if bool(solve_saved_lights) != cfg.solve_saved_lights:
+                cfg.solve_saved_lights_by_hand = True
+            cfg.solve_saved_lights = bool(solve_saved_lights)
         cfg.wcs_stamp = wcs_stamp
         return self.bump_and_save()
 

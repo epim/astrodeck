@@ -26,6 +26,9 @@
 //
 // MUTANTS, each run from a byte backup of the file named, inside this
 // worktree, sha256 compared on restore and the mutant text grepped out:
+//   U5 "export read as latin-1" (the real export call decodes the response as
+//     anything but UTF-8). Observed: x the real export call reads the server's
+//     UTF-8 response with its marks intact: the response text, mark for mark.
 //   U1 "import drops skip" (framingModel PANEL_CSV_KEYS without "skip"). Observed:
 //     w16PanelCsv.test: 11/14 passed
 //     x an import merges the file's geometry and leaves the block's own settings alone: a file with no missing cell CLEARS the skip the block had: expected "", got "1-2"
@@ -137,6 +140,14 @@ const draft0 = (over: Record<string, string | number> = {}): FramingDraft =>
 /** The server's answer to a file of a 2 x 2 at rotation 330 with one warning,
  *  in the node's own shape. The UI does not care that 330 is what a file at
  *  position angle 30 means: it merges what it is handed. */
+/** What the server's export writes now (#178, fix round 1): a real Telescopius
+ *  export's shape, with the characters of the one sample that is known (the
+ *  right single quote U+2019 and the ordinal indicator U+00BA), which the UI
+ *  must carry byte for byte through the response and the file. */
+const EXPORT_TEXT =
+  "Pane, RA, DEC, Position Angle (East), Pane width (arcmins), Pane height (arcmins), Overlap, Row, Column\n"
+  + "Center, 00hr 42\u2019 44\", +41\u00ba 00\u2019 00\", 330.0, 120.00, 79.80, 25%, -, -\n"
+  + "Pane 1, 00hr 37\u2019 58\", +41\u00ba 03\u2019 03\", 330.0, 120.00, 79.80, 25%, 1, 1\n";
 const IMPORTED = {
   draft: {
     ra: "00h 42m 44.30000s", dec: "+41\u00b0 16' 09.0000\"", rows: 2, cols: 2, overlap: 20.0,
@@ -150,9 +161,10 @@ const IMPORTED = {
 let exportCalls: any[] = [];
 let importCalls: string[] = [];
 let saved: Array<[string, string]> = [];
-let exportAnswer: any = { text: "Pane,RA\n1,2\n", convention: "THE SERVER'S SENTENCE about the angle" };
+let exportAnswer: any = { text: EXPORT_TEXT, convention: "THE SERVER'S SENTENCE about the angle" };
 let importAnswer: any = IMPORTED;
 let importFails: Error | null = null;
+const realExport = panelCsvApi.exportCsv;
 const fakeExport = async (req: any) => { exportCalls.push(req); return exportAnswer; };
 (panelCsvApi as any).importCsv = async (text: string) => {
   importCalls.push(text);
@@ -162,7 +174,7 @@ const fakeExport = async (req: any) => { exportCalls.push(req); return exportAns
 (panelCsvApi as any).save = (name: string, text: string) => { saved.push([name, text]); };
 function reset(): void {
   exportCalls = []; importCalls = []; saved = [];
-  exportAnswer = { text: "Pane,RA\n1,2\n", convention: "THE SERVER'S SENTENCE about the angle" };
+  exportAnswer = { text: EXPORT_TEXT, convention: "THE SERVER'S SENTENCE about the angle" };
   importAnswer = IMPORTED; importFails = null;
   (panelCsvApi as any).exportCsv = fakeExport;
 }
@@ -319,10 +331,29 @@ await test("EXPORT PANELS posts the layout, saves what the server wrote and show
   await flush();
   eq(exportCalls, [model.panelCsvRequest(draft0())], "what was posted");
   eq(exportCalls[0].skip, "1-2", "the skip text went with it");
-  eq(saved, [[model.PANEL_CSV_FILENAME, "Pane,RA\n1,2\n"]], "the file saved is the server's text, byte for byte");
+  eq(saved, [[model.PANEL_CSV_FILENAME, EXPORT_TEXT]], "the file saved is the server's text, byte for byte");
   eq(qa("framing-panel-csv-convention").map((e) => e.textContent), ["THE SERVER'S SENTENCE about the angle"], "the convention, once");
   eq(qa("framing-panel-csv-warning").length, 0, "an export has no warnings");
   eq(explained, [], "nothing was refused");
+});
+
+await test("the real export call reads the server's UTF-8 response with its marks intact", async () => {
+  // The marks of a real Telescopius file are not ASCII: a response decoded as
+  // anything but UTF-8 turns the minutes mark and the ordinal into mojibake,
+  // which the file would then carry out of the browser.
+  const bytes = new TextEncoder().encode(EXPORT_TEXT);
+  const realFetch = g.fetch;
+  g.fetch = async () => new Response(bytes, {
+    status: 200,
+    headers: { "Content-Type": "text/csv; charset=utf-8", "X-Panel-Csv-Convention": "THE SERVER'S SENTENCE" },
+  });
+  try {
+    const answer = await realExport(model.panelCsvRequest(draft0())!);
+    eq(answer.text, EXPORT_TEXT, "the response text, mark for mark");
+    eq(answer.convention, "THE SERVER'S SENTENCE", "the convention header");
+  } finally {
+    g.fetch = realFetch;
+  }
 });
 
 await test("a refused export says the server's reason and saves nothing", async () => {
@@ -337,8 +368,8 @@ await test("a refused export says the server's reason and saves nothing", async 
 
 await test("IMPORT PANELS posts the file's text, merges the draft and shows the convention and each warning once", async () => {
   mount(draft0());
-  await pick("Pane,RA,DEC\n1,2,3\n");
-  eq(importCalls, ["Pane,RA,DEC\n1,2,3\n"], "the file's text, as it was");
+  await pick(EXPORT_TEXT);
+  eq(importCalls, [EXPORT_TEXT], "the file's text, as it was, its non-ASCII marks included");
   eq(seen.draft.rows, 2, "rows merged");
   eq(seen.draft.cols, 2, "columns merged");
   eq(seen.draft.rotation, 330, "the rotation as the server gave it");

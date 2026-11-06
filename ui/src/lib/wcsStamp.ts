@@ -5,6 +5,23 @@
 // DOM: the panel itself is a thin shell.
 import type { WcsStampConfig } from "../types";
 
+/** The one sentence both Settings surfaces say about the master option
+ *  (#826, owner ruling D-I): it follows the plate solver until it is changed
+ *  by hand. */
+export const WCS_FOLLOWS_SOLVER =
+  "Stamping follows the plate solver: it is on while one is installed, until you change it by hand.";
+
+/** The control that hands the option back to the solver. Shown only once the
+ *  option has been changed by hand, since before that it already follows. */
+export const WCS_FOLLOW_AGAIN = "Follow the plate solver again";
+
+/** Whether the operator has chosen the option either way
+ *  (`AppConfig.solve_saved_lights_by_hand`). Absent on a server that predates
+ *  it, which is "not by hand". */
+export const wcsChosenByHand = (
+  cfg: { solve_saved_lights_by_hand?: boolean } | null | undefined,
+): boolean => cfg?.solve_saved_lights_by_hand === true;
+
 /** Every field at its server default (config.py WcsStampConfig). Used as the
  *  fallback when an old WS `hello` bootstrap predates the block. */
 export const DEFAULT_WCS_STAMP: WcsStampConfig = {

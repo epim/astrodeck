@@ -29,15 +29,15 @@ import { ApiError } from "../../../../../api";
 import { setWcsStampConfig } from "../../../../../api/backends";
 import { accessPhrase } from "../../../../../lib/caps";
 import {
-  DOWNSAMPLE_CHOICES, downsampleLabel, wcsStampAdvisory, wcsStampOrDefault,
-  wcsStampSummary,
+  DOWNSAMPLE_CHOICES, downsampleLabel, wcsChosenByHand, wcsStampAdvisory,
+  wcsStampOrDefault, wcsStampSummary, WCS_FOLLOWS_SOLVER, WCS_FOLLOW_AGAIN,
 } from "../../../../../lib/wcsStamp";
 import type { WcsStampConfig } from "../../../../../types";
 import { useConfig, useProviders, useStore } from "../../../../../store";
 import { useLock } from "../../../../lib/gateHook";
 import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import {
-  Disclosure, LockNote, NumberField, Segmented, Switch,
+  ActionButton, Disclosure, LockNote, NumberField, Segmented, Switch,
 } from "../../../../ui";
 import {
   filesLockSentence, plainDashes, WCS_BLURB, WCS_DOWNSAMPLE_NOTE, WCS_FOOTNOTE,
@@ -49,6 +49,7 @@ export function WcsStampEditor(): JSX.Element {
   const config = useConfig();
   const providers = useProviders();
   const enabled = config?.solve_saved_lights ?? false;
+  const byHand = wcsChosenByHand(config);
   const stamp = wcsStampOrDefault(config?.wcs_stamp);
 
   // Named at RENDER time (`accessPhrase` reads the live role table) and phrased
@@ -67,7 +68,9 @@ export function WcsStampEditor(): JSX.Element {
 
   const advisory = wcsStampAdvisory(providers?.solve);
 
-  const save = async (nextEnabled: boolean, next: WcsStampConfig): Promise<void> => {
+  const save = async (
+    nextEnabled: boolean, next: WcsStampConfig, followSolver = false,
+  ): Promise<void> => {
     if (busy) return;
     setBusy(true);
     setErr(null);
@@ -75,7 +78,10 @@ export function WcsStampEditor(): JSX.Element {
       // The master enable and the advanced block travel together: the server
       // takes them in one atomic version bump, so sending half would leave the
       // other half of the user's intent unrecorded.
-      await setWcsStampConfig({ solve_saved_lights: nextEnabled, wcs_stamp: next });
+      await setWcsStampConfig({
+        solve_saved_lights: nextEnabled, wcs_stamp: next,
+        ...(followSolver ? { follow_solver: true } : {}),
+      });
       await useStore.getState().loadConfig();
     } catch (e) {
       // `isLocalOnly` FIRST: the fence answers 403 for every role.
@@ -100,6 +106,20 @@ export function WcsStampEditor(): JSX.Element {
         onExplain={explain}
         data-testid="wcs-enabled"
       />
+
+      <p className="nx-files-note" data-testid="wcs-follows-solver">{WCS_FOLLOWS_SOLVER}</p>
+      {byHand && (
+        <ActionButton
+          kind="ghost"
+          data-testid="wcs-follow-again"
+          busy={busy}
+          lockedReason={lock}
+          onExplain={explain}
+          onPress={() => { void save(enabled, stamp, true); }}
+        >
+          {WCS_FOLLOW_AGAIN.toUpperCase()}
+        </ActionButton>
+      )}
 
       {advisory && (
         <p className="nx-files-warn" data-testid="wcs-advisory">{plainDashes(advisory)}</p>

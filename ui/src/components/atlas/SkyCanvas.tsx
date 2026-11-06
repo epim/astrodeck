@@ -44,6 +44,7 @@ import {
   fovFromOptics, deproject, plausibilityHint, mosaicTotalFov, type OpticsLike,
 } from "../../lib/framing";
 import { surveyTransform, type SurveyGeom } from "../../lib/surveyView";
+import { objectShape } from "../../lib/objectShape";
 import {
   pointingFov, pointingCaption, skyToView,
   type AtlasViewGeom, type MountSample, type RotatorSample, type ViewPoint,
@@ -929,6 +930,14 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // ---- object-size ellipse + verdict ----
   const sizeDeg = (catalogTarget?.size_arcmin ?? 0) / 60;
   const semiMajorDeg = sizeDeg > 0 ? sizeDeg / 2 : null;
+  // The drawn ellipse (#181): the row's own axes and angle when it has an
+  // ellipse with an angle, else a circle across the long axis. An axis ratio
+  // with no angle orients nothing, so it is a circle too.
+  const objectEllipse = useMemo(() => {
+    const shape = catalogTarget ? objectShape(catalogTarget) : null;
+    if (!shape || shape.pa_deg === null) return null;
+    return { semiMinorDeg: shape.minor_arcmin / 120, paDeg: shape.pa_deg };
+  }, [catalogTarget]);
   const verdict = useMemo(() => {
     if (!haveOptics) return null;
     if (sizeDeg <= 0) return null; // stars/doubles — suppress (C3-A11)
@@ -1442,6 +1451,8 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
                 hatchId={hatchId}
                 frameCenter={frameView}
                 objectRPx={semiMajorDeg ? semiMajorDeg * pxPerDeg : null}
+                objectMinorRPx={objectEllipse ? objectEllipse.semiMinorDeg * pxPerDeg : null}
+                objectPaDeg={objectEllipse ? objectEllipse.paDeg : null}
               />
             )}
             {!panelsMode && props.showFraming !== false && frameView && <FovOverlay
@@ -1456,7 +1467,8 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               cols={mosaic.cols}
               overlap={mosaic.overlap}
               objectSemiMajorDeg={semiMajorDeg}
-              objectSemiMinorDeg={semiMajorDeg}
+              objectSemiMinorDeg={objectEllipse ? objectEllipse.semiMinorDeg : semiMajorDeg}
+              objectPaDeg={objectEllipse ? objectEllipse.paDeg : null}
               haveOptics={haveOptics}
             />}
             {/* catalogue markers — AFTER the planned box (they are backdrop, not

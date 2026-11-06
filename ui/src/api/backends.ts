@@ -640,7 +640,13 @@ export const setStandardsConfig = (standards: StandardsConfig):
   Promise<AppConfig> => api.post<AppConfig>("/api/config", { standards });
 
 export const setWcsStampConfig = (
-  body: { solve_saved_lights: boolean; wcs_stamp: WcsStampConfig },
+  body: {
+    solve_saved_lights: boolean;
+    wcs_stamp: WcsStampConfig;
+    /** Hand the master option back to the plate solver (#826): the server
+     *  clears the operator's choice and does not read `solve_saved_lights`. */
+    follow_solver?: boolean;
+  },
 ): Promise<AppConfig> => api.post<AppConfig>("/api/config/wcs", body);
 
 // ------------------------------------------------------ file-sync push (Phase 2)
