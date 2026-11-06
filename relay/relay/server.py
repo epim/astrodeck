@@ -10,6 +10,8 @@ single on-wire WSS integration test exercises this shell end to end.
 Endpoints:
   * ``GET  /``                         redirect to the one connected home, or a
                                        small list page for zero/several (#686).
+  * ``GET  /rig/{home_id}``            the rig's last ten pings (#606), only when
+                                       RELAY_RIG_PAGE_KEY is set, behind it.
   * ``GET  /healthz``                  liveness (no auth), with the build
                                        identity baked into the image.
   * ``WS   /scope``                    the HOME dials here (device-token auth via
@@ -32,6 +34,7 @@ defining and host-lifecycle routes are denied on every tunneled request at home.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import copy
 import hmac
@@ -46,12 +49,14 @@ from .config import (
     RelayConfig,
     load_device_tokens,
     load_home_labels,
+    load_rig_page_key,
     load_seed,
     reload_device_tokens,
 )
 from .connection import ScopeConnection
 from .headers import transform_request_headers, transform_response_headers
 from .landing import render_landing_page, single_home_redirect_path
+from .rig_status import render_rig_page
 from .principal import PrincipalSigner
 from .protocol import (
     MAX_PAYLOAD,
@@ -115,6 +120,8 @@ class RelayState:
         # once at startup, same as the token map above -- config-only, NEVER
         # from a home's HELLO (see relay.landing's module docstring).
         self.home_labels = load_home_labels()
+        # The password of ``GET /rig/{home_id}`` (#606); "" means no such page.
+        self.rig_page_key = load_rig_page_key()
         self.oidc_signer = _make_signer(load_seed("RELAY_OIDC_SEED_FILE"),
                                         kid="oidc")
         self.viewer_signer = _make_signer(load_seed("RELAY_VIEWER_SEED_FILE"),
@@ -576,6 +583,49 @@ async def _root_landing(state: RelayState, request) -> "Response":
     return response
 
 
+def _basic_password(request) -> str:
+    """The password of an ``Authorization: Basic`` header, or ``""``."""
+    header = request.headers.get("authorization", "")
+    scheme, _, credentials = header.partition(" ")
+    if scheme.lower() != "basic":
+        return ""
+    try:
+        decoded = base64.b64decode(credentials.strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    return decoded.partition(":")[2]
+
+
+async def _rig_page(state: RelayState, request) -> "Response":
+    """``GET /rig/{home_id}`` (#606): the rig's last ten pings, readable with
+    the rig PC dark.
+
+    Off unless the owner set ``RELAY_RIG_PAGE_KEY``, and then behind it as an
+    HTTP Basic password: when a rig is online, imaging and away is not a page
+    to leave public. The key is checked before the home id is, so a wrong
+    guess learns nothing about which ids exist; an id nobody provisioned is a
+    404 only once the key is right. Same per-IP limiter and response policy as
+    ``GET /``."""
+    headers = {"Cache-Control": "no-store", **_ROOT_HEADERS}
+    if not state.rig_page_key:
+        return PlainTextResponse("not found", status_code=404, headers=headers)
+    if not state.http_limiter.allow(_client_ip(request.scope)):
+        return PlainTextResponse("rate limited", status_code=429, headers=headers)
+    if not hmac.compare_digest(_basic_password(request).encode(),
+                               state.rig_page_key.encode()):
+        return PlainTextResponse(
+            "authentication required", status_code=401,
+            headers={**headers, "WWW-Authenticate": 'Basic realm="rig"'})
+    home_id = request.path_params["home_id"]
+    if not state.registry.is_provisioned(home_id):
+        return PlainTextResponse("not found", status_code=404, headers=headers)
+    html = render_rig_page(
+        home_id, state.home_labels.get(home_id, home_id),
+        state.registry.ping_entries(home_id),
+        connected=state.registry.get(home_id) is not None, now=time.time())
+    return HTMLResponse(html, headers=headers)
+
+
 #: ``GET /``'s own policy (see ``_root_landing``). The page has no script, no
 #: images, no forms and only inline ``<style>``, so everything else is 'none';
 #: ``frame-ancestors 'none'`` and ``X-Frame-Options`` keep it out of a frame.
@@ -923,6 +973,9 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
     async def root_ep(request):  # noqa: ANN001
         return await _root_landing(state, request)
 
+    async def rig_page_ep(request):  # noqa: ANN001
+        return await _rig_page(state, request)
+
     # Read once: the environment is fixed when the image is built, so the
     # identity cannot change for the life of the process.
     build = build_identity()
@@ -933,6 +986,7 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
     routes = [
         Route("/", root_ep, methods=["GET"]),
         Route(HEALTHZ_PATH, healthz_ep, methods=["GET"]),
+        Route("/rig/{home_id}", rig_page_ep, methods=["GET"]),
         WebSocketRoute("/scope", scope_ep),
         WebSocketRoute("/h/{home_id}/ws", browser_ws_ep),
         Route("/h/{home_id}/{path:path}", browser_http_ep,

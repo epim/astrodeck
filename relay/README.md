@@ -78,6 +78,7 @@ with the home-side `server/astrodeck/remote/protocol.py` (the scope client).
 |------------------------------------|-------------|---------|
 | `GET /`                            | anyone      | one connected home -> `302` to `/h/{home_id}/`; zero or several -> a small phone-first list page, never a 404 (#686) |
 | `GET /healthz`                     | anyone      | liveness and build identity (`version`, `commit`; `unknown` when built without `scripts/deploy_relay.ps1`) |
+| `GET /rig/{home_id}`               | the owner   | the rig's last ten pings, readable with the rig PC dark (#606). Off unless `RELAY_RIG_PAGE_KEY` is set; then HTTP Basic, any user name, the key as the password |
 | `WS  /scope`                       | the **home**| outbound tunnel (device-token auth via `HELLO`) |
 | `WS  /h/{home_id}/ws`              | a browser   | tunnelled `/ws` event stream |
 | `ANY /h/{home_id}/{path:path}`     | a browser   | tunnelled HTTP (SPA, `/assets`, `/api`, `/auth`) |
@@ -88,6 +89,20 @@ comes **only** from the relay's own `RELAY_HOME_LABELS` config below -- never
 from the home, its `HELLO`, or anything else carried over the tunnel -- because
 a rig's own name can carry the observing site's label, which must never leave
 the rig.
+
+`GET /rig/{home_id}` is the off-box evidence of an outage (#606). The home
+answers each relay `PING` with a `PONG` that carries its status beacon (state,
+frame count, log level, uptime, the epoch seconds of its newest night-log line,
+whether Windows holds a restart, and how its previous session ended). The relay
+parses the beacon against the closed grammar, drops anything else, and keeps the
+last ten per home **in memory**, beside the tunnel registry, so they are still
+there when the tunnel is gone. A ping within a minute of the newest one, with
+the same state, log level, boot cause and restart flag, refreshes that entry in
+place, so ten entries reach back at least ten minutes. The record does not
+survive a relay restart or deploy. The page does not exist (404) until the
+owner sets `RELAY_RIG_PAGE_KEY`, because a page of when a rig is online,
+imaging and away is not one to leave public; a wrong or missing key gets `401`
+and shows nothing, including whether the home id exists.
 
 `home_id` in the path is the stable routing key. Because path tenants share one
 browser origin and cookie namespace, this build deliberately accepts tokens for
@@ -253,5 +268,6 @@ no scale-to-zero) so a home's persistent WSS stays on the same instance, exposes
 | `RELAY_DEVICE_TOKENS` | `""` | same JSON inline, when a file mount isn't available (e.g. Fly/most-PaaS secrets-as-env) |
 | `RELAY_HOME_LABELS_FILE` | `""` | JSON `{home_id: label}` (mounted): owner-set display label for `GET /` (#686). A home with no entry shows its own id |
 | `RELAY_HOME_LABELS` | `""` | same JSON inline, same precedence rule as `RELAY_DEVICE_TOKENS` above. Display text, not a secret -- but still never sourced from the home itself |
+| `RELAY_RIG_PAGE_KEY` | `""` | the password for `GET /rig/{home_id}` (#606): 32-256 printable ASCII characters, from the environment (a Fly secret). Unset means the page is off. Mint one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `RELAY_OIDC_SEED_FILE` | `""` | 32-byte Ed25519 seed for the OIDC key |
 | `RELAY_VIEWER_SEED_FILE` | `""` | 32-byte Ed25519 seed for the **separate** viewer key |

@@ -68,7 +68,7 @@ import { useBusyOrPending } from "../../../../lib/useBusy";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import { EscalationEditor } from "../../settings/tuning/safety";
 import type {
-  AlertHealth, EscalationConfig, NoGoWedge, SafetyConfig,
+  AlertHealth, EscalationConfig, NoGoWedge, RestartStatus, SafetyConfig,
 } from "../../../../types";
 import {
   CHAIN_NOTE, chainReasons, safetyChain, type ChainNode,
@@ -351,6 +351,12 @@ export function SafetySheet(_p: SheetProps): JSX.Element {
   const safety = useSafety();
   const status = useStatus();
   const canSiteDerived = useCan("view.site_derived");
+  // The stored acknowledgement of a pending Windows restart (#1076) is a start
+  // decision, so it takes the capability the start routes take.
+  const canAcknowledge = useCan("control.mount");
+  const [acknowledgedHere, setAcknowledgedHere] = useState(false);
+  const restartPending = status?.restart?.pending === true;
+  useEffect(() => { if (!restartPending) setAcknowledgedHere(false); }, [restartPending]);
   const bp = useBreakpoint();
 
   // Two locks, because the sun cone is two capabilities (server-routes.md 4.15).
@@ -1018,6 +1024,21 @@ export function SafetySheet(_p: SheetProps): JSX.Element {
         )}
       </Card>
 
+      {/* ------------------------------------------------ 7b. Windows restart */}
+      {status?.restart?.pending && (
+        <Card data-testid="safety-restart">
+          <Label>WINDOWS RESTART</Label>
+          <Banner tone="warn" testid="safety-restart-pending">{restartSentence(status.restart)}</Banner>
+          {canAcknowledge && !status.restart.acknowledged && !acknowledgedHere && (
+            <ActionButton
+              kind="secondary"
+              onPress={() => void onAcknowledgeRestart()}
+              data-testid="safety-restart-acknowledge"
+            >ACKNOWLEDGE</ActionButton>
+          )}
+        </Card>
+      )}
+
       {/* ---------------------------------------------------------- 8. dead-man */}
       <Card data-testid="safety-deadman">
         <Label>WHO GETS TOLD</Label>
@@ -1147,6 +1168,21 @@ export function SafetySheet(_p: SheetProps): JSX.Element {
     patch({ solar_avoidance: wantOn });
     const took = await post("sun", { solar_avoidance: wantOn, solar_exclusion_deg: coneDeg });
     if (!took) patch({ solar_avoidance: server.solar_avoidance });
+  }
+
+  async function onAcknowledgeRestart(): Promise<void> {
+    try {
+      await api.post("/api/rig/restart/acknowledge");
+      setAcknowledgedHere(true);
+      useStore.getState().enqueueToast({
+        level: "info", title: "Restart acknowledged - nights start despite it until Windows has restarted.",
+      });
+    } catch (e) {
+      useStore.getState().enqueueToast({
+        level: "error",
+        title: e instanceof ApiError ? e.message || "Could not acknowledge the restart." : "Could not acknowledge the restart.",
+      });
+    }
   }
 
   async function onCloseRoof(): Promise<void> {
@@ -1288,6 +1324,20 @@ export function deadmanLine(h: AlertHealth | null): string {
   }
   const detail = deadmanVerdict(h).detail;
   return `configured · ${detail.charAt(0).toLowerCase()}${detail.slice(1)}`;
+}
+
+/** What the restart-pending banner says (#1076): the arm gate's own sentence
+ *  when it would refuse, else why it would not. Never a second wording of the
+ *  refusal: the server decides, and this prints it. */
+export function restartSentence(r: RestartStatus): string {
+  if (r.acknowledged) {
+    return `RESTART PENDING (${r.sources.join(", ") || "source not named"}). Acknowledged: `
+      + "nights start despite it until Windows has restarted.";
+  }
+  if (r.arm_refusal) return `RESTART PENDING. ${r.arm_refusal}`;
+  return `RESTART PENDING (${r.sources.join(", ") || "source not named"}). `
+    + "Tonight sits inside Windows Update's active hours, so Windows should not "
+    + "restart this PC during the run.";
 }
 
 // Re-exported so the DOM test can assert against the same string the sheet

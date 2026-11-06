@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
 from .protocol import Frame
+from .rig_status import PingLog, parse_beacon
 
 
 class RegistrationError(Exception):
@@ -129,6 +130,10 @@ class HomeRegistry:
         # device_token -> home_id (provisioning table; swap for a DB lookup).
         self._token_to_home = dict(token_to_home or {})
         self._homes: dict[str, HomeRegistration] = {}
+        # home_id -> the last pings it answered with a status beacon (#606).
+        # Beside the live tunnels and NOT part of one, so the record is still
+        # here when the tunnel is gone, which is when it is read.
+        self._ping_logs: dict[str, PingLog] = {}
         self.ping_interval_s = ping_interval_s
         self.max_ping_misses = max_ping_misses
 
@@ -312,3 +317,23 @@ class HomeRegistry:
     def homes(self) -> list[str]:
         """The currently-connected home ids (for status/metrics)."""
         return sorted(self._homes)
+
+    # -- the last pings (#606) ------------------------------------------------
+
+    def is_provisioned(self, home_id: str) -> bool:
+        """Does any device token map to ``home_id``? Connected or not."""
+        return home_id in self._token_to_home.values()
+
+    def record_ping(self, home_id: str, beacon_text: object, now: float) -> None:
+        """Keep one PONG's status beacon for a provisioned home. A beacon that
+        is not exactly the grammar, and a home nobody provisioned, record
+        nothing: the text came from a device the relay does not run."""
+        beacon = parse_beacon(beacon_text)
+        if beacon is None or not self.is_provisioned(home_id):
+            return
+        self._ping_logs.setdefault(home_id, PingLog()).record(beacon, now)
+
+    def ping_entries(self, home_id: str) -> list[dict]:
+        """The kept pings for ``home_id``, oldest first, or ``[]``."""
+        log = self._ping_logs.get(home_id)
+        return log.entries() if log is not None else []

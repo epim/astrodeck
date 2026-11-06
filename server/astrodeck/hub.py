@@ -3236,6 +3236,75 @@ class Hub:
             return "the mount is moving"
         return None
 
+    def arm_refusal(self, *, acknowledged: bool = False,
+                    now: float | None = None) -> str | None:
+        """The sentence that refuses to ARM a night, or None to allow it (#1076).
+
+        Windows Update restarted the rig PC at 08:43 under TrustedInstaller, and
+        nothing stopped the same restart arriving mid-night. It restarts only
+        when an update is PENDING and the clock is outside Windows Update's
+        ACTIVE HOURS, so the gate asks exactly that of tonight: a restart is
+        pending AND some part of the night lies outside the active hours.
+
+        ``acknowledged`` is the operator saying, on this request, that they have
+        seen it and arm anyway. The same answer, given once for the pending
+        restart, is STORED (:meth:`acknowledge_restart`) and honoured here too,
+        so the starts that cannot carry a flag (the quick flow, auto-resume)
+        are not refused for ever. With no site there is no night to compare (``observing_night``
+        answers None), so a pending restart cannot be shown to be covered and
+        the gate refuses; with nothing pending it never asks.
+
+        The sentence names the active hours, which are the PC's, and no time of
+        the night, which is computed from the site."""
+        from . import bootcause
+        state = bootcause.restart_state()
+        stored = self._restart_is_acknowledged(state)
+        if acknowledged or stored or not state.pending:
+            return None
+        from .sequence.schedule import observing_night
+        t = time.time() if now is None else now
+        night = observing_night(self.site, now=t)
+        if night is not None:
+            dusk, dawn = night
+            if not bootcause.night_outside_active_hours(
+                    max(dusk, t), dawn, state.active_start, state.active_end):
+                return None
+        return (f"Windows has a restart pending ({', '.join(state.sources)}) and "
+                f"tonight runs outside Windows Update's active hours "
+                f"({state.active_start:02d}:00 to {state.active_end:02d}:00), so "
+                f"it may restart this PC in the middle of the run. Restart the PC "
+                f"now, or set the Windows Update active hours to cover the night, "
+                f"then arm again. To start anyway, press ACKNOWLEDGE on the "
+                f"Windows restart card in Rig > Safety: nights then start despite "
+                f"it until Windows has restarted.")
+
+    #: Whether the operator has acknowledged the restart Windows is holding.
+    #: Process memory on purpose: a restart of this process (which is what the
+    #: pending Windows restart is about to cause) forgets it, and
+    #: :meth:`_restart_is_acknowledged` clears it when the pending flag does.
+    _restart_acknowledged = False
+
+    def _restart_is_acknowledged(self, state: "Any") -> bool:
+        """The stored acknowledgement, for the pending restart ``state`` shows.
+        Tied to that restart: once nothing is pending it is cleared, so the next
+        restart Windows stages has to be acknowledged afresh."""
+        if not state.pending:
+            self._restart_acknowledged = False
+        return self._restart_acknowledged
+
+    def acknowledge_restart(self) -> bool:
+        """Acknowledge the pending Windows restart (#1076): arming a night is no
+        longer refused for it until it clears. False, storing nothing, when no
+        restart is pending."""
+        from . import bootcause
+        if not bootcause.restart_state().pending:
+            return False
+        if not self._restart_acknowledged:
+            bus.log("info", "the pending Windows restart was acknowledged: "
+                            "starting a night is no longer refused for it", "hub")
+        self._restart_acknowledged = True
+        return True
+
     async def _nina_heartbeat(self) -> None:
         """Every 5s, ping NINA ``/version`` so ``last_ok`` stays honest even when
         a multi-minute capture means no other NINA traffic. Never fatal."""
@@ -10627,6 +10696,14 @@ class Hub:
 
         out["live_stack_active"] = self.live_stacker is not None   # NOV-1 server truth
         out["bahtinov_active"] = self.bahtinov is not None         # NOV-12 server truth
+        from . import bootcause
+        restart = bootcause.restart_state()                        # #1076
+        # ``arm_refusal`` is the gate's own sentence: what the SAFETY sheet
+        # shows beside "restart pending" is the reason arming would be refused,
+        # not a second wording of it. None while nothing is pending.
+        out["restart"] = {**restart.as_status(),
+                          "acknowledged": self._restart_is_acknowledged(restart),
+                          "arm_refusal": self.arm_refusal() if restart.pending else None}
         # These must live in poll_status (not just summary): the store does a
         # wholesale set({status}) every 2s, so anything absent here flickers.
         s = self.site

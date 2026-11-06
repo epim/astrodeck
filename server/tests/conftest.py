@@ -1227,6 +1227,23 @@ def _no_test_probes_the_real_network(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_test_reads_the_real_registry(monkeypatch):
+    """No test reads the PC's real Windows registry (#1076, WP 3.7).
+
+    The arm gate asks ``bootcause`` whether Windows holds a restart, and that
+    read goes to ``HKLM`` on Windows. A developer's PC, or a hosted Windows
+    runner, can have a restart pending, and every start route would then answer
+    409 ``restart_pending`` to a test that is about something else. Replaced,
+    per test, by a read that finds nothing: no restart pending, Windows' default
+    active hours. A test that grades the gate fakes the same name itself and
+    overrides this."""
+    import astrodeck.bootcause as bootcause
+    monkeypatch.setattr(bootcause, "_registry_read",
+                        lambda key, value=None: None)
+    yield
+
+
 class _CaptureRoots:
     """Where the capture root is while the suite runs (#309); state shared by
     the two fixtures below and read by test_capture_root_isolated.py."""

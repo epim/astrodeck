@@ -137,6 +137,44 @@ def _watch_line(deadman_health: object = None) -> str:
     return "; ".join(parts)
 
 
+#: The marker words ``astrodeck.bootcause`` names a pending restart by. A COPY,
+#: like ``DEADMAN_INTERVAL_S``: this script cannot import the server. Only these
+#: words are ever printed from the status block.
+_RESTART_SOURCES = ("windows_update", "component_servicing")
+
+
+def _hour(raw: object) -> "str | None":
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 23:
+        return None
+    return f"{raw:02d}:00"
+
+
+def _restart_line(block: object) -> str:
+    """Is Windows holding a restart that could land mid-night? (#1076)
+
+    ``block`` is the ``restart`` block of ``/api/status``. Windows Update
+    restarted the rig PC at 08:43 under TrustedInstaller; it does that when an
+    update is pending and the clock is outside its active hours, and both are
+    in the block. Total: a block that is absent or whose ``pending`` is not a
+    real boolean is UNKNOWN, never "none pending", and only the marker words
+    above and two valid hours are printed from it.
+    """
+    if not isinstance(block, dict) or not isinstance(block.get("pending"), bool):
+        return "UNKNOWN (this server does not report a pending Windows restart)"
+    hours = block.get("active_hours")
+    hours = hours if isinstance(hours, dict) else {}
+    start, end = _hour(hours.get("start")), _hour(hours.get("end"))
+    window = f"active hours {start} to {end}" if start and end else "active hours unknown"
+    if not block["pending"]:
+        return f"none pending ({window})"
+    sources = block.get("sources")
+    named = [s for s in (sources if isinstance(sources, list) else [])
+             if s in _RESTART_SOURCES]
+    return (f"PENDING ({', '.join(named) or 'source not named'}): Windows may restart "
+            f"this PC outside its {window}. Restart it now, or set the active hours "
+            f"to cover the night, before arming one")
+
+
 def _recovery_line() -> str:
     """Will the engine try to reconnect a dropped or silent device? (#16)
 
@@ -240,6 +278,7 @@ def main(argv: list[str]) -> int:
     print("site: " + _site_line())
     print("watched: " + _watch_line(deadman_health))
     print("recovery: " + _recovery_line())
+    print("restart: " + _restart_line(status.get("restart")))
     for flag in ("looping", "bahtinov_active", "live_stack_active"):
         print(f"{flag}: {status.get(flag)}")
 
