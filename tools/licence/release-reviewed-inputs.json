@@ -44,8 +44,8 @@
     },
     {
       "path": "server/astrodeck/api/app.py",
-      "sha256": "3a0cdbe042f32f763b4a21a122152d000e4d0ab081abe580e466685321a6b7c2",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. Application routes and wiring: the start routes refuse while a Windows restart is pending unless acknowledged and a new POST /api/rig/restart/acknowledge route (#1076); GET and POST /api/locations/horizon-suggestion (learned horizon, view.site_derived only, #599); GET /api/sequence/stack/mosaic.jpg (#779); the frames CSV columns derived from FrameRecord (#795); max_time_min on the flow wizard body (#1094); follow_solver on the WCS stamp body (#826); the retry-set-aside route resolves against the card's plan (#809); halt reasons passed to bump_motion_epoch. First-party code and comments only, no dependency or data.",
+      "sha256": "b3d38e060da229126fa01f4e40cbcde063753e63c6910b3fda4a32f54e098f14",
+      "review": "Read the delta from daaa3450 (the round-1 state). The quick-flow body gains autofocus, watchdog and dither_every and passes them to flow_wizard.quick (#820), and the compile route's docstring counts 29 doctor rules (L2). First-party code and comments.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -80,8 +80,8 @@
     },
     {
       "path": "server/astrodeck/sequence/engine.py",
-      "sha256": "5b9bd8461d81d070fdcede66aba48b4ee5922fe1e16c6fc71f8f6226e7989019",
-      "review": "Read the complete diff from the 0.3.47 reviewed state (about 720 added lines). Engine logic and operator-facing text only: the recovery ladder at a centring (_recover_centring, home leg, imports sequence/recovery.py, #1109), the operator-halt pause (D-A, #880), the target maximum time (TargetTimeUp, _enforce_time_bound, planned endings promote the queued session, #1094, #598), flow stage status publishing (#464, #1125), opening the dome and roof before the first slew (#601, #602), mosaic and panel ids on frame records (#796), and horizon-learner calls (#599). First-party code; no new dependency, data or third-party text.",
+      "sha256": "87564c4b7a507fbe0d68f34003524906fb8e508193ad610c75d183a10989042f",
+      "review": "Read the delta from daaa3450 (about 525 added lines). The DUSK FLATS stage runs the twilight-sky method (#603 job C, WP 4.1b): waits for the Sun window, requires a roof that reads open, slews without centring to the sky opposite the Sun with the sun-avoidance gate and the mount's limits checked, shoots and re-meters, stops when too dark, restores tracking and cover; one flat set per panel angle with the rotator turned to each (#783); day darks honour the Always policy (#1219). Site-derived log lines are flagged and carry no figure. First-party code; no new dependency or data.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -92,8 +92,8 @@
     },
     {
       "path": "server/astrodeck/sequence/session.py",
-      "sha256": "4e9c137d80eb990a6b8535106f12650d982f909d73be387ebadcd831d5fc2212",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. Adds mosaics_of(plan) and a mosaics list on a session's index row for the shelf card's chip (#188); it imports naming.panel_label. First-party code.",
+      "sha256": "e7ae5ac337d9abcdfc38b952705a2a47eff265572545ece990329a92b5605965",
+      "review": "Read the delta from daaa3450. Session keeps flow_blocks and flow_stages beside its plan, written on every save by note_stages and applied by a model validator, so a plan read back from disk names its stages again (#1231, #464, #1125). First-party code.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -281,8 +281,8 @@
     },
     {
       "path": "ui/src/lib/flowsApi.ts",
-      "sha256": "3bbe21ac9ff5ead08739e359f2bdc38edc451f9252daa86744276fdbda17df22",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. The wizard body type gains max_time_min with its doc comment (#1094). First-party typing."
+      "sha256": "7e80aecba8feca90ee2ad097b865a8d575d7dc02e303d386f8edcfbe8fcd9697",
+      "review": "Read the delta from daaa3450. The quick-flow answers type gains optional autofocus, watchdog and dither_every (#820). First-party typing."
     },
     {
       "path": "ui/src/lib/keys.ts",
@@ -331,8 +331,8 @@
     },
     {
       "path": "ui/src/next/hubs/sky/sheets/quick.tsx",
-      "sha256": "038c6756ce228e5531d460570eb202c2e0e2d719dbe0a30122e7b9563f729a7a",
-      "review": "Read the complete diff from b3ce0f1b: one call site passes 1 as the panel count to commandedPa, with a comment (#790). First-party."
+      "sha256": "801efd47633cb6fd5202865dab596d6a58b4bee5485fa205cf928f4bc3ebbf62",
+      "review": "Read the delta from daaa3450. The quick sheet sends its chip answers, creates DUSK FLATS with the connected panel's method when there is one, and lists only the capable automation chips (#820, #843). First-party code."
     },
     {
       "path": "ui/src/views/AtlasView.tsx",
@@ -396,8 +396,8 @@
     },
     {
       "path": "server/astrodeck/flows/compile.py",
-      "sha256": "ba599d62fff4987e67648fad3e6382b951010d5f4a19d0078490006e69e6a197",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. The target entry carries max_time_min when the block's maxTime is a positive finite number (#1094); flows without it compile as before. First-party code."
+      "sha256": "012c840c6129a505263da9b53365765844d1dc2203035aec49f9553f7be8516e",
+      "review": "Read the delta from daaa3450. The compiled calibration queue's policy is read from the node's darks value (Always, Skip, else if_stale) instead of a constant (#1219). First-party code."
     },
     {
       "path": "server/astrodeck/flows/continuation.py",
@@ -411,13 +411,13 @@
     },
     {
       "path": "server/astrodeck/flows/to_plan.py",
-      "sha256": "20b264fc41d8ac1f761c2da0b5e63452a8ef0448e90985d8a5dcf80a7ba0c389",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. Carries the target's max_time_min (_time_bound, bounded to 1440, #1094), stamps each step's stage and the target's block from node ids (#464), and carries the DOME CONTROL block into SequencePlan.dome (#602) with the dome notes reworded to match. First-party code and message text."
+      "sha256": "6a6eee900a9f66fdf6b003827fddd3df71723edd264f857fb0cbc8b6b31835f3",
+      "review": "Read the delta from daaa3450. DUSK_FLATS_RUNS and the method labels are read off nodes.DUSK_FLATS_METHODS (twilight sky now runs, #603 job C), a 'target done' wire into a calibration queue funds the end-of-night darks (END_OF_NIGHT_TRIGGERS) with day_darks_always for the Always policy and no lane for Skip (#818, #1219), and the quick flow's autofocus and dither settings reach the plan (#820). First-party code and message text."
     },
     {
       "path": "server/astrodeck/flows/tonight.py",
-      "sha256": "399eaac8f053129b18118a222be8c2983408837fcd20f18a8be52e266c8cf3e9",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. Comment and brief-text corrections only: the dome open and binding claims now say they happen on a rig with a roof or rotating dome (WP 4.4, #601, #602). First-party prose."
+      "sha256": "9d6161a65708498e1ed06093be885cf35b7decdd1f52b9982019914a36639d38",
+      "review": "Read the delta from daaa3450. Tonight words and places the twilight-sky flats, prices a runnable DUSK FLATS block with flats_duration_s (a nominal frame cost, an estimate that uses only the operator's own count and filters, #845), and describes the end-of-night darks triggers. First-party code and copy; no site figure."
     },
     {
       "path": "server/astrodeck/focus/autofocus.py",
@@ -456,8 +456,8 @@
     },
     {
       "path": "server/astrodeck/sequence/models.py",
-      "sha256": "47241558afa36efbd27c4b0fcd23d539e75be8e6245f3c6d79dbc6a6cff6eb1d",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. Plan models gain ExposureStep.stage and Target.block (excluded from dumps, #464), Target.max_time_min with a serializer that omits it at 0 (#1094), SequencePlan.dome omitted when None (#602), and the unbounded-stop check counts the time bound. First-party pydantic models."
+      "sha256": "e585e6a34c6a80edd443865a71e3a5dc42c7899d563550e97b4208385849ccc0",
+      "review": "Read the delta from daaa3450. SequencePlan gains day_darks_always, omitted from the dump while False (#1219). First-party model field."
     },
     {
       "path": "server/astrodeck/sequence/report.py",
@@ -491,18 +491,18 @@
     },
     {
       "path": "server/astrodeck/flows/doctor.py",
-      "sha256": "0eb15a169c365d29d4c8337f4669fae622b935f512cb6c3c8cafcb5dbde3fbea",
-      "review": "Read the complete diff from b3ce0f1b. A _time_bounded helper so a plan whose every counted target has a maximum time is not reported as unbounded, plus a warning that a maximum time on a mosaic block is unused (#1094). First-party code and message text."
+      "sha256": "deb761a9335d3eeec29ae077b03a7aeb2acb9960672ecb022829bab2c1f90187",
+      "review": "Read the delta from daaa3450. New rule L2: a DUSK FLATS block whose method the engine does not run is a danger naming the methods it does (#843, #1111). First-party code and message text."
     },
     {
       "path": "server/astrodeck/flows/nodes.py",
-      "sha256": "03653f2688fbd337925bcfbde267de21b96cb7bcbb546b75805cd479f8fdc423",
-      "review": "Read the complete diff from b3ce0f1b. The target block default gains maxTime: 0 with a comment (#1094, owner ruling D-D). First-party data default."
+      "sha256": "129910d518a8da5133d3be071e299b66f8dc6fe54dd0c433df3df9e0590d72d6",
+      "review": "Read the delta from daaa3450. Adds the Capability dataclass and three tables, DUSK_FLATS_METHODS, AUTOMATION_CHIPS and the QUICK_AUTOFOCUS and QUICK_DITHER_EVERY setting keys, with flats_method and default_flats_method, and a created_as method for the DUSK FLATS node (#843, #820, #1111). The method and chip names are the product's own vocabulary. First-party data tables and code; nothing copied or third-party."
     },
     {
       "path": "server/astrodeck/flows/wizard.py",
-      "sha256": "c4e9470f50e38726d51afbfe27b4e190d943dd33345c69405e4bd2e0e7434122",
-      "review": "Read the complete diff from b3ce0f1b. Adds MAX_TIME_MAX_MIN, checked_max_time and _door_max_time so the wizard's max_time_min answer is a whole number of minutes from 0 to 1440, refused for pool and mosaic kinds, and written to the TARGET's maxTime (#1094, owner ruling D-D). First-party validation code."
+      "sha256": "54b25a799ce487ab0eedf76fe4294b7f38f777598e4b52f783ba8cb65253b322",
+      "review": "Read the delta from daaa3450. flow_wizard.generate and quick take autofocus, watchdog and dither_every and write the quickAutofocus and quickDitherEvery flow settings (#820, WP 4.1a). First-party code."
     },
     {
       "path": "server/astrodeck/imaging/mosaic_preview.py",
@@ -611,8 +611,8 @@
     },
     {
       "path": "ui/src/components/flows/nodeDefs.ts",
-      "sha256": "08e31597328e9438a1db11bec66a4c4680c1828821eabceafda4c9cafcada168",
-      "review": "Read the complete diff from b3ce0f1b. The TARGET block gains a maxTime field (default 0, label and unit, #1094) and the auto-resume help sentence now says a motorized roof or dust cover is opened before the first slew (#601, #192). First-party definitions and copy."
+      "sha256": "ed4c9c4f83382878ef061a3e53e054930ebe35ee1c56caccd913642aa871cb54",
+      "review": "Read the delta from daaa3450. Adds the client mirror of nodes.py: Capability, DUSK_FLATS_METHODS, AUTOMATION_CHIPS, capableFlatsMethods and chipEngineCapable; the DUSK FLATS node is created with the first runnable method and its description now says two methods run (#843, #820, #1111). First-party tables and copy."
     },
     {
       "path": "ui/src/components/flows/wizard/SendToWizardSheet.tsx",
@@ -748,6 +748,46 @@
       "path": "ui/src/views/ReportView.tsx",
       "sha256": "528806854ef4798a5a07eaaa3ab01154544d3e8d4b41dacd29bd3d20582cde49",
       "review": "Read the complete diff from b3ce0f1b. The classic report uses MosaicTarget for target rows and appends the mosaic and panel to a bundle group line (#796, #188, #830). First-party code."
+    },
+    {
+      "path": "ui/src/components/flows/TonightPanel.tsx",
+      "sha256": "dff4344edbf61e1c3cc1f391034e58d6ea3af3f2206b457f03324b972c75e8dc",
+      "review": "Read the complete diff from b3ce0f1b. The flats block carries duration_s from the server's Tonight answer (#845). First-party, two lines."
+    },
+    {
+      "path": "ui/src/components/flows/TonightTimeline.tsx",
+      "sha256": "7097b23701684848e91527ece44b8b53b75b30f70e14e4471686ea09d26813e9",
+      "review": "Read the complete diff from b3ce0f1b. A runs-at-start DUSK FLATS block is drawn at its estimated length and the axis opens at the run's start when that is up to three hours before dusk (#845); legend glyph follows what is drawn. First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/create/quickPayload.ts",
+      "sha256": "4472f58a17bb4fb176e25b36f7df9da7d5de8b7eb300b2ab9191f2e28b2e8c71",
+      "review": "Read the complete diff from b3ce0f1b. Adds chipAnswers and an optional chips argument that put the sheet's autofocus, watchdog and dither chips into the quick-flow body (#820). First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/tonight/TonightTimelineCard.tsx",
+      "sha256": "bec241e82ee70f7ca8265a1923341ca4ae4eb1b76ae482e131b0e2d0fe38ac33",
+      "review": "Read the complete diff from b3ce0f1b. The flats legend swatch is a block when a length is drawn and a tick when not (#845). First-party code and comment."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/tonight/tonightModel.ts",
+      "sha256": "fb83cb993359ed7e96282edf09ef12a34a52106244619abce880054729550eb3",
+      "review": "Read the complete diff from b3ce0f1b. The flats block carries duration_s (#845). First-party, two lines."
+    },
+    {
+      "path": "ui/src/next/hubs/settings/sheets/QuickDefaultsSheet.tsx",
+      "sha256": "2e8d8362a3fb599586c14cb9157fb9cdd0fba1d8d851e5b09056c2a969c91a00",
+      "review": "Read the complete diff from b3ce0f1b. The AUTOMATION rows offer only the chips the engine keeps (chipEngineCapable, #820). First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/flowGraphExtras.ts",
+      "sha256": "0786b5c782343f911526749ba0d17e936b7159aa3de9926cecd57ff70e8821f0",
+      "review": "Read the complete diff from b3ce0f1b. Adds flatPanelConnected, withDuskFlats takes a panel flag (flat panel when one is connected, else the first runnable method, #843), and the graph helpers keep the graph's other fields (settings) when they add a node. First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/quickCopy.ts",
+      "sha256": "7ab2ca11eba4bc88c9733f148a20f8fbcd7d9abaa9f348ac13aada86838f10bf",
+      "review": "Read the complete diff from b3ce0f1b. Help copy for the quick sheet rewritten to what the engine now does: the automation list without cloud hold and live stack, autofocus off, DUSK FLATS adding the twilight-sky block, DARKS AFTER at the end of the night with Darks Always (#820, #843, #1219, #818). First-party prose."
     }
   ],
   "upstream_review": {
