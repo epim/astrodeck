@@ -609,7 +609,12 @@ async def test_a_plan_swapped_inside_the_ladder_passes_the_gates_before_it_start
     stored = session_store.load(one.id)
     assert (stored.status, stored.auto_resume, stored.crash_resumes) == (
         "dormant", True, one.crash_resumes)
-    assert stored.plan == swapped, "the operator's new plan was overwritten"
+    # Compared as dumps: pydantic's == also compares the flow stage names
+    # (excluded from the dump, #1231), which this plan's duplicate step id
+    # makes collide on the session's map; the plan the operator saved is
+    # what the dump holds.
+    assert stored.plan.model_dump() == swapped.model_dump(), (
+        "the operator's new plan was overwritten")
     refused = [m for lvl, m, _src in bus_lines
                if lvl == "warning" and m.startswith("auto-resume refused")]
     assert len(refused) == 1 and expected in refused[0], refused
