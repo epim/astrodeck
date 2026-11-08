@@ -158,11 +158,22 @@ class Shots:
 
 
 async def _night(hub, monkeypatch, plan, *, t0: float, model=None,
-                 cover_open=False, before_run=None) -> tuple[Night, Shots]:
+                 cover_open=False, before_run=None,
+                 stage_alone=True) -> tuple[Night, Shots]:
+    """``stage_alone`` stubs the run start's ``_open_the_observatory`` (WP
+    4.4, #601: it opens the roof and the cover before the stage), so the stage
+    meets the roof and the cover as the test left them and its own rules can
+    be shown. The whole run, with that step in, is held by
+    ``test_the_run_opens_a_shut_roof_and_cover_and_the_sky_stage_uses_them``."""
     if cover_open:
         await hub.devices["covercalibrator"].open_cover()
     night = Night(hub, monkeypatch, t0=t0)
     shots = Shots(night, hub, model or SKY_MODEL)
+    if stage_alone:
+        async def nothing():
+            return None
+
+        monkeypatch.setattr(night.engine, "_open_the_observatory", nothing)
     if before_run is not None:
         before_run(night, shots)
     ok = await night.run(plan)

@@ -15403,7 +15403,10 @@ class SequenceEngine:
         no roof or dome is connected, or it reads open. A roof that reads
         anything else, or cannot be read at all, is not known to be open, and
         a sky flat is never shot under a closed roof. Nothing here opens one:
-        that is the run's own opening of the observatory, not this stage's."""
+        the run start does, before its first slew and so before this stage
+        (`_open_the_observatory`, #601), and refuses the run when the roof will
+        not open, so on a run this finds it open. A stage met some other way
+        (a test, a restart path) finds the roof as it was left, and refuses."""
         dome = self.hub.devices.get("dome")
         if dome is None or not getattr(dome, "connected", False):
             return ""
@@ -15559,7 +15562,9 @@ class SequenceEngine:
         are done. The sun-avoidance gate and the mount's own limits judge the
         point first, and a refusal skips the sky flats, saying so. It never
         shoots under a roof that does not read open (`_sky_flats_roof_refusal`)
-        and never opens one: opening the observatory is the run's own step.
+        and never opens one: opening the observatory is the run start's step
+        (`_open_the_observatory`, #601), which has already opened the roof and
+        the dust cover, and confirmed both, before this stage is reached.
 
         It never runs once a light frame has been taken tonight
         (`_lights_taken_tonight`), and a library that already holds a fresh
@@ -15583,9 +15588,10 @@ class SequenceEngine:
         leaves it shut, so a cover that was OPEN when a panel stage began is
         re-opened here once the sets are done: otherwise the first light would
         be taken through a shut cover, a whole night of black frames. A panel
-        stage never opens a cover it found shut (that is #601's, with the
-        roof). A sky stage must open it to see the sky, and shuts it again
-        afterwards if it found it shut. On an abort or a cancel nothing moves
+        stage never opens a cover it found shut (opening it for the night is
+        `_open_the_observatory`'s, at the run start, #601). A sky stage must
+        open a shut cover to see the sky, and shuts it again afterwards; on a
+        run it finds the cover already open and moves nothing. On an abort or a cancel nothing moves
         it: shut is the safe state, and the wind-down shuts it.
 
         The panel is driven as a dust-cover panel: the node does not say which

@@ -24,6 +24,10 @@ What is held, on the clocked simulator of ``test_w4_1b_sky_flats.py``:
   slew and no exposure, and nothing opens it;
 * nothing the stage says carries the point or the Sun's altitude.
 
+These run the STAGE ALONE: the run start's ``_open_the_observatory`` (WP
+4.4, #601) is stubbed, so the stage meets the roof and the cover as each test
+left them. The whole run, with it in, is the last two tests.
+
 Named mutant: the pointing slew skipped (``_dusk_flats``'s ``if point is not
 None:`` made ``if False:``): ``test_the_mount_slews_to_the_flat_field_before_
 metering_without_centring`` finds no slew.
@@ -84,7 +88,7 @@ class Mount:
 
 
 async def _run(hub, monkeypatch, *, tracking=True, parked=False,
-               before=None, plan=None, cover_open=False):
+               before=None, plan=None, cover_open=False, stage_alone=True):
     tel = hub.devices["telescope"]
     if parked:
         await tel.park()
@@ -101,7 +105,8 @@ async def _run(hub, monkeypatch, *, tracking=True, parked=False,
     t_hi = _hi_crossing()
     night, shots = await _night(hub, monkeypatch, plan or _plan(),
                                 t0=t_hi - 120.0, before_run=setup,
-                                cover_open=cover_open)
+                                cover_open=cover_open,
+                                stage_alone=stage_alone)
     return night, shots, box["mount"]
 
 
@@ -261,3 +266,59 @@ async def test_nothing_the_stage_says_carries_the_point_or_the_sun(
         low = msg.lower()
         assert "azimuth" not in low and "altitude" not in low, msg
         assert f"{ra:.2f}" not in msg and f"{dec:.2f}" not in msg, msg
+
+
+# ------------------------------------------------- the whole run (WP 4.4, #601)
+
+@pytest.mark.asyncio
+async def test_the_run_opens_a_shut_roof_and_cover_and_the_sky_stage_uses_them(
+        sky_hub, monkeypatch):
+    """The merged tree, nothing stubbed: a rig whose roof is closed and whose
+    cover is shut. The run start opens both (``_open_the_observatory``), the
+    sky stage finds them open, and so moves neither: it slews, meters and
+    shoots through an open cover under an open roof and leaves the cover open
+    for the lights."""
+    dome = sky_hub.devices["dome"]
+    seen: dict = {}
+
+    def before(night):
+        dome._state = DomeShutterState.CLOSED
+        real = night.engine._run_scheduled
+
+        async def scheduled(plan):
+            seen["roof"] = dome._state
+            await real(plan)
+
+        night.mp.setattr(night.engine, "_run_scheduled", scheduled)
+
+    night, s, m = await _run(sky_hub, monkeypatch, before=before,
+                             stage_alone=False)
+    assert s.covers_before_lights == ["open"], (
+        f"the cover was moved by more than the run start: {s.covers}")
+    assert seen["roof"] is DomeShutterState.OPEN
+    assert s.marker is not None and s.marker["cover"] == "open", s.marker
+    assert len(m.slews()) == 1 and s.saved_flats(), m.events[:6]
+    assert all(c["cover"] == "open" for c in s.captures), s.captures[:3]
+
+
+@pytest.mark.asyncio
+async def test_a_roof_that_will_not_open_ends_the_run_before_the_stage(
+        sky_hub, monkeypatch):
+    """The run start refuses the night when the roof will not open (an error
+    ending naming the device), so the sky stage is never reached: no slew, no
+    exposure, no first light."""
+    dome = sky_hub.devices["dome"]
+
+    async def jammed():
+        raise DeviceError("test: the roof is jammed")
+
+    def before(night):
+        dome._state = DomeShutterState.CLOSED
+        night.mp.setattr(dome, "open_shutter", jammed)
+
+    night, s, m = await _run(sky_hub, monkeypatch, before=before,
+                             stage_alone=False)
+    assert m.slews() == [] and s.captures == [], (m.events[:6], s.captures[:3])
+    assert s.marker is None, "the night went on to its lights"
+    assert night.engine.state.get("state") == "error", night.engine.state
+    assert night.said("DUSK FLATS") == []
