@@ -1,6 +1,8 @@
 # Copyright (c) 2026 James Penick
 # SPDX-License-Identifier: Apache-2.0
 """Catalog search and coordinate math."""
+import re
+
 import pytest
 
 from astrodeck.catalog import (CATALOG, altaz, format_dec, format_ra,
@@ -40,14 +42,41 @@ def test_designation_search_ignores_spacing_and_case(query, expected):
     assert ids and ids[0] == expected, ids[:5]
 
 
-def test_every_catalog_id_finds_itself_first_however_it_is_spelled():
+#: Ids per sweep test. Each `search_catalog` call is a linear scan of all 13,370
+#: rows (9.2 ms measured 2026-11-07, 2 searches per id), so 500 ids cost about
+#: 9 s of CPU here and about 40 s on a hosted runner four times slower. The
+#: whole sweep as ONE test took 246 s here and 940 s on CI (#1210): one xdist
+#: worker busy for 16 minutes, and CI's 300 s stack dump fired on it every run.
+_SWEEP_CHUNK = 500
+
+
+def _sweep_chunks() -> list[tuple[str, list[str]]]:
+    """(label, ids) pairs: ids grouped by catalogue prefix (NGC, IC, M, ...) and
+    each group cut into runs of `_SWEEP_CHUNK`, so a failure names a catalogue
+    and xdist can spread the sweep over every worker."""
+    by_catalogue: dict[str, list[str]] = {}
+    for o in CATALOG:
+        by_catalogue.setdefault(re.match(r"[A-Za-z]*", o.id).group(0), []).append(o.id)
+    return [(f"{name}-{i // _SWEEP_CHUNK}", ids[i:i + _SWEEP_CHUNK])
+            for name, ids in by_catalogue.items()
+            for i in range(0, len(ids), _SWEEP_CHUNK)]
+
+
+_SWEEP_CHUNKS = _sweep_chunks()
+
+
+@pytest.mark.parametrize("ids", [pytest.param(ids, id=label)
+                                 for label, ids in _SWEEP_CHUNKS])
+def test_every_catalog_id_finds_itself_first_however_it_is_spelled(ids):
     """Every id, both spellings, at the TOP of its own results.
 
     THE MOST EXPENSIVE TEST IN THIS SUITE, and worth knowing the price of: each
-    `search_catalog` call is a linear scan of all 13,370 rows (6.9 ms measured
-    2026-08-17), so one walk of the catalogue is ~92 seconds of pure CPU. It
-    earns that by being the only check that no id anywhere is unreachable or
-    outranked — the shape that made "M 31" and "ngc3372" each find nothing.
+    `search_catalog` call is a linear scan of all 13,370 rows (9.2 ms measured
+    2026-11-07), so one walk of the catalogue is ~123 seconds of pure CPU and
+    both spellings ~246. It is split into `_SWEEP_CHUNK`-id runs so the cost
+    spreads over the xdist workers (#1210). It earns that by being the only
+    check that no id anywhere is unreachable or outranked: the shape that made
+    "M 31" and "ngc3372" each find nothing.
 
     IT USED TO BE THREE WALKS, in two files, and one of them established
     nothing. This test asserted `o.id in _ids(o.id)`; `test_catalog_stars.py`
@@ -69,10 +98,18 @@ def test_every_catalog_id_finds_itself_first_however_it_is_spelled():
     could be pushed off the front of its own search by a star that merely shares
     letters with it.
     """
-    for o in CATALOG:
-        assert _ids(o.id)[0] == o.id, o.id
-        unspaced = o.id.replace(" ", "").replace("-", "")
-        assert _ids(unspaced)[0] == o.id, f"{o.id} as {unspaced!r}"
+    for oid in ids:
+        assert _ids(oid)[0] == oid, oid
+        unspaced = oid.replace(" ", "").replace("-", "")
+        assert _ids(unspaced)[0] == oid, f"{oid} as {unspaced!r}"
+
+
+def test_the_sweep_chunks_partition_the_whole_catalogue():
+    """The split must not lose an id: every catalogue id is in exactly one
+    chunk, so the chunked sweep above covers what the single walk covered."""
+    swept = [oid for _label, ids in _SWEEP_CHUNKS for oid in ids]
+    assert sorted(swept) == sorted(o.id for o in CATALOG)
+    assert len(set(swept)) == len(swept)
 
 
 def test_name_and_type_search_still_substring():
