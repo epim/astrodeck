@@ -68,6 +68,15 @@ def _clean_learner():
 def sited(sim_hub, monkeypatch):
     monkeypatch.setattr(type(sim_hub), "site", property(lambda self: dict(SITE)))
     monkeypatch.setattr(engine_mod, "CENTRING_HOLD_RETRY_S", 0.01)
+    # The hold retries only inside the target's own window, which the real
+    # `target_own_window` computes from the made-up site and the wall clock:
+    # in that site's daytime the window has closed and the hold never loops,
+    # so these tests passed only at the hours of the day they were written in.
+    # Here the window is open for an hour either side of now, whatever the hour.
+    monkeypatch.setattr(
+        "astrodeck.flows.tonight.target_own_window",
+        lambda *a, **k: {"start_unix": time.time() - 3600.0,
+                         "end_unix": time.time() + 3600.0})
     return sim_hub
 
 
