@@ -15,13 +15,16 @@ graph ``wizard.quick`` really generates. The UI test pins the other end of the
 mirror: it fails if ``withDarksAfter`` stops drawing that wire, which is when
 this mirror and the card both need to be read again.
 
-THE FINDING THIS PINS. The engine's end-of-night darks are the wind-down's
-day-darks lane (``plan.day_darks``), funded by ``to_plan.plan_extras`` only for
-a queue wired to SHUTDOWN COMPLETE (a PARK + CLOSE node's ``closed`` port). The
-chip wires the queue from the report instead, which compiles to the rule
-``on_target_complete -> calib`` that the engine has no action for. So the chip
-funds ``cloud_hold_darks`` (a cloud hold takes darks) and not ``day_darks``:
-the card may promise the first and must not promise the second.
+THE FINDING THIS PINS, AND ITS FIX (WP 4.1b, #818). The engine's end-of-night
+darks are the wind-down's day-darks lane (``plan.day_darks``). It used to be
+funded by ``to_plan.plan_extras`` only for a queue wired to SHUTDOWN COMPLETE
+(a PARK + CLOSE node's ``closed`` port); the chip wires the queue from the
+report instead, which compiles to the rule ``on_target_complete -> calib`` that
+the engine has no action for, so the chip funded ``cloud_hold_darks`` and not
+``day_darks``. ``to_plan.END_OF_NIGHT_TRIGGERS`` now names both wires, so the
+chip funds the lane too: once, at the end of the night, between the park and
+the warm ramp (``test_w4_1b_end_of_night_darks.py`` holds the engine side), and
+the card may say "at the end of the night" again.
 """
 from __future__ import annotations
 
@@ -53,30 +56,24 @@ def _plan_and_notes(graph):
     return plan, {u["key"]: u["detail"] for u in unmapped}
 
 
-def test_the_chip_funds_no_end_of_night_darks():
-    """THE CLAIM THE CARD NO LONGER MAKES. With the queue started by the
-    report, the wind-down's day-darks lane has no funding, so nothing is taken
-    at the end of the night, and the compile says the wire does not run.
+def test_the_chip_funds_the_end_of_night_darks():
+    """THE CLAIM THE CARD MAY NOW MAKE. With the queue started by the report,
+    the wind-down's day-darks lane is funded, and the compile reports the wire
+    as honoured by it, not as a rule that will not run.
 
-    Named mutant "the report wire funds the lane" (``to_plan.plan_extras``'s
-    day-darks condition widened from ``== "on_shutdown_complete"`` to ``in
-    ("on_shutdown_complete", "on_target_complete")``). ``to_plan.py`` is not
-    this work package's file, so the mutant was run in a private copy of the
-    ``astrodeck`` package under the session scratchpad (this file copied beside
-    it, since ``conftest.py`` would put the worktree's own package first), never
-    in the worktree, from a byte backup that was restored and compared by
-    sha256: RED, ``AssertionError: the DARKS AFTER chip now funds the
-    end-of-night darks lane: the card (quickCopy.ts INFO.darks) may say 'at the
-    end of the night' again``.
+    Named mutant "the report wire does not fund the lane"
+    (``to_plan.END_OF_NIGHT_TRIGGERS`` narrowed to ``on_shutdown_complete``
+    alone), from a byte backup, restored and compared by sha256: RED,
+    ``AssertionError: the DARKS AFTER chip funds no end-of-night darks``.
     """
     plan, notes = _plan_and_notes(_quick_with_darks_after())
-    assert plan.day_darks == 0, (
-        "the DARKS AFTER chip now funds the end-of-night darks lane: the card "
-        "(quickCopy.ts INFO.darks) may say 'at the end of the night' again")
-    detail = notes.get("instructions[on_target_complete -> calib]", "")
-    assert "will not run" in detail, (
-        f"the report -> queue wire is no longer reported as not running: "
-        f"{notes}")
+    assert plan.day_darks > 0, (
+        "the DARKS AFTER chip funds no end-of-night darks: the card "
+        "(quickCopy.ts INFO.darks) may not say 'at the end of the night'")
+    detail = notes.get("instructions[on_target_complete -> calib.do]", "")
+    assert detail and "will not run" not in detail, (
+        f"the report -> queue wire is still reported as not running: {notes}")
+    assert "instructions[on_target_complete -> calib]" not in notes
 
 
 def test_the_chip_funds_the_cloud_hold_darks():

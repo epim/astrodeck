@@ -172,7 +172,18 @@ HONOURED_BY: dict[tuple[str, str, str], str] = {
     ("on_clouds_in", "calib", "do"): "cloud_hold_darks",
     ("on_clouds_clear", "calib", "stop"): "cloud_hold_darks",
     ("on_shutdown_complete", "calib", "do"): "day_darks",
+    ("on_target_complete", "calib", "do"): "day_darks",
 }
+
+#: The triggers whose wire into a CALIBRATION QUEUE's ``do`` asks for the
+#: end-of-night darks, the wind-down's day-darks phase (#818). SHUTDOWN
+#: COMPLETE is the campaign Example's wiring; 'target done' is what the quick
+#: sheet's DARKS AFTER chip draws (SESSION REPORT's ``done`` into the queue).
+#: Both mean "darks when the work is over", and the engine has one place where
+#: that is true, so both fund it. The wire is honoured by that phase, never run
+#: as a rule.
+END_OF_NIGHT_TRIGGERS: frozenset[str] = frozenset(
+    {"on_shutdown_complete", "on_target_complete"})
 
 HOLD_HONOURED: dict[tuple[str, str, str], str] = {
     ("on_clouds_in", "calib", "do"): (
@@ -183,6 +194,14 @@ HOLD_HONOURED: dict[tuple[str, str, str], str] = {
     ("on_shutdown_complete", "calib", "do"): (
         "the wind-down takes these darks itself, in the window between the park "
         "and the warm ramp - the one moment the mount is stowed, the cover is "
+        "shut and the sensor is still at setpoint. They are matched to the "
+        "lights this plan actually shot and capped at what the library still "
+        "needs, and only a night that ended normally takes them: an abort, an "
+        "unsafe trip or a cooling skip goes straight to the warm"),
+    ("on_target_complete", "calib", "do"): (
+        "the wind-down takes these darks itself, once, at the end of the "
+        "night rather than after each target: in the window between the park "
+        "and the warm ramp, the one moment the mount is stowed, the cover is "
         "shut and the sensor is still at setpoint. They are matched to the "
         "lights this plan actually shot and capped at what the library still "
         "needs, and only a night that ended normally takes them: an abort, an "
@@ -1360,16 +1379,17 @@ def plan_extras(compiled: dict) -> dict:
         out["cloud_hold_darks"] = min(int(quota), 40)
         # THE DAY-DARKS LANE, and it is keyed on the OPERATOR'S OWN WIRE rather
         # than on the queue existing. A CALIBRATION QUEUE fed only from a CLOUD
-        # WATCH is asking for hold darks; one fed from SHUTDOWN COMPLETE is
-        # asking for day darks; a lot of flows want the first and not the
-        # second, and holding a camera cold for an extra hour on a night nobody
+        # WATCH is asking for hold darks; one fed from SHUTDOWN COMPLETE or
+        # from 'target done' (the quick sheet's DARKS AFTER chip) is asking
+        # for day darks (`END_OF_NIGHT_TRIGGERS`); a lot of flows want the
+        # first and not the second, and holding a camera cold for an extra hour on a night nobody
         # asked for it is a real cost in power and TEC life.
         #
         # The compiled instruction is where that wire survives - `automation`
         # records the queue's settings but not who feeds it - so this reads the
         # rule the operator drew. Same cap as the hold: the lane tops the
         # library up, it does not fill it.
-        if any(str(r.get("when") or "") == "on_shutdown_complete"
+        if any(str(r.get("when") or "") in END_OF_NIGHT_TRIGGERS
                and str(r.get("action") or "") == "calib"
                for r in (compiled.get("instructions") or [])):
             out["day_darks"] = min(int(quota), 40)

@@ -302,15 +302,21 @@ def test_a_roof_or_cover_is_opened_only_where_the_copy_accounts_for_it():
 
     The engine's two direct openers are not for the night, and are listed by
     their function: the reopen after an unsafe close (``_await_safe_and_reopen``,
-    opt-in), and the DUSK FLATS stage (``_dusk_flats``, backlog WP-134), which
-    re-opens the dust cover AFTER its flats, only a cover that was open when the
-    stage began (the flats leave it shut and the lights that follow must not be
-    taken through it): restoring what it found, held by
-    ``test_w17_dusk_flats_panel.py::test_a_cover_that_was_shut_is_left_shut``.
+    opt-in), and the DUSK FLATS stage (``_dusk_flats``), which opens the dust
+    cover twice. Its panel method (backlog WP-134) re-opens the cover AFTER its
+    flats, only a cover that was open when the stage began (the flats leave it
+    shut and the lights that follow must not be taken through it): restoring
+    what it found, held by ``test_w17_dusk_flats_panel.py::
+    test_a_cover_that_was_shut_is_left_shut``. Its twilight-sky method (WP 4.1b,
+    #603 job C) opens a cover it finds shut, because the sky cannot be seen
+    through it, and shuts it again afterwards (``test_w4_1b_sky_flats.py::
+    test_the_cover_is_opened_for_the_sky_and_shut_again``); since WP 4.4 the run
+    start has normally opened it already. Neither opens the roof.
     ``ResumeArm`` and ``DuskArm`` open nothing themselves."""
     root = SERVER / "astrodeck"
     engine = _opener_calls(root / "sequence" / "engine.py")
     assert engine == [("open_shutter", "_await_safe_and_reopen"),
+                      ("open_cover", "_dusk_flats"),
                       ("open_cover", "_dusk_flats")], (
         f"the engine opens a roof or cover somewhere new: {engine}; the "
         f"tooltip does not account for it")
