@@ -63,16 +63,26 @@ function chipStyle(lit: boolean): CSSProperties {
 }
 
 /** One chip per panel, named with its sub count. The lit chip is the pinned
- *  panel, or the latest while following; pressing the pinned chip lets go. */
-export function PanelPicker({ panels, panel, onPick, testId = "panel-picker" }: {
+ *  panel, or the latest while following; pressing the pinned chip lets go.
+ *
+ *  A surface that can draw the whole mosaic (the Gallery) passes `onAssemble`
+ *  and gets one more chip after the panels, ASSEMBLED, lit by `assembled`. While
+ *  it is lit no panel chip is: the picture is of all of them. The surface owns
+ *  the flag, so choosing a panel (`onPick`) is where it leaves the assembled
+ *  view. */
+export function PanelPicker({
+  panels, panel, onPick, assembled = false, onAssemble, testId = "panel-picker",
+}: {
   panels: readonly SessionStackPanel[];
   panel: string | null;
   onPick: (key: string | null) => void;
+  assembled?: boolean;
+  onAssemble?: () => void;
   testId?: string;
 }): JSX.Element | null {
   if (panels.length < 2) return null;
   const labels = panelLabels(panels);
-  const lit = panel ?? latestPanel(panels)?.key ?? null;
+  const lit = assembled ? null : panel ?? latestPanel(panels)?.key ?? null;
   return (
     <div data-testid={testId} role="group" aria-label="Mosaic panels" style={ROW}>
       {panels.map((p, i) => (
@@ -88,6 +98,17 @@ export function PanelPicker({ panels, panel, onPick, testId = "panel-picker" }: 
           <span data-part="count" style={{ opacity: 0.7 }}>{p.frames}</span>
         </button>
       ))}
+      {onAssemble && (
+        <button
+          type="button"
+          aria-pressed={assembled}
+          data-testid="panel-chip-assembled"
+          style={chipStyle(assembled)}
+          onClick={onAssemble}
+        >
+          ASSEMBLED
+        </button>
+      )}
     </div>
   );
 }

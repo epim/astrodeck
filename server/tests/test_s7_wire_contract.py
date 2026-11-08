@@ -39,6 +39,7 @@ _WIRE = (
 
     # -- per-channel session stack (D-SES-1) ---------------------------------
     ("GET", "/api/sequence/stack/preview.jpg", "view.preview"),
+    ("GET", "/api/sequence/stack/mosaic.jpg", "view.preview"),
 
     # -- promote the last frame (D-SES-4) ------------------------------------
     ("GET", "/api/capture/last", "view.status"),

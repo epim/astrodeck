@@ -32,7 +32,7 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 
 import {
-  backfillLabel, backfillSessionStack, fmtIntegration, getSessionStack,
+  assembledImageUrl, backfillLabel, backfillSessionStack, fmtIntegration, getSessionStack,
   resetSessionStack, sessionStackImageUrl, startSessionStack, stopSessionStack,
   type SessionStackStatus,
 } from "../../../../../api/sessionStack";
@@ -60,11 +60,17 @@ export function SessionStackPanel(): JSX.Element {
   // The panel the picture is of: pinned with the chips (shared with the other
   // stack surfaces), or the latest while following.
   const { panel, setPanel } = usePanelPin(status?.panels);
-  const asked = useRef<string | null>(panel);
-  asked.current = panel;
+  // The assembled view is of every panel, and its picture changes when ANY
+  // panel's frame lands. The status under it is therefore the LATEST panel's
+  // (the seq that moves for every frame), whatever panel is pinned; the pin is
+  // kept for when the view is let go.
+  const [assembled, setAssembled] = useState(false);
+  const asking = assembled ? null : panel;
+  const asked = useRef<string | null>(asking);
+  asked.current = asking;
 
   const refresh = useCallback(async () => {
-    const want = panel;
+    const want = asking;
     try {
       const s = await getSessionStack(want);
       // The pin moved while this was in flight: a newer request is on its way.
@@ -76,7 +82,7 @@ export function SessionStackPanel(): JSX.Element {
       // live.
       if (alive.current) setError((e as Error).message);
     }
-  }, [panel]);
+  }, [asking]);
 
   useEffect(() => {
     alive.current = true;
@@ -114,6 +120,11 @@ export function SessionStackPanel(): JSX.Element {
 
   const frames = status?.frames ?? 0;
   const hasImage = Boolean(status?.has_image && frames > 0);
+  // The picker offers the choice only over two or more panels, so a mosaic that
+  // falls back to one while it is on shows that panel (and the choice is
+  // remembered, for when the panels come back).
+  const panelCount = status?.panels?.length ?? 0;
+  const showAssembled = assembled && panelCount >= 2;
   const bf = status?.backfill;
   const available = bf?.available ?? 0;
   const bfLabel = backfillLabel(bf);
@@ -179,12 +190,28 @@ export function SessionStackPanel(): JSX.Element {
           <PanelPicker
             panels={status?.panels ?? []}
             panel={panel}
-            onPick={setPanel}
+            onPick={(key) => { setAssembled(false); setPanel(key); }}
+            assembled={showAssembled}
+            onAssemble={() => setAssembled((on) => !on)}
             testId="gallery-stack-panels"
           />
         )}
 
-        {enabled && hasImage && status && (
+        {enabled && hasImage && status && showAssembled && (
+          <>
+            <img
+              className="nx-frames-stackimg"
+              data-testid="gallery-stack-assembled-img"
+              src={assembledImageUrl(status.seq)}
+              alt={`Assembled mosaic of ${panelCount} stacked panels`}
+            />
+            <Mono size={10.5} tone="dim">
+              {`${panelCount} panels placed by sky position - a panel with no stack yet is an outlined footprint`}
+            </Mono>
+          </>
+        )}
+
+        {enabled && hasImage && status && !showAssembled && (
           <>
             <img
               className="nx-frames-stackimg"
@@ -231,33 +258,40 @@ export function SessionStackPanel(): JSX.Element {
               </div>
             )}
 
-            <ReadoutGrid cols={3}>
-              <ReadoutTile label="FRAMES" value={String(frames)} />
-              <ReadoutTile label="INTEGRATED" value={fmtIntegration(status?.integrated_s ?? 0)} />
-              <ReadoutTile
-                label="BINNED"
-                value={status?.downsample ? `${status.downsample}x` : "-"}
-                sub="preview only"
-              />
-            </ReadoutGrid>
-            <p className="nx-frames-note">
-              The composite is accumulated at reduced resolution so a full-frame stack
-              per filter cannot exhaust the box&apos;s memory. It is a preview; the
-              frames on disk are untouched.
-            </p>
+            {/* The readouts and the channel list are ONE panel's (the latest,
+                under the assembled view): drawn beside the whole mosaic they
+                would read as its totals. */}
+            {!showAssembled && (
+              <>
+                <ReadoutGrid cols={3}>
+                  <ReadoutTile label="FRAMES" value={String(frames)} />
+                  <ReadoutTile label="INTEGRATED" value={fmtIntegration(status?.integrated_s ?? 0)} />
+                  <ReadoutTile
+                    label="BINNED"
+                    value={status?.downsample ? `${status.downsample}x` : "-"}
+                    sub="preview only"
+                  />
+                </ReadoutGrid>
+                <p className="nx-frames-note">
+                  The composite is accumulated at reduced resolution so a full-frame stack
+                  per filter cannot exhaust the box&apos;s memory. It is a preview; the
+                  frames on disk are untouched.
+                </p>
 
-            {(status?.channels?.length ?? 0) > 0 && (
-              <div data-testid="gallery-stack-channels">
-                {status!.channels.map((c) => (
-                  <div key={c.channel} className="nx-frames-chan">
-                    <Mono size={10.5}>{c.channel}</Mono>
-                    <Mono size={10} tone="dim">
-                      {`${c.frames} ${c.frames === 1 ? "frame" : "frames"} - ${fmtIntegration(c.integrated_s)}`
-                        + (c.rejected > 0 ? ` - ${c.rejected} unaligned` : "")}
-                    </Mono>
+                {(status?.channels?.length ?? 0) > 0 && (
+                  <div data-testid="gallery-stack-channels">
+                    {status!.channels.map((c) => (
+                      <div key={c.channel} className="nx-frames-chan">
+                        <Mono size={10.5}>{c.channel}</Mono>
+                        <Mono size={10} tone="dim">
+                          {`${c.frames} ${c.frames === 1 ? "frame" : "frames"} - ${fmtIntegration(c.integrated_s)}`
+                            + (c.rejected > 0 ? ` - ${c.rejected} unaligned` : "")}
+                        </Mono>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                )}
+              </>
             )}
 
             <div className="nx-frames-actions">

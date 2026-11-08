@@ -538,7 +538,7 @@ def _finite(value) -> float | None:
     return f if math.isfinite(f) else None
 
 
-def _planned_angle(group: TargetGroup, member: Target) -> float | None:
+def planned_angle(group: TargetGroup, member: Target) -> float | None:
     """The angle a panel was planned at, or ``None`` for "any".
 
     A rotate group commands each member's own ``rotation_deg``; a fixed
@@ -567,7 +567,7 @@ def _grid_is_single(group: TargetGroup, members: list[Target]) -> bool:
     return len(members) + len(group.skipped_ids) <= 1
 
 
-def _field(group: TargetGroup) -> tuple[float, float] | None:
+def group_field(group: TargetGroup) -> tuple[float, float] | None:
     geometry = group.geometry or {}
     fov_x, fov_y = _finite(geometry.get("fov_x")), _finite(geometry.get("fov_y"))
     if fov_x is None or fov_y is None or fov_x <= 0.0 or fov_y <= 0.0:
@@ -578,7 +578,7 @@ def _field(group: TargetGroup) -> tuple[float, float] | None:
 def _panel_row(member: Target, group: TargetGroup,
                field: tuple[float, float] | None, threshold: float,
                frames: list[SessionFrame]) -> dict:
-    planned = _planned_angle(group, member)
+    planned = planned_angle(group, member)
     stamped = flagged = 0
     worst_overlap: float | None = None
     worst_offset: float | None = None
@@ -650,7 +650,7 @@ def coverage_report(session: Session) -> dict:
     for group in plan.groups:
         members = [t for t in plan.targets
                    if t.mosaic_group == group.id and not t.calibration]
-        field = _field(group)
+        field = group_field(group)
         overlap = _finite((group.geometry or {}).get("overlap")) or 0.0
         threshold = on_tile_threshold(
             overlap, single=_grid_is_single(group, members))

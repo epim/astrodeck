@@ -401,6 +401,47 @@ def stretch_channels(planes: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return out
 
 
+def mix_channels(stretched: dict[str, np.ndarray],
+                 cover: dict[str, np.ndarray] | None = None) -> np.ndarray:
+    """Stretched channels as float RGB in [0,1], shape (h, w, 3).
+
+    A display channel is the MEAN of whichever of its contributors exist
+    (``CHANNEL_MIX``). L is folded in last and as a LUMINANCE SUBSTITUTION: each
+    channel gets ``L - y`` added, where ``y`` is the composite's own luminance.
+    The differences between channels (the colour) survive untouched while the
+    brightness becomes L's, which is what LRGB means. It also degenerates
+    correctly: a session with nothing but L has zero colour, so the same line
+    produces grey rather than needing a second code path.
+
+    ``cover`` is for a picture whose channels do not all have data everywhere (the
+    assembled mosaic: panels may have shot different filters): a boolean map per
+    channel, and the mean and the L step are then taken only where a channel has
+    data, because a channel a panel lacks is absent there and not black. With no
+    ``cover`` every channel is everywhere, as in one panel's stack.
+    """
+    shape = next(iter(stretched.values())).shape
+    rgb = np.zeros(shape + (3,), dtype=np.float32)
+    for i, key in enumerate(("r", "g", "b")):
+        names = [c for c in CHANNEL_MIX[key] if c in stretched]
+        if not names:
+            continue
+        if cover is None:
+            rgb[:, :, i] = np.mean([stretched[c] for c in names], axis=0)
+            continue
+        total = sum(stretched[c] for c in names)
+        count = sum(cover[c].astype(np.float32) for c in names)
+        rgb[:, :, i] = np.divide(total, count,
+                                 out=np.zeros(shape, np.float32),
+                                 where=count > 0)
+    lum = stretched.get("L")
+    if lum is not None:
+        y = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1]
+             + 0.114 * rgb[:, :, 2])
+        step = lum - y if cover is None else np.where(cover["L"], lum - y, 0.0)
+        rgb += step[:, :, None]
+    return np.clip(rgb, 0.0, 1.0)
+
+
 @dataclass
 class _Slot:
     """One panel's picture: its accumulators and everything that describes them.
@@ -458,6 +499,18 @@ class _Slot:
                 if plane is not None:
                     total += int(plane.nbytes)
         return total
+
+
+@dataclass(frozen=True)
+class PanelPlanes:
+    """What the assembled mosaic preview reads of one stacked panel: its
+    channels' running means on ONE grid (aligned onto the busiest channel's
+    frame, as the composite does), uncomposited and unstretched, so the
+    assembly can stretch every panel with one scale."""
+    key: str
+    target: str
+    frames: int
+    planes: dict[str, np.ndarray]
 
 
 class SessionStacker:
@@ -1075,6 +1128,29 @@ class SessionStacker:
             out[ch] = shifted
         return out, h, w
 
+    def panel_planes(self) -> dict[str, PanelPlanes]:
+        """Every panel the stacker holds, by key, as its aligned channel planes.
+
+        A READ: no panel is visited (the budget's order is the run's, not a
+        viewer's), nothing is cached and nothing is changed. A panel the budget
+        has released, or that has nothing stacked, is not in the answer, so a
+        reader cannot draw pixels the stacker no longer holds. The lock is
+        taken one panel at a time, because aligning a panel's channels is the
+        slow part and the frame loop must not wait for all of them.
+        """
+        with self._lock:
+            keys = list(self._slots)
+        out: dict[str, PanelPlanes] = {}
+        for key in keys:
+            with self._lock:
+                slot = self._slots.get(key)
+                got = self._aligned_planes(slot) if slot is not None else None
+                if slot is None or got is None:
+                    continue
+                frames = sum(c.frames for c in self._channels_of(slot))
+                out[key] = PanelPlanes(key, slot.target, frames, got[0])
+        return out
+
     def compose(self, panel: str | None = None) -> np.ndarray | None:
         """One panel's composite as float RGB in [0,1], shape (h, w, 3). None
         when the panel is empty or not stacked (default: the foreground).
@@ -1099,25 +1175,12 @@ class SessionStacker:
             got = self._aligned_planes(slot)
             if got is None:
                 return None
-            planes, h, w = got
+            planes = got[0]
         # Out of the lock from here: `planes` is already a private copy of every
         # channel's mean, so a frame landing mid-render changes the NEXT picture
         # rather than this one -- and the render is the slowest thing the
         # stacker does, which is exactly what must not block the frame loop.
-        stretched = stretch_channels(planes)
-
-        rgb = np.zeros((h, w, 3), dtype=np.float32)
-        for i, key in enumerate(("r", "g", "b")):
-            parts = [stretched[c] for c in CHANNEL_MIX[key] if c in stretched]
-            if parts:
-                rgb[:, :, i] = np.mean(parts, axis=0)
-
-        lum = stretched.get("L")
-        if lum is not None:
-            y = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1]
-                 + 0.114 * rgb[:, :, 2])
-            rgb += (lum - y)[:, :, None]
-        return np.clip(rgb, 0.0, 1.0)
+        return mix_channels(stretch_channels(planes))
 
     # ------------------------------------------------------------ render cache
     def _cached(self, slot: _Slot, key: str | None, size: int,

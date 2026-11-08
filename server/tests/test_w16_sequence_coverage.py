@@ -520,7 +520,7 @@ class TestThePlannedAngle:
         something else.
 
         RED under mutation "the footprint ignoring Target.rotation_deg"
-        (``_planned_angle`` answering ``group.pa_deg`` for a rotate group):
+        (``planned_angle`` answering ``group.pa_deg`` for a rotate group):
         the plan is laid out at 0 and the light was shot at 90, so
 
             assert 1 == 0                       (flagged)
@@ -580,7 +580,7 @@ class TestThePlannedAngle:
         member says 90.
 
         RED under mutation "a fixed camera reads the member's rotation
-        too" (``_planned_angle``'s ``(member.rotation_deg, group.pa_deg) if
+        too" (``planned_angle``'s ``(member.rotation_deg, group.pa_deg) if
         group.rotate else (group.pa_deg,)`` -> ``(member.rotation_deg,
         group.pa_deg)``): the plan is laid at 90 and the light was shot at
         40, so ``assert 1 == 0`` (flagged)."""
