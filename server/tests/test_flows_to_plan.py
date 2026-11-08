@@ -704,6 +704,13 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
             t["center_tolerance_arcmin"] = t["center_attempts"] = None
         count_mode = got["count_mode"]
         got["count_mode"] = "attempts"
+        # THE DOME BLOCK IS A DELIBERATE ADDITION (WP 4.4, #602): an example
+        # with a DOME CONTROL node now carries the node's block on its plan
+        # (`SequencePlan.dome`), which the hashes below were taken without.
+        # Left out of the digest, as the centring is; the two examples that
+        # have the node are held to carry it by
+        # `test_the_examples_with_a_dome_node_carry_its_block`.
+        got.pop("dome", None)
         blob = json.dumps(got, sort_keys=True).encode("utf-8")
         return hashlib.sha256(blob).hexdigest(), centre, count_mode
 
@@ -717,6 +724,16 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
         digest, _centre, _mode = self._dump(ex)
         assert digest == self.BEFORE[ex.id], (
             f"{ex.id} moved beyond its centring")
+
+    @pytest.mark.parametrize("ex", _NO_MOSAIC, ids=lambda e: e.id)
+    def test_the_examples_with_a_dome_node_carry_its_block(self, ex):
+        compiled = compile_plan(ex.graph, ex.name)
+        plan, _ = to_sequence_plan(compiled, ex.graph,
+                                   flow_id="control-" + ex.id)
+        has_node = any(n.type == "dome" for n in ex.graph.nodes)
+        assert (plan.dome is not None) is has_node, ex.id
+        if has_node:
+            assert plan.dome == compiled["automation"]["dome"]
 
     @pytest.mark.parametrize("ex", _NO_MOSAIC, ids=lambda e: e.id)
     def test_every_example_counts_accepted_subs(self, ex):

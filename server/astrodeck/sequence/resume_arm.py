@@ -118,8 +118,9 @@ from typing import NamedTuple
 
 from ..aio import reap
 from ..config import config_store
-from ..devices.base import (GotoRefused, SyncRefused, SyncUnverified,
-                            quotable_sync_reply, rig_position_known)
+from ..devices.base import (DomePolicy, GotoRefused, SyncRefused,
+                            SyncUnverified, quotable_sync_reply,
+                            rig_position_known)
 from ..events import bus, night_key
 from ..hub import SOLVE_REASON_SYNC_REFUSED, SOLVE_REASON_SYNC_UNVERIFIED
 from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
@@ -131,6 +132,7 @@ from .models import (Target, TargetGroup, duplicate_name_warning,
                      plan_identity_errors, quota_unbounded, replan_cooling)
 from .panel_order import OrderSnapshot, order_panels
 from .policy import resolve_policy
+from .roof import open_for_the_night
 from .session import Session, SessionUnreadable, session_store
 
 _log = logging.getLogger(__name__)
@@ -2467,6 +2469,25 @@ class ResumeArm:
             if not reading.is_safe:
                 return (f"the safety monitor says it is not safe to observe "
                         f"({reading.reason or 'no reason given'})")
+
+        # 0b. THE OBSERVATORY IS OPEN BEFORE ANYTHING IS SOLVED OR SLEWN
+        #     (#601, #192). Every wind-down shuts the dust cover, and a roof
+        #     the last night closed (end of night, or a weather close) stays
+        #     shut, so the first step that takes a frame, the autofocus or the
+        #     blind solve below, used to look through it, fail, and retry
+        #     every ten minutes until the window closed, with nothing naming
+        #     the cover. After the safety read, which a roof opening into rain
+        #     needs first. A rig with no roof and no cover is never asked, and
+        #     a plan with no light frames (darks) has no use for an open sky.
+        #     Its refusal names the device and holds like any other.
+        if session.plan.total_lights() > 0:
+            reason = await open_for_the_night(
+                self.hub.devices.get("dome"),
+                self.hub.devices.get("covercalibrator"), log=bus.log,
+                policy=(DomePolicy.from_plan(session.plan.dome)
+                        if session.plan.dome is not None else None))
+            if reason is not None:
+                return reason
 
         # 1. FOCUS — measure when the focuser lost count; never restore a number.
         #    A focuser that disagrees with the record has forgotten its position

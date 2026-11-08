@@ -219,6 +219,22 @@ def _log_spy(monkeypatch) -> list[tuple[str, str]]:
     return lines
 
 
+def _stage_alone(hub, monkeypatch) -> SequenceEngine:
+    """An engine whose run start does not open the observatory
+    (``_open_the_observatory``, WP 4.4, #601), so the flats stage meets the
+    cover as it was left. Since #601 a run opens a shut cover for its lights
+    BEFORE the stage, so the stage's own rule (it restores what it found and
+    never opens a cover it found shut) can only be shown with that step out of
+    the way."""
+    eng = SequenceEngine(hub)
+
+    async def nothing():
+        return None
+
+    monkeypatch.setattr(eng, "_open_the_observatory", nothing)
+    return eng
+
+
 async def _run(hub, plan, monkeypatch, *, engine=None):
     eng = engine or SequenceEngine(hub)
     watch = Watch(hub, eng, monkeypatch)
@@ -253,7 +269,8 @@ async def test_lamp_lit_with_the_cover_shut_and_off_after_each_filter(
     """The panel goes on at the connected panel's middle level (the plan names
     none), only once the cover is shut (#194), and is off with the cover shut
     again before the next filter starts."""
-    _, w = await _run(sim_hub, _plan(_flats()), monkeypatch)
+    _, w = await _run(sim_hub, _plan(_flats()), monkeypatch,
+                      engine=_stage_alone(sim_hub, monkeypatch))
     ons = [e for e in w.events if e[0] == "lamp_on"]
     assert len(ons) == 2, w.events
     mid = sim_hub.calibrator.max_brightness // 2
@@ -291,6 +308,14 @@ async def test_a_cover_that_was_shut_is_left_shut(sim_hub, monkeypatch):
     """Control: the stage does not open a cover it found shut. Opening it for
     the night is #601's, with the roof.
 
+    SUPERSEDED BY WP 4.4 (#601), IN ITS CONDITION BUT NOT IN ITS RULING. The
+    ruling below set "job B must not ship for a covered rig before #601" and
+    #601 has landed: a run now opens a shut cover itself, at its start and
+    before this stage (`SequenceEngine._open_the_observatory`; the whole run is
+    held by ``test_a_run_opens_a_shut_cover_for_the_lights_and_the_stage_
+    restores_it``). The STAGE's rule is unchanged, so this test runs the stage
+    alone (`_stage_alone`: the run-start open stubbed out) and still holds it.
+
     ORCHESTRATOR'S RULING (wave 17 integration, 2026-10-07; the orchestrator's,
     NOT the owner's): the dusk-flats stage NEVER OPENS A COVER IT FOUND SHUT
     and only RESTORES one it found open. That is what satisfies the plan's
@@ -315,9 +340,23 @@ async def test_a_cover_that_was_shut_is_left_shut(sim_hub, monkeypatch):
     last event (``'cover:open' == 'cover:closed'``).
     """
     assert await Watch.cover(sim_hub) == "closed"
-    _, w = await _run(sim_hub, _plan(_flats()), monkeypatch)
+    _, w = await _run(sim_hub, _plan(_flats()), monkeypatch,
+                      engine=_stage_alone(sim_hub, monkeypatch))
     (marker,) = [e for e in w.events if e[0] == "scheduled"]
     assert marker[1] == "closed", marker
+
+
+async def test_a_run_opens_a_shut_cover_for_the_lights_and_the_stage_restores_it(
+        sim_hub, monkeypatch):
+    """WP 4.4 (#601). The whole run, as it now is: the run start opens the
+    shut cover for the night, the flats stage finds it open, shuts it for the
+    lamp and opens it again, so the first light is taken through an open
+    cover."""
+    assert await Watch.cover(sim_hub) == "closed"
+    _, w = await _run(sim_hub, _plan(_flats()), monkeypatch)
+    (marker,) = [e for e in w.events if e[0] == "scheduled"]
+    assert marker[1] == "open", marker
+    assert marker[2] == "off", marker
 
 
 # ---------------------------------------------------------- once per night

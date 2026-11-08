@@ -273,10 +273,14 @@ export function duskAutoResume(p: Record<string, string | number> | undefined | 
  *  DUSK Start choice, a clock time included, and it opens at the rig's
  *  twilight angle plus the offset, never at sunset); "holds during cloudy
  *  weather" is true with every monitor now (#193 closed) and is worded as
- *  the three sources it has; the last sentence is NOT true (#192, #601 to
- *  #603 are open), so it is replaced by the one that is. The owner's wording
- *  returns clause by clause as #192's items close. The sentences that say
- *  what OFF does are the new behaviour (`_finalize_report`, `ResumeArm.tick`).
+ *  the three sources it has; the last sentence is NOT true as the owner wrote
+ *  it (neither the dome nor the flat panel responds to the day/night cycle or
+ *  the weather), so it is replaced by the part that is: with a motorized roof
+ *  or dust cover, both are opened before the night's first slew, at a run
+ *  start and in a resume's recovery (#601, #192; `roof.open_for_the_night`).
+ *  The owner's wording returns clause by clause as #192's other items close.
+ *  The sentences that say what OFF does are the new behaviour
+ *  (`_finalize_report`, `ResumeArm.tick`).
  *
  *  No non-ASCII, and each sentence ends with a full stop followed by a space:
  *  the claims table splits it on exactly that. */
@@ -288,7 +292,8 @@ export const AUTO_RESUME_HELP =
   "cloud, a CLOUD WATCH rule, or, when no monitor reads cloud, its own frames. " +
   "When off, a crash or restart the same night still resumes, but a subsequent night " +
   "does not: CONTINUE it by hand. " +
-  "It does not yet open the dome or the flat panel's cover for the night.";
+  "On a rig with a motorized roof or dust cover, it opens them before the first slew of " +
+  "the night, on a resume as on a first start.";
 
 /** The whole vocabulary. Grouped and ordered as nodes.py declares them
  *  (SOURCES → EQUIPMENT → RIG OPS → LOGIC → ACTIONS + SINKS); note this is a

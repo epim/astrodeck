@@ -135,6 +135,10 @@ def _plan_digest(ex: FlowRecord) -> str:
         ins["id"] = ""
     assert got["count_mode"] == "accepted", (ex.id, got["count_mode"])
     got["count_mode"] = "attempts"
+    # THE DOME BLOCK IS A DELIBERATE ADDITION (WP 4.4, #602): an Example with
+    # a DOME CONTROL node now carries the node's block (`SequencePlan.dome`),
+    # which HEAD_PLAN_SHA256 was hashed without. Left out, like the count mode.
+    got.pop("dome", None)
     return hashlib.sha256(json.dumps(got, sort_keys=True).encode()).hexdigest()
 
 

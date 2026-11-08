@@ -849,8 +849,10 @@ test("DUSK WINDOW's Automatic resume help is the interim text and says what Off 
   assert(!/sunset/i.test(help), "help says sunset: the window opens at the rig's twilight angle, not at sunset");
   assert(!help.includes("Flat panel, dome control"),
     "the help promises the dome and flat panel work, which #192 says they do not");
-  assert(help.endsWith("It does not yet open the dome or the flat panel's cover for the night."),
-    "the last sentence must say what #192 leaves undone");
+  assert(help.endsWith("On a rig with a motorized roof or dust cover, it opens them before the first slew of the night, on a resume as on a first start."),
+    "the last sentence must say what the engine now does for the roof and the cover (#601)");
+  assert(!help.includes("does not yet open"),
+    "the help still says the roof and cover are not opened: #601 opens them");
   // The claims table splits on ". ", so every sentence must end that way.
   assert(/^[\x20-\x7e]+$/.test(help), "the help carries a non-ASCII character");
 });

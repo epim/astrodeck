@@ -1573,6 +1573,15 @@ class DomePolicy:
     # default to True, the way D-16 did for ``close_dome_when_done``, is an
     # open owner question (#657 part b) and is NOT decided here — this
     # comment describes the code as it stands, not as it might be ruled.
+    #
+    # THE OPEN AND THE BINDING (#601, #602). Once before a run's first slew,
+    # ``SequenceEngine._open_the_observatory`` calls ``sequence/roof.bind_dome``
+    # (``apply_binding``) and ``sequence/roof.open_for_the_night``
+    # (``open_and_confirm``), and ``ResumeArm._recover`` calls the second in its
+    # recovery. Both use ``DomePolicy()``'s own defaults, the policy of a rig
+    # with no DOME CONTROL node: the compiled plan has nowhere to carry the
+    # node's block (``SequencePlan``), so ``from_plan`` and the node's own
+    # shutter timeout and Manual choice reach no run yet.
 
     @classmethod
     def from_node_params(cls, params: dict) -> "DomePolicy":

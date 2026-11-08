@@ -164,6 +164,11 @@ class TestAbsentAnswersWriteNothing:
                                            when=_WHEN)
                 got = _blank(plan.model_dump(mode="json"))
                 got["count_mode"] = "attempts"
+                # THE DOME BLOCK IS A DELIBERATE ADDITION (WP 4.4, #602): the
+                # wizard's dome chip makes a DOME CONTROL node, whose block a
+                # plan now carries (`SequencePlan.dome`); the pin was hashed
+                # without it. Left out, like the count mode.
+                got.pop("dome", None)
                 blobs.append(json.dumps(got, sort_keys=True))
         assert len(blobs) == 3 * 64
         assert _digest(blobs) == WIZARD_PLANS_SHA256
