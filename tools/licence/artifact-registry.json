@@ -671,7 +671,7 @@
   "reviewed_sources": [
     {
       "path": "server/astrodeck/__init__.py",
-      "sha256": "452aeae2d80165ff34733dc656c8b562b9b0440d4263d5e097b8f1d2af9901a1",
+      "sha256": "44c7b54ef96c68a3fa3426a289c618cc8360a46f72c9d4eba22b8ccfaf73d1f4",
       "component": "AstroDeck application source"
     },
     {
@@ -1547,6 +1547,11 @@
       "component": "AstroDeck application source"
     },
     {
+      "path": "server/astrodeck/imaging/mosaic_preview.py",
+      "sha256": "5853ae0bfa015d6ea6ff5f1febc74c6ff1441f541c71091dec380456b0b8075a",
+      "component": "AstroDeck application source"
+    },
+    {
       "path": "server/astrodeck/imaging/nightstack.py",
       "sha256": "4da14c4534b6d1635ab17ab511097c49e73a3b7b38e02ae1eca3dc12a350b02a",
       "component": "AstroDeck application source"
@@ -1767,6 +1772,11 @@
       "component": "AstroDeck application source"
     },
     {
+      "path": "server/astrodeck/sequence/recovery.py",
+      "sha256": "69495cf0c8dfb0b23b1a7efd4607fc1470c28f91ec1eec8f53fa0ea9e6b4dc65",
+      "component": "AstroDeck application source"
+    },
+    {
       "path": "server/astrodeck/sequence/report.py",
       "sha256": "f62c0b747a96f43eca2269a20d1a5899f6b30c546a415815f475e35baf533724",
       "component": "AstroDeck application source"
@@ -1804,6 +1814,11 @@
     {
       "path": "server/astrodeck/site_gps.py",
       "sha256": "5882b85be857be38b39c0179a89327345760e6817c7920a9ce69e5014759158a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/site_horizon.py",
+      "sha256": "c3ad6e49aaab62f03b5fcfb1dd32ea3a1a5067108c5ff06cd204953ee3c4000b",
       "component": "AstroDeck application source"
     },
     {
@@ -1938,7 +1953,7 @@
     },
     {
       "path": "server/pyproject.toml",
-      "sha256": "58378289489ec855ae17c1a35c8f4bc4cb6d6f236a35ee4d451fb8ca637473b0",
+      "sha256": "2b76b2c4f65d12fd2ee98c691e88028c3298a70860d51249fdb8d7de2a572e86",
       "component": "AstroDeck application source"
     }
   ],
