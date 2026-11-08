@@ -594,9 +594,51 @@ def _dusk_flats_runs(plan: Mapping | None, graph: FlowGraph | None):
         return False, None, f"the engine cannot run it as set: {why}"
     if flats.method not in to_plan.DUSK_FLATS_RUNS:
         label = to_plan.DUSK_FLATS_METHOD_LABEL[flats.method]
-        return False, flats, (f"the engine runs the flat-panel method only, "
-                              f"and this one is {label}")
+        return False, flats, f"the engine does not run the {label} method"
     return True, flats, ""
+
+
+#: What one metered flat frame costs the DUSK FLATS stage, in seconds, as
+#: Tonight prices a block (#845): the exposure a set meters to, which nothing
+#: knows before the night, taken as a typical panel or twilight-sky flat, and
+#: the download and settle around it. Together with ``FLAT_METER_FRAMES``, the
+#: unsaved trial exposures that find the exposure before each set, they give
+#: the block a length to draw. An ESTIMATE, said as one in the story, and a
+#: function of the operator's own count and filters alone: no site figure.
+FLAT_NOMINAL_EXPOSURE_S = 3.0
+FLAT_FRAME_OVERHEAD_S = 2.0
+FLAT_METER_FRAMES = 3
+
+
+def _flat_filter_names(plan: Mapping | None) -> list[str]:
+    """The distinct LIGHT filters of a compiled plan in plan order: the
+    capture loop's filter and every filter-cycle slot's. Empty for a plan
+    whose lights name none (a one-channel rig), which takes one unfiltered
+    set."""
+    names: list[str] = []
+    for target in (plan or {}).get("targets") or []:
+        for step in target.get("steps") or []:
+            if str(step.get("frame_type") or "Light") != "Light":
+                continue
+            found = [str(s.get("filter") or "")
+                     for s in step.get("slots") or []]
+            found.append(str(step.get("filter") or ""))
+            names += [f for f in found if f and f not in names]
+    return names
+
+
+def flats_duration_s(flats, plan: Mapping | None) -> float | None:
+    """How long the DUSK FLATS stage is expected to take, in seconds, or None
+    when it cannot be said (#845): the sets (one per filter) times the
+    metering trials plus the count of flats, each at the nominal frame cost
+    above. "All in wheel" is None, because the wheel is the rig's and this
+    answer is built without one; so is a block the stage does not run, and an
+    unusable count."""
+    if flats is None or flats.filters is None:
+        return None
+    sets = max(1, len(_flat_filter_names(plan)))
+    frames = sets * (flats.count + FLAT_METER_FRAMES)
+    return frames * (FLAT_NOMINAL_EXPOSURE_S + FLAT_FRAME_OVERHEAD_S)
 
 
 #: Said in place of what the block would do while the engine does not run it
@@ -850,17 +892,24 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
         # not use. So for a block the engine RUNS as a panel, the window times
         # are dropped (start/end None: a client that knows nothing of the new
         # keys draws nothing wrong) and `runs_at_start` + `at_unix` say where
-        # it happens. The other two methods are carried and not run
-        # (``_dusk_flats_runs``): they keep the window, drawn as such and
-        # worded "drawn but not run" in the story.
-        runs_at_start, _plan, _why = _dusk_flats_runs(plan_dict, graph)
+        # it happens. The TWILIGHT SKY waits for the window's upper edge, so
+        # it keeps the window and is not placed at the start ("runs" is not
+        # "runs at the run's start with no window"); the lens cap is carried
+        # and not run (``_dusk_flats_runs``): it keeps the window too, drawn
+        # as such and worded "drawn but not run" in the story.
+        runs, flats_plan, _why = _dusk_flats_runs(plan_dict, graph)
+        runs_at_start = runs and flats_plan.method == "panel"
         if runs_at_start:
             f0 = f1 = None
         else:
             f0, f1 = _flats_window(str(df.get("window") or ""), lat, lon, dusk)
+        # HOW LONG IT TAKES, for a block the engine runs (#845): the timeline
+        # draws the block at this width from where it starts.
         flats = {"start_unix": f0, "end_unix": f1,
                  "runs_at_start": runs_at_start,
                  "at_unix": window_start if runs_at_start else None,
+                 "duration_s": (flats_duration_s(flats_plan, plan_dict)
+                                if runs else None),
                  "window": df.get("window"), "adu_target": df.get("adu_target"),
                  "count": df.get("count"), "method": df.get("method")}
 
@@ -2015,7 +2064,17 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         # a figure printed beside "does not run" reads as a plan.
         if df is not None:
             runs, flats_plan, _why = _dusk_flats_runs(plan, g)
-            if runs:
+            if runs and flats_plan.method == "sky":
+                # The sky is metered, so the clause says when it starts (the
+                # window's upper edge, not "in the twilight window" as a whole)
+                # and the one thing that skips it, a connected roof that does
+                # not read open: the stage never opens one, and a rig with no
+                # roof just shoots.
+                t += (f", and shoots {flats_plan.count} flats per filter of "
+                      f"the twilight sky once the Sun reaches the window and "
+                      f"before its first light, only while a connected roof "
+                      f"reads open")
+            elif runs:
                 # The stage's own count, off the plan, and only the method it
                 # runs: with a flat panel, once, before the first light, and
                 # not in "the twilight window" (a panel does not wait for it).
@@ -2364,9 +2423,10 @@ def _day_darks_clause(n: int) -> str:
     and the camera warms as soon as they are done, so an operator who walked
     away expecting a cold sensor for later darks would come back to a warm one
     (the class this note was first written to fix). ``plan_extras`` funds the
-    darks only for a calibration queue wired to SHUTDOWN COMPLETE, and the
-    engine takes them between the park and the warm ramp, with the sensor
-    still at setpoint."""
+    darks only for a calibration queue wired to SHUTDOWN COMPLETE or to a
+    SESSION REPORT's 'target done' (``to_plan.END_OF_NIGHT_TRIGGERS``) and
+    whose Darks is not Skip, and the engine takes them, once, between the
+    park and the warm ramp, with the sensor still at setpoint."""
     if n <= 0:
         return "no day darks are queued, so the cooler does not stay cold"
     verb, noun = ("is", "dark") if n == 1 else ("are", "darks")
@@ -2810,7 +2870,21 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
         runs, flats_plan, why = _dusk_flats_runs(plan, graph)
         adu = flats.get("adu_target")
         adu_txt = f"{int(_num(adu)):,}".replace(",", " ") if adu else "target"
-        if runs:
+        if runs and flats_plan.method == "sky":
+            # THE TWILIGHT SKY (#603 job C): timed at the window's upper edge,
+            # where the stage starts, because the sky is what it meters. A
+            # window that names no two altitudes has no edge to time it at, so
+            # it is timed where the run starts. The operator's own window
+            # text, count and ADU target, and no site-derived figure (#19).
+            start = flats["start_unix"]
+            timed.append(row(
+                start if start is not None else night["window_start_unix"],
+                f"DUSK FLATS (twilight sky, {flats['window']}): "
+                f"{flats_plan.count} flats per filter, exposure solved to "
+                f"{adu_txt} ADU and re-solved as the sky darkens, taken once "
+                f"before the first light - skipped, with a line in the log, "
+                f"if a connected roof does not read open", TONE_DIM))
+        elif runs:
             # THE FLAT PANEL, which the stage runs (#603 job B): timed where
             # the run starts, not at the Sun window, because a panel does not
             # wait for the sky (the stage runs when the run reaches it, before

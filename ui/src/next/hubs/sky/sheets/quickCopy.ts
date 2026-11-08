@@ -27,7 +27,7 @@ export const INFO: Record<string, InfoTopic> = {
   setup: {
     t: "WHAT THESE MEAN",
     b: "Night arc: how long to image. Filter cycle: which filters, how long each sub. "
-      + "Automation: focus, guiding, dither, cloud hold, HFR watchdog, live stack. "
+      + "Automation: focus, guiding, dither, HFR watchdog. "
       + "Hold any label for its own explanation.",
   },
   arc: {
@@ -53,7 +53,8 @@ export const INFO: Record<string, InfoTopic> = {
   af: {
     t: "AUTOFOCUS",
     b: "Steps the focuser through a V-curve and picks the sharpest point before the first "
-      + "light frame, then again whenever the HFR watchdog asks.",
+      + "light frame, then again whenever the HFR watchdog asks. Off, the flow has no autofocus "
+      + "stage and takes no sweep at the start; the watchdog can still ask for one.",
   },
   guide: {
     t: "GUIDING",
@@ -84,40 +85,42 @@ export const INFO: Record<string, InfoTopic> = {
   },
   flats: {
     t: "DUSK FLATS",
-    // Leads with what the engine does today (#192, #603, #744): it runs the
-    // Flat panel method only. The server's `to_plan.DUSK_FLATS_WIRED` /
-    // `DUSK_FLATS_RUNS` are the one switch; `test_w15_dusk_flats_claim.py`
-    // reads this text and fails the day it is flipped without this changing.
-    // The chip adds the block with the vocabulary's default method, which is
-    // the lens cap (`NODE_DEFS.duskflats.params`), so the sentence says to
-    // change it: a quick flow that ticks this chip and leaves the method takes
-    // no flats, and the card's CHECKS say so.
-    b: "The Flat panel method runs: once per night, before the first light, and only with a "
-      + "connected flat panel; without one it says so once and goes on. It does not wait for "
-      + "the twilight window. The translucent lens cap and twilight sky methods are not run "
-      + "yet. This chip adds the block set to Translucent lens cap, so change its Method to "
-      + "Flat panel on the flow card to take flats. Flats divide out dust and vignetting; "
-      + "without them a stack keeps every shadow the optics put there.",
+    // Leads with what the engine does today (#192, #603, #744, #1111): it runs
+    // the Twilight sky and Flat panel methods, and not the lens cap. The
+    // server's `to_plan.DUSK_FLATS_WIRED` / `DUSK_FLATS_RUNS` (read off
+    // `nodes.DUSK_FLATS_METHODS`) are the one switch;
+    // `test_w15_dusk_flats_claim.py` reads this text and fails the day it is
+    // flipped without this changing. The chip adds the block with the first
+    // method the engine runs (`NODE_DEFS.duskflats.createdAs`), the twilight
+    // sky, so the sentence says what that does and how to change it.
+    b: "Adds the block set to Twilight sky: once per night, before the first light, it waits for "
+      + "the Sun to reach the top of its window, points the mount at the sky opposite it, opens "
+      + "the dust cover and shoots each filter, re-solving exposure as the sky darkens. It shoots "
+      + "only while a connected roof reads open and never opens one. Change its Method to Flat panel "
+      + "on the flow card if the rig has a panel: that method does not wait for the Sun window "
+      + "and needs the panel connected. The translucent lens cap method is not run. Flats divide "
+      + "out dust and vignetting; without them a stack keeps every shadow the optics put there.",
   },
   darks: {
     t: "DARKS AFTER",
-    // Says what the queue this chip adds does today (#745). It used to read
-    // "Queues darks and bias at the end of the night", which the engine keeps
-    // in neither half: the queue's bias and flat legs are not wired
-    // (`to_plan`'s calibration-queue note), and `withDarksAfter` wires the
-    // queue from the report's `done` event, which funds no end-of-night lane
-    // (the wind-down's day darks need a queue wired to SHUTDOWN COMPLETE).
-    // What the queue's quota does fund is the cloud hold's dark quota
-    // (`cloud_hold_darks`), so that is what is said. The chip's label,
-    // "darks after", is quick.tsx's and is not changed here.
-    // `w16QuickDarksCopy.test.ts` pins these words to the wiring: rewire the
-    // chip to SHUTDOWN COMPLETE and its premise goes red, which is the moment
-    // to say "at the end of the night" again.
-    b: "Adds a calibration queue that takes darks only; bias is not run yet. Each dark is shot "
-      + "with the wheel rotated to a blackout slot, at the same temperature and exposure as "
-      + "tonight's lights, which is the only way the library matches them later. They are taken "
-      + "while a cloud hold lasts, up to what the library still lacks, so a clear night takes "
-      + "none and nothing is queued for the end of the night.",
+    // Says what the queue this chip adds does today (#745, #818, #1219). It
+    // read "Queues darks and bias at the end of the night" while the engine
+    // kept neither half: the queue's bias and flat legs are not wired
+    // (`to_plan`'s calibration-queue note), and the report's `done` wire funded
+    // no end-of-night lane. Since wave 4 WP 4.1b the wire funds it
+    // (`to_plan.END_OF_NIGHT_TRIGGERS`): the wind-down takes the darks once,
+    // between the park and the warm-up, on a night that ends normally. The
+    // chip sets Darks to Always and WP 4.1a carries that policy into the plan
+    // (`plan.day_darks_always`), so the quota is shot whatever the library
+    // holds. `w16QuickDarksCopy.test.ts` pins these words to the wiring.
+    b: "Adds a calibration queue that takes darks only; bias is not run yet. Once, at the end of "
+      + "the night, between the park and the warm-up, it shoots its quota of darks with the wheel "
+      + "rotated to a blackout slot, at the same temperature and exposure as tonight's lights, "
+      + "which is the only way the library matches them later. The chip sets Darks to Always, so "
+      + "the quota is shot whatever the library already holds; set Darks to If library stale on "
+      + "the flow card to take only what is missing. A night that ends on an abort or an unsafe "
+      + "trip takes none. The same queue also takes darks while a cloud hold lasts, up to what "
+      + "the library still lacks.",
   },
   floor: {
     t: "HORIZON LIMIT",

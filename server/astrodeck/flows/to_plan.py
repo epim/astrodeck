@@ -51,7 +51,8 @@ from ..sequence.schedule import sun_window_needs_a_site
 from . import identity, tonight
 from .compile import lane_refusals
 from .models import FlowGraph
-from .nodes import NODE_DEFS
+from .nodes import (DUSK_FLATS_METHODS, NODE_DEFS, QUICK_AUTOFOCUS,
+                    QUICK_DITHER_EVERY)
 from .rig import RigFacts
 
 #: The engine's real vocabularies, read off the ``Literal`` types rather than
@@ -196,7 +197,8 @@ HOLD_HONOURED: dict[tuple[str, str, str], str] = {
         "and the warm ramp - the one moment the mount is stowed, the cover is "
         "shut and the sensor is still at setpoint. They are matched to the "
         "lights this plan actually shot and capped at what the library still "
-        "needs, and only a night that ended normally takes them: an abort, an "
+        "needs (the whole quota when the queue's Darks is Always), and only a "
+        "night that ended normally takes them: an abort, an "
         "unsafe trip or a cooling skip goes straight to the warm"),
     ("on_target_complete", "calib", "do"): (
         "the wind-down takes these darks itself, once, at the end of the "
@@ -204,7 +206,8 @@ HOLD_HONOURED: dict[tuple[str, str, str], str] = {
         "and the warm ramp, the one moment the mount is stowed, the cover is "
         "shut and the sensor is still at setpoint. They are matched to the "
         "lights this plan actually shot and capped at what the library still "
-        "needs, and only a night that ended normally takes them: an abort, an "
+        "needs (the whole quota when the queue's Darks is Always), and only a "
+        "night that ended normally takes them: an abort, an "
         "unsafe trip or a cooling skip goes straight to the warm"),
     ("on_clouds_clear", "calib", "stop"): (
         "the hold ends when the sky clears and its darks stop with it, so this "
@@ -959,10 +962,10 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
 #: WHETHER THE ENGINE HAS A DUSK FLATS STAGE - the one switch (#192's copy
 #: sweep, #603 job A). It is True since #603 job B (WP-134):
 #: ``SequenceEngine._dusk_flats`` runs once a night, before the first light.
-#: It runs ONE of the node's three methods, :data:`DUSK_FLATS_RUNS`; the
-#: other two are carried in the plan and reported as not run yet, so a
-#: sentence about what a given block does reads that set as well as this
-#: constant (``tonight._dusk_flats_runs``).
+#: It runs TWO of the node's three methods, :data:`DUSK_FLATS_RUNS`; the
+#: other is carried in the plan and reported as not run, so a sentence about
+#: what a given block does reads that set as well as this constant
+#: (``tonight._dusk_flats_runs``).
 #:
 #: TWO THINGS READ IT, and they must never disagree about one fact. This
 #: module's "not wired" note below is present exactly when it is False, and
@@ -972,20 +975,21 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
 #: constant, so ``test_w15_dusk_flats_claim.py`` reads them as text.
 DUSK_FLATS_WIRED = True
 
-#: The ``DuskFlatsPlan.method`` values the stage runs. 'cap' and 'sky' need a
-#: bright sky and a Sun-altitude wait (job C, its own issue); a panel is a
-#: constant light source and needs neither.
-DUSK_FLATS_RUNS: frozenset[str] = frozenset({"panel"})
+#: The ``DuskFlatsPlan.method`` values the stage runs: the capable rows of
+#: ``nodes.DUSK_FLATS_METHODS``, the one table that says which methods the
+#: engine keeps (#1111). The flat panel and the twilight sky (job C, WP 4.1b)
+#: run; the translucent lens cap does not. A panel is a constant light source
+#: and does not wait for the Sun; the sky does, for the window's upper edge
+#: (``tonight`` words and places the two differently).
+DUSK_FLATS_RUNS: frozenset[str] = frozenset(
+    m.key for m in DUSK_FLATS_METHODS if m.engine_capable)
 
 #: The DUSK FLATS node's "Method" options (``nodes.py``, ``nodeDefs.ts``) ->
 #: ``DuskFlatsPlan.method``, matched on the option's own text, lower-cased.
-_DUSK_FLATS_METHODS = {"flat panel": "panel",
-                       "translucent lens cap": "cap",
-                       "twilight sky": "sky"}
+_DUSK_FLATS_METHODS = {m.label.lower(): m.key for m in DUSK_FLATS_METHODS}
 
 #: What an operator reads for each method in a sentence.
-DUSK_FLATS_METHOD_LABEL = {"panel": "flat panel", "cap": "translucent lens cap",
-                           "sky": "twilight sky"}
+DUSK_FLATS_METHOD_LABEL = {m.key: m.label.lower() for m in DUSK_FLATS_METHODS}
 
 
 def _flats_band(window_text: str) -> tuple[float | None, float | None]:
@@ -1158,10 +1162,10 @@ def _dusk_flats_notes(block: Mapping | None) -> list[dict]:
 
     Three cases, because they are not the same loss. With the switch off
     (``DUSK_FLATS_WIRED``) the old "not wired" sentence. With a method the
-    stage runs (the flat panel) a ``note``: the block is honoured, so it is no
-    loss and blocks nothing, and the row says what is and is not carried. With
-    any other method, or a block the stage cannot run as set, a ``warn``: this
-    run will not take flats."""
+    stage runs (the flat panel, the twilight sky) a ``note``: the block is
+    honoured, so it is no loss and blocks nothing, and the row says what is and
+    is not carried. With any other method, or a block the stage cannot run as
+    set, a ``warn``: this run will not take flats."""
     if not DUSK_FLATS_WIRED:
         return [_note("automation.dusk_flats",
                       "the dusk-flats stage is not wired into the engine yet "
@@ -1173,10 +1177,26 @@ def _dusk_flats_notes(block: Mapping | None) -> list[dict]:
                       f"not take flats")]
     label = DUSK_FLATS_METHOD_LABEL[plan.method]
     if plan.method not in DUSK_FLATS_RUNS:
+        runs = " and ".join(DUSK_FLATS_METHOD_LABEL[m.key]
+                            for m in DUSK_FLATS_METHODS
+                            if m.key in DUSK_FLATS_RUNS)
         return [_note("automation.dusk_flats",
-                      f"the dusk-flats stage runs the flat-panel method only; "
-                      f"{label} flats are not run yet, so this run will not "
+                      f"the dusk-flats stage runs the {runs} methods only; "
+                      f"{label} flats are not run, so this run will not "
                       f"take flats")]
+    if plan.method == "sky":
+        return [_note(
+            "automation.dusk_flats",
+            f"DUSK FLATS runs against the twilight sky: {plan.count} flats "
+            f"per filter, metered to {plan.adu_target} ADU and re-metered as "
+            f"the sky darkens, once per night and before the first light. It "
+            f"waits for the Sun to reach the window's upper edge, shoots only "
+            f"while a connected roof reads open (it never opens one), and "
+            f"stops when the sky is too dark for the longest exposure",
+            "note",
+            carried=["method: twilight sky", "the Sun window",
+                     f"count per filter: {plan.count}",
+                     f"ADU target: {plan.adu_target}", "which filters"])]
     return [_note(
         "automation.dusk_flats",
         f"DUSK FLATS runs with the flat panel: {plan.count} flats per filter, "
@@ -1372,7 +1392,11 @@ def plan_extras(compiled: dict) -> dict:
     if compiled.get("resume_across_nights") is False:
         out["resume_across_nights"] = False
     quota = cq.get("quota")
-    if isinstance(quota, (int, float)) and quota > 0:
+    # DARKS "SKIP" FUNDS NO DARKS LANE (#820's neighbour, WP 4.1a): a queue
+    # that asks for no darks must not top the library up on a cloud hold or at
+    # the end of the night because it has a quota.
+    if (isinstance(quota, (int, float)) and quota > 0
+            and cq.get("policy") != "skip"):
         # The queue's quota is "how many of each kind the library wants". A hold
         # is bounded and cannot deliver a whole quota, so it is capped: the hold
         # tops the library up, it does not fill it.
@@ -1393,6 +1417,12 @@ def plan_extras(compiled: dict) -> dict:
                and str(r.get("action") or "") == "calib"
                for r in (compiled.get("instructions") or [])):
             out["day_darks"] = min(int(quota), 40)
+            # THE QUEUE'S DARKS POLICY RIDES WITH THE QUOTA (#1219). "Always"
+            # (the DARKS AFTER chip) shoots the quota whatever the library
+            # holds; the key is absent otherwise, so every plan without the
+            # policy is as it was and the engine keeps its shortfall rule.
+            if cq.get("policy") == "always":
+                out["day_darks_always"] = True
     return out
 
 
@@ -2170,6 +2200,22 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     # production callers pass the graph.
     if graph is not None:
         fields["guide"] = any(n.type == "guide" for n in graph.nodes)
+        # THE QUICK SHEET'S CHIPS, WRITTEN OUT (#820, WP 4.1a). Autofocus at
+        # each target's start and the dither cadence were never readings of the
+        # graph: the engine focused with or without an AUTOFOCUS node, and the
+        # GUIDE node's `dither` never reached the plan, which dithers at its own
+        # default. Reading the absence of the node, or the node's default, as a
+        # choice would change every saved flow without a word, so the chips are
+        # EXPLICIT: `wizard.quick` writes them into the flow's settings, and
+        # only a flow that carries them is read here. A flow without them (every
+        # saved flow, every hand-drawn one, the Examples) compiles to the plan
+        # it always did.
+        if graph.settings.get(QUICK_AUTOFOCUS) is False:
+            for t in targets:
+                t["autofocus_first"] = False
+        every = graph.settings.get(QUICK_DITHER_EVERY)
+        if isinstance(every, int) and not isinstance(every, bool) and every >= 0:
+            fields["dither_every"] = every
     if cool_to is not None:
         fields["cool_to"] = float(cool_to)
     elif camera_can_cool:

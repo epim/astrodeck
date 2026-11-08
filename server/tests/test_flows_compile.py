@@ -573,6 +573,11 @@ class TestTheExamplesCompile:
                         if n.type == "duskflats")
             assert flats.pop("filters") == str(node.params.get("filters")), (
                 f"{ex_id}'s DUSK FLATS block does not compile its Filters")
+            # WP 4.1a (#843): the Example's block is CREATED with the first
+            # method the engine runs, the twilight sky, where it read the lens
+            # cap through the missing-key default; reset, it is the fixture's.
+            assert flats["method"] == "Twilight sky", flats
+            flats["method"] = "Translucent lens cap"
         got = json.dumps(compiled, ensure_ascii=False)
         want = json.dumps(LEGACY_EXAMPLES[ex_id], ensure_ascii=False)
         assert got == want, f"{ex_id} changed its compile beyond the S3 keys"

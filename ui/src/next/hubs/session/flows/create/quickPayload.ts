@@ -84,6 +84,20 @@ export function targetFromEntry(e: CatalogEntry): QuickTarget {
   return { name: e.name || e.id, ra: raHms(e.ra_hours), dec: decDms(e.dec_deg) };
 }
 
+/** The automation chips that shape the graph, as the payload carries them
+ *  (#820): the sheet's persisted chip states (`QuickPrefs.extras`, a chip is on
+ *  unless it is explicitly false) and its dither N. The Dither chip off is a
+ *  cadence of 0, so the one number says both. */
+export function chipAnswers(
+  extras: Readonly<Record<string, boolean>>, ditherN: number,
+): { autofocus: boolean; watchdog: boolean; ditherEvery: number } {
+  return {
+    autofocus: extras.af !== false,
+    watchdog: extras.hfr !== false,
+    ditherEvery: extras.dither !== false ? ditherN : 0,
+  };
+}
+
 /** The exact body `POST /api/flows/quick` receives.
  *
  *  Pure and exported so the payload can be graded without a DOM: the failure
@@ -99,6 +113,11 @@ export function quickPayload(a: {
   exposures: Readonly<Record<string, number>>;
   guided: boolean;
   run: boolean;
+  /** The sheet's automation chips that shape the graph (#820). Absent, the
+   *  body carries none of them and the server builds what the four answers
+   *  always built. `ditherEvery` is the sheet's N with the Dither chip on and
+   *  0 with it off: the server writes it onto the GUIDE stage. */
+  chips?: { autofocus: boolean; watchdog: boolean; ditherEvery: number };
 }): QuickFlowAnswers {
   const keys = a.filters.length > 0 ? a.filters : [OSC_LABEL];
   const exposures: Record<string, number> = {};
@@ -112,6 +131,13 @@ export function quickPayload(a: {
     filters: [...a.filters],
     exposures,
     guided: a.guided,
+    ...(a.chips
+      ? {
+          autofocus: a.chips.autofocus,
+          watchdog: a.chips.watchdog,
+          dither_every: a.chips.ditherEvery,
+        }
+      : {}),
     run: a.run,
   };
 }

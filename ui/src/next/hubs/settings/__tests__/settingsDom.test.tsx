@@ -628,13 +628,24 @@ act(() => { root2.unmount(); });
   });
 
   // `liveStack` vs `stack` was one label over two settings: the row here and
-  // the chip on the quick sheet wrote different keys, so turning live stacking
-  // off in Settings left it on in the night that ran.
-  click(q('[data-testid="quick-extra-stack"]'));
+  // the chip on the quick sheet wrote different keys, so turning a chip off in
+  // Settings left it on in the night that ran. (Live stack and Cloud hold are
+  // not rows any more: a quick flow reaches neither, `chipEngineCapable`.)
+  click(q('[data-testid="quick-extra-hfr"]'));
   await settle();
   test("the automation rows key on the names the Sky hub's chips write", () => {
-    eq(seen?.quick.extras.stack, false,
-      "live stacking after switching it off here, as the Sky quick sheet reads it:");
+    eq(seen?.quick.extras.hfr, false,
+      "the HFR watchdog after switching it off here, as the Sky quick sheet reads it:");
+  });
+
+  test("only the chips a quick flow carries are rows (#820)", () => {
+    for (const key of ["af", "guide", "dither", "hfr"]) {
+      assert(q(`[data-testid="quick-extra-${key}"]`) != null, `the ${key} row is missing`);
+    }
+    for (const key of ["cloud", "stack"]) {
+      eq(q(`[data-testid="quick-extra-${key}"]`), null,
+        `the ${key} row is offered, but a quick flow reaches nothing for it:`);
+    }
   });
 
   test("nothing about the defaults was written to this phone", () => {
@@ -682,7 +693,7 @@ act(() => { root2.unmount(); });
       "quick-hours",
       "quick-filter-L", "quick-filter-Ha",
       "quick-extra-af", "quick-extra-guide", "quick-extra-dither",
-      "quick-extra-cloud", "quick-extra-hfr", "quick-extra-stack",
+      "quick-extra-hfr",
       "quick-reset",
     ];
     const steppers = ["quick-exp-L", "quick-exp-Ha", "quick-dither-n"];

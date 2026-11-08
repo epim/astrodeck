@@ -20,6 +20,14 @@ block reads from the same constant, so the warning and the copy cannot
 disagree. The UI's two static strings cannot read a Python constant, so
 ``test_the_ui_copy_follows_the_switch`` reads them as text.
 
+RE-PINNED FOR WAVE 4 WP 4.1a (#1111 C-05, #843): the engine runs two methods
+now, the flat panel and the twilight sky (WP 4.1b), and ``nodes.
+DUSK_FLATS_METHODS`` is the one table that says so (``to_plan.DUSK_FLATS_RUNS``
+is read off it). Only the translucent lens cap is "drawn but not run", and a
+new DUSK FLATS node is CREATED with the first capable method, so the shipped
+M16 Example, which was the lens cap through the missing-key default, is now a
+twilight-sky block and is graded with the blocks the engine runs.
+
 RE-PINNED FOR BACKLOG WP-134 (#603 job B, wave 17): the switch is now True,
 because ``SequenceEngine._dusk_flats`` exists. It runs ONE of the node's three
 methods, the flat panel (``to_plan.DUSK_FLATS_RUNS``); the translucent lens
@@ -176,11 +184,12 @@ def _hand_cap(**kw) -> FlowGraph:
     return _hand(method="Translucent lens cap", **kw)
 
 
-#: The two flows with a DUSK FLATS node the engine does NOT run: the Example
-#: the library ships (translucent lens cap), and a hand-built one (so the test
-#: cannot pass by reading only the Example). The flat-panel block, which it
-#: does run, is ``_hand()`` and has its own tests below.
-GRAPHS = {"example-m16": _m16, "hand-built": _hand_cap}
+#: The flow with a DUSK FLATS node the engine does NOT run: a hand-built one
+#: set to the lens cap, the one method no stage runs. (The shipped M16 Example
+#: was the other until a created node took the first capable method, #843: it
+#: is a twilight-sky block now, which ``_m16`` is graded as below.) The blocks
+#: the engine does run are ``_hand()`` and ``_hand(method="Twilight sky")``.
+GRAPHS = {"hand-built": _hand_cap}
 
 
 def _tonight(graph: FlowGraph) -> dict:
@@ -314,8 +323,8 @@ class TestTheStory:
                     f"{row['msg']}")
         row = _flats_row(out["story"])
         assert "is drawn but not run" in row["msg"], row["msg"]
-        assert ("the engine runs the flat-panel method only, and this one is "
-                "translucent lens cap") in row["msg"], row["msg"]
+        assert ("the engine does not run the translucent lens cap method"
+                ) in row["msg"], row["msg"]
         assert row["tone"] == "warn"
         assert row["t_unix"] == out["flats"]["start_unix"] is not None
         timed = [r["t_unix"] for r in out["story"] if r["t_unix"] is not None]
@@ -340,9 +349,8 @@ class TestTheStory:
         out = _tonight(_hand_cap())
         row = _flats_row(out["story"])
         assert row["msg"] == (
-            "DUSK FLATS (Sun −2° … −8°) is drawn but not run: the engine runs "
-            "the flat-panel method only, and this one is translucent lens "
-            "cap"), row["msg"]
+            "DUSK FLATS (Sun −2° … −8°) is drawn but not run: the engine does "
+            "not run the translucent lens cap method"), row["msg"]
         assert not re.search(r"\bmin\b|\bminutes\b|\d{2,}", row["msg"])
         panel = _flats_row(_tonight(_hand())["story"])["msg"]
         assert not re.search(r"\bmin\b|\bminutes\b", panel), panel
@@ -414,12 +422,12 @@ class TestOneSwitch:
         assert run.index("await self._dusk_flats()") < run.index(
             "await self._run_scheduled(plan)"), (
             "the stage must be called before the scheduler's first target")
-        assert to_plan.DUSK_FLATS_RUNS == frozenset({"panel"})
+        assert to_plan.DUSK_FLATS_RUNS == frozenset({"panel", "sky"})
 
     def test_the_unmapped_row_says_what_the_stage_does_by_method(self):
-        """The panel is honoured: a ``note`` (no loss, nothing blocks a run).
-        The other two methods and an unusable block are a ``warn`` (a loss)
-        that says this run will not take flats."""
+        """The panel and the twilight sky are honoured: a ``note`` (no loss,
+        nothing blocks a run). The lens cap and an unusable block are a
+        ``warn`` (a loss) that says this run will not take flats."""
         def row(g):
             _, unmapped = to_sequence_plan(compile_plan(g, "n"), g)
             rows = [u for u in unmapped if u["key"] == "automation.dusk_flats"]
@@ -430,11 +438,16 @@ class TestOneSwitch:
         assert panel["level"] == "note" and "runs with the flat panel" in \
             panel["detail"], panel
         assert "will not take flats" not in panel["detail"]
-        for method in ("Translucent lens cap", "Twilight sky"):
-            r = row(_hand(method=method))
-            assert r["level"] == "warn" and "will not take flats" in \
-                r["detail"], r
-            assert "flat-panel method only" in r["detail"], r
+        sky = row(_hand(method="Twilight sky"))
+        assert sky["level"] == "note" and "runs against the twilight sky" in \
+            sky["detail"], sky
+        assert "will not take flats" not in sky["detail"]
+        assert any("Sun window" in c for c in sky.get("carried", [])), sky
+        assert "ignored" not in sky, "the sky stage waits for the Sun window"
+        cap = row(_hand(method="Translucent lens cap"))
+        assert cap["level"] == "warn" and "will not take flats" in \
+            cap["detail"], cap
+        assert "twilight sky and flat panel methods only" in cap["detail"], cap
         for bad in ({"count": 0}, {"count": 5000}, {"method": "Dome flat"}):
             r = row(_hand(**bad))
             assert r["level"] == "warn", r
@@ -482,13 +495,14 @@ class TestOneSwitch:
         opens with the not-run sentence exactly while the switch is off.
 
         With the switch on (since WP-134) they must NOT open with it, and
-        they say what the stage does: the flat-panel method runs once a night
-        before the first light and only with a connected panel, the Sun window
-        is not waited for, and the lens-cap and twilight-sky methods are not
-        run yet (#744, #603 job B; the wave 17 integration rewrote both
-        strings). This was a strict xfail while the UI files were another
-        package's, with the marker's own instruction to remove it the day they
-        were rewritten; it is an ordinary test now.
+        they say what the stage does: the twilight-sky and flat-panel methods
+        run once a night before the first light, the panel needs a connected
+        panel and does not wait for the Sun window, and the lens cap is not
+        run (#744, #603 jobs B and C, #1111; the wave 17 integration rewrote
+        both strings and WP 4.1a rewrote them again for the sky). This was a
+        strict xfail while the UI files were another package's, with the
+        marker's own instruction to remove it the day they were rewritten; it
+        is an ordinary test now.
 
         RED under "node desc restored" / "quick card restored" (the opening
         not-run sentence put back on a rewritten string), observed, from a
@@ -503,11 +517,11 @@ class TestOneSwitch:
             AssertionError: nodeDefs.ts duskflats desc opens with the not-run
             sentence: False, but DUSK_FLATS_WIRED is False
 
-        and under "the other two methods dropped" (the lens-cap and
-        twilight-sky sentence taken out of the node's description):
+        and under "the lens cap sentence dropped" (the lens-cap sentence taken
+        out of the node's description):
 
-            AssertionError: nodeDefs.ts duskflats desc does not say the other
-            two methods are not run yet: The Flat panel method runs: ..."""
+            AssertionError: nodeDefs.ts duskflats desc does not say the lens
+            cap is not run: Two methods run, ..."""
         for label, text in (("nodeDefs.ts duskflats desc", _node_desc()),
                             ("quickCopy.ts flats body", _quick_flats_body())):
             opens = text.startswith(NOT_RUN)
@@ -521,20 +535,23 @@ class TestOneSwitch:
                     f"{label} says the block shoots something: {text}")
             else:
                 low = text.lower()
-                assert "flat panel" in low and "once per night" in low, (
-                    f"{label} does not say the flat-panel method runs once a "
-                    f"night: {text}")
+                assert ("flat panel" in low and "twilight sky" in low
+                        and "once per night" in low), (
+                    f"{label} does not say the two methods run once a night: "
+                    f"{text}")
                 assert "before the first light" in low, (
                     f"{label} does not say when in the night: {text}")
-                assert "connected flat panel" in low, (
-                    f"{label} does not say it needs a connected panel: {text}")
-                assert ("lens cap" in low and "twilight sky" in low
-                        and "not run yet" in low), (
-                    f"{label} does not say the other two methods are not run "
-                    f"yet: {text}")
-                assert "does not wait for the" in low, (
-                    f"{label} does not say the Sun window is not waited for: "
+                assert "panel" in low and "connected" in low, (
+                    f"{label} does not say the panel needs to be connected: "
                     f"{text}")
+                assert "lens cap method is not run" in low, (
+                    f"{label} does not say the lens cap is not run: {text}")
+                assert "does not wait for the sun window" in low, (
+                    f"{label} does not say the panel does not wait for the "
+                    f"Sun window: {text}")
+                assert "connected roof reads open" in low and "never opens" in low, (
+                    f"{label} does not say the sky stage needs an open roof "
+                    f"and never opens one: {text}")
 
 
 class TestThePreviewFollowsThePlan:
@@ -559,7 +576,8 @@ class TestThePreviewFollowsThePlan:
         promised flats."""
         g = _hand(**self.CASES[case])
         plan, unmapped = to_sequence_plan(compile_plan(g, "n"), g)
-        runs = plan.dusk_flats is not None and plan.dusk_flats.method == "panel"
+        runs = (plan.dusk_flats is not None
+                and plan.dusk_flats.method in ("panel", "sky"))
         text = brief(g)
         story = " ".join(r["msg"] for r in _tonight(g)["story"])
         promised = "and shoots" in text and "flats per filter" in text
@@ -630,8 +648,8 @@ class TestTheExamplesTagline:
             blocks = [n for n in ex.graph.with_defaults().nodes
                       if n.type == "duskflats"]
             runs = bool(blocks) and all(
-                str(n.params.get("method")).strip().lower() == "flat panel"
-                for n in blocks)
+                str(n.params.get("method")).strip().lower()
+                in ("flat panel", "twilight sky") for n in blocks)
             if not runs:
                 assert "flats" not in ex.tagline.lower(), (ex.id, ex.tagline)
 

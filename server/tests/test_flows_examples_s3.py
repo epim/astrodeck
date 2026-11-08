@@ -139,6 +139,14 @@ def _plan_digest(ex: FlowRecord) -> str:
     # a DOME CONTROL node now carries the node's block (`SequencePlan.dome`),
     # which HEAD_PLAN_SHA256 was hashed without. Left out, like the count mode.
     got.pop("dome", None)
+    # WP 4.1a (#843): example-m16's DUSK FLATS block is CREATED with the first
+    # method the engine runs, the twilight sky, where it read the lens cap
+    # through the missing-key default. The one change to its plan; resetting
+    # it reproduces the pin, byte for byte.
+    flats = got.get("dusk_flats")
+    if flats is not None:
+        assert flats["method"] == "sky", flats
+        flats["method"] = "cap"
     return hashlib.sha256(json.dumps(got, sort_keys=True).encode()).hexdigest()
 
 

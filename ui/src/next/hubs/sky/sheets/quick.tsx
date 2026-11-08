@@ -51,7 +51,7 @@ import { flowsApi } from "../../../../lib/flowsApi";
 // oversized import for another. `quickPayload.ts` is where these six actually
 // live and it imports nothing but types.
 import {
-  QUICK_RUN_FAILED, QUICK_SAVE_FAILED, decDms, quickPayload, raHms, targetFromEntry,
+  QUICK_RUN_FAILED, QUICK_SAVE_FAILED, chipAnswers, decDms, quickPayload, raHms, targetFromEntry,
   type QuickTarget,
 } from "../../session/flows/create/quickPayload";
 import type { FlowGraphRec, FlowRecordRec } from "../../../../components/flows/flowsTypes";
@@ -68,7 +68,10 @@ import {
 import {
   NightArc, curveFromNight, hoursToDawn, type ArcCurve, type ArcHold,
 } from "./quickNightArc";
-import { withDarksAfter, withDuskFlats, withRotation, withTargetPool } from "./flowGraphExtras";
+import {
+  flatPanelConnected, withDarksAfter, withDuskFlats, withRotation, withTargetPool,
+} from "./flowGraphExtras";
+import { chipEngineCapable } from "../../../../components/flows/nodeDefs";
 import { commandedPa, framingMatches, framingPrefill } from "../frame/mosaic";
 import { openFlowWizard } from "../../session/flows/wizard";
 import { effectiveOptics } from "../../../../lib/effective";
@@ -195,6 +198,11 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
   const wheelOpaque = useStore((s) => s.status?.filterwheel?.opaque);
   const wheelNarrow = useStore((s) => s.status?.filterwheel?.narrowband);
   const wheelExposures = useStore((s) => s.status?.filterwheel?.exposures);
+
+  // THE FLATS CHIP'S DEFAULT METHOD (#843): the flat panel when one is
+  // connected, else the twilight sky, the first method the engine runs.
+  const panelConnected = useStore((s) => flatPanelConnected(
+    s.status?.backend_links, s.status?.connected));
 
   /**
    * IS THERE A RIG HERE AT ALL, which is not the same as "is there a wheel".
@@ -479,6 +487,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
         filters,
         exposures,
         guided: prefs.extras.guide !== false,
+        chips: chipAnswers(prefs.extras, prefs.ditherN),
         run: false,
       });
       const res = await flowsApi.quick({ ...answers, name: `Quick session: ${target.name}` });
@@ -490,7 +499,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       const record = res.flow as unknown as FlowRecordRec;
       let graph = record.graph as FlowGraphRec;
       const before = graph;
-      if (prefs.extras.flats) graph = withDuskFlats(graph);
+      if (prefs.extras.flats) graph = withDuskFlats(graph, panelConnected);
       if (prefs.extras.darks) graph = withDarksAfter(graph);
       // THE CAMERA ANGLE, which nothing sent before. `wizard.quick` replaces
       // only name/ra/dec on the TARGET node, so the node vocabulary's default
@@ -810,7 +819,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
         <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <HeaderRow label="AUTOMATION" onHold={() => openBrief("setup")} right="hold a chip to learn · hold dither to set" />
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {AUTOMATION.map((a) => (
+            {AUTOMATION.filter((a) => chipEngineCapable(a.key)).map((a) => (
               <HoldChip
                 key={a.key}
                 testid="quick-auto"

@@ -712,6 +712,13 @@ def _s3_normal(graph) -> dict:
         drop = (_S3_TARGET_KEYS if n["type"] == "target"
                 else _S3_POOL_KEYS if n["type"] == "pool" else set())
         n["params"] = {k: v for k, v in n["params"].items() if k not in drop}
+        if n["type"] == "duskflats":
+            # WP 4.1a (#843): a created DUSK FLATS block takes the first
+            # method the engine runs, the twilight sky, where the wizard's
+            # read the lens cap through the missing-key default. Reset here,
+            # the dump hashes to the pin, byte for byte.
+            assert n["params"]["method"] == "Twilight sky", n
+            n["params"]["method"] = "Translucent lens cap"
     return out
 
 
@@ -814,6 +821,12 @@ class TestTheThreeAnswersAreTodaysGraphLessSlew:
                 # plan now carries (`SequencePlan.dome`); the pin was hashed
                 # without it. Left out, like the count mode.
                 got.pop("dome", None)
+                if "dusk_flats" in got:
+                    # WP 4.1a (#843): the wizard's block is created as the
+                    # twilight sky, where it was the lens cap (see
+                    # ``_s3_normal``); reset, the dump hashes to the pin.
+                    assert got["dusk_flats"]["method"] == "sky", got
+                    got["dusk_flats"]["method"] = "cap"
                 blobs.append(json.dumps(got, sort_keys=True))
         assert _digest(blobs) == WIZARD_PLANS_SHA256
 

@@ -32,6 +32,14 @@
 // `day_darks`). This file holds the UI half: the wiring `withDarksAfter` draws
 // is the one the card describes, and the card's words.
 //
+// RE-PINNED FOR WAVE 4 (WP 4.1a, #818, #1219). WP 4.1b made the report's `done`
+// wire fund the end-of-night lane (`to_plan.END_OF_NIGHT_TRIGGERS`), so the
+// card says "at the end of the night" again, and WP 4.1a carries the chip's
+// Always policy into the plan (`plan.day_darks_always`), so the card says the
+// quota is shot whatever the library holds. The wiring premise is unchanged
+// and still pinned; the two sentences about WHEN the darks are taken and WHAT
+// is shot are the new ones.
+//
 // THE PREMISE TEST IS THE GUARD AGAINST THE COPY OUTLIVING A FIX. The day
 // `withDarksAfter` is rewired to SHUTDOWN COMPLETE the end-of-night lane is
 // funded and the card may say so again; the premise below goes red then, and
@@ -72,11 +80,14 @@ function eq<T>(got: T, want: T, msg = ""): void {
 
 /** The card's words, word for word. */
 const DARKS_CARD =
-  "Adds a calibration queue that takes darks only; bias is not run yet. Each dark is shot "
-  + "with the wheel rotated to a blackout slot, at the same temperature and exposure as "
-  + "tonight's lights, which is the only way the library matches them later. They are taken "
-  + "while a cloud hold lasts, up to what the library still lacks, so a clear night takes "
-  + "none and nothing is queued for the end of the night.";
+  "Adds a calibration queue that takes darks only; bias is not run yet. Once, at the end of "
+  + "the night, between the park and the warm-up, it shoots its quota of darks with the wheel "
+  + "rotated to a blackout slot, at the same temperature and exposure as tonight's lights, "
+  + "which is the only way the library matches them later. The chip sets Darks to Always, so "
+  + "the quota is shot whatever the library already holds; set Darks to If library stale on "
+  + "the flow card to take only what is missing. A night that ends on an abort or an unsafe "
+  + "trip takes none. The same queue also takes darks while a cloud hold lasts, up to what "
+  + "the library still lacks.";
 
 /** A server-generated lane's two ends: the quick graph always ends in a report. */
 function lane(): FlowGraphRec {
@@ -111,12 +122,15 @@ test("the card says darks only, and that bias is not run", () => {
   assert(/bias is not run yet/.test(b), `the card does not say bias is not run: ${b}`);
 });
 
-test("the card does not promise darks at the end of the night, and says what does run", () => {
+test("the card says when the darks are taken, what the chip's policy shoots, and when none are", () => {
   const b = INFO.darks.b;
-  assert(!/at the end of the night/i.test(b),
-    `the card promises darks at the end of the night, a lane this chip's wiring never funds: ${b}`);
-  assert(/cloud hold/.test(b), `the card does not say a cloud hold is when the darks are taken: ${b}`);
-  assert(/clear night takes none/.test(b), `the card does not say a clear night takes none: ${b}`);
+  assert(/at the end of the night/i.test(b),
+    `the card does not say the darks are taken at the end of the night: ${b}`);
+  assert(/between the park and the warm-up/.test(b), `the card does not say where in the wind-down: ${b}`);
+  assert(/Darks to Always/.test(b) && /whatever the library already holds/.test(b),
+    `the card does not say the chip's Always policy shoots the quota: ${b}`);
+  assert(/abort or an unsafe trip takes none/.test(b), `the card does not say when none are taken: ${b}`);
+  assert(/cloud hold/.test(b), `the card does not say a cloud hold takes darks too: ${b}`);
 });
 
 test("the card, word for word", () => {

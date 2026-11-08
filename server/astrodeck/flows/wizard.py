@@ -100,7 +100,8 @@ from ..catalog.coords import (format_dec_fits, format_ra_fits, parse_dec,
 from . import doctor
 from .compile import NEXT_PORT, PASS_PORT, grid_size, lane_tail, parse_skip
 from .models import MY_FLOWS_FOLDER, FlowEdge, FlowGraph, FlowNode, FlowRecord
-from .nodes import NODE_DEFS, TARGET_ANGLES, create_params, parse_cycle_plan
+from .nodes import (NODE_DEFS, QUICK_AUTOFOCUS, QUICK_DITHER_EVERY, TARGET_ANGLES,
+                    create_params, parse_cycle_plan)
 from .rig import RigFacts
 
 # ---------------------------------------------------------------- the answers
@@ -167,6 +168,11 @@ _EAA_CAPTURE = {"exposure": 4, "gain": 300, "bin": "2", "count": 60, "goal": 0}
 #: number the wizard states as if it computed something would carry authority it
 #: has not earned.
 UNGUIDED_EXPOSURE_DEFAULT = 30
+
+#: The GUIDE stage's dither cadence in frames (``NODE_DEFS["guide"]``'s own
+#: default, which the plan has always dithered at), and what the quick sheet's
+#: Dither chip sends when it is on at its default. 0 is no dither.
+DEFAULT_DITHER_EVERY = int(NODE_DEFS["guide"].params["dither"])
 
 #: Used when the operator generates without typing a target — they get a flow
 #: they can find in the library rather than a second "Untitled flow".
@@ -1056,7 +1062,8 @@ def generate(kind: str = KIND_DEEP_SKY,
              use_measured: bool = False,
              skip: str | None = None,
              rig: RigFacts | None = None,
-             measured_pa_deg: float | None = None) -> FlowGraph:
+             measured_pa_deg: float | None = None,
+             autofocus: bool = True) -> FlowGraph:
     """The graph for one set of wizard answers.
 
     ``kind`` is one of :data:`KINDS`, ``options`` any subset of
@@ -1112,19 +1119,24 @@ def generate(kind: str = KIND_DEEP_SKY,
     target → autofocus → guide → report lane would be exactly that, and it
     would drift on the first deviation the doctor forces on one of them. The
     mosaic kind is this builder too, for the same reason.
+
+    ``autofocus`` False leaves the AUTOFOCUS stage out of the lane (the quick
+    sheet's Autofocus chip off, #820), as drawn; it is ``quick`` that says the
+    run takes no sweep, in the flow's settings. The default draws it, as every
+    wizard flow always has.
     """
     return _generate(
         kind, options, target, unguided_exposure_s, cycle_plan=cycle_plan,
         cycles=cycles, coords=coords, safety_abort=safety_abort, rows=rows,
         cols=cols, overlap_pct=overlap_pct, angle_mode=angle_mode,
         pa_deg=pa_deg, use_measured=use_measured, skip=skip, rig=rig,
-        measured_pa_deg=measured_pa_deg)[0]
+        measured_pa_deg=measured_pa_deg, autofocus=autofocus)[0]
 
 
 def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
               cycles, coords, safety_abort, rows, cols, overlap_pct,
               angle_mode, pa_deg, use_measured, skip, rig, measured_pa_deg,
-              dusk_answers=None, max_time_min=None
+              dusk_answers=None, max_time_min=None, autofocus=True
               ) -> tuple[FlowGraph, list[str]]:
     """``generate``'s graph and the notes that go with it: why a mosaic was
     answered as one target, why a TARGET has no coordinates. ``generate``
@@ -1165,7 +1177,8 @@ def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
     lane_types.append("pool" if kind == KIND_POOL else "target")
     # No "slew" (spec 1.7): the TARGET block centres. Every stage after it is
     # in its panel lane, which is what a mosaic's loop needs.
-    lane_types.append("autofocus")
+    if autofocus:
+        lane_types.append("autofocus")
     guided = _guided(kind, opts)
     if guided:
         lane_types.append("guide")
@@ -1703,8 +1716,21 @@ def quick(target: dict,
           guided: bool = True,
           name: str | None = None,
           *,
-          wheel: Iterable[str] | None = None) -> FlowRecord:
+          wheel: Iterable[str] | None = None,
+          autofocus: bool = True,
+          watchdog: bool = True,
+          dither_every: int = DEFAULT_DITHER_EVERY) -> FlowRecord:
     """A whole night from four answers, as the library stores it.
+
+    THE THREE AUTOMATION CHIPS THAT SHAPE THE PLAN (#820, WP 4.1a):
+    ``autofocus`` (the AUTOFOCUS stage drawn or left out, and the flow's
+    ``quickAutofocus`` setting), ``watchdog`` (the CONDITION + REFOCUS pair,
+    the relative HFR rule, drawn or left out) and ``dither_every`` (the plan's
+    dither cadence in frames, 0 for none, the flow's ``quickDitherEvery``
+    setting). The settings are written explicitly because no node carries them
+    (see below); the defaults make the plan the four answers always made.
+    Cloud hold and Live stack are not answers: a quick flow reaches neither
+    (``nodes.AUTOMATION_CHIPS``).
 
     ``target`` is ``{name, ra, dec}`` - the same three strings the TARGET node
     holds, so the picker's row goes onto the canvas unchanged. ``filters`` are
@@ -1745,7 +1771,8 @@ def quick(target: dict,
     # The two automation chips this shape is: the guider (when asked for) and
     # the relative HFR watchdog, which is "HFR above (x focus)" at 1.3 - the
     # CONDITION node's own defaults, so nothing here re-types a threshold.
-    opts = [OPT_WATCHDOG] + ([OPT_GUIDING] if guided else [])
+    opts = ([OPT_WATCHDOG] if watchdog else []) + (
+        [OPT_GUIDING] if guided else [])
 
     if picked:
         plan = cycle_plan_for(picked, wheel, exposures_s)
@@ -1753,14 +1780,15 @@ def quick(target: dict,
         _within_the_unguided_line(parse_cycle_plan(plan), guided)
         graph = generate(KIND_DEEP_SKY, opts, tname,
                          cycle_plan=plan, cycles=subs, coords=coords,
-                         safety_abort=True)
+                         safety_abort=True, autofocus=autofocus)
         channels = ", ".join(f for f, _ in parse_cycle_plan(plan))
     else:
         one = _one_channel_exposure_s(exposures_s)
         _within_the_unguided_line([(_one_channel_label(exposures_s), one)],
                                   guided)
         graph = generate(KIND_DEEP_SKY, opts, tname,
-                         coords=coords, safety_abort=True)
+                         coords=coords, safety_abort=True,
+                         autofocus=autofocus)
         cap = next(n for n in graph.nodes if n.type == "capture")
         # No filter NAME on a rig with no wheel: the frames are one channel and
         # writing a label into FILTER would file them under a slot that does not
@@ -1772,6 +1800,16 @@ def quick(target: dict,
         cap.params.update({"filter": "", "exposure": one, "count": subs,
                            "goal": 0})
         channels = ""
+
+    # THE CHIPS, WRITTEN OUT. Whether the run focuses at each target's start
+    # and how often it dithers are the plan's own (`autofocus_first`,
+    # `dither_every`), and no node of the graph carried either: the engine
+    # focused with or without an AUTOFOCUS stage, and the GUIDE stage's `dither`
+    # never reached the plan. Reading a missing stage or a default as a choice
+    # would change every flow the sheet did not write, so the quick flow says
+    # it in its own settings, and `to_plan` reads them only where they are.
+    graph.settings[QUICK_AUTOFOCUS] = bool(autofocus)
+    graph.settings[QUICK_DITHER_EVERY] = max(0, int(dither_every))
 
     total = subs * (len(picked) or 1)
     each = f"{subs} subs each of {channels}" if channels else f"{subs} subs"

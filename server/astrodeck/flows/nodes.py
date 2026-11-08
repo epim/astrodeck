@@ -178,6 +178,95 @@ def _e(pid: str, label: str) -> Port:
     return Port(pid, label, "event")
 
 
+@dataclass(frozen=True)
+class Capability:
+    """One thing the quick sheet can offer, and whether the engine runs it
+    (#1111 C-05, #843, #820).
+
+    A CHOICE THE ENGINE DOES NOT RUN IS A CLAIM NOTHING KEEPS: the sheet offers
+    it, the operator ticks it, the compile carries it and reports it as not
+    run, and the night goes without. ``engine_capable`` is the one statement of
+    which choices the engine keeps; the sheet offers only those, the doctor
+    refuses the rest as a danger, and ``reason`` says why in words the
+    operator reads."""
+    key: str
+    label: str
+    engine_capable: bool
+    reason: str = ""
+
+
+#: The DUSK FLATS node's "Method" options, in the order they are offered, and
+#: whether ``SequenceEngine._dusk_flats`` runs each. ``key`` is the
+#: ``DuskFlatsPlan.method`` value the compile makes of the label. THE ENGINE'S
+#: SET IS THIS TABLE'S: ``to_plan.DUSK_FLATS_RUNS`` is read off it, so a method
+#: gains the stage here and nowhere else. The first capable one is what a new
+#: node is created with (``default_flats_method``), so the sheet's one-tap
+#: chip can never create a block the engine would not run (#843).
+DUSK_FLATS_METHODS: tuple[Capability, ...] = (
+    Capability("sky", "Twilight sky", True),
+    Capability("panel", "Flat panel", True),
+    Capability("cap", "Translucent lens cap", False,
+               "the engine has no lens-cap stage, so a block set to it takes "
+               "no flats"),
+)
+
+
+def flats_method(label: object) -> Capability | None:
+    """The method a DUSK FLATS ``method`` text names, matched on its own text
+    lower-cased, or None for a text that is none of them."""
+    text = str(label or "").strip().lower()
+    return next((m for m in DUSK_FLATS_METHODS if m.label.lower() == text),
+                None)
+
+
+def default_flats_method() -> str:
+    """The first method the engine runs: what a DUSK FLATS node is CREATED
+    with (its Created-as column), whatever the vocabulary's missing-key
+    default is."""
+    return next(m.label for m in DUSK_FLATS_METHODS if m.engine_capable)
+
+
+#: The two flow settings the quick sheet's chips write (#820, WP 4.1a): flat
+#: scalars in ``FlowGraph.settings``, outside ``FLOW_SETTINGS`` (they are no
+#: choice the editor offers) and kept by every round trip because unknown
+#: settings are. ``wizard.quick`` is the only writer. ``quickAutofocus`` False
+#: means no sweep at each target's start; ``quickDitherEvery`` is the plan's
+#: dither cadence in frames, 0 for none. Absent, the plan is what it always was.
+QUICK_AUTOFOCUS = "quickAutofocus"
+QUICK_DITHER_EVERY = "quickDitherEvery"
+
+#: The quick sheet's six AUTOMATION chips, and whether a quick flow carries
+#: each to the engine. ``reason`` says how a capable one is carried, and what
+#: stands in the way of an incapable one. A chip is capable only when ticking
+#: it changes the flow the sheet saves AND the engine runs what that flow
+#: compiles to; ``test_w4_quick_chips.py`` ticks each on the simulator.
+#:
+#: * ``af`` is the AUTOFOCUS stage, drawn or left out by the chip (the stage's
+#:   presence is whether the run focuses at each target's start).
+#: * ``guide`` is the GUIDE stage (``guided``).
+#: * ``dither`` is the GUIDE stage's dither cadence, written by the chip (0 is
+#:   off): it needs the guider.
+#: * ``hfr`` is the CONDITION + REFOCUS rule, drawn or left out by the chip.
+#: * ``cloud`` and ``stack`` reach no part of a quick flow: it draws no CLOUD
+#:   WATCH or HOLD / RESUME, and live stacking is the rig's, not the flow's.
+AUTOMATION_CHIPS: tuple[Capability, ...] = (
+    Capability("af", "Autofocus", True,
+               "the AUTOFOCUS stage, drawn or left out by the chip"),
+    Capability("guide", "Guide", True, "the GUIDE stage"),
+    Capability("dither", "Dither", True,
+               "the GUIDE stage's dither cadence, 0 for off, so it needs Guide"),
+    Capability("cloud", "Cloud hold", False,
+               "a quick flow draws no CLOUD WATCH, so the chip reaches no "
+               "rule; a cloud hold happens only when the rig's own sky "
+               "fallback is on, whatever the chip says"),
+    Capability("hfr", "HFR watchdog", True,
+               "the CONDITION and REFOCUS rule, drawn or left out by the chip"),
+    Capability("stack", "Live stack", False,
+               "live stacking is the rig's, not a stage of the flow, so the "
+               "chip reaches nothing the flow runs"),
+)
+
+
 NODE_DEFS: dict[str, NodeDef] = {
     # ---------------------------------------------------------------- SOURCES
     "dusk": NodeDef(
@@ -365,8 +454,17 @@ NODE_DEFS: dict[str, NodeDef] = {
     "duskflats": NodeDef(
         type="duskflats", label="DUSK FLATS", cat="RIG",
         ins=(_f("run", "run"),), outs=(_f("done", "flats done"),),
+        # THE MISSING-KEY DEFAULT STAYS THE LENS CAP, the meaning the key had
+        # before the engine ran any method: a saved block with no `method`
+        # reads through it. A NEW block is created with the first method the
+        # engine runs (`created_as`), so the sheet's one-tap chip can never
+        # create a block that takes no flats (#843). WRITTEN AS A LITERAL
+        # because the UI parity test reads this file as text;
+        # ``test_w4_quick_chips.py`` holds it equal to
+        # ``default_flats_method()``.
         params={"method": "Translucent lens cap", "window": "Sun −2° … −8°",
-                "filters": "Tonight's plan only", "adu": 28500, "count": 15}),
+                "filters": "Tonight's plan only", "adu": 28500, "count": 15},
+        created_as={"method": "Twilight sky"}),
     "calib": NodeDef(
         type="calib", label="CALIBRATION QUEUE", cat="RIG",
         # ALL THREE INPUTS ARE OPTIONAL, and the queue still works with none of
