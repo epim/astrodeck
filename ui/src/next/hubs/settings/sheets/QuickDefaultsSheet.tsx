@@ -47,6 +47,7 @@ import { nav } from "../../../router";
 import { explainLock } from "../../../shell/explain";
 import { useStore } from "../../../../store";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
+import { chipEngineCapable } from "../../../../components/flows/nodeDefs";
 import type { SheetProps } from "../../sheets";
 import { usePlanning } from "../../../lib/planning";
 import { type QuickPrefs } from "../../sky/finder";
@@ -251,7 +252,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
 
           <Label>AUTOMATION</Label>
           <Card>
-            {EXTRA_ROWS.map((r) => (
+            {EXTRA_ROWS.filter((r) => chipEngineCapable(r.key)).map((r) => (
               <Switch
                 key={r.key}
                 checked={q.extras[r.key] !== false}

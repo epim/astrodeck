@@ -42,7 +42,8 @@ from .compile import (
     panel_lane)
 from .identity import typed_coordinates
 from .models import FlowGraph
-from .nodes import NODE_DEFS, parse_cycle_plan, port_kind, target_angle
+from .nodes import (DUSK_FLATS_METHODS, NODE_DEFS, flats_method,
+                    parse_cycle_plan, port_kind, target_angle)
 from .rig import RigFacts
 
 
@@ -1078,5 +1079,21 @@ def check(graph: FlowGraph, *, standards=None, mount=None,
                 f"tolerance never reached the run, which centred to "
                 f"{_plain(centred)} arcmin. Delete it and set centring on the "
                 f"TARGET.", "note"))
+
+    # L2 (#843, #1111). A DUSK FLATS method the engine does not run. The node
+    # offers three methods and the engine keeps the capable rows of
+    # ``nodes.DUSK_FLATS_METHODS``; a block set to the rest compiles, is
+    # reported as not run, and the night goes without flats. That is a plan
+    # the operator cannot have meant, so it is a danger and not a note.
+    for n in [x for x in graph.nodes if x.type == "duskflats"]:
+        method = flats_method(n.params.get("method"))
+        if method is None or not method.engine_capable:
+            runs = " or ".join(m.label for m in DUSK_FLATS_METHODS
+                               if m.engine_capable)
+            why = (method.reason if method is not None else
+                   f"the engine runs none of '{_plain(n.params.get('method'))}'")
+            out.append(Issue(
+                f"▸ {NODE_DEFS['duskflats'].label} - {why}. Set Method to "
+                f"{runs}.", "danger"))
 
     return out

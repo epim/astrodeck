@@ -295,6 +295,63 @@ export const AUTO_RESUME_HELP =
   "On a rig with a motorized roof or dust cover, it opens them before the first slew of " +
   "the night, on a resume as on a first start.";
 
+// ------------------------------------------------------ the capability table
+// MIRRORS nodes.py `Capability`, `DUSK_FLATS_METHODS` and `AUTOMATION_CHIPS`
+// row for row (#1111 C-05, #843, #820): which choices the engine keeps. The
+// quick sheet offers only the capable ones, and the DUSK FLATS node is CREATED
+// with the first capable method. `w4_1aQuickChips.test.tsx` reads nodes.py as
+// text and holds this mirror equal to it, as `nodeDefs.test.ts` does for the
+// vocabulary.
+
+export interface Capability {
+  key: string;
+  label: string;
+  /** Whether the engine runs it. */
+  engineCapable: boolean;
+  /** How a capable one is carried, or what stands in the way of the rest. */
+  reason: string;
+}
+
+/** The DUSK FLATS "Method" options in the order they are offered. */
+export const DUSK_FLATS_METHODS: readonly Capability[] = [
+  { key: "sky", label: "Twilight sky", engineCapable: true, reason: "" },
+  { key: "panel", label: "Flat panel", engineCapable: true, reason: "" },
+  {
+    key: "cap", label: "Translucent lens cap", engineCapable: false,
+    reason: "the engine has no lens-cap stage, so a block set to it takes no flats",
+  },
+];
+
+/** The quick sheet's six AUTOMATION chips, in the sheet's order. */
+export const AUTOMATION_CHIPS: readonly Capability[] = [
+  { key: "af", label: "Autofocus", engineCapable: true, reason: "the AUTOFOCUS stage, drawn or left out by the chip" },
+  { key: "guide", label: "Guide", engineCapable: true, reason: "the GUIDE stage" },
+  { key: "dither", label: "Dither", engineCapable: true, reason: "the GUIDE stage's dither cadence, 0 for off, so it needs Guide" },
+  {
+    key: "cloud", label: "Cloud hold", engineCapable: false,
+    reason: "a quick flow draws no CLOUD WATCH, so the chip reaches no rule; a cloud hold happens only when the rig's own sky fallback is on, whatever the chip says",
+  },
+  { key: "hfr", label: "HFR watchdog", engineCapable: true, reason: "the CONDITION and REFOCUS rule, drawn or left out by the chip" },
+  {
+    key: "stack", label: "Live stack", engineCapable: false,
+    reason: "live stacking is the rig's, not a stage of the flow, so the chip reaches nothing the flow runs",
+  },
+];
+
+/** The labels of the methods the engine runs, in offered order. */
+export const capableFlatsMethods = (): string[] =>
+  DUSK_FLATS_METHODS.filter((m) => m.engineCapable).map((m) => m.label);
+
+/** Whether the quick sheet may offer this automation chip. A key the table
+ *  does not hold is not offered. */
+export const chipEngineCapable = (key: string): boolean =>
+  AUTOMATION_CHIPS.some((c) => c.key === key && c.engineCapable);
+
+/** The DUSK FLATS Created-as column: a new block takes the first method the
+ *  engine runs. A named constant, not a literal in the node, so that the spec
+ *  claim that counts the literal columns (TARGET and POOL) stays about them. */
+const FLATS_CREATED_AS = { method: capableFlatsMethods()[0] };
+
 /** The whole vocabulary. Grouped and ordered as nodes.py declares them
  *  (SOURCES → EQUIPMENT → RIG OPS → LOGIC → ACTIONS + SINKS); note this is a
  *  declaration order for reading, NOT the palette's item order, which is
@@ -631,23 +688,34 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // "Sun −2° … −8°" carries U+2212 MINUS and U+2026 ELLIPSIS, not "-" and
     // "...". nodes.py stores the identical string and the compiler matches on
     // it, so an ASCII "fix" here would stop the window resolving.
+    // THE MISSING-KEY DEFAULT STAYS THE LENS CAP (a saved block with no
+    // `method` means what it always did); a NEW block takes the first method
+    // the engine runs, `createdAs`, which mirrors nodes.py `created_as`
+    // (`default_flats_method`: the first capable row of `DUSK_FLATS_METHODS`).
+    // The lens cap is not what a block is CREATED with, and the doctor refuses
+    // it (a danger: it takes no flats). It stays in the inspector's list because
+    // a select's default must be one of its options (`nodeDefs.test.ts`) and the
+    // missing-key default is the lens cap: a saved block that holds it shows it.
     params: { method: "Translucent lens cap", window: "Sun −2° … −8°", filters: "Tonight's plan only", adu: 28500, count: 15 },
+    createdAs: FLATS_CREATED_AS,
     fields: [
-      { key: "method", label: "Method", control: "select", options: ["Translucent lens cap", "Flat panel", "Twilight sky"] },
+      { key: "method", label: "Method", control: "select", options: DUSK_FLATS_METHODS.map((m) => m.label) },
       { key: "window", label: "Wait for", control: "select", options: ["Sun −2° … −8°", "Sun 0° … −6°", "Now"] },
       { key: "filters", label: "Filters", control: "select", options: ["All in wheel", "Tonight's plan only"] },
       { key: "adu", label: "ADU target", control: "text" },
       { key: "count", label: "Count per filter", control: "text" },
     ],
-    // LEADS WITH WHAT THE ENGINE DOES TODAY (#192, #603, #744): the engine runs
-    // ONE of the three methods. The Flat panel method shoots its set once per
-    // night, before the first light, and does not wait for the Sun band (a
-    // panel needs no sky); the lens-cap and twilight-sky methods are carried
-    // and not run. The server's `to_plan.DUSK_FLATS_WIRED` / `DUSK_FLATS_RUNS`
-    // are the one switch; this string cannot read them, so
-    // `test_w15_dusk_flats_claim.py` reads this text and fails the day the
+    // LEADS WITH WHAT THE ENGINE DOES TODAY (#192, #603, #744, #1111): the
+    // engine runs TWO of the three methods. The Flat panel method shoots its
+    // set once per night, before the first light, and does not wait for the
+    // Sun band (a panel needs no sky); the Twilight sky method waits for the
+    // Sun to reach the band, meters the sky and shoots before the first light;
+    // the lens cap is carried and not run. The server's `to_plan.
+    // DUSK_FLATS_WIRED` / `DUSK_FLATS_RUNS` (read off `nodes.
+    // DUSK_FLATS_METHODS`) are the one switch; this string cannot read them,
+    // so `test_w15_dusk_flats_claim.py` reads this text and fails the day the
     // switch is flipped without it.
-    desc: "The Flat panel method runs: once per night, before the first light, and only with a connected flat panel (without one it says so once and the night goes on). It does not wait for the Sun window; it shoots the count on each filter with the dust cover shut, solving exposure to the ADU target. The translucent lens cap and twilight sky methods are not run yet: a flow that uses either takes no flats.",
+    desc: "Two methods run, once per night and before the first light. Twilight sky waits for the Sun to reach the top of the window, points the mount at the sky opposite it, opens the dust cover and shoots the count on each filter, re-solving exposure to the ADU target as the sky darkens; it shoots only while a connected roof reads open, never opens one, and stops when the sky is too dark. Flat panel does not wait for the Sun window: it needs a connected flat panel (without one it says so once and the night goes on) and shoots with the dust cover shut. The translucent lens cap method is not run: a flow that uses it takes no flats, and the doctor says so.",
     // `window` is NOT lowercased: it starts with "Sun", a proper noun here.
     sum: (p) => low(p.method) + " · " + txt(p.window) + " · ×" + txt(p.count),
   },

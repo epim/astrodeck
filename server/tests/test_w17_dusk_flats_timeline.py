@@ -18,9 +18,11 @@ answer drops the window times (``start_unix`` / ``end_unix`` are None, so a
 client that knows nothing of the new keys draws nothing wrong) and says where it
 happens: ``runs_at_start`` true and ``at_unix`` the run's start, the SAME
 instant the STORY row is timed at. For every block the engine does not run as
-a panel (the lens cap and the twilight sky, which are carried and not run; a
-panel block the plan drops as unusable; the switch off) the answer is what it
-always was: the window, ``runs_at_start`` false, ``at_unix`` None.
+a panel (the lens cap, which is carried and not run; a panel block the plan
+drops as unusable; the switch off) the answer is what it always was: the
+window, ``runs_at_start`` false, ``at_unix`` None. The twilight sky runs, but
+it waits for the Sun's window, so it keeps the window and is not placed at the
+start either (WP 4.1a; ``test_w4_quick_chips.py`` holds it).
 
 Site: made up (``test_w15_dusk_flats_claim``'s), and the hub is pinned to it.
 
@@ -62,11 +64,10 @@ def test_a_panel_block_is_not_placed_at_the_sun_window():
         "the structured answer and the STORY row disagree about when")
 
 
-@pytest.mark.parametrize("method", ["Translucent lens cap", "Twilight sky"])
+@pytest.mark.parametrize("method", ["Translucent lens cap"])
 def test_a_block_the_engine_does_not_run_keeps_its_window(method):
-    """The lens cap and the twilight sky are carried and not run: they are
-    drawn at the Sun window, as before, and worded "drawn but not run" in the
-    STORY.
+    """The lens cap is carried and not run: it is drawn at the Sun window, as
+    before, and worded "drawn but not run" in the STORY.
 
     MUTANT "every method is at the start" (tonight.py: ``runs_at_start, _plan,
     _why = _dusk_flats_runs(plan_dict, graph)`` made ``= True, None, ''``)

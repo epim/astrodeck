@@ -38,6 +38,7 @@
 // Every function is PURE: graph in, new graph out, nothing mutated, no fetch.
 
 import { NODE_DEFS, createParams } from "../../../../components/flows/nodeDefs";
+import type { BackendLink, DeviceInfo } from "../../../../types";
 import type {
   FlowEdgeRec, FlowGraphRec, FlowNodeRec, FlowNodeType,
 } from "../../../../components/flows/flowsTypes";
@@ -92,6 +93,23 @@ function freeSpot(g: FlowGraphRec, y: number): { x: number; y: number } {
   return { x: maxX + 228, y };
 }
 
+/** The DUSK FLATS method the sheet's chip creates when a panel is connected. */
+export const FLAT_PANEL_METHOD = "Flat panel";
+
+/** Whether a flat panel (the `covercalibrator` role) is connected, read the way
+ *  the rest of the sheet reads device state: a bridged rig reports its roles on
+ *  `backend_links`, the legacy tablet on the per-device map. A role neither
+ *  mentions is not connected (unlike `resolveRoleConnected`, there is no sticky
+ *  "equipment is up" answer to fall back on for an accessory). */
+export function flatPanelConnected(
+  links: readonly BackendLink[] | undefined,
+  connected: Readonly<Record<string, DeviceInfo>> | undefined,
+): boolean {
+  const link = (links ?? []).find((l) => l.role === "covercalibrator");
+  if (link) return link.connected;
+  return connected?.covercalibrator?.connected === true;
+}
+
 /**
  * DUSK FLATS between the window opening and whatever the window fed.
  *
@@ -100,8 +118,12 @@ function freeSpot(g: FlowGraphRec, y: number): { x: number; y: number } {
  * always does, but a hand-edited one might not - the graph comes back unchanged
  * rather than gaining an orphan: a flats node wired to nothing would shoot no
  * flats and still put a stage on the card claiming it would.
+ *
+ * THE METHOD IT IS CREATED WITH (#843): the first one the engine runs, the
+ * twilight sky (the node's Created-as column), or the flat panel when `panel`
+ * says one is connected, because a panel needs no sky and no roof.
  */
-export function withDuskFlats(g: FlowGraphRec): FlowGraphRec {
+export function withDuskFlats(g: FlowGraphRec, panel = false): FlowGraphRec {
   if (nodeOfType(g, "duskflats")) return g;
   const dusk = nodeOfType(g, "dusk");
   if (!dusk) return g;
@@ -115,7 +137,9 @@ export function withDuskFlats(g: FlowGraphRec): FlowGraphRec {
     id,
     type: "duskflats",
     ...freeSpot(g, 60),
-    params: defaultParams("duskflats"),
+    params: panel
+      ? { ...defaultParams("duskflats"), method: FLAT_PANEL_METHOD }
+      : defaultParams("duskflats"),
   };
 
   // The wires the window currently drives. Usually exactly one (the lane is a
@@ -133,7 +157,7 @@ export function withDuskFlats(g: FlowGraphRec): FlowGraphRec {
     toPort: runPort,
   });
 
-  return { nodes: [...g.nodes, node], edges };
+  return { ...g, nodes: [...g.nodes, node], edges };
 }
 
 /**
@@ -168,7 +192,7 @@ export function withDarksAfter(g: FlowGraphRec): FlowGraphRec {
     to: id,
     toPort: doPort,
   };
-  return { nodes: [...g.nodes, node], edges: [...g.edges, edge] };
+  return { ...g, nodes: [...g.nodes, node], edges: [...g.edges, edge] };
 }
 
 /**
@@ -201,6 +225,7 @@ export function withRotation(g: FlowGraphRec, deg: number | null): FlowGraphRec 
   const rotation = deg == null ? -1 : deg;
   if (target.params.rotation === rotation) return g;
   return {
+    ...g,
     nodes: g.nodes.map((n) =>
       n.id === target.id ? { ...n, params: { ...n.params, rotation } } : n,
     ),
@@ -265,5 +290,5 @@ export function withTargetPool(g: FlowGraphRec, memberNames: readonly string[]):
     });
   }
 
-  return { nodes: [...g.nodes, node], edges };
+  return { ...g, nodes: [...g.nodes, node], edges };
 }

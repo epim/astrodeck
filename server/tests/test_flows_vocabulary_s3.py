@@ -249,9 +249,18 @@ class TestCreateParams:
                                       if k != "counts"}
 
     def test_every_other_type_is_created_with_its_defaults(self):
-        """The control: only TARGET and POOL have a Created-as column."""
+        """The control: only TARGET, POOL and DUSK FLATS have a Created-as
+        column. DUSK FLATS (WP 4.1a, #843) differs in ``method`` alone: a new
+        block takes the first method the engine runs, and the missing-key
+        default keeps the lens cap a saved block always meant."""
         for t in NODE_DEFS:
             if t in ("target", "pool"):
+                continue
+            if t == "duskflats":
+                created, default = create_params(t), default_params(t)
+                assert created.pop("method") == "Twilight sky"
+                assert default.pop("method") == "Translucent lens cap"
+                assert created == default, t
                 continue
             assert create_params(t) == default_params(t), t
 

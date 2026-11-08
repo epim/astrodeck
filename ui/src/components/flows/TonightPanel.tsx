@@ -128,6 +128,8 @@ function readTonight(payload: Record<string, unknown> | null): TonightRead | nul
           // window it always was.
           runs_at_start: flats.runs_at_start === true,
           at_unix: num(flats.at_unix),
+          // The estimated length of a block the engine runs (#845).
+          duration_s: num(flats.duration_s),
         }
       : null,
     moon: moon

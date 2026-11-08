@@ -169,6 +169,12 @@ class TestAbsentAnswersWriteNothing:
                 # plan now carries (`SequencePlan.dome`); the pin was hashed
                 # without it. Left out, like the count mode.
                 got.pop("dome", None)
+                if "dusk_flats" in got:
+                    # WP 4.1a (#843): the wizard's block is created as the
+                    # twilight sky, where it was the lens cap; reset, the
+                    # dump hashes to the pin, byte for byte.
+                    assert got["dusk_flats"]["method"] == "sky", got
+                    got["dusk_flats"]["method"] = "cap"
                 blobs.append(json.dumps(got, sort_keys=True))
         assert len(blobs) == 3 * 64
         assert _digest(blobs) == WIZARD_PLANS_SHA256

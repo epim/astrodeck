@@ -2791,6 +2791,13 @@ class FlowQuickBody(BaseModel):
     filters: list[str] = Field(default_factory=list)
     exposures: dict[str, float] | None = None
     guided: bool = True
+    #: THE OTHER AUTOMATION CHIPS THAT SHAPE THE GRAPH (#820): the AUTOFOCUS
+    #: stage, the relative HFR watchdog rule and the GUIDE stage's dither
+    #: cadence in frames (0 for none). Each defaults to what the four answers
+    #: always built, so a client that sends none of them gets that flow.
+    autofocus: bool = True
+    watchdog: bool = True
+    dither_every: int = Field(3, ge=0, le=100)
     #: Start it on the engine as well. Refused exactly as POST
     #: /api/flows/{id}/run refuses -- it IS that route's handler.
     run: bool = False
@@ -7032,9 +7039,9 @@ def create_app(*, bind_host: str | None = None,
           validates NOTHING and will happily emit ``action: "?"`` for an edge
           whose destination is missing, so a compile route that does not call
           this itself compiles nonsense without complaint.
-        * ``issues`` — the doctor's 28 rules (``flows.doctor.check``): 12
+        * ``issues`` — the doctor's 29 rules (``flows.doctor.check``): 12
           from the prototype (1 to 10, 13 and 14; 11 and 12 were removed on
-          2026-08-16), the 15 mosaic rules M1 to M15 and L1, each an advisory
+          2026-08-16), the 15 mosaic rules M1 to M15 and L1, L2, each an advisory
           ``{text, level}``; then the capture-geometry warnings
           (``capture_geometry.plan_warnings``) and that inventory's note,
           then, for a mosaic that runs with ``solve_saved_lights`` off, the
@@ -7331,7 +7338,8 @@ def create_app(*, bind_host: str | None = None,
             record = await asyncio.to_thread(
                 flow_wizard.quick, body.target.model_dump(), body.subs,
                 body.filters, body.exposures, body.guided, body.name,
-                wheel=_rig_wheel())
+                wheel=_rig_wheel(), autofocus=body.autofocus,
+                watchdog=body.watchdog, dither_every=body.dither_every)
         except ValueError as e:
             raise HTTPException(422, detail={"detail": str(e),
                                              "code": "invalid_quick_flow"})

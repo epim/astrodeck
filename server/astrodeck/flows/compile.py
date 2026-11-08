@@ -1438,7 +1438,14 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     if calib is not None:
         automation["calibration_queue"] = {
             "order": ["dark", "bias", "flat"],
-            "policy": "if_stale",
+            # THE DARKS POLICY THE NODE SAYS (#1219): "Always" is the quick
+            # sheet's DARKS AFTER chip, a request for a fresh set whatever the
+            # library holds; "Skip" asks for no darks at all, so no lane is
+            # funded; every other value, the node's own default included, is
+            # the library-aware rule. `plan_extras` carries it.
+            "policy": ({"Always": "always", "Skip": "skip"}.get(
+                calib.params.get("darks"), "if_stale")
+                if isinstance(calib.params.get("darks"), str) else "if_stale"),
             # A count, read finite-only (#328): `plan_extras` takes
             # ``int()`` of it for the hold's darks.
             "quota": _finite(calib.params.get("quota")),

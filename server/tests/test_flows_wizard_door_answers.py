@@ -245,6 +245,14 @@ def _answer_blob(ans) -> str:
     rec = ans.record.model_dump(mode="json", by_alias=True)
     for minted in ("id", "created_ts", "updated_ts"):
         rec.pop(minted)
+    for node in rec["graph"]["nodes"]:
+        if node["type"] == "duskflats":
+            # WP 4.1a (#843): a created DUSK FLATS block takes the first
+            # method the engine runs, the twilight sky, where the wizard's
+            # read the lens cap through the missing-key default. Reset here,
+            # the dump hashes to the pin, byte for byte.
+            assert node["params"]["method"] == "Twilight sky", node
+            node["params"]["method"] = "Translucent lens cap"
     return json.dumps({"record": rec, "notes": list(ans.notes)},
                       sort_keys=True)
 

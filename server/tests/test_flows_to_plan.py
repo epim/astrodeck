@@ -711,6 +711,14 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
         # have the node are held to carry it by
         # `test_the_examples_with_a_dome_node_carry_its_block`.
         got.pop("dome", None)
+        # WP 4.1a (#843): example-m16's DUSK FLATS block is CREATED with the
+        # first method the engine runs, the twilight sky, where it read the
+        # lens cap through the missing-key default. That is the one change to
+        # its plan, and resetting it here reproduces the pin, byte for byte.
+        flats = got.get("dusk_flats")
+        if flats is not None:
+            assert flats["method"] == "sky", flats
+            flats["method"] = "cap"
         blob = json.dumps(got, sort_keys=True).encode("utf-8")
         return hashlib.sha256(blob).hexdigest(), centre, count_mode
 

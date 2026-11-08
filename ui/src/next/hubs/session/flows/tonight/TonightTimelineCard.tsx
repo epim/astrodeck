@@ -210,9 +210,13 @@ export function TonightTimelineCard(props: TonightTimelineProps): JSX.Element {
           {g.flats === "window" ? "twilight / flats" : "twilight"}
         </LegendItem>
         {g.flats === "start" && (
-          // The flat-panel method is a tick at the run's start, not a band
-          // over the Sun window (#744): named only on a night that draws it.
-          <LegendItem tone="sky" shape="dash">flats, once before the first light</LegendItem>
+          // The flat-panel method at the run's start, not a band over the Sun
+          // window (#744): named only on a night that draws it, with the swatch
+          // of what is drawn, a block of its estimated length (#845) or a tick
+          // when no length is known.
+          <LegendItem tone="sky" shape={g.rects.some((r) => r.key === "flats-start") ? "block" : "dash"}>
+            flats, once before the first light
+          </LegendItem>
         )}
         <LegendItem tone="warn" shape="dash">meridian flip</LegendItem>
         <LegendItem tone="faint" shape="bar">

@@ -610,6 +610,13 @@ class SequencePlan(BaseModel):
     # 0 means do not, and 0 is the default: a flow that did not ask for day
     # darks must not find its camera held cold for an extra hour.
     day_darks: int = Field(0, ge=0, le=200)
+    # THE DARKS POLICY OF THAT LANE (#1219; ADDITIVE, and ABSENT from the dump
+    # while False, like ``dusk_flats``). False is the library-aware rule: only
+    # what the library lacks at each recipe. True is the queue's "Always" (the
+    # quick sheet's DARKS AFTER chip): the quota is shot whatever the library
+    # holds, because the operator asked for a fresh set, after a sensor or
+    # cooler change for one. Meaningless with ``day_darks`` 0.
+    day_darks_always: bool = False
     # --- conditional sequencer (PRO-3; ADDITIVE — [] => byte-identical run) ---
     # An author-editable when-trigger-do-action layer on top of the fixed
     # targets×steps plan. Empty by default so existing plans deserialize
@@ -652,9 +659,10 @@ class SequencePlan(BaseModel):
     @model_serializer(mode="wrap")
     def _omit_an_empty_skip(self, handler: SerializerFunctionWrapHandler):
         """The dump without ``skipped_ids`` when it is empty, and without
-        ``dusk_flats`` or ``dome`` when they are None, whatever the mode, and
-        nested in a ``Session`` too. A wrap serializer, so every other field,
-        and the JSON schema, are pydantic's own."""
+        ``dusk_flats`` or ``dome`` when they are None, and without
+        ``day_darks_always`` when it is False, whatever the mode, and nested
+        in a ``Session`` too. A wrap serializer, so every other field, and
+        the JSON schema, are pydantic's own."""
         out = handler(self)
         if isinstance(out, dict) and not out.get("skipped_ids"):
             out.pop("skipped_ids", None)
@@ -662,6 +670,8 @@ class SequencePlan(BaseModel):
             out.pop("dusk_flats", None)
         if isinstance(out, dict) and out.get("dome") is None:
             out.pop("dome", None)
+        if isinstance(out, dict) and not out.get("day_darks_always"):
+            out.pop("day_darks_always", None)
         return out
 
     def total_frames(self) -> int:

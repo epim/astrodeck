@@ -15054,6 +15054,13 @@ class SequenceEngine:
         real work is safely in the ledger; a calibration hiccup must never stop
         the warm ramp below from running, which is what actually protects the
         sensor.
+
+        THE QUEUE'S DARKS POLICY (#1219). ``plan.day_darks_always`` is the
+        queue's "Always", the quick sheet's DARKS AFTER chip: the operator asked
+        for a fresh set (after a sensor or cooler change, say), so the quota is
+        shot whatever the library holds, split evenly over the recipes (the
+        last takes what is left) so a night of several exposures gets darks at
+        each. Without it the shortfall rule above is the whole policy.
         """
         quota = int(getattr(self.plan, "day_darks", 0) or 0)
         recipes = self._day_dark_recipes()
@@ -15064,20 +15071,29 @@ class SequenceEngine:
             bus.log("warning", "day darks skipped - no camera connected",
                     "sequence")
             return
+        always = bool(getattr(self.plan, "day_darks_always", False))
+        share = -(-quota // len(recipes))
         taken = 0
         for step in recipes:
             if taken >= quota:
                 break
-            want, have = self._hold_darks_shortfall(step, quota - taken)
-            if want <= 0:
+            if always:
+                want = min(share, quota - taken)
                 bus.log("info",
-                        f"day darks: the library already holds {have} at "
-                        f"{step.exposure_s:g}s g{step.gain} - skipping",
-                        "sequence")
-                continue
-            bus.log("info",
-                    f"day darks: {want} at {step.exposure_s:g}s g{step.gain} "
-                    f"({have} already captured)", "sequence")
+                        f"day darks: {want} at {step.exposure_s:g}s "
+                        f"g{step.gain} (the queue's Darks is Always, so the "
+                        f"library's stock is not counted)", "sequence")
+            else:
+                want, have = self._hold_darks_shortfall(step, quota - taken)
+                if want <= 0:
+                    bus.log("info",
+                            f"day darks: the library already holds {have} at "
+                            f"{step.exposure_s:g}s g{step.gain} - skipping",
+                            "sequence")
+                    continue
+                bus.log("info",
+                        f"day darks: {want} at {step.exposure_s:g}s "
+                        f"g{step.gain} ({have} already captured)", "sequence")
             for _ in range(want):
                 if taken >= quota:
                     break

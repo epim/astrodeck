@@ -173,6 +173,13 @@ export interface QuickFlowAnswers {
    *  entry whose key is a label, not a slot. */
   exposures?: Record<string, number>;
   guided: boolean;
+  /** The automation chips that shape the graph (#820): the AUTOFOCUS stage,
+   *  the relative HFR watchdog rule and the GUIDE stage's dither cadence in
+   *  frames (0 for none). Each is optional: left out, the server builds what
+   *  the four answers always built (every chip on, dither every 3). */
+  autofocus?: boolean;
+  watchdog?: boolean;
+  dither_every?: number;
   run: boolean;
   name?: string;
 }
